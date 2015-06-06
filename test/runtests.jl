@@ -121,8 +121,10 @@ f = CSV.File(fullpath;rows_for_type_detect=1000)
 
 fullpath = "/Users/jacobquinn/test"
 f = CSV.File(fullpath)
-CSV.read(f)
+t = CSV.read(f)
 
 fullpath = "/Users/jacobquinn/Downloads/bids.csv"
-f = CSV.File(fullpath)
+@time f = CSV.File(fullpath)
 @time CSV.read(f)
+t=ans
+map(string,t[2])

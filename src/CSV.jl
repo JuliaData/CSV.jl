@@ -235,12 +235,19 @@ function detecttype(val,f::Str,sep::Char,null::Str)
     return Str, ""
 end
 
+# we need to keep a reference to our mmapped arrays for CStrings
+const GLOBALREF = []
+
 type Stream <: IO
     file::CSV.File
     data::Vector{UInt8} # Mmap.Array
     pos::Int
 end
-Base.open(file::CSV.File) = Stream(file,Mmap.mmap(file.fullpath),1)
+function Base.open(file::CSV.File)
+    m = Mmap.mmap(file.fullpath)
+    push!(GLOBALREF,m)
+    Stream(file,m,1)
+end
 # CSV.open(file::AbstractString) = Stream(CSV.File(file),mmap(file),1)
 
 function Base.read(io::CSV.Stream, ::Type{UInt8}=UInt8)
@@ -340,6 +347,7 @@ end
 const NULLSTRING = CString(C_NULL,0)
 Base.show(io::IO, x::CString) = print(io,x == NULLSTRING ? "NULL" : "\"$(bytestring(x.ptr,x.len))\"")
 Base.endof(x::CString) = x.len
+Base.string(x::CString) = x == NULLSTRING ? "" : bytestring(x.ptr,x.len)
 
 function getfield{T<:Integer}(io, ::Type{T}, row, col, int, float)
     val, isnull = readfield(io, T, row, col)
