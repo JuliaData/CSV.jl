@@ -262,7 +262,6 @@ const NEG_ONE   = @compat UInt8('0')-UInt8(1)
 const ZERO      = @compat UInt8('0')
 const TEN       = @compat UInt8('9')+UInt8(1)
 
-# io = Mmap.Array, pos = current parsing position, eof = length(io) + 1
 @inline function readfield{T<:Integer}(io::CSV.Stream, ::Type{T}, row, col)
     @inbounds begin
     b = read(io)
@@ -295,6 +294,21 @@ const TEN       = @compat UInt8('9')+UInt8(1)
     end
 end
 
+@inline function readfield(io::CSV.Stream, ::Type{Float64}, row, col)
+    b = read(io)
+    while !eof(io) && (b == SPACE || b == TAB || b == io.file.quotechar)
+        b = read(io)
+    end
+    if b == io.file.delim || b == io.file.newline
+        return NaN, true
+    end
+    ptr = pointer(io.data) + UInt(io.pos-2)
+    ending = Ref{Ptr{UInt8}}()
+    val = ccall(:strtod, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, ending)
+    io.pos += ending[] - ptr
+    return val, false
+end
+
 @inline function readfield{T<:AbstractString}(io::CSV.Stream, ::Type{T}, row, col)
     pos = position(io)
     @inbounds while !eof(io)
@@ -324,14 +338,18 @@ immutable CString <: AbstractString
     len::Int
 end
 const NULLSTRING = CString(C_NULL,0)
-Base.show(io::IO, x::CString) = print(io,x == NULLSTRING ? "NULL" : bytestring(x.ptr,x.len))
+Base.show(io::IO, x::CString) = print(io,x == NULLSTRING ? "NULL" : "\"$(bytestring(x.ptr,x.len))\"")
 Base.endof(x::CString) = x.len
 
-function getfield{T<:Integer}(io, ::Type{T}, row, col)
+function getfield{T<:Integer}(io, ::Type{T}, row, col, int, float)
     val, isnull = readfield(io, T, row, col)
-    return ifelse(isnull,typemin(Int),val)
+    return ifelse(isnull,int,val)
 end
-function getfield{T<:AbstractString}(io, ::Type{T}, row, col)
+function getfield(io, ::Type{Float64}, row, col, int, float)
+    val, isnull = CSV.readfield(io, Float64, row, col)
+    return ifelse(isnull,float,val)
+end
+function getfield{T<:AbstractString}(io, ::Type{T}, row, col, int, float)
     ptr, len, isnull = CSV.readfield(io,T,row,col)
     return ifelse(isnull,NULLSTRING,CString(ptr,len))
 end
@@ -339,7 +357,7 @@ end
 gettype(x) = x
 gettype{T<:AbstractString}(::Type{T}) = CString
 
-function Base.read(file::CSV.File)
+function Base.read(file::CSV.File;int::Int=typemin(Int),float::Float64=NaN)
     io = CSV.open(file)
     seek(io,file.datapos)
     rows = countlines(file.fullpath)-1
@@ -347,13 +365,13 @@ function Base.read(file::CSV.File)
     # pre-allocate
     result = Any[]
     for i = 1:cols
-        push!(result,Array(gettype(file.types[i]), rows))
+        push!(result,Array(CSV.gettype(file.types[i]), rows))
     end
 
     N = 1
     while !eof(io)
         for i = 1:cols
-            result[i][N] = getfield(io, file.types[i], N, i)
+            result[i][N] = CSV.getfield(io, file.types[i], N, i, int, float)
         end
         N += 1
     end
