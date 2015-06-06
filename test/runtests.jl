@@ -118,3 +118,11 @@ f = CSV.File(fullpath;rows_for_type_detect=1000)
 fullpath = "/Users/jacobquinn/domo/curse/dfp2.csv"
 f = CSV.File(fullpath;rows_for_type_detect=1000)
 @time CSV.validate(f)
+
+fullpath = "/Users/jacobquinn/test"
+f = CSV.File(fullpath)
+CSV.read(f)
+
+fullpath = "/Users/jacobquinn/Downloads/bids.csv"
+f = CSV.File(fullpath)
+@time CSV.read(f)
