@@ -13,6 +13,7 @@ module CSV
 
 using Compat
 reload("Mmap")
+import Mmap
 
 typealias Str AbstractString
 
