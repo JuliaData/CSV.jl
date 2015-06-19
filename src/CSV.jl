@@ -94,7 +94,7 @@ const COMMA = @compat UInt8(',')
 const QUOTE = @compat UInt8('"')
 const ESCAPE = @compat UInt8('\\')
 
-function readline(f::IOStream,q::UInt8)
+function readline(f::IOStream,q::UInt8,n::UInt8=NEWLINE)
     buf = IOBuffer()
     while !eof(f)
         b = read(f, UInt8)
@@ -105,7 +105,7 @@ function readline(f::IOStream,q::UInt8)
                 write(buf, b)
                 b == q && break
             end
-        elseif b == NEWLINE
+        elseif b == n
             break
         end
     end
@@ -113,10 +113,10 @@ function readline(f::IOStream,q::UInt8)
 end
 
 function File{T<:Str}(fullpath::Str,
-              delim::UInt8=COMMA;
-              newline::UInt8=NEWLINE,
-              quotechar::UInt8=QUOTE,
-              escapechar::UInt8=ESCAPE,
+              delim=COMMA;
+              newline=NEWLINE,
+              quotechar=QUOTE,
+              escapechar=ESCAPE,
               numcols::Int=0,
               header::Vector{T}=UTF8String[],
               types::Vector{DataType}=DataType[],
@@ -126,11 +126,16 @@ function File{T<:Str}(fullpath::Str,
               headerrow::Int=1,
               datarow::Int=headerrow+1,
               rows_for_type_detect::Int=250,
-              separator::UInt8=COMMA,
+              separator=COMMA,
               null::Str="")
     # argument checks
     isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file"))
     datarow > headerrow || throw(ArgumentError("data row ($datarow) must come after header row ($headerrow)"))
+
+    # make sure args are UInt8
+    delim = delim % UInt8; newline = newline % UInt8;
+    quotechar = quotechar % UInt8; escapechar = escapechar % UInt8;
+    separator = separator % UInt8;
 
     if splitext(fullpath)[end] in ZIP_FILE_EXTS
         temp = tempname()
@@ -143,12 +148,12 @@ function File{T<:Str}(fullpath::Str,
 
     CSV.skipto!(f,1,headerrow,quotechar,escapechar,newline)
     headerpos = position(f)
-    cols = numcols == 0 ? length(split(readline(f,quotechar),@compat(Char(delim)))) : numcols
+    cols = numcols == 0 ? length(split(readline(f,quotechar,newline),@compat(Char(delim)))) : numcols
     seek(f,headerpos)
 
     # if headerrow == 0, there is no header in the file itself
     # a header can be provided in the `header` argument, otherwise column names are auto-generated
-    header = headerrow != 0 ? map(utf8,split(chomp(readline(f,quotechar)),@compat(Char(delim)))) : 
+    header = headerrow != 0 ? map(utf8,split(chomp(readline(f,quotechar,newline)),@compat(Char(delim)))) : 
                 isempty(header) ? UTF8String["Column$i" for i = 1:cols] : map(utf8,header)
     
     seek(f,headerpos)
@@ -167,7 +172,7 @@ function File{T<:Str}(fullpath::Str,
         poss_types = Array(DataType,rows_for_type_detect,cols)
         lineschecked = 0
         while !eof(f) && lineschecked < rows_for_type_detect
-            vals = split(chomp(readline(f,quotechar)),@compat(Char(delim)))
+            vals = split(chomp(readline(f,quotechar,newline)),@compat(Char(delim)))
             lineschecked += 1
             for i = 1:cols
                poss_types[lineschecked,i], formats[i] = CSV.detecttype(vals[i],formats[i],@compat(Char(separator)),null)
@@ -250,16 +255,14 @@ function Base.open(file::CSV.File)
 end
 # CSV.open(file::AbstractString) = Stream(CSV.File(file),mmap(file),1)
 
-function Base.read(io::CSV.Stream, ::Type{UInt8}=UInt8)
-    eof(io) && return 0x00 # throw(EOFError())?
-    @inbounds b = io.data[io.pos]
+@inline function Base.read(io::CSV.Stream, ::Type{UInt8}=UInt8)
+    b = io.data[io.pos]
     io.pos += 1
     return b
 end
 Base.eof(io::CSV.Stream) = io.pos > length(io.data)
 Base.position(io::CSV.Stream) = io.pos
 Base.seek(io::CSV.Stream,i::Int) = (io.pos = i)
-
 
 const SPACE     = @compat UInt8(' ')
 const TAB       = @compat UInt8('\t')
@@ -270,6 +273,7 @@ const ZERO      = @compat UInt8('0')
 const TEN       = @compat UInt8('9')+UInt8(1)
 
 @inline function readfield{T<:Integer}(io::CSV.Stream, ::Type{T}, row, col)
+    pos = io.pos
     @inbounds begin
     b = read(io)
     while !eof(io) && (b == SPACE || b == TAB || b == io.file.quotechar)
@@ -303,7 +307,7 @@ end
 
 @inline function readfield(io::CSV.Stream, ::Type{Float64}, row, col)
     b = read(io)
-    while !eof(io) && (b == SPACE || b == TAB || b == io.file.quotechar)
+    while !eof(io) && (b == CSV.SPACE || b == CSV.TAB || b == io.file.quotechar)
         b = read(io)
     end
     if b == io.file.delim || b == io.file.newline
@@ -313,7 +317,12 @@ end
     ending = Ref{Ptr{UInt8}}()
     val = ccall(:strtod, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, ending)
     io.pos += ending[] - ptr
-    return val, false
+    b = unsafe_load(ending[])
+    if b == io.file.delim || b == io.file.newline || eof(io)
+        return val, false
+    else
+        throw(CSV.CSVError("error parsing Float64 on row $row, column $col; parsed '$v' before encountering $(@compat(Char(b))) character"))
+    end
 end
 
 @inline function readfield{T<:AbstractString}(io::CSV.Stream, ::Type{T}, row, col)
@@ -345,6 +354,7 @@ immutable CString <: AbstractString
     len::Int
 end
 const NULLSTRING = CString(C_NULL,0)
+Base.print(io::IO, x::CString) = show(io,x)
 Base.show(io::IO, x::CString) = print(io,x == NULLSTRING ? "NULL" : "\"$(bytestring(x.ptr,x.len))\"")
 Base.endof(x::CString) = x.len
 Base.string(x::CString) = x == NULLSTRING ? "" : bytestring(x.ptr,x.len)
@@ -367,7 +377,7 @@ gettype{T<:AbstractString}(::Type{T}) = CString
 
 function Base.read(file::CSV.File;int::Int=typemin(Int),float::Float64=NaN)
     io = CSV.open(file)
-    seek(io,file.datapos)
+    seek(io,file.datapos+1)
     rows = countlines(file.fullpath)-1
     cols = file.cols
     # pre-allocate
@@ -378,13 +388,24 @@ function Base.read(file::CSV.File;int::Int=typemin(Int),float::Float64=NaN)
 
     N = 1
     while !eof(io)
-        for i = 1:cols
-            result[i][N] = CSV.getfield(io, file.types[i], N, i, int, float)
+        for i = 1:41
+            println(CSV.getfield(io, file.types[i], row, i, int, float))
         end
         N += 1
     end
     return result
 end
+
+# function Base.countlines(file::CSV.File)
+#     eol = file.newline
+#     m = Mmap.mmap(file.fullpath)
+#     lines = 0
+#     for byte in m
+#         lines += ifelse(byte == eol,1,0)
+#     end
+#     return lines+1
+# end
+
 # validatetype{T<:Str}(value::Str,::Type{T},f,sep,null,r,c) = return
 # function validatetype{T<:Real}(value::Str,::Type{T},f,sep,null,row,col)
 #     (value == "" || value == null) && return
