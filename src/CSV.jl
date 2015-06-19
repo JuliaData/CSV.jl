@@ -12,7 +12,7 @@
 module CSV
 
 using Compat
-reload("/Users/jacobquinn/.julia/v0.4/Mmap/src/Mmap.jl")
+reload("Mmap")
 import Mmap
 
 typealias Str AbstractString
