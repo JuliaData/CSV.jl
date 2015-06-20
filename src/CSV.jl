@@ -349,6 +349,27 @@ end
     end
 end
 
+@inline function readfield(io::CSV.Stream, ::Type{Date}, row, col)
+    year = 0
+    for i = 1:4
+        year *= 10
+        year += read(io) - ZERO
+    end
+    read(io)
+    month = 0
+    for i = 1:2
+        month *= 10
+        month += read(io) - ZERO 
+    end
+    read(io)
+    day = 0
+    for i = 1:2
+        day *= 10
+        day += read(io) - ZERO 
+    end
+    return Date(year,month,day), false
+end
+
 immutable CString <: AbstractString
     ptr::Ptr{UInt8}
     len::Int
