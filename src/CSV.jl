@@ -315,11 +315,11 @@ end
     end
     ptr = pointer(io.data) + UInt(io.pos-2)
     ending = Ref{Ptr{UInt8}}()
-    val = ccall(:strtod, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, ending)
+    v = ccall(:strtod, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, ending)
     io.pos += ending[] - ptr
     b = unsafe_load(ending[])
     if b == io.file.delim || b == io.file.newline || eof(io)
-        return val, false
+        return v, false
     else
         throw(CSV.CSVError("error parsing Float64 on row $row, column $col; parsed '$v' before encountering $(@compat(Char(b))) character"))
     end
