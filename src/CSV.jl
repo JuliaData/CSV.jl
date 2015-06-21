@@ -367,6 +367,7 @@ end
         day *= 10
         day += read(io) - ZERO 
     end
+    read(io)
     return Date(year,month,day), false
 end
 
@@ -392,6 +393,10 @@ function getfield{T<:AbstractString}(io, ::Type{T}, row, col, int, float)
     ptr, len, isnull = CSV.readfield(io,T,row,col)
     return ifelse(isnull,NULLSTRING,CString(ptr,len))
 end
+function getfield(io, ::Type{Date}, row, col, int, float)
+    val, isnull = CSV.readfield(io, Date, row, col)
+    return val
+end
 
 gettype(x) = x
 gettype{T<:AbstractString}(::Type{T}) = CString
@@ -409,8 +414,9 @@ function Base.read(file::CSV.File;int::Int=typemin(Int),float::Float64=NaN)
 
     N = 1
     while !eof(io)
-        for i = 1:41
-            println(CSV.getfield(io, file.types[i], row, i, int, float))
+        for i = 1:cols
+            result[i][N] = CSV.getfield(io, file.types[i], N, i, int, float)
+            # println(CSV.getfield(io, file.types[i], N, i, int, float))
         end
         N += 1
     end
