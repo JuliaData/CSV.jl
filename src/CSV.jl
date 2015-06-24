@@ -305,6 +305,8 @@ const TEN       = @compat UInt8('9')+UInt8(1)
     end
 end
 
+const REF = Array(Ptr{UInt8},1)
+
 @inline function readfield(io::CSV.Stream, ::Type{Float64}, row, col)
     b = read(io)
     while !eof(io) && (b == CSV.SPACE || b == CSV.TAB || b == io.file.quotechar)
@@ -314,10 +316,9 @@ end
         return NaN, true
     end
     ptr = pointer(io.data) + UInt(io.pos-2)
-    ending = Ref{Ptr{UInt8}}()
-    v = ccall(:strtod, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, ending)
-    io.pos += ending[] - ptr
-    b = unsafe_load(ending[])
+    v = ccall(:strtod, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, REF)
+    io.pos += REF[1] - ptr
+    b = unsafe_load(REF[1])
     if b == io.file.delim || b == io.file.newline || eof(io)
         return v, false
     else
