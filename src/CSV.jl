@@ -326,6 +326,8 @@ const REF = Array(Ptr{UInt8},1)
     end
 end
 
+const UINT8NULL = concert(Ptr{UInt8},C_NULL)
+
 @inline function readfield{T<:AbstractString}(io::CSV.Stream, ::Type{T}, row, col)
     pos = position(io)
     @inbounds while !eof(io)
@@ -344,7 +346,7 @@ end
         end
     end
     if pos == position(io)-1
-        return C_NULL, 0, true
+        return UINT8NULL, 0, true
     else
         return pointer(io.data)+Uint(pos-1), position(io)-pos-1, false
     end
