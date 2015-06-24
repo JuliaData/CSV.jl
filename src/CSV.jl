@@ -326,7 +326,7 @@ const REF = Array(Ptr{UInt8},1)
     end
 end
 
-const UINT8NULL = concert(Ptr{UInt8},C_NULL)
+const UINT8NULL = convert(Ptr{UInt8},C_NULL)
 
 @inline function readfield{T<:AbstractString}(io::CSV.Stream, ::Type{T}, row, col)
     pos = position(io)
