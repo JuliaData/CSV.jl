@@ -1,21 +1,8 @@
-# Validation Rules
- # Each row must contain the same number of columns
- # Each field must be formatted correctly and be of the right type and format, must be one of:
-  # Empty, missing value
-  # DATE
-  # DATETIME
-  # INTEGER
-  # DOUBLE
-  # STRING
-  # quoted by f.quotechar, with f.escapechar allowed within f.quotechar to specify literal f.quotechar, f.delim, or f.newline
-
 module CSV
 
 using Compat
 reload("Mmap")
 import Mmap
-
-typealias Str AbstractString
 
 immutable CSVError <: Exception
     msg::ASCIIString
@@ -112,12 +99,11 @@ function readline(f::IOStream,q::UInt8,n::UInt8=NEWLINE)
     return takebuf_string(buf)
 end
 
-function File{T<:Str}(fullpath::Str,
+function File{T<:AbstractString}(fullpath::AbstractString,
               delim=COMMA;
               newline=NEWLINE,
               quotechar=QUOTE,
               escapechar=ESCAPE,
-              numcols::Int=0,
               header::Vector{T}=UTF8String[],
               types::Vector{DataType}=DataType[],
               coltypes::Dict{Int,DataType}=Dict{Int,DataType}(),
@@ -127,7 +113,7 @@ function File{T<:Str}(fullpath::Str,
               datarow::Int=headerrow+1,
               rows_for_type_detect::Int=250,
               separator=COMMA,
-              null::Str="")
+              null::AbstractString="")
     # argument checks
     isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file"))
     datarow > headerrow || throw(ArgumentError("data row ($datarow) must come after header row ($headerrow)"))
@@ -142,13 +128,14 @@ function File{T<:Str}(fullpath::Str,
         unzipcmd = unzip(splitext(fullpath)[end],fullpath)
         run(pipe(pipe(unzipcmd,`head -$(rows_for_type_detect+headerrow)`);stdout=temp))
         f = open(temp)
+        rm(temp)
     else
         f = open(fullpath)
     end
 
     CSV.skipto!(f,1,headerrow,quotechar,escapechar,newline)
     headerpos = position(f)
-    cols = numcols == 0 ? length(split(readline(f,quotechar,newline),@compat(Char(delim)))) : numcols
+    cols = length(split(readline(f,quotechar,newline),@compat(Char(delim))))
     seek(f,headerpos)
 
     # if headerrow == 0, there is no header in the file itself
@@ -186,7 +173,11 @@ function File{T<:Str}(fullpath::Str,
                 t == NullField && continue
                 push!(d,t)
             end
-            ts[i] = (isempty(d) || Str in d ) ? Str : (Date in d) ? Date : (DateTime in d) ? DateTime : (Float64 in d) ? Float64 : (Int in d) ? Int : Str
+            ts[i] = (isempty(d) || AbstractString in d ) ? AbstractString : 
+                (Date     in d) ? Date : 
+                (DateTime in d) ? DateTime : 
+                (Float64  in d) ? Float64 : 
+                (Int      in d) ? Int : AbstractString
             empty!(d)
         end
     end
@@ -206,21 +197,13 @@ function File{T<:Str}(fullpath::Str,
         formats[i] = types[i] <: Dates.TimeType ? formats[i] : ""
     end
     return File(utf8(fullpath),
-                delim,
-                newline,
-                quotechar,
-                escapechar,
-                headerpos,
-                datapos,
-                cols,
-                header,
-                types,
-                formats,
-                separator,
-                utf8(null))
+                delim,newline,quotechar,escapechar,
+                headerpos,datapos,cols,
+                header,types,formats,
+                separator,utf8(null))
 end
 
-function detecttype(val,f::Str,sep::Char,null::Str)
+function detecttype(val,f::AbstractString,sep::Char,null::AbstractString)
     (val == "" || val == null) && return NullField, ""
     val2 = replace(val, sep, "")
     t = tryparse(Int,val2)
@@ -240,7 +223,7 @@ function detecttype(val,f::Str,sep::Char,null::Str)
     return Str, ""
 end
 
-# we need to keep a reference to our mmapped arrays for CStrings
+# we need to keep a reference to our mmapped arrays for Strs
 const GLOBALREF = []
 
 type Stream <: IO
@@ -299,7 +282,7 @@ const TEN       = @compat UInt8('9')+UInt8(1)
     end
     end # @inbounds
     if b == io.file.delim || b == io.file.newline || eof(io)
-        return negative ? -v : v, false
+        return ifelse(negative,-v,v), false
     else
         throw(CSV.CSVError("error parsing $T on column $col, row $row; parsed $v before encountering $(@compat(Char(b))) character"))
     end
@@ -318,7 +301,7 @@ const REF = Array(Ptr{UInt8},1)
     ptr = pointer(io.data) + UInt(io.pos-2)
     v = ccall(:strtod, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, REF)
     io.pos += REF[1] - ptr
-    b = unsafe_load(REF[1])
+    b = io.data[io.pos-1]
     if b == io.file.delim || b == io.file.newline || eof(io)
         return v, false
     else
@@ -352,37 +335,27 @@ const UINT8NULL = convert(Ptr{UInt8},C_NULL)
     end
 end
 
+itr(io,n,val) = (for i = 1:n; val += 10; val += read(io) - ZERO; end; return val)
+
 @inline function readfield(io::CSV.Stream, ::Type{Date}, row, col)
-    year = 0
-    for i = 1:4
-        year *= 10
-        year += read(io) - ZERO
-    end
+    year = itr(io,4,0)
     read(io)
-    month = 0
-    for i = 1:2
-        month *= 10
-        month += read(io) - ZERO 
-    end
+    month = itr(io,2,0)
     read(io)
-    day = 0
-    for i = 1:2
-        day *= 10
-        day += read(io) - ZERO 
-    end
+    day = itr(io,n,0)
     read(io)
     return Date(year,month,day), false
 end
 
-immutable CString <: AbstractString
+immutable Str <: AbstractString
     ptr::Ptr{UInt8}
     len::Int
 end
-const NULLSTRING = CString(C_NULL,0)
-Base.print(io::IO, x::CString) = show(io,x)
-Base.show(io::IO, x::CString) = print(io,x == NULLSTRING ? "NULL" : "\"$(bytestring(x.ptr,x.len))\"")
-Base.endof(x::CString) = x.len
-Base.string(x::CString) = x == NULLSTRING ? "" : bytestring(x.ptr,x.len)
+const NULLSTRING = Str(C_NULL,0)
+Base.print(io::IO, x::Str) = show(io,x)
+Base.show(io::IO, x::Str) = print(io,x == NULLSTRING ? "" : "\"$(bytestring(x.ptr,x.len))\"")
+Base.endof(x::Str) = x.len
+Base.string(x::Str) = x == NULLSTRING ? "" : bytestring(x.ptr,x.len)
 
 function getfield{T<:Integer}(io, ::Type{T}, row, col, int, float)
     val, isnull = readfield(io, T, row, col)
@@ -394,7 +367,7 @@ function getfield(io, ::Type{Float64}, row, col, int, float)
 end
 function getfield{T<:AbstractString}(io, ::Type{T}, row, col, int, float)
     ptr, len, isnull = CSV.readfield(io,T,row,col)
-    return ifelse(isnull,NULLSTRING,CString(ptr,len))
+    return ifelse(isnull,NULLSTRING,Str(ptr,len))
 end
 function getfield(io, ::Type{Date}, row, col, int, float)
     val, isnull = CSV.readfield(io, Date, row, col)
@@ -402,12 +375,12 @@ function getfield(io, ::Type{Date}, row, col, int, float)
 end
 
 gettype(x) = x
-gettype{T<:AbstractString}(::Type{T}) = CString
+gettype{T<:AbstractString}(::Type{T}) = Str
 
 function Base.read(file::CSV.File;int::Int=typemin(Int),float::Float64=NaN)
     io = CSV.open(file)
     seek(io,file.datapos+1)
-    rows = countlines(file.fullpath)-1
+    rows = countlines(file.fullpath,Char(file.newline))-1
     cols = file.cols
     # pre-allocate
     result = Any[]
@@ -419,22 +392,11 @@ function Base.read(file::CSV.File;int::Int=typemin(Int),float::Float64=NaN)
     while !eof(io)
         for i = 1:cols
             result[i][N] = CSV.getfield(io, file.types[i], N, i, int, float)
-            # println(CSV.getfield(io, file.types[i], N, i, int, float))
         end
         N += 1
     end
     return result
 end
-
-# function Base.countlines(file::CSV.File)
-#     eol = file.newline
-#     m = Mmap.mmap(file.fullpath)
-#     lines = 0
-#     for byte in m
-#         lines += ifelse(byte == eol,1,0)
-#     end
-#     return lines+1
-# end
 
 # validatetype{T<:Str}(value::Str,::Type{T},f,sep,null,r,c) = return
 # function validatetype{T<:Real}(value::Str,::Type{T},f,sep,null,row,col)
