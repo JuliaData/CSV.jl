@@ -123,6 +123,7 @@ fullpath = "/Users/jacobquinn/test"
 f = CSV.File(fullpath)
 t = CSV.read(f)
 
+reload("CSV")
 fullpath = "/Users/jacobquinn/Downloads/bids.csv"
 @time f = CSV.File(fullpath)
 @time CSV.read(f)
