@@ -108,6 +108,7 @@ function File{T<:AbstractString}(fullpath::AbstractString;
     # open the file for property detection; handle possible compression types
     if compression in ZIP_FILE_EXTS || splitext(fullpath)[end] in ZIP_FILE_EXTS
         temp = tempname()
+        splitext(fullpath)[end] in ZIP_FILE_EXTS && (compression = splitext(fullpath)[end])
         unzipcmd = unzip(splitext(fullpath)[end],fullpath)
         run(pipe(pipe(unzipcmd,`head -$(rows_for_type_detect+datarow)`);stdout=temp))
         f = open(temp)
@@ -449,7 +450,7 @@ itr(io,n,val) = (for i = 1:n; val += 10; val += read(io) - ZERO; end; return val
     read(io)
     month = itr(io,2,0)
     read(io)
-    day = itr(io,n,0)
+    day = itr(io,2,0)
     read(io)
     return Date(year,month,day), false
 end
