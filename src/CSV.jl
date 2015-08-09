@@ -394,7 +394,7 @@ const REF = Array(Ptr{UInt8},1)
     while !eof(io) && (b == CSV.SPACE || b == CSV.TAB || b == io.file.quotechar)
         b = read(io)
     end
-    if b == io.file.delim || b == NEWLINE
+    if b == io.file.delim || b == NEWLINE || b == PERIOD
         return NaN, true
     elseif b == RETURN
         peek(io) == NEWLINE && (io.pos+=1)
