@@ -40,9 +40,9 @@ function readsplitline(f::IO,d::UInt8,q::UInt8,e::UInt8)
                     b = read(f, UInt8)
                     write(buf, b)
                 elseif b == q
-                    push!(vals,takebuf_string(buf))
-                    !eof(f) && read(f, UInt8) # read the delim, '\r', or '\n'
-                    !eof(f) && peek(f) == NEWLINE && read(f, UInt8)
+                    # push!(vals,takebuf_string(buf))
+                    # !eof(f) && read(f, UInt8) # read the delim, '\r', or '\n'
+                    # !eof(f) && peek(f) == NEWLINE && read(f, UInt8)
                     break
                 else
                     write(buf, b)

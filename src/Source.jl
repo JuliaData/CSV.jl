@@ -20,17 +20,18 @@ type Source <: IOSource # <: IO
 
     data::Vector{UInt8} # mmapped array, or entire IOStream/gzipped file read into Vector{UInt8}
     ptr::Int # represents the current index position in `data`; i.e. 1-based
+    datapos::Int
 end
 
 function Base.show(io::IO,f::Source)
-    println(io,"fullpath: \"",f.fullpath,"\"")
+    println(io,"CSV.Source: \"",f.fullpath,"\"")
 
     println(io,"delim: '",@compat(Char(f.delim)),"'")
     println(io,"quotechar: '",@compat(Char(f.quotechar)),"'")
-    println(io,"escapechar: '\\",@compat(Char(f.escapechar)),"'")
+    print(io,"escapechar: '"); print_escaped(io,string(@compat(Char(f.escapechar))),"\\"); println(io,"'")
     # println(io,"separator: '",@compat(Char(f.separator)),"'")
     # println(io,"decimal: '",@compat(Char(f.decimal)),"'")
-    println(io,"null: \"",f.null,"\"")
+    print(io,"null: \""); print_escaped(io,f.null,"\\"); println(io,"\"")
     println(io,"schema: ",f.schema)
     println(io,"dateformat: ",f.dateformat)
 end
@@ -50,8 +51,10 @@ Base.size(io::CSV.Source) = size(io.schema)
 Base.readline(io::CSV.Source) = readline(io,io.quotechar,io.escapechar)
 readsplitline(io::CSV.Source) = readsplitline(io,io.delim,io.quotechar,io.escapechar)
 Base.countlines(io::CSV.Source) = countlines(io,io.quotechar,io.escapechar)
+reset!(io::CSV.Source) = (io.ptr = io.datapos; return nothing)
 
 # Constructor
+#TODO: add Source(::IOBuffer) constructor
 function Source(fullpath::AbstractString;
               compression="",
 
@@ -189,7 +192,7 @@ function Source(fullpath::AbstractString;
     end
     (any(columntypes .== DateTime) || any(columntypes .== Date)) && dateformat == EMPTY_DATEFORMAT && (dateformat = Dates.ISODateFormat)
     return Source(utf8(fullpath),delim,quotechar,escapechar,separator,decimal,ascii(null),null != "",
-                Schema(columnnames,columntypes,rows,cols),dateformat,source,datapos)
+                Schema(columnnames,columntypes,rows,cols),dateformat,source,datapos,datapos)
 end
 
 # used only during the type detection process

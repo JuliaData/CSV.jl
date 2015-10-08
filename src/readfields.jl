@@ -1,12 +1,13 @@
 readfield!(io::IOBuffer,dest::NullableVector,typ;null::AbstractString="",format::Dates.DateFormat=EMPTY_DATEFORMAT) =
-    readfield!(Source("",COMMA,QUOTE,ESCAPE,COMMA,PERIOD,null,null != "",Schema(UTF8String[],DataType[],0,0),typ == Date && format == EMPTY_DATEFORMAT ? Dates.ISODateFormat : format,io.data,1),
+    readfield!(Source("",COMMA,QUOTE,ESCAPE,COMMA,PERIOD,null,null != "",Schema(UTF8String[],DataType[],0,0),typ == Date && format == EMPTY_DATEFORMAT ? Dates.ISODateFormat : format,io.data,1,1),
     dest,typ,1,1)
 
-function Base.isnull(io::Source,b,row,col)
+function Base.isnull{T}(io::Source,::Type{T}, b,row,col)
     !io.nullcheck && return false
     i = 1
-    while !eof(io) && i <= length(io.null)
+    while true
         b == io.null[i] || return false
+        (eof(io) || i == length(io.null)) && break
         b = read(io, UInt8)
         i += 1
     end
@@ -21,31 +22,26 @@ function Base.isnull(io::Source,b,row,col)
         elseif eof(io) && b == io.quotechar
             return true
         else
-            throw(CSV.CSVError("error parsing $T on column $col, row $row; parsed $v before invalid digit '$(@compat(Char(b)))'"))
+            throw(CSV.CSVError("error parsing $T on column $col, row $row; parsed '$(@compat(Char(b)))'"))
         end
     end
     return true
 end
 
-@inline function setfield!(dest::NullableVector, row, val, null)
-    @inbounds dest.values[row], dest.isnull[row] = val, null
-    return
-end
-
 # `io` points to the first byte/character of an Integer field
-function readfield!{T<:Integer}(io::Source, dest::NullableVector{T}, ::Type{T}, row=0, col=0)
+function readfield{T<:Integer}(io::Source, ::Type{T}, row=0, col=0)
     v = zero(T)
-    eof(io) && return setfield!(dest,row,0,true)
+    eof(io) && return 0,true
     b = read(io, UInt8)
     while b == CSV.SPACE || b == CSV.TAB || b == io.quotechar
-        eof(io) && return setfield!(dest,row,0,true)
+        eof(io) && return 0,true
         b = read(io, UInt8)
     end
     if b == io.delim || b == NEWLINE # check for empty field
-        return setfield!(dest,row,0,true)
+        return 0,true
     elseif b == RETURN
         !eof(io) && peek(io) == NEWLINE && read(io, UInt8)
-        return setfield!(dest,row,0,true)
+        return 0,true
     end
     negative = false
     if b == CSV.MINUS # check for leading '-' or '+'
@@ -58,19 +54,19 @@ function readfield!{T<:Integer}(io::Source, dest::NullableVector{T}, ::Type{T}, 
         # process digits
         v *= 10
         v += b - CSV.ZERO
-        eof(io) && return setfield!(dest,row,ifelse(negative,-v,v), false)
+        eof(io) && return ifelse(negative,-v,v), false
         b = read(io, UInt8)
     end
     b == io.quotechar && !eof(io) && (b = read(io, UInt8))
     if b == io.delim || b == NEWLINE
-        return setfield!(dest,row,ifelse(negative,-v,v), false)
+        return ifelse(negative,-v,v), false
     elseif b == RETURN
         !eof(io) && peek(io) == NEWLINE && read(io, UInt8)
-        return setfield!(dest,row,ifelse(negative,-v,v), false)
+        return ifelse(negative,-v,v), false
     elseif eof(io) && b == io.quotechar
-        return setfield!(dest,row,ifelse(negative,-v,v), false)
-    elseif isnull(io,b,row,col)
-        return setfield!(dest,row,0,true)
+        return ifelse(negative,-v,v), false
+    elseif isnull(io,T,b,row,col)
+        return 0,true
     else
         throw(CSV.CSVError("error parsing $T on column $col, row $row; parsed $v before invalid digit '$(@compat(Char(b)))'"))
     end
@@ -78,42 +74,42 @@ end
 
 const REF = Array(Ptr{UInt8},1)
 
-function readfield!{T<:AbstractFloat}(io::Source, dest::NullableVector{T}, ::Type{T}, row=0, col=0)
-    eof(io) && return setfield!(dest, row, NaN, true)
+function readfield{T<:AbstractFloat}(io::Source, ::Type{T}, row=0, col=0)
+    eof(io) && return NaN, true
     b = read(io, UInt8)
     while b == CSV.SPACE || b == CSV.TAB || b == io.quotechar
-        eof(io) && return setfield!(dest, row, NaN, true)
+        eof(io) && return NaN, true
         b = read(io, UInt8)
     end
     if b == io.delim || b == NEWLINE
-        return setfield!(dest, row, NaN, true)
+        return NaN, true
     elseif b == RETURN
         !eof(io) && peek(io) == NEWLINE && read(io, UInt8)
-        return setfield!(dest, row, NaN, true)
+        return NaN, true
     end
     # subtract 1 because we just read a valid byte, so position(io) is +1 from where a digit should be
     ptr = pointer(io.data) + position(io) - 1
     v = ccall(:strtod, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, REF)
     io.ptr += REF[1] - ptr - 1 # Hopefully io.ptr doesn't change for IOBuffer?
-    eof(io) && return setfield!(dest, row, v, false)
+    eof(io) && return v, false
     b = read(io, UInt8)
     b == io.quotechar && !eof(io) && (b = read(io, UInt8))
     if b == io.delim || b == NEWLINE
-        return setfield!(dest, row, v, false)
+        return v, false
     elseif b == RETURN
         !eof(io) && peek(io) == NEWLINE && read(io, UInt8)
-        return setfield!(dest, row, v, false)
+        return v, false
     elseif eof(io) && b == io.quotechar
-        return setfield!(dest, row, v, false)
-    elseif isnull(io,b,row,col)
-        return setfield!(dest, row, NaN, true)
+        return v, false
+    elseif isnull(io,T,b,row,col)
+        return NaN, true
     else
         throw(CSV.CSVError("error parsing Float64 on row $row, column $col; parsed '$v' before invalid digit '$(@compat(Char(b)))'"))
     end
 end
 
-function readfield!{T<:AbstractString}(io::Source, dest::NullableVector{T}, ::Type{T}, row=0, col=0)
-    eof(io) && return setfield!(dest, row, NULLSTRING, true)
+function readfield{T<:AbstractString}(io::Source, ::Type{T}, row=0, col=0)
+    eof(io) && return NULLSTRING, true
     ptr = pointer(io.data) + position(io)
     len = 0
     nullcheck = io.nullcheck # if null is "", then we don't need to byte match it
@@ -143,46 +139,46 @@ function readfield!{T<:AbstractString}(io::Source, dest::NullableVector{T}, ::Ty
             len += 1
         end
     end
-    return (len == 0 || nullcheck) ? setfield!(dest, row, NULLSTRING, true) : setfield!(dest, row, PointerString(ptr, len), false)
+    return (len == 0 || nullcheck) ? (NULLSTRING, true) : (PointerString(ptr, len), false)
 end
 
 @inline itr(io,n,val) = (for i = 1:n; val *= 10; val += read(io, UInt8) - CSV.ZERO; end; return val)
 
-function readfield!(io::Source, dest::NullableVector{Date}, ::Type{Date}, row=0, col=0)
-    eof(io) && return setfield!(dest, row, Date(0,1,1), true)
+function readfield(io::Source, ::Type{Date}, row=0, col=0)
+    eof(io) && return Date(0,1,1), true
     b = read(io, UInt8)
     while b == CSV.SPACE || b == CSV.TAB || b == io.quotechar
-        eof(io) && return setfield!(dest, row, Date(0,1,1), true)
+        eof(io) && return Date(0,1,1), true
         b = read(io, UInt8)
     end
     if b == io.delim || b == NEWLINE
-        return setfield!(dest, row, Date(0,1,1), true)
+        return Date(0,1,1), true
     elseif b == RETURN
         !eof(io) && peek(io) == NEWLINE && read(io, UInt8)
-        return setfield!(dest, row, Date(0,1,1), true)
+        return Date(0,1,1), true
     end
     if io.dateformat == Dates.ISODateFormat # optimize for default yyyy-mm-dd
         if CSV.NEG_ONE < b < CSV.TEN
             year = CSV.itr(io,3,b - CSV.ZERO)
             read(io, UInt8)
-            month = itr(io,2,0)
+            month = CSV.itr(io,2,0)
             read(io, UInt8)
-            day = itr(io,2,0)
-            eof(io) && return setfield!(dest, row, Date(year,month,day), false)
+            day = CSV.itr(io,2,0)
+            eof(io) && return Date(year,month,day), false
             b = read(io, UInt8)
             b == io.quotechar && !eof(io) && (b = read(io, UInt8))
         else
-            if isnull(io,b,row,col)
-                return setfield!(dest, row, Date(0,1,1), true)
+            if CSV.isnull(io,Date,b,row,col)
+                return Date(0,1,1), true
             else
                 throw(CSV.CSVError("error parsing Date on row $row, column $col; parsed '$year-$month-$day' before invalid character '$(@compat(Char(b)))'"))
             end
         end
         if b == io.delim || b == NEWLINE || eof(io)
-            return setfield!(dest, row, Date(year,month,day), false)
+            return Date(year,month,day), false
         elseif b == RETURN
             !eof(io) && peek(io) == NEWLINE && read(io, UInt8)
-            return setfield!(dest, row, Date(year,month,day), false)
+            return Date(year,month,day), false
         else
             throw(CSV.CSVError("error parsing Date on row $row, column $col; parsed '$year-$month-$day' before invalid character '$(@compat(Char(b)))'"))
         end
@@ -205,8 +201,7 @@ function readfield!(io::Source, dest::NullableVector{Date}, ::Type{Date}, row=0,
             end
         end
         val = bytestring(pointer(io.data)+pos, position(io)-pos-quoted-1)
-        # println(val)
-        val == io.null && return setfield!(dest, row, Date(0,1,1), true)
-        return setfield!(dest, row, Date(val, io.dateformat), false)
+        val == io.null && return Date(0,1,1), true
+        return Date(val, io.dateformat), false
     end
 end

@@ -38,14 +38,23 @@ include("Sink.jl")
 
 DataStreams.DataStream(source::CSV.Source) = DataStreams.DataStream(source.schema)
 
+function readfield!{T}(source::Source, dest::NullableVector{T}, ::Type{T}, row, col)
+    @inbounds val, null = CSV.readfield(source, T, row, col) # row + datarow
+    @inbounds dest.values[row], dest.isnull[row] = val, null
+    return
+end
+
 function DataStreams.stream!(source::CSV.Source,sink::DataStream)
     rows, cols = size(source)
     types = source.schema.types
     data = sink.data
     for row = 1:rows, col = 1:cols
-        @inbounds CSV.readfield!(source, data[col], types[col], row, col) # row + datarow
+        CSV.readfield!(source, data[col], types[col], row, col) # row + datarow
     end
     return sink
 end
 
 end # module
+
+#TODO
+ # Create Source(::IOBuffer)

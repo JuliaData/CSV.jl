@@ -21,7 +21,7 @@ function writeheaders(source::Source,sink::Sink)
 end
 
 writefield(io::Sink, val, col, N) = (col == N ? println(io.io,val) : print(io.io,val,sink.delim); return nothing)
-function writefield(io::Sink, val::AbstractString, col N)
+function writefield(io::Sink, val::AbstractString, col, N)
     if io.quotefields
         print(io.io,io.quotechar,replace(val,io.quotechar,"$(io.escapechar)$(io.quotechar)"),io.quotechar)
     else
@@ -30,7 +30,7 @@ function writefield(io::Sink, val::AbstractString, col N)
     col == N ? println(io.io) : print(io,io.delim)
     return nothing
 end
-function writefield(io::Sink, val::Dates.TimeType, col N)
+function writefield(io::Sink, val::Dates.TimeType, col, N)
     if io.quotefields
         print(io.io,io.quotechar,io.defaultdate ? val : Dates.format(val,io.dateformat),io.quotechar)
     else
@@ -40,7 +40,7 @@ function writefield(io::Sink, val::Dates.TimeType, col N)
     return nothing
 end
 
-function DataStreams.stream(source::CSV.Source,sink::CSV.Sink;replace::Bool=true,header::Bool=true)
+function DataStreams.stream!(source::CSV.Source,sink::CSV.Sink;replace::Bool=true,header::Bool=true)
     replace ? seekstart(sink.io) : seekend(sink.io) # write a newline for append?
     header && writeheaders(source,sink)
     M, N = size(source)
