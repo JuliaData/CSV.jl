@@ -6,6 +6,8 @@ Base.close(::Libz.BufferedStreams.BufferedInputStream{Libz.Source{:inflate,Libz.
 #TODO: make .data field a type parameter? ultimate source might be HTTP Stream or other IO object
 # would need to refactor readfields to somehow operate on readline or something
 type Source <: IOSource # <: IO
+    schema::Schema
+
     fullpath::UTF8String
 
     delim::UInt8
@@ -15,7 +17,6 @@ type Source <: IOSource # <: IO
     decimal::UInt8
     null::ASCIIString # how null is represented in the dataset
     nullcheck::Bool   # do we have a custom null value to check for
-    schema::Schema
     dateformat::Dates.DateFormat
 
     data::Vector{UInt8} # mmapped array, or entire IOStream/gzipped file read into Vector{UInt8}
@@ -53,9 +54,9 @@ readsplitline(io::CSV.Source) = readsplitline(io,io.delim,io.quotechar,io.escape
 Base.countlines(io::CSV.Source) = countlines(io,io.quotechar,io.escapechar)
 reset!(io::CSV.Source) = (io.ptr = io.datapos; return nothing)
 
-# Constructor
-#TODO: add Source(::IOBuffer) constructor
-function Source(fullpath::AbstractString;
+# Constructors
+# independent constructor
+function Source(fullpath::Union{AbstractString,IO};
               compression="",
 
               delim=COMMA,
@@ -73,7 +74,7 @@ function Source(fullpath::AbstractString;
               rows::Int=0)
     # compression="";delim=CSV.COMMA;quotechar=CSV.QUOTE;escapechar=CSV.ESCAPE;separator=CSV.COMMA;decimal=CSV.PERIOD;null="";header=1;datarow=2;types=DataType[];formats=UTF8String[];skipblankrows=true;footerskip=0;rows_for_type_detect=250;countrows=true
     # argument checks
-    isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file"))
+    isa(fullpath,AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
     isa(header,Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
 
     # make sure character args are UInt8
@@ -90,10 +91,16 @@ function Source(fullpath::AbstractString;
     dateformat = isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat)
 
     # open the file for property detection; handle possible compression types
-    if compression in ZIP_FILE_EXTS || splitext(fullpath)[end] in ZIP_FILE_EXTS
+    if isa(fullpath,IO)
+        source = readbytes(fullpath)
+        seekstart(fullpath)
+        temp = fullpath
+        temp2 = deepcopy(fullpath)
+        fullpath = ""
+    elseif compression in ZIP_FILE_EXTS || splitext(fullpath)[end] in ZIP_FILE_EXTS
         #TODO: detect zip formats?
         temp = Libz.ZlibInflateInputStream(open(fullpath)) # used for countlines
-        temp2 = Libz.ZlibInflateInputStream(open(fullpath)) # used for type detection
+        temp2 = Libz.ZlibInflateInputStream(open(fullpath)) # used for countlines
         source = readbytes(Libz.ZlibInflateInputStream(open(fullpath))) # stored for reading data
     elseif compression == ""
         temp = open(fullpath)
@@ -102,17 +109,16 @@ function Source(fullpath::AbstractString;
     else
         throw(ArgumentError("unsupported compression type: $compression"))
     end
-    rows = rows == 0 ? countlines(temp,quotechar,escapechar) : rows
+    rows = rows == 0 ? CSV.countlines(temp2,quotechar,escapechar) : rows
     rows == 0 && throw(ArgumentError("No rows of data detected in $fullpath"))
-    close(temp)
     f = IOBuffer()
     bufferedrows = 0
     for i = 1:(rows < 0 ? rows_for_type_detect : min(rows,rows_for_type_detect))
-        write(f,readline(temp2,quotechar,escapechar))
+        write(f,CSV.readline(temp,quotechar,escapechar))
         bufferedrows += 1
-        eof(temp2) && break
+        eof(temp) && break
     end
-    close(temp2)
+    close(temp)
     seekstart(f)
 
     datarow = datarow == -1 ? last(header) + 1 : datarow # by default, data starts on line after header
@@ -123,12 +129,20 @@ function Source(fullpath::AbstractString;
     cols = 0
     if isa(header,Integer)
         # default header = 1
-        CSV.skipto!(f,1,header,quotechar,escapechar)
-        potential_header = UTF8String[utf8(x) for x in readsplitline(f,delim,quotechar,escapechar)]
-        cols = length(potential_header)
-        columnnames = header <= 0 ? UTF8String["Column$i" for i = 1:cols] : potential_header
-        datarow != header+1 && CSV.skipto!(f,header+1,datarow,quotechar,escapechar)
-        datapos = position(f)+1
+        if header <= 0
+            CSV.skipto!(f,1,datarow,quotechar,escapechar)
+            datapos = position(f)
+            cols = length(CSV.readsplitline(f,delim,quotechar,escapechar))
+            seek(f, datapos)
+            datapos = max(1,datapos) # in cases where `readfield` would being at position 0
+            columnnames = UTF8String["Column$i" for i = 1:cols]
+        else
+            CSV.skipto!(f,1,header,quotechar,escapechar)
+            columnnames = UTF8String[utf8(x) for x in CSV.readsplitline(f,delim,quotechar,escapechar)]
+            cols = length(columnnames)
+            datarow != header+1 && CSV.skipto!(f,header+1,datarow,quotechar,escapechar)
+            datapos = position(f)+1
+        end
     elseif isa(header,Range)
         CSV.skipto!(f,1,first(header),quotechar,escapechar)
         columnnames = UTF8String[utf8(x) for x in readsplitline(f,delim,quotechar,escapechar)]
@@ -191,39 +205,6 @@ function Source(fullpath::AbstractString;
         end
     end
     (any(columntypes .== DateTime) || any(columntypes .== Date)) && dateformat == EMPTY_DATEFORMAT && (dateformat = Dates.ISODateFormat)
-    return Source(utf8(fullpath),delim,quotechar,escapechar,separator,decimal,ascii(null),null != "",
-                Schema(columnnames,columntypes,rows,cols),dateformat,source,datapos,datapos)
-end
-
-# used only during the type detection process
-immutable NullField end
-
-function detecttype(val::AbstractString,format,null)
-    (val == "" || val == null) && return NullField
-    val2 = replace(val, @compat(Char(COMMA)), "") # remove potential comma separators from integers
-    t = tryparse(Int,val2)
-    !isnull(t) && return Int
-    # our strtod only works on period decimal points (e.g. "1.0")
-    t = tryparse(Float64,val2)
-    !isnull(t) && return Float64
-    if format != EMPTY_DATEFORMAT
-        try # it might be nice to throw an error when a format is specifically given but doesn't parse
-            Date(val,format)
-            return Date
-        end
-        try
-            DateTime(val,format)
-            return DateTime
-        end
-    else
-        try
-            Date(val)
-            return Date
-        end
-        try
-            DateTime(val)
-            return DateTime
-        end
-    end
-    return AbstractString
+    return Source(Schema(columnnames,columntypes,rows,cols),utf8(fullpath),
+                    delim,quotechar,escapechar,separator,decimal,ascii(null),null != "",dateformat,source,datapos,datapos)
 end
