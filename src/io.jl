@@ -93,3 +93,36 @@ function skipto!(f::IO,cur,dest,q,e)
     end
     return
 end
+
+# used only during the type detection process
+immutable NullField end
+
+function detecttype(val::AbstractString,format,null)
+    (val == "" || val == null) && return NullField
+    val2 = replace(val, @compat(Char(COMMA)), "") # remove potential comma separators from integers
+    t = tryparse(Int,val2)
+    !isnull(t) && return Int
+    # our strtod only works on period decimal points (e.g. "1.0")
+    t = tryparse(Float64,val2)
+    !isnull(t) && return Float64
+    if format != EMPTY_DATEFORMAT
+        try # it might be nice to throw an error when a format is specifically given but doesn't parse
+            Date(val,format)
+            return Date
+        end
+        try
+            DateTime(val,format)
+            return DateTime
+        end
+    else
+        try
+            Date(val)
+            return Date
+        end
+        try
+            DateTime(val)
+            return DateTime
+        end
+    end
+    return AbstractString
+end

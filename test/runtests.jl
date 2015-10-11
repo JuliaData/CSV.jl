@@ -23,6 +23,12 @@ f = CSV.Source(dir * "test_utf8.csv")
 @test f.schema.header == ["col1","col2","col3"]
 @test f.schema.types == [Float64,Float64,Float64]
 @test f.ptr == 16
+ds = DataStreams.DataStream(f)
+@test ds.data[1][1].value == 1.0
+@test ds.data[1][2].value == 4.0
+@test ds.data[1][3].value == 7.0
+@test ds.data[2][1].value == 2.0
+@test ds.schema == f.schema
 # f = CSV.Source(dir * "test_utf16_be.csv")
 # f = CSV.Source(dir * "test_utf16_le.csv")
 # f = CSV.Source(dir * "test_utf16.csv")
@@ -38,6 +44,10 @@ f = CSV.Source(dir * "test_single_column.csv")
 @test f.schema.rows == 3
 @test f.schema.header == ["col1"]
 @test f.schema.types == [Int]
+ds = DataStreams.DataStream(f)
+@test ds.data[1][1].value == 1
+@test ds.data[1][2].value == 2
+@test ds.data[1][3].value == 3
 
 #test empty file
 @test_throws ArgumentError CSV.Source(dir * "test_empty_file.csv")
@@ -54,6 +64,9 @@ f = CSV.Source(dir * "test_empty_file_newlines.csv")
 f = CSV.Source(dir * "test_simple_quoted.csv")
 @test f.schema.cols == 2
 @test f.schema.rows == 1
+ds = DataStreams.DataStream(f)
+@test string(ds.data[1][1].value) == "quoted field 1"
+@test string(ds.data[2][1].value) == "quoted field 2"
 f = CSV.Source(dir * "test_quoted_delim_and_newline.csv")
 @test f.schema.cols == 2
 @test f.schema.rows == 1
@@ -63,6 +76,8 @@ f = CSV.Source(dir * "test_crlf_line_endings.csv")
 @test f.schema.header == ["col1","col2","col3"]
 @test f.schema.cols == 3
 @test f.schema.types == [Int,Int,Int]
+ds = DataStreams.DataStream(f)
+@test ds.data[1][1].value == 1
 f = CSV.Source(dir * "test_newline_line_endings.csv")
 @test f.schema.header == ["col1","col2","col3"]
 @test f.schema.cols == 3
@@ -89,6 +104,10 @@ f = CSV.Source(dir * "test_dates.csv";types=[Date],dateformat="yyyy-mm-dd")
 @test f.schema.cols == 1
 @test f.schema.rows == 3
 @test f.schema.types == [Date]
+ds = DataStreams.DataStream(f)
+@test ds.data[1][1].value == Date(2015,1,1)
+@test ds.data[1][2].value == Date(2015,1,2)
+@test ds.data[1][3].value == Date(2015,1,3)
 f = CSV.Source(dir * "test_excel_date_formats.csv";types=[Date],dateformat="mm/dd/yy")
 @test f.schema.cols == 1
 @test f.schema.rows == 3
@@ -108,11 +127,20 @@ f = CSV.Source(dir * "test_missing_value_NULL.csv")
 @test f.schema.cols == 3
 @test f.schema.rows == 3
 @test f.schema.types == [Float64,AbstractString,Float64]
+ds = DataStreams.DataStream(f)
+@test ds.data[1][1].value == 1.0
+@test string(ds.data[2][1].value) == "2.0"
+@test string(ds.data[2][2].value) == "NULL"
 f = CSV.Source(dir * "test_missing_value_NULL.csv";null="NULL")
 @test f.schema.cols == 3
 @test f.schema.rows == 3
 @test f.null == "NULL"
 @test f.schema.types == [Float64,Float64,Float64]
+ds = DataStreams.DataStream(f)
+@test ds.data[1][1].value == 1.0
+@test string(ds.data[2][1].value) == "2.0"
+@test isnull(ds.data[2][2])
+
 # uses default missing value ""
 f = CSV.Source(dir * "test_missing_value.csv")
 @test f.schema.cols == 3
@@ -126,6 +154,7 @@ f = CSV.Source(dir * "baseball.csv")
 @test f.ptr == 60
 @test f.schema.header == UTF8String["Rk","Year","Age","Tm","Lg","","W","L","W-L%","G","Finish","Wpost","Lpost","W-L%post",""]
 @test f.schema.types == [Int64,Int64,Int64,AbstractString,AbstractString,AbstractString,Int64,Int64,Float64,Int64,Float64,Int64,Int64,Float64,AbstractString]
+ds = DataStreams.DataStream(f)
 # CSV.read(f)
 
 f = CSV.Source(dir * "FL_insurance_sample.csv")
@@ -182,18 +211,6 @@ f = CSV.Source(dir * "latest (1).csv";header=0,null="\\N")
 @test f.schema.rows == 1000
 @test f.schema.header == ["Column$i" for i = 1:f.schema.cols]
 @test f.schema.types == [AbstractString,AbstractString,Int64,Int64,AbstractString,Int64,AbstractString,Int64,Date,Date,Int64,AbstractString,Float64,Float64,Float64,Float64,Int64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,Float64]
-
-f = CSV.Source(dir * "pandas/matrix.csv")
-@test f.schema.cols == 10
-@test f.schema.rows == 1_000_000
-@test f.schema.header == UTF8String["0","1","2","3","4","5","6","7","8","9"]
-@test f.schema.types == [Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64]
-
-f = CSV.Source(dir * "pandas/P00000001-ALL.csv")
-@test f.schema.cols == 16
-@test f.schema.rows == 255843
-@test f.schema.header == UTF8String["cmte_id","cand_id","cand_nm","contbr_nm","contbr_city","contbr_st","contbr_zip","contbr_employer","contbr_occupation","contb_receipt_amt","contb_receipt_dt","receipt_desc","memo_cd","memo_text","form_tp","file_num"]
-@test f.schema.types == [AbstractString,AbstractString,AbstractString,AbstractString,AbstractString,AbstractString,Int64,AbstractString,AbstractString,Int64,AbstractString,AbstractString,AbstractString,AbstractString,AbstractString,Int64]
 
 f = CSV.Source(dir * "pandas/zeros.csv")
 @test f.schema.cols == 50
@@ -810,10 +827,8 @@ CSV.readfield!(io,v,Date)
 v = v[1]
 @test v === Nullable{Date}(Date(2015,10,5))
 
-io = IOBuffer("10/5/2015,")
-v = NullableArray(Date,1)
-CSV.readfield!(io,v,Date;null="",format=Dates.DateFormat("mm/dd/yyyy"))
-v = v[1]
+io = CSV.Source(IOBuffer("10/5/2015,");dateformat=Dates.DateFormat("mm/dd/yyyy"),header=0,datarow=1)
+ds = DataStreams.DataStream(io)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = IOBuffer("\"10/5/2015\"\n")
@@ -824,7 +839,7 @@ v = v[1]
 
 # All types
 io = IOBuffer("1,1.0,hey there sailor,2015-10-05\n,1.0,hey there sailor,\n1,,hey there sailor,2015-10-05\n1,1.0,,\n,,,")
-io = CSV.Source("",CSV.COMMA,CSV.QUOTE,CSV.ESCAPE,CSV.COMMA,CSV.PERIOD,"",false,DataStreams.Schema(UTF8String[],DataType[],0,0),Dates.ISODateFormat,io.data,1)
+io = CSV.Source(DataStreams.Schema(UTF8String[],DataType[],0,0),utf8(""),CSV.COMMA,CSV.QUOTE,CSV.ESCAPE,CSV.COMMA,CSV.PERIOD,"",false,Dates.ISODateFormat,io.data,1,1)
 v = NullableArray(Int,1)
 CSV.readfield!(io,v,Int,1,1)
 v = v[1]
