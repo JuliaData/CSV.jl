@@ -1,5 +1,5 @@
 reload("CSV")
-using Base.Test, NullableArrays
+using Base.Test, NullableArrays, DataStreams
 
 ### File.jl
 
@@ -23,12 +23,32 @@ f = CSV.Source(dir * "test_utf8.csv")
 @test f.schema.header == ["col1","col2","col3"]
 @test f.schema.types == [Float64,Float64,Float64]
 @test f.ptr == 16
-ds = DataStreams.DataStream(f)
-@test ds.data[1][1].value == 1.0
-@test ds.data[1][2].value == 4.0
-@test ds.data[1][3].value == 7.0
-@test ds.data[2][1].value == 2.0
+ds = DataStreams.DataTable(f)
+@test ds[1,1].value == 1.0
+@test ds[2,1].value == 4.0
+@test ds[3,1].value == 7.0
+@test ds[1,2].value == 2.0
 @test ds.schema == f.schema
+
+f = CSV.Source(dir * "test_utf8.csv")
+si = CSV.Sink(f,dir * "new_test_utf8.csv")
+DataStreams.stream!(f,si)
+@test si.isclosed
+@test si.schema == f.schema
+so = CSV.Source(si)
+@test so.delim == ','
+@test so.schema.cols == 3
+@test so.schema.rows == 3
+@test so.schema.header == ["col1","col2","col3"]
+@test so.schema.types == [Float64,Float64,Float64]
+@test so.ptr == 16
+ds = DataStreams.DataTable(so)
+@test ds[1,1].value == 1.0
+@test ds[2,1].value == 4.0
+@test ds[3,1].value == 7.0
+@test ds[1,2].value == 2.0
+@test ds.schema == f.schema == si.schema == so.schema
+
 # f = CSV.Source(dir * "test_utf16_be.csv")
 # f = CSV.Source(dir * "test_utf16_le.csv")
 # f = CSV.Source(dir * "test_utf16.csv")
@@ -44,10 +64,10 @@ f = CSV.Source(dir * "test_single_column.csv")
 @test f.schema.rows == 3
 @test f.schema.header == ["col1"]
 @test f.schema.types == [Int]
-ds = DataStreams.DataStream(f)
-@test ds.data[1][1].value == 1
-@test ds.data[1][2].value == 2
-@test ds.data[1][3].value == 3
+ds = DataStreams.DataTable(f)
+@test ds[1,1].value == 1
+@test ds[2,1].value == 2
+@test ds[3,1].value == 3
 
 #test empty file
 @test_throws ArgumentError CSV.Source(dir * "test_empty_file.csv")
@@ -58,15 +78,15 @@ f = CSV.Source(dir * "test_empty_file_newlines.csv")
 @test f.schema.rows == 9
 @test f.ptr == 2
 @test f.schema.header == [""]
-@test f.schema.types == [AbstractString]
+@test f.schema.types == [PointerString]
 
 #test with various quotechars, escapechars
 f = CSV.Source(dir * "test_simple_quoted.csv")
 @test f.schema.cols == 2
 @test f.schema.rows == 1
-ds = DataStreams.DataStream(f)
-@test string(ds.data[1][1].value) == "quoted field 1"
-@test string(ds.data[2][1].value) == "quoted field 2"
+ds = DataStreams.DataTable(f)
+@test string(ds[1,1].value) == "quoted field 1"
+@test string(ds[1,2].value) == "quoted field 2"
 f = CSV.Source(dir * "test_quoted_delim_and_newline.csv")
 @test f.schema.cols == 2
 @test f.schema.rows == 1
@@ -76,8 +96,8 @@ f = CSV.Source(dir * "test_crlf_line_endings.csv")
 @test f.schema.header == ["col1","col2","col3"]
 @test f.schema.cols == 3
 @test f.schema.types == [Int,Int,Int]
-ds = DataStreams.DataStream(f)
-@test ds.data[1][1].value == 1
+ds = DataStreams.DataTable(f)
+@test ds[1,1].value == 1
 f = CSV.Source(dir * "test_newline_line_endings.csv")
 @test f.schema.header == ["col1","col2","col3"]
 @test f.schema.cols == 3
@@ -104,10 +124,10 @@ f = CSV.Source(dir * "test_dates.csv";types=[Date],dateformat="yyyy-mm-dd")
 @test f.schema.cols == 1
 @test f.schema.rows == 3
 @test f.schema.types == [Date]
-ds = DataStreams.DataStream(f)
-@test ds.data[1][1].value == Date(2015,1,1)
-@test ds.data[1][2].value == Date(2015,1,2)
-@test ds.data[1][3].value == Date(2015,1,3)
+ds = DataStreams.DataTable(f)
+@test ds[1,1].value == Date(2015,1,1)
+@test ds[2,1].value == Date(2015,1,2)
+@test ds[3,1].value == Date(2015,1,3)
 f = CSV.Source(dir * "test_excel_date_formats.csv";types=[Date],dateformat="mm/dd/yy")
 @test f.schema.cols == 1
 @test f.schema.rows == 3
@@ -126,20 +146,20 @@ f = CSV.Source(dir * "test_datetimes.csv";types=[DateTime],dateformat="yyyy-mm-d
 f = CSV.Source(dir * "test_missing_value_NULL.csv")
 @test f.schema.cols == 3
 @test f.schema.rows == 3
-@test f.schema.types == [Float64,AbstractString,Float64]
-ds = DataStreams.DataStream(f)
-@test ds.data[1][1].value == 1.0
-@test string(ds.data[2][1].value) == "2.0"
-@test string(ds.data[2][2].value) == "NULL"
+@test f.schema.types == [Float64,PointerString,Float64]
+ds = DataStreams.DataTable(f)
+@test ds[1,1].value == 1.0
+@test string(ds[1,2].value) == "2.0"
+@test string(ds[2,2].value) == "NULL"
 f = CSV.Source(dir * "test_missing_value_NULL.csv";null="NULL")
 @test f.schema.cols == 3
 @test f.schema.rows == 3
 @test f.null == "NULL"
 @test f.schema.types == [Float64,Float64,Float64]
-ds = DataStreams.DataStream(f)
-@test ds.data[1][1].value == 1.0
-@test string(ds.data[2][1].value) == "2.0"
-@test isnull(ds.data[2][2])
+ds = DataStreams.DataTable(f)
+@test ds[1,1].value == 1.0
+@test string(ds[1,2].value) == "2.0"
+@test isnull(ds[2,2])
 
 # uses default missing value ""
 f = CSV.Source(dir * "test_missing_value.csv")
@@ -153,8 +173,8 @@ f = CSV.Source(dir * "baseball.csv")
 @test f.schema.rows == 35
 @test f.ptr == 60
 @test f.schema.header == UTF8String["Rk","Year","Age","Tm","Lg","","W","L","W-L%","G","Finish","Wpost","Lpost","W-L%post",""]
-@test f.schema.types == [Int64,Int64,Int64,AbstractString,AbstractString,AbstractString,Int64,Int64,Float64,Int64,Float64,Int64,Int64,Float64,AbstractString]
-ds = DataStreams.DataStream(f)
+@test f.schema.types == [Int64,Int64,Int64,PointerString,PointerString,PointerString,Int64,Int64,Float64,Int64,Float64,Int64,Int64,Float64,PointerString]
+ds = DataStreams.DataTable(f)
 # CSV.read(f)
 
 f = CSV.Source(dir * "FL_insurance_sample.csv")
@@ -162,55 +182,55 @@ f = CSV.Source(dir * "FL_insurance_sample.csv")
 @test f.schema.rows == 36634
 @test f.ptr == 244
 @test f.schema.header == UTF8String["policyID","statecode","county","eq_site_limit","hu_site_limit","fl_site_limit","fr_site_limit","tiv_2011","tiv_2012","eq_site_deductible","hu_site_deductible","fl_site_deductible","fr_site_deductible","point_latitude","point_longitude","line","construction","point_granularity"]
-@test f.schema.types == [Int64,AbstractString,AbstractString,Float64,Float64,Float64,Float64,Float64,Float64,Int64,Float64,Int64,Int64,Float64,Float64,AbstractString,AbstractString,Int64]
+@test f.schema.types == [Int64,PointerString,PointerString,Float64,Float64,Float64,Float64,Float64,Float64,Int64,Float64,Int64,Int64,Float64,Float64,PointerString,PointerString,Int64]
 
 f = CSV.Source(dir * "SacramentocrimeJanuary2006.csv")
 @test f.schema.cols == 9
 @test f.schema.rows == 7584
 @test f.ptr == 82
 @test f.schema.header == UTF8String["cdatetime","address","district","beat","grid","crimedescr","ucr_ncic_code","latitude","longitude"]
-@test f.schema.types == [AbstractString,AbstractString,Int64,AbstractString,Int64,AbstractString,Int64,Float64,Float64]
+@test f.schema.types == [PointerString,PointerString,Int64,PointerString,Int64,PointerString,Int64,Float64,Float64]
 
 f = CSV.Source(dir * "Sacramentorealestatetransactions.csv")
 @test f.schema.cols == 12
 @test f.schema.rows == 985
 @test f.ptr == 81
 @test f.schema.header == UTF8String["street","city","zip","state","beds","baths","sq__ft","type","sale_date","price","latitude","longitude"]
-@test f.schema.types == [AbstractString,AbstractString,Int64,AbstractString,Int64,Int64,Int64,AbstractString,AbstractString,Int64,Float64,Float64]
+@test f.schema.types == [PointerString,PointerString,Int64,PointerString,Int64,Int64,Int64,PointerString,PointerString,Int64,Float64,Float64]
 
 f = CSV.Source(dir * "SalesJan2009.csv")
 @test f.schema.cols == 12
 @test f.schema.rows == 998
 @test f.ptr == 115
 @test f.schema.header == UTF8String["Transaction_date","Product","Price","Payment_Type","Name","City","State","Country","Account_Created","Last_Login","Latitude","Longitude"]
-@test f.schema.types == [AbstractString,AbstractString,Int64,AbstractString,AbstractString,AbstractString,AbstractString,AbstractString,AbstractString,AbstractString,Float64,Float64]
+@test f.schema.types == [PointerString,PointerString,Int64,PointerString,PointerString,PointerString,PointerString,PointerString,PointerString,PointerString,Float64,Float64]
 
 f = CSV.Source(dir * "stocks.csv")
 @test f.schema.cols == 2
 @test f.schema.rows == 30
 @test f.ptr == 25
 @test f.schema.header == UTF8String["Stock Name","Company Name"]
-@test f.schema.types == [AbstractString,AbstractString]
+@test f.schema.types == [PointerString,PointerString]
 
 f = CSV.Source(dir * "TechCrunchcontinentalUSA.csv")
 @test f.schema.cols == 10
 @test f.schema.rows == 1460
 @test f.ptr == 89
 @test f.schema.header == UTF8String["permalink","company","numEmps","category","city","state","fundedDate","raisedAmt","raisedCurrency","round"]
-@test f.schema.types == [AbstractString,AbstractString,Int64,AbstractString,AbstractString,AbstractString,AbstractString,Int64,AbstractString,AbstractString]
+@test f.schema.types == [PointerString,PointerString,Int64,PointerString,PointerString,PointerString,PointerString,Int64,PointerString,PointerString]
 
 f = CSV.Source(dir * "Fielding.csv")
 @test f.schema.cols == 18
 @test f.schema.rows == 167938
 @test f.ptr == 78
 @test f.schema.header == UTF8String["playerID","yearID","stint","teamID","lgID","POS","G","GS","InnOuts","PO","A","E","DP","PB","WP","SB","CS","ZR"]
-@test f.schema.types == [AbstractString,Int64,Int64,AbstractString,AbstractString,AbstractString,Int64,AbstractString,AbstractString,Int64,Int64,Int64,Int64,Int64,AbstractString,AbstractString,AbstractString,AbstractString]
+@test f.schema.types == [PointerString,Int64,Int64,PointerString,PointerString,PointerString,Int64,PointerString,PointerString,Int64,Int64,Int64,Int64,Int64,PointerString,PointerString,PointerString,PointerString]
 
 f = CSV.Source(dir * "latest (1).csv";header=0,null="\\N")
 @test f.schema.cols == 25
 @test f.schema.rows == 1000
 @test f.schema.header == ["Column$i" for i = 1:f.schema.cols]
-@test f.schema.types == [AbstractString,AbstractString,Int64,Int64,AbstractString,Int64,AbstractString,Int64,Date,Date,Int64,AbstractString,Float64,Float64,Float64,Float64,Int64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,Float64]
+@test f.schema.types == [PointerString,PointerString,Int64,Int64,PointerString,Int64,PointerString,Int64,Date,Date,Int64,PointerString,Float64,Float64,Float64,Float64,Int64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,Float64]
 
 f = CSV.Source(dir * "pandas/zeros.csv")
 @test f.schema.cols == 50
@@ -567,165 +587,165 @@ v = v[1]
 
 # String
 io = IOBuffer("0")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "0"
 
 io = IOBuffer("-1")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "-1"
 
 io = IOBuffer("1")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "1"
 
 io = IOBuffer("2000")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "2000"
 
 io = IOBuffer("0.0")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "0.0"
 
 io = IOBuffer("0a")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "0a"
 
 io = IOBuffer("")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test isnull(v)
 
 io = IOBuffer(" ")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == " "
 
 io = IOBuffer("\t")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "\t"
 
 io = IOBuffer(" \t 010")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == " \t 010"
 
 io = IOBuffer("\"1_00a0\"")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "1_00a0"
 
 io = IOBuffer("\"0\"")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "0"
 
 io = IOBuffer("0\n")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "0"
 
 io = IOBuffer("0\r")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "0"
 
 io = IOBuffer("0\r\n")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "0"
 
 io = IOBuffer("0a\n")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "0a"
 
 # Should we handle trailing whitespace?
 io = IOBuffer("\t0\t\n")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "\t0\t"
 
 io = IOBuffer("0,")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "0"
 
 io = IOBuffer("0,\n")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "0"
 
 io = IOBuffer("\n")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test isnull(v)
 
 io = IOBuffer("\r")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test isnull(v)
 
 io = IOBuffer("\r\n")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test isnull(v)
 
 io = IOBuffer("\"\"")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test isnull(v)
 
 io = IOBuffer("1234567890")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "1234567890"
 
 io = IOBuffer("\"hey there\\\"quoted field\\\"\"")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString)
 v = v[1]
 @test string(get(v)) == "hey there\\\"quoted field\\\""
 
 io = IOBuffer("\\N")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString;null="\\N")
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString;null="\\N")
 v = v[1]
 @test isnull(v)
 
 io = IOBuffer("\"\\N\"")
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString;null="\\N")
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString;null="\\N")
 v = v[1]
 @test isnull(v)
 
@@ -828,7 +848,7 @@ v = v[1]
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = CSV.Source(IOBuffer("10/5/2015,");dateformat=Dates.DateFormat("mm/dd/yyyy"),header=0,datarow=1)
-ds = DataStreams.DataStream(io)
+ds = DataStreams.DataTable(io)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = IOBuffer("\"10/5/2015\"\n")
@@ -848,8 +868,8 @@ v = NullableArray(Float64,1)
 CSV.readfield!(io,v,Float64,1,1)
 v = v[1]
 @test v === Nullable(1.0)
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString,1,1)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString,1,1)
 v = v[1]
 @test string(get(v)) == "hey there sailor"
 v = NullableArray(Date,1)
@@ -865,8 +885,8 @@ v = NullableArray(Float64,1)
 CSV.readfield!(io,v,Float64,1,1)
 v = v[1]
 @test v === Nullable(1.0)
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString,1,1)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString,1,1)
 v = v[1]
 @test string(get(v)) == "hey there sailor"
 v = NullableArray(Date,1)
@@ -882,8 +902,8 @@ v = NullableArray(Float64,1)
 CSV.readfield!(io,v,Float64,1,1)
 v = v[1]
 @test isnull(v)
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString,1,1)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString,1,1)
 v = v[1]
 @test string(get(v)) == "hey there sailor"
 v = NullableArray(Date,1)
@@ -899,8 +919,8 @@ v = NullableArray(Float64,1)
 CSV.readfield!(io,v,Float64,1,1)
 v = v[1]
 @test v === Nullable(1.0)
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString,1,1)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString,1,1)
 v = v[1]
 @test isnull(v)
 v = NullableArray(Date,1)
@@ -916,8 +936,8 @@ v = NullableArray(Float64,1)
 CSV.readfield!(io,v,Float64,1,1)
 v = v[1]
 @test isnull(v)
-v = NullableArray(AbstractString,1)
-CSV.readfield!(io,v,AbstractString,1,1)
+v = NullableArray(PointerString,1)
+CSV.readfield!(io,v,PointerString,1,1)
 v = v[1]
 @test isnull(v)
 v = NullableArray(Date,1)
