@@ -22,16 +22,6 @@ const TEN     = @compat UInt8('9')+UInt8(1)
 Base.isascii(c::UInt8) = c < 0x80
 import Base.peek
 
-immutable PointerString <: AbstractString
-    ptr::Ptr{UInt8}
-    len::Int
-end
-const NULLSTRING = PointerString(C_NULL,0)
-Base.show(io::IO, x::PointerString) = print(io,x == NULLSTRING ? "PointerString(\"\")" : "PointerString(\"$(bytestring(x.ptr,x.len))\")")
-Base.showcompact(io::IO, x::PointerString) = print(io,x == NULLSTRING ? "\"\"" : "\"$(bytestring(x.ptr,x.len))\"")
-Base.endof(x::PointerString) = x.len
-Base.string(x::PointerString) = x == NULLSTRING ? "" : "$(bytestring(x.ptr,x.len))"
-
 include("io.jl")
 include("Source.jl")
 include("readfields.jl")
@@ -42,20 +32,22 @@ function readfield!{T}(source::Source, dest::NullableVector{T}, ::Type{T}, row, 
     @inbounds dest.values[row], dest.isnull[row] = val, null
     return
 end
+#TODO: support other column types in DataTable{T} (Matrix, DataFrame, Vector{Vector{T}})
 
-function DataStreams.stream!(source::CSV.Source,sink::DataStream)
+function DataStreams.stream!(source::CSV.Source,sink::DataTable)
     rows, cols = size(source)
-    types = source.schema.types
-    data = sink.data
-    #TODO: check if we need more rows? should DataStream hold a `current_row` field for appending?
+    types = DataStreams.types(source)
+    #TODO: check if we need more rows? should DataTable hold a `current_row` field for appending?
     for row = 1:rows, col = 1:cols
-        CSV.readfield!(source, data[col], types[col], row, col) # row + datarow
+        @inbounds T = types[col]
+        CSV.readfield!(source, DataStreams.unsafe_column(sink, col, T), T, row, col) # row + datarow
     end
     return sink
 end
-# creates a new DataStream according to `source` schema and streams `Source` data into it
-function DataStreams.DataStream(source::CSV.Source)
-    sink = DataStreams.DataStream(source.schema)
+# creates a new DataTable according to `source` schema and streams `Source` data into it
+function DataStreams.DataTable(source::CSV.Source)
+    sink = DataStreams.DataTable(source.schema)
+    sink.other = source.data # keep a reference to our mmapped array for PointerStrings
     return stream!(source,sink)
 end
 

@@ -1,6 +1,5 @@
 # for potentially embedded newlines/delimiters in quoted fields
-function Base.readline(f::IO,q::UInt8,e::UInt8)
-    buf = IOBuffer()
+function Base.readline(f::IO,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
     while !eof(f)
         b = read(f, UInt8)
         write(buf, b)
@@ -27,9 +26,8 @@ end
 
 # read and split a line into string values;
 # write(t,"\"hey there\",1000,\"1000\",\"\",,1.0,\"hey \n \\\"quote\\\" there\"\n"); seekstart(t)
-function readsplitline(f::IO,d::UInt8,q::UInt8,e::UInt8)
+function readsplitline(f::IO,d::UInt8,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
     vals = UTF8String[]
-    buf = IOBuffer()
     while !eof(f)
         b = read(f, UInt8)
         if b == q
@@ -124,5 +122,5 @@ function detecttype(val::AbstractString,format,null)
             return DateTime
         end
     end
-    return AbstractString
+    return PointerString
 end

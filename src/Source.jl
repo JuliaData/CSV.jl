@@ -89,6 +89,7 @@ function Source(fullpath::Union{AbstractString,IO};
     decimal = CSV.PERIOD; decimal % UInt8
     separator = CSV.COMMA; separator % UInt8
     dateformat = isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat)
+    isa(fullpath,IOStream) && (fullpath = chop(replace(fullpath.name,"<file ","")))
 
     # open the file for property detection; handle possible compression types
     if isa(fullpath,IO)
@@ -189,11 +190,11 @@ function Source(fullpath::Union{AbstractString,IO};
                 t == NullField && continue
                 push!(d,t)
             end
-            columntypes[i] = (isempty(d) || AbstractString in d ) ? AbstractString :
+            columntypes[i] = (isempty(d) || PointerString in d ) ? PointerString :
                                 (Date     in d) ? Date :
                                 (DateTime in d) ? DateTime :
                                 (Float64  in d) ? Float64 :
-                                (Int      in d) ? Int : AbstractString
+                                (Int      in d) ? Int : PointerString
             empty!(d)
         end
     else
