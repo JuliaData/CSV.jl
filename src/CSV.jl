@@ -2,6 +2,9 @@ module CSV
 
 using Compat, NullableArrays, Libz, DataStreams
 
+const PointerString = Data.PointerString
+const NULLSTRING = Data.NULLSTRING
+
 immutable CSVError <: Exception
     msg::ASCIIString
 end
@@ -24,31 +27,33 @@ import Base.peek
 
 include("io.jl")
 include("Source.jl")
-include("readfields.jl")
+include("getfields.jl")
 include("Sink.jl")
 
-function readfield!{T}(source::Source, dest::NullableVector{T}, ::Type{T}, row, col)
-    @inbounds val, null = CSV.readfield(source, T, row, col) # row + datarow
+function getfield!{T}(io::IOBuffer, dest::NullableVector{T}, ::Type{T}, opts, row, col)
+    @inbounds val, null = CSV.getfield(io, T, opts, row, col) # row + datarow
     @inbounds dest.values[row], dest.isnull[row] = val, null
     return
 end
 #TODO: support other column types in DataTable{T} (Matrix, DataFrame, Vector{Vector{T}})
 
-function DataStreams.stream!(source::CSV.Source,sink::DataTable)
+function Data.stream!(source::CSV.Source,sink::Data.Table)
     rows, cols = size(source)
-    types = DataStreams.types(source)
-    #TODO: check if we need more rows? should DataTable hold a `current_row` field for appending?
+    types = Data.types(source)
+    io = source.data
+    opts = source.options
+    #TODO: check if we need more rows?
     for row = 1:rows, col = 1:cols
         @inbounds T = types[col]
-        CSV.readfield!(source, DataStreams.unsafe_column(sink, col, T), T, row, col) # row + datarow
+        CSV.getfield!(io, Data.unsafe_column(sink, col, T), T, opts, row, col) # row + datarow
     end
     return sink
 end
 # creates a new DataTable according to `source` schema and streams `Source` data into it
-function DataStreams.DataTable(source::CSV.Source)
-    sink = DataStreams.DataTable(source.schema)
+function Data.Table(source::CSV.Source)
+    sink = Data.Table(source.schema)
     sink.other = source.data # keep a reference to our mmapped array for PointerStrings
-    return stream!(source,sink)
+    return Data.stream!(source,sink)
 end
 
 
