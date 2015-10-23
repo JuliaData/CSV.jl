@@ -45,7 +45,7 @@ type Source{I} <: Data.Source # <: IO
 end
 
 function Base.show(io::IO,f::Source)
-    println(io,"CSV.Source:")
+    println(io,"CSV.Source: ",f.fullpath)
     println(io,f.options)
     showcompact(io, f.schema)
 end
@@ -127,7 +127,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     # open the file for property detection; handle possible compression types
     if isa(fullpath,IOBuffer)
         source = fullpath
-        fullpath = ""
+        fullpath = "<IOBuffer>"
     elseif isa(fullpath,IO)
         source = IOBuffer(readbytes(fullpath))
         fullpath = fullpath.name
