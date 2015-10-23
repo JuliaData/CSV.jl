@@ -259,6 +259,7 @@ end
 
 """
 parses a delimited file into strongly typed NullableVectors.
+
 * `fullpath` can be a file name (string) or other `IO` instance
 * `compression` indicates the type of compression of a file; (".gzip",".gz",etc.)
 * `delim`::Union{Char,UInt8} = how fields in the file are delimited
@@ -270,6 +271,22 @@ parses a delimited file into strongly typed NullableVectors.
 * `rows_for_type_detect`::Int indicates how many rows should be read to infer the types of columns
 * `rows`::Int indicates the total number of rows to read from the file
 * `use_mmap`::Bool=true; whether the underlying file will be mmapped or not while parsing
+
+Example usage:
+```julia
+julia> dt = CSV.read("bids.csv")
+DataStreams.Data.Table{Array{NullableArrays.NullableArray{T,1},1}}(7656334x9 Data.Schema:
+     bid_id, Int64
+  bidder_id, PointerString
+    auction, PointerString
+merchandise, PointerString
+     device, PointerString
+       time, Int64
+    country, PointerString
+         ip, PointerString
+        url, PointerString
+...
+```
 """
 function Base.read(fullpath::Union{AbstractString,IO};
               compression="",
