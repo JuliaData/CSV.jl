@@ -1,4 +1,4 @@
-# CSV [BETA]
+# CSV [beta]
 
 [![CSV](http://pkg.julialang.org/badges/Example_0.4.svg)](http://pkg.julialang.org/?pkg=CSV&ver=0.4)
 
