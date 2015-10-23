@@ -83,7 +83,7 @@ function Source(fullpath::Union{AbstractString,IO};
               dateformat::Union{AbstractString,Dates.DateFormat}=EMPTY_DATEFORMAT,
 
               footerskip::Int=0,
-              rows_for_type_detect::Int=250,
+              rows_for_type_detect::Int=100,
               rows::Int=0,
               use_mmap::Bool=true)
     # make sure character args are UInt8
@@ -114,7 +114,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 types::Union{Dict{Int,DataType},Vector{DataType}}=DataType[],
 
                 footerskip::Int=0,
-                rows_for_type_detect::Int=250,
+                rows_for_type_detect::Int=100,
                 rows::Int=0,
                 use_mmap::Bool=true)
     # compression="";delim=CSV.COMMA;quotechar=CSV.QUOTE;escapechar=CSV.ESCAPE;separator=CSV.COMMA;decimal=CSV.PERIOD;null="";header=1;datarow=2;types=DataType[];formats=UTF8String[];skipblankrows=true;footerskip=0;rows_for_type_detect=250;countrows=true
@@ -229,4 +229,66 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         options.dateformat == EMPTY_DATEFORMAT && (options.dateformat = Dates.ISODateFormat)
     seek(source,datapos)
     return Source(Data.Schema(columnnames,columntypes,rows),options,source,datapos,utf8(fullpath))
+end
+
+# DataStreams interface
+function getfield!{T}(io::IOBuffer, dest::NullableVector{T}, ::Type{T}, opts, row, col)
+    @inbounds val, null = CSV.getfield(io, T, opts, row, col) # row + datarow
+    @inbounds dest.values[row], dest.isnull[row] = val, null
+    return
+end
+
+function Data.stream!(source::CSV.Source,sink::Data.Table)
+    rows, cols = size(source)
+    types = Data.types(source)
+    io = source.data
+    opts = source.options
+    #TODO: check if we need more rows?
+    for row = 1:rows, col = 1:cols
+        @inbounds T = types[col]
+        CSV.getfield!(io, Data.unsafe_column(sink, col, T), T, opts, row, col) # row + datarow
+    end
+    return sink
+end
+# creates a new DataTable according to `source` schema and streams `Source` data into it
+function Data.Table(source::CSV.Source)
+    sink = Data.Table(source.schema)
+    sink.other = source.data # keep a reference to our mmapped array for PointerStrings
+    return Data.stream!(source,sink)
+end
+
+"""
+parses a delimited file into strongly typed NullableVectors.
+* `fullpath` can be a file name (string) or other `IO` instance
+* `compression` indicates the type of compression of a file; (".gzip",".gz",etc.)
+* `delim`::Union{Char,UInt8} = how fields in the file are delimited
+* `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
+* `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
+* `null`::ASCIIString = the ascii string that indicates how NULL values are represented in the dataset
+* `dateformat`::Union{AbstractString,Dates.DateFormat} = how dates/datetimes are represented in the dataset
+* `footerskip`::Int indicates the number of rows to skip at the end of the file
+* `rows_for_type_detect`::Int indicates how many rows should be read to infer the types of columns
+* `rows`::Int indicates the total number of rows to read from the file
+* `use_mmap`::Bool=true; whether the underlying file will be mmapped or not while parsing
+"""
+function Base.read(fullpath::Union{AbstractString,IO};
+              compression="",
+              delim=COMMA,
+              quotechar=QUOTE,
+              escapechar=ESCAPE,
+              null::AbstractString="",
+              header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
+              datarow::Int=-1, # by default, data starts immediately after header or start of file
+              types::Union{Dict{Int,DataType},Vector{DataType}}=DataType[],
+              dateformat::Union{AbstractString,Dates.DateFormat}=EMPTY_DATEFORMAT,
+
+              footerskip::Int=0,
+              rows_for_type_detect::Int=100,
+              rows::Int=0,
+              use_mmap::Bool=true)
+    source = Source(fullpath::Union{AbstractString,IO};compression=compression,
+                  delim=delim,quotechar=quotechar,escapechar=escapechar,null=null,
+                  header=header,datarow=datarow,types=types,dateformat=dateformat,
+                  footerskip=footerskip,rows_for_type_detect=rows_for_type_detect,rows=rows,use_mmap=use_mmap)
+    return Data.Table(source)
 end
