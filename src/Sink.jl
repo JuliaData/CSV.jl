@@ -15,7 +15,7 @@ function Source(s::CSV.Sink{IOStream})
     isclosed(s) || throw(ArgumentError("::Sink has not been closed to streaming yet; call `close(::Sink)` first"))
     data = IOBuffer(Mmap.mmap(chop(replace(s.data.name,"<file ",""))))
     seek(data,s.datapos)
-    return Source(s.schema,s.options,data,s.datapos,utf8(s.data.name))
+    return Source(s.schema,s.options,data,s.datapos,utf8(chop(replace(s.data.name,"<file ",""))))
 end
 function Source(s::CSV.Sink)
     isclosed(s) || throw(ArgumentError("::Sink has not been closed to streaming yet; call `close(::Sink)` first"))
@@ -26,16 +26,16 @@ end
 
 # creates a Sink wrapping an existing "ultimate data source" (`s.fullpath` in this case)
 # can replace or append to this new Sink
-function Sink(s::CSV.Source;quotefields::Bool=false,append::Bool=false)
+function Sink(s::CSV.Source;quotefields::Bool=true,append::Bool=false)
     data = open(s.fullpath,append ? "a" : "w")
     seek(data, s.datapos)
     return Sink(s.schema,s.options,data,s.datapos,false,quotefields)
 end
 # these two constructors create new Sinks, either from an open IOStream, or a filename
 # most fields are populated through the CSV.Source
-Sink(s::CSV.Source,io::IOStream;quotefields::Bool=false) = Sink(s.schema,s.options,io,position(io),false,quotefields)
+Sink(s::CSV.Source,io::IOStream;quotefields::Bool=true) = Sink(s.schema,s.options,io,position(io),false,quotefields)
 
-function Sink(s::CSV.Source,file::AbstractString;quotefields::Bool=false,append::Bool=false)
+function Sink(s::CSV.Source,file::AbstractString;quotefields::Bool=true,append::Bool=false)
     io = open(file,append ? "a" : "w")
     return Sink(s.schema,s.options,io,0,false,quotefields)
 end
@@ -47,57 +47,58 @@ function Sink(io::Union{AbstractString,IO};
               escapechar::Char='\\',
               null::AbstractString="",
               dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateFormat,
-              quotefields::Bool=false)
+              quotefields::Bool=true)
     delim = delim % UInt8; quotechar = quotechar % UInt8; escapechar = escapechar % UInt8
     dateformat = isa(dateformat,AbstractString) ? Dates.DateFormat(dateformat) : dateformat
-    io = isa(io,AbstractString) && open(io,"r") : io
+    io = isa(io,AbstractString) ? open(io,"w") : io
     return Sink(schema,CSV.Options(delim,quotechar,escapechar,COMMA,PERIOD,
             ascii(null),null=="",dateformat,dateformat == Dates.ISODateFormat),io,0,false,quotefields)
 end
 
 Base.close(s::Sink) = (applicable(close,s.data) && close(s.data); s.isclosed = true; return nothing)
 
-function writeheaders(source::Source,sink::Sink)
+function writeheaders(source::Data.Source,sink::Sink)
     isclosed(sink) && throw(CSVError("$sink is already closed; can't write to it"))
-    cols = source.schema.cols
-    q = sink.options.quotechar; e = sink.options.escapechar
-    h = DataStreams.Data.header(source)
-    for i = 1:cols
-        write(sink.data,sink.quotefields ? replace("$q$(h[i])$q",q,"$e$q") : h[i])
-        write(sink.data,ifelse(i == cols, NEWLINE, sink.options.delim))
+    rows, cols = size(source)
+    q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
+    h = Data.header(source)
+    for col = 1:cols
+        print(sink.data,q,sink.quotefields ? replace("$(h[col])",q,"$e$q") : h[col],q)
+        print(sink.data,ifelse(col == cols, Char(NEWLINE), Char(sink.options.delim)))
     end
+    sink.datapos = position(sink)
     return nothing
 end
 
 writefield(io::Sink, val, col, N) = (isclosed(io) && throw(CSVError("$io is already closed; can't write to it"));
                                         col == N ? println(io.data,val) : print(io.data,val,Char(io.options.delim)); return nothing)
-function writefield(io::Sink, val::AbstractString, col, N)
-    isclosed(io) && throw(CSVError("$io is already closed; can't write to it"))
-    q = io.options.quotechar
-    if io.quotefields
-        write(io.data,q,replace(val,q,"$(io.options.escapechar)$(q)"),q)
+function writefield(sink::Sink, val::AbstractString, col, cols)
+    isclosed(sink) && throw(CSVError("$sink is already closed; can't write to it"))
+    q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
+    if sink.quotefields
+        print(sink.data,q,replace(val,q,"$e$q"),q)
     else
-        write(io.data,val) # should we detect delim, newline here and quote automatically?
+        print(sink.data,val) # should we detect delim, newline here and quote automatically?
     end
-    col == N ? println(io.data) : write(io,io.options.delim)
+    print(sink.data,ifelse(col == cols, NEWLINE, Char(sink.options.delim)))
     return nothing
 end
-function writefield(io::Sink, val::Dates.TimeType, col, N)
-    isclosed(io) && throw(CSVError("$io is already closed; can't write to it"))
-    q = io.options.quotechar
-    if io.quotefields
-        print(io.data,q,io.options.datecheck ? val : Dates.format(val,io.options.dateformat),q)
+function writefield(sink::Sink, val::Dates.TimeType, col, cols)
+    isclosed(sink) && throw(CSVError("$sink is already closed; can't print to it"))
+    q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
+    val = sink.options.datecheck ? val : Dates.format(val,sink.options.dateformat)
+    if sink.quotefields
+        print(sink.data,q,replace(val,q,"$e$q"),q)
     else
-        print(io.data,io.options.datecheck ? val : Dates.format(val,io.options.dateformat))
+        print(sink.data,val)
     end
-    col == N ? println(io.data) : print(io,io.options.delim)
+    print(sink.data,ifelse(col == cols, NEWLINE, Char(sink.options.delim)))
     return nothing
 end
 
 function Data.stream!(source::CSV.Source,sink::CSV.Sink;header::Bool=true)
     Data.schema(sink) == Data.EMPTYSCHEMA && (sink.schema = source.schema)
     header && writeheaders(source,sink)
-    sink.datapos = position(sink)
     rows, cols = size(source)
     types = Data.types(source)
     io = source.data; opts = source.options
