@@ -1,3 +1,4 @@
+using DataStreams
 module CSV
 
 using Compat, NullableArrays, Libz, DataStreams
@@ -29,32 +30,5 @@ include("io.jl")
 include("Source.jl")
 include("getfields.jl")
 include("Sink.jl")
-
-function getfield!{T}(io::IOBuffer, dest::NullableVector{T}, ::Type{T}, opts, row, col)
-    @inbounds val, null = CSV.getfield(io, T, opts, row, col) # row + datarow
-    @inbounds dest.values[row], dest.isnull[row] = val, null
-    return
-end
-#TODO: support other column types in DataTable{T} (Matrix, DataFrame, Vector{Vector{T}})
-
-function Data.stream!(source::CSV.Source,sink::Data.Table)
-    rows, cols = size(source)
-    types = Data.types(source)
-    io = source.data
-    opts = source.options
-    #TODO: check if we need more rows?
-    for row = 1:rows, col = 1:cols
-        @inbounds T = types[col]
-        CSV.getfield!(io, Data.unsafe_column(sink, col, T), T, opts, row, col) # row + datarow
-    end
-    return sink
-end
-# creates a new DataTable according to `source` schema and streams `Source` data into it
-function Data.Table(source::CSV.Source)
-    sink = Data.Table(source.schema)
-    sink.other = source.data # keep a reference to our mmapped array for PointerStrings
-    return Data.stream!(source,sink)
-end
-
 
 end # module
