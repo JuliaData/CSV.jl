@@ -3,8 +3,8 @@ using Base.Test, NullableArrays, DataStreams
 
 ### File.jl
 
-dir = "/Users/jacobquinn/.julia/v0.4/CSV/test/test_files/"
-# dir = joinpath(dirname(@__FILE__),"test_files/")
+# dir = "/Users/jacobquinn/.julia/v0.4/CSV/test/test_files/"
+dir = joinpath(dirname(@__FILE__),"test_files/")
 
 # test 0.3 and 0.4
 
