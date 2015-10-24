@@ -23,7 +23,7 @@ f = CSV.Source(dir * "test_utf8.csv")
 @test f.schema.header == ["col1","col2","col3"]
 @test f.schema.types == [Float64,Float64,Float64]
 @test position(f.data) == 15
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 @test ds[1,1].value == 1.0
 @test ds[2,1].value == 4.0
 @test ds[3,1].value == 7.0
@@ -32,7 +32,7 @@ ds = Data.Table(f)
 
 f = CSV.Source(dir * "test_utf8.csv")
 si = CSV.Sink(f,dir * "new_test_utf8.csv")
-DataStreams.Data.stream!(f,si)
+Data.stream!(f,si)
 @test si.isclosed
 @test si.schema == f.schema
 so = CSV.Source(si)
@@ -41,13 +41,14 @@ so = CSV.Source(si)
 @test so.schema.rows == 3
 @test so.schema.header == ["col1","col2","col3"]
 @test so.schema.types == [Float64,Float64,Float64]
-@test so.datapos == 15
-ds = Data.Table(so)
+@test so.datapos == 21
+ds = Data.stream!(so, Data.Table)
 @test ds[1,1].value == 1.0
 @test ds[2,1].value == 4.0
 @test ds[3,1].value == 7.0
 @test ds[1,2].value == 2.0
 @test ds.schema == f.schema == si.schema == so.schema
+rm(dir * "new_test_utf8.csv")
 
 # f = CSV.Source(dir * "test_utf16_be.csv")
 # f = CSV.Source(dir * "test_utf16_le.csv")
@@ -64,7 +65,7 @@ f = CSV.Source(dir * "test_single_column.csv")
 @test f.schema.rows == 3
 @test f.schema.header == ["col1"]
 @test f.schema.types == [Int]
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 @test ds[1,1].value == 1
 @test ds[2,1].value == 2
 @test ds[3,1].value == 3
@@ -84,7 +85,7 @@ f = CSV.Source(dir * "test_empty_file_newlines.csv")
 f = CSV.Source(dir * "test_simple_quoted.csv")
 @test f.schema.cols == 2
 @test f.schema.rows == 1
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 @test string(ds[1,1].value) == "quoted field 1"
 @test string(ds[1,2].value) == "quoted field 2"
 f = CSV.Source(dir * "test_quoted_delim_and_newline.csv")
@@ -96,7 +97,7 @@ f = CSV.Source(dir * "test_crlf_line_endings.csv")
 @test f.schema.header == ["col1","col2","col3"]
 @test f.schema.cols == 3
 @test f.schema.types == [Int,Int,Int]
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 @test ds[1,1].value == 1
 f = CSV.Source(dir * "test_newline_line_endings.csv")
 @test f.schema.header == ["col1","col2","col3"]
@@ -124,7 +125,7 @@ f = CSV.Source(dir * "test_dates.csv";types=[Date],dateformat="yyyy-mm-dd")
 @test f.schema.cols == 1
 @test f.schema.rows == 3
 @test f.schema.types == [Date]
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 @test ds[1,1].value == Date(2015,1,1)
 @test ds[2,1].value == Date(2015,1,2)
 @test ds[3,1].value == Date(2015,1,3)
@@ -147,7 +148,7 @@ f = CSV.Source(dir * "test_missing_value_NULL.csv")
 @test f.schema.cols == 3
 @test f.schema.rows == 3
 @test f.schema.types == [Float64,CSV.PointerString,Float64]
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 @test ds[1,1].value == 1.0
 @test string(ds[1,2].value) == "2.0"
 @test string(ds[2,2].value) == "NULL"
@@ -156,7 +157,7 @@ f = CSV.Source(dir * "test_missing_value_NULL.csv";null="NULL")
 @test f.schema.rows == 3
 @test f.options.null == "NULL"
 @test f.schema.types == [Float64,Float64,Float64]
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 @test ds[1,1].value == 1.0
 @test string(ds[1,2].value) == "2.0"
 @test isnull(ds[2,2])
@@ -174,7 +175,7 @@ f = CSV.Source(dir * "baseball.csv")
 @test position(f.data) == 59
 @test f.schema.header == UTF8String["Rk","Year","Age","Tm","Lg","","W","L","W-L%","G","Finish","Wpost","Lpost","W-L%post",""]
 @test f.schema.types == [Int64,Int64,Int64,CSV.PointerString,CSV.PointerString,CSV.PointerString,Int64,Int64,Float64,Int64,Float64,Int64,Int64,Float64,CSV.PointerString]
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 # CSV.read(f)
 
 f = CSV.Source(dir * "FL_insurance_sample.csv";types=Dict(10=>Float64,12=>Float64))
@@ -183,7 +184,7 @@ f = CSV.Source(dir * "FL_insurance_sample.csv";types=Dict(10=>Float64,12=>Float6
 @test position(f.data) == 243
 @test f.schema.header == UTF8String["policyID","statecode","county","eq_site_limit","hu_site_limit","fl_site_limit","fr_site_limit","tiv_2011","tiv_2012","eq_site_deductible","hu_site_deductible","fl_site_deductible","fr_site_deductible","point_latitude","point_longitude","line","construction","point_granularity"]
 @test f.schema.types == [Int64,CSV.PointerString,CSV.PointerString,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,CSV.PointerString,CSV.PointerString,Int64]
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "SacramentocrimeJanuary2006.csv")
 @test f.schema.cols == 9
@@ -191,7 +192,7 @@ f = CSV.Source(dir * "SacramentocrimeJanuary2006.csv")
 @test position(f.data) == 81
 @test f.schema.header == UTF8String["cdatetime","address","district","beat","grid","crimedescr","ucr_ncic_code","latitude","longitude"]
 @test f.schema.types == [CSV.PointerString,CSV.PointerString,Int64,CSV.PointerString,Int64,CSV.PointerString,Int64,Float64,Float64]
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "Sacramentorealestatetransactions.csv")
 @test f.schema.cols == 12
@@ -199,7 +200,7 @@ f = CSV.Source(dir * "Sacramentorealestatetransactions.csv")
 @test position(f.data) == 80
 @test f.schema.header == UTF8String["street","city","zip","state","beds","baths","sq__ft","type","sale_date","price","latitude","longitude"]
 @test f.schema.types == [CSV.PointerString,CSV.PointerString,Int64,CSV.PointerString,Int64,Int64,Int64,CSV.PointerString,CSV.PointerString,Int64,Float64,Float64]
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "SalesJan2009.csv")
 @test f.schema.cols == 12
@@ -207,7 +208,7 @@ f = CSV.Source(dir * "SalesJan2009.csv")
 @test position(f.data) == 114
 @test f.schema.header == UTF8String["Transaction_date","Product","Price","Payment_Type","Name","City","State","Country","Account_Created","Last_Login","Latitude","Longitude"]
 @test f.schema.types == [CSV.PointerString,CSV.PointerString,Int64,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString,Float64,Float64]
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "stocks.csv")
 @test f.schema.cols == 2
@@ -215,7 +216,7 @@ f = CSV.Source(dir * "stocks.csv")
 @test position(f.data) == 24
 @test f.schema.header == UTF8String["Stock Name","Company Name"]
 @test f.schema.types == [CSV.PointerString,CSV.PointerString]
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "TechCrunchcontinentalUSA.csv")
 @test f.schema.cols == 10
@@ -223,7 +224,7 @@ f = CSV.Source(dir * "TechCrunchcontinentalUSA.csv")
 @test position(f.data) == 88
 @test f.schema.header == UTF8String["permalink","company","numEmps","category","city","state","fundedDate","raisedAmt","raisedCurrency","round"]
 @test f.schema.types == [CSV.PointerString,CSV.PointerString,Int64,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString,Int64,CSV.PointerString,CSV.PointerString]
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "Fielding.csv")
 @test f.schema.cols == 18
@@ -231,60 +232,60 @@ f = CSV.Source(dir * "Fielding.csv")
 @test position(f.data) == 77
 @test f.schema.header == UTF8String["playerID","yearID","stint","teamID","lgID","POS","G","GS","InnOuts","PO","A","E","DP","PB","WP","SB","CS","ZR"]
 @test f.schema.types == [CSV.PointerString,Int64,Int64,CSV.PointerString,CSV.PointerString,CSV.PointerString,Int64,CSV.PointerString,CSV.PointerString,Int64,Int64,Int64,Int64,Int64,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString]
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "latest (1).csv";header=0,null="\\N")
 @test f.schema.cols == 25
 @test f.schema.rows == 1000
 @test f.schema.header == ["Column$i" for i = 1:f.schema.cols]
 @test f.schema.types == [CSV.PointerString,CSV.PointerString,Int64,Int64,CSV.PointerString,Int64,CSV.PointerString,Int64,Date,Date,Int64,CSV.PointerString,Float64,Float64,Float64,Float64,Int64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,Float64]
-ds = Data.Table(f)
+ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "pandas/zeros.csv")
 @test f.schema.cols == 50
 @test f.schema.rows == 100000
 @test f.schema.header == [string(i) for i = 0:49]
 @test f.schema.types == repmat([Int],50)
-@time ds = Data.Table(f);
+@time ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "test_basic.csv.gz")
 @test f.schema.cols == 3
 @test f.schema.rows == 3
 @test f.schema.header == ["col1","col2","col3"]
 @test f.schema.types == [Int,Int,Int]
-ds = Data.Table(f);
+ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "test_header_range.csv";header=1:3)
 @test f.schema.cols == 3
 @test f.schema.rows == 3
 @test f.schema.header == ["col1_sub1_part1","col2_sub2_part2","col3_sub3_part3"]
-ds = Data.Table(f);
+ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "test_header_range.csv";header=["col1_sub1_part1","col2_sub2_part2","col3_sub3_part3"],datarow=4)
 @test f.schema.cols == 3
 @test f.schema.rows == 3
 @test f.schema.header == ["col1_sub1_part1","col2_sub2_part2","col3_sub3_part3"]
-ds = Data.Table(f);
+ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "test_basic.csv";types=Dict(2=>Float64))
 @test f.schema.cols == 3
 @test f.schema.rows == 3
 @test f.schema.types == [Int,Float64,Int]
-ds = Data.Table(f);
+ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "test_basic_pipe.csv";delim='|')
 @test f.schema.cols == 3
 @test f.schema.rows == 3
 @test f.schema.types == [Int,Int,Int]
 @test f.options.delim == '|'
-ds = Data.Table(f);
+ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "test_basic_pipe.csv";delim='|',footerskip=1)
 @test f.schema.cols == 3
 @test f.schema.rows == 2
 @test f.schema.types == [Int,Int,Int]
 @test f.options.delim == '|'
-ds = Data.Table(f);
+ds = Data.stream!(f, Data.Table)
 
 ### io.jl
 
