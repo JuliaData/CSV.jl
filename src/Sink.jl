@@ -1,31 +1,11 @@
-type Sink{I<:IO} <: Data.Sink # <: IO
-    schema::Data.Schema
-    options::Options
-    data::I
-    datapos::Int # the byte position in `io` where the data rows start
-    isclosed::Bool
-    quotefields::Bool # whether to always quote string fields or not
-end
 
 Base.position(io::Sink) = position(io.data)
 isclosed(io::Sink) = io.isclosed
 
-# construct a new Source from a Sink that has been streamed to (i.e. DONE)
-function Source(s::CSV.Sink{IOStream})
-    isclosed(s) || throw(ArgumentError("::Sink has not been closed to streaming yet; call `close(::Sink)` first"))
-    data = IOBuffer(Mmap.mmap(chop(replace(s.data.name,"<file ",""))))
-    seek(data,s.datapos)
-    return Source(s.schema,s.options,data,s.datapos,utf8(chop(replace(s.data.name,"<file ",""))))
-end
-function Source(s::CSV.Sink)
-    isclosed(s) || throw(ArgumentError("::Sink has not been closed to streaming yet; call `close(::Sink)` first"))
-    data = IOBuffer(readbytes(s.data))
-    seek(data,s.datapos)
-    return Source(s.schema,s.options,data,s.datapos,utf8(""))
-end
-
-# creates a Sink wrapping an existing "ultimate data source" (`s.fullpath` in this case)
-# can replace or append to this new Sink
+"""
+creates a Sink wrapping an existing "true data source" (`s.fullpath` in this case)
+can replace or append to this new Sink
+"""
 function Sink(s::CSV.Source;quotefields::Bool=true,append::Bool=false)
     data = open(s.fullpath,append ? "a" : "w")
     seek(data, s.datapos)
@@ -33,13 +13,23 @@ function Sink(s::CSV.Source;quotefields::Bool=true,append::Bool=false)
 end
 # these two constructors create new Sinks, either from an open IOStream, or a filename
 # most fields are populated through the CSV.Source
+"create a new `Sink` patterned after the `CSV.Source`; data will be streamed to the `io::IOStream` argument"
 Sink(s::CSV.Source,io::IOStream;quotefields::Bool=true) = Sink(s.schema,s.options,io,position(io),false,quotefields)
-
+"create a new `Sink` patterned after the `CSV.Source`; data will be streamed to the `file` argument after opening"
 function Sink(s::CSV.Source,file::AbstractString;quotefields::Bool=true,append::Bool=false)
     io = open(file,append ? "a" : "w")
     return Sink(s.schema,s.options,io,0,false,quotefields)
 end
+"""
+create a new `Sink` from `io` (either a filename or `IOStream`), with various options:
 
+* `delim`::Union{Char,UInt8} = how fields in the file will be delimited
+* `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
+* `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
+* `null`::ASCIIString = the ascii string that indicates how NULL values will be represented in the dataset
+* `dateformat`::Union{AbstractString,Dates.DateFormat} = how dates/datetimes will be represented in the dataset
+* `quotefields`::Bool = whether all fields should be quoted or not
+"""
 function Sink(io::Union{AbstractString,IO};
               schema::Data.Schema=Data.EMPTYSCHEMA,
               delim::Char=',',
@@ -95,7 +85,7 @@ function writefield(sink::Sink, val::Dates.TimeType, col, cols)
     print(sink.data,ifelse(col == cols, NEWLINE, Char(sink.options.delim)))
     return nothing
 end
-
+"stream data from `source` to `sink`; `header::Bool` = whether to write the column names or not"
 function Data.stream!(source::CSV.Source,sink::CSV.Sink;header::Bool=true)
     Data.schema(sink) == Data.EMPTYSCHEMA && (sink.schema = source.schema)
     header && writeheaders(source,sink)
