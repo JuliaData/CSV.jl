@@ -3,62 +3,10 @@ const EMPTY_DATEFORMAT = Dates.DateFormat("")
 
 Base.close(::Libz.BufferedStreams.BufferedInputStream{Libz.Source{:inflate,Libz.BufferedStreams.BufferedInputStream{IOStream}}}) = return nothing
 
-"""
-Represents the various configuration settings for csv file parsing.
- * `delim`::Union{Char,UInt8} = how fields in the file are delimited
- * `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
- * `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
- * `null`::ASCIIString = the ascii string that indicates how NULL values are represented in the dataset
- * `dateformat`::Union{AbstractString,Dates.DateFormat} = how dates/datetimes are represented in the dataset
-"""
-type Options
-    delim::UInt8
-    quotechar::UInt8
-    escapechar::UInt8
-    separator::UInt8
-    decimal::UInt8
-    null::ASCIIString # how null is represented in the dataset
-    nullcheck::Bool   # do we have a custom null value to check for
-    dateformat::Dates.DateFormat
-    datecheck::Bool   # do we have a custom dateformat to check for
-end
-Options() = Options(COMMA,QUOTE,ESCAPE,COMMA,PERIOD,"",false,EMPTY_DATEFORMAT,false)
-Options(;delim=COMMA,quotechar=QUOTE,escapechar=ESCAPE,null::ASCIIString="",dateformat=Dates.ISODateFormat) =
-    Options(delim%UInt8,quotechar%UInt8,escapechar%UInt8,COMMA,PERIOD,
-            null,null != "",isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat),dateformat == Dates.ISODateFormat)
-function Base.show(io::IO,op::Options)
-    println("    CSV.Options:")
-    println(io,"        delim: '",@compat(Char(op.delim)),"'")
-    println(io,"        quotechar: '",@compat(Char(op.quotechar)),"'")
-    print(io,"        escapechar: '"); print_escaped(io,string(@compat(Char(op.escapechar))),"\\"); println(io,"'")
-    print(io,"        null: \""); print_escaped(io,op.null,"\\"); println(io,"\"")
-    print(io,"        dateformat: ",op.dateformat)
-end
-
-"`CSV.Source` satisfies the `DataStreams` interface for data processing for delimited `IO`."
-type Source{I} <: Data.Source # <: IO
-    schema::Data.Schema
-    options::Options
-    data::I # IOStream/IOBuffer/Any IO that implements read(io, UInt8) (which they all should)
-    datapos::Int # the position in the IO where the rows of data begins
-    fullpath::UTF8String
-end
-
-function Base.show(io::IO,f::Source)
-    println(io,"CSV.Source: ",f.fullpath)
-    println(io,f.options)
-    showcompact(io, f.schema)
-end
-
-# IO interface
-@inline Base.read(io::CSV.Source, ::Type{UInt8}) = read(io.data, UInt8)
-
 # Data.Source interface
-Base.eof(io::CSV.Source) = eof(io.data)
 Data.reset!(io::CSV.Source) = seek(io.data,io.datapos)
-
-Data.getrow(io::CSV.Source) = readsplitline(io,io.options.delim,io.options.quotechar,io.options.escapechar)
-
+Data.isdone(io::CSV.Source) = eof(io.data)
+# Data.getrow(io::CSV.Source) = readsplitline(io,io.options.delim,io.options.quotechar,io.options.escapechar)
 Base.readline(io::CSV.Source) = readline(io,io.options.quotechar,io.options.escapechar)
 
 @inline function Base.read(from::Base.AbstractIOBuffer, ::Type{UInt8})
@@ -69,6 +17,40 @@ end
 
 # Constructors
 # independent constructor
+"""
+constructs a `CSV.Source` file ready to start parsing data from
+
+* `fullpath` can be a file name (string) or other `IO` instance
+* `compression` indicates the type of compression of a file; (".gzip",".gz",etc.)
+* `delim`::Union{Char,UInt8} = how fields in the file are delimited
+* `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
+* `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
+* `null`::ASCIIString = the ascii string that indicates how NULL values are represented in the dataset
+* `dateformat`::Union{AbstractString,Dates.DateFormat} = how dates/datetimes are represented in the dataset
+* `footerskip`::Int indicates the number of rows to skip at the end of the file
+* `rows_for_type_detect`::Int indicates how many rows should be read to infer the types of columns
+* `rows`::Int indicates the total number of rows to read from the file
+* `use_mmap`::Bool=true; whether the underlying file will be mmapped or not while parsing
+
+Note by default, "string" or text columns will be parsed as the `PointerString` type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
+To convert a `PointerString` to a standard Julia string type, just call `string(::PointerString)`, this also works on an entire column `string(::NullableVector{PointerString})`.
+Oftentimes, however, it can be convenient to work with `PointerStrings` depending on the ultimate use, such as transfering the data directly to another system and avoiding all the intermediate byte copying.
+
+Example usage:
+```
+julia> csv_source = CSV.Source("bids.csv")
+CSV.Source: bids.csv
+    CSV.Options:
+        delim: ','
+        quotechar: '"'
+        escapechar: '\\'
+        null: ""
+        dateformat: Base.Dates.DateFormat(Base.Dates.Slot[],"","english")
+7656334x9 Data.Schema:
+ bid_id,     bidder_id,       auction,   merchandise,        device,  time,       country,            ip,           url
+  Int64, PointerString, PointerString, PointerString, PointerString, Int64, PointerString, PointerString, PointerString
+```
+"""
 function Source(fullpath::Union{AbstractString,IO};
               compression="",
 
@@ -231,6 +213,21 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     return Source(Data.Schema(columnnames,columntypes,rows),options,source,datapos,utf8(fullpath))
 end
 
+"construct a new Source from a Sink that has been streamed to (i.e. DONE)"
+function Source{I}(s::CSV.Sink{I})
+    Data.isdone(s) || throw(ArgumentError("::Sink has not been closed to streaming yet; call `close(::Sink)` first"))
+    if is(I,IOStream)
+        nm = utf8(chop(replace(s.data.name,"<file ","")))
+        data = IOBuffer(Mmap.mmap(nm))
+    else
+        seek(s.data, s.datapos)
+        data = IOBuffer(readbytes(s.data))
+        nm = utf8("")
+    end
+    seek(data,s.datapos)
+    return Source(s.schema,s.options,data,s.datapos,nm)
+end
+
 # DataStreams interface
 function getfield!{T}(io::IOBuffer, dest::NullableVector{T}, ::Type{T}, opts, row, col)
     @inbounds val, null = CSV.getfield(io, T, opts, row, col) # row + datarow
@@ -238,23 +235,19 @@ function getfield!{T}(io::IOBuffer, dest::NullableVector{T}, ::Type{T}, opts, ro
     return
 end
 
+"parse data from `source` into a `Data.Table`"
 function Data.stream!(source::CSV.Source,sink::Data.Table)
+    Data.schema(source) == Data.schema(sink) || throw(ArgumentError("schema mismatch: \n$(Data.schema(source))\nvs.\n$(Data.schema(sink))"))
     rows, cols = size(source)
     types = Data.types(source)
     io = source.data
     opts = source.options
-    #TODO: check if we need more rows?
     for row = 1:rows, col = 1:cols
         @inbounds T = types[col]
-        CSV.getfield!(io, Data.unsafe_column(sink, col, T), T, opts, row, col) # row + datarow
+        CSV.getfield!(io, Data.unsafe_column(sink, col, T), T, opts, row, col)
     end
-    return sink
-end
-# creates a new DataTable according to `source` schema and streams `Source` data into it
-function Data.Table(source::CSV.Source)
-    sink = Data.Table(source.schema)
     sink.other = source.data # keep a reference to our mmapped array for PointerStrings
-    return Data.stream!(source,sink)
+    return sink
 end
 
 """
@@ -273,7 +266,7 @@ parses a delimited file into strongly typed NullableVectors.
 * `use_mmap`::Bool=true; whether the underlying file will be mmapped or not while parsing
 
 Example usage:
-```julia
+```
 julia> dt = CSV.read("bids.csv")
 DataStreams.Data.Table{Array{NullableArrays.NullableArray{T,1},1}}(7656334x9 Data.Schema:
      bid_id, Int64
@@ -307,5 +300,5 @@ function Base.read(fullpath::Union{AbstractString,IO};
                   delim=delim,quotechar=quotechar,escapechar=escapechar,null=null,
                   header=header,datarow=datarow,types=types,dateformat=dateformat,
                   footerskip=footerskip,rows_for_type_detect=rows_for_type_detect,rows=rows,use_mmap=use_mmap)
-    return Data.Table(source)
+    return Data.stream!(source,Data.Table)
 end

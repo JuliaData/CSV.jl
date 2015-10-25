@@ -1,14 +1,14 @@
-# for potentially embedded newlines/delimiters in quoted fields
-function Base.readline(f::IO,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
-    while !eof(f)
-        b = read(f, UInt8)
+"read a single line from `io` (any `IO` type) as a string, accounting for potentially embedded newlines in quoted fields (e.g. value1, value2, \"value3 with \n embedded newlines\"). Can optionally provide a `buf::IOBuffer` type for buffer resuse"
+function Base.readline(io::IO,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
+    while !eof(io)
+        b = read(io, UInt8)
         write(buf, b)
         if b == q
-            while !eof(f)
-                b = read(f, UInt8)
+            while !eof(io)
+                b = read(io, UInt8)
                 write(buf, b)
                 if b == e
-                    b = read(f, UInt8)
+                    b = read(io, UInt8)
                     write(buf, b)
                 elseif b == q
                     break
@@ -17,7 +17,7 @@ function Base.readline(f::IO,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
         elseif b == NEWLINE
             break
         elseif b == RETURN
-            !eof(f) && peek(f) == NEWLINE && write(buf,read(f, UInt8))
+            !eof(io) && peek(io) == NEWLINE && write(buf,read(io, UInt8))
             break
         end
     end
@@ -26,21 +26,19 @@ end
 
 # read and split a line into string values;
 # write(t,"\"hey there\",1000,\"1000\",\"\",,1.0,\"hey \n \\\"quote\\\" there\"\n"); seekstart(t)
-function readsplitline(f::IO,d::UInt8,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
+"read a single line from `io` (any `IO` type) as a `Vector{UTF8String}` with elements being delimited fields. Can optionally provide a `buf::IOBuffer` type for buffer resuse"
+function readsplitline(io::IO,d::UInt8,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
     vals = UTF8String[]
-    while !eof(f)
-        b = read(f, UInt8)
+    while !eof(io)
+        b = read(io, UInt8)
         if b == q
-            while !eof(f)
-                b = read(f, UInt8)
+            while !eof(io)
+                b = read(io, UInt8)
                 if b == e
                     write(buf, b)
-                    b = read(f, UInt8)
+                    b = read(io, UInt8)
                     write(buf, b)
                 elseif b == q
-                    # push!(vals,takebuf_string(buf))
-                    # !eof(f) && read(f, UInt8) # read the delim, '\r', or '\n'
-                    # !eof(f) && peek(f) == NEWLINE && read(f, UInt8)
                     break
                 else
                     write(buf, b)
@@ -51,7 +49,7 @@ function readsplitline(f::IO,d::UInt8,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer()
         elseif b == NEWLINE
             break
         elseif b == RETURN
-            !eof(f) && peek(f) == NEWLINE && read(f, UInt8)
+            !eof(io) && peek(io) == NEWLINE && read(io, UInt8)
             break
         else
             write(buf, b)
@@ -59,7 +57,7 @@ function readsplitline(f::IO,d::UInt8,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer()
     end
     return push!(vals,takebuf_string(buf))
 end
-
+"count the number of lines in a file, accounting for potentially embedded newlines in quoted fields"
 function Base.countlines(f::IO,q::UInt8,e::UInt8)
     nl = 1
     b = 0x00
@@ -92,9 +90,10 @@ function skipto!(f::IO,cur,dest,q,e)
     return
 end
 
-# used only during the type detection process
+# NullField is used only during the type detection process
 immutable NullField end
 
+"try to infer the type of the value in `val`. The precedence of type checking is `Int` => `Float64` => `Date` => `DateTime` => `String`"
 function detecttype(val::AbstractString,format,null)
     (val == "" || val == null) && return NullField
     val2 = replace(val, @compat(Char(COMMA)), "") # remove potential comma separators from integers

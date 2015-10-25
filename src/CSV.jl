@@ -10,21 +10,77 @@ immutable CSVError <: Exception
     msg::ASCIIString
 end
 
-const RETURN  = @compat UInt8('\r')
-const NEWLINE = @compat UInt8('\n')
-const COMMA   = @compat UInt8(',')
-const QUOTE   = @compat UInt8('"')
-const ESCAPE  = @compat UInt8('\\')
-const PERIOD  = @compat UInt8('.')
-const SPACE   = @compat UInt8(' ')
-const TAB     = @compat UInt8('\t')
-const MINUS   = @compat UInt8('-')
-const PLUS    = @compat UInt8('+')
-const NEG_ONE = @compat UInt8('0')-UInt8(1)
-const ZERO    = @compat UInt8('0')
-const TEN     = @compat UInt8('9')+UInt8(1)
+const RETURN  = UInt8('\r')
+const NEWLINE = UInt8('\n')
+const COMMA   = UInt8(',')
+const QUOTE   = UInt8('"')
+const ESCAPE  = UInt8('\\')
+const PERIOD  = UInt8('.')
+const SPACE   = UInt8(' ')
+const TAB     = UInt8('\t')
+const MINUS   = UInt8('-')
+const PLUS    = UInt8('+')
+const NEG_ONE = UInt8('0')-UInt8(1)
+const ZERO    = UInt8('0')
+const TEN     = UInt8('9')+UInt8(1)
 Base.isascii(c::UInt8) = c < 0x80
 import Base.peek
+
+"""
+Represents the various configuration settings for csv file parsing.
+
+ * `delim`::Union{Char,UInt8} = how fields in the file are delimited
+ * `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
+ * `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
+ * `null`::ASCIIString = the ascii string that indicates how NULL values are represented in the dataset
+ * `dateformat`::Union{AbstractString,Dates.DateFormat} = how dates/datetimes are represented in the dataset
+"""
+type Options
+    delim::UInt8
+    quotechar::UInt8
+    escapechar::UInt8
+    separator::UInt8
+    decimal::UInt8
+    null::ASCIIString # how null is represented in the dataset
+    nullcheck::Bool   # do we have a custom null value to check for
+    dateformat::Dates.DateFormat
+    datecheck::Bool   # do we have a custom dateformat to check for
+end
+Options() = Options(COMMA,QUOTE,ESCAPE,COMMA,PERIOD,"",false,EMPTY_DATEFORMAT,false)
+Options(;delim=COMMA,quotechar=QUOTE,escapechar=ESCAPE,null::ASCIIString="",dateformat=Dates.ISODateFormat) =
+    Options(delim%UInt8,quotechar%UInt8,escapechar%UInt8,COMMA,PERIOD,
+            null,null != "",isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat),dateformat == Dates.ISODateFormat)
+function Base.show(io::IO,op::Options)
+    println("    CSV.Options:")
+    println(io,"        delim: '",@compat(Char(op.delim)),"'")
+    println(io,"        quotechar: '",@compat(Char(op.quotechar)),"'")
+    print(io,"        escapechar: '"); print_escaped(io,string(@compat(Char(op.escapechar))),"\\"); println(io,"'")
+    print(io,"        null: \""); print_escaped(io,op.null,"\\"); println(io,"\"")
+    print(io,"        dateformat: ",op.dateformat)
+end
+
+"`CSV.Source` satisfies the `DataStreams` interface for data processing for delimited `IO`."
+type Source <: Data.Source
+    schema::Data.Schema
+    options::Options
+    data::IOBuffer
+    datapos::Int # the position in the IOBuffer where the rows of data begins
+    fullpath::UTF8String
+end
+
+function Base.show(io::IO,f::Source)
+    println(io,"CSV.Source: ",f.fullpath)
+    println(io,f.options)
+    showcompact(io, f.schema)
+end
+
+type Sink{I} <: Data.Sink
+    schema::Data.Schema
+    options::Options
+    data::I
+    datapos::Int # the byte position in `io` where the data rows start
+    quotefields::Bool # whether to always quote string fields or not
+end
 
 include("io.jl")
 include("Source.jl")
