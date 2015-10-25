@@ -60,11 +60,11 @@ function Base.show(io::IO,op::Options)
 end
 
 "`CSV.Source` satisfies the `DataStreams` interface for data processing for delimited `IO`."
-type Source{I} <: Data.Source # <: IO
+type Source <: Data.Source
     schema::Data.Schema
     options::Options
-    data::I # IOStream/IOBuffer/Any IO that implements read(io, UInt8) (which they all should)
-    datapos::Int # the position in the IO where the rows of data begins
+    data::IOBuffer
+    datapos::Int # the position in the IOBuffer where the rows of data begins
     fullpath::UTF8String
 end
 
@@ -74,12 +74,11 @@ function Base.show(io::IO,f::Source)
     showcompact(io, f.schema)
 end
 
-type Sink{I<:IO} <: Data.Sink # <: IO
+type Sink{I} <: Data.Sink
     schema::Data.Schema
     options::Options
     data::I
     datapos::Int # the byte position in `io` where the data rows start
-    isclosed::Bool
     quotefields::Bool # whether to always quote string fields or not
 end
 

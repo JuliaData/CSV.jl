@@ -33,7 +33,7 @@ ds = Data.stream!(f, Data.Table)
 f = CSV.Source(dir * "test_utf8.csv")
 si = CSV.Sink(f,dir * "new_test_utf8.csv")
 Data.stream!(f,si)
-@test si.isclosed
+@test Data.isdone(si)
 @test si.schema == f.schema
 so = CSV.Source(si)
 @test so.options.delim == ','

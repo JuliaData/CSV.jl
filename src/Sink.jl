@@ -1,6 +1,8 @@
 
-Base.position(io::Sink) = position(io.data)
-isclosed(io::Sink) = io.isclosed
+function Data.reset!(io::CSV.Sink;append::Bool=false)
+    throw(ArgumentError("not currently able to reset a `CSV.Sink`"))
+end
+Data.isdone(io::CSV.Sink) = !isopen(io.data)
 
 """
 creates a Sink wrapping an existing "true data source" (`s.fullpath` in this case)
@@ -9,16 +11,16 @@ can replace or append to this new Sink
 function Sink(s::CSV.Source;quotefields::Bool=true,append::Bool=false)
     data = open(s.fullpath,append ? "a" : "w")
     seek(data, s.datapos)
-    return Sink(s.schema,s.options,data,s.datapos,false,quotefields)
+    return Sink(s.schema,s.options,data,s.datapos,quotefields)
 end
 # these two constructors create new Sinks, either from an open IOStream, or a filename
 # most fields are populated through the CSV.Source
 "create a new `Sink` patterned after the `CSV.Source`; data will be streamed to the `io::IOStream` argument"
-Sink(s::CSV.Source,io::IOStream;quotefields::Bool=true) = Sink(s.schema,s.options,io,position(io),false,quotefields)
+Sink(s::CSV.Source,io::IOStream;quotefields::Bool=true) = Sink(s.schema,s.options,io,position(io),quotefields)
 "create a new `Sink` patterned after the `CSV.Source`; data will be streamed to the `file` argument after opening"
 function Sink(s::CSV.Source,file::AbstractString;quotefields::Bool=true,append::Bool=false)
     io = open(file,append ? "a" : "w")
-    return Sink(s.schema,s.options,io,0,false,quotefields)
+    return Sink(s.schema,s.options,io,0,quotefields)
 end
 """
 create a new `Sink` from `io` (either a filename or `IOStream`), with various options:
@@ -42,13 +44,13 @@ function Sink(io::Union{AbstractString,IO};
     dateformat = isa(dateformat,AbstractString) ? Dates.DateFormat(dateformat) : dateformat
     io = isa(io,AbstractString) ? open(io,"w") : io
     return Sink(schema,CSV.Options(delim,quotechar,escapechar,COMMA,PERIOD,
-            ascii(null),null=="",dateformat,dateformat == Dates.ISODateFormat),io,0,false,quotefields)
+            ascii(null),null=="",dateformat,dateformat == Dates.ISODateFormat),io,0,quotefields)
 end
 
-Base.close(s::Sink) = (applicable(close,s.data) && close(s.data); s.isclosed = true; return nothing)
+Base.close(s::Sink) = (applicable(close,s.data) && close(s.data); return nothing)
 
 function writeheaders(source::Data.Source,sink::Sink)
-    isclosed(sink) && throw(CSVError("$sink is already closed; can't write to it"))
+    Data.isdone(sink) && throw(CSVError("$sink is already closed; can't write to it"))
     rows, cols = size(source)
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
     h = Data.header(source)
@@ -56,14 +58,14 @@ function writeheaders(source::Data.Source,sink::Sink)
         print(sink.data,q,sink.quotefields ? replace("$(h[col])",q,"$e$q") : h[col],q)
         print(sink.data,ifelse(col == cols, Char(NEWLINE), Char(sink.options.delim)))
     end
-    sink.datapos = position(sink)
+    sink.datapos = position(sink.data)
     return nothing
 end
 
-writefield(io::Sink, val, col, N) = (isclosed(io) && throw(CSVError("$io is already closed; can't write to it"));
+writefield(io::Sink, val, col, N) = (Data.isdone(io) && throw(CSVError("$io is already closed; can't write to it"));
                                         col == N ? println(io.data,val) : print(io.data,val,Char(io.options.delim)); return nothing)
 function writefield(sink::Sink, val::AbstractString, col, cols)
-    isclosed(sink) && throw(CSVError("$sink is already closed; can't write to it"))
+    Data.isdone(sink) && throw(CSVError("$sink is already closed; can't write to it"))
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
     if sink.quotefields
         print(sink.data,q,replace(val,q,"$e$q"),q)
@@ -74,7 +76,7 @@ function writefield(sink::Sink, val::AbstractString, col, cols)
     return nothing
 end
 function writefield(sink::Sink, val::Dates.TimeType, col, cols)
-    isclosed(sink) && throw(CSVError("$sink is already closed; can't print to it"))
+    Data.isdone(sink) && throw(CSVError("$sink is already closed; can't print to it"))
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
     val = sink.options.datecheck ? val : Dates.format(val,sink.options.dateformat)
     if sink.quotefields
