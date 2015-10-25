@@ -4,11 +4,9 @@ const EMPTY_DATEFORMAT = Dates.DateFormat("")
 Base.close(::Libz.BufferedStreams.BufferedInputStream{Libz.Source{:inflate,Libz.BufferedStreams.BufferedInputStream{IOStream}}}) = return nothing
 
 # Data.Source interface
-Base.eof(io::CSV.Source) = eof(io.data)
 Data.reset!(io::CSV.Source) = seek(io.data,io.datapos)
-
+Data.isdone(io::CSV.Source) = eof(io.data)
 # Data.getrow(io::CSV.Source) = readsplitline(io,io.options.delim,io.options.quotechar,io.options.escapechar)
-
 Base.readline(io::CSV.Source) = readline(io,io.options.quotechar,io.options.escapechar)
 
 @inline function Base.read(from::Base.AbstractIOBuffer, ::Type{UInt8})
@@ -217,7 +215,7 @@ end
 
 "construct a new Source from a Sink that has been streamed to (i.e. DONE)"
 function Source{I}(s::CSV.Sink{I})
-    isclosed(s) || throw(ArgumentError("::Sink has not been closed to streaming yet; call `close(::Sink)` first"))
+    Data.isdone(s) || throw(ArgumentError("::Sink has not been closed to streaming yet; call `close(::Sink)` first"))
     if is(I,IOStream)
         nm = utf8(chop(replace(s.data.name,"<file ","")))
         data = IOBuffer(Mmap.mmap(nm))
