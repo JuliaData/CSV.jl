@@ -241,7 +241,7 @@ f = CSV.Source(dir * "latest (1).csv";header=0,null="\\N")
 @test f.schema.types == [CSV.PointerString,CSV.PointerString,Int64,Int64,CSV.PointerString,Int64,CSV.PointerString,Int64,Date,Date,Int64,CSV.PointerString,Float64,Float64,Float64,Float64,Int64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,Float64]
 ds = Data.stream!(f, Data.Table)
 
-f = CSV.Source(dir * "pandas/zeros.csv")
+f = CSV.Source(dir * "pandas_zeros.csv")
 @test f.schema.cols == 50
 @test f.schema.rows == 100000
 @test f.schema.header == [string(i) for i = 0:49]
