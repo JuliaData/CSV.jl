@@ -180,7 +180,7 @@ f = CSV.Source(dir * "baseball.csv")
 @test f.schema.rows == 35
 @test position(f.data) == 59
 @test f.schema.header == UTF8String["Rk","Year","Age","Tm","Lg","","W","L","W-L%","G","Finish","Wpost","Lpost","W-L%post",""]
-@test f.schema.types == [Int64,Int64,Int64,CSV.PointerString,CSV.PointerString,CSV.PointerString,Int64,Int64,Float64,Int64,Float64,Int64,Int64,Float64,CSV.PointerString]
+@test f.schema.types == [Int,Int,Int,CSV.PointerString,CSV.PointerString,CSV.PointerString,Int,Int,Float64,Int,Float64,Int,Int,Float64,CSV.PointerString]
 ds = Data.stream!(f, Data.Table)
 # CSV.read(f)
 
@@ -189,7 +189,7 @@ f = CSV.Source(dir * "FL_insurance_sample.csv";types=Dict(10=>Float64,12=>Float6
 @test f.schema.rows == 36634
 @test position(f.data) == 243
 @test f.schema.header == UTF8String["policyID","statecode","county","eq_site_limit","hu_site_limit","fl_site_limit","fr_site_limit","tiv_2011","tiv_2012","eq_site_deductible","hu_site_deductible","fl_site_deductible","fr_site_deductible","point_latitude","point_longitude","line","construction","point_granularity"]
-@test f.schema.types == [Int64,CSV.PointerString,CSV.PointerString,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,CSV.PointerString,CSV.PointerString,Int64]
+@test f.schema.types == [Int,CSV.PointerString,CSV.PointerString,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int,Float64,Float64,CSV.PointerString,CSV.PointerString,Int]
 ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "SacramentocrimeJanuary2006.csv")
@@ -197,7 +197,7 @@ f = CSV.Source(dir * "SacramentocrimeJanuary2006.csv")
 @test f.schema.rows == 7584
 @test position(f.data) == 81
 @test f.schema.header == UTF8String["cdatetime","address","district","beat","grid","crimedescr","ucr_ncic_code","latitude","longitude"]
-@test f.schema.types == [CSV.PointerString,CSV.PointerString,Int64,CSV.PointerString,Int64,CSV.PointerString,Int64,Float64,Float64]
+@test f.schema.types == [CSV.PointerString,CSV.PointerString,Int,CSV.PointerString,Int,CSV.PointerString,Int,Float64,Float64]
 ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "Sacramentorealestatetransactions.csv")
@@ -205,7 +205,7 @@ f = CSV.Source(dir * "Sacramentorealestatetransactions.csv")
 @test f.schema.rows == 985
 @test position(f.data) == 80
 @test f.schema.header == UTF8String["street","city","zip","state","beds","baths","sq__ft","type","sale_date","price","latitude","longitude"]
-@test f.schema.types == [CSV.PointerString,CSV.PointerString,Int64,CSV.PointerString,Int64,Int64,Int64,CSV.PointerString,CSV.PointerString,Int64,Float64,Float64]
+@test f.schema.types == [CSV.PointerString,CSV.PointerString,Int,CSV.PointerString,Int,Int,Int,CSV.PointerString,CSV.PointerString,Int,Float64,Float64]
 ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "SalesJan2009.csv")
@@ -213,7 +213,7 @@ f = CSV.Source(dir * "SalesJan2009.csv")
 @test f.schema.rows == 998
 @test position(f.data) == 114
 @test f.schema.header == UTF8String["Transaction_date","Product","Price","Payment_Type","Name","City","State","Country","Account_Created","Last_Login","Latitude","Longitude"]
-@test f.schema.types == [CSV.PointerString,CSV.PointerString,Int64,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString,Float64,Float64]
+@test f.schema.types == [CSV.PointerString,CSV.PointerString,Int,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString,Float64,Float64]
 ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "stocks.csv")
@@ -229,7 +229,7 @@ f = CSV.Source(dir * "TechCrunchcontinentalUSA.csv")
 @test f.schema.rows == 1460
 @test position(f.data) == 88
 @test f.schema.header == UTF8String["permalink","company","numEmps","category","city","state","fundedDate","raisedAmt","raisedCurrency","round"]
-@test f.schema.types == [CSV.PointerString,CSV.PointerString,Int64,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString,Int64,CSV.PointerString,CSV.PointerString]
+@test f.schema.types == [CSV.PointerString,CSV.PointerString,Int,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString,Int,CSV.PointerString,CSV.PointerString]
 ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "Fielding.csv")
@@ -237,14 +237,14 @@ f = CSV.Source(dir * "Fielding.csv")
 @test f.schema.rows == 167938
 @test position(f.data) == 77
 @test f.schema.header == UTF8String["playerID","yearID","stint","teamID","lgID","POS","G","GS","InnOuts","PO","A","E","DP","PB","WP","SB","CS","ZR"]
-@test f.schema.types == [CSV.PointerString,Int64,Int64,CSV.PointerString,CSV.PointerString,CSV.PointerString,Int64,CSV.PointerString,CSV.PointerString,Int64,Int64,Int64,Int64,Int64,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString]
+@test f.schema.types == [CSV.PointerString,Int,Int,CSV.PointerString,CSV.PointerString,CSV.PointerString,Int,CSV.PointerString,CSV.PointerString,Int,Int,Int,Int,Int,CSV.PointerString,CSV.PointerString,CSV.PointerString,CSV.PointerString]
 ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "latest (1).csv";header=0,null="\\N")
 @test f.schema.cols == 25
 @test f.schema.rows == 1000
 @test f.schema.header == ["Column$i" for i = 1:f.schema.cols]
-@test f.schema.types == [CSV.PointerString,CSV.PointerString,Int64,Int64,CSV.PointerString,Int64,CSV.PointerString,Int64,Date,Date,Int64,CSV.PointerString,Float64,Float64,Float64,Float64,Int64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,Float64]
+@test f.schema.types == [CSV.PointerString,CSV.PointerString,Int,Int,CSV.PointerString,Int,CSV.PointerString,Int,Date,Date,Int,CSV.PointerString,Float64,Float64,Float64,Float64,Int,Float64,Float64,Float64,Float64,Int,Float64,Float64,Float64]
 ds = Data.stream!(f, Data.Table)
 
 f = CSV.Source(dir * "pandas_zeros.csv")
