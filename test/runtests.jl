@@ -48,6 +48,7 @@ ds = Data.stream!(so, Data.Table)
 @test ds[3,1].value == 7.0
 @test ds[1,2].value == 2.0
 @test ds.schema == f.schema == si.schema == so.schema
+f = si = so = ds = nothing; gc(); gc()
 rm(dir * "new_test_utf8.csv")
 
 # f = CSV.Source(dir * "test_utf16_be.csv")
