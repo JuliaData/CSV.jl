@@ -71,7 +71,12 @@ ds = Data.stream!(f, Data.Table)
 @test ds[3,1].value == 3
 
 #test empty file
-@test_throws ArgumentError CSV.Source(dir * "test_empty_file.csv")
+if VERSION > v"0.5.0-dev"
+    f = CSV.Source(dir * "test_empty_file.csv")
+    @test f.schema.rows == 0
+else
+    @test_throws ArgumentError CSV.Source(dir * "test_empty_file.csv")
+end
 
 #test file with just newlines
 f = CSV.Source(dir * "test_empty_file_newlines.csv")
