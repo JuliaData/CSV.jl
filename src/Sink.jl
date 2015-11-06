@@ -68,11 +68,11 @@ function writefield(sink::Sink, val::AbstractString, col, cols)
     Data.isdone(sink) && throw(CSVError("$sink is already closed; can't write to it"))
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
     if sink.quotefields
-        print(sink.data,q,replace(val,q,"$e$q"),q)
+        print(sink.data,q,replace(string(val),q,"$e$q"),q)
     else
-        print(sink.data,val) # should we detect delim, newline here and quote automatically?
+        print(sink.data,string(val)) # should we detect delim, newline here and quote automatically?
     end
-    print(sink.data,ifelse(col == cols, NEWLINE, Char(sink.options.delim)))
+    print(sink.data,ifelse(col == cols, Char(NEWLINE), Char(sink.options.delim)))
     return nothing
 end
 function writefield(sink::Sink, val::Dates.TimeType, col, cols)
@@ -84,7 +84,7 @@ function writefield(sink::Sink, val::Dates.TimeType, col, cols)
     else
         print(sink.data,val)
     end
-    print(sink.data,ifelse(col == cols, NEWLINE, Char(sink.options.delim)))
+    print(sink.data,ifelse(col == cols, Char(NEWLINE), Char(sink.options.delim)))
     return nothing
 end
 "stream data from `source` to `sink`; `header::Bool` = whether to write the column names or not"
