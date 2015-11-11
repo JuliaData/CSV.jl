@@ -106,7 +106,7 @@ function getfield{T<:AbstractFloat}(io::IOBuffer, ::Type{T}, opt::CSV.Options=CS
     null && return v, true
     # subtract 1 because we just read a valid byte, so position(io) is +1 from where a digit should be
     ptr = pointer(io.data) + position(io) - 1
-    v = convert(T, ccall(:strtod, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, REF))
+    v = convert(T, ccall(:jl_strtod_c, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, REF))
     io.ptr += REF[1] - ptr - 1 # Hopefully io.ptr doesn't change for IOBuffer?
     eof(io) && return v, false
     b = read(io, UInt8)
