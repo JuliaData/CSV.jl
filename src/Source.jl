@@ -9,12 +9,6 @@ Data.isdone(io::CSV.Source) = eof(io.data)
 # Data.getrow(io::CSV.Source) = readsplitline(io,io.options.delim,io.options.quotechar,io.options.escapechar)
 Base.readline(io::CSV.Source) = readline(io,io.options.quotechar,io.options.escapechar)
 
-@inline function Base.read(from::Base.AbstractIOBuffer, ::Type{UInt8})
-    @inbounds byte = from.data[from.ptr]
-    from.ptr += 1
-    return byte
-end
-
 # Constructors
 # independent constructor
 """
