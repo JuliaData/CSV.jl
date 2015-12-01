@@ -1,3 +1,17 @@
+if VERSION < v"0.4.1"
+  @inline function Base.read(from::Base.AbstractIOBuffer, ::Type{UInt8})
+      ptr = from.ptr
+      size = from.size
+      from.readable || throw(ArgumentError("read failed, IOBuffer is not readable"))
+      if ptr > size
+          throw(EOFError())
+      end
+      @inbounds byte = from.data[ptr]
+      from.ptr = ptr + 1
+      return byte
+  end
+end
+
 "read a single line from `io` (any `IO` type) as a string, accounting for potentially embedded newlines in quoted fields (e.g. value1, value2, \"value3 with \n embedded newlines\"). Can optionally provide a `buf::IOBuffer` type for buffer resuse"
 function Base.readline(io::IO,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
     while !eof(io)
