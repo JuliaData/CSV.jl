@@ -9,12 +9,6 @@ Data.isdone(io::CSV.Source) = eof(io.data)
 # Data.getrow(io::CSV.Source) = readsplitline(io,io.options.delim,io.options.quotechar,io.options.escapechar)
 Base.readline(io::CSV.Source) = readline(io,io.options.quotechar,io.options.escapechar)
 
-@inline function Base.read(from::Base.AbstractIOBuffer, ::Type{UInt8})
-    @inbounds byte = from.data[from.ptr]
-    from.ptr += 1
-    return byte
-end
-
 # Constructors
 # independent constructor
 """
@@ -108,16 +102,16 @@ function Source(;fullpath::Union{AbstractString,IO}="",
 
     # open the file for property detection; handle possible compression types
     if isa(fullpath,IOBuffer)
-        source = fullpath
+        source = UnsafeBuffer(fullpath.data,fullpath.ptr,fullpath.size)
         fullpath = "<IOBuffer>"
     elseif isa(fullpath,IO)
-        source = IOBuffer(readbytes(fullpath))
+        source = UnsafeBuffer(readbytes(fullpath))
         fullpath = fullpath.name
     elseif compression in ZIP_FILE_EXTS || splitext(fullpath)[end] in ZIP_FILE_EXTS
         #TODO: detect zip formats?
-        source = IOBuffer(readbytes(Libz.ZlibInflateInputStream(open(fullpath)))) # stored for reading data
+        source = UnsafeBuffer(readbytes(Libz.ZlibInflateInputStream(open(fullpath)))) # stored for reading data
     elseif compression == ""
-        source = IOBuffer(use_mmap ? Mmap.mmap(fullpath) : open(readbytes,fullpath))
+        source = UnsafeBuffer(use_mmap ? Mmap.mmap(fullpath) : open(readbytes,fullpath))
     else
         throw(ArgumentError("unsupported compression type: $compression"))
     end
@@ -229,7 +223,7 @@ function Source{I}(s::CSV.Sink{I})
 end
 
 # DataStreams interface
-function getfield!{T}(io::IOBuffer, dest::NullableVector{T}, ::Type{T}, opts, row, col)
+function getfield!{T}(io::Union{IOBuffer,UnsafeBuffer}, dest::NullableVector{T}, ::Type{T}, opts, row, col)
     @inbounds val, null = CSV.getfield(io, T, opts, row, col) # row + datarow
     @inbounds dest.values[row], dest.isnull[row] = val, null
     return

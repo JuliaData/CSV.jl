@@ -26,6 +26,8 @@ const TEN     = UInt8('9')+UInt8(1)
 Base.isascii(c::UInt8) = c < 0x80
 import Base.peek
 
+include("unsafebuffer.jl")
+
 """
 Represents the various configuration settings for csv file parsing.
 
@@ -63,7 +65,7 @@ end
 type Source <: Data.Source
     schema::Data.Schema
     options::Options
-    data::IOBuffer
+    data::UnsafeBuffer
     datapos::Int # the position in the IOBuffer where the rows of data begins
     fullpath::UTF8String
 end
