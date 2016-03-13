@@ -245,7 +245,6 @@ function parsefield(io::Union{IOBuffer,UnsafeBuffer}, ::Type{DateTime}, opt::CSV
             minute = CSV.itr(io,2,0)
             read(io, UInt8)
             second = CSV.itr(io,2,0)
-            b = read(io, UInt8) # read the `T`
             eof(io) && return DateTime(year,month,day,hour,minute,second), false
             b = read(io, UInt8)
         end

@@ -143,6 +143,10 @@ f = CSV.Source(dir * "test_datetimes.csv";types=[DateTime],dateformat="yyyy-mm-d
 @test f.schema.cols == 1
 @test f.schema.rows == 3
 @test f.schema.types == [DateTime]
+ds = Data.stream!(f, Data.Table)
+@test ds[1,1].value == DateTime(2015,1,1)
+@test ds[2,1].value == DateTime(2015,1,2,0,0,1)
+@test ds[3,1].value == DateTime(2015,1,3,0,12,0,1)
 # f = CSV.Source(dir * "test_mixed_date_formats.csv";types=[Date],formats=["mm/dd/yyyy"])
 
 #test bad types
@@ -878,6 +882,114 @@ v = NullableArray(Date,1)
 CSV.parsefield!(io,v,Date,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy")),1,1)
 v = v[1]
 @test v === Nullable{Date}(Date(2015,10,5))
+
+# DateTime
+
+io = IOBuffer("")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
+v = v[1]
+@test isnull(v)
+
+io = IOBuffer(",")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
+v = v[1]
+@test isnull(v)
+
+io = IOBuffer("\n")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
+v = v[1]
+@test isnull(v)
+
+io = IOBuffer("\r")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
+v = v[1]
+@test isnull(v)
+
+io = IOBuffer("\r\n")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
+v = v[1]
+@test isnull(v)
+
+io = IOBuffer("\"\"")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
+v = v[1]
+@test isnull(v)
+
+io = IOBuffer("\\N")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(null="\\N"),1,1)
+v = v[1]
+@test isnull(v)
+
+io = IOBuffer("\"\\N\"")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(null="\\N"),1,1)
+v = v[1]
+@test isnull(v)
+
+io = IOBuffer("2015-10-05T00:00:01")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
+v = v[1]
+@test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
+
+io = IOBuffer("\"2015-10-05T00:00:01\"")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
+v = v[1]
+@test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
+
+io = IOBuffer("2015-10-05T00:00:01,")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
+v = v[1]
+@test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
+
+io = IOBuffer("2015-10-05T00:00:01\n")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
+v = v[1]
+@test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
+
+io = IOBuffer("2015-10-05T00:00:01\r")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
+v = v[1]
+@test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
+
+io = IOBuffer("2015-10-05T00:00:01\r\n")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
+v = v[1]
+@test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
+
+io = IOBuffer("  \"2015-10-05T00:00:01\",")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
+v = v[1]
+@test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
+
+io = IOBuffer("\"2015-10-05T00:00:01\"\n")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
+v = v[1]
+@test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
+
+io = CSV.Source(IOBuffer("10/5/2015 00:00:01,");dateformat=Dates.DateFormat("mm/dd/yyyy HH:MM:SS"),header=0,datarow=1)
+ds = Data.Table(io)
+@test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
+
+io = IOBuffer("\"10/5/2015 00:00:01\"\n")
+v = NullableArray(DateTime,1)
+CSV.parsefield!(io,v,DateTime,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy HH:MM:SS")),1,1)
+v = v[1]
+@test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 # All types
 io = IOBuffer("1,1.0,hey there sailor,2015-10-05\n,1.0,hey there sailor,\n1,,hey there sailor,2015-10-05\n1,1.0,,\n,,,")
