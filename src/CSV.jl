@@ -24,7 +24,7 @@ const NEG_ONE = UInt8('0')-UInt8(1)
 const ZERO    = UInt8('0')
 const TEN     = UInt8('9')+UInt8(1)
 Base.isascii(c::UInt8) = c < 0x80
-import Base.peek
+import Base.peek, Base.getfield
 
 include("unsafebuffer.jl")
 
@@ -48,7 +48,7 @@ type Options
     dateformat::Dates.DateFormat
     datecheck::Bool   # do we have a custom dateformat to check for
 end
-Options() = Options(COMMA,QUOTE,ESCAPE,COMMA,PERIOD,"",false,EMPTY_DATEFORMAT,false)
+
 Options(;delim=COMMA,quotechar=QUOTE,escapechar=ESCAPE,null::ASCIIString="",dateformat=Dates.ISODateFormat) =
     Options(delim%UInt8,quotechar%UInt8,escapechar%UInt8,COMMA,PERIOD,
             null,null != "",isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat),dateformat == Dates.ISODateFormat)

@@ -62,7 +62,7 @@ the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quo
 `opt.null` is also checked if there is a custom value provided (i.e. "NA", "\\N", etc.)
 if field is non-null and non-digit characters are encountered at any point before a delimiter or newline, an error is thrown
 """
-function getfield{T<:Integer}(io::Union{IOBuffer,UnsafeBuffer}, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
+function parsefield{T<:Integer}(io::Union{IOBuffer,UnsafeBuffer}, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
     v = zero(T)
     b::UInt8, null::Bool = CSV.checknullstart(io,opt)
     null && return v, true
@@ -100,7 +100,7 @@ the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quo
 `opt.null` is also checked if there is a custom value provided (i.e. "NA", "\\N", etc.)
 if field is non-null and non-digit characters are encountered at any point before a delimiter or newline, an error is thrown
 """
-function getfield{T<:AbstractFloat}(io::Union{IOBuffer,UnsafeBuffer}, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
+function parsefield{T<:AbstractFloat}(io::Union{IOBuffer,UnsafeBuffer}, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
     b, null = CSV.checknullstart(io,opt)
     v = zero(T)
     null && return v, true
@@ -127,7 +127,7 @@ field is null if the next delimiter or newline is encountered before any charact
 the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quotechar` results in a null field
 `opt.null` is also checked if there is a custom value provided (i.e. "NA", "\\N", etc.)
 """
-function getfield{T<:AbstractString}(io::Union{IOBuffer,UnsafeBuffer}, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
+function parsefield{T<:AbstractString}(io::Union{IOBuffer,UnsafeBuffer}, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
     eof(io) && return NULLSTRING, true
     ptr = pointer(io.data) + position(io)
     len = 0
@@ -171,7 +171,7 @@ the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quo
 `opt.null` is also checked if there is a custom value provided (i.e. "NA", "\\N", etc.)
 if field contains digits/characters no compatible with `opt.dateformat`, an error is thrown
 """
-function getfield(io::Union{IOBuffer,UnsafeBuffer}, ::Type{Date}, opt::CSV.Options=CSV.Options(), row=0, col=0)
+function parsefield(io::Union{IOBuffer,UnsafeBuffer}, ::Type{Date}, opt::CSV.Options=CSV.Options(), row=0, col=0)
     b, null = CSV.checknullstart(io,opt)
     null && return Date(0,1,1), true
     if opt.datecheck # optimize for default yyyy-mm-dd
@@ -217,5 +217,70 @@ function getfield(io::Union{IOBuffer,UnsafeBuffer}, ::Type{Date}, opt::CSV.Optio
         val = bytestring(pointer(io.data)+pos, position(io)-pos-quoted-1+end_of_file)
         val == opt.null && return Date(0,1,1), true
         return Date(val, opt.dateformat)::Date, false
+    end
+end
+"""
+`io` is an `IOBuffer` that is positioned at the first byte/character of a `DateTime` field
+leading whitespace is ignored
+returns a `Tuple{DateTime,Bool}` with a value & bool saying whether the field contains a null value or not
+field is null if the next delimiter or newline is encountered before any digits/characters of the `opt.dateformat`
+the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quotechar` results in a null field
+`opt.null` is also checked if there is a custom value provided (i.e. "NA", "\\N", etc.)
+if field contains digits/characters not compatible with `opt.dateformat`, an error is thrown
+"""
+function parsefield(io::Union{IOBuffer,UnsafeBuffer}, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), row=0, col=0)
+    b, null = CSV.checknullstart(io,opt)
+    null && return DateTime(0,1,1), true
+    if opt.datecheck # optimize for default yyyy-mm-ddTHH:MM:SS
+        if CSV.NEG_ONE < b < CSV.TEN
+            year = CSV.itr(io,3,Int(b - CSV.ZERO))
+            read(io, UInt8)
+            month = CSV.itr(io,2,0)
+            read(io, UInt8)
+            day = CSV.itr(io,2,0)
+            eof(io) && return DateTime(year,month,day), false
+            b = read(io, UInt8) # read the `T`
+            hour = CSV.itr(io,2,0)
+            read(io, UInt8)
+            minute = CSV.itr(io,2,0)
+            read(io, UInt8)
+            second = CSV.itr(io,2,0)
+            b = read(io, UInt8) # read the `T`
+            eof(io) && return DateTime(year,month,day,hour,minute,second), false
+            b = read(io, UInt8)
+        end
+        b, done = checkdone(io,b,opt)
+        if done
+            return DateTime(year,month,day,hour,minute,second), false
+        elseif checknullend(io,DateTime,b,opt,row,col)
+            return DateTime(0,1,1), true
+        else
+            throw(CSVError("couldn't parse DateTime"))
+        end
+    elseif opt.dateformat == EMPTY_DATEFORMAT
+        throw(ArgumentError("Can't parse a `DateTime` type with $EMPTY_DATEFORMAT; please provide a valid Dates.DateFormat or date format string"))
+    else
+        pos = position(io) - 1 # current position of start of date string (even if date is quoted, and we know it's not empty)
+        quoted = false
+        end_of_file = false
+        while true
+            b = read(io, UInt8)
+            if b == opt.delim || b == CSV.NEWLINE
+                break
+            elseif b == CSV.RETURN
+                !eof(io) && peek(io) == CSV.NEWLINE && read(io, UInt8)
+                break
+            elseif eof(io)
+                end_of_file = true
+                break
+            elseif b == opt.quotechar
+                b, done = checkdone(io,b,opt)
+                quoted = true
+                break
+            end
+        end
+        val = bytestring(pointer(io.data)+pos, position(io)-pos-quoted-1+end_of_file)
+        val == opt.null && return DateTime(0,1,1), true
+        return DateTime(val, opt.dateformat)::DateTime, false
     end
 end
