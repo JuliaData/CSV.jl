@@ -223,8 +223,8 @@ function Source{I}(s::CSV.Sink{I})
 end
 
 # DataStreams interface
-function getfield!{T}(io::Union{IOBuffer,UnsafeBuffer}, dest::NullableVector{T}, ::Type{T}, opts, row, col)
-    @inbounds val, null = CSV.getfield(io, T, opts, row, col) # row + datarow
+function parsefield!{T}(io::Union{IOBuffer,UnsafeBuffer}, dest::NullableVector{T}, ::Type{T}, opts, row, col)
+    @inbounds val, null = CSV.parsefield(io, T, opts, row, col) # row + datarow
     @inbounds dest.values[row], dest.isnull[row] = val, null
     return
 end
@@ -238,7 +238,7 @@ function Data.stream!(source::CSV.Source,sink::Data.Table)
     opts = source.options
     for row = 1:rows, col = 1:cols
         @inbounds T = types[col]
-        CSV.getfield!(io, Data.unsafe_column(sink, col, T), T, opts, row, col)
+        CSV.parsefield!(io, Data.unsafe_column(sink, col, T), T, opts, row, col)
     end
     sink.other = source.data # keep a reference to our mmapped array for PointerStrings
     return sink

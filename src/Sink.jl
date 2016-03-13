@@ -95,7 +95,7 @@ function Data.stream!(source::CSV.Source,sink::CSV.Sink;header::Bool=true)
     types = Data.types(source)
     io = source.data; opts = source.options
     for row = 1:rows, col = 1:cols
-        val, null = CSV.getfield(io, types[col], opts, row, col)
+        val, null = CSV.parsefield(io, types[col], opts, row, col)
         writefield(sink, ifelse(null, sink.options.null, val), col, cols)
     end
     close(sink)
