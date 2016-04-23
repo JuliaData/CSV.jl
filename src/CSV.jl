@@ -24,7 +24,7 @@ const NEG_ONE = UInt8('0')-UInt8(1)
 const ZERO    = UInt8('0')
 const TEN     = UInt8('9')+UInt8(1)
 Base.isascii(c::UInt8) = c < 0x80
-import Base.peek, Base.getfield
+import Base.peek
 
 include("unsafebuffer.jl")
 
