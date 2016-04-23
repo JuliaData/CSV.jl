@@ -119,7 +119,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     rows == 0 && throw(ArgumentError("No rows of data detected in $fullpath"))
     seekstart(source)
 
-    datarow = datarow == -1 ? last(header) + 1 : datarow # by default, data starts on line after header
+    datarow = datarow == -1 ? (isa(header,Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
     rows = rows - datarow + 1 - footerskip # rows now equals the actual number of rows in the dataset
 
     # figure out # of columns and header, either an Integer, Range, or Vector{String}
@@ -224,7 +224,7 @@ end
 
 # DataStreams interface
 function parsefield!{T}(io::Union{IOBuffer,UnsafeBuffer}, dest::NullableVector{T}, ::Type{T}, opts, row, col)
-    @inbounds val, null = CSV.parsefield(io, T, opts, row, col) # row + datarow
+    @inbounds val, null = CSV.parsefield(io, T, opts, row, col)
     @inbounds dest.values[row], dest.isnull[row] = val, null
     return
 end
