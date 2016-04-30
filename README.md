@@ -1,6 +1,7 @@
 # CSV [beta]
 
 [![CSV](http://pkg.julialang.org/badges/CSV_0.4.svg)](http://pkg.julialang.org/?pkg=CSV&ver=0.4)
+[![CSV](http://pkg.julialang.org/badges/CSV_0.5.svg)](http://pkg.julialang.org/?pkg=CSV&ver=0.5)
 
 Linux: [![Build Status](https://travis-ci.org/JuliaDB/CSV.jl.svg?branch=master)](https://travis-ci.org/JuliaDB/CSV.jl)
 
@@ -13,8 +14,8 @@ A package for working with CSV and other delimited files.
 Types/functions:
 
 * `CSV.Source`/`CSV.Sink`: `Data.Source` and `Data.Sink` types for the [DataStreams.jl](https://github.com/JuliaDB/DataStreams.jl) interface
-* `CSV.Options`: a type that collects various parsing configurations that can be passed to `CSV.Source` or `CSV.read`
-* `CSV.read`: convenience method that supports all the same options/inputs as `CSV.Source`; it creates a `CSV.Source` and then calls `Data.stream!(source, Data.Table)`
+* `CSV.Options`: a type that collects various parsing configurations that can be passed to `CSV.Source` or `CSV.csv`
+* `CSV.csv`: convenience method that supports all the same options/inputs as `CSV.Source`; it creates a `CSV.Source` and then calls `Data.stream!(source, Data.Table)`
 * `Data.stream!(::CSV.Source,::CSV.Sink)`: method for streaming data from a CSV source to a CSV sink (csv file to csv file)
 * `Data.stream!(::CSV.Source,::Data.Table)`: method for streaming data from a CSV source to a `Data.Table` (Julia structure)
 * `Data.stream!(::Data.Table,::CSV.Sink)`: method for streaming data from a `Data.Table` to a CSV sink
