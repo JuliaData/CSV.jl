@@ -1,7 +1,7 @@
 using DataStreams
 module CSV
 
-using Compat, NullableArrays, Libz, DataStreams
+using Compat, NullableArrays, DataStreams
 
 const PointerString = Data.PointerString
 const NULLSTRING = Data.NULLSTRING

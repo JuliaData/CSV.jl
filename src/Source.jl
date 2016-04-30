@@ -1,7 +1,4 @@
-const ZIP_FILE_EXTS = Set{UTF8String}([".zip",".gz","-gz",".z","-z","_z",".Z"#=,".bz2", ".bz", ".tbz2", ".tbz"=#])
 const EMPTY_DATEFORMAT = Dates.DateFormat("")
-
-Base.close(::Libz.BufferedStreams.BufferedInputStream{Libz.Source{:inflate,Libz.BufferedStreams.BufferedInputStream{IOStream}}}) = return nothing
 
 # Data.Source interface
 Data.reset!(io::CSV.Source) = seek(io.data,io.datapos)
@@ -15,7 +12,6 @@ Base.readline(io::CSV.Source) = readline(io,io.options.quotechar,io.options.esca
 constructs a `CSV.Source` file ready to start parsing data from
 
 * `fullpath` can be a file name (string) or other `IO` instance
-* `compression` indicates the type of compression of a file; (".gzip",".gz",etc.)
 * `delim`::Union{Char,UInt8} = how fields in the file are delimited
 * `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
 * `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
@@ -46,7 +42,6 @@ CSV.Source: bids.csv
 ```
 """
 function Source(fullpath::Union{AbstractString,IO};
-              compression="",
 
               delim=COMMA,
               quotechar=QUOTE,
@@ -74,7 +69,7 @@ function Source(fullpath::Union{AbstractString,IO};
     decimal = CSV.PERIOD; decimal % UInt8
     separator = CSV.COMMA; separator % UInt8
     dateformat = isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat)
-    return CSV.Source(fullpath=fullpath, compression=compression,
+    return CSV.Source(fullpath=fullpath,
                         options=CSV.Options(delim,quotechar,escapechar,separator,
                                     decimal,ascii(null),null!="",dateformat,dateformat==Dates.ISODateFormat),
                         header=header, datarow=datarow, types=types, footerskip=footerskip,
@@ -82,7 +77,6 @@ function Source(fullpath::Union{AbstractString,IO};
 end
 
 function Source(;fullpath::Union{AbstractString,IO}="",
-                compression="",
                 options::CSV.Options=CSV.Options(),
 
                 header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
@@ -93,27 +87,22 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 rows_for_type_detect::Int=100,
                 rows::Int=0,
                 use_mmap::Bool=true)
-    # compression="";delim=CSV.COMMA;quotechar=CSV.QUOTE;escapechar=CSV.ESCAPE;separator=CSV.COMMA;decimal=CSV.PERIOD;null="";header=1;datarow=2;types=DataType[];formats=UTF8String[];skipblankrows=true;footerskip=0;rows_for_type_detect=250;countrows=true
+    # delim=CSV.COMMA;quotechar=CSV.QUOTE;escapechar=CSV.ESCAPE;separator=CSV.COMMA;decimal=CSV.PERIOD;null="";header=1;datarow=2;types=DataType[];formats=UTF8String[];skipblankrows=true;footerskip=0;rows_for_type_detect=250;countrows=true
     # argument checks
     isa(fullpath,AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
     isa(header,Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
 
     isa(fullpath,IOStream) && (fullpath = chop(replace(fullpath.name,"<file ","")))
 
-    # open the file for property detection; handle possible compression types
+    # open the file for property detection
     if isa(fullpath,IOBuffer)
         source = UnsafeBuffer(fullpath.data,fullpath.ptr,fullpath.size)
         fullpath = "<IOBuffer>"
     elseif isa(fullpath,IO)
         source = UnsafeBuffer(readbytes(fullpath))
         fullpath = fullpath.name
-    elseif compression in ZIP_FILE_EXTS || splitext(fullpath)[end] in ZIP_FILE_EXTS
-        #TODO: detect zip formats?
-        source = UnsafeBuffer(readbytes(Libz.ZlibInflateInputStream(open(fullpath)))) # stored for reading data
-    elseif compression == ""
-        source = UnsafeBuffer(use_mmap ? Mmap.mmap(fullpath) : open(readbytes,fullpath))
     else
-        throw(ArgumentError("unsupported compression type: $compression"))
+        source = UnsafeBuffer(use_mmap ? Mmap.mmap(fullpath) : open(readbytes,fullpath))
     end
     rows = rows == 0 ? CSV.countlines(source,options.quotechar,options.escapechar) : rows
     rows == 0 && throw(ArgumentError("No rows of data detected in $fullpath"))
@@ -248,7 +237,6 @@ end
 parses a delimited file into strongly typed NullableVectors.
 
 * `fullpath` can be a file name (string) or other `IO` instance
-* `compression` indicates the type of compression of a file; (".gzip",".gz",etc.)
 * `delim`::Union{Char,UInt8} = how fields in the file are delimited
 * `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
 * `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
@@ -290,7 +278,7 @@ function Base.read(fullpath::Union{AbstractString,IO};
               rows_for_type_detect::Int=100,
               rows::Int=0,
               use_mmap::Bool=true)
-    source = Source(fullpath::Union{AbstractString,IO};compression=compression,
+    source = Source(fullpath::Union{AbstractString,IO};
                   delim=delim,quotechar=quotechar,escapechar=escapechar,null=null,
                   header=header,datarow=datarow,types=types,dateformat=dateformat,
                   footerskip=footerskip,rows_for_type_detect=rows_for_type_detect,rows=rows,use_mmap=use_mmap)
