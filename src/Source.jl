@@ -249,7 +249,7 @@ parses a delimited file into strongly typed NullableVectors.
 
 Example usage:
 ```
-julia> dt = CSV.read("bids.csv")
+julia> dt = CSV.csv("bids.csv")
 DataStreams.Data.Table{Array{NullableArrays.NullableArray{T,1},1}}(7656334x9 Data.Schema:
      bid_id, Int64
   bidder_id, PointerString
@@ -263,8 +263,7 @@ merchandise, PointerString
 ...
 ```
 """
-function Base.read(fullpath::Union{AbstractString,IO};
-              compression="",
+function csv(fullpath::Union{AbstractString,IO};
               delim=COMMA,
               quotechar=QUOTE,
               escapechar=ESCAPE,
