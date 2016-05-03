@@ -258,13 +258,6 @@ f = CSV.Source(dir * "pandas_zeros.csv")
 @test f.schema.types == repmat([Int],50)
 @time ds = Data.stream!(f, Data.Table)
 
-f = CSV.Source(dir * "test_basic.csv.gz")
-@test f.schema.cols == 3
-@test f.schema.rows == 3
-@test f.schema.header == ["col1","col2","col3"]
-@test f.schema.types == [Int,Int,Int]
-ds = Data.stream!(f, Data.Table)
-
 f = CSV.Source(dir * "test_header_range.csv";header=1:3)
 @test f.schema.cols == 3
 @test f.schema.rows == 3
