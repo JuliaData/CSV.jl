@@ -15,7 +15,7 @@ constructs a `CSV.Source` file ready to start parsing data from
 * `delim`::Union{Char,UInt8} = how fields in the file are delimited
 * `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
 * `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
-* `null`::ASCIIString = the ascii string that indicates how NULL values are represented in the dataset
+* `null`::String = the ascii string that indicates how NULL values are represented in the dataset
 * `dateformat`::Union{AbstractString,Dates.DateFormat} = how dates/datetimes are represented in the dataset
 * `footerskip`::Int indicates the number of rows to skip at the end of the file
 * `rows_for_type_detect`::Int indicates how many rows should be read to infer the types of columns
@@ -240,7 +240,7 @@ parses a delimited file into strongly typed NullableVectors.
 * `delim`::Union{Char,UInt8} = how fields in the file are delimited
 * `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
 * `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
-* `null`::ASCIIString = the ascii string that indicates how NULL values are represented in the dataset
+* `null`::String = the ascii string that indicates how NULL values are represented in the dataset
 * `dateformat`::Union{AbstractString,Dates.DateFormat} = how dates/datetimes are represented in the dataset
 * `footerskip`::Int indicates the number of rows to skip at the end of the file
 * `rows_for_type_detect`::Int indicates how many rows should be read to infer the types of columns
