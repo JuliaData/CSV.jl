@@ -21,7 +21,7 @@ Types/functions:
 * `Data.stream!(::Data.Table,::CSV.Sink)`: method for streaming data from a `Data.Table` to a CSV sink
 * `CSV.getfield{T}(io::IOBuffer, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)`: various custom parsing methods for types `T`
 * `CSV.readline(f::IO,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())`: custom `readline` implementation that accounts for potentially quoted newlines
-* `CSV.readsplitline(f::IO,d::UInt8,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())`: similar to `readline`, but also splits each field into a separate element in a `Vector{UTF8String}`
+* `CSV.readsplitline(f::IO,d::UInt8,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())`: similar to `readline`, but also splits each field into a separate element in a `Vector{String}`
 * `CSV.countlines(f::IO,q::UInt8,e::UInt8)`: custom `countlines` implementation that accounts for potential quoted newlines
 
 See the help documentation for any of the above for additional details (e.g. `?CSV.Options`, `?CSV.read`, etc.)

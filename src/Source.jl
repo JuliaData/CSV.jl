@@ -121,20 +121,20 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             datapos = position(source)
             cols = length(CSV.readsplitline(source,options.delim,options.quotechar,options.escapechar))
             seek(source, datapos)
-            columnnames = UTF8String["Column$i" for i = 1:cols]
+            columnnames = @compat(String)["Column$i" for i = 1:cols]
         else
             CSV.skipto!(source,1,header,options.quotechar,options.escapechar)
-            columnnames = UTF8String[utf8(x) for x in CSV.readsplitline(source,options.delim,options.quotechar,options.escapechar)]
+            columnnames = @compat(String)[x for x in CSV.readsplitline(source,options.delim,options.quotechar,options.escapechar)]
             cols = length(columnnames)
             datarow != header+1 && CSV.skipto!(source,header+1,datarow,options.quotechar,options.escapechar)
             datapos = position(source)
         end
     elseif isa(header,Range)
         CSV.skipto!(source,1,first(header),options.quotechar,options.escapechar)
-        columnnames = UTF8String[utf8(x) for x in readsplitline(source,options.delim,options.quotechar,options.escapechar)]
+        columnnames = @compat(String)[x for x in readsplitline(source,options.delim,options.quotechar,options.escapechar)]
         cols = length(columnnames)
         for row = first(header):(last(header)-1)
-            for (i,c) in enumerate(UTF8String[utf8(x) for x in readsplitline(source,options.delim,options.quotechar,options.escapechar)])
+            for (i,c) in enumerate(@compat(String)[x for x in readsplitline(source,options.delim,options.quotechar,options.escapechar)])
                 columnnames[i] *= "_" * c
             end
         end
@@ -146,10 +146,10 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         cols = length(readsplitline(source,options.delim,options.quotechar,options.escapechar))
         seek(source,datapos)
         if isempty(header)
-            columnnames = UTF8String["Column$i" for i = 1:cols]
+            columnnames = @compat(String)["Column$i" for i = 1:cols]
         else
             length(header) == cols || throw(ArgumentError("length of provided header doesn't match number of columns of data at row $datarow"))
-            columnnames = UTF8String[utf8(x) for x in header]
+            columnnames = @compat(String)[x for x in header]
         end
     end
 
@@ -193,19 +193,19 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     (any(columntypes .== DateTime) || any(columntypes .== Date)) &&
         options.dateformat == EMPTY_DATEFORMAT && (options.dateformat = Dates.ISODateFormat)
     seek(source,datapos)
-    return Source(Data.Schema(columnnames,columntypes,rows),options,source,datapos,utf8(fullpath))
+    return Source(Data.Schema(columnnames,columntypes,rows),options,source,datapos,fullpath)
 end
 
 "construct a new Source from a Sink that has been streamed to (i.e. DONE)"
 function Source{I}(s::CSV.Sink{I})
     Data.isdone(s) || throw(ArgumentError("::Sink has not been closed to streaming yet; call `close(::Sink)` first"))
     if is(I,IOStream)
-        nm = utf8(chop(replace(s.data.name,"<file ","")))
+        nm = chop(replace(s.data.name,"<file ",""))
         data = IOBuffer(Mmap.mmap(nm))
     else
         seek(s.data, s.datapos)
         data = IOBuffer(readbytes(s.data))
-        nm = utf8("")
+        nm = ""
     end
     seek(data,s.datapos)
     return Source(s.schema,s.options,data,s.datapos,nm)
