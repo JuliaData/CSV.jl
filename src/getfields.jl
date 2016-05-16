@@ -40,7 +40,7 @@ CSVError{T}(::Type{T}, b, row, col) = CSV.CSVError("error parsing a `$T` value o
     !opt.nullcheck && throw(CSVError(T, b, row, col))
     i = 1
     while true
-        b == opt.null[i] || throw(CSVError(T, b, row, col))
+        b == opt.null.data[i] || throw(CSVError(T, b, row, col))
         (eof(io) || i == length(opt.null)) && break
         b = read(io, UInt8)
         i += 1
@@ -145,7 +145,7 @@ function parsefield{T<:AbstractString}(io::Union{IOBuffer,UnsafeBuffer}, ::Type{
                 elseif b == opt.quotechar
                     break
                 end
-                (nullcheck && len+1 <= nulllen && b == opt.null[len+1]) || (nullcheck = false)
+                (nullcheck && len+1 <= nulllen && b == opt.null.data[len+1]) || (nullcheck = false)
                 len += 1
             end
         elseif b == opt.delim || b == NEWLINE
@@ -154,7 +154,7 @@ function parsefield{T<:AbstractString}(io::Union{IOBuffer,UnsafeBuffer}, ::Type{
             !eof(io) && peek(io) == NEWLINE && read(io, UInt8)
             break
         else
-            (nullcheck && len+1 <= nulllen && b == opt.null[len+1]) || (nullcheck = false)
+            (nullcheck && len+1 <= nulllen && b == opt.null.data[len+1]) || (nullcheck = false)
             len += 1
         end
     end

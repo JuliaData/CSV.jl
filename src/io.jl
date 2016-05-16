@@ -26,9 +26,9 @@ end
 
 # read and split a line into string values;
 # write(t,"\"hey there\",1000,\"1000\",\"\",,1.0,\"hey \n \\\"quote\\\" there\"\n"); seekstart(t)
-"read a single line from `io` (any `IO` type) as a `Vector{UTF8String}` with elements being delimited fields. Can optionally provide a `buf::IOBuffer` type for buffer resuse"
+"read a single line from `io` (any `IO` type) as a `Vector{String}` with elements being delimited fields. Can optionally provide a `buf::IOBuffer` type for buffer resuse"
 function readsplitline(io::IO,d::UInt8,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
-    vals = UTF8String[]
+    vals = @compat(String)[]
     while !eof(io)
         b = read(io, UInt8)
         if b == q
