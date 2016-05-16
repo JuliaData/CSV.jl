@@ -7,7 +7,7 @@ const PointerString = Data.PointerString
 const NULLSTRING = Data.NULLSTRING
 
 immutable CSVError <: Exception
-    msg::ASCIIString
+    msg::@compat(String)
 end
 
 const RETURN  = UInt8('\r')
@@ -34,7 +34,7 @@ Represents the various configuration settings for csv file parsing.
  * `delim`::Union{Char,UInt8} = how fields in the file are delimited
  * `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
  * `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
- * `null`::ASCIIString = the ascii string that indicates how NULL values are represented in the dataset
+ * `null`::String = the ascii string that indicates how NULL values are represented in the dataset
  * `dateformat`::Union{AbstractString,Dates.DateFormat} = how dates/datetimes are represented in the dataset
 """
 type Options
@@ -43,13 +43,13 @@ type Options
     escapechar::UInt8
     separator::UInt8
     decimal::UInt8
-    null::ASCIIString # how null is represented in the dataset
+    null::@compat(String) # how null is represented in the dataset
     nullcheck::Bool   # do we have a custom null value to check for
     dateformat::Dates.DateFormat
     datecheck::Bool   # do we have a custom dateformat to check for
 end
 
-Options(;delim=COMMA,quotechar=QUOTE,escapechar=ESCAPE,null::ASCIIString="",dateformat=Dates.ISODateFormat) =
+Options(;delim=COMMA,quotechar=QUOTE,escapechar=ESCAPE,null::@compat(String)="",dateformat=Dates.ISODateFormat) =
     Options(delim%UInt8,quotechar%UInt8,escapechar%UInt8,COMMA,PERIOD,
             null,null != "",isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat),dateformat == Dates.ISODateFormat)
 function Base.show(io::IO,op::Options)
@@ -67,7 +67,7 @@ type Source <: Data.Source
     options::Options
     data::UnsafeBuffer
     datapos::Int # the position in the IOBuffer where the rows of data begins
-    fullpath::UTF8String
+    fullpath::@compat(String)
 end
 
 function Base.show(io::IO,f::Source)

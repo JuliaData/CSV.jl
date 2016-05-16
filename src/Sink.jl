@@ -28,7 +28,7 @@ create a new `Sink` from `io` (either a filename or `IOStream`), with various op
 * `delim`::Union{Char,UInt8} = how fields in the file will be delimited
 * `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
 * `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
-* `null`::ASCIIString = the ascii string that indicates how NULL values will be represented in the dataset
+* `null`::String = the ascii string that indicates how NULL values will be represented in the dataset
 * `dateformat`::Union{AbstractString,Dates.DateFormat} = how dates/datetimes will be represented in the dataset
 * `quotefields`::Bool = whether all fields should be quoted or not
 """
