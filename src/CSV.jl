@@ -36,6 +36,7 @@ Represents the various configuration settings for csv file parsing.
  * `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
  * `null`::String = the ascii string that indicates how NULL values are represented in the dataset
  * `dateformat`::Union{AbstractString,Dates.DateFormat} = how dates/datetimes are represented in the dataset
+ * `floattype`::DataType = type used (must be <: AbstractFloat) to represent floating point numbers
 """
 type Options
     delim::UInt8
@@ -47,18 +48,24 @@ type Options
     nullcheck::Bool   # do we have a custom null value to check for
     dateformat::Dates.DateFormat
     datecheck::Bool   # do we have a custom dateformat to check for
+    floattype::DataType
 end
 
-Options(;delim=COMMA,quotechar=QUOTE,escapechar=ESCAPE,null::@compat(String)="",dateformat=Dates.ISODateFormat) =
+Options(;delim=COMMA,quotechar=QUOTE,escapechar=ESCAPE,null::@compat(String)="",
+        dateformat=Dates.ISODateFormat,floattype=Float64) =
     Options(delim%UInt8,quotechar%UInt8,escapechar%UInt8,COMMA,PERIOD,
-            null,null != "",isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat),dateformat == Dates.ISODateFormat)
+            null,null != "",
+            isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat),
+            dateformat == Dates.ISODateFormat,
+            floattype)
 function Base.show(io::IO,op::Options)
     println("    CSV.Options:")
     println(io,"        delim: '",@compat(Char(op.delim)),"'")
     println(io,"        quotechar: '",@compat(Char(op.quotechar)),"'")
     print(io,"        escapechar: '"); print_escaped(io,string(@compat(Char(op.escapechar))),"\\"); println(io,"'")
     print(io,"        null: \""); print_escaped(io,op.null,"\\"); println(io,"\"")
-    print(io,"        dateformat: ",op.dateformat)
+    println(io,"        dateformat: ",op.dateformat)
+    println(io,"        floattype: ",op.floattype)
 end
 
 "`CSV.Source` satisfies the `DataStreams` interface for data processing for delimited `IO`."
