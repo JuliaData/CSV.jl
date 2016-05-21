@@ -20,6 +20,7 @@ constructs a `CSV.Source` file ready to start parsing data from
 * `footerskip`::Int indicates the number of rows to skip at the end of the file
 * `rows_for_type_detect`::Int indicates how many rows should be read to infer the types of columns
 * `rows`::Int indicates the total number of rows to read from the file
+* `floattype`::DataType indicates the type to use for floating point values (must be <: `AbstractFloat`)
 * `use_mmap`::Bool=true; whether the underlying file will be mmapped or not while parsing
 
 Note by default, "string" or text columns will be parsed as the `PointerString` type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
@@ -42,27 +43,32 @@ CSV.Source: bids.csv
 ```
 """
 function Source(fullpath::Union{AbstractString,IO};
+                delim=COMMA,
+                quotechar=QUOTE,
+                escapechar=ESCAPE,
+                null::AbstractString="",
 
-              delim=COMMA,
-              quotechar=QUOTE,
-              escapechar=ESCAPE,
-              null::AbstractString="",
+                header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
+                datarow::Int=-1, # by default, data starts immediately after header or start of file
+                types::Union{Dict{Int,DataType},Vector{DataType}}=DataType[],
+                dateformat::Union{AbstractString,Dates.DateFormat}=EMPTY_DATEFORMAT,
 
-              header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
-              datarow::Int=-1, # by default, data starts immediately after header or start of file
-              types::Union{Dict{Int,DataType},Vector{DataType}}=DataType[],
-              dateformat::Union{AbstractString,Dates.DateFormat}=EMPTY_DATEFORMAT,
-
-              footerskip::Int=0,
-              rows_for_type_detect::Int=100,
-              rows::Int=0,
-              use_mmap::Bool=true)
+                footerskip::Int=0,
+                rows_for_type_detect::Int=100,
+                rows::Int=0,
+                floattype::DataType=Float64,
+                use_mmap::Bool=true)
     # make sure character args are UInt8
-    isascii(delim) || throw(ArgumentError("non-ASCII characters not supported for delim argument: $delim"))
-    isascii(quotechar) || throw(ArgumentError("non-ASCII characters not supported for quotechar argument: $quotechar"))
-    isascii(escapechar) || throw(ArgumentError("non-ASCII characters not supported for escapechar argument: $escapechar"))
+    isascii(delim) ||
+        throw(ArgumentError("non-ASCII characters not supported for delim argument: $delim"))
+    isascii(quotechar) ||
+        throw(ArgumentError("non-ASCII characters not supported for quotechar argument: $quotechar"))
+    isascii(escapechar) ||
+        throw(ArgumentError("non-ASCII characters not supported for escapechar argument: $escapechar"))
     # isascii(decimal) || throw(ArgumentError("non-ASCII characters not supported for decimal argument: $decimal"))
     # isascii(separator) || throw(ArgumentError("non-ASCII characters not supported for separator argument: $separator"))
+    (floattype <: AbstractFloat) ||
+        throw(ArgumentError("$floattype is not a subtype of AbstractFloat"))
     delim = delim % UInt8
     quotechar = quotechar % UInt8
     escapechar = escapechar % UInt8
@@ -70,10 +76,13 @@ function Source(fullpath::Union{AbstractString,IO};
     separator = CSV.COMMA; separator % UInt8
     dateformat = isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat)
     return CSV.Source(fullpath=fullpath,
-                        options=CSV.Options(delim,quotechar,escapechar,separator,
-                                    decimal,ascii(null),null!="",dateformat,dateformat==Dates.ISODateFormat),
-                        header=header, datarow=datarow, types=types, footerskip=footerskip,
-                        rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
+                      options=CSV.Options(delim,quotechar,escapechar,separator,
+                                          decimal,ascii(null),null!="",
+                                          dateformat,dateformat==Dates.ISODateFormat,
+                                          floattype),
+                      header=header, datarow=datarow, types=types, footerskip=footerskip,
+                      rows_for_type_detect=rows_for_type_detect, rows=rows,
+                      use_mmap=use_mmap)
 end
 
 function Source(;fullpath::Union{AbstractString,IO}="",
@@ -178,7 +187,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             columntypes[i] = (isempty(d) || PointerString in d ) ? PointerString :
                                 (Date     in d) ? Date :
                                 (DateTime in d) ? DateTime :
-                                (Float64  in d) ? Float64 :
+                                (Float64  in d) ? options.floattype :
                                 (Int      in d) ? Int : PointerString
             empty!(d)
         end
@@ -245,6 +254,7 @@ parses a delimited file into strongly typed NullableVectors.
 * `footerskip`::Int indicates the number of rows to skip at the end of the file
 * `rows_for_type_detect`::Int indicates how many rows should be read to infer the types of columns
 * `rows`::Int indicates the total number of rows to read from the file
+* `floattype`::DataType indicates the type to use for floating point values (must be <: `AbstractFloat`)
 * `use_mmap`::Bool=true; whether the underlying file will be mmapped or not while parsing
 
 Example usage:
@@ -264,22 +274,24 @@ merchandise, PointerString
 ```
 """
 function csv(fullpath::Union{AbstractString,IO};
-              delim=COMMA,
-              quotechar=QUOTE,
-              escapechar=ESCAPE,
-              null::AbstractString="",
-              header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
-              datarow::Int=-1, # by default, data starts immediately after header or start of file
-              types::Union{Dict{Int,DataType},Vector{DataType}}=DataType[],
-              dateformat::Union{AbstractString,Dates.DateFormat}=EMPTY_DATEFORMAT,
-
-              footerskip::Int=0,
-              rows_for_type_detect::Int=100,
-              rows::Int=0,
-              use_mmap::Bool=true)
+             delim=COMMA,
+             quotechar=QUOTE,
+             escapechar=ESCAPE,
+             null::AbstractString="",
+             header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
+             datarow::Int=-1, # by default, data starts immediately after header or start of file
+             types::Union{Dict{Int,DataType},Vector{DataType}}=DataType[],
+             dateformat::Union{AbstractString,Dates.DateFormat}=EMPTY_DATEFORMAT,
+             footerskip::Int=0,
+             rows_for_type_detect::Int=100,
+             rows::Int=0,
+             floattype::DataType=Float64,
+             use_mmap::Bool=true)
     source = Source(fullpath::Union{AbstractString,IO};
-                  delim=delim,quotechar=quotechar,escapechar=escapechar,null=null,
-                  header=header,datarow=datarow,types=types,dateformat=dateformat,
-                  footerskip=footerskip,rows_for_type_detect=rows_for_type_detect,rows=rows,use_mmap=use_mmap)
+                    delim=delim,quotechar=quotechar,escapechar=escapechar,null=null,
+                    header=header,datarow=datarow,types=types,dateformat=dateformat,
+                    footerskip=footerskip,rows_for_type_detect=rows_for_type_detect,rows=rows,
+                    floattype=floattype,
+                    use_mmap=use_mmap)
     return Data.stream!(source,Data.Table)
 end

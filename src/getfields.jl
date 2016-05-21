@@ -106,7 +106,16 @@ function parsefield{T<:AbstractFloat}(io::Union{IOBuffer,UnsafeBuffer}, ::Type{T
     null && return v, true
     # subtract 1 because we just read a valid byte, so position(io) is +1 from where a digit should be
     ptr = pointer(io.data) + position(io) - 1
-    v = convert(T, ccall(:jl_strtod_c, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, REF))
+    # Use C call for speed, 
+    if T <: Union{Float16, Float32, Float64}
+        v = convert(T, ccall(:jl_strtod_c, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, REF))
+    else
+        # Use this to find out the length of the string to be parsed
+        ccall(:jl_strtod_c, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, REF)
+        # Parse it with T's parser, note this is not really performant!
+        # Needs better string design, like Strings.jl
+        v = parse(T, string(pointer_to_string(ptr, REF[1] - ptr), '\0')[1:end-1])
+    end
     io.ptr += REF[1] - ptr - 1 # Hopefully io.ptr doesn't change for IOBuffer?
     eof(io) && return v, false
     b = read(io, UInt8)
