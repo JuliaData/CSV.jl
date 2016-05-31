@@ -15,7 +15,7 @@ constructs a `CSV.Source` file ready to start parsing data from
 * `delim`::Union{Char,UInt8} = how fields in the file are delimited
 * `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
 * `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
-* `null`::String = the ascii string that indicates how NULL values are represented in the dataset
+* `null`::String = indicates how NULL values are represented in the dataset
 * `dateformat`::Union{AbstractString,Dates.DateFormat} = how dates/datetimes are represented in the dataset
 * `footerskip`::Int indicates the number of rows to skip at the end of the file
 * `rows_for_type_detect`::Int indicates how many rows should be read to infer the types of columns
@@ -121,20 +121,20 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             datapos = position(source)
             cols = length(CSV.readsplitline(source,options.delim,options.quotechar,options.escapechar))
             seek(source, datapos)
-            columnnames = @compat(String)["Column$i" for i = 1:cols]
+            columnnames = ["Column$i" for i = 1:cols]
         else
             CSV.skipto!(source,1,header,options.quotechar,options.escapechar)
-            columnnames = @compat(String)[x for x in CSV.readsplitline(source,options.delim,options.quotechar,options.escapechar)]
+            columnnames = [x for x in CSV.readsplitline(source,options.delim,options.quotechar,options.escapechar)]
             cols = length(columnnames)
             datarow != header+1 && CSV.skipto!(source,header+1,datarow,options.quotechar,options.escapechar)
             datapos = position(source)
         end
     elseif isa(header,Range)
         CSV.skipto!(source,1,first(header),options.quotechar,options.escapechar)
-        columnnames = @compat(String)[x for x in readsplitline(source,options.delim,options.quotechar,options.escapechar)]
+        columnnames = [x for x in readsplitline(source,options.delim,options.quotechar,options.escapechar)]
         cols = length(columnnames)
         for row = first(header):(last(header)-1)
-            for (i,c) in enumerate(@compat(String)[x for x in readsplitline(source,options.delim,options.quotechar,options.escapechar)])
+            for (i,c) in enumerate([x for x in readsplitline(source,options.delim,options.quotechar,options.escapechar)])
                 columnnames[i] *= "_" * c
             end
         end
@@ -146,10 +146,10 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         cols = length(readsplitline(source,options.delim,options.quotechar,options.escapechar))
         seek(source,datapos)
         if isempty(header)
-            columnnames = @compat(String)["Column$i" for i = 1:cols]
+            columnnames = ["Column$i" for i = 1:cols]
         else
             length(header) == cols || throw(ArgumentError("length of provided header doesn't match number of columns of data at row $datarow"))
-            columnnames = @compat(String)[x for x in header]
+            columnnames = [x for x in header]
         end
     end
 
