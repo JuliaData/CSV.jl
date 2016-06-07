@@ -214,7 +214,7 @@ function parsefield(io::Union{IOBuffer,UnsafeBuffer}, ::Type{Date}, opt::CSV.Opt
                 break
             end
         end
-        val = String(pointer(io.data)+pos, position(io)-pos-quoted-1+end_of_file)
+        val = Compat.bytestring(pointer(io.data)+pos, position(io)-pos-quoted-1+end_of_file)
         val == opt.null && return Date(0,1,1), true
         return Date(val, opt.dateformat)::Date, false
     end
@@ -278,7 +278,7 @@ function parsefield(io::Union{IOBuffer,UnsafeBuffer}, ::Type{DateTime}, opt::CSV
                 break
             end
         end
-        val = String(pointer(io.data)+pos, position(io)-pos-quoted-1+end_of_file)
+        val = Compat.bytestring(pointer(io.data)+pos, position(io)-pos-quoted-1+end_of_file)
         val == opt.null && return DateTime(0,1,1), true
         return DateTime(val, opt.dateformat)::DateTime, false
     end
