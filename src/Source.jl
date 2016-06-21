@@ -46,7 +46,7 @@ function Source(fullpath::Union{AbstractString,IO};
               delim=COMMA,
               quotechar=QUOTE,
               escapechar=ESCAPE,
-              null::AbstractString="",
+              null::AbstractString=String(""),
 
               header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
@@ -209,7 +209,7 @@ function Source{I}(s::CSV.Sink{I})
     else
         seek(s.data, s.datapos)
         data = IOBuffer(readbytes(s.data))
-        nm = ""
+        nm = String("")
     end
     seek(data,s.datapos)
     return Source(s.schema,s.options,data,s.datapos,nm)
@@ -277,7 +277,7 @@ function read(fullpath::Union{AbstractString,IO};
               delim=COMMA,
               quotechar=QUOTE,
               escapechar=ESCAPE,
-              null::AbstractString="",
+              null::AbstractString=String(""),
               header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types::Union{Dict{Int,DataType},Vector{DataType}}=DataType[],
