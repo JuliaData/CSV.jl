@@ -22,8 +22,8 @@ constructs a `CSV.Source` file ready to start parsing data from
 * `rows`::Int indicates the total number of rows to read from the file
 * `use_mmap`::Bool=true; whether the underlying file will be mmapped or not while parsing
 
-Note by default, "string" or text columns will be parsed as the `PointerString` type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
-To convert a `PointerString` to a standard Julia string type, just call `string(::PointerString)`, this also works on an entire column `string(::NullableVector{PointerString})`.
+Note by default, "string" or text columns will be parsed as the `String` type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
+To convert a `String` to a standard Julia string type, just call `string(::String)`, this also works on an entire column `string(::NullableVector{String})`.
 Oftentimes, however, it can be convenient to work with `PointerStrings` depending on the ultimate use, such as transfering the data directly to another system and avoiding all the intermediate byte copying.
 
 Example usage:
@@ -38,7 +38,7 @@ CSV.Source: bids.csv
         dateformat: Base.Dates.DateFormat(Base.Dates.Slot[],"","english")
 7656334x9 Data.Schema:
  bid_id,     bidder_id,       auction,   merchandise,        device,  time,       country,            ip,           url
-  Int64, PointerString, PointerString, PointerString, PointerString, Int64, PointerString, PointerString, PointerString
+  Int64, String, String, String, String, Int64, String, String, String
 ```
 """
 function Source(fullpath::Union{AbstractString,IO};
@@ -95,14 +95,16 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     isa(fullpath,IOStream) && (fullpath = chop(replace(fullpath.name,"<file ","")))
 
     # open the file for property detection
+    parent = UInt8[]
     if isa(fullpath,IOBuffer)
-        source = UnsafeBuffer(fullpath.data,fullpath.ptr,fullpath.size)
+        source = fullpath
         fullpath = "<IOBuffer>"
     elseif isa(fullpath,IO)
-        source = UnsafeBuffer(readbytes(fullpath))
+        source = IOBuffer(readbytes(fullpath))
         fullpath = fullpath.name
     else
-        source = UnsafeBuffer(use_mmap ? Mmap.mmap(fullpath) : open(readbytes,fullpath))
+        source = IOBuffer(use_mmap ? Mmap.mmap(fullpath) : open(readbytes,fullpath))
+        parent = source.data
     end
     rows = rows == 0 ? CSV.countlines(source,options.quotechar,options.escapechar) : rows
     rows == 0 && throw(ArgumentError("No rows of data detected in $fullpath"))
@@ -175,11 +177,11 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 t == NullField && continue
                 push!(d,t)
             end
-            columntypes[i] = (isempty(d) || PointerString in d ) ? PointerString :
+            columntypes[i] = (isempty(d) || WeakRefString in d ) ? WeakRefString :
                                 (Date     in d) ? Date :
                                 (DateTime in d) ? DateTime :
                                 (Float64  in d) ? Float64 :
-                                (Int      in d) ? Int : PointerString
+                                (Int      in d) ? Int : WeakRefString
             empty!(d)
         end
     else
@@ -193,7 +195,8 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     (any(columntypes .== DateTime) || any(columntypes .== Date)) &&
         options.dateformat == EMPTY_DATEFORMAT && (options.dateformat = Dates.ISODateFormat)
     seek(source,datapos)
-    return Source(Data.Schema(columnnames,columntypes,rows),options,source,datapos,fullpath)
+    return Source(Data.Schema(columnnames,columntypes,rows,Dict("parent"=>parent)),
+                  options,source,datapos,fullpath)
 end
 
 "construct a new Source from a Sink that has been streamed to (i.e. DONE)"
@@ -202,6 +205,7 @@ function Source{I}(s::CSV.Sink{I})
     if is(I,IOStream)
         nm = chop(replace(s.data.name,"<file ",""))
         data = IOBuffer(Mmap.mmap(nm))
+        s.schema.metadata["parent"] =  data.data
     else
         seek(s.data, s.datapos)
         data = IOBuffer(readbytes(s.data))
@@ -212,26 +216,32 @@ function Source{I}(s::CSV.Sink{I})
 end
 
 # DataStreams interface
-function parsefield!{T}(io::Union{IOBuffer,UnsafeBuffer}, dest::NullableVector{T}, ::Type{T}, opts, row, col)
+function parsefield!{T}(io::IOBuffer, dest::NullableVector{T}, ::Type{T}, opts, row, col)
     @inbounds val, null = CSV.parsefield(io, T, opts, row, col)
     @inbounds dest.values[row], dest.isnull[row] = val, null
     return
 end
 
-"parse data from `source` into a `Data.Table`"
-function Data.stream!(source::CSV.Source,sink::Data.Table)
-    Data.schema(source) == Data.schema(sink) || throw(ArgumentError("schema mismatch: \n$(Data.schema(source))\nvs.\n$(Data.schema(sink))"))
+"parse data from `source` into a `DataFrame`"
+function Data.stream!(source::CSV.Source,sink::DataFrame)
+    (Data.types(source) == Data.types(sink) &&
+    size(source) == size(sink)) || throw(ArgumentError("schema mismatch: \n$(Data.schema(source))\nvs.\n$(Data.schema(sink))"))
     rows, cols = size(source)
     types = Data.types(source)
     io = source.data
     opts = source.options
+    data = sink.columns
     for row = 1:rows, col = 1:cols
         @inbounds T = types[col]
-        CSV.parsefield!(io, Data.unsafe_column(sink, col, T), T, opts, row, col)
+        CSV.parsefield!(io, data[col], T, opts, row, col)
     end
-    sink.other = source.data # keep a reference to our mmapped array for PointerStrings
     return sink
 end
+
+# "parse data from a `CSV.Source` into a `Feather.Sink`, feather-formatted binary file"
+# function Data.stream!(source::CSV.Source,sink::Feather.Sink)
+#
+# end
 
 """
 parses a delimited file into strongly typed NullableVectors.
@@ -249,21 +259,21 @@ parses a delimited file into strongly typed NullableVectors.
 
 Example usage:
 ```
-julia> dt = CSV.csv("bids.csv")
+julia> dt = CSV.read("bids.csv")
 DataStreams.Data.Table{Array{NullableArrays.NullableArray{T,1},1}}(7656334x9 Data.Schema:
      bid_id, Int64
-  bidder_id, PointerString
-    auction, PointerString
-merchandise, PointerString
-     device, PointerString
+  bidder_id, String
+    auction, String
+merchandise, String
+     device, String
        time, Int64
-    country, PointerString
-         ip, PointerString
-        url, PointerString
+    country, String
+         ip, String
+        url, String
 ...
 ```
 """
-function csv(fullpath::Union{AbstractString,IO};
+function read(fullpath::Union{AbstractString,IO};
               delim=COMMA,
               quotechar=QUOTE,
               escapechar=ESCAPE,
@@ -281,5 +291,5 @@ function csv(fullpath::Union{AbstractString,IO};
                   delim=delim,quotechar=quotechar,escapechar=escapechar,null=null,
                   header=header,datarow=datarow,types=types,dateformat=dateformat,
                   footerskip=footerskip,rows_for_type_detect=rows_for_type_detect,rows=rows,use_mmap=use_mmap)
-    return Data.stream!(source,Data.Table)
+    return Data.stream!(source,DataFrame)
 end
