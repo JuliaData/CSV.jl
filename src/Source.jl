@@ -196,7 +196,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         options.dateformat == EMPTY_DATEFORMAT && (options.dateformat = Dates.ISODateFormat)
     seek(source,datapos)
     return Source(Data.Schema(columnnames,columntypes,rows,Dict("parent"=>parent)),
-                  options,source,datapos,fullpath)
+                  options,source,datapos,String(fullpath))
 end
 
 "construct a new Source from a Sink that has been streamed to (i.e. DONE)"
