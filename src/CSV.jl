@@ -12,6 +12,7 @@ end
 if Base.VERSION < v"0.5.0-dev+4631"
     unsafe_wrap{A<:Array}(::Type{A}, ptr, len) = pointer_to_array(ptr, len)
     unsafe_string(ptr, len) = utf8(ptr, len)
+    unsafe_wrap(::Type{String}, ptr, len) = unsafe_string(ptr, len)
 end
 
 immutable CSVError <: Exception
