@@ -1,7 +1,7 @@
 reload("CSV")
 using Base.Test, DataFrames, NullableArrays, DataStreams, WeakRefStrings
 
-dir = joinpath(Pkg.dir("CSV"),"test/test_files/")
+dir = joinpath(dirname(@__FILE__),"test_files/")
 
 #test on non-existent file
 @test_throws ArgumentError CSV.Source("");
