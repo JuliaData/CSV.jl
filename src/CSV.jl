@@ -62,7 +62,7 @@ type Options
     datecheck::Bool   # do we have a custom dateformat to check for
 end
 
-Options(;delim=COMMA,quotechar=QUOTE,escapechar=ESCAPE,null="",dateformat=Dates.ISODateFormat) =
+Options(;delim=COMMA,quotechar=QUOTE,escapechar=ESCAPE,null=String(""),dateformat=Dates.ISODateFormat) =
     Options(delim%UInt8,quotechar%UInt8,escapechar%UInt8,COMMA,PERIOD,
             null,null != "",isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat),dateformat == Dates.ISODateFormat)
 function Base.show(io::IO,op::Options)
