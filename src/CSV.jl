@@ -9,6 +9,11 @@ if !isdefined(Core, :String)
     typealias String UTF8String
 end
 
+if Base.VERSION < v"0.5.0-dev+4631"
+    unsafe_wrap{A<:Array}(::Type{A}, ptr, len) = pointer_to_array(ptr, len)
+    unsafe_string(ptr, len) = utf8(ptr, len)
+end
+
 immutable CSVError <: Exception
     msg::String
 end
