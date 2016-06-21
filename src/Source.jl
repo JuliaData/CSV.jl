@@ -203,7 +203,7 @@ end
 function Source{I}(s::CSV.Sink{I})
     Data.isdone(s) || throw(ArgumentError("::Sink has not been closed to streaming yet; call `close(::Sink)` first"))
     if is(I,IOStream)
-        nm = chop(replace(s.data.name,"<file ",""))
+        nm = String(chop(replace(s.data.name,"<file ","")))
         data = IOBuffer(Mmap.mmap(nm))
         s.schema.metadata["parent"] =  data.data
     else
