@@ -124,5 +124,5 @@ function detecttype(val::AbstractString,format,null)
             !n && return DateTime
         end
     end
-    return WeakRefString
+    return WeakRefString{UInt8}
 end

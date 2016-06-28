@@ -177,11 +177,11 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 t == NullField && continue
                 push!(d,t)
             end
-            columntypes[i] = (isempty(d) || WeakRefString in d ) ? WeakRefString :
+            columntypes[i] = (isempty(d) || WeakRefString{UInt8} in d ) ? WeakRefString{UInt8} :
                                 (Date     in d) ? Date :
                                 (DateTime in d) ? DateTime :
                                 (Float64  in d) ? Float64 :
-                                (Int      in d) ? Int : WeakRefString
+                                (Int      in d) ? Int : WeakRefString{UInt8}
             empty!(d)
         end
     else
