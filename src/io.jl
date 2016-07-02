@@ -2,14 +2,14 @@
 function readline(io::IO,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
     while !eof(io)
         b = unsafe_read(io, UInt8)
-        write(buf, b)
+        Base.write(buf, b)
         if b == q
             while !eof(io)
                 b = unsafe_read(io, UInt8)
-                write(buf, b)
+                Base.write(buf, b)
                 if b == e
                     b = unsafe_read(io, UInt8)
-                    write(buf, b)
+                    Base.write(buf, b)
                 elseif b == q
                     break
                 end
@@ -17,7 +17,7 @@ function readline(io::IO,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
         elseif b == NEWLINE
             break
         elseif b == RETURN
-            !eof(io) && unsafe_peek(io) == NEWLINE && write(buf,unsafe_read(io, UInt8))
+            !eof(io) && unsafe_peek(io) == NEWLINE && Base.write(buf,unsafe_read(io, UInt8))
             break
         end
     end
@@ -35,13 +35,13 @@ function readsplitline(io::IO,d::UInt8=COMMA,q::UInt8=QUOTE,e::UInt8=ESCAPE,buf:
             while !eof(io)
                 b = unsafe_read(io, UInt8)
                 if b == e
-                    write(buf, b)
+                    Base.write(buf, b)
                     b = unsafe_read(io, UInt8)
-                    write(buf, b)
+                    Base.write(buf, b)
                 elseif b == q
                     break
                 else
-                    write(buf, b)
+                    Base.write(buf, b)
                 end
             end
         elseif b == d
@@ -52,7 +52,7 @@ function readsplitline(io::IO,d::UInt8=COMMA,q::UInt8=QUOTE,e::UInt8=ESCAPE,buf:
             !eof(io) && unsafe_peek(io) == NEWLINE && unsafe_read(io, UInt8)
             break
         else
-            write(buf, b)
+            Base.write(buf, b)
         end
     end
     return push!(vals,takebuf_string(buf))
