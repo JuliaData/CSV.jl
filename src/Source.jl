@@ -216,7 +216,7 @@ function Source{I}(s::CSV.Sink{I})
 end
 
 # DataStreams interface
-function parsefield!{T}(io::IOBuffer, dest::NullableVector{T}, ::Type{T}, opts, row, col)
+function parsefield!{T}(io::IO, dest::NullableVector{T}, ::Type{T}, opts, row, col)
     @inbounds val, null = CSV.parsefield(io, T, opts, row, col)
     @inbounds dest.values[row], dest.isnull[row] = val, null
     return

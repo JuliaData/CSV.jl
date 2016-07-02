@@ -46,7 +46,7 @@ unsafe_read(from::IO, T) = Base.read(from, T)
     @inbounds byte = from.data[from.ptr]
     return byte
 end
-unsafe_peek(from::IO) = Base.peek(from)
+unsafe_peek(from::IO) = (mark(from); v = Base.read(from, UInt8); reset(from); return v)
 
 """
 Represents the various configuration settings for csv file parsing.
