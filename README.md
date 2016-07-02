@@ -31,24 +31,25 @@ Contributions are very welcome, as are feature requests and suggestions. Please 
 [issue][issues-url] if you encounter any problems or would just like to ask a question.
 
 
+
 [docs-latest-img]: https://img.shields.io/badge/docs-latest-blue.svg
-[docs-latest-url]: https://juliadocs.github.io/Documenter.jl/latest
+[docs-latest-url]: https://JuliaData.github.io/CSV.jl/latest
 
 [docs-stable-img]: https://img.shields.io/badge/docs-stable-blue.svg
-[docs-stable-url]: https://juliadocs.github.io/Documenter.jl/stable
+[docs-stable-url]: https://JuliaData.github.io/CSV.jl/stable
 
-[travis-img]: https://travis-ci.org/JuliaDocs/Documenter.jl.svg?branch=master
-[travis-url]: https://travis-ci.org/JuliaDocs/Documenter.jl
+[travis-img]: https://travis-ci.org/JuliaData/CSV.jl.svg?branch=master
+[travis-url]: https://travis-ci.org/JuliaData/CSV.jl
 
 [appveyor-img]: https://ci.appveyor.com/api/projects/status/h227adt6ovd1u3sx/branch/master?svg=true
-[appveyor-url]: https://ci.appveyor.com/project/JuliaDocs/documenter-jl/branch/master
+[appveyor-url]: https://ci.appveyor.com/project/JuliaData/documenter-jl/branch/master
 
-[codecov-img]: https://codecov.io/gh/JuliaDocs/Documenter.jl/branch/master/graph/badge.svg
-[codecov-url]: https://codecov.io/gh/JuliaDocs/Documenter.jl
+[codecov-img]: https://codecov.io/gh/JuliaData/CSV.jl/branch/master/graph/badge.svg
+[codecov-url]: https://codecov.io/gh/JuliaData/CSV.jl
 
-[issues-url]: https://github.com/JuliaDocs/Documenter.jl/issues
+[issues-url]: https://github.com/JuliaData/CSV.jl/issues
 
-[pkg-0.4-img]: http://pkg.julialang.org/badges/Documenter_0.4.svg
-[pkg-0.4-url]: http://pkg.julialang.org/?pkg=Documenter
-[pkg-0.5-img]: http://pkg.julialang.org/badges/Documenter_0.5.svg
-[pkg-0.5-url]: http://pkg.julialang.org/?pkg=Documenter
+[pkg-0.4-img]: http://pkg.julialang.org/badges/CSV_0.4.svg
+[pkg-0.4-url]: http://pkg.julialang.org/?pkg=CSV
+[pkg-0.5-img]: http://pkg.julialang.org/badges/CSV_0.5.svg
+[pkg-0.5-url]: http://pkg.julialang.org/?pkg=CSV
