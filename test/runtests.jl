@@ -195,7 +195,7 @@ f = CSV.Source(joinpath(dir, "FL_insurance_sample.csv");types=Dict(10=>Float64,1
 @test f.schema.types == [Int,WeakRefString{UInt8},WeakRefString{UInt8},Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int,Float64,Float64,WeakRefString{UInt8},WeakRefString{UInt8},Int]
 ds = Data.stream!(f, DataFrame)
 
-f = CSV.Source(joinpath(dir, "FL_insurance_sample.csv");types=Dict("eq_site_deductible"=>Float64,"fl_site_deductible"=>Float64))
+f = CSV.Source(joinpath(dir, "FL_insurance_sample.csv");types=Dict{String,DataType}("eq_site_deductible"=>Float64,"fl_site_deductible"=>Float64))
 @test f.schema.cols == 18
 @test f.schema.rows == 36634
 @test position(f.data) == 243

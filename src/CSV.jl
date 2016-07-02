@@ -63,10 +63,10 @@ type Options
     escapechar::UInt8
     separator::UInt8
     decimal::UInt8
-    null::String # how null is represented in the dataset
-    nullcheck::Bool   # do we have a custom null value to check for
+    null::String
+    nullcheck::Bool
     dateformat::Dates.DateFormat
-    datecheck::Bool   # do we have a custom dateformat to check for
+    datecheck::Bool
 end
 
 Options(;delim=COMMA,quotechar=QUOTE,escapechar=ESCAPE,null=String(""),dateformat=Dates.ISODateFormat) =
@@ -81,7 +81,11 @@ function Base.show(io::IO,op::Options)
     print(io,"        dateformat: ",op.dateformat)
 end
 
-"`CSV.Source` satisfies the `DataStreams` interface for data processing for delimited `IO`."
+"""
+constructs a `CSV.Source` file ready to start parsing data from
+
+implements the `Data.Source` interface for providing convenient `Data.stream!` methods for various `Data.Sink` types
+"""
 type Source{I<:IO} <: Data.Source
     schema::Data.Schema
     options::Options
@@ -93,9 +97,14 @@ end
 function Base.show(io::IO,f::Source)
     println(io,"CSV.Source: ",f.fullpath)
     println(io,f.options)
-    showcompact(io, f.schema)
+    show(io, f.schema)
 end
 
+"""
+constructs a `CSV.Sink` file ready to start writing data to
+
+implements the `Data.Sink` interface for providing convenient `Data.stream!` methods for various `Data.Source` types
+"""
 type Sink{I<:IO} <: Data.Sink
     schema::Data.Schema
     options::Options
