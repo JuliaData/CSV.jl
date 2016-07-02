@@ -50,7 +50,7 @@ function Source(fullpath::Union{AbstractString,IO};
 
               header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
-              types::Union{Dict{Int,DataType},Vector{DataType}}=DataType[],
+              types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
               dateformat::Union{AbstractString,Dates.DateFormat}=EMPTY_DATEFORMAT,
 
               footerskip::Int=0,
@@ -81,7 +81,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
 
                 header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
-                types::Union{Dict{Int,DataType},Vector{DataType}}=DataType[],
+                types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
 
                 footerskip::Int=0,
                 rows_for_type_detect::Int=100,
@@ -187,9 +187,14 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     else
         throw(ArgumentError("$cols number of columns detected; `types` argument has $(length(types)) entries"))
     end
-    if isa(types,Dict)
+    if isa(types,Dict{Int,DataType})
         for (col,typ) in types
             columntypes[col] = typ
+        end
+    elseif isa(types,Dict{String,DataType})
+        for (col,typ) in types
+            c = findfirst(columnnames, col)
+            columntypes[c] = typ
         end
     end
     (any(columntypes .== DateTime) && options.dateformat == EMPTY_DATEFORMAT) && (options.dateformat = Dates.ISODateTimeFormat)
@@ -280,7 +285,7 @@ function read(fullpath::Union{AbstractString,IO};
               null::AbstractString=String(""),
               header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
-              types::Union{Dict{Int,DataType},Vector{DataType}}=DataType[],
+              types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
               dateformat::Union{AbstractString,Dates.DateFormat}=EMPTY_DATEFORMAT,
 
               footerskip::Int=0,
