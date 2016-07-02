@@ -151,7 +151,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             columnnames = ["Column$i" for i = 1:cols]
         else
             length(header) == cols || throw(ArgumentError("length of provided header doesn't match number of columns of data at row $datarow"))
-            columnnames = [x for x in header]
+            columnnames = header
         end
     end
 
@@ -192,8 +192,8 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             columntypes[col] = typ
         end
     end
-    (any(columntypes .== DateTime) || any(columntypes .== Date)) &&
-        options.dateformat == EMPTY_DATEFORMAT && (options.dateformat = Dates.ISODateFormat)
+    (any(columntypes .== DateTime) && options.dateformat == EMPTY_DATEFORMAT) && (options.dateformat = Dates.ISODateTimeFormat)
+    (any(columntypes .== Date) && options.dateformat == EMPTY_DATEFORMAT) && (options.dateformat = Dates.ISODateFormat)
     seek(source,datapos)
     return Source(Data.Schema(columnnames,columntypes,rows,Dict("parent"=>parent)),
                   options,source,datapos,String(fullpath))
