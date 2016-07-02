@@ -93,7 +93,7 @@ end
 # NullField is used only during the type detection process
 immutable NullField end
 
-"try to infer the type of the value in `val`. The precedence of type checking is `Int` => `Float64` => `Date` => `DateTime` => `String`"
+# try to infer the type of the value in `val`. The precedence of type checking is `Int` => `Float64` => `Date` => `DateTime` => `String`
 function detecttype(val::AbstractString,format,null)
     (val == "" || val == null) && return NullField
     try

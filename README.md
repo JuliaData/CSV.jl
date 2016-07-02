@@ -1,29 +1,54 @@
-# CSV [beta]
 
-[![CSV](http://pkg.julialang.org/badges/CSV_0.4.svg)](http://pkg.julialang.org/?pkg=CSV&ver=0.4)
-[![CSV](http://pkg.julialang.org/badges/CSV_0.5.svg)](http://pkg.julialang.org/?pkg=CSV&ver=0.5)
+# CSV
 
-Linux: [![Build Status](https://travis-ci.org/JuliaDB/CSV.jl.svg?branch=master)](https://travis-ci.org/JuliaDB/CSV.jl)
+*A fast, flexible delimited file reader/writer for Julia.*
 
-Windows: [![Build Status](https://ci.appveyor.com/api/projects/status/github/JuliaDB/CSV.jl?branch=master&svg=true)](https://ci.appveyor.com/project/JuliaDB/csv-jl/branch/master)
+| **Documentation**                                                               | **PackageEvaluator**                                            | **Build Status**                                                                                |
+|:-------------------------------------------------------------------------------:|:---------------------------------------------------------------:|:-----------------------------------------------------------------------------------------------:|
+| [![][docs-stable-img]][docs-stable-url] [![][docs-latest-img]][docs-latest-url] | [![][pkg-0.4-img]][pkg-0.4-url] [![][pkg-0.5-img]][pkg-0.5-url] | [![][travis-img]][travis-url] [![][appveyor-img]][appveyor-url] [![][codecov-img]][codecov-url] |
 
-[![codecov.io](http://codecov.io/github/JuliaDB/CSV/coverage.svg?branch=master)](http://codecov.io/github/JuliaDB/CSV?branch=master)
 
-A package for working with CSV and other delimited files.
+## Installation
 
-Types/functions:
+The package is registered in `METADATA.jl` and so can be installed with `Pkg.add`.
 
-* `CSV.Source`/`CSV.Sink`: `Data.Source` and `Data.Sink` types for the [DataStreams.jl](https://github.com/JuliaDB/DataStreams.jl) interface
-* `CSV.Options`: a type that collects various parsing configurations that can be passed to `CSV.Source` or `CSV.csv`
-* `CSV.csv`: convenience method that supports all the same options/inputs as `CSV.Source`; it creates a `CSV.Source` and then calls `Data.stream!(source, Data.Table)`
-* `Data.stream!(::CSV.Source,::CSV.Sink)`: method for streaming data from a CSV source to a CSV sink (csv file to csv file)
-* `Data.stream!(::CSV.Source,::Data.Table)`: method for streaming data from a CSV source to a `Data.Table` (Julia structure)
-* `Data.stream!(::Data.Table,::CSV.Sink)`: method for streaming data from a `Data.Table` to a CSV sink
-* `CSV.getfield{T}(io::IOBuffer, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)`: various custom parsing methods for types `T`
-* `CSV.readline(f::IO,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())`: custom `readline` implementation that accounts for potentially quoted newlines
-* `CSV.readsplitline(f::IO,d::UInt8,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())`: similar to `readline`, but also splits each field into a separate element in a `Vector{String}`
-* `CSV.countlines(f::IO,q::UInt8,e::UInt8)`: custom `countlines` implementation that accounts for potential quoted newlines
+```julia
+julia> Pkg.add("CSV")
+```
 
-See the help documentation for any of the above for additional details (e.g. `?CSV.Options`, `?CSV.read`, etc.)
+## Documentation
 
-The package is currently in "beta", which means it's been tested, used by various and sundry whipper-snappers, but most likely has some corner cases yet to be fleshed out. Please let us know about your experience, any bugs, or feature requests [here](https://github.com/JuliaDB/CSV.jl/issues/new)!
+- [**STABLE**][docs-stable-url] &mdash; **most recently tagged version of the documentation.**
+- [**LATEST**][docs-latest-url] &mdash; *in-development version of the documentation.*
+
+## Project Status
+
+The package is tested against Julia `0.4` and *current* `0.5-dev` on Linux, OS X, and Windows.
+
+## Contributing and Questions
+
+Contributions are very welcome, as are feature requests and suggestions. Please open an
+[issue][issues-url] if you encounter any problems or would just like to ask a question.
+
+
+[docs-latest-img]: https://img.shields.io/badge/docs-latest-blue.svg
+[docs-latest-url]: https://juliadocs.github.io/Documenter.jl/latest
+
+[docs-stable-img]: https://img.shields.io/badge/docs-stable-blue.svg
+[docs-stable-url]: https://juliadocs.github.io/Documenter.jl/stable
+
+[travis-img]: https://travis-ci.org/JuliaDocs/Documenter.jl.svg?branch=master
+[travis-url]: https://travis-ci.org/JuliaDocs/Documenter.jl
+
+[appveyor-img]: https://ci.appveyor.com/api/projects/status/h227adt6ovd1u3sx/branch/master?svg=true
+[appveyor-url]: https://ci.appveyor.com/project/JuliaDocs/documenter-jl/branch/master
+
+[codecov-img]: https://codecov.io/gh/JuliaDocs/Documenter.jl/branch/master/graph/badge.svg
+[codecov-url]: https://codecov.io/gh/JuliaDocs/Documenter.jl
+
+[issues-url]: https://github.com/JuliaDocs/Documenter.jl/issues
+
+[pkg-0.4-img]: http://pkg.julialang.org/badges/Documenter_0.4.svg
+[pkg-0.4-url]: http://pkg.julialang.org/?pkg=Documenter
+[pkg-0.5-img]: http://pkg.julialang.org/badges/Documenter_0.5.svg
+[pkg-0.5-url]: http://pkg.julialang.org/?pkg=Documenter

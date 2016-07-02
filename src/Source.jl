@@ -8,39 +8,6 @@ Base.readline(io::CSV.Source) = readline(io,io.options.quotechar,io.options.esca
 
 # Constructors
 # independent constructor
-"""
-constructs a `CSV.Source` file ready to start parsing data from
-
-* `fullpath` can be a file name (string) or other `IO` instance
-* `delim`::Union{Char,UInt8} = how fields in the file are delimited
-* `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
-* `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
-* `null`::String = indicates how NULL values are represented in the dataset
-* `dateformat`::Union{AbstractString,Dates.DateFormat} = how dates/datetimes are represented in the dataset
-* `footerskip`::Int indicates the number of rows to skip at the end of the file
-* `rows_for_type_detect`::Int indicates how many rows should be read to infer the types of columns
-* `rows`::Int indicates the total number of rows to read from the file
-* `use_mmap`::Bool=true; whether the underlying file will be mmapped or not while parsing
-
-Note by default, "string" or text columns will be parsed as the `String` type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
-To convert a `String` to a standard Julia string type, just call `string(::String)`, this also works on an entire column `string(::NullableVector{String})`.
-Oftentimes, however, it can be convenient to work with `PointerStrings` depending on the ultimate use, such as transfering the data directly to another system and avoiding all the intermediate byte copying.
-
-Example usage:
-```
-julia> csv_source = CSV.Source("bids.csv")
-CSV.Source: bids.csv
-    CSV.Options:
-        delim: ','
-        quotechar: '"'
-        escapechar: '\\'
-        null: ""
-        dateformat: Base.Dates.DateFormat(Base.Dates.Slot[],"","english")
-7656334x9 Data.Schema:
- bid_id,     bidder_id,       auction,   merchandise,        device,  time,       country,            ip,           url
-  Int64, String, String, String, String, Int64, String, String, String
-```
-"""
 function Source(fullpath::Union{AbstractString,IO};
 
               delim=COMMA,
@@ -204,7 +171,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                   options,source,datapos,String(fullpath))
 end
 
-"construct a new Source from a Sink that has been streamed to (i.e. DONE)"
+# construct a new Source from a Sink that has been streamed to (i.e. DONE)
 function Source{I}(s::CSV.Sink{I})
     Data.isdone(s) || throw(ArgumentError("::Sink has not been closed to streaming yet; call `close(::Sink)` first"))
     if is(I,IOStream)
@@ -227,7 +194,7 @@ function parsefield!{T}(io::IO, dest::NullableVector{T}, ::Type{T}, opts, row, c
     return
 end
 
-"parse data from `source` into a `DataFrame`"
+# parse data from `source` into a `DataFrame`
 function Data.stream!(source::CSV.Source,sink::DataFrame)
     (Data.types(source) == Data.types(sink) &&
     size(source) == size(sink)) || throw(ArgumentError("schema mismatch: \n$(Data.schema(source))\nvs.\n$(Data.schema(sink))"))
@@ -249,36 +216,40 @@ end
 # end
 
 """
-parses a delimited file into strongly typed NullableVectors.
+parses a delimited file into a Julia structure (a DataFrame by default, but any `Data.Sink` may be given).
 
-* `fullpath` can be a file name (string) or other `IO` instance
-* `delim`::Union{Char,UInt8} = how fields in the file are delimited
-* `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
-* `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
-* `null`::String = the ascii string that indicates how NULL values are represented in the dataset
-* `dateformat`::Union{AbstractString,Dates.DateFormat} = how dates/datetimes are represented in the dataset
-* `footerskip`::Int indicates the number of rows to skip at the end of the file
-* `rows_for_type_detect`::Int indicates how many rows should be read to infer the types of columns
-* `rows`::Int indicates the total number of rows to read from the file
-* `use_mmap`::Bool=true; whether the underlying file will be mmapped or not while parsing
+* `fullpath`; can be a file name (string) or other `IO` instance
+* `sink`; a `DataFrame` by default, but may also be other `Data.Sink` types that support the `AbstractTable` interface
+* `delim::Union{Char,UInt8}`; how fields in the file are delimited
+* `quotechar::Union{Char,UInt8}`; the character that indicates a quoted field that may contain the `delim` or newlines
+* `escapechar::Union{Char,UInt8}`; the character that escapes a `quotechar` in a quoted field
+* `null::String`; an ascii string that indicates how NULL values are represented in the dataset
+* `header`; column names can be provided manually as a complete Vector{String}, or as an Int/Range which indicates the row/rows that contain the column names
+* `datarow::Int`; specifies the row on which the actual data starts in the file; by default, the data is expected on the next row after the header row(s)
+* `types`; column types can be provided manually as a complete Vector{DataType}, or in a Dict to reference a column by name or number
+* `dateformat::Union{AbstractString,Dates.DateFormat}`; how all dates/datetimes are represented in the dataset
+* `footerskip::Int`; indicates the number of rows to skip at the end of the file
+* `rows_for_type_detect::Int=100`; indicates how many rows should be read to infer the types of columns
+* `rows::Int`; indicates the total number of rows to read from the file; by default the file is pre-parsed to count the # of rows
+* `use_mmap::Bool=true`; whether the underlying file will be mmapped or not while parsing
+
+Note by default, "string" or text columns will be parsed as the `WeakRefString` type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
+To convert a `String` to a standard Julia string type, just call `string(::String)`, this also works on an entire column `string(::NullableVector{String})`.
+Oftentimes, however, it can be convenient to work with `WeakRefStrings` depending on the ultimate use, such as transfering the data directly to another system and avoiding all the intermediate byte copying.
 
 Example usage:
 ```
 julia> dt = CSV.read("bids.csv")
-DataStreams.Data.Table{Array{NullableArrays.NullableArray{T,1},1}}(7656334x9 Data.Schema:
-     bid_id, Int64
-  bidder_id, String
-    auction, String
-merchandise, String
-     device, String
-       time, Int64
-    country, String
-         ip, String
-        url, String
+7656334×9 DataFrames.DataFrame
+│ Row     │ bid_id  │ bidder_id                               │ auction │ merchandise      │ device      │
+├─────────┼─────────┼─────────────────────────────────────────┼─────────┼──────────────────┼─────────────┤
+│ 1       │ 0       │ "8dac2b259fd1c6d1120e519fb1ac14fbqvax8" │ "ewmzr" │ "jewelry"        │ "phone0"    │
+│ 2       │ 1       │ "668d393e858e8126275433046bbd35c6tywop" │ "aeqok" │ "furniture"      │ "phone1"    │
+│ 3       │ 2       │ "aa5f360084278b35d746fa6af3a7a1a5ra3xe" │ "wa00e" │ "home goods"     │ "phone2"    │
 ...
 ```
 """
-function read(fullpath::Union{AbstractString,IO};
+function read(fullpath::Union{AbstractString,IO}, sink=DataFrame;
               delim=COMMA,
               quotechar=QUOTE,
               escapechar=ESCAPE,
@@ -296,5 +267,5 @@ function read(fullpath::Union{AbstractString,IO};
                   delim=delim,quotechar=quotechar,escapechar=escapechar,null=null,
                   header=header,datarow=datarow,types=types,dateformat=dateformat,
                   footerskip=footerskip,rows_for_type_detect=rows_for_type_detect,rows=rows,use_mmap=use_mmap)
-    return Data.stream!(source,DataFrame)
+    return Data.stream!(source,sink)
 end
