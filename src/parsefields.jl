@@ -1,7 +1,7 @@
 # at start of field: check if eof, remove leading whitespace, check if empty field
 # returns `true` if result of initial parsing is a null field
 # also return `b` which is last byte read
-@inline function checknullstart(io::IOBuffer,opt::CSV.Options)
+@inline function checknullstart(io::IO,opt::CSV.Options)
     eof(io) && return 0x00, true
     b = Base.read(io, UInt8)
     while b == CSV.SPACE || b == CSV.TAB || b == opt.quotechar
@@ -18,7 +18,7 @@
 end
 # check if we've successfully finished parsing a field by whether
 # we've encountered a delimiter or newline break or reached eof
-@inline function checkdone(io::IOBuffer,b::UInt8,opt::CSV.Options)
+@inline function checkdone(io::IO,b::UInt8,opt::CSV.Options)
     b == opt.quotechar && !eof(io) && (b = Base.read(io, UInt8))
     if b == opt.delim || b == NEWLINE
         return b, true
@@ -36,7 +36,7 @@ CSVError{T}(::Type{T}, b, row, col) = CSV.CSVError("error parsing a `$T` value o
 # as a last ditch effort, after we've trying parsing the correct type,
 # we check if the field is equal to a custom null type
 # otherwise we give up and throw an error
-@inline function checknullend{T}(io::IOBuffer, ::Type{T}, b::UInt8, opt::CSV.Options, row, col)
+@inline function checknullend{T}(io::IO, ::Type{T}, b::UInt8, opt::CSV.Options, row, col)
     !opt.nullcheck && throw(CSVError(T, b, row, col))
     i = 1
     while true
@@ -62,9 +62,9 @@ the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quo
 `opt.null` is also checked if there is a custom value provided (i.e. "NA", "\\N", etc.)
 if field is non-null and non-digit characters are encountered at any point before a delimiter or newline, an error is thrown
 """
-function parsefield{T<:Integer}(io::IOBuffer, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
+function parsefield{T<:Integer}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
     v = zero(T)
-    b::UInt8, null::Bool = CSV.checknullstart(io,opt)
+    b, null = CSV.checknullstart(io,opt)
     null && return v, true
     negative = false
     if b == CSV.MINUS # check for leading '-' or '+'
@@ -119,6 +119,37 @@ function parsefield{T<:AbstractFloat}(io::IOBuffer, ::Type{T}, opt::CSV.Options=
         throw(CSVError("couldn't parse $T"))
     end
 end
+
+function getfloat(io, T, b, opt, row, col, buf)
+    ptr = pointer(buf.data)
+    v = convert(T, ccall(:jl_strtod_c, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, CSV.REF))
+    if (CSV.REF[1] - ptr) != position(buf)
+        reset(io)
+        b, null = CSV.checknullstart(io,opt)
+        CSV.checknullend(io,T,b,opt,row,col) && return v, true
+        throw(CSVError(T, b, row, col))
+    end
+    return v, false
+end
+
+function parsefield{T<:AbstractFloat}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
+    mark(io)
+    b, null = CSV.checknullstart(io,opt)
+    v = zero(T)
+    null && return v, true
+    buf = IOBuffer(zeros(UInt8, 18), true, true)
+    Base.write(buf, b)
+    eof(io) && return getfloat(io, T, b, opt, row, col, buf)
+    while true
+        b = Base.read(io, UInt8)
+        b, isdone = CSV.checkdone(io, b, opt)
+        isdone && return getfloat(io, T, b, opt, row, col, buf)
+        Base.write(buf, b)
+        eof(io) && return getfloat(io, T, b, opt, row, col, buf)
+    end
+    throw(CSVError("couldn't parse $T"))
+end
+
 """
 `io` is an `IOBuffer` that is positioned at the first byte/character of an `AbstractString` field
 leading/trailing whitespace is *not* ignored
@@ -127,7 +158,7 @@ field is null if the next delimiter or newline is encountered before any charact
 the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quotechar` results in a null field
 `opt.null` is also checked if there is a custom value provided (i.e. "NA", "\\N", etc.)
 """
-function parsefield{T<:AbstractString}(io::IOBuffer, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
+function parsefield{T<:AbstractString}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
     eof(io) && return WeakRefStrings.NULLSTRING, true
     ptr = pointer(io.data) + position(io)
     len = 0
@@ -171,7 +202,7 @@ the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quo
 `opt.null` is also checked if there is a custom value provided (i.e. "NA", "\\N", etc.)
 if field contains digits/characters no compatible with `opt.dateformat`, an error is thrown
 """
-function parsefield(io::IOBuffer, ::Type{Date}, opt::CSV.Options=CSV.Options(), row=0, col=0)
+function parsefield(io::IO, ::Type{Date}, opt::CSV.Options=CSV.Options(), row=0, col=0)
     b, null = CSV.checknullstart(io,opt)
     null && return Date(0,1,1), true
     if opt.datecheck # optimize for default yyyy-mm-dd
@@ -228,7 +259,7 @@ the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quo
 `opt.null` is also checked if there is a custom value provided (i.e. "NA", "\\N", etc.)
 if field contains digits/characters not compatible with `opt.dateformat`, an error is thrown
 """
-function parsefield(io::IOBuffer, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), row=0, col=0)
+function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), row=0, col=0)
     b, null = CSV.checknullstart(io,opt)
     null && return DateTime(0,1,1), true
     if opt.datecheck # optimize for default yyyy-mm-ddTHH:MM:SS
