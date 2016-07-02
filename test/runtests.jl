@@ -1,6 +1,10 @@
 reload("CSV")
 using Base.Test, DataFrames, NullableArrays, DataStreams, WeakRefStrings, Libz
 
+if !isdefined(Core, :String)
+    typealias String UTF8String
+end
+
 dir = joinpath(dirname(@__FILE__),"test_files/")
 
 #test on non-existent file
