@@ -348,3 +348,35 @@ function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), ro
         return DateTime(val, opt.dateformat)::DateTime, false
     end
 end
+
+# Generic fallback
+function getgeneric(io, T, b, opt, row, col, buf)
+    str = takebuf_string(buf)
+    try
+        val = parse(T, str)::T
+    catch e
+        reset(io)
+        b, null = CSV.checknullstart(io,opt)
+        CSV.checknullend(io,T,b,opt,row,col) && return zero(T), true
+        throw(CSVError(T, b, row, col))
+    end
+    return val, false
+end
+
+function parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
+    mark(io)
+    b, null = CSV.checknullstart(io,opt)
+    v = zero(T)
+    null && return v, true
+    buf = IOBuffer()
+    Base.write(buf, b)
+    eof(io) && return getgeneric(io, T, b, opt, row, col, buf)
+    while true
+        b = Base.read(io, UInt8)
+        b, isdone = CSV.checkdone(io, b, opt)
+        isdone && return getgeneric(io, T, b, opt, row, col, buf)
+        Base.write(buf, b)
+        eof(io) && return getgeneric(io, T, b, opt, row, col, buf)
+    end
+    throw(CSVError("couldn't parse $T"))
+end
