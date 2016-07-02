@@ -158,7 +158,7 @@ field is null if the next delimiter or newline is encountered before any charact
 the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quotechar` results in a null field
 `opt.null` is also checked if there is a custom value provided (i.e. "NA", "\\N", etc.)
 """
-function parsefield{T<:AbstractString}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
+function parsefield{T<:AbstractString}(io::IOBuffer, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
     eof(io) && return WeakRefStrings.NULLSTRING, true
     ptr = pointer(io.data) + position(io)
     len = 0
@@ -190,6 +190,42 @@ function parsefield{T<:AbstractString}(io::IO, ::Type{T}, opt::CSV.Options=CSV.O
         end
     end
     return (len == 0 || nullcheck) ? (WeakRefStrings.NULLSTRING, true) : (WeakRefString(ptr, len), false)
+end
+
+function parsefield{T<:AbstractString}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
+    eof(io) && return "", true
+    buf = IOBuffer()
+    len = 0
+    nullcheck = opt.nullcheck # if null is "", then we don't need to byte match it
+    nulllen = length(opt.null)
+    @inbounds while !eof(io)
+        b = Base.read(io, UInt8)
+        if b == opt.quotechar
+            while !eof(io)
+                b = Base.read(io, UInt8)
+                if b == opt.escapechar
+                    Base.write(buf, b)
+                    b = Base.read(io, UInt8)
+                    len += 1
+                elseif b == opt.quotechar
+                    break
+                end
+                (nullcheck && len+1 <= nulllen && b == opt.null.data[len+1]) || (nullcheck = false)
+                Base.write(buf, b)
+                len += 1
+            end
+        elseif b == opt.delim || b == NEWLINE
+            break
+        elseif b == RETURN
+            !eof(io) && unsafe_peek(io) == NEWLINE && Base.read(io, UInt8)
+            break
+        else
+            (nullcheck && len+1 <= nulllen && b == opt.null.data[len+1]) || (nullcheck = false)
+            Base.write(buf, b)
+            len += 1
+        end
+    end
+    return (len == 0 || nullcheck) ? ("", true) : (takebuf_string(buf), false)
 end
 
 @inline itr(io,n,val) = (for i = 1:n; val *= 10; val += Base.read(io, UInt8) - CSV.ZERO; end; return val)
@@ -226,9 +262,8 @@ function parsefield(io::IO, ::Type{Date}, opt::CSV.Options=CSV.Options(), row=0,
     elseif opt.dateformat == EMPTY_DATEFORMAT
         throw(ArgumentError("Can't parse a `Date` type with $EMPTY_DATEFORMAT; please provide a valid Dates.DateFormat or date format string"))
     else
-        pos = position(io) - 1 # current position of start of date string (even if date is quoted, and we know it's not empty)
-        quoted = false
-        end_of_file = false
+        buf = IOBuffer()
+        Base.write(buf, b)
         while true
             b = Base.read(io, UInt8)
             if b == opt.delim || b == CSV.NEWLINE
@@ -237,15 +272,15 @@ function parsefield(io::IO, ::Type{Date}, opt::CSV.Options=CSV.Options(), row=0,
                 !eof(io) && unsafe_peek(io) == CSV.NEWLINE && Base.read(io, UInt8)
                 break
             elseif eof(io)
-                end_of_file = true
+                Base.write(buf, b)
                 break
             elseif b == opt.quotechar
                 b, done = checkdone(io,b,opt)
-                quoted = true
                 break
             end
+            Base.write(buf, b)
         end
-        val = unsafe_wrap(String, pointer(io.data)+pos, position(io)-pos-quoted-1+end_of_file)
+        val = takebuf_string(buf)
         val == opt.null && return Date(0,1,1), true
         return Date(val, opt.dateformat)::Date, false
     end
@@ -290,9 +325,8 @@ function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), ro
     elseif opt.dateformat == EMPTY_DATEFORMAT
         throw(ArgumentError("Can't parse a `DateTime` type with $EMPTY_DATEFORMAT; please provide a valid Dates.DateFormat or date format string"))
     else
-        pos = position(io) - 1 # current position of start of date string (even if date is quoted, and we know it's not empty)
-        quoted = false
-        end_of_file = false
+        buf = IOBuffer()
+        Base.write(buf, b)
         while true
             b = Base.read(io, UInt8)
             if b == opt.delim || b == CSV.NEWLINE
@@ -301,15 +335,15 @@ function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), ro
                 !eof(io) && unsafe_peek(io) == CSV.NEWLINE && Base.read(io, UInt8)
                 break
             elseif eof(io)
-                end_of_file = true
+                Base.write(buf, b)
                 break
             elseif b == opt.quotechar
                 b, done = checkdone(io,b,opt)
-                quoted = true
                 break
             end
+            Base.write(buf, b)
         end
-        val = unsafe_wrap(String, pointer(io.data)+pos, position(io)-pos-quoted-1+end_of_file)
+        val = takebuf_string(buf)
         val == opt.null && return DateTime(0,1,1), true
         return DateTime(val, opt.dateformat)::DateTime, false
     end
