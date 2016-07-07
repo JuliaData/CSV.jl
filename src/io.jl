@@ -1,4 +1,8 @@
-"read a single line from `io` (any `IO` type) as a string, accounting for potentially embedded newlines in quoted fields (e.g. value1, value2, \"value3 with \n embedded newlines\"). Can optionally provide a `buf::IOBuffer` type for buffer resuse"
+"""
+`CSV.readline(io::IO, q='"', e='\\', buf::IOBuffer=IOBuffer())` => `String`
+
+read a single line from `io` (any `IO` type) as a string, accounting for potentially embedded newlines in quoted fields (e.g. value1, value2, \"value3 with \n embedded newlines\"). Can optionally provide a `buf::IOBuffer` type for buffer reuse
+"""
 function readline(io::IO,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
     while !eof(io)
         b = unsafe_read(io, UInt8)
@@ -23,11 +27,16 @@ function readline(io::IO,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
     end
     return takebuf_string(buf)
 end
+readline(io::IO, q='"', e='\\', buf::IOBuffer=IOBuffer()) = readline(io, UInt8(q), UInt8(e), buf)
 
 # read and split a line into string values;
 # write(t,"\"hey there\",1000,\"1000\",\"\",,1.0,\"hey \n \\\"quote\\\" there\"\n"); seekstart(t)
-"read a single line from `io` (any `IO` type) as a `Vector{String}` with elements being delimited fields. Can optionally provide a `buf::IOBuffer` type for buffer resuse"
-function readsplitline(io::IO,d::UInt8=COMMA,q::UInt8=QUOTE,e::UInt8=ESCAPE,buf::IOBuffer=IOBuffer())
+"""
+`CSV.readsplitline(io, d=',', q='"', e='\\', buf::IOBuffer=IOBuffer())` => `Vector{String}`
+
+read a single line from `io` (any `IO` type) as a `Vector{String}` with elements being delimited fields. Can optionally provide a `buf::IOBuffer` type for buffer reuse
+"""
+function readsplitline(io::IO,d::UInt8,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
     vals = String[]
     while !eof(io)
         b = unsafe_read(io, UInt8)
@@ -57,8 +66,14 @@ function readsplitline(io::IO,d::UInt8=COMMA,q::UInt8=QUOTE,e::UInt8=ESCAPE,buf:
     end
     return push!(vals,takebuf_string(buf))
 end
-"count the number of lines in a file, accounting for potentially embedded newlines in quoted fields"
-function countlines(f::IO,q::UInt8,e::UInt8)
+readsplitline(io::IO,d=',',q='"',e='\\',buf::IOBuffer=IOBuffer()) = readsplitline(io,UInt8(d),UInt8(q),UInt8(e),buf)
+
+"""
+`CSV.countlines(io::IO, quotechar, escapechar)` => Int
+
+count the number of lines in a file, accounting for potentially embedded newlines in quoted fields
+"""
+function countlines(io::IO,q::UInt8,e::UInt8)
     nl = 1
     b = 0x00
     while !eof(f)
@@ -81,6 +96,7 @@ function countlines(f::IO,q::UInt8,e::UInt8)
     end
     return nl - (b == NEWLINE || b == RETURN)
 end
+countlines(io::IO, q, e) = countlines(io, UInt8(q), UInt8(e))
 
 function skipto!(f::IO,cur,dest,q,e)
     cur >= dest && return
