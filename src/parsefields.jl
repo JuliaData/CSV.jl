@@ -53,12 +53,14 @@ CSVError{T}(::Type{T}, b, row, col) = CSV.CSVError("error parsing a `$T` value o
     return true
 end
 """
+`CSV.parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)` => `Tuple{T, Bool}`
+
 `io` is an `IO` type that is positioned at the first byte/character of an delimited-file field (i.e. a single cell)
 leading whitespace is ignored for Integer and Float types.
-returns a `Tuple{T,Bool}` with a value & bool saying whether the field contains a null value or not
+returns a `Tuple{T,Bool}` with a value & bool saying whether the field contains a null value or not (empty field, missing value)
+field is null if the next delimiter or newline is encountered before any other characters.
 Specialized methods exist for Integer, Float, String, Date, and DateTime.
 For other types `T`, a generic fallback requires `zero(T)` and `parse(T, str::String)` to be defined.
-field is null if the next delimiter or newline is encountered before any other characters.
 the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quotechar` results in a null field
 `opt.null` is also checked if there is a custom value provided (i.e. "NA", "\\N", etc.)
 For numeric fields, if field is non-null and non-digit characters are encountered at any point before a delimiter or newline, an error is thrown

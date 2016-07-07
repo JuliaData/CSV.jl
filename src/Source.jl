@@ -216,10 +216,18 @@ end
 # end
 
 """
+
+`CSV.read(fullpath::Union{AbstractString,IO}, sink=DataFrame)` => `typeof(sink)`
+
 parses a delimited file into a Julia structure (a DataFrame by default, but any `Data.Sink` may be given).
+
+Positional arguments:
 
 * `fullpath`; can be a file name (string) or other `IO` instance
 * `sink`; a `DataFrame` by default, but may also be other `Data.Sink` types that support the `AbstractTable` interface
+
+Keyword Arguments:
+
 * `delim::Union{Char,UInt8}`; how fields in the file are delimited
 * `quotechar::Union{Char,UInt8}`; the character that indicates a quoted field that may contain the `delim` or newlines
 * `escapechar::Union{Char,UInt8}`; the character that escapes a `quotechar` in a quoted field
@@ -234,7 +242,7 @@ parses a delimited file into a Julia structure (a DataFrame by default, but any 
 * `use_mmap::Bool=true`; whether the underlying file will be mmapped or not while parsing
 
 Note by default, "string" or text columns will be parsed as the `WeakRefString` type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
-To convert a `String` to a standard Julia string type, just call `string(::String)`, this also works on an entire column `string(::NullableVector{String})`.
+To convert a `String` to a standard Julia string type, just call `string(::WeakRefString)`, this also works on an entire column `string(::NullableVector{WeakRefString})`.
 Oftentimes, however, it can be convenient to work with `WeakRefStrings` depending on the ultimate use, such as transfering the data directly to another system and avoiding all the intermediate byte copying.
 
 Example usage:

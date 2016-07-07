@@ -51,6 +51,8 @@ unsafe_peek(from::IO) = (mark(from); v = Base.read(from, UInt8); reset(from); re
 """
 Represents the various configuration settings for csv file parsing.
 
+Keyword Arguments:
+
  * `delim`::Union{Char,UInt8} = how fields in the file are delimited
  * `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
  * `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
