@@ -53,14 +53,14 @@ CSVError{T}(::Type{T}, b, row, col) = CSV.CSVError("error parsing a `$T` value o
     return true
 end
 """
-`CSV.parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)` => `Tuple{T, Bool}`
+`CSV.parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)` => `Nullable{T}`
 
 `io` is an `IO` type that is positioned at the first byte/character of an delimited-file field (i.e. a single cell)
 leading whitespace is ignored for Integer and Float types.
-returns a `Tuple{T,Bool}` with a value & bool saying whether the field contains a null value or not (empty field, missing value)
+returns a `Nullable{T}` saying whether the field contains a null value or not (empty field, missing value)
 field is null if the next delimiter or newline is encountered before any other characters.
 Specialized methods exist for Integer, Float, String, Date, and DateTime.
-For other types `T`, a generic fallback requires `zero(T)` and `parse(T, str::String)` to be defined.
+For other types `T`, a generic fallback requires `parse(T, str::String)` to be defined.
 the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quotechar` results in a null field
 `opt.null` is also checked if there is a custom value provided (i.e. "NA", "\\N", etc.)
 For numeric fields, if field is non-null and non-digit characters are encountered at any point before a delimiter or newline, an error is thrown
@@ -70,7 +70,7 @@ function parsefield end
 function parsefield{T<:Integer}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
     v = zero(T)
     b, null = CSV.checknullstart(io,opt)
-    null && return v, true
+    null && return Nullable{T}()
     negative = false
     if b == CSV.MINUS # check for leading '-' or '+'
         negative = true
@@ -82,14 +82,14 @@ function parsefield{T<:Integer}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(
         # process digits
         v *= 10
         v += b - CSV.ZERO
-        eof(io) && return ifelse(negative,-v,v), false
+        eof(io) && return Nullable{T}(ifelse(negative,-v,v))
         b = Base.read(io, UInt8)
     end
     b, done::Bool = CSV.checkdone(io,b,opt)
     if done
-        return ifelse(negative,-v,v), false
+        return Nullable{T}(ifelse(negative,-v,v))
     elseif CSV.checknullend(io,T,b,opt,row,col)
-        return v, true
+        return Nullable{T}()
     else
         throw(CSVError("couldn't parse Int"))
     end
@@ -100,18 +100,18 @@ const REF = Array(Ptr{UInt8},1)
 function parsefield{T<:AbstractFloat}(io::IOBuffer, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
     b, null = CSV.checknullstart(io,opt)
     v = zero(T)
-    null && return v, true
+    null && return Nullable{T}()
     # subtract 1 because we just read a valid byte, so position(io) is +1 from where a digit should be
     ptr = pointer(io.data) + position(io) - 1
     v = convert(T, ccall(:jl_strtod_c, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, REF))
     io.ptr += REF[1] - ptr - 1 # Hopefully io.ptr doesn't change for IOBuffer?
-    eof(io) && return v, false
+    eof(io) && return Nullable{T}(v)
     b = Base.read(io, UInt8)
     b, done = checkdone(io,b,opt)
     if done
-        return v, false
+        return Nullable{T}(v)
     elseif checknullend(io,T,b,opt,row,col)
-        return v, true
+        return Nullable{T}()
     else
         throw(CSVError("couldn't parse $T"))
     end
@@ -123,17 +123,17 @@ function getfloat(io, T, b, opt, row, col, buf)
     if (CSV.REF[1] - ptr) != position(buf)
         reset(io)
         b, null = CSV.checknullstart(io,opt)
-        CSV.checknullend(io,T,b,opt,row,col) && return v, true
+        CSV.checknullend(io,T,b,opt,row,col) && return Nullable{T}()
         throw(CSVError(T, b, row, col))
     end
-    return v, false
+    return Nullable{T}(v)
 end
 
 function parsefield{T<:AbstractFloat}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
     mark(io)
     b, null = CSV.checknullstart(io,opt)
     v = zero(T)
-    null && return v, true
+    null && return Nullable{T}()
     buf = IOBuffer(zeros(UInt8, 18), true, true)
     Base.write(buf, b)
     eof(io) && return getfloat(io, T, b, opt, row, col, buf)
@@ -148,7 +148,7 @@ function parsefield{T<:AbstractFloat}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Op
 end
 
 function parsefield{T<:AbstractString}(io::IOBuffer, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
-    eof(io) && return WeakRefStrings.NULLSTRING, true
+    eof(io) && return Nullable{T}(WeakRefStrings.NULLSTRING, true)
     ptr = pointer(io.data) + position(io)
     len = 0
     nullcheck = opt.nullcheck # if null is "", then we don't need to byte match it
@@ -178,11 +178,11 @@ function parsefield{T<:AbstractString}(io::IOBuffer, ::Type{T}, opt::CSV.Options
             len += 1
         end
     end
-    return (len == 0 || nullcheck) ? (WeakRefStrings.NULLSTRING, true) : (WeakRefString(ptr, len), false)
+    return (len == 0 || nullcheck) ? Nullable{T}(WeakRefStrings.NULLSTRING, true) : Nullable{T}(WeakRefString(ptr, len))
 end
 
 function parsefield{T<:AbstractString}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
-    eof(io) && return "", true
+    eof(io) && return Nullable{T}()
     buf = IOBuffer()
     len = 0
     nullcheck = opt.nullcheck # if null is "", then we don't need to byte match it
@@ -214,14 +214,14 @@ function parsefield{T<:AbstractString}(io::IO, ::Type{T}, opt::CSV.Options=CSV.O
             len += 1
         end
     end
-    return (len == 0 || nullcheck) ? ("", true) : (takebuf_string(buf), false)
+    return (len == 0 || nullcheck) ? Nullable{T}() : Nullable{T}(takebuf_string(buf))
 end
 
 @inline itr(io,n,val) = (for i = 1:n; val *= 10; val += Base.read(io, UInt8) - CSV.ZERO; end; return val)
 
 function parsefield(io::IO, ::Type{Date}, opt::CSV.Options=CSV.Options(), row=0, col=0)
     b, null = CSV.checknullstart(io,opt)
-    null && return Date(0,1,1), true
+    null && return Nullable{Date}()
     if opt.datecheck # optimize for default yyyy-mm-dd
         if CSV.NEG_ONE < b < CSV.TEN
             year = CSV.itr(io,3,Int(b - CSV.ZERO))
@@ -229,14 +229,14 @@ function parsefield(io::IO, ::Type{Date}, opt::CSV.Options=CSV.Options(), row=0,
             month = CSV.itr(io,2,0)
             Base.read(io, UInt8)
             day = CSV.itr(io,2,0)
-            eof(io) && return Date(year,month,day), false
+            eof(io) && return Nullable{Date}(Date(year,month,day))
             b = Base.read(io, UInt8)
         end
         b, done = checkdone(io,b,opt)
         if done
-            return Date(year,month,day), false
+            return Nullable{Date}(Date(year,month,day))
         elseif checknullend(io,Date,b,opt,row,col)
-            return Date(0,1,1), true
+            return Nullable{Date}()
         else
             throw(CSVError("couldn't parse Date"))
         end
@@ -262,14 +262,14 @@ function parsefield(io::IO, ::Type{Date}, opt::CSV.Options=CSV.Options(), row=0,
             Base.write(buf, b)
         end
         val = takebuf_string(buf)
-        val == opt.null && return Date(0,1,1), true
-        return Date(val, opt.dateformat)::Date, false
+        val == opt.null && return Nullable{Date}()
+        return Nullable{Date}(Date(val, opt.dateformat)::Date)
     end
 end
 
 function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), row=0, col=0)
     b, null = CSV.checknullstart(io,opt)
-    null && return DateTime(0,1,1), true
+    null && return Nullable{DateTime}()
     if opt.datecheck # optimize for default yyyy-mm-ddTHH:MM:SS
         if CSV.NEG_ONE < b < CSV.TEN
             year = CSV.itr(io,3,Int(b - CSV.ZERO))
@@ -277,21 +277,21 @@ function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), ro
             month = CSV.itr(io,2,0)
             Base.read(io, UInt8)
             day = CSV.itr(io,2,0)
-            eof(io) && return DateTime(year,month,day), false
+            eof(io) && return Nullable{DateTime}(DateTime(year,month,day))
             b = Base.read(io, UInt8) # read the `T`
             hour = CSV.itr(io,2,0)
             Base.read(io, UInt8)
             minute = CSV.itr(io,2,0)
             Base.read(io, UInt8)
             second = CSV.itr(io,2,0)
-            eof(io) && return DateTime(year,month,day,hour,minute,second), false
+            eof(io) && return Nullable{DateTime}(DateTime(year,month,day,hour,minute,second))
             b = Base.read(io, UInt8)
         end
         b, done = checkdone(io,b,opt)
         if done
-            return DateTime(year,month,day,hour,minute,second), false
+            return Nullable{DateTime}(DateTime(year,month,day,hour,minute,second))
         elseif checknullend(io,DateTime,b,opt,row,col)
-            return DateTime(0,1,1), true
+            return Nullable{DateTime}()
         else
             throw(CSVError("couldn't parse DateTime"))
         end
@@ -317,8 +317,8 @@ function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), ro
             Base.write(buf, b)
         end
         val = takebuf_string(buf)
-        val == opt.null && return DateTime(0,1,1), true
-        return DateTime(val, opt.dateformat)::DateTime, false
+        val == opt.null && return Nullable{DateTime}()
+        return Nullable{DateTime}(DateTime(val, opt.dateformat)::DateTime)
     end
 end
 
@@ -330,17 +330,17 @@ function getgeneric(io, T, b, opt, row, col, buf)
     catch e
         reset(io)
         b, null = CSV.checknullstart(io,opt)
-        CSV.checknullend(io,T,b,opt,row,col) && return zero(T), true
+        CSV.checknullend(io,T,b,opt,row,col) && return Nullable{T}()
         throw(CSVError(T, b, row, col))
     end
-    return val, false
+    return Nullable{T}(val)
 end
 
 function parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)
     mark(io)
     b, null = CSV.checknullstart(io,opt)
     v = zero(T)
-    null && return v, true
+    null && return Nullable{T}()
     buf = IOBuffer()
     Base.write(buf, b)
     eof(io) && return getgeneric(io, T, b, opt, row, col, buf)

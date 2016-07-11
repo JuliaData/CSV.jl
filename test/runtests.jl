@@ -1,4 +1,4 @@
-reload("CSV")
+using CSV
 using Base.Test, DataFrames, NullableArrays, DataStreams, WeakRefStrings, Libz, DecFP
 
 if !isdefined(Core, :String)
@@ -32,7 +32,7 @@ ds = Data.stream!(f, DataFrame)
 f = CSV.Source(joinpath(dir, "test_utf8.csv"))
 si = CSV.Sink(f,joinpath(dir, "new_test_utf8.csv"))
 Data.stream!(f,si)
-@test Data.isdone(si)
+# @test Data.isdone(si)
 @test si.schema == f.schema
 so = CSV.Source(si)
 @test so.options.delim == UInt8(',')
@@ -301,1876 +301,1232 @@ ds = Data.stream!(f, DataFrame)
 
 # Int
 io = IOBuffer("0")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(0)
 
 io = IOBuffer("-1")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(-1)
 
 io = IOBuffer("1")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(1)
 
 io = IOBuffer("2000")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(2000)
 
 io = IOBuffer("0.0")
-v = NullableArray(Int,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Int,CSV.Options(),1,1)
 io = IOBuffer("0a")
-v = NullableArray(Int,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Int,CSV.Options(),1,1)
 io = IOBuffer("")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer(" ")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\t")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer(" \t 010")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(10)
 
 io = IOBuffer("\"1_00a0\"")
-v = NullableArray(Int,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Int,CSV.Options(),1,1)
 io = IOBuffer("\"0\"")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(0)
 
 io = IOBuffer("0\n")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(0)
 
 io = IOBuffer("0\r")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(0)
 
 io = IOBuffer("0\r\n")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(0)
 
 io = IOBuffer("0a\n")
-v = NullableArray(Int,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Int,CSV.Options(),1,1)
 # Should we handle trailing whitespace?
 io = IOBuffer("\t0\t\n")
-v = NullableArray(Int,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-#@test v == (0,false)
+@test_throws CSV.CSVError CSV.parsefield(io,Int,CSV.Options(),1,1)
 
 io = IOBuffer("0,")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(0)
 
 io = IOBuffer("0,\n")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(0)
 
 io = IOBuffer("\n")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\r")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\r\n")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\"\"")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("1234567890")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(1234567890)
 
 io = IOBuffer("\\N")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = IOBuffer("\"\\N\"")
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 # Int64 Libz
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("-1")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(-1)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(1)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2000")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(2000)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0.0")))
-v = NullableArray(Int,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Int,CSV.Options(),1,1)
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a")))
-v = NullableArray(Int,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Int,CSV.Options(),1,1)
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" ")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" \t 010")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(10)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"1_00a0\"")))
-v = NullableArray(Int,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Int,CSV.Options(),1,1)
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"0\"")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\n")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r\n")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a\n")))
-v = NullableArray(Int,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Int,CSV.Options(),1,1)
 # Should we handle trailing whitespace?
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t0\t\n")))
-v = NullableArray(Int,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-#@test v == (0,false)
+@test_throws CSV.CSVError CSV.parsefield(io,Int,CSV.Options(),1,1)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,\n")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\"")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1234567890")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(1234567890)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\"")))
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 # Float64 Libz
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(1.0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("-1.0")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(-1.0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(0.0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2000")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(2000.0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a")))
-v = NullableArray(Float64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Float64,CSV.Options(),1,1)
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" ")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" \t 010")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(10.0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"1_00a0\"")))
-v = NullableArray(Float64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Float64,CSV.Options(),1,1)
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"0\"")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(0.0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\n")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(0.0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(0.0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r\n")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(0.0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a\n")))
-v = NullableArray(Float64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Float64,CSV.Options(),1,1)
 # Should we handle trailing whitespace?
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t0\t\n")))
-v = NullableArray(Float64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-#@test v == (0,false)
+@test_throws CSV.CSVError CSV.parsefield(io,Float64,CSV.Options(),1,1)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(0.0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,\n")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(0.0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\"")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1234567890")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(1234567890.0)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(".1234567890")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(.1234567890)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0.1234567890")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(.1234567890)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"0.1234567890\"")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(.1234567890)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("nan")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(NaN)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("NaN")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(NaN)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("inf")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(Inf)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("infinity")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(Inf)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\"")))
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 # Float64
 io = IOBuffer("1")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(1.0)
 
 io = IOBuffer("-1.0")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(-1.0)
 
 io = IOBuffer("0")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(0.0)
 
 io = IOBuffer("2000")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(2000.0)
 
 io = IOBuffer("0a")
-v = NullableArray(Float64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Float64,CSV.Options(),1,1)
 io = IOBuffer("")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer(" ")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\t")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer(" \t 010")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(10.0)
 
 io = IOBuffer("\"1_00a0\"")
-v = NullableArray(Float64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Float64,CSV.Options(),1,1)
 io = IOBuffer("\"0\"")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(0.0)
 
 io = IOBuffer("0\n")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(0.0)
 
 io = IOBuffer("0\r")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(0.0)
 
 io = IOBuffer("0\r\n")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(0.0)
 
 io = IOBuffer("0a\n")
-v = NullableArray(Float64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Float64,CSV.Options(),1,1)
 # Should we handle trailing whitespace?
 io = IOBuffer("\t0\t\n")
-v = NullableArray(Float64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-#@test v == (0,false)
+@test_throws CSV.CSVError CSV.parsefield(io,Float64,CSV.Options(),1,1)
 
 io = IOBuffer("0,")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(0.0)
 
 io = IOBuffer("0,\n")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(0.0)
 
 io = IOBuffer("\n")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\r")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\r\n")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\"\"")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("1234567890")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(1234567890.0)
 
 io = IOBuffer(".1234567890")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(.1234567890)
 
 io = IOBuffer("0.1234567890")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(.1234567890)
 
 io = IOBuffer("\"0.1234567890\"")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(.1234567890)
 
 io = IOBuffer("nan")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(NaN)
 
 io = IOBuffer("NaN")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(NaN)
 
 io = IOBuffer("inf")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(Inf)
 
 io = IOBuffer("infinity")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(Inf)
 
 io = IOBuffer("\\N")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = IOBuffer("\"\\N\"")
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 # DecFP Libz
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(1.0))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("-1.0")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(-1.0))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(0.0))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2000")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(2000.0))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a")))
-v = NullableArray(Dec64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" ")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" \t 010")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(10.0))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"1_00a0\"")))
-v = NullableArray(Dec64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"0\"")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(0.0))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\n")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(0.0))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(0.0))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r\n")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(0.0))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a\n")))
-v = NullableArray(Dec64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 # Should we handle trailing whitespace?
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t0\t\n")))
-v = NullableArray(Dec64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-#@test v == (0Dec64(,false))
+@test_throws CSV.CSVError CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(0.0))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,\n")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(0.0))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\"")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1234567890")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(1234567890.0))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(".1234567890")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(.1234567890))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0.1234567890")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(.1234567890))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"0.1234567890\"")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(.1234567890))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("nan")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(NaN))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("NaN")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(NaN))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("inf")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(Inf))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("infinity")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(Inf))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\"")))
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 # DecFP
 io = IOBuffer("1")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(1.0))
 
 io = IOBuffer("-1.0")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(-1.0))
 
 io = IOBuffer("0")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(0.0))
 
 io = IOBuffer("2000")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(2000.0))
 
 io = IOBuffer("0a")
-v = NullableArray(Dec64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 io = IOBuffer("")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer(" ")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\t")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer(" \t 010")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(10.0))
 
 io = IOBuffer("\"1_00a0\"")
-v = NullableArray(Dec64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 io = IOBuffer("\"0\"")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(0.0))
 
 io = IOBuffer("0\n")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(0.0))
 
 io = IOBuffer("0\r")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(0.0))
 
 io = IOBuffer("0\r\n")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(0.0))
 
 io = IOBuffer("0a\n")
-v = NullableArray(Dec64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-
+@test_throws CSV.CSVError CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 # Should we handle trailing whitespace?
 io = IOBuffer("\t0\t\n")
-v = NullableArray(Dec64,1)
-@test_throws CSV.CSVError CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-#@test v == (0Dec64(,false))
+@test_throws CSV.CSVError CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 
 io = IOBuffer("0,")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(0.0))
 
 io = IOBuffer("0,\n")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(0.0))
 
 io = IOBuffer("\n")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\r")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\r\n")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\"\"")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("1234567890")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(1234567890.0))
 
 io = IOBuffer(".1234567890")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(.1234567890))
 
 io = IOBuffer("0.1234567890")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(.1234567890))
 
 io = IOBuffer("\"0.1234567890\"")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(.1234567890))
 
 io = IOBuffer("nan")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(NaN))
 
 io = IOBuffer("NaN")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(NaN))
 
 io = IOBuffer("inf")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(Inf))
 
 io = IOBuffer("infinity")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(),1,1)
 @test v === Nullable(Dec64(Inf))
 
 io = IOBuffer("\\N")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = IOBuffer("\"\\N\"")
-v = NullableArray(Dec64,1)
-CSV.parsefield!(io,v,Dec64,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Dec64,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 # WeakRefString
 io = IOBuffer("0")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "0"
 
 io = IOBuffer("-1")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "-1"
 
 io = IOBuffer("1")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "1"
 
 io = IOBuffer("2000")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "2000"
 
 io = IOBuffer("0.0")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "0.0"
 
 io = IOBuffer("0a")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "0a"
 
 io = IOBuffer("")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer(" ")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == " "
 
 io = IOBuffer("\t")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "\t"
 
 io = IOBuffer(" \t 010")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == " \t 010"
 
 io = IOBuffer("\"1_00a0\"")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "1_00a0"
 
 io = IOBuffer("\"0\"")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "0"
 
 io = IOBuffer("0\n")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "0"
 
 io = IOBuffer("0\r")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "0"
 
 io = IOBuffer("0\r\n")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "0"
 
 io = IOBuffer("0a\n")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "0a"
 
 # Should we handle trailing whitespace?
 io = IOBuffer("\t0\t\n")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "\t0\t"
 
 io = IOBuffer("0,")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "0"
 
 io = IOBuffer("0,\n")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "0"
 
 io = IOBuffer("\n")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\r")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\r\n")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\"\"")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("1234567890")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "1234567890"
 
 io = IOBuffer("\"hey there\\\"quoted field\\\"\"")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "hey there\\\"quoted field\\\""
 
 io = IOBuffer("\\N")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = IOBuffer("\"\\N\"")
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 # Libz
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "0"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("-1")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "-1"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "1"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2000")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "2000"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0.0")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "0.0"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "0a"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" ")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == " "
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "\t"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" \t 010")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == " \t 010"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"1_00a0\"")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "1_00a0"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"0\"")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "0"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\n")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "0"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "0"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r\n")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "0"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a\n")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "0a"
 
 # Should we handle trailing whitespace?
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t0\t\n")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "\t0\t"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "0"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,\n")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "0"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\"")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1234567890")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "1234567890"
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"hey there\\\"quoted field\\\"\"")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(),1,1)
 @test string(get(v)) == "hey there\\\"quoted field\\\""
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\"")))
-v = NullableArray(String,1)
-CSV.parsefield!(io,v,String,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,String,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 # Date
 
 io = IOBuffer("")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer(",")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\n")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\r")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\r\n")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\"\"")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\\N")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = IOBuffer("\"\\N\"")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = IOBuffer("2015-10-05")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = IOBuffer("\"2015-10-05\"")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = IOBuffer("2015-10-05,")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = IOBuffer("2015-10-05\n")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = IOBuffer("2015-10-05\r")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = IOBuffer("2015-10-05\r\n")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = IOBuffer("  \"2015-10-05\",")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = IOBuffer("\"2015-10-05\"\n")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = IOBuffer("\"10/5/2015\"\n")
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy")),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy")),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 # Date Libz
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(",")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\"")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\"")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"2015-10-05\"")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05,")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05\n")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05\r")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05\r\n")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("  \"2015-10-05\",")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"2015-10-05\"\n")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"10/5/2015\"\n")))
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy")),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy")),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
 # DateTime
 
 io = IOBuffer("")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer(",")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\n")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\r")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\r\n")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\"\"")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test isnull(v)
 
 io = IOBuffer("\\N")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = IOBuffer("\"\\N\"")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = IOBuffer("2015-10-05T00:00:01")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = IOBuffer("\"2015-10-05T00:00:01\"")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = IOBuffer("2015-10-05T00:00:01,")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = IOBuffer("2015-10-05T00:00:01\n")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = IOBuffer("2015-10-05T00:00:01\r")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = IOBuffer("2015-10-05T00:00:01\r\n")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = IOBuffer("  \"2015-10-05T00:00:01\",")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = IOBuffer("\"2015-10-05T00:00:01\"\n")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = IOBuffer("\"10/5/2015 00:00:01\"\n")
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy HH:MM:SS")),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy HH:MM:SS")),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 # DateTime Libz
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(",")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\"")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\"")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(null="\\N"),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05T00:00:01")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"2015-10-05T00:00:01\"")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05T00:00:01,")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05T00:00:01\n")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05T00:00:01\r")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05T00:00:01\r\n")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("  \"2015-10-05T00:00:01\",")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"2015-10-05T00:00:01\"\n")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"10/5/2015 00:00:01\"\n")))
-v = NullableArray(DateTime,1)
-CSV.parsefield!(io,v,DateTime,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy HH:MM:SS")),1,1)
-v = v[1]
+v = CSV.parsefield(io,DateTime,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy HH:MM:SS")),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
 # All types
 io = IOBuffer("1,1.0,hey there sailor,2015-10-05\n,1.0,hey there sailor,\n1,,hey there sailor,2015-10-05\n1,1.0,,\n,,,")
 # io = CSV.Source(io)
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(1)
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(1.0)
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "hey there sailor"
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(1.0)
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "hey there sailor"
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
 
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(1)
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test string(get(v)) == "hey there sailor"
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(1)
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test v === Nullable(1.0)
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test isnull(v)
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
 
-v = NullableArray(Int,1)
-CSV.parsefield!(io,v,Int,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test isnull(v)
-v = NullableArray(Float64,1)
-CSV.parsefield!(io,v,Float64,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Float64,CSV.Options(),1,1)
 @test isnull(v)
-v = NullableArray(WeakRefString{UInt8},1)
-CSV.parsefield!(io,v,WeakRefString{UInt8},CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test isnull(v)
-v = NullableArray(Date,1)
-CSV.parsefield!(io,v,Date,CSV.Options(),1,1)
-v = v[1]
+v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
