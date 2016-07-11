@@ -76,13 +76,13 @@ count the number of lines in a file, accounting for potentially embedded newline
 function countlines(io::IO,q::UInt8,e::UInt8)
     nl = 1
     b = 0x00
-    while !eof(f)
-        b = unsafe_read(f, UInt8)
+    while !eof(io)
+        b = unsafe_read(io, UInt8)
         if b == q
-            while !eof(f)
-                b = unsafe_read(f, UInt8)
+            while !eof(io)
+                b = unsafe_read(io, UInt8)
                 if b == e
-                    b = unsafe_read(f, UInt8)
+                    b = unsafe_read(io, UInt8)
                 elseif b == q
                     break
                 end
@@ -91,7 +91,7 @@ function countlines(io::IO,q::UInt8,e::UInt8)
             nl += 1
         elseif b == RETURN
             nl += 1
-            !eof(f) && unsafe_peek(f) == NEWLINE && unsafe_read(f, UInt8)
+            !eof(io) && unsafe_peek(io) == NEWLINE && unsafe_read(io, UInt8)
         end
     end
     return nl - (b == NEWLINE || b == RETURN)
@@ -113,13 +113,12 @@ immutable NullField end
 function detecttype(val::AbstractString,format,null)
     (val == "" || val == null) && return NullField
     try
-        v, n = parsefield(IOBuffer(replace(val, Char(COMMA), "")), Int)
-        !n && return Int
+        v = parsefield(IOBuffer(replace(val, Char(COMMA), "")), Int)
+        !isnull(v) && return Int
     end
-    # our strtod only works on period decimal points (e.g. "1.0")
     try
-        v, n = parsefield(IOBuffer(replace(val, Char(COMMA), "")), Float64)
-        !n && return Float64
+        v = CSV.parsefield(IOBuffer(replace(val, Char(COMMA), "")), Float64)
+        !isnull(v) && return Float64
     end
     if format != EMPTY_DATEFORMAT
         try # it might be nice to throw an error when a format is specifically given but doesn't parse
@@ -132,12 +131,12 @@ function detecttype(val::AbstractString,format,null)
         end
     else
         try
-            v, n = CSV.parsefield(IOBuffer(val), Date)
-            !n && return Date
+            v = CSV.parsefield(IOBuffer(val), Date)
+            !isnull(v) && return Date
         end
         try
-            v, n = parsefield(IOBuffer(val), DateTime)
-            !n && return DateTime
+            v = parsefield(IOBuffer(val), DateTime)
+            !isnull(v) && return DateTime
         end
     end
     return WeakRefString{UInt8}

@@ -1,11 +1,5 @@
 const EMPTY_DATEFORMAT = Dates.DateFormat("")
 
-# Data.Source interface
-Data.reset!(io::CSV.Source) = seek(io.data,io.datapos)
-Data.isdone(io::CSV.Source) = eof(io.data)
-# Data.getrow(io::CSV.Source) = readsplitline(io,io.options.delim,io.options.quotechar,io.options.escapechar)
-Base.readline(io::CSV.Source) = readline(io,io.options.quotechar,io.options.escapechar)
-
 # Constructors
 # independent constructor
 function Source(fullpath::Union{AbstractString,IO};
@@ -38,7 +32,7 @@ function Source(fullpath::Union{AbstractString,IO};
     dateformat = isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat)
     return CSV.Source(fullpath=fullpath,
                         options=CSV.Options(delim,quotechar,escapechar,separator,
-                                    decimal,ascii(null),null!="",dateformat,dateformat==Dates.ISODateFormat),
+                                    decimal,ascii(null),null!="",dateformat,dateformat==Dates.ISODateFormat,-1,0,1,DataType[]),
                         header=header, datarow=datarow, types=types, footerskip=footerskip,
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
@@ -66,15 +60,23 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     if isa(fullpath,IOBuffer)
         source = fullpath
         fullpath = "<IOBuffer>"
+    elseif isdefined(fullpath, :gz_file) # hack to detect GZip.Stream
+        source = fullpath
+        fullpath = fullpath.name
     elseif isa(fullpath,IO)
         source = IOBuffer(readbytes(fullpath))
         fullpath = fullpath.name
+        parent = source.data
     else
         source = IOBuffer(use_mmap ? Mmap.mmap(fullpath) : open(readbytes,fullpath))
         parent = source.data
     end
+    options.datarow != -1 && (datarow = options.datarow)
+    options.rows != 0 && (rows = options.rows)
+    options.header != 1 && (header = options.header)
+    options.types != DataType[] && (types = options.types)
     rows = rows == 0 ? CSV.countlines(source,options.quotechar,options.escapechar) : rows
-    rows == 0 && throw(ArgumentError("No rows of data detected in $fullpath"))
+    # rows == 0 && throw(ArgumentError("No rows of data detected in $fullpath"))
     seekstart(source)
 
     datarow = datarow == -1 ? (isa(header,Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
@@ -127,10 +129,10 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     if isa(types,Vector) && length(types) == cols
         columntypes = types
     elseif isa(types,Dict) || isempty(types)
-        poss_types = Array(DataType,min(rows,rows_for_type_detect),cols)
+        poss_types = Array(DataType,min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect),cols)
         lineschecked = 0
-        while !eof(source) && lineschecked < min(rows,rows_for_type_detect)
-            vals = readsplitline(source,options.delim,options.quotechar,options.escapechar)
+        while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
+            vals = CSV.readsplitline(source,options.delim,options.quotechar,options.escapechar)
             lineschecked += 1
             for i = 1:cols
                poss_types[lineschecked,i] = CSV.detecttype(vals[i],options.dateformat,options.null)
@@ -173,7 +175,7 @@ end
 
 # construct a new Source from a Sink that has been streamed to (i.e. DONE)
 function Source{I}(s::CSV.Sink{I})
-    Data.isdone(s) || throw(ArgumentError("::Sink has not been closed to streaming yet; call `close(::Sink)` first"))
+    # Data.isdone(s) || throw(ArgumentError("::Sink has not been closed to streaming yet; call `close(::Sink)` first"))
     if is(I,IOStream)
         nm = String(chop(replace(s.data.name,"<file ","")))
         data = IOBuffer(Mmap.mmap(nm))
@@ -187,28 +189,33 @@ function Source{I}(s::CSV.Sink{I})
     return Source(s.schema,s.options,data,s.datapos,nm)
 end
 
-# DataStreams interface
-function parsefield!{T}(io::IO, dest::NullableVector{T}, ::Type{T}, opts, row, col)
-    @inbounds val, null = CSV.parsefield(io, T, opts, row, col)
-    @inbounds dest.values[row], dest.isnull[row] = val, null
-    return
-end
+# Data.Source interface
+Data.reset!(io::CSV.Source) = seek(io.data,io.datapos)
+Data.isdone(io::CSV.Source, row, col) = eof(io.data)
+Data.streamtype{T<:CSV.Source}(::Type{T}, ::Type{Data.Field}) = true
+Data.getfield{T}(source::CSV.Source, ::Type{T}, row, col) = CSV.parsefield(source.data, T, source.options, row, col)
 
-# parse data from `source` into a `DataFrame`
-function Data.stream!(source::CSV.Source,sink::DataFrame)
-    (Data.types(source) == Data.types(sink) &&
-    size(source) == size(sink)) || throw(ArgumentError("schema mismatch: \n$(Data.schema(source))\nvs.\n$(Data.schema(sink))"))
-    rows, cols = size(source)
-    types = Data.types(source)
-    io = source.data
-    opts = source.options
-    data = sink.columns
-    for row = 1:rows, col = 1:cols
-        @inbounds T = types[col]
-        CSV.parsefield!(io, data[col], T, opts, row, col)
-    end
-    return sink
-end
+# function parsefield!{T}(io::IO, dest::NullableVector{T}, ::Type{T}, opts, row, col)
+#     @inbounds val, null = CSV.parsefield(io, T, opts, row, col)
+#     @inbounds dest.values[row], dest.isnull[row] = val, null
+#     return
+# end
+#
+# # parse data from `source` into a `DataFrame`
+# function Data.stream!(source::CSV.Source,sink::DataFrame)
+#     (Data.types(source) == Data.types(sink) &&
+#     size(source) == size(sink)) || throw(ArgumentError("schema mismatch: \n$(Data.schema(source))\nvs.\n$(Data.schema(sink))"))
+#     rows, cols = size(source)
+#     types = Data.types(source)
+#     io = source.data
+#     opts = source.options
+#     data = sink.columns
+#     for row = 1:rows, col = 1:cols
+#         @inbounds T = types[col]
+#         CSV.parsefield!(io, data[col], T, opts, row, col)
+#     end
+#     return sink
+# end
 
 # "parse data from a `CSV.Source` into a `Feather.Sink`, feather-formatted binary file"
 # function Data.stream!(source::CSV.Source,sink::Feather.Sink)

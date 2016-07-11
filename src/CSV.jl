@@ -1,9 +1,9 @@
 VERSION >= v"0.4.0-dev+6521" && __precompile__(true)
 module CSV
 
-using DataStreams, DataFrames, NullableArrays, WeakRefStrings
+using DataStreams, DataFrames, WeakRefStrings
 
-export Data
+export Data, DataFrame
 
 if !isdefined(Core, :String)
     typealias String UTF8String
@@ -69,13 +69,18 @@ type Options
     nullcheck::Bool
     dateformat::Dates.DateFormat
     datecheck::Bool
+    # non-public for now
+    datarow::Int
+    rows::Int
+    header::Union{Integer,UnitRange{Int},Vector}
+    types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}
 end
 
-Options(;delim=COMMA,quotechar=QUOTE,escapechar=ESCAPE,null=String(""),dateformat=Dates.ISODateFormat) =
+Options(;delim=COMMA,quotechar=QUOTE,escapechar=ESCAPE,null=String(""),dateformat=Dates.ISODateFormat, datarow=-1, rows=0, header=1, types=DataType[]) =
     Options(delim%UInt8,quotechar%UInt8,escapechar%UInt8,COMMA,PERIOD,
-            null,null != "",isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat),dateformat == Dates.ISODateFormat)
+            null,null != "",isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat),dateformat == Dates.ISODateFormat, datarow, rows, header, types)
 function Base.show(io::IO,op::Options)
-    println("    CSV.Options:")
+    println(io,"    CSV.Options:")
     println(io,"        delim: '",Char(op.delim),"'")
     println(io,"        quotechar: '",Char(op.quotechar),"'")
     print(io,"        escapechar: '"); escape_string(io,string(Char(op.escapechar)),"\\"); println(io,"'")
@@ -112,6 +117,7 @@ type Sink{I<:IO} <: Data.Sink
     options::Options
     data::I
     datapos::Int # the byte position in `io` where the data rows start
+    header::Bool
     quotefields::Bool # whether to always quote string fields or not
 end
 
