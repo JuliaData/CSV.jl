@@ -80,16 +80,17 @@ function Data.stream!(source, ::Type{Data.Field}, sink::CSV.Sink)
     Data.schema(sink) == Data.EMPTYSCHEMA && (sink.schema = source.schema)
     sink.header && writeheaders(source,sink)
     rows, cols = size(source)
+    Data.isdone(source, 1, 1) && (close(sink); return sink)
     types = Data.types(source)
-    row = 0
-    while !Data.isdone(source, row, cols)
-        row += 1
+    row = 1
+    while !Data.isdone(source, row, cols+1)
         for col = 1:cols
             val = Data.getfield(source, types[col], row, col)
             # below assumes that the result of getfield is Nullable
             # not necessarily true for DataFrame(zeros(10, 10))
             writefield(sink, isnull(val) ? sink.options.null : get(val), col, cols)
         end
+        row += 1
     end
     Data.setrows!(source, rows)
     close(sink)
