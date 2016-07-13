@@ -5,7 +5,7 @@
 
 | **Documentation**                                                               | **PackageEvaluator**                                            | **Build Status**                                                                                |
 |:-------------------------------------------------------------------------------:|:---------------------------------------------------------------:|:-----------------------------------------------------------------------------------------------:|
-| [![][docs-stable-img]][docs-stable-url] [![][docs-latest-img]][docs-latest-url] | [![][pkg-0.4-img]][pkg-0.4-url] [![][pkg-0.5-img]][pkg-0.5-url] | [![][travis-img]][travis-url] [![][appveyor-img]][appveyor-url] [![][codecov-img]][codecov-url] |
+| [![][docs-stable-img]][docs-stable-url] [![][docs-latest-img]][docs-latest-url] | [![][pkg-0.4-img]][pkg-0.4-url] [![][pkg-0.5-img]][pkg-0.5-url] | [![][travis-img]][travis-url] [![][appveyor-img]][appveyor-url] [![][coveralls-img]][coveralls-url] |
 
 
 ## Installation
@@ -44,8 +44,8 @@ Contributions are very welcome, as are feature requests and suggestions. Please 
 [appveyor-img]: https://ci.appveyor.com/api/projects/status/h227adt6ovd1u3sx/branch/master?svg=true
 [appveyor-url]: https://ci.appveyor.com/project/JuliaData/documenter-jl/branch/master
 
-[codecov-img]: https://codecov.io/gh/JuliaData/CSV.jl/branch/master/graph/badge.svg
-[codecov-url]: https://codecov.io/gh/JuliaData/CSV.jl
+[coveralls-img]: https://coveralls.io/repos/github/JuliaData/CSV.jl/badge.svg?branch=master
+[coveralls-url]: https://coveralls.io/github/JuliaData/CSV.jl?branch=master
 
 [issues-url]: https://github.com/JuliaData/CSV.jl/issues
 
