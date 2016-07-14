@@ -130,12 +130,14 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         columntypes = types
     elseif isa(types,Dict) || isempty(types)
         poss_types = Array(DataType,min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect),cols)
+        fill!(poss_types, NullField)
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
             vals = CSV.readsplitline(source,options.delim,options.quotechar,options.escapechar)
             lineschecked += 1
             for i = 1:cols
-               poss_types[lineschecked,i] = CSV.detecttype(vals[i],options.dateformat,options.null)
+                i > length(vals) && continue
+                poss_types[lineschecked,i] = CSV.detecttype(vals[i],options.dateformat,options.null)
             end
         end
         # detect most common/general type of each column of types
