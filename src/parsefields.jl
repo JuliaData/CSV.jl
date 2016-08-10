@@ -130,7 +130,7 @@ function parsefield{T<:AbstractFloat}(io::IOBuffer, ::Type{T}, opt::CSV.Options=
     end
 end
 
-function getfloat(io, T, b, opt, row, col, buf)
+function getfloat(io, T, b, opt, row, col, buf, state)
     ptr = pointer(buf.data)
     v = convert(T, ccall(:jl_strtod_c, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, CSV.REF))
     if (CSV.REF[1] - ptr) != position(buf)

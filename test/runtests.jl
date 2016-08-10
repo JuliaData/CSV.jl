@@ -5,6 +5,7 @@ if !isdefined(Core, :String)
     typealias String UTF8String
 end
 
+dir = "/Users/jacobquinn/.julia/v0.5/CSV/test/test_files/"
 dir = joinpath(dirname(@__FILE__),"test_files/")
 
 #test on non-existent file
@@ -27,11 +28,10 @@ ds = Data.stream!(f, DataFrame)
 @test ds[2,1].value == 4.0
 @test ds[3,1].value == 7.0
 @test ds[1,2].value == 2.0
-@test Data.schema(ds) == Data.schema(f)
+@test Data.header(ds) == Data.header(f) && Data.types(ds) == Data.types(f)
 
 f = CSV.Source(joinpath(dir, "test_utf8.csv"))
-si = CSV.Sink(f,joinpath(dir, "new_test_utf8.csv"))
-Data.stream!(f,si)
+si = CSV.write(joinpath(dir, "new_test_utf8.csv"), f)
 # @test Data.isdone(si)
 @test si.schema == f.schema
 so = CSV.Source(si)
@@ -40,13 +40,13 @@ so = CSV.Source(si)
 @test so.schema.rows == 3
 @test so.schema.header == ["col1","col2","col3"]
 @test so.schema.types == [Float64,Float64,Float64]
-@test so.datapos == 21
+# @test so.datapos == 21
 ds = Data.stream!(so, DataFrame)
 @test ds[1,1].value == 1.0
 @test ds[2,1].value == 4.0
 @test ds[3,1].value == 7.0
 @test ds[1,2].value == 2.0
-@test Data.schema(ds) == Data.schema(f) == Data.schema(si) == Data.schema(so)
+@test Data.types(ds) == Data.types(f) == Data.types(si) == Data.types(so)
 f = si = so = ds = nothing; gc(); gc()
 rm(joinpath(dir, "new_test_utf8.csv"))
 
@@ -176,6 +176,72 @@ f = CSV.Source(joinpath(dir, "test_missing_value.csv"))
 @test f.schema.cols == 3
 @test f.schema.rows == 3
 @test f.schema.types == [Float64,Float64,Float64]
+
+# DataStreams interface
+source_file = joinpath(dir, "test_utf8.csv")
+sink_file = joinpath(dir, "test_utf8_new.csv")
+header = "\"col1\",\"col2\",\"col3\"\n"
+values = "1.0,2.0,3.0\n4.0,5.0,6.0\n7.0,8.0,9.0\n"
+
+ds = CSV.read(source_file)
+@test size(ds) == (3,3)
+ds = CSV.read(source_file, CSV.Sink, sink_file)
+@test readstring(sink_file) == header * values
+ds = CSV.read(source_file, CSV.Sink, sink_file; append=true)
+@test readstring(sink_file) == header * values * values
+
+sink = CSV.Sink(joinpath(dir, "test_utf8_new.csv"))
+ds = CSV.read(source_file, sink)
+@test readstring(sink_file) == header * values
+ds = CSV.read(source_file, sink; append=true)
+@test readstring(sink_file) == header * values * values
+
+source = CSV.Source(source_file)
+ds = CSV.read(source)
+@test size(ds) == (3,3)
+source = CSV.Source(source_file)
+ds = CSV.read(source, CSV.Sink, sink_file)
+@test readstring(sink_file) == header * values
+source = CSV.Source(source_file)
+ds = CSV.read(source, CSV.Sink, sink_file; append=true)
+@test readstring(sink_file) == header * values * values
+
+sink = CSV.Sink(joinpath(dir, "test_utf8_new.csv"))
+source = CSV.Source(source_file)
+ds = CSV.read(source, sink)
+@test readstring(sink_file) == header * values
+source = CSV.Source(source_file)
+ds = CSV.read(source, sink; append=true)
+@test readstring(sink_file) == header * values * values
+
+si = CSV.write(sink_file, CSV.Source, source_file)
+@test readstring(sink_file) == header * values
+si = CSV.write(sink_file, CSV.Source, source_file; append=true)
+@test readstring(sink_file) == header * values * values
+
+source = CSV.Source(source_file)
+si = CSV.write(sink_file, source)
+@test readstring(sink_file) == header * values
+source = CSV.Source(source_file)
+si = CSV.write(sink_file, source; append=true)
+@test readstring(sink_file) == header * values * values
+
+sink = CSV.Sink(joinpath(dir, "test_utf8_new.csv"))
+si = CSV.write(sink, CSV.Source, source_file)
+@test readstring(sink_file) == header * values
+sink = CSV.Sink(joinpath(dir, "test_utf8_new.csv"); append=true)
+si = CSV.write(sink, CSV.Source, source_file; append=true)
+@test readstring(sink_file) == header * values * values
+
+source = CSV.Source(source_file)
+sink = CSV.Sink(joinpath(dir, "test_utf8_new.csv"))
+si = CSV.write(sink, source)
+@test readstring(sink_file) == header * values
+source = CSV.Source(source_file)
+sink = CSV.Sink(joinpath(dir, "test_utf8_new.csv"); append=true)
+si = CSV.write(sink, source; append=true)
+@test readstring(sink_file) == header * values * values
+rm(sink_file)
 
 #other various files found around the internet
 f = CSV.Source(joinpath(dir, "baseball.csv"))

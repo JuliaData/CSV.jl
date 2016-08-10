@@ -56,7 +56,6 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     isa(fullpath,IOStream) && (fullpath = chop(replace(fullpath.name,"<file ","")))
 
     # open the file for property detection
-    parent = UInt8[]
     if isa(fullpath,IOBuffer)
         source = fullpath
         fullpath = "<IOBuffer>"
@@ -66,10 +65,8 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     elseif isa(fullpath,IO)
         source = IOBuffer(readbytes(fullpath))
         fullpath = fullpath.name
-        parent = source.data
     else
         source = IOBuffer(use_mmap ? Mmap.mmap(fullpath) : open(readbytes,fullpath))
-        parent = source.data
     end
     options.datarow != -1 && (datarow = options.datarow)
     options.rows != 0 && (rows = options.rows)
@@ -171,20 +168,20 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     (any(columntypes .== DateTime) && options.dateformat == EMPTY_DATEFORMAT) && (options.dateformat = Dates.ISODateTimeFormat)
     (any(columntypes .== Date) && options.dateformat == EMPTY_DATEFORMAT) && (options.dateformat = Dates.ISODateFormat)
     seek(source,datapos)
-    return Source(Data.Schema(columnnames,columntypes,rows,Dict("parent"=>parent)),
+    return Source(Data.Schema(columnnames,columntypes,rows),
                   options,source,datapos,String(fullpath))
 end
 
 # construct a new Source from a Sink that has been streamed to (i.e. DONE)
-function Source{I}(s::CSV.Sink{I})
+function Source(s::CSV.Sink)
     # Data.isdone(s) || throw(ArgumentError("::Sink has not been closed to streaming yet; call `close(::Sink)` first"))
-    if is(I,IOStream)
-        nm = String(chop(replace(s.data.name,"<file ","")))
+    io = s.data
+    if isa(io,IOStream)
+        nm = String(chop(replace(io.name,"<file ","")))
         data = IOBuffer(Mmap.mmap(nm))
-        s.schema.metadata["parent"] =  data.data
     else
-        seek(s.data, s.datapos)
-        data = IOBuffer(readbytes(s.data))
+        seek(io, s.datapos)
+        data = IOBuffer(readbytes(io))
         nm = String("")
     end
     seek(data,s.datapos)
@@ -196,44 +193,18 @@ Data.reset!(io::CSV.Source) = seek(io.data,io.datapos)
 Data.isdone(io::CSV.Source, row, col) = eof(io.data)
 Data.streamtype{T<:CSV.Source}(::Type{T}, ::Type{Data.Field}) = true
 Data.getfield{T}(source::CSV.Source, ::Type{T}, row, col) = CSV.parsefield(source.data, T, source.options, row, col)
-
-# function parsefield!{T}(io::IO, dest::NullableVector{T}, ::Type{T}, opts, row, col)
-#     @inbounds val, null = CSV.parsefield(io, T, opts, row, col)
-#     @inbounds dest.values[row], dest.isnull[row] = val, null
-#     return
-# end
-#
-# # parse data from `source` into a `DataFrame`
-# function Data.stream!(source::CSV.Source,sink::DataFrame)
-#     (Data.types(source) == Data.types(sink) &&
-#     size(source) == size(sink)) || throw(ArgumentError("schema mismatch: \n$(Data.schema(source))\nvs.\n$(Data.schema(sink))"))
-#     rows, cols = size(source)
-#     types = Data.types(source)
-#     io = source.data
-#     opts = source.options
-#     data = sink.columns
-#     for row = 1:rows, col = 1:cols
-#         @inbounds T = types[col]
-#         CSV.parsefield!(io, data[col], T, opts, row, col)
-#     end
-#     return sink
-# end
-
-# "parse data from a `CSV.Source` into a `Feather.Sink`, feather-formatted binary file"
-# function Data.stream!(source::CSV.Source,sink::Feather.Sink)
-#
-# end
+Data.reference(source::CSV.Source{Base.AbstractIOBuffer{Array{UInt8,1}}}) = source.data.data
 
 """
 
-`CSV.read(fullpath::Union{AbstractString,IO}, sink=DataFrame)` => `typeof(sink)`
+`CSV.read(fullpath::Union{AbstractString,IO}, sink=DataFrame, args...; kwargs...)` => `typeof(sink)`
 
 parses a delimited file into a Julia structure (a DataFrame by default, but any `Data.Sink` may be given).
 
 Positional arguments:
 
 * `fullpath`; can be a file name (string) or other `IO` instance
-* `sink`; a `DataFrame` by default, but may also be other `Data.Sink` types that support the `AbstractTable` interface
+* `sink`; a `DataFrame` by default, but may also be other `Data.Sink` types that support streaming via `Data.Field` interface
 
 Keyword Arguments:
 
@@ -266,7 +237,7 @@ julia> dt = CSV.read("bids.csv")
 ...
 ```
 """
-function read(fullpath::Union{AbstractString,IO}, sink=DataFrame;
+function read(fullpath::Union{AbstractString,IO}, sink=DataFrame, args...; append::Bool=false,
               delim=COMMA,
               quotechar=QUOTE,
               escapechar=ESCAPE,
@@ -280,9 +251,33 @@ function read(fullpath::Union{AbstractString,IO}, sink=DataFrame;
               rows_for_type_detect::Int=100,
               rows::Int=0,
               use_mmap::Bool=true)
-    source = Source(fullpath::Union{AbstractString,IO};
-                  delim=delim,quotechar=quotechar,escapechar=escapechar,null=null,
-                  header=header,datarow=datarow,types=types,dateformat=dateformat,
-                  footerskip=footerskip,rows_for_type_detect=rows_for_type_detect,rows=rows,use_mmap=use_mmap)
-    return Data.stream!(source,sink)
+    source = Source(fullpath;
+                  delim=delim, quotechar=quotechar, escapechar=escapechar, null=null,
+                  header=header, datarow=datarow, types=types, dateformat=dateformat,
+                  footerskip=footerskip, rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
+    return Data.stream!(source, sink, append, args...)
 end
+
+function read{T}(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false,
+              delim=COMMA,
+              quotechar=QUOTE,
+              escapechar=ESCAPE,
+              null::AbstractString=String(""),
+              header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
+              datarow::Int=-1, # by default, data starts immediately after header or start of file
+              types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
+              dateformat::Union{AbstractString,Dates.DateFormat}=EMPTY_DATEFORMAT,
+
+              footerskip::Int=0,
+              rows_for_type_detect::Int=100,
+              rows::Int=0,
+              use_mmap::Bool=true)
+    source = Source(fullpath;
+                  delim=delim, quotechar=quotechar, escapechar=escapechar, null=null,
+                  header=header, datarow=datarow, types=types, dateformat=dateformat,
+                  footerskip=footerskip, rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
+    return Data.stream!(source, sink, append)
+end
+
+read(source::CSV.Source, sink=DataFrame, args...; append::Bool=false) = Data.stream!(source, sink, append, args...)
+read{T}(source::CSV.Source, sink::T; append::Bool=false) = Data.stream!(source, sink, append)
