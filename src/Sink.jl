@@ -1,40 +1,28 @@
-
-function Sink(s::CSV.Source; header::Bool=true, quotefields::Bool=true, append::Bool=false)
+# construct a Sink from an existing CSV Source
+function Sink(s::CSV.Source; append::Bool=false)
     data = open(s.fullpath, append ? "a" : "w")
-    seek(data, s.datapos)
-    return Sink(s.schema, s.options, data, s.datapos, header, quotefields)
+    seek(data, append ? filesize(s.fullpath) : s.datapos)
+    return Sink(s.schema, s.options, data, s.datapos, !append)
 end
 
-# these two constructors create new Sinks, either from an open IOStream, or a filename
-# most fields are populated through the CSV.Source
-
-# create a new `Sink` patterned after the `CSV.Source`; data will be streamed to the `io::IOStream` argument
-Sink(s::CSV.Source,io::IOStream; header::Bool=true, quotefields::Bool=true) = Sink(s.schema, s.options, io, position(io), header, quotefields)
-
-# create a new `Sink` patterned after the `CSV.Source`; data will be streamed to the `file` argument after opening
-function Sink(s::CSV.Source, file::AbstractString; header::Bool=true, quotefields::Bool=true, append::Bool=false)
-    io = open(file,append ? "a" : "w")
-    return Sink(s.schema, s.options, io, 0,header, quotefields)
-end
-
-function Sink(io::Union{AbstractString,IO};
-              schema::Data.Schema=Data.EMPTYSCHEMA,
+function Sink(io::Union{AbstractString,IO},
+              schema::Data.Schema=Data.EMPTYSCHEMA;
               delim::Char=',',
               quotechar::Char='"',
               escapechar::Char='\\',
               null::AbstractString="",
               dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateFormat,
               header::Bool=true,
-              quotefields::Bool=true,
               append::Bool=false)
     delim = delim % UInt8; quotechar = quotechar % UInt8; escapechar = escapechar % UInt8
     dateformat = isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat
     io = isa(io, AbstractString) ? open(io, append ? "a" : "w") : io
     return Sink(schema, CSV.Options(delim, quotechar, escapechar, COMMA, PERIOD,
-            ascii(null), null=="", dateformat, dateformat == Dates.ISODateFormat, -1, 0, 1, DataType[]), io, 0, header, quotefields)
+            ascii(null), null=="", dateformat, dateformat == Dates.ISODateFormat, -1, 0, 1, DataType[]), io, 0, header)
 end
 
 Base.close(s::Sink) = (applicable(close, s.data) && close(s.data); return nothing)
+Base.flush(s::Sink) = (applicable(flush, s.data) && flush(s.data); return nothing)
 Base.position(s::Sink) = applicable(position, s.data) ? position(s.data) : 0
 
 function writeheaders(source, sink::Sink)
@@ -42,59 +30,82 @@ function writeheaders(source, sink::Sink)
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
     h = Data.header(source)
     for col = 1:cols
-        print(sink.data, q, sink.quotefields ? replace("$(h[col])", q, "$e$q") : h[col], q)
+        print(sink.data, q, replace("$(h[col])", q, "$e$q"), q)
         print(sink.data, ifelse(col == cols, Char(NEWLINE), Char(sink.options.delim)))
     end
     sink.datapos = position(sink)
     return nothing
 end
 
+# DataStreams interface
+Data.streamtypes{T<:CSV.Sink}(::Type{T}) = [Data.Field]
+
+# Constructors
+# CSV.read(file, CSV.Sink, file_or_io; append=true)
+function Sink{T}(source, ::Type{T}, append::Bool, file::AbstractString)
+    sch = Data.schema(source)
+    io = open(file, append ? "a" : "w")
+    return Sink(sch, CSV.Options(), io, 0, !append)
+end
+function Sink{T}(source, ::Type{T}, append::Bool, io::IO)
+    sch = Data.schema(source)
+    append ? io : seekstart(io)
+    return Sink(sch, CSV.Options(), io, 0, !append)
+end
+# TT(sink, source, typ, append)
+function CSV.Sink{T}(sink, source, ::Type{T}, append::Bool)
+    !append && seekstart(sink.data)
+    sink.schema = Data.schema(source)
+    return sink
+end
+
 writefield(io::Sink, val, col, N) = (col == N ? println(io.data,val) : print(io.data,val,Char(io.options.delim)); return nothing)
 function writefield(sink::Sink, val::AbstractString, col, cols)
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
-    if sink.quotefields
-        print(sink.data,q,replace(string(val),q,"$e$q"),q)
-    else
-        print(sink.data,string(val)) # should we detect delim, newline here and quote automatically?
-    end
-    print(sink.data,ifelse(col == cols, Char(NEWLINE), Char(sink.options.delim)))
+    print(sink.data, q, replace(string(val), q, "$e$q"), q)
+    print(sink.data, ifelse(col == cols, Char(NEWLINE), Char(sink.options.delim)))
     return nothing
 end
 
 function writefield(sink::Sink, val::Dates.TimeType, col, cols)
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
-    val = sink.options.datecheck ? val : Dates.format(val,sink.options.dateformat)
-    if sink.quotefields
-        print(sink.data,q,replace(string(val),q,"$e$q"),q)
-    else
-        print(sink.data,val)
-    end
-    print(sink.data,ifelse(col == cols, Char(NEWLINE), Char(sink.options.delim)))
+    val = sink.options.datecheck ? string(val) : Dates.format(val, sink.options.dateformat)
+    print(sink.data, val)
+    print(sink.data, ifelse(col == cols, Char(NEWLINE), Char(sink.options.delim)))
     return nothing
 end
 
-# DataStreams interface
-Data.streamtypes{T<:CSV.Sink}(::Type{T}) = [Data.Field]
+function writefield{T}(sink::Sink, val::Nullable{T}, col, cols)
+    writefield(sink, isnull(val) ? sink.options.null : get(val), col, cols)
+    return nothing
+end
+function writefield(sink::Sink, val::NAtype, col, cols)
+    writefield(sink, sink.options.null, col, cols)
+    return nothing
+end
+
+function writefield!{T}(sink, source, ::Type{T}, row, col, cols)
+    val = Data.getfield(source, T, row, col)
+    writefield(sink, val, col, cols)
+    return nothing
+end
 
 # stream data from `source` to `sink`; `header::Bool` = whether to write the column names or not
-function Data.stream!(source, ::Type{Data.Field}, sink::CSV.Sink)
+function Data.stream!(source, ::Type{Data.Field}, sink::CSV.Sink, append::Bool)
     Data.schema(sink) == Data.EMPTYSCHEMA && (sink.schema = Data.schema(source))
-    sink.header && writeheaders(source,sink)
+    !append && sink.header && writeheaders(source, sink)
     rows, cols = size(source)
-    Data.isdone(source, 1, 1) && (close(sink); return sink)
+    Data.isdone(source, 1, 1) && return sink
     types = Data.types(source)
     row = 1
     while !Data.isdone(source, row, cols+1)
         for col = 1:cols
-            val = Data.getfield(source, types[col], row, col)
-            # below assumes that the result of getfield is Nullable
-            # not necessarily true for DataFrame(zeros(10, 10))
-            writefield(sink, isnull(val) ? sink.options.null : get(val), col, cols)
+            writefield!(sink, source, types[col], row, col, cols)
         end
         row += 1
     end
     Data.setrows!(source, rows)
-    close(sink)
+    flush(sink)
     return sink
 end
 
@@ -112,8 +123,27 @@ write a `source::Data.Source` out to a `CSV.Sink`
 * `header::Bool`; whether to write out the column names from `source`
 * `append::Bool`; start writing data at the end of `io`; by default, `io` will be reset to its beginning before writing
 """
+function write{T}(io::Union{AbstractString,IO}, ::Type{T}, args...;
+              delim::Char=',',
+              quotechar::Char='"',
+              escapechar::Char='\\',
+              null::AbstractString="",
+              dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateFormat,
+              quotefields::Bool=true,
+              header::Bool=true,
+              append::Bool=false)
+    delim = delim % UInt8; quotechar = quotechar % UInt8; escapechar = escapechar % UInt8
+    dateformat = isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat
+    io = isa(io,AbstractString) ? open(io, append ? "a" : "w") : io
+    source = T(args...)
+    schema = Data.schema(source)
+    sink = Sink(schema, CSV.Options(delim, quotechar, escapechar, COMMA, PERIOD,
+            ascii(null), null=="", dateformat, dateformat == Dates.ISODateFormat, -1, 0, 1, DataType[]), io, 0, header)
+    Data.stream!(source, sink, append)
+    close(sink)
+    return sink
+end
 function write(io::Union{AbstractString,IO}, source;
-              schema::Data.Schema=Data.EMPTYSCHEMA,
               delim::Char=',',
               quotechar::Char='"',
               escapechar::Char='\\',
@@ -125,7 +155,13 @@ function write(io::Union{AbstractString,IO}, source;
     delim = delim % UInt8; quotechar = quotechar % UInt8; escapechar = escapechar % UInt8
     dateformat = isa(dateformat,AbstractString) ? Dates.DateFormat(dateformat) : dateformat
     io = isa(io,AbstractString) ? open(io, append ? "a" : "w") : io
-    sink = Sink(schema,CSV.Options(delim,quotechar,escapechar,COMMA,PERIOD,
-            ascii(null),null=="",dateformat,dateformat == Dates.ISODateFormat, -1, 0, 1, DataType[]),io,0,header,quotefields)
-    return Data.stream!(source, sink)
+    schema = Data.schema(source)
+    sink = Sink(schema, CSV.Options(delim, quotechar, escapechar, COMMA, PERIOD,
+            ascii(null), null=="", dateformat, dateformat == Dates.ISODateFormat, -1, 0, 1, DataType[]), io, 0, header)
+    Data.stream!(source, sink, append)
+    close(sink)
+    return sink
 end
+
+write{T}(sink::Sink, ::Type{T}, args...; append::Bool=false) = Data.stream!(T(args...), sink, append)
+write(sink::Sink, source; append::Bool=false) = Data.stream!(source, sink, append)
