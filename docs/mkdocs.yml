@@ -3,7 +3,12 @@ repo_url:         https://github.com/JuliaData/CSV.jl
 site_description: Utility library for working with CSV and other delimited files in the Julia programming language
 site_author:      Jacob Quinn
 
-theme: readthedocs
+theme: material
+
+extra:
+  palette:
+    primary: 'indigo'
+    accent:  'blue'
 
 extra_css:
   - assets/Documenter.css
