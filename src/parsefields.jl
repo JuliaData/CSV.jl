@@ -239,7 +239,7 @@ function parsefield{T<:AbstractString}(io::IO, ::Type{T}, opt::CSV.Options=CSV.O
         end
     end
     eof(io) && (state[] = EOF)
-    return (len == 0 || nullcheck) ? Nullable{T}() : Nullable{T}(takebuf_string(buf))
+    return (len == 0 || nullcheck) ? Nullable{T}() : Nullable{T}(convert(T, takebuf_string(buf)))
 end
 
 @inline itr(io,n,val) = (for i = 1:n; val *= 10; val += Base.read(io, UInt8) - CSV.ZERO; end; return val)
@@ -334,7 +334,7 @@ function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), ro
         while true
             b = Base.read(io, UInt8)
             if b == opt.delim
-                state[] = Delimiter
+                state[] = Delimter
                 break
             elseif b == CSV.NEWLINE
                 state[] = Newline

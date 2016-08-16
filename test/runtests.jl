@@ -4,7 +4,7 @@ using Base.Test, DataFrames, NullableArrays, DataStreams, WeakRefStrings, Libz, 
 if !isdefined(Core, :String)
     typealias String UTF8String
 end
-if VERSION < v"0.5"
+if VERSION < v"0.5-dev"
     readstring = readall
 end
 
