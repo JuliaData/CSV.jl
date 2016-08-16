@@ -4,6 +4,9 @@ using Base.Test, DataFrames, NullableArrays, DataStreams, WeakRefStrings, Libz, 
 if !isdefined(Core, :String)
     typealias String UTF8String
 end
+if VERSION < v"0.5"
+    readstring = readall
+end
 
 dir = "/Users/jacobquinn/.julia/v0.5/CSV/test/test_files/"
 dir = joinpath(dirname(@__FILE__),"test_files/")

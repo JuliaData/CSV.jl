@@ -5,6 +5,6 @@ makedocs(
 )
 
 deploydocs(
-    deps = Deps.pip("mkdocs", "python-markdown-math"),
+    deps = Deps.pip("mkdocs", "mkdocs-material", "python-markdown-math"),
     repo = "github.com/JuliaData/CSV.jl.git"
 )
