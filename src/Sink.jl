@@ -53,7 +53,7 @@ function Sink{T}(source, ::Type{T}, append::Bool, io::IO)
     return Sink(sch, CSV.Options(), io, 0, !append)
 end
 # TT(sink, source, typ, append)
-function CSV.Sink{T}(sink, source, ::Type{T}, append::Bool)
+function Sink{T}(sink, source, ::Type{T}, append::Bool)
     !append && seekstart(sink.data)
     sink.schema = Data.schema(source)
     return sink
