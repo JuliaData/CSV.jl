@@ -174,7 +174,6 @@ end
 
 # construct a new Source from a Sink that has been streamed to (i.e. DONE)
 function Source(s::CSV.Sink)
-    # Data.isdone(s) || throw(ArgumentError("::Sink has not been closed to streaming yet; call `close(::Sink)` first"))
     io = s.data
     if isa(io,IOStream)
         nm = String(chop(replace(io.name,"<file ","")))
@@ -185,6 +184,11 @@ function Source(s::CSV.Sink)
         nm = String("")
     end
     seek(data,s.datapos)
+    for (i, T) in enumerate(s.schema.types)
+        if T <: AbstractString
+            s.schema.types[i] = WeakRefString{UInt8}
+        end
+    end
     return Source(s.schema,s.options,data,s.datapos,nm)
 end
 
