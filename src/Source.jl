@@ -12,6 +12,7 @@ function Source(fullpath::Union{AbstractString,IO};
               header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
+              nullable::Bool=true,
               dateformat::Union{AbstractString,Dates.DateFormat}=EMPTY_DATEFORMAT,
 
               footerskip::Int=0,
@@ -33,7 +34,7 @@ function Source(fullpath::Union{AbstractString,IO};
     return CSV.Source(fullpath=fullpath,
                         options=CSV.Options(delim,quotechar,escapechar,separator,
                                     decimal,ascii(null),null!="",dateformat,dateformat==Dates.ISODateFormat,-1,0,1,DataType[]),
-                        header=header, datarow=datarow, types=types, footerskip=footerskip,
+                        header=header, datarow=datarow, types=types, nullable=nullable, footerskip=footerskip,
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
 
@@ -43,6 +44,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
                 types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
+                nullable::Bool=true,
 
                 footerskip::Int=0,
                 rows_for_type_detect::Int=100,
@@ -157,16 +159,22 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     end
     if isa(types,Dict{Int,DataType})
         for (col,typ) in types
-            columntypes[col] = typ
+            columntypes[col] = typ <: AbstractString ? WeakRefString{UInt8} : typ
         end
     elseif isa(types,Dict{String,DataType})
         for (col,typ) in types
             c = findfirst(columnnames, col)
-            columntypes[c] = typ
+            columntypes[c] = typ <: AbstractString ? WeakRefString{UInt8} : typ
         end
     end
     (any(columntypes .== DateTime) && options.dateformat == EMPTY_DATEFORMAT) && (options.dateformat = Dates.ISODateTimeFormat)
     (any(columntypes .== Date) && options.dateformat == EMPTY_DATEFORMAT) && (options.dateformat = Dates.ISODateFormat)
+    if nullable
+        columntypes = [T <: Nullable ? T : Nullable{T} for T in columntypes]
+    else
+        # WeakRefStrings won't be safe if they don't end up in a NullableArray
+        columntypes = [T <: WeakRefString ? String : T for T in columntypes]
+    end
     seek(source,datapos)
     return Source(Data.Schema(columnnames,columntypes,rows),
                   options,source,datapos,String(fullpath))
@@ -196,7 +204,8 @@ end
 Data.reset!(io::CSV.Source) = seek(io.data,io.datapos)
 Data.isdone(io::CSV.Source, row, col) = eof(io.data)
 Data.streamtype{T<:CSV.Source}(::Type{T}, ::Type{Data.Field}) = true
-Data.getfield{T}(source::CSV.Source, ::Type{T}, row, col) = CSV.parsefield(source.data, T, source.options, row, col)
+Data.getfield{T}(source::CSV.Source, ::Type{T}, row, col) = get(CSV.parsefield(source.data, T, source.options, row, col))
+Data.getfield{T}(source::CSV.Source, ::Type{Nullable{T}}, row, col) = CSV.parsefield(source.data, T, source.options, row, col)
 Data.reference(source::CSV.Source{Base.AbstractIOBuffer{Array{UInt8,1}}}) = source.data.data
 
 """
@@ -219,6 +228,7 @@ Keyword Arguments:
 * `header`; column names can be provided manually as a complete Vector{String}, or as an Int/Range which indicates the row/rows that contain the column names
 * `datarow::Int`; specifies the row on which the actual data starts in the file; by default, the data is expected on the next row after the header row(s)
 * `types`; column types can be provided manually as a complete Vector{DataType}, or in a Dict to reference a column by name or number
+* `nullable::Bool`; indicates whether values can be nullable or not; `true` by default. If set to `false` and missing values are encountered, a `NullException` will be thrown
 * `dateformat::Union{AbstractString,Dates.DateFormat}`; how all dates/datetimes are represented in the dataset
 * `footerskip::Int`; indicates the number of rows to skip at the end of the file
 * `rows_for_type_detect::Int=100`; indicates how many rows should be read to infer the types of columns
@@ -249,6 +259,7 @@ function read(fullpath::Union{AbstractString,IO}, sink=DataFrame, args...; appen
               header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
+              nullable::Bool=true,
               dateformat::Union{AbstractString,Dates.DateFormat}=EMPTY_DATEFORMAT,
 
               footerskip::Int=0,
@@ -257,7 +268,7 @@ function read(fullpath::Union{AbstractString,IO}, sink=DataFrame, args...; appen
               use_mmap::Bool=true)
     source = Source(fullpath;
                   delim=delim, quotechar=quotechar, escapechar=escapechar, null=null,
-                  header=header, datarow=datarow, types=types, dateformat=dateformat,
+                  header=header, datarow=datarow, types=types, nullable=nullable, dateformat=dateformat,
                   footerskip=footerskip, rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
     return Data.stream!(source, sink, append, args...)
 end
@@ -270,6 +281,7 @@ function read{T}(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false
               header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
+              nullable::Bool=true,
               dateformat::Union{AbstractString,Dates.DateFormat}=EMPTY_DATEFORMAT,
 
               footerskip::Int=0,
@@ -278,7 +290,7 @@ function read{T}(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false
               use_mmap::Bool=true)
     source = Source(fullpath;
                   delim=delim, quotechar=quotechar, escapechar=escapechar, null=null,
-                  header=header, datarow=datarow, types=types, dateformat=dateformat,
+                  header=header, datarow=datarow, types=types, nullable=nullable, dateformat=dateformat,
                   footerskip=footerskip, rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
     return Data.stream!(source, sink, append)
 end

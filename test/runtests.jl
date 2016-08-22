@@ -24,7 +24,7 @@ f = CSV.Source(joinpath(dir, "test_utf8.csv"))
 @test f.schema.cols == 3
 @test f.schema.rows == 3
 @test f.schema.header == ["col1","col2","col3"]
-@test f.schema.types == [Float64,Float64,Float64]
+@test f.schema.types == [Nullable{Float64},Nullable{Float64},Nullable{Float64}]
 @test position(f.data) == 15
 ds = Data.stream!(f, DataFrame)
 @test ds[1,1].value == 1.0
@@ -42,7 +42,7 @@ so = CSV.Source(si)
 @test so.schema.cols == 3
 @test so.schema.rows == 3
 @test so.schema.header == ["col1","col2","col3"]
-@test so.schema.types == [Float64,Float64,Float64]
+@test so.schema.types == [Nullable{Float64},Nullable{Float64},Nullable{Float64}]
 # @test so.datapos == 21
 ds = Data.stream!(so, DataFrame)
 @test ds[1,1].value == 1.0
@@ -67,7 +67,7 @@ f = CSV.Source(joinpath(dir, "test_single_column.csv"))
 @test f.schema.cols == 1
 @test f.schema.rows == 3
 @test f.schema.header == ["col1"]
-@test f.schema.types == [Int]
+@test f.schema.types == [Nullable{Int}]
 ds = Data.stream!(f, DataFrame)
 @test ds[1,1].value == 1
 @test ds[2,1].value == 2
@@ -87,7 +87,7 @@ f = CSV.Source(joinpath(dir, "test_empty_file_newlines.csv"))
 @test f.schema.rows == 9
 @test position(f.data) == 1
 @test f.schema.header == [""]
-@test f.schema.types == [WeakRefString{UInt8}]
+@test f.schema.types == [Nullable{WeakRefString{UInt8}}]
 
 #test with various quotechars, escapechars
 f = CSV.Source(joinpath(dir, "test_simple_quoted.csv"))
@@ -104,27 +104,27 @@ f = CSV.Source(joinpath(dir, "test_quoted_delim_and_newline.csv"))
 f = CSV.Source(joinpath(dir, "test_crlf_line_endings.csv"))
 @test f.schema.header == ["col1","col2","col3"]
 @test f.schema.cols == 3
-@test f.schema.types == [Int,Int,Int]
+@test f.schema.types == [Nullable{Int},Nullable{Int},Nullable{Int}]
 ds = Data.stream!(f, DataFrame)
 @test ds[1,1].value == 1
 f = CSV.Source(joinpath(dir, "test_newline_line_endings.csv"))
 @test f.schema.header == ["col1","col2","col3"]
 @test f.schema.cols == 3
-@test f.schema.types == [Int,Int,Int]
+@test f.schema.types == [Nullable{Int},Nullable{Int},Nullable{Int}]
 f = CSV.Source(joinpath(dir, "test_mac_line_endings.csv"))
 @test f.schema.header == ["col1","col2","col3"]
 @test f.schema.cols == 3
-@test f.schema.types == [Int,Int,Int]
+@test f.schema.types == [Nullable{Int},Nullable{Int},Nullable{Int}]
 
 #test headerrow, datarow, footerskips
 f = CSV.Source(joinpath(dir, "test_no_header.csv");header=0,datarow=1)
 @test f.schema.header == ["Column1","Column2","Column3"]
-@test f.schema.types == [Float64,Float64,Float64]
+@test f.schema.types == [Nullable{Float64},Nullable{Float64},Nullable{Float64}]
 @test f.schema.cols == 3
 @test f.schema.rows == 3
 f = CSV.Source(joinpath(dir, "test_2_footer_rows.csv");header=4,datarow=5,footerskip=2)
 @test f.schema.header == ["col1","col2","col3"]
-@test f.schema.types == [Int,Int,Int]
+@test f.schema.types == [Nullable{Int},Nullable{Int},Nullable{Int}]
 @test f.schema.cols == 3
 @test f.schema.rows == 3
 
@@ -132,7 +132,7 @@ f = CSV.Source(joinpath(dir, "test_2_footer_rows.csv");header=4,datarow=5,footer
 f = CSV.Source(joinpath(dir, "test_dates.csv");types=[Date],dateformat="yyyy-mm-dd")
 @test f.schema.cols == 1
 @test f.schema.rows == 3
-@test f.schema.types == [Date]
+@test f.schema.types == [Nullable{Date}]
 ds = Data.stream!(f, DataFrame)
 @test ds[1,1].value == Date(2015,1,1)
 @test ds[2,1].value == Date(2015,1,2)
@@ -140,11 +140,11 @@ ds = Data.stream!(f, DataFrame)
 f = CSV.Source(joinpath(dir, "test_excel_date_formats.csv");types=[Date],dateformat="mm/dd/yy")
 @test f.schema.cols == 1
 @test f.schema.rows == 3
-@test f.schema.types == [Date]
+@test f.schema.types == [Nullable{Date}]
 f = CSV.Source(joinpath(dir, "test_datetimes.csv");types=[DateTime],dateformat="yyyy-mm-dd HH:MM:SS.s")
 @test f.schema.cols == 1
 @test f.schema.rows == 3
-@test f.schema.types == [DateTime]
+@test f.schema.types == [Nullable{DateTime}]
 ds = Data.stream!(f, DataFrame)
 @test ds[1,1].value == DateTime(2015,1,1)
 @test ds[2,1].value == DateTime(2015,1,2,0,0,1)
@@ -159,7 +159,7 @@ ds = Data.stream!(f, DataFrame)
 f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"))
 @test f.schema.cols == 3
 @test f.schema.rows == 3
-@test f.schema.types == [Float64,WeakRefString{UInt8},Float64]
+@test f.schema.types == [Nullable{Float64},Nullable{WeakRefString{UInt8}},Nullable{Float64}]
 ds = Data.stream!(f, DataFrame)
 @test ds[1,1].value == 1.0
 @test string(ds[1,2].value) == "2.0"
@@ -168,7 +168,7 @@ f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"); null="NULL")
 @test f.schema.cols == 3
 @test f.schema.rows == 3
 @test f.options.null == "NULL"
-@test f.schema.types == [Float64,Float64,Float64]
+@test f.schema.types == [Nullable{Float64},Nullable{Float64},Nullable{Float64}]
 ds = Data.stream!(f, DataFrame)
 @test ds[1,1].value == 1.0
 @test string(ds[1,2].value) == "2.0"
@@ -178,7 +178,7 @@ ds = Data.stream!(f, DataFrame)
 f = CSV.Source(joinpath(dir, "test_missing_value.csv"))
 @test f.schema.cols == 3
 @test f.schema.rows == 3
-@test f.schema.types == [Float64,Float64,Float64]
+@test f.schema.types == [Nullable{Float64},Nullable{Float64},Nullable{Float64}]
 
 # DataStreams interface
 source_file = joinpath(dir, "test_utf8.csv")
@@ -252,7 +252,7 @@ f = CSV.Source(joinpath(dir, "baseball.csv"))
 @test f.schema.rows == 35
 @test position(f.data) == 59
 @test f.schema.header == ["Rk","Year","Age","Tm","Lg","","W","L","W-L%","G","Finish","Wpost","Lpost","W-L%post",""]
-@test f.schema.types == [Int,Int,Int,WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},Int,Int,Float64,Int,Float64,Int,Int,Float64,WeakRefString{UInt8}]
+@test f.schema.types == [Nullable{Int},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Int},Nullable{Int},Nullable{Float64},Nullable{WeakRefString{UInt8}}]
 ds = Data.stream!(f, DataFrame)
 # CSV.read(f)
 
@@ -261,7 +261,7 @@ f = CSV.Source(joinpath(dir, "FL_insurance_sample.csv");types=Dict(10=>Float64,1
 @test f.schema.rows == 36634
 @test position(f.data) == 243
 @test f.schema.header == ["policyID","statecode","county","eq_site_limit","hu_site_limit","fl_site_limit","fr_site_limit","tiv_2011","tiv_2012","eq_site_deductible","hu_site_deductible","fl_site_deductible","fr_site_deductible","point_latitude","point_longitude","line","construction","point_granularity"]
-@test f.schema.types == [Int,WeakRefString{UInt8},WeakRefString{UInt8},Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int,Float64,Float64,WeakRefString{UInt8},WeakRefString{UInt8},Int]
+@test f.schema.types == [Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Float64},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int}]
 ds = Data.stream!(f, DataFrame)
 
 f = CSV.Source(joinpath(dir, "FL_insurance_sample.csv");types=Dict{String,DataType}("eq_site_deductible"=>Float64,"fl_site_deductible"=>Float64))
@@ -269,7 +269,7 @@ f = CSV.Source(joinpath(dir, "FL_insurance_sample.csv");types=Dict{String,DataTy
 @test f.schema.rows == 36634
 @test position(f.data) == 243
 @test f.schema.header == ["policyID","statecode","county","eq_site_limit","hu_site_limit","fl_site_limit","fr_site_limit","tiv_2011","tiv_2012","eq_site_deductible","hu_site_deductible","fl_site_deductible","fr_site_deductible","point_latitude","point_longitude","line","construction","point_granularity"]
-@test f.schema.types == [Int,WeakRefString{UInt8},WeakRefString{UInt8},Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int,Float64,Float64,WeakRefString{UInt8},WeakRefString{UInt8},Int]
+@test f.schema.types == [Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Float64},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int}]
 ds = Data.stream!(f, DataFrame)
 
 f = CSV.Source(joinpath(dir, "SacramentocrimeJanuary2006.csv"))
@@ -277,7 +277,7 @@ f = CSV.Source(joinpath(dir, "SacramentocrimeJanuary2006.csv"))
 @test f.schema.rows == 7584
 @test position(f.data) == 81
 @test f.schema.header == ["cdatetime","address","district","beat","grid","crimedescr","ucr_ncic_code","latitude","longitude"]
-@test f.schema.types == [WeakRefString{UInt8},WeakRefString{UInt8},Int,WeakRefString{UInt8},Int,WeakRefString{UInt8},Int,Float64,Float64]
+@test f.schema.types == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Float64},Nullable{Float64}]
 ds = Data.stream!(f, DataFrame)
 
 f = CSV.Source(joinpath(dir, "Sacramentorealestatetransactions.csv"))
@@ -285,7 +285,7 @@ f = CSV.Source(joinpath(dir, "Sacramentorealestatetransactions.csv"))
 @test f.schema.rows == 985
 @test position(f.data) == 80
 @test f.schema.header == ["street","city","zip","state","beds","baths","sq__ft","type","sale_date","price","latitude","longitude"]
-@test f.schema.types == [WeakRefString{UInt8},WeakRefString{UInt8},Int,WeakRefString{UInt8},Int,Int,Int,WeakRefString{UInt8},WeakRefString{UInt8},Int,Float64,Float64]
+@test f.schema.types == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Float64},Nullable{Float64}]
 ds = Data.stream!(f, DataFrame)
 
 f = CSV.Source(joinpath(dir, "SalesJan2009.csv"))
@@ -293,7 +293,7 @@ f = CSV.Source(joinpath(dir, "SalesJan2009.csv"))
 @test f.schema.rows == 998
 @test position(f.data) == 114
 @test f.schema.header == ["Transaction_date","Product","Price","Payment_Type","Name","City","State","Country","Account_Created","Last_Login","Latitude","Longitude"]
-@test f.schema.types == [WeakRefString{UInt8},WeakRefString{UInt8},Int,WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},Float64,Float64]
+@test f.schema.types == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Float64},Nullable{Float64}]
 ds = Data.stream!(f, DataFrame)
 
 f = CSV.Source(joinpath(dir, "stocks.csv"))
@@ -301,7 +301,7 @@ f = CSV.Source(joinpath(dir, "stocks.csv"))
 @test f.schema.rows == 30
 @test position(f.data) == 24
 @test f.schema.header == ["Stock Name","Company Name"]
-@test f.schema.types == [WeakRefString{UInt8},WeakRefString{UInt8}]
+@test f.schema.types == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}}]
 ds = Data.stream!(f, DataFrame)
 
 f = CSV.Source(joinpath(dir, "TechCrunchcontinentalUSA.csv"))
@@ -309,7 +309,7 @@ f = CSV.Source(joinpath(dir, "TechCrunchcontinentalUSA.csv"))
 @test f.schema.rows == 1460
 @test position(f.data) == 88
 @test f.schema.header == ["permalink","company","numEmps","category","city","state","fundedDate","raisedAmt","raisedCurrency","round"]
-@test f.schema.types == [WeakRefString{UInt8},WeakRefString{UInt8},Int,WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},Int,WeakRefString{UInt8},WeakRefString{UInt8}]
+@test f.schema.types == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}}]
 ds = Data.stream!(f, DataFrame)
 
 f = CSV.Source(joinpath(dir, "Fielding.csv"))
@@ -317,21 +317,21 @@ f = CSV.Source(joinpath(dir, "Fielding.csv"))
 @test f.schema.rows == 167938
 @test position(f.data) == 77
 @test f.schema.header == ["playerID","yearID","stint","teamID","lgID","POS","G","GS","InnOuts","PO","A","E","DP","PB","WP","SB","CS","ZR"]
-@test f.schema.types == [WeakRefString{UInt8},Int,Int,WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},Int,WeakRefString{UInt8},WeakRefString{UInt8},Int,Int,Int,Int,Int,WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8}]
+@test f.schema.types == [Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{Int},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}}]
 ds = Data.stream!(f, DataFrame)
 
 f = CSV.Source(joinpath(dir, "latest (1).csv"); header=0, null="\\N")
 @test f.schema.cols == 25
 @test f.schema.rows == 1000
 @test f.schema.header == ["Column$i" for i = 1:f.schema.cols]
-@test f.schema.types == [WeakRefString{UInt8},WeakRefString{UInt8},Int,Int,WeakRefString{UInt8},Int,WeakRefString{UInt8},Int,Date,Date,Int,WeakRefString{UInt8},Float64,Float64,Float64,Float64,Int,Float64,Float64,Float64,Float64,Int,Float64,Float64,Float64]
+@test f.schema.types == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Date},Nullable{Date},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Float64},Nullable{Float64}]
 ds = Data.stream!(f, DataFrame)
 
 f = CSV.Source(joinpath(dir, "pandas_zeros.csv"))
 @test f.schema.cols == 50
 @test f.schema.rows == 100000
 @test f.schema.header == [string(i) for i = 0:49]
-@test f.schema.types == repmat([Int],50)
+@test f.schema.types == repmat([Nullable{Int}],50)
 @time ds = Data.stream!(f, DataFrame)
 
 f = CSV.Source(joinpath(dir, "test_header_range.csv");header=1:3)
@@ -349,20 +349,20 @@ ds = Data.stream!(f, DataFrame)
 f = CSV.Source(joinpath(dir, "test_basic.csv");types=Dict(2=>Float64))
 @test f.schema.cols == 3
 @test f.schema.rows == 3
-@test f.schema.types == [Int,Float64,Int]
+@test f.schema.types == [Nullable{Int},Nullable{Float64},Nullable{Int}]
 ds = Data.stream!(f, DataFrame)
 
 f = CSV.Source(joinpath(dir, "test_basic_pipe.csv");delim='|')
 @test f.schema.cols == 3
 @test f.schema.rows == 3
-@test f.schema.types == [Int,Int,Int]
+@test f.schema.types == [Nullable{Int},Nullable{Int},Nullable{Int}]
 @test f.options.delim == UInt8('|')
 ds = Data.stream!(f, DataFrame)
 
 f = CSV.Source(joinpath(dir, "test_basic_pipe.csv");delim='|',footerskip=1)
 @test f.schema.cols == 3
 @test f.schema.rows == 2
-@test f.schema.types == [Int,Int,Int]
+@test f.schema.types == [Nullable{Int},Nullable{Int},Nullable{Int}]
 @test f.options.delim == UInt8('|')
 ds = Data.stream!(f, DataFrame)
 
