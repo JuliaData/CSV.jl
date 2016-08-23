@@ -235,6 +235,7 @@
 <li><code>header</code>; column names can be provided manually as a complete Vector{String}, or as an Int/Range which indicates the row/rows that contain the column names</li>
 <li><code>datarow::Int</code>; specifies the row on which the actual data starts in the file; by default, the data is expected on the next row after the header row(s)</li>
 <li><code>types</code>; column types can be provided manually as a complete Vector{DataType}, or in a Dict to reference a column by name or number</li>
+<li><code>nullable::Bool</code>; indicates whether values can be nullable or not; <code>true</code> by default. If set to <code>false</code> and missing values are encountered, a <code>NullException</code> will be thrown</li>
 <li><code>dateformat::Union{AbstractString,Dates.DateFormat}</code>; how all dates/datetimes are represented in the dataset</li>
 <li><code>footerskip::Int</code>; indicates the number of rows to skip at the end of the file</li>
 <li><code>rows_for_type_detect::Int=100</code>; indicates how many rows should be read to infer the types of columns</li>
@@ -253,7 +254,7 @@
 ...
 </code></pre>
 
-<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/e9f151b085d0ceb1ab157c8ae5d91d80446c6de4/src/Source.jl#L202-L243' class='documenter-source'>source</a><br></p>
+<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/67f2c2c2f332a7431e65a17497b60f3de25c0af1/src/Source.jl#L211-L253' class='documenter-source'>source</a><br></p>
 <p><a id='CSV.write' href='#CSV.write'>#</a>
 <strong><code>CSV.write</code></strong> &mdash; <em>Function</em>.</p>
 <p>write a <code>source::Data.Source</code> out to a <code>CSV.Sink</code></p>
@@ -269,7 +270,7 @@
 <li><code>header::Bool</code>; whether to write out the column names from <code>source</code></li>
 <li><code>append::Bool</code>; start writing data at the end of <code>io</code>; by default, <code>io</code> will be reset to its beginning before writing</li>
 </ul>
-<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/e9f151b085d0ceb1ab157c8ae5d91d80446c6de4/src/Sink.jl#L112-L125' class='documenter-source'>source</a><br></p>
+<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/67f2c2c2f332a7431e65a17497b60f3de25c0af1/src/Sink.jl#L112-L125' class='documenter-source'>source</a><br></p>
 <p><a id='Lower-level-utilities-1'></a></p>
 <h2 id="lower-level-utilities">Lower-level utilities</h2>
 <pre><code>CSV.Source
