@@ -161,7 +161,7 @@ function parsefield{T<:AbstractFloat}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Op
 end
 
 function parsefield{T<:AbstractString}(io::IOBuffer, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state=Ref{ParsingState}(None))
-    eof(io) && (state[] = EOF; return Nullable{T}(WeakRefStrings.NULLSTRING, true))
+    eof(io) && (state[] = EOF; return Nullable{WeakRefString{UInt8}}(WeakRefStrings.NULLSTRING, true))
     ptr = pointer(io.data) + position(io)
     len = 0
     nullcheck = opt.nullcheck # if null is "", then we don't need to byte match it
@@ -197,7 +197,7 @@ function parsefield{T<:AbstractString}(io::IOBuffer, ::Type{T}, opt::CSV.Options
         end
     end
     eof(io) && (state[] = EOF)
-    return (len == 0 || nullcheck) ? Nullable{T}(WeakRefStrings.NULLSTRING, true) : Nullable{T}(WeakRefString(ptr, len))
+    return (len == 0 || nullcheck) ? Nullable{WeakRefString{UInt8}}(WeakRefStrings.NULLSTRING, true) : Nullable{WeakRefString{UInt8}}(WeakRefString(ptr, len))
 end
 
 function parsefield{T<:AbstractString}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state=Ref{ParsingState}(None))
