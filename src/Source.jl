@@ -170,10 +170,10 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     (any(columntypes .== DateTime) && options.dateformat == EMPTY_DATEFORMAT) && (options.dateformat = Dates.ISODateTimeFormat)
     (any(columntypes .== Date) && options.dateformat == EMPTY_DATEFORMAT) && (options.dateformat = Dates.ISODateFormat)
     if nullable
-        columntypes = [T <: Nullable ? T : Nullable{T} for T in columntypes]
+        columntypes = DataType[T <: Nullable ? T : Nullable{T} for T in columntypes]
     else
         # WeakRefStrings won't be safe if they don't end up in a NullableArray
-        columntypes = [T <: WeakRefString ? String : T for T in columntypes]
+        columntypes = DataType[T <: WeakRefString ? String : T for T in columntypes]
     end
     seek(source,datapos)
     return Source(Data.Schema(columnnames,columntypes,rows),
