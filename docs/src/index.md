@@ -15,7 +15,7 @@ CSV.Source
 CSV.Sink
 CSV.Options
 CSV.parsefield
-CSV.readline(::CSV.Source)
+CSV.readline
 CSV.readsplitline
-CSV.countlines(::CSV.Source)
+CSV.countlines
 ```
