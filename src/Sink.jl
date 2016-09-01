@@ -110,16 +110,23 @@ function Data.stream!(source, ::Type{Data.Field}, sink::CSV.Sink, append::Bool)
 end
 
 """
-write a `source::Data.Source` out to a `CSV.Sink`
+`CSV.write(fullpath::Union{AbstractString,IO}, source::Type{T}, args...; kwargs...)` => `CSV.Sink`
+`CSV.write(fullpath::Union{AbstractString,IO}, source::Data.Source; kwargs...)` => `CSV.Sink`
 
-* `io::Union{String,IO}`; a filename (String) or `IO` type to write the `source` to
-* `source`; a `Data.Source` type
-* `delim::Union{Char,UInt8}`; how fields in the file will be delimited
-* `quotechar::Union{Char,UInt8}`; the character that indicates a quoted field that may contain the `delim` or newlines
-* `escapechar::Union{Char,UInt8}`; the character that escapes a `quotechar` in a quoted field
-* `null::String`; the ascii string that indicates how NULL values will be represented in the dataset
-* `dateformat`; how dates/datetimes will be represented in the dataset
-* `quotefields::Bool`; whether all fields should be quoted or not
+write a `Data.Source` out to a `CSV.Sink`.
+
+Positional Arguments:
+
+* `fullpath`; can be a file name (string) or other `IO` instance
+* `source` can be the *type* of `Data.Source`, plus any required `args...`, or an already constructed `Data.Source` can be passsed in directly (2nd method)
+
+Keyword Arguments:
+
+* `delim::Union{Char,UInt8}`; how fields in the file will be delimited; default is `UInt8(',')`
+* `quotechar::Union{Char,UInt8}`; the character that indicates a quoted field that may contain the `delim` or newlines; default is `UInt8('"')`
+* `escapechar::Union{Char,UInt8}`; the character that escapes a `quotechar` in a quoted field; default is `UInt8('\\')`
+* `null::String`; the ascii string that indicates how NULL values will be represented in the dataset; default is the emtpy string `""`
+* `dateformat`; how dates/datetimes will be represented in the dataset; default is ISO-8601 `yyyy-mm-ddTHH:MM:SS.s`
 * `header::Bool`; whether to write out the column names from `source`
 * `append::Bool`; start writing data at the end of `io`; by default, `io` will be reset to its beginning before writing
 """
@@ -129,7 +136,6 @@ function write{T}(io::Union{AbstractString,IO}, ::Type{T}, args...;
               escapechar::Char='\\',
               null::AbstractString="",
               dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateFormat,
-              quotefields::Bool=true,
               header::Bool=true,
               append::Bool=false)
     delim = delim % UInt8; quotechar = quotechar % UInt8; escapechar = escapechar % UInt8
@@ -149,7 +155,6 @@ function write(io::Union{AbstractString,IO}, source;
               escapechar::Char='\\',
               null::AbstractString="",
               dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateFormat,
-              quotefields::Bool=true,
               header::Bool=true,
               append::Bool=false)
     delim = delim % UInt8; quotechar = quotechar % UInt8; escapechar = escapechar % UInt8
