@@ -334,7 +334,7 @@ function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), ro
         while true
             b = Base.read(io, UInt8)
             if b == opt.delim
-                state[] = Delimter
+                state[] = Delimiter
                 break
             elseif b == CSV.NEWLINE
                 state[] = Newline
