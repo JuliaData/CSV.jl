@@ -210,34 +210,36 @@ Data.reference(source::CSV.Source{Base.AbstractIOBuffer{Array{UInt8,1}}}) = sour
 
 """
 
-`CSV.read(fullpath::Union{AbstractString,IO}, sink=DataFrame, args...; kwargs...)` => `typeof(sink)`
+`CSV.read(fullpath::Union{AbstractString,IO}, sink::Type{T}=DataFrame, args...; kwargs...)` => `typeof(sink)`
+`CSV.read(fullpath::Union{AbstractString,IO}, sink::Data.Sink; kwargs...)` => `Data.Sink`
 
 parses a delimited file into a Julia structure (a DataFrame by default, but any `Data.Sink` may be given).
 
 Positional arguments:
 
 * `fullpath`; can be a file name (string) or other `IO` instance
-* `sink`; a `DataFrame` by default, but may also be other `Data.Sink` types that support streaming via `Data.Field` interface
+* `sink::Type{T}`; `DataFrame` by default, but may also be other `Data.Sink` types that support streaming via `Data.Field` interface; note that the method argument can be the *type* of `Data.Sink`, plus any required arguments the sink may need (`args...`).
+                    or an already constructed `sink` may be passed (2nd method above)
 
 Keyword Arguments:
 
-* `delim::Union{Char,UInt8}`; how fields in the file are delimited
-* `quotechar::Union{Char,UInt8}`; the character that indicates a quoted field that may contain the `delim` or newlines
-* `escapechar::Union{Char,UInt8}`; the character that escapes a `quotechar` in a quoted field
-* `null::String`; an ascii string that indicates how NULL values are represented in the dataset
+* `delim::Union{Char,UInt8}`; a single character or ascii-compatible byte that indicates how fields in the file are delimited; default is `UInt8(',')`
+* `quotechar::Union{Char,UInt8}`; the character that indicates a quoted field that may contain the `delim` or newlines; default is `UInt8('"')`
+* `escapechar::Union{Char,UInt8}`; the character that escapes a `quotechar` in a quoted field; default is `UInt8('\\')`
+* `null::String`; an ascii string that indicates how NULL values are represented in the dataset; default is the empty string, `""`
 * `header`; column names can be provided manually as a complete Vector{String}, or as an Int/Range which indicates the row/rows that contain the column names
-* `datarow::Int`; specifies the row on which the actual data starts in the file; by default, the data is expected on the next row after the header row(s)
-* `types`; column types can be provided manually as a complete Vector{DataType}, or in a Dict to reference a column by name or number
+* `datarow::Int`; specifies the row on which the actual data starts in the file; by default, the data is expected on the next row after the header row(s); for a file without column names (header), specify `datarow=1`
+* `types`; column types can be provided manually as a complete Vector{DataType}, or in a Dict to reference individual columns by name or number
 * `nullable::Bool`; indicates whether values can be nullable or not; `true` by default. If set to `false` and missing values are encountered, a `NullException` will be thrown
-* `dateformat::Union{AbstractString,Dates.DateFormat}`; how all dates/datetimes are represented in the dataset
+* `dateformat::Union{AbstractString,Dates.DateFormat}`; how all dates/datetimes in the dataset are formatted
 * `footerskip::Int`; indicates the number of rows to skip at the end of the file
 * `rows_for_type_detect::Int=100`; indicates how many rows should be read to infer the types of columns
-* `rows::Int`; indicates the total number of rows to read from the file; by default the file is pre-parsed to count the # of rows
+* `rows::Int`; indicates the total number of rows to read from the file; by default the file is pre-parsed to count the # of rows; `-1` can be passed to skip a full-file scan, but the `Data.Sink` must be setup account for a potentially unknown # of rows
 * `use_mmap::Bool=true`; whether the underlying file will be mmapped or not while parsing
 
-Note by default, "string" or text columns will be parsed as the `WeakRefString` type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
-To convert a `String` to a standard Julia string type, just call `string(::WeakRefString)`, this also works on an entire column `string(::NullableVector{WeakRefString})`.
-Oftentimes, however, it can be convenient to work with `WeakRefStrings` depending on the ultimate use, such as transfering the data directly to another system and avoiding all the intermediate byte copying.
+Note by default, "string" or text columns will be parsed as the [`WeakRefString`](https://github.com/quinnj/WeakRefStrings.jl) type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
+To convert a `String` to a standard Julia string type, just call `string(::WeakRefString)`, this also works on an entire column.
+Oftentimes, however, it can be convenient to work with `WeakRefStrings` depending on the ultimate use, such as transfering the data directly to another system and avoiding all the intermediate copying.
 
 Example usage:
 ```
