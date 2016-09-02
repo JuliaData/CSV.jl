@@ -79,9 +79,11 @@ function writefield{T}(sink::Sink, val::Nullable{T}, col, cols)
     writefield(sink, isnull(val) ? sink.options.null : get(val), col, cols)
     return nothing
 end
+if isdefined(:NAtype)
 function writefield(sink::Sink, val::NAtype, col, cols)
     writefield(sink, sink.options.null, col, cols)
     return nothing
+end
 end
 
 function writefield!{T}(sink, source, ::Type{T}, row, col, cols)
