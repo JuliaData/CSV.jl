@@ -100,13 +100,14 @@ function Data.stream!(source, ::Type{Data.Field}, sink::CSV.Sink, append::Bool)
     Data.isdone(source, 1, 1) && return sink
     types = Data.types(source)
     row = 1
-    while !Data.isdone(source, row, cols+1)
+    while true
         for col = 1:cols
             writefield!(sink, source, types[col], row, col, cols)
         end
         row += 1
+        Data.isdone(source, row, cols) && break
     end
-    Data.setrows!(source, rows)
+    Data.setrows!(source, row - 1)
     flush(sink)
     return sink
 end
