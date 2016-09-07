@@ -209,7 +209,6 @@ Data.getfield{T}(source::CSV.Source, ::Type{Nullable{T}}, row, col) = CSV.parsef
 Data.reference(source::CSV.Source{Base.AbstractIOBuffer{Array{UInt8,1}}}) = source.data.data
 
 """
-
 `CSV.read(fullpath::Union{AbstractString,IO}, sink::Type{T}=DataFrame, args...; kwargs...)` => `typeof(sink)`
 `CSV.read(fullpath::Union{AbstractString,IO}, sink::Data.Sink; kwargs...)` => `Data.Sink`
 
