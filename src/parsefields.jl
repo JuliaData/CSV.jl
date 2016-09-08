@@ -376,7 +376,6 @@ end
 function parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state=Ref{ParsingState}(None))
     mark(io)
     b, null = CSV.checknullstart(io, opt, state)
-    v = zero(T)
     null && return Nullable{T}()
     buf = IOBuffer()
     Base.write(buf, b)
