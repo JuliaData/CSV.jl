@@ -254,7 +254,7 @@
 ...
 </code></pre>
 
-<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/5ad2674371adc09082c38f2e3f0c5c3dafc7614f/src/Source.jl#L211-L254' class='documenter-source'>source</a><br></p>
+<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/c5bda3843ec7e50142ca6f5325e041d06bd575ba/src/Source.jl#L211-L254' class='documenter-source'>source</a><br></p>
 <p><a id='CSV.write' href='#CSV.write'>#</a>
 <strong><code>CSV.write</code></strong> &mdash; <em>Function</em>.</p>
 <p><code>CSV.write(fullpath::Union{AbstractString,IO}, source::Type{T}, args...; kwargs...)</code> =&gt; <code>CSV.Sink</code> <code>CSV.write(fullpath::Union{AbstractString,IO}, source::Data.Source; kwargs...)</code> =&gt; <code>CSV.Sink</code></p>
@@ -274,19 +274,19 @@
 <li><code>header::Bool</code>; whether to write out the column names from <code>source</code></li>
 <li><code>append::Bool</code>; start writing data at the end of <code>io</code>; by default, <code>io</code> will be reset to its beginning before writing</li>
 </ul>
-<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/5ad2674371adc09082c38f2e3f0c5c3dafc7614f/src/Sink.jl#L115-L135' class='documenter-source'>source</a><br></p>
+<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/c5bda3843ec7e50142ca6f5325e041d06bd575ba/src/Sink.jl#L115-L135' class='documenter-source'>source</a><br></p>
 <p><a id='Lower-level-utilities-1'></a></p>
 <h2 id="lower-level-utilities">Lower-level utilities</h2>
 <p><a id='CSV.Source' href='#CSV.Source'>#</a>
 <strong><code>CSV.Source</code></strong> &mdash; <em>Type</em>.</p>
 <p>constructs a <code>CSV.Source</code> file ready to start parsing data from</p>
 <p>implements the <code>Data.Source</code> interface for providing convenient <code>Data.stream!</code> methods for various <code>Data.Sink</code> types</p>
-<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/5ad2674371adc09082c38f2e3f0c5c3dafc7614f/src/CSV.jl#L91-L95' class='documenter-source'>source</a><br></p>
+<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/c5bda3843ec7e50142ca6f5325e041d06bd575ba/src/CSV.jl#L91-L95' class='documenter-source'>source</a><br></p>
 <p><a id='CSV.Sink' href='#CSV.Sink'>#</a>
 <strong><code>CSV.Sink</code></strong> &mdash; <em>Type</em>.</p>
 <p>constructs a <code>CSV.Sink</code> file ready to start writing data to</p>
 <p>implements the <code>Data.Sink</code> interface for providing convenient <code>Data.stream!</code> methods for various <code>Data.Source</code> types</p>
-<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/5ad2674371adc09082c38f2e3f0c5c3dafc7614f/src/CSV.jl#L110-L114' class='documenter-source'>source</a><br></p>
+<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/c5bda3843ec7e50142ca6f5325e041d06bd575ba/src/CSV.jl#L110-L114' class='documenter-source'>source</a><br></p>
 <p><a id='CSV.Options' href='#CSV.Options'>#</a>
 <strong><code>CSV.Options</code></strong> &mdash; <em>Type</em>.</p>
 <p>Represents the various configuration settings for csv file parsing.</p>
@@ -298,27 +298,27 @@
 <li><code>null</code>::String = indicates how NULL values are represented in the dataset</li>
 <li><code>dateformat</code>::Union{AbstractString,Dates.DateFormat} = how dates/datetimes are represented in the dataset</li>
 </ul>
-<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/5ad2674371adc09082c38f2e3f0c5c3dafc7614f/src/CSV.jl#L51-L61' class='documenter-source'>source</a><br></p>
+<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/c5bda3843ec7e50142ca6f5325e041d06bd575ba/src/CSV.jl#L51-L61' class='documenter-source'>source</a><br></p>
 <p><a id='CSV.parsefield' href='#CSV.parsefield'>#</a>
 <strong><code>CSV.parsefield</code></strong> &mdash; <em>Function</em>.</p>
 <p><code>CSV.parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)</code> =&gt; <code>Nullable{T}</code></p>
 <p><code>io</code> is an <code>IO</code> type that is positioned at the first byte/character of an delimited-file field (i.e. a single cell) leading whitespace is ignored for Integer and Float types. returns a <code>Nullable{T}</code> saying whether the field contains a null value or not (empty field, missing value) field is null if the next delimiter or newline is encountered before any other characters. Specialized methods exist for Integer, Float, String, Date, and DateTime. For other types <code>T</code>, a generic fallback requires <code>parse(T, str::String)</code> to be defined. the field value may also be wrapped in <code>opt.quotechar</code>; two consecutive <code>opt.quotechar</code> results in a null field <code>opt.null</code> is also checked if there is a custom value provided (i.e. "NA", "\N", etc.) For numeric fields, if field is non-null and non-digit characters are encountered at any point before a delimiter or newline, an error is thrown</p>
-<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/5ad2674371adc09082c38f2e3f0c5c3dafc7614f/src/parsefields.jl#L68-L80' class='documenter-source'>source</a><br></p>
+<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/c5bda3843ec7e50142ca6f5325e041d06bd575ba/src/parsefields.jl#L68-L80' class='documenter-source'>source</a><br></p>
 <p><a id='CSV.readline' href='#CSV.readline'>#</a>
 <strong><code>CSV.readline</code></strong> &mdash; <em>Function</em>.</p>
 <p><code>CSV.readline(io::IO, q='"', e='\', buf::IOBuffer=IOBuffer())</code> =&gt; <code>String</code> <code>CSV.readline(source::CSV.Source)</code> =&gt; <code>String</code></p>
 <p>read a single line from <code>io</code> (any <code>IO</code> type) or a <code>CSV.Source</code> as a string, accounting for potentially embedded newlines in quoted fields (e.g. value1, value2, "value3 with   embedded newlines"). Can optionally provide a <code>buf::IOBuffer</code> type for buffer reuse</p>
-<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/5ad2674371adc09082c38f2e3f0c5c3dafc7614f/src/io.jl#L1-L7' class='documenter-source'>source</a><br></p>
+<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/c5bda3843ec7e50142ca6f5325e041d06bd575ba/src/io.jl#L1-L7' class='documenter-source'>source</a><br></p>
 <p><a id='CSV.readsplitline' href='#CSV.readsplitline'>#</a>
 <strong><code>CSV.readsplitline</code></strong> &mdash; <em>Function</em>.</p>
 <p><code>CSV.readsplitline(io, d=',', q='"', e='\', buf::IOBuffer=IOBuffer())</code> =&gt; <code>Vector{String}</code> <code>CSV.readsplitline(source::CSV.Source)</code> =&gt; <code>Vector{String}</code></p>
 <p>read a single line from <code>io</code> (any <code>IO</code> type) as a <code>Vector{String}</code> with elements being delimited fields (separated by a delimiter <code>d</code>). Can optionally provide a <code>buf::IOBuffer</code> type for buffer reuse</p>
-<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/5ad2674371adc09082c38f2e3f0c5c3dafc7614f/src/io.jl#L36-L41' class='documenter-source'>source</a><br></p>
+<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/c5bda3843ec7e50142ca6f5325e041d06bd575ba/src/io.jl#L36-L41' class='documenter-source'>source</a><br></p>
 <p><a id='CSV.countlines' href='#CSV.countlines'>#</a>
 <strong><code>CSV.countlines</code></strong> &mdash; <em>Function</em>.</p>
 <p><code>CSV.countlines(io::IO, quotechar, escapechar)</code> =&gt; <code>Int</code> <code>CSV.countlines(source::CSV.Source)</code> =&gt; <code>Int</code></p>
 <p>count the number of lines in a file, accounting for potentially embedded newlines in quoted fields</p>
-<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/5ad2674371adc09082c38f2e3f0c5c3dafc7614f/src/io.jl#L77-L82' class='documenter-source'>source</a><br></p>
+<p><a target='_blank' href='https://github.com/JuliaData/CSV.jl/tree/c5bda3843ec7e50142ca6f5325e041d06bd575ba/src/io.jl#L77-L82' class='documenter-source'>source</a><br></p>
           <aside class="copyright" role="note">
             
             Documentation built with
