@@ -2,7 +2,7 @@
 function Sink(s::CSV.Source; append::Bool=false)
     data = open(s.fullpath, append ? "a" : "w")
     seek(data, append ? filesize(s.fullpath) : s.datapos)
-    return Sink(s.schema, s.options, data, s.datapos, !append)
+    return Sink(s.schema, s.options, s.fullpath, data, s.datapos, !append)
 end
 
 function Sink(io::Union{AbstractString,IO},
@@ -16,9 +16,9 @@ function Sink(io::Union{AbstractString,IO},
               append::Bool=false)
     delim = delim % UInt8; quotechar = quotechar % UInt8; escapechar = escapechar % UInt8
     dateformat = isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat
-    io = isa(io, AbstractString) ? open(io, append ? "a" : "w") : io
+    name, io = isa(io, AbstractString) ? (io, open(io, append ? "a" : "w")) : ("__IO__", io)
     return Sink(schema, CSV.Options(delim, quotechar, escapechar, COMMA, PERIOD,
-            ascii(null), null=="", dateformat, dateformat == Dates.ISODateFormat, -1, 0, 1, DataType[]), io, 0, header)
+            ascii(null), null=="", dateformat, dateformat == Dates.ISODateFormat, -1, 0, 1, DataType[]), name, io, 0, header && !append)
 end
 
 Base.close(s::Sink) = (applicable(close, s.data) && close(s.data); return nothing)
@@ -41,25 +41,32 @@ end
 Data.streamtypes{T<:CSV.Sink}(::Type{T}) = [Data.Field]
 
 # Constructors
-# CSV.read(file, CSV.Sink, file_or_io; append=true)
 function Sink{T}(source, ::Type{T}, append::Bool, file::AbstractString)
     sch = Data.schema(source)
     io = open(file, append ? "a" : "w")
-    return Sink(sch, CSV.Options(), io, 0, !append)
+    return Sink(io, sch; append=append)
 end
+
 function Sink{T}(source, ::Type{T}, append::Bool, io::IO)
     sch = Data.schema(source)
     append ? io : seekstart(io)
-    return Sink(sch, CSV.Options(), io, 0, !append)
+    return Sink(io, sch; append=append)
 end
-# TT(sink, source, typ, append)
+
 function Sink{T}(sink, source, ::Type{T}, append::Bool)
-    !append && seekstart(sink.data)
+    if !isopen(sink.data)
+        # try to re-open if we have filename
+        sink.path == "__IO__" && throw(ArgumentError("unable to stream to a closed sink"))
+        sink.data = open(sink.path, append ? "a" : "w")
+    else
+        !append && seekstart(sink.data)
+    end
+    append && (sink.header = false)
     sink.schema = Data.schema(source)
     return sink
 end
 
-writefield(io::Sink, val, col, N) = (col == N ? println(io.data,val) : print(io.data,val,Char(io.options.delim)); return nothing)
+writefield(io::Sink, val, col, N) = (col == N ? println(io.data, val) : print(io.data, val, Char(io.options.delim)); return nothing)
 function writefield(sink::Sink, val::AbstractString, col, cols)
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
     print(sink.data, q, replace(string(val), q, "$e$q"), q)
@@ -86,31 +93,15 @@ function writefield(sink::Sink, val::NAtype, col, cols)
 end
 end
 
-function writefield!{T}(sink, source, ::Type{T}, row, col, cols)
+function Data.streamfield!{T}(sink::CSV.Sink, source, ::Type{T}, row, col, cols)
     val = Data.getfield(source, T, row, col)
     writefield(sink, val, col, cols)
     return nothing
 end
 
-# stream data from `source` to `sink`; `header::Bool` = whether to write the column names or not
-function Data.stream!(source, ::Type{Data.Field}, sink::CSV.Sink, append::Bool)
-    Data.schema(sink) == Data.EMPTYSCHEMA && (sink.schema = Data.schema(source))
-    !append && sink.header && writeheaders(source, sink)
-    rows, cols = size(source)
-    Data.isdone(source, 1, 1) && return sink
-    types = Data.types(source)
-    row = 1
-    while true
-        for col = 1:cols
-            writefield!(sink, source, types[col], row, col, cols)
-        end
-        row += 1
-        Data.isdone(source, row, cols) && break
-    end
-    Data.setrows!(source, row - 1)
-    flush(sink)
-    return sink
-end
+Data.open!(sink::CSV.Sink, source) = (sink.header && writeheaders(source, sink); return nothing)
+Data.flush!(sink::CSV.Sink) = flush(sink)
+Data.close!(sink::CSV.Sink) = close(sink)
 
 """
 `CSV.write(fullpath::Union{AbstractString,IO}, source::Type{T}, args...; kwargs...)` => `CSV.Sink`
@@ -131,7 +122,7 @@ Keyword Arguments:
 * `null::String`; the ascii string that indicates how NULL values will be represented in the dataset; default is the emtpy string `""`
 * `dateformat`; how dates/datetimes will be represented in the dataset; default is ISO-8601 `yyyy-mm-ddTHH:MM:SS.s`
 * `header::Bool`; whether to write out the column names from `source`
-* `append::Bool`; start writing data at the end of `io`; by default, `io` will be reset to its beginning before writing
+* `append::Bool`; start writing data at the end of `io`; by default, `io` will be reset to the beginning before writing
 """
 function write{T}(io::Union{AbstractString,IO}, ::Type{T}, args...;
               delim::Char=',',
@@ -141,15 +132,10 @@ function write{T}(io::Union{AbstractString,IO}, ::Type{T}, args...;
               dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateFormat,
               header::Bool=true,
               append::Bool=false)
-    delim = delim % UInt8; quotechar = quotechar % UInt8; escapechar = escapechar % UInt8
-    dateformat = isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat
-    io = isa(io,AbstractString) ? open(io, append ? "a" : "w") : io
-    source = T(args...)
-    schema = Data.schema(source)
-    sink = Sink(schema, CSV.Options(delim, quotechar, escapechar, COMMA, PERIOD,
-            ascii(null), null=="", dateformat, dateformat == Dates.ISODateFormat, -1, 0, 1, DataType[]), io, 0, header)
-    Data.stream!(source, sink, append)
-    close(sink)
+    sink = Sink(io; delim=delim, quotechar=quotechar, escapechar=escapechar, null=null,
+                                         dateformat=dateformat, header=header, append=append)
+    Data.stream!(T(args...), sink, append)
+    Data.close!(sink)
     return sink
 end
 function write(io::Union{AbstractString,IO}, source;
@@ -160,16 +146,12 @@ function write(io::Union{AbstractString,IO}, source;
               dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateFormat,
               header::Bool=true,
               append::Bool=false)
-    delim = delim % UInt8; quotechar = quotechar % UInt8; escapechar = escapechar % UInt8
-    dateformat = isa(dateformat,AbstractString) ? Dates.DateFormat(dateformat) : dateformat
-    io = isa(io,AbstractString) ? open(io, append ? "a" : "w") : io
-    schema = Data.schema(source)
-    sink = Sink(schema, CSV.Options(delim, quotechar, escapechar, COMMA, PERIOD,
-            ascii(null), null=="", dateformat, dateformat == Dates.ISODateFormat, -1, 0, 1, DataType[]), io, 0, header)
+    sink = Sink(io, Data.schema(source); delim=delim, quotechar=quotechar, escapechar=escapechar, null=null,
+                                         dateformat=dateformat, header=header, append=append)
     Data.stream!(source, sink, append)
-    close(sink)
+    Data.close!(sink)
     return sink
 end
 
-write{T}(sink::Sink, ::Type{T}, args...; append::Bool=false) = Data.stream!(T(args...), sink, append)
-write(sink::Sink, source; append::Bool=false) = Data.stream!(source, sink, append)
+write{T}(sink::Sink, ::Type{T}, args...; append::Bool=false) = (sink = Data.stream!(T(args...), sink, append); Data.close!(sink); return sink)
+write(sink::Sink, source; append::Bool=false) = (sink = Data.stream!(source, sink, append); Data.close!(sink); return sink)

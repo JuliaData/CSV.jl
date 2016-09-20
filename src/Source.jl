@@ -202,7 +202,7 @@ end
 
 # Data.Source interface
 Data.reset!(io::CSV.Source) = seek(io.data,io.datapos)
-Data.isdone(io::CSV.Source, row, col) = eof(io.data)
+Data.isdone(io::CSV.Source, row, col) = eof(io.data) || (row > io.schema.rows && io.schema.rows > -1)
 Data.streamtype{T<:CSV.Source}(::Type{T}, ::Type{Data.Field}) = true
 Data.getfield{T}(source::CSV.Source, ::Type{T}, row, col) = get(CSV.parsefield(source.data, T, source.options, row, col))
 Data.getfield{T}(source::CSV.Source, ::Type{Nullable{T}}, row, col) = CSV.parsefield(source.data, T, source.options, row, col)
@@ -235,6 +235,7 @@ Keyword Arguments:
 * `rows_for_type_detect::Int=100`; indicates how many rows should be read to infer the types of columns
 * `rows::Int`; indicates the total number of rows to read from the file; by default the file is pre-parsed to count the # of rows; `-1` can be passed to skip a full-file scan, but the `Data.Sink` must be setup account for a potentially unknown # of rows
 * `use_mmap::Bool=true`; whether the underlying file will be mmapped or not while parsing
+* `append::Bool=false`; if the `sink` argument provided is an existing table, `append=true` will append the source's data to the existing data instead of doing a full replace
 
 Note by default, "string" or text columns will be parsed as the [`WeakRefString`](https://github.com/quinnj/WeakRefStrings.jl) type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
 To convert a `String` to a standard Julia string type, just call `string(::WeakRefString)`, this also works on an entire column.
@@ -271,7 +272,9 @@ function read(fullpath::Union{AbstractString,IO}, sink=DataFrame, args...; appen
                   delim=delim, quotechar=quotechar, escapechar=escapechar, null=null,
                   header=header, datarow=datarow, types=types, nullable=nullable, dateformat=dateformat,
                   footerskip=footerskip, rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
-    return Data.stream!(source, sink, append, args...)
+    sink = Data.stream!(source, sink, append, args...)
+    Data.close!(sink)
+    return sink
 end
 
 function read{T}(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false,
@@ -293,8 +296,10 @@ function read{T}(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false
                   delim=delim, quotechar=quotechar, escapechar=escapechar, null=null,
                   header=header, datarow=datarow, types=types, nullable=nullable, dateformat=dateformat,
                   footerskip=footerskip, rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
-    return Data.stream!(source, sink, append)
+    sink = Data.stream!(source, sink, append)
+    Data.close!(sink)
+    return sink
 end
 
-read(source::CSV.Source, sink=DataFrame, args...; append::Bool=false) = Data.stream!(source, sink, append, args...)
-read{T}(source::CSV.Source, sink::T; append::Bool=false) = Data.stream!(source, sink, append)
+read(source::CSV.Source, sink=DataFrame, args...; append::Bool=false) = (sink = Data.stream!(source, sink, append, args...); Data.close!(sink); return sink)
+read{T}(source::CSV.Source, sink::T; append::Bool=false) = (sink = Data.stream!(source, sink, append); Data.close!(sink); return sink)
