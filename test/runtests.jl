@@ -8,7 +8,7 @@ if VERSION < v"0.5-dev"
     readstring = readall
 end
 
-dir = "/Users/jacobquinn/.julia/v0.5/CSV/test/test_files/"
+# dir = joinpath(Pkg.dir("CSV"), "test/test_files")
 dir = joinpath(dirname(@__FILE__),"test_files/")
 
 #test on non-existent file
@@ -36,7 +36,7 @@ ds = Data.stream!(f, DataFrame)
 f = CSV.Source(joinpath(dir, "test_utf8.csv"))
 si = CSV.write(joinpath(dir, "new_test_utf8.csv"), f)
 # @test Data.isdone(si)
-@test si.schema == f.schema
+@test Data.header(si) == Data.header(f) && Data.types(si) == Data.types(f)
 so = CSV.Source(si)
 @test so.options.delim == UInt8(',')
 @test so.schema.cols == 3

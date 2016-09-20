@@ -115,6 +115,7 @@ implements the `Data.Sink` interface for providing convenient `Data.stream!` met
 type Sink <: Data.Sink
     schema::Data.Schema
     options::Options
+    path::String
     data::IO
     datapos::Int # the byte position in `io` where the data rows start
     header::Bool
