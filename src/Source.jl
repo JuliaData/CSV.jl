@@ -176,7 +176,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         columntypes = DataType[T <: WeakRefString ? String : T for T in columntypes]
     end
     seek(source,datapos)
-    return Source(Data.Schema(columnnames,columntypes,rows),
+    return Source(Data.Schema(Data.Field, columnnames,columntypes,rows),
                   options,source,datapos,String(fullpath))
 end
 
@@ -195,6 +195,8 @@ function Source(s::CSV.Sink)
     for (i, T) in enumerate(s.schema.types)
         if T <: AbstractString
             s.schema.types[i] = WeakRefString{UInt8}
+        elseif T <: Nullable && eltype(T) <: AbstractString
+            s.schema.types[i] = Nullable{WeakRefString{UInt8}}
         end
     end
     return Source(s.schema,s.options,data,s.datapos,nm)
@@ -253,53 +255,19 @@ julia> dt = CSV.read("bids.csv")
 ...
 ```
 """
-function read(fullpath::Union{AbstractString,IO}, sink=DataFrame, args...; append::Bool=false,
-              delim=COMMA,
-              quotechar=QUOTE,
-              escapechar=ESCAPE,
-              null::AbstractString=String(""),
-              header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
-              datarow::Int=-1, # by default, data starts immediately after header or start of file
-              types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
-              nullable::Bool=true,
-              dateformat::Union{AbstractString,Dates.DateFormat}=EMPTY_DATEFORMAT,
-
-              footerskip::Int=0,
-              rows_for_type_detect::Int=100,
-              rows::Int=0,
-              use_mmap::Bool=true)
-    source = Source(fullpath;
-                  delim=delim, quotechar=quotechar, escapechar=escapechar, null=null,
-                  header=header, datarow=datarow, types=types, nullable=nullable, dateformat=dateformat,
-                  footerskip=footerskip, rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
-    sink = Data.stream!(source, sink, append, args...)
+function read(fullpath::Union{AbstractString,IO}, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
+    source = Source(fullpath; kwargs...)
+    sink = Data.stream!(source, sink, append, transforms, args...)
     Data.close!(sink)
     return sink
 end
 
-function read{T}(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false,
-              delim=COMMA,
-              quotechar=QUOTE,
-              escapechar=ESCAPE,
-              null::AbstractString=String(""),
-              header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
-              datarow::Int=-1, # by default, data starts immediately after header or start of file
-              types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
-              nullable::Bool=true,
-              dateformat::Union{AbstractString,Dates.DateFormat}=EMPTY_DATEFORMAT,
-
-              footerskip::Int=0,
-              rows_for_type_detect::Int=100,
-              rows::Int=0,
-              use_mmap::Bool=true)
-    source = Source(fullpath;
-                  delim=delim, quotechar=quotechar, escapechar=escapechar, null=null,
-                  header=header, datarow=datarow, types=types, nullable=nullable, dateformat=dateformat,
-                  footerskip=footerskip, rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
-    sink = Data.stream!(source, sink, append)
+function read{T}(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
+    source = Source(fullpath; kwargs...)
+    sink = Data.stream!(source, sink, append, transforms)
     Data.close!(sink)
     return sink
 end
 
-read(source::CSV.Source, sink=DataFrame, args...; append::Bool=false) = (sink = Data.stream!(source, sink, append, args...); Data.close!(sink); return sink)
-read{T}(source::CSV.Source, sink::T; append::Bool=false) = (sink = Data.stream!(source, sink, append); Data.close!(sink); return sink)
+read(source::CSV.Source, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, append, transforms, args...); Data.close!(sink); return sink)
+read{T}(source::CSV.Source, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, append, transforms); Data.close!(sink); return sink)
