@@ -181,26 +181,27 @@ function Source(;fullpath::Union{AbstractString,IO}="",
 end
 
 # construct a new Source from a Sink that has been streamed to (i.e. DONE)
-function Source(s::CSV.Sink)
-    io = s.data
-    if isa(io,IOStream)
-        nm = String(chop(replace(io.name,"<file ","")))
-        data = IOBuffer(Mmap.mmap(nm))
-    else
-        seek(io, s.datapos)
-        data = IOBuffer(readbytes(io))
-        nm = String("")
-    end
-    seek(data,s.datapos)
-    for (i, T) in enumerate(s.schema.types)
-        if T <: AbstractString
-            s.schema.types[i] = WeakRefString{UInt8}
-        elseif T <: Nullable && eltype(T) <: AbstractString
-            s.schema.types[i] = Nullable{WeakRefString{UInt8}}
-        end
-    end
-    return Source(s.schema,s.options,data,s.datapos,nm)
-end
+Source(s::CSV.Sink) = CSV.Source(fullpath= isa(s.data, IOStream) ? String(chop(replace(io.name,"<file ",""))) : seekstart(s.data), options=s.options)
+# function Source(s::CSV.Sink)
+#     io = s.data
+#     if isa(io,IOStream)
+#         nm = String(chop(replace(io.name,"<file ","")))
+#         data = IOBuffer(Mmap.mmap(nm))
+#     else
+#         seek(io, s.datapos)
+#         data = IOBuffer(readbytes(io))
+#         nm = String("")
+#     end
+#     seek(data,s.datapos)
+#     for (i, T) in enumerate(s.schema.types)
+#         if T <: AbstractString
+#             s.schema.types[i] = WeakRefString{UInt8}
+#         elseif T <: Nullable && eltype(T) <: AbstractString
+#             s.schema.types[i] = Nullable{WeakRefString{UInt8}}
+#         end
+#     end
+#     return Source(s.schema,s.options,data,s.datapos,nm)
+# end
 
 # Data.Source interface
 Data.reset!(io::CSV.Source) = seek(io.data,io.datapos)
