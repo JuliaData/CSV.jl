@@ -36,8 +36,6 @@ ds = Data.stream!(f, DataFrame)
 
 f = CSV.Source(joinpath(dir, "test_utf8.csv"))
 si = CSV.write(joinpath(dir, "new_test_utf8.csv"), f)
-# @test Data.isdone(si)
-@test Data.header(si) == Data.header(f) && Data.types(si) == Data.types(f)
 so = CSV.Source(si)
 @test so.options.delim == UInt8(',')
 @test size(so, 2) == 3
@@ -50,7 +48,7 @@ ds = Data.stream!(so, DataFrame)
 @test ds[2,1].value == 4.0
 @test ds[3,1].value == 7.0
 @test ds[1,2].value == 2.0
-@test Data.types(f) == Data.types(si) == Data.types(so) == Data.types(ds)
+@test Data.types(f) == Data.types(so) == Data.types(ds)
 f = si = so = ds = nothing; gc(); gc()
 rm(joinpath(dir, "new_test_utf8.csv"))
 

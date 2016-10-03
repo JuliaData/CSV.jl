@@ -113,7 +113,6 @@ constructs a `CSV.Sink` file ready to start writing data to
 implements the `Data.Sink` interface for providing convenient `Data.stream!` methods for various `Data.Source` types
 """
 type Sink <: Data.Sink
-    schema::Data.Schema
     options::Options
     path::String
     data::IO

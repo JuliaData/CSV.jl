@@ -1,5 +1,4 @@
-function Sink(io::Union{AbstractString,IO},
-              schema::Data.Schema=Data.Schema();
+function Sink(io::Union{AbstractString,IO};
               delim::Char=',',
               quotechar::Char='"',
               escapechar::Char='\\',
@@ -10,7 +9,7 @@ function Sink(io::Union{AbstractString,IO},
     delim = delim % UInt8; quotechar = quotechar % UInt8; escapechar = escapechar % UInt8
     dateformat = isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat
     name, io = isa(io, AbstractString) ? (io, open(io, append ? "a" : "w")) : ("__IO__", io)
-    return Sink(schema, CSV.Options(delim, quotechar, escapechar, COMMA, PERIOD,
+    return Sink(CSV.Options(delim, quotechar, escapechar, COMMA, PERIOD,
             ascii(null), null=="", dateformat, dateformat == Dates.ISODateFormat, -1, 0, 1, DataType[]), name, io, 0, header && !append)
 end
 
@@ -36,14 +35,14 @@ Data.streamtypes{T<:CSV.Sink}(::Type{T}) = [Data.Field]
 # Constructors
 function Sink{T}(sch::Data.Schema, ::Type{T}, append::Bool, ref::Vector{UInt8}, file::AbstractString; kwargs...)
     io = open(file, append ? "a" : "w")
-    sink = Sink(io, sch; append=append, kwargs...)
+    sink = Sink(io; append=append, kwargs...)
     !append && writeheaders(sch, sink)
     return sink
 end
 
 function Sink{T}(sch::Data.Schema, ::Type{T}, append::Bool, ref::Vector{UInt8}, io::IO; kwargs...)
     !append && seekstart(io)
-    sink = Sink(io, sch; append=append, kwargs...)
+    sink = Sink(io; append=append, kwargs...)
     !append && writeheaders(sch, sink)
     return sink
 end
@@ -57,34 +56,33 @@ function Sink{T}(sink, sch::Data.Schema, ::Type{T}, append::Bool, ref::Vector{UI
         !append && seekstart(sink.data)
     end
     !append && writeheaders(sch, sink)
-    sink.schema = sch
     return sink
 end
 
-Data.stream!(sink::Sink, ::Type{Data.Field}, val, row, col, cols) = (col == cols ? println(sink.data, val) : print(sink.data, val, Char(sink.options.delim)); return nothing)
-function Data.stream!(sink::Sink, ::Type{Data.Field}, val::AbstractString, row, col, cols)
+Data.streamto!(sink::Sink, ::Type{Data.Field}, val, row, col, sch) = (col == size(sch, 2) ? println(sink.data, val) : print(sink.data, val, Char(sink.options.delim)); return nothing)
+function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::AbstractString, row, col, sch)
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
     print(sink.data, q, replace(string(val), q, "$e$q"), q)
-    print(sink.data, ifelse(col == cols, Char(NEWLINE), Char(sink.options.delim)))
+    print(sink.data, ifelse(col == size(sch, 2), Char(NEWLINE), Char(sink.options.delim)))
     return nothing
 end
 
-function Data.stream!(sink::Sink, ::Type{Data.Field}, val::Dates.TimeType, row, col, cols)
+function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::Dates.TimeType, row, col, sch)
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
     val = sink.options.datecheck ? string(val) : Dates.format(val, sink.options.dateformat)
     print(sink.data, val)
-    print(sink.data, ifelse(col == cols, Char(NEWLINE), Char(sink.options.delim)))
+    print(sink.data, ifelse(col == size(sch, 2), Char(NEWLINE), Char(sink.options.delim)))
     return nothing
 end
 
-function Data.stream!{T}(sink::Sink, ::Type{Data.Field}, val::Nullable{T}, row, col, cols)
-    Data.stream!(sink, Data.Field, isnull(val) ? sink.options.null : get(val), row, col, cols)
+function Data.streamto!{T}(sink::Sink, ::Type{Data.Field}, val::Nullable{T}, row, col, sch)
+    Data.streamto!(sink, Data.Field, isnull(val) ? sink.options.null : get(val), row, col, sch)
     return nothing
 end
 
 if isdefined(:NAtype)
-function Data.stream!(sink::Sink, ::Type{Data.Field}, val::NAtype, row, col, cols)
-    Data.stream!(sink, Data.Field, sink.options.null, row, col, cols)
+function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::NAtype, row, col, sch)
+    Data.streamto!(sink, Data.Field, sink.options.null, row, col, sch)
     return nothing
 end
 end
