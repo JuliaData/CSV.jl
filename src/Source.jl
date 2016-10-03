@@ -176,39 +176,19 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         columntypes = DataType[T <: WeakRefString ? String : T for T in columntypes]
     end
     seek(source,datapos)
-    return Source(Data.Schema(Data.Field, columnnames,columntypes,rows),
+    return Source(Data.Schema(columnnames,columntypes,rows),
                   options,source,datapos,String(fullpath))
 end
 
 # construct a new Source from a Sink that has been streamed to (i.e. DONE)
-Source(s::CSV.Sink) = CSV.Source(fullpath= isa(s.data, IOStream) ? String(chop(replace(io.name,"<file ",""))) : seekstart(s.data), options=s.options)
-# function Source(s::CSV.Sink)
-#     io = s.data
-#     if isa(io,IOStream)
-#         nm = String(chop(replace(io.name,"<file ","")))
-#         data = IOBuffer(Mmap.mmap(nm))
-#     else
-#         seek(io, s.datapos)
-#         data = IOBuffer(readbytes(io))
-#         nm = String("")
-#     end
-#     seek(data,s.datapos)
-#     for (i, T) in enumerate(s.schema.types)
-#         if T <: AbstractString
-#             s.schema.types[i] = WeakRefString{UInt8}
-#         elseif T <: Nullable && eltype(T) <: AbstractString
-#             s.schema.types[i] = Nullable{WeakRefString{UInt8}}
-#         end
-#     end
-#     return Source(s.schema,s.options,data,s.datapos,nm)
-# end
+Source(s::CSV.Sink) = CSV.Source(fullpath= isa(s.data, IOStream) ? String(chop(replace(s.data.name,"<file ",""))) : seekstart(s.data), options=s.options)
 
 # Data.Source interface
-Data.reset!(io::CSV.Source) = seek(io.data,io.datapos)
+Data.schema(source::CSV.Source, ::Type{Data.Field}) = source.schema
 Data.isdone(io::CSV.Source, row, col) = eof(io.data) || (row > io.schema.rows && io.schema.rows > -1)
 Data.streamtype{T<:CSV.Source}(::Type{T}, ::Type{Data.Field}) = true
-Data.getfield{T}(source::CSV.Source, ::Type{T}, row, col) = get(CSV.parsefield(source.data, T, source.options, row, col))
-Data.getfield{T}(source::CSV.Source, ::Type{Nullable{T}}, row, col) = CSV.parsefield(source.data, T, source.options, row, col)
+Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col) = get(CSV.parsefield(source.data, T, source.options, row, col))
+Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{Nullable{T}}, row, col) = CSV.parsefield(source.data, T, source.options, row, col)
 Data.reference(source::CSV.Source{Base.AbstractIOBuffer{Array{UInt8,1}}}) = source.data.data
 
 """
