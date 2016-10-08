@@ -6,7 +6,7 @@ read a single line from `io` (any `IO` type) or a `CSV.Source` as a string, acco
 """
 function readline end
 
-function readline(io::IO,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
+function readline(io::IO, q::UInt8, e::UInt8, buf::IOBuffer=IOBuffer())
     while !eof(io)
         b = unsafe_read(io, UInt8)
         Base.write(buf, b)
@@ -24,14 +24,14 @@ function readline(io::IO,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
         elseif b == NEWLINE
             break
         elseif b == RETURN
-            !eof(io) && unsafe_peek(io) == NEWLINE && Base.write(buf,unsafe_read(io, UInt8))
+            !eof(io) && unsafe_peek(io) == NEWLINE && Base.write(buf, unsafe_read(io, UInt8))
             break
         end
     end
     return takebuf_string(buf)
 end
 readline(io::IO, q='"', e='\\', buf::IOBuffer=IOBuffer()) = readline(io, UInt8(q), UInt8(e), buf)
-readline(source::CSV.Source) = readline(source.data, source.options.quotechar, source.options.escapechar)
+readline(source::CSV.Source) = readline(source.io, source.options.quotechar, source.options.escapechar)
 
 """
 `CSV.readsplitline(io, d=',', q='"', e='\\', buf::IOBuffer=IOBuffer())` => `Vector{String}`
@@ -41,7 +41,7 @@ read a single line from `io` (any `IO` type) as a `Vector{String}` with elements
 """
 function readsplitline end
 
-function readsplitline(io::IO,d::UInt8,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer())
+function readsplitline(io::IO, d::UInt8, q::UInt8, e::UInt8, buf::IOBuffer=IOBuffer())
     vals = String[]
     while !eof(io)
         b = unsafe_read(io, UInt8)
@@ -71,8 +71,8 @@ function readsplitline(io::IO,d::UInt8,q::UInt8,e::UInt8,buf::IOBuffer=IOBuffer(
     end
     return push!(vals,takebuf_string(buf))
 end
-readsplitline(io::IO,d=',',q='"',e='\\',buf::IOBuffer=IOBuffer()) = readsplitline(io,UInt8(d),UInt8(q),UInt8(e),buf)
-readsplitline(source::CSV.Source) = readsplitline(source.data, source.options.delim, source.options.quotechar, source.options.escapechar)
+readsplitline(io::IO, d=',', q='"', e='\\', buf::IOBuffer=IOBuffer()) = readsplitline(io, UInt8(d), UInt8(q), UInt8(e), buf)
+readsplitline(source::CSV.Source) = readsplitline(source.io, source.options.delim, source.options.quotechar, source.options.escapechar)
 
 """
 `CSV.countlines(io::IO, quotechar, escapechar)` => `Int`
@@ -80,7 +80,7 @@ readsplitline(source::CSV.Source) = readsplitline(source.data, source.options.de
 
 count the number of lines in a file, accounting for potentially embedded newlines in quoted fields
 """
-function countlines(io::IO,q::UInt8,e::UInt8)
+function countlines(io::IO, q::UInt8, e::UInt8)
     nl = 1
     b = 0x00
     while !eof(io)
@@ -103,10 +103,10 @@ function countlines(io::IO,q::UInt8,e::UInt8)
     end
     return nl - (b == NEWLINE || b == RETURN)
 end
-countlines(io::IO, q, e) = countlines(io, UInt8(q), UInt8(e))
-countlines(source::CSV.Source) = countlines(source.data, source.options.quotechar, source.options.escapechar)
+countlines(io::IO, q='"', e='\\') = countlines(io, UInt8(q), UInt8(e))
+countlines(source::CSV.Source) = countlines(source.io, source.options.quotechar, source.options.escapechar)
 
-function skipto!(f::IO,cur,dest,q,e)
+function skipto!(f::IO, cur, dest, q, e)
     cur >= dest && return
     for _ = 1:(dest-cur)
         CSV.readline(f,q,e)
@@ -118,7 +118,7 @@ end
 immutable NullField end
 
 # try to infer the type of the value in `val`. The precedence of type checking is `Int` => `Float64` => `Date` => `DateTime` => `String`
-function detecttype(val::AbstractString,format,null)
+function detecttype(val::AbstractString, format, null)
     (val == "" || val == null) && return NullField
     try
         v = parsefield(IOBuffer(replace(val, Char(COMMA), "")), Int)
