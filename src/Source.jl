@@ -54,14 +54,14 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     if isa(fullpath, IOBuffer)
         source = fullpath
         fullpath = "<IOBuffer>"
-    elseif isdefined(fullpath, :gz_file) # hack to detect GZip.Stream
-        source = fullpath
-        fullpath = fullpath.name
-    elseif isa(fullpath,IO)
-        source = IOBuffer(readbytes(fullpath))
-        fullpath = fullpath.name
+        fs = nb_available(source)
+    elseif isa(fullpath, IO)
+        source = IOBuffer(read(fullpath))
+        fs = nb_available(fullpath)
+        fullpath = isdefined(fullpath, :name) ? fullpath.name : "__IO__"
     else
-        source = IOBuffer(use_mmap ? Mmap.mmap(fullpath) : open(readbytes,fullpath))
+        source = IOBuffer(use_mmap ? Mmap.mmap(fullpath) : open(read, fullpath))
+        fs = filesize(fullpath)
     end
     options.datarow != -1 && (datarow = options.datarow)
     options.rows != 0 && (rows = options.rows)
@@ -69,8 +69,13 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     options.types != DataType[] && (types = options.types)
     rows = rows == 0 ? CSV.countlines(source, options.quotechar, options.escapechar) : rows
     seekstart(source)
-
-    datarow = datarow == -1 ? (isa(header,Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
+    # BOM character detection
+    if fs > 0 && unsafe_peek(source) == 0xef
+        unsafe_read(source, UInt8)
+        unsafe_read(source, UInt8) == 0xbb || seekstart(source)
+        unsafe_read(source, UInt8) == 0xbf || seekstart(source)
+    end
+    datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
     rows = rows - datarow + 1 - footerskip # rows now equals the actual number of rows in the dataset
 
     # figure out # of columns and header, either an Integer, Range, or Vector{String}
