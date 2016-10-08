@@ -181,7 +181,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
 end
 
 # construct a new Source from a Sink that has been streamed to (i.e. DONE)
-Source(s::CSV.Sink) = CSV.Source(fullpath= isa(s.data, IOStream) ? String(chop(replace(s.data.name,"<file ",""))) : seekstart(s.data), options=s.options)
+Source(s::CSV.Sink) = CSV.Source(fullpath=s.fullpath, options=s.options)
 
 # Data.Source interface
 Data.schema(source::CSV.Source, ::Type{Data.Field}) = source.schema

@@ -1,31 +1,27 @@
-function Sink(io::Union{AbstractString,IO};
+function Sink(fullpath::AbstractString;
               delim::Char=',',
               quotechar::Char='"',
               escapechar::Char='\\',
               null::AbstractString="",
               dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateFormat,
               header::Bool=true,
+              colnames::Vector{String}=String[],
               append::Bool=false)
     delim = delim % UInt8; quotechar = quotechar % UInt8; escapechar = escapechar % UInt8
     dateformat = isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat
-    name, io = isa(io, AbstractString) ? (io, open(io, append ? "a" : "w")) : ("__IO__", io)
-    return Sink(CSV.Options(delim, quotechar, escapechar, COMMA, PERIOD,
-            ascii(null), null=="", dateformat, dateformat == Dates.ISODateFormat, -1, 0, 1, DataType[]), name, io, 0, header && !append)
+    io = IOBuffer()
+    options = CSV.Options(delim=delim, quotechar=quotechar, escapechar=escapechar, null=null, dateformat=dateformat)
+    !append && header && !isempty(colnames) && writeheaders(io, colnames, options)
+    return Sink(options, io, fullpath, position(io), !append && header && !isempty(colnames), colnames, append)
 end
 
-Base.close(s::Sink) = (applicable(close, s.data) && close(s.data); return nothing)
-Base.flush(s::Sink) = (applicable(flush, s.data) && flush(s.data); return nothing)
-Base.position(s::Sink) = applicable(position, s.data) ? position(s.data) : 0
-
-function writeheaders(schema, sink::Sink)
-    rows, cols = size(schema)
-    q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
-    h = Data.header(schema)
+function writeheaders(io::IOBuffer, h::Vector{String}, options)
+    cols = length(h)
+    q = Char(options.quotechar); e = Char(options.escapechar)
     for col = 1:cols
-        print(sink.data, q, replace("$(h[col])", q, "$e$q"), q)
-        print(sink.data, ifelse(col == cols, Char(NEWLINE), Char(sink.options.delim)))
+        print(io, q, replace("$(h[col])", q, "$e$q"), q)
+        print(io, ifelse(col == cols, Char(NEWLINE), Char(options.delim)))
     end
-    sink.datapos = position(sink)
     return nothing
 end
 
@@ -34,44 +30,29 @@ Data.streamtypes{T<:CSV.Sink}(::Type{T}) = [Data.Field]
 
 # Constructors
 function Sink{T}(sch::Data.Schema, ::Type{T}, append::Bool, ref::Vector{UInt8}, file::AbstractString; kwargs...)
-    io = open(file, append ? "a" : "w")
-    sink = Sink(io; append=append, kwargs...)
-    !append && writeheaders(sch, sink)
-    return sink
-end
-
-function Sink{T}(sch::Data.Schema, ::Type{T}, append::Bool, ref::Vector{UInt8}, io::IO; kwargs...)
-    !append && seekstart(io)
-    sink = Sink(io; append=append, kwargs...)
-    !append && writeheaders(sch, sink)
+    sink = Sink(file; append=append, colnames=Data.header(sch), kwargs...)
     return sink
 end
 
 function Sink{T}(sink, sch::Data.Schema, ::Type{T}, append::Bool, ref::Vector{UInt8})
-    if !isopen(sink.data)
-        # try to re-open if we have filename
-        sink.path == "__IO__" && throw(ArgumentError("unable to stream to a closed sink"))
-        sink.data = open(sink.path, append ? "a" : "w")
-    else
-        !append && seekstart(sink.data)
-    end
-    !append && writeheaders(sch, sink)
+    sink.append = append
+    !sink.header && !append && writeheaders(sink.io, Data.header(sch), sink.options)
     return sink
 end
 
-Data.streamto!(sink::Sink, ::Type{Data.Field}, val, row, col, sch) = (col == size(sch, 2) ? println(sink.data, val) : print(sink.data, val, Char(sink.options.delim)); return nothing)
+Data.streamto!(sink::Sink, ::Type{Data.Field}, val, row, col, sch) = (col == size(sch, 2) ? println(sink.io, val) : print(sink.io, val, Char(sink.options.delim)); return nothing)
 function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::AbstractString, row, col, sch)
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
-    print(sink.data, q, replace(string(val), q, "$e$q"), q)
-    print(sink.data, ifelse(col == size(sch, 2), Char(NEWLINE), Char(sink.options.delim)))
+    print(sink.io, q, replace(string(val), q, "$e$q"), q)
+    print(sink.io, ifelse(col == size(sch, 2), Char(NEWLINE), Char(sink.options.delim)))
     return nothing
 end
 
 function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::Dates.TimeType, row, col, sch)
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
     val = sink.options.datecheck ? string(val) : Dates.format(val, sink.options.dateformat)
-    print(sink.data, val)
-    print(sink.data, ifelse(col == size(sch, 2), Char(NEWLINE), Char(sink.options.delim)))
+    print(sink.io, val)
+    print(sink.io, ifelse(col == size(sch, 2), Char(NEWLINE), Char(sink.options.delim)))
     return nothing
 end
 
@@ -87,7 +68,12 @@ function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::NAtype, row, col, s
 end
 end
 
-Data.close!(sink::CSV.Sink) = close(sink)
+function Data.close!(sink::CSV.Sink)
+    io = open(sink.fullpath, sink.append ? "a" : "w")
+    Base.write(io, takebuf_array(sink.io))
+    close(io)
+    return nothing
+end
 
 """
 `CSV.write(fullpath::Union{AbstractString,IO}, source::Type{T}, args...; kwargs...)` => `CSV.Sink`
@@ -110,13 +96,13 @@ Keyword Arguments:
 * `header::Bool`; whether to write out the column names from `source`
 * `append::Bool`; start writing data at the end of `io`; by default, `io` will be reset to the beginning before writing
 """
-function write{T}(io::Union{AbstractString,IO}, ::Type{T}, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
-    sink = Data.stream!(T(args...), CSV.Sink, append, transforms, io; kwargs...)
+function write{T}(file::AbstractString, ::Type{T}, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
+    sink = Data.stream!(T(args...), CSV.Sink, append, transforms, file; kwargs...)
     Data.close!(sink)
     return sink
 end
-function write(io::Union{AbstractString,IO}, source; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
-    sink = Data.stream!(source, CSV.Sink, append, transforms, io; kwargs...)
+function write(file::AbstractString, source; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
+    sink = Data.stream!(source, CSV.Sink, append, transforms, file; kwargs...)
     Data.close!(sink)
     return sink
 end

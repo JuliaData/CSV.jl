@@ -101,11 +101,12 @@ implements the `Data.Sink` interface for providing convenient `Data.stream!` met
 """
 type Sink <: Data.Sink
     options::Options
-    path::String
-    data::IO
-    datapos::Int # the byte position in `io` where the data rows start
+    io::IOBuffer
+    fullpath::String
+    datapos::Int # the position in the IOBuffer where the rows of data begins
     header::Bool
-    # quotefields::Bool # whether to always quote string fields or not
+    colnames::Vector{String}
+    append::Bool
 end
 
 include("parsefields.jl")
