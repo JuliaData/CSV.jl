@@ -1,4 +1,5 @@
 @enum ParsingState None Delimiter EOF Newline
+
 # at start of field: check if eof, remove leading whitespace, check if empty field
 # returns `true` if result of initial parsing is a null field
 # also return `b` which is last byte read
@@ -22,6 +23,7 @@
     end
     return b, false
 end
+
 # check if we've successfully finished parsing a field by whether
 # we've encountered a delimiter or newline break or reached eof
 @inline function checkdone(io::IO, b::UInt8, opt::CSV.Options, state)
@@ -80,7 +82,7 @@ For numeric fields, if field is non-null and non-digit characters are encountere
 """
 function parsefield end
 
-function parsefield{T<:Integer}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state=Ref{ParsingState}(None))
+@inline function parsefield{T<:Integer}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state=Ref{ParsingState}(None))
     v = zero(T)
     b, null = CSV.checknullstart(io, opt, state)
     null && return Nullable{T}()
@@ -95,12 +97,12 @@ function parsefield{T<:Integer}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(
         # process digits
         v *= 10
         v += b - CSV.ZERO
-        eof(io) && (state[] = EOF; return Nullable{T}(ifelse(negative,-v,v)))
+        eof(io) && (state[] = EOF; return Nullable{T}(ifelse(negative, -v, v)))
         b = unsafe_read(io, UInt8)
     end
     b, done::Bool = CSV.checkdone(io, b, opt, state)
     if done
-        return Nullable{T}(ifelse(negative,-v,v))
+        return Nullable{T}(ifelse(negative, -v, v))
     elseif CSV.checknullend(io, T, b, opt, row, col, state)
         return Nullable{T}()
     else
@@ -116,7 +118,7 @@ function parsefield{T<:AbstractFloat}(io::IOBuffer, ::Type{T}, opt::CSV.Options=
     null && return Nullable{T}()
     # subtract 1 because we just read a valid byte, so position(io) is +1 from where a digit should be
     ptr = pointer(io.data) + position(io) - 1
-    v = convert(T, ccall(:jl_strtod_c, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, REF))
+    v = convert(T, ccall(:jl_strtod_c, Float64, (Ptr{UInt8}, Ptr{Ptr{UInt8}}), ptr, REF))
     io.ptr += REF[1] - ptr - 1 # Hopefully io.ptr doesn't change for IOBuffer?
     eof(io) && (state[] = EOF; return Nullable{T}(v))
     b = unsafe_read(io, UInt8)
@@ -132,7 +134,7 @@ end
 
 function getfloat(io, T, b, opt, row, col, buf, state)
     ptr = pointer(buf.data)
-    v = convert(T, ccall(:jl_strtod_c, Float64, (Ptr{UInt8},Ptr{Ptr{UInt8}}), ptr, CSV.REF))
+    v = convert(T, ccall(:jl_strtod_c, Float64, (Ptr{UInt8}, Ptr{Ptr{UInt8}}), ptr, CSV.REF))
     if (CSV.REF[1] - ptr) != position(buf)
         reset(io)
         b, null = CSV.checknullstart(io, opt, state)
@@ -160,7 +162,7 @@ function parsefield{T<:AbstractFloat}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Op
     throw(CSVError("couldn't parse $T"))
 end
 
-function parsefield{T<:AbstractString}(io::IOBuffer, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state=Ref{ParsingState}(None))
+function parsefield(io::IOBuffer, ::Type{WeakRefString{UInt8}}, opt::CSV.Options=CSV.Options(), row=0, col=0, state=Ref{ParsingState}(None))
     eof(io) && (state[] = EOF; return Nullable{WeakRefString{UInt8}}(WeakRefStrings.NULLSTRING, true))
     ptr = pointer(io.data) + position(io)
     len = 0
