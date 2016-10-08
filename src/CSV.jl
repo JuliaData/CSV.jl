@@ -5,17 +5,6 @@ using DataStreams, DataFrames, WeakRefStrings
 
 export Data, DataFrame
 
-if !isdefined(Core, :String)
-    typealias String UTF8String
-end
-
-if Base.VERSION < v"0.5.0-dev+4631"
-    unsafe_wrap{A<:Array}(::Type{A}, ptr, len) = pointer_to_array(ptr, len)
-    unsafe_string(ptr, len) = utf8(ptr, len)
-    unsafe_wrap(::Type{String}, ptr, len) = unsafe_string(ptr, len)
-    escape_string(io, str1, str2) = print_escaped(io, str1, str2)
-end
-
 immutable CSVError <: Exception
     msg::String
 end
@@ -63,8 +52,6 @@ type Options
     delim::UInt8
     quotechar::UInt8
     escapechar::UInt8
-    separator::UInt8
-    decimal::UInt8
     null::String
     nullcheck::Bool
     dateformat::Dates.DateFormat
@@ -77,15 +64,15 @@ type Options
 end
 
 Options(;delim=COMMA,quotechar=QUOTE,escapechar=ESCAPE,null=String(""),dateformat=Dates.ISODateFormat, datarow=-1, rows=0, header=1, types=DataType[]) =
-    Options(delim%UInt8,quotechar%UInt8,escapechar%UInt8,COMMA,PERIOD,
-            null,null != "",isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat),dateformat == Dates.ISODateFormat, datarow, rows, header, types)
+    Options(delim%UInt8,quotechar%UInt8,escapechar%UInt8,
+            ascii(null),null != "",isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat),dateformat == Dates.ISODateFormat, datarow, rows, header, types)
 function Base.show(io::IO,op::Options)
-    println(io,"    CSV.Options:")
-    println(io,"        delim: '",Char(op.delim),"'")
-    println(io,"        quotechar: '",Char(op.quotechar),"'")
-    print(io,"        escapechar: '"); escape_string(io,string(Char(op.escapechar)),"\\"); println(io,"'")
-    print(io,"        null: \""); escape_string(io,op.null,"\\"); println(io,"\"")
-    print(io,"        dateformat: ",op.dateformat)
+    println(io, "    CSV.Options:")
+    println(io, "        delim: '", Char(op.delim), "'")
+    println(io, "        quotechar: '", Char(op.quotechar), "'")
+    print(io, "        escapechar: '"); escape_string(io, string(Char(op.escapechar)), "\\"); println(io, "'")
+    print(io, "        null: \""); escape_string(io, op.null, "\\"); println(io, "\"")
+    print(io, "        dateformat: ", op.dateformat)
 end
 
 """
@@ -93,17 +80,17 @@ constructs a `CSV.Source` file ready to start parsing data from
 
 implements the `Data.Source` interface for providing convenient `Data.stream!` methods for various `Data.Sink` types
 """
-type Source{I<:IO} <: Data.Source
+type Source <: Data.Source
     schema::Data.Schema
     options::Options
-    data::I
-    datapos::Int # the position in the IOBuffer where the rows of data begins
+    io::IOBuffer
     fullpath::String
+    datapos::Int # the position in the IOBuffer where the rows of data begins
 end
 
-function Base.show(io::IO,f::Source)
-    println(io,"CSV.Source: ",f.fullpath)
-    println(io,f.options)
+function Base.show(io::IO, f::Source)
+    println(io, "CSV.Source: ", f.fullpath)
+    println(io, f.options)
     show(io, f.schema)
 end
 
