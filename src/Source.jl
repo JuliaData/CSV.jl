@@ -154,14 +154,14 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     else
         throw(ArgumentError("$cols number of columns detected; `types` argument has $(length(types)) entries"))
     end
-    if isa(types,Dict{Int,DataType})
-        for (col,typ) in types
-            columntypes[col] = typ <: AbstractString ? WeakRefString{UInt8} : typ
+    if isa(types, Dict{Int, DataType})
+        for (col, typ) in types
+            columntypes[col] = typ
         end
-    elseif isa(types,Dict{String,DataType})
+    elseif isa(types, Dict{String, DataType})
         for (col,typ) in types
             c = findfirst(columnnames, col)
-            columntypes[c] = typ <: AbstractString ? WeakRefString{UInt8} : typ
+            columntypes[c] = typ
         end
     end
     (any(columntypes .== DateTime) && options.dateformat == EMPTY_DATEFORMAT) && (options.dateformat = Dates.ISODateTimeFormat)
