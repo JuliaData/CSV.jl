@@ -7,7 +7,7 @@ function Source(fullpath::Union{AbstractString,IO};
               delim=COMMA,
               quotechar=QUOTE,
               escapechar=ESCAPE,
-              null::AbstractString=String(""),
+              null::AbstractString="",
 
               header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
@@ -23,17 +23,10 @@ function Source(fullpath::Union{AbstractString,IO};
     isascii(delim) || throw(ArgumentError("non-ASCII characters not supported for delim argument: $delim"))
     isascii(quotechar) || throw(ArgumentError("non-ASCII characters not supported for quotechar argument: $quotechar"))
     isascii(escapechar) || throw(ArgumentError("non-ASCII characters not supported for escapechar argument: $escapechar"))
-    # isascii(decimal) || throw(ArgumentError("non-ASCII characters not supported for decimal argument: $decimal"))
-    # isascii(separator) || throw(ArgumentError("non-ASCII characters not supported for separator argument: $separator"))
-    delim = delim % UInt8
-    quotechar = quotechar % UInt8
-    escapechar = escapechar % UInt8
-    decimal = CSV.PERIOD; decimal % UInt8
-    separator = CSV.COMMA; separator % UInt8
-    dateformat = isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat)
+    dateformat = isa(dateformat, Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat)
     return CSV.Source(fullpath=fullpath,
-                        options=CSV.Options(delim,quotechar,escapechar,separator,
-                                    decimal,ascii(null),null!="",dateformat,dateformat==Dates.ISODateFormat,-1,0,1,DataType[]),
+                        options=CSV.Options(delim=delim % UInt8,quotechar=quotechar % UInt8,escapechar=escapechar % UInt8,
+                                    null=null,dateformat=dateformat),
                         header=header, datarow=datarow, types=types, nullable=nullable, footerskip=footerskip,
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
@@ -52,13 +45,13 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 use_mmap::Bool=true)
     # delim=CSV.COMMA;quotechar=CSV.QUOTE;escapechar=CSV.ESCAPE;separator=CSV.COMMA;decimal=CSV.PERIOD;null="";header=1;datarow=2;types=DataType[];formats=UTF8String[];skipblankrows=true;footerskip=0;rows_for_type_detect=250;countrows=true
     # argument checks
-    isa(fullpath,AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
-    isa(header,Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
+    isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
+    isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
 
-    isa(fullpath,IOStream) && (fullpath = chop(replace(fullpath.name,"<file ","")))
+    isa(fullpath, IOStream) && (fullpath = chop(replace(fullpath.name, "<file ", "")))
 
     # open the file for property detection
-    if isa(fullpath,IOBuffer)
+    if isa(fullpath, IOBuffer)
         source = fullpath
         fullpath = "<IOBuffer>"
     elseif isdefined(fullpath, :gz_file) # hack to detect GZip.Stream
@@ -74,8 +67,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     options.rows != 0 && (rows = options.rows)
     options.header != 1 && (header = options.header)
     options.types != DataType[] && (types = options.types)
-    rows = rows == 0 ? CSV.countlines(source,options.quotechar,options.escapechar) : rows
-    # rows == 0 && throw(ArgumentError("No rows of data detected in $fullpath"))
+    rows = rows == 0 ? CSV.countlines(source, options.quotechar, options.escapechar) : rows
     seekstart(source)
 
     datarow = datarow == -1 ? (isa(header,Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
@@ -84,7 +76,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     # figure out # of columns and header, either an Integer, Range, or Vector{String}
     # also ensure that `f` is positioned at the start of data
     cols = 0
-    if isa(header,Integer)
+    if isa(header, Integer)
         # default header = 1
         if header <= 0
             CSV.skipto!(source,1,datarow,options.quotechar,options.escapechar)
@@ -128,24 +120,24 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     if isa(types,Vector) && length(types) == cols
         columntypes = types
     elseif isa(types,Dict) || isempty(types)
-        poss_types = Array(DataType,min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect),cols)
+        poss_types = Array(DataType, min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect), cols)
         fill!(poss_types, NullField)
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
-            vals = CSV.readsplitline(source,options.delim,options.quotechar,options.escapechar)
+            vals = CSV.readsplitline(source, options.delim, options.quotechar, options.escapechar)
             lineschecked += 1
             for i = 1:cols
                 i > length(vals) && continue
-                poss_types[lineschecked,i] = CSV.detecttype(vals[i],options.dateformat,options.null)
+                poss_types[lineschecked, i] = CSV.detecttype(vals[i], options.dateformat, options.null)
             end
         end
         # detect most common/general type of each column of types
         d = Set{DataType}()
         for i = 1:cols
             for n = 1:lineschecked
-                t = poss_types[n,i]
+                t = poss_types[n, i]
                 t == NullField && continue
-                push!(d,t)
+                push!(d, t)
             end
             columntypes[i] = (isempty(d) || WeakRefString{UInt8} in d ) ? WeakRefString{UInt8} :
                                 (Date     in d) ? Date :
@@ -175,9 +167,9 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         # WeakRefStrings won't be safe if they don't end up in a NullableArray
         columntypes = DataType[T <: WeakRefString ? String : T for T in columntypes]
     end
-    seek(source,datapos)
-    return Source(Data.Schema(columnnames,columntypes,rows),
-                  options,source,datapos,String(fullpath))
+    seek(source, datapos)
+    return Source(Data.Schema(columnnames, columntypes, rows),
+                  options, source, fullpath, datapos)
 end
 
 # construct a new Source from a Sink that has been streamed to (i.e. DONE)
@@ -185,11 +177,11 @@ Source(s::CSV.Sink) = CSV.Source(fullpath=s.fullpath, options=s.options)
 
 # Data.Source interface
 Data.schema(source::CSV.Source, ::Type{Data.Field}) = source.schema
-Data.isdone(io::CSV.Source, row, col) = eof(io.data) || (row > io.schema.rows && io.schema.rows > -1)
+Data.isdone(io::CSV.Source, row, col) = eof(io.io) || (row > io.schema.rows && io.schema.rows > -1)
 Data.streamtype{T<:CSV.Source}(::Type{T}, ::Type{Data.Field}) = true
-Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col) = get(CSV.parsefield(source.data, T, source.options, row, col))
-Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{Nullable{T}}, row, col) = CSV.parsefield(source.data, T, source.options, row, col)
-Data.reference(source::CSV.Source{Base.AbstractIOBuffer{Array{UInt8,1}}}) = source.data.data
+Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col) = get(CSV.parsefield(source.io, T, source.options, row, col))
+Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{Nullable{T}}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
+Data.reference(source::CSV.Source) = source.io.data
 
 """
 `CSV.read(fullpath::Union{AbstractString,IO}, sink::Type{T}=DataFrame, args...; kwargs...)` => `typeof(sink)`
