@@ -41,8 +41,8 @@ Contributions are very welcome, as are feature requests and suggestions. Please 
 [travis-img]: https://travis-ci.org/JuliaData/CSV.jl.svg?branch=master
 [travis-url]: https://travis-ci.org/JuliaData/CSV.jl
 
-[appveyor-img]: https://ci.appveyor.com/api/projects/status/h227adt6ovd1u3sx/branch/master?svg=true
-[appveyor-url]: https://ci.appveyor.com/project/JuliaData/documenter-jl/branch/master
+[appveyor-img]: https://ci.appveyor.com/api/projects/status/wcm124d03d2ey5o2?svg=true
+[appveyor-url]: https://ci.appveyor.com/project/quinnj/csv-jl-groth
 
 [codecov-img]: https://codecov.io/gh/JuliaData/CSV.jl/branch/master/graph/badge.svg
 [codecov-url]: https://codecov.io/gh/JuliaData/CSV.jl
