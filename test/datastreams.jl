@@ -30,6 +30,6 @@ end
 # CSV
 FILE2 = joinpath(DSTESTDIR, "randoms2_small.csv")
 csvsource = Tester("CSV.Source", CSV.read, true, CSV.Source, (FILE,), scalartransforms, vectortransforms, x->x, x->nothing)
-csvsink = Tester("CSV.Sink", CSV.write, true, CSV.Sink, (FILE2,), scalartransforms, vectortransforms, x->CSV.read(FILE2), x->rm(FILE2))
+csvsink = Tester("CSV.Sink", CSV.write, true, CSV.Sink, (FILE2,), scalartransforms, vectortransforms, x->CSV.read(FILE2), x->try; rm(FILE2); catch e; end)
 
 DataStreamsIntegrationTests.teststream([dfsource, csvsource], [dfsink, csvsink]; rows=99)
