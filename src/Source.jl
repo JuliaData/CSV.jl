@@ -1,5 +1,3 @@
-const EMPTY_DATEFORMAT = Dates.DateFormat("")
-
 # Constructors
 # independent constructor
 function Source(fullpath::Union{AbstractString,IO};
@@ -13,7 +11,7 @@ function Source(fullpath::Union{AbstractString,IO};
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
               nullable::Bool=true,
-              dateformat::Union{AbstractString,Dates.DateFormat}=EMPTY_DATEFORMAT,
+              dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateTimeFormat,
 
               footerskip::Int=0,
               rows_for_type_detect::Int=100,
@@ -164,8 +162,6 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             columntypes[c] = typ
         end
     end
-    (any(columntypes .== DateTime) && options.dateformat == EMPTY_DATEFORMAT) && (options.dateformat = Dates.ISODateTimeFormat)
-    (any(columntypes .== Date) && options.dateformat == EMPTY_DATEFORMAT) && (options.dateformat = Dates.ISODateFormat)
     if nullable
         columntypes = DataType[T <: Nullable ? T : Nullable{T} for T in columntypes]
     else

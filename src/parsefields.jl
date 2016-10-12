@@ -271,8 +271,8 @@ function parsefield(io::IO, ::Type{Date}, opt::CSV.Options=CSV.Options(), row=0,
         else
             throw(CSVError("couldn't parse Date"))
         end
-    elseif opt.dateformat == EMPTY_DATEFORMAT
-        throw(ArgumentError("Can't parse a `Date` type with $EMPTY_DATEFORMAT; please provide a valid Dates.DateFormat or date format string"))
+    # elseif opt.dateformat == EMPTY_DATEFORMAT
+    #     throw(ArgumentError("Can't parse a `Date` type with $EMPTY_DATEFORMAT; please provide a valid Dates.DateFormat or date format string"))
     else
         buf = IOBuffer()
         Base.write(buf, b)
@@ -332,8 +332,8 @@ function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), ro
         else
             throw(CSVError("couldn't parse DateTime"))
         end
-    elseif opt.dateformat == EMPTY_DATEFORMAT
-        throw(ArgumentError("Can't parse a `DateTime` type with $EMPTY_DATEFORMAT; please provide a valid Dates.DateFormat or date format string"))
+    # elseif opt.dateformat == EMPTY_DATEFORMAT
+    #     throw(ArgumentError("Can't parse a `DateTime` type with $EMPTY_DATEFORMAT; please provide a valid Dates.DateFormat or date format string"))
     else
         buf = IOBuffer()
         Base.write(buf, b)
