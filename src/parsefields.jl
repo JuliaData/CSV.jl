@@ -1,5 +1,7 @@
 @enum ParsingState None Delimiter EOF Newline
 
+const STATE = Ref(None)
+
 # at start of field: check if eof, remove leading whitespace, check if empty field
 # returns `true` if result of initial parsing is a null field
 # also return `b` which is last byte read
@@ -82,7 +84,7 @@ For numeric fields, if field is non-null and non-digit characters are encountere
 """
 function parsefield end
 
-@inline function parsefield{T<:Integer}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state=Ref{ParsingState}(None))
+@inline function parsefield{T<:Integer}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
     v = zero(T)
     b, null = CSV.checknullstart(io, opt, state)
     null && return Nullable{T}()
@@ -112,7 +114,7 @@ end
 
 const REF = Array(Ptr{UInt8},1)
 
-function parsefield{T<:AbstractFloat}(io::IOBuffer, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state=Ref{ParsingState}(None))
+@inline function parsefield{T<:AbstractFloat}(io::IOBuffer, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
     b, null = CSV.checknullstart(io, opt, state)
     v = zero(T)
     null && return Nullable{T}()
@@ -144,7 +146,7 @@ function getfloat(io, T, b, opt, row, col, buf, state)
     return Nullable{T}(v)
 end
 
-function parsefield{T<:AbstractFloat}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state=Ref{ParsingState}(None))
+@inline function parsefield{T<:AbstractFloat}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
     mark(io)
     b, null = CSV.checknullstart(io, opt, state)
     v = zero(T)
@@ -162,9 +164,11 @@ function parsefield{T<:AbstractFloat}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Op
     throw(CSVError("couldn't parse $T"))
 end
 
-function parsefield(io::IOBuffer, ::Type{WeakRefString{UInt8}}, opt::CSV.Options=CSV.Options(), row=0, col=0, state=Ref{ParsingState}(None))
-    eof(io) && (state[] = EOF; return Nullable{WeakRefString{UInt8}}(WeakRefStrings.NULLSTRING, true))
-    ptr = pointer(io.data) + position(io)
+const NULLSTRING = Nullable{WeakRefString{UInt8}}(WeakRefStrings.NULLSTRING, true)
+
+@inline function parsefield(io::IOBuffer, ::Type{WeakRefString{UInt8}}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE, start_ptr=Int(pointer(io.data)))
+    eof(io) && (state[] = EOF; return NULLSTRING)
+    ptr = start_ptr + position(io)
     len = 0
     nullcheck = opt.nullcheck # if null is "", then we don't need to byte match it
     nulllen = length(opt.null.data)
@@ -199,10 +203,10 @@ function parsefield(io::IOBuffer, ::Type{WeakRefString{UInt8}}, opt::CSV.Options
         end
     end
     eof(io) && (state[] = EOF)
-    return (len == 0 || nullcheck) ? Nullable{WeakRefString{UInt8}}(WeakRefStrings.NULLSTRING, true) : Nullable{WeakRefString{UInt8}}(WeakRefString(ptr, len))
+    return (len == 0 || nullcheck) ? NULLSTRING : Nullable{WeakRefString{UInt8}}(WeakRefString(Ptr{UInt8}(ptr), len))
 end
 
-function parsefield{T<:AbstractString}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state=Ref{ParsingState}(None))
+function parsefield{T<:AbstractString}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
     eof(io) && (state[] = EOF; return Nullable{T}())
     buf = IOBuffer()
     len = 0
@@ -246,7 +250,7 @@ end
 
 @inline itr(io,n,val) = (for i = 1:n; val *= 10; val += unsafe_read(io, UInt8) - CSV.ZERO; end; return val)
 
-function parsefield(io::IO, ::Type{Date}, opt::CSV.Options=CSV.Options(), row=0, col=0, state=Ref{ParsingState}(None))
+function parsefield(io::IO, ::Type{Date}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
     b, null = CSV.checknullstart(io, opt, state)
     null && return Nullable{Date}()
     if opt.datecheck # optimize for default yyyy-mm-dd
@@ -300,7 +304,7 @@ function parsefield(io::IO, ::Type{Date}, opt::CSV.Options=CSV.Options(), row=0,
     end
 end
 
-function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), row=0, col=0, state=Ref{ParsingState}(None))
+function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
     b, null = CSV.checknullstart(io, opt, state)
     null && return Nullable{DateTime}()
     if opt.datecheck # optimize for default yyyy-mm-ddTHH:MM:SS
@@ -375,7 +379,7 @@ function getgeneric(io, T, b, opt, row, col, buf, state)
     return Nullable{T}(val)
 end
 
-function parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state=Ref{ParsingState}(None))
+function parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
     mark(io)
     b, null = CSV.checknullstart(io, opt, state)
     null && return Nullable{T}()

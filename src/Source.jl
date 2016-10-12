@@ -174,7 +174,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     end
     seek(source, datapos)
     return Source(Data.Schema(columnnames, columntypes, rows),
-                  options, source, fullpath, datapos)
+                  options, source, Int(pointer(source.data)), fullpath, datapos)
 end
 
 # construct a new Source from a Sink that has been streamed to (i.e. DONE)
@@ -186,6 +186,7 @@ Data.isdone(io::CSV.Source, row, col) = eof(io.io) || (row > io.schema.rows && i
 Data.streamtype{T<:CSV.Source}(::Type{T}, ::Type{Data.Field}) = true
 Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col) = get(CSV.parsefield(source.io, T, source.options, row, col))
 Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{Nullable{T}}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
+Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{Nullable{WeakRefString{UInt8}}}, row, col) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, STATE, source.ptr)
 Data.reference(source::CSV.Source) = source.io.data
 
 """
