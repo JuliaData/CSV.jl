@@ -9,7 +9,7 @@ dir = joinpath(dirname(@__FILE__),"test_files/")
 
 include("source.jl")
 
-Pkg.clone("https://github.com/JuliaData/DataStreamsIntegrationTests.jl")
+Pkg.clone("https://github.com/JuliaData/DataStreamsIntegrationTests")
 using DataStreamsIntegrationTests
 
 include("datastreams.jl")
