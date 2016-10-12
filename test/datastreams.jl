@@ -18,7 +18,7 @@ function DataFrame(sink, sch::Data.Schema, ::Type{Data.Field}, append::Bool, ref
     sch.rows = newsize
     for (i, T) in enumerate(Data.types(sch))
         if T <: Nullable{String} && eltype(sink.columns[i]) <: Nullable{WeakRefString{UInt8}}
-            sink.columns[i] = NullableArray(String[string(x) for x in sink.columns[i]])
+            sink.columns[i] = NullableArray(String[isnull(x) ? "" : string(get(x)) for x in sink.columns[i]])
         end
         if T != eltype(sink.columns[i])
             sink.columns[i] = NullableArray(eltype(T), newsize)
