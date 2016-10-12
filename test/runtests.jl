@@ -1,4 +1,5 @@
 using CSV
+Pkg.checkout("DataStreams")
 using Base.Test, DataFrames, DataStreams, NullableArrays, WeakRefStrings, Libz, DecFP
 
 include("parsefields.jl")

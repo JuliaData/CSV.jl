@@ -169,8 +169,10 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         columntypes = DataType[T <: WeakRefString ? String : T for T in columntypes]
     end
     seek(source, datapos)
-    return Source(Data.Schema(columnnames, columntypes, rows),
-                  options, source, Int(pointer(source.data)), fullpath, datapos)
+    sch = Data.Schema(columnnames, columntypes, rows)
+    src = Source(sch, options, source, Int(pointer(source.data)), fullpath, datapos)
+    sch.metadata["CSV.Source"] = src
+    return src
 end
 
 # construct a new Source from a Sink that has been streamed to (i.e. DONE)
