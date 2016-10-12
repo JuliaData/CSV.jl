@@ -128,7 +128,7 @@ function detecttype(val::AbstractString, format, null)
         v = CSV.parsefield(IOBuffer(replace(val, Char(COMMA), "")), Float64)
         !isnull(v) && return Float64
     end
-    if format != EMPTY_DATEFORMAT
+    if format != Dates.ISODateTimeFormat
         try # it might be nice to throw an error when a format is specifically given but doesn't parse
             Date(IOBuffer(val),format)
             return Date
