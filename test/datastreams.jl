@@ -1,6 +1,6 @@
 
 # DataFrames
-FILE = joinpath(DSTESTDIR, "randoms.csv")
+FILE = joinpath(DSTESTDIR, "randoms_small.csv")
 DF = CSV.read(FILE)
 DF2 = CSV.read(FILE)
 dfsource = Tester("DataFrame", x->x, DataFrame, (:DF,), scalartransforms, vectortransforms, x->x, x->nothing)
@@ -28,7 +28,7 @@ function DataFrame(sink, sch::Data.Schema, ::Type{Data.Field}, append::Bool, ref
 end
 
 # CSV
-FILE2 = joinpath(DSTESTDIR, "randoms2.csv")
+FILE2 = joinpath(DSTESTDIR, "randoms2_small.csv")
 csvsource = Tester("CSV.Source", CSV.read, CSV.Source, (FILE,), scalartransforms, vectortransforms, x->x, x->nothing)
 csvsink = Tester("CSV.Sink", CSV.write, CSV.Sink, (FILE2,), scalartransforms, vectortransforms, x->CSV.read(FILE2), x->rm(FILE2))
 
