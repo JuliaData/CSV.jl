@@ -84,6 +84,7 @@ type Source <: Data.Source
     schema::Data.Schema
     options::Options
     io::IOBuffer
+    ptr::Int # pointer to underlying data buffer
     fullpath::String
     datapos::Int # the position in the IOBuffer where the rows of data begins
 end
