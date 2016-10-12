@@ -1,6 +1,6 @@
 
 # DataFrames
-FILE = joinpath(DSTESTDIR, "randoms_small.csv")
+FILE = joinpath(DSTESTDIR, "randoms.csv")
 DF = CSV.read(FILE)
 DF2 = CSV.read(FILE)
 dfsource = Tester("DataFrame", x->x, false, DataFrame, (:DF,), scalartransforms, vectortransforms, x->x, x->nothing)
