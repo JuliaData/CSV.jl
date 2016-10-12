@@ -64,8 +64,8 @@ type Options
 end
 
 Options(;delim=COMMA,quotechar=QUOTE,escapechar=ESCAPE,null=String(""),dateformat=Dates.ISODateFormat, datarow=-1, rows=0, header=1, types=DataType[]) =
-    Options(delim%UInt8,quotechar%UInt8,escapechar%UInt8,
-            ascii(null),null != "",isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat),dateformat == Dates.ISODateFormat, datarow, rows, header, types)
+    Options(delim%UInt8, quotechar%UInt8, escapechar%UInt8,
+            ascii(null), null != "", isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat), dateformat == Dates.ISODateFormat, datarow, rows, header, types)
 function Base.show(io::IO,op::Options)
     println(io, "    CSV.Options:")
     println(io, "        delim: '", Char(op.delim), "'")
