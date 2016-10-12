@@ -14,12 +14,19 @@ end
 function DataFrame(sink, sch::Data.Schema, ::Type{Data.Field}, append::Bool, ref::Vector{UInt8})
     rows, cols = size(sch)
     newsize = max(0, rows + (append ? size(sink, 1) : 0))
-    for (i, T) in enumerate(Data.types(sch))
-        if T <: Nullable{String} && eltype(sink.columns[i]) <: Nullable{WeakRefString{UInt8}}
-            sink.columns[i] = NullableArray(String[isnull(x) ? "" : string(get(x)) for x in sink.columns[i]])
+    # need to make sure we don't break a NullableVector{WeakRefString{UInt8}} when appending
+    if append
+        for (i, T) in enumerate(Data.types(sch))
+            if T <: Nullable{WeakRefString{UInt8}}
+                sink.columns[i] = NullableArray(String[string(get(x, "")) for x in sink.columns[i]])
+                sch.types[i] = Nullable{String}
+            end
         end
-        if T != eltype(sink.columns[i])
-            sink.columns[i] = NullableArray(eltype(T), newsize)
+    else
+        for (i, T) in enumerate(Data.types(sch))
+            if T != eltype(sink.columns[i])
+                sink.columns[i] = NullableArray(eltype(T), newsize)
+            end
         end
     end
     foreach(x->resize!(x, newsize), sink.columns)

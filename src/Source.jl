@@ -170,9 +170,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     end
     seek(source, datapos)
     sch = Data.Schema(columnnames, columntypes, rows)
-    src = Source(sch, options, source, Int(pointer(source.data)), fullpath, datapos)
-    sch.metadata["CSV.Source"] = src
-    return src
+    return Source(sch, options, source, Int(pointer(source.data)), fullpath, datapos)
 end
 
 # construct a new Source from a Sink that has been streamed to (i.e. DONE)
