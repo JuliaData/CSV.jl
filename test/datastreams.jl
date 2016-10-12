@@ -14,8 +14,6 @@ end
 function DataFrame(sink, sch::Data.Schema, ::Type{Data.Field}, append::Bool, ref::Vector{UInt8})
     rows, cols = size(sch)
     newsize = max(0, rows + (append ? size(sink, 1) : 0))
-    foreach(x->resize!(x, newsize), sink.columns)
-    sch.rows = newsize
     for (i, T) in enumerate(Data.types(sch))
         if T <: Nullable{String} && eltype(sink.columns[i]) <: Nullable{WeakRefString{UInt8}}
             sink.columns[i] = NullableArray(String[isnull(x) ? "" : string(get(x)) for x in sink.columns[i]])
@@ -24,6 +22,8 @@ function DataFrame(sink, sch::Data.Schema, ::Type{Data.Field}, append::Bool, ref
             sink.columns[i] = NullableArray(eltype(T), newsize)
         end
     end
+    foreach(x->resize!(x, newsize), sink.columns)
+    sch.rows = newsize
     return sink
 end
 
