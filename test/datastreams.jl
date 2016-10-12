@@ -30,6 +30,13 @@ function DataFrame(sink, sch::Data.Schema, ::Type{Data.Field}, append::Bool, ref
         end
     end
     foreach(x->resize!(x, newsize), sink.columns)
+    if !append
+        for (i, T) in enumerate(eltypes(sink))
+            if T <: Nullable{WeakRefString{UInt8}}
+                sink.columns[i] = NullableArray{WeakRefString{UInt8}, 1}(Array{WeakRefString{UInt8}}(newsize), fill(true, newsize), isempty(ref) ? UInt8[] : ref)
+            end
+        end
+    end
     sch.rows = newsize
     return sink
 end
