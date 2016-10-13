@@ -125,6 +125,9 @@ end
 immutable NullField end
 
 # try to infer the type of the value in `val`. The precedence of type checking is `Int` => `Float64` => `Date` => `DateTime` => `String`
+slottype{T}(df::Dates.Slot{T}) = T
+timetype(df::Dates.DateFormat) = any(slottype(T) in (Dates.Hour,Dates.Minute,Dates.Second,Dates.Millisecond) for T in df.slots) ? DateTime : Date
+
 function detecttype(val::AbstractString, format, datecheck, null)
     (val == "" || val == null) && return NullField
     try
@@ -137,16 +140,17 @@ function detecttype(val::AbstractString, format, datecheck, null)
     end
     if !datecheck
         try
-            DateTime(val, format)
-            return DateTime
+            T = timetype(format)
+            T(val, format)
+            return T
         end
     else
         try
-            v = CSV.parsefield(IOBuffer(val), Date)
+            v = CSV.parsefield(IOBuffer(val), Date, CSV.Options(dateformat=Dates.ISODateFormat))
             !isnull(v) && return Date
         end
         try
-            v = parsefield(IOBuffer(val), DateTime)
+            v = CSV.parsefield(IOBuffer(val), DateTime, CSV.Options(dateformat=Dates.ISODateTimeFormat))
             !isnull(v) && return DateTime
         end
     end
