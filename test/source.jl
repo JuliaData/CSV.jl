@@ -234,7 +234,7 @@ f = CSV.Source(joinpath(dir, "latest (1).csv"); header=0, null="\\N")
 @test size(f, 2) == 25
 @test size(f, 1) == 1000
 @test Data.header(f) == ["Column$i" for i = 1:size(f, 2)]
-@test Data.types(f) == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Date},Nullable{Date},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Float64},Nullable{Float64}]
+@test Data.types(f) == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Date},Nullable{DateTime},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Float64},Nullable{Float64}]
 ds = Data.stream!(f, DataFrame)
 
 f = CSV.Source(joinpath(dir, "pandas_zeros.csv"))
