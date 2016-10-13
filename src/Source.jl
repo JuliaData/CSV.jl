@@ -129,7 +129,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             lineschecked += 1
             for i = 1:cols
                 i > length(vals) && continue
-                poss_types[lineschecked, i] = CSV.detecttype(vals[i], options.dateformat, options.null)
+                poss_types[lineschecked, i] = CSV.detecttype(vals[i], options.dateformat, options.datecheck, options.null)
             end
         end
         # detect most common/general type of each column of types

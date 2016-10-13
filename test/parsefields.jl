@@ -7,6 +7,10 @@ io = IOBuffer("-1")
 v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(-1)
 
+io = IOBuffer("+1")
+v = CSV.parsefield(io,Int,CSV.Options(),1,1)
+@test v === Nullable(1)
+
 io = IOBuffer("1")
 v = CSV.parsefield(io,Int,CSV.Options(),1,1)
 @test v === Nullable(1)
@@ -974,6 +978,14 @@ io = IOBuffer("\"10/5/2015\"\n")
 v = CSV.parsefield(io,Date,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy")),1,1)
 @test v === Nullable{Date}(Date(2015,10,5))
 
+io = IOBuffer("\"10/5/2015\"\r")
+v = CSV.parsefield(io,Date,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy")),1,1)
+@test v === Nullable{Date}(Date(2015,10,5))
+
+io = IOBuffer("\"10/5/2015\"\r\n")
+v = CSV.parsefield(io,Date,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy")),1,1)
+@test v === Nullable{Date}(Date(2015,10,5))
+
 # Date Libz
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("")))
 v = CSV.parsefield(io,Date,CSV.Options(),1,1)
@@ -1113,6 +1125,14 @@ io = IOBuffer("\"10/5/2015 00:00:01\"\n")
 v = CSV.parsefield(io,DateTime,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy HH:MM:SS")),1,1)
 @test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
 
+io = IOBuffer("\"10/5/2015 00:00:01\"\r")
+v = CSV.parsefield(io,DateTime,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy HH:MM:SS")),1,1)
+@test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
+
+io = IOBuffer("\"10/5/2015 00:00:01\"\r\n")
+v = CSV.parsefield(io,DateTime,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy HH:MM:SS")),1,1)
+@test v === Nullable{DateTime}(DateTime(2015,10,5,0,0,1))
+
 # DateTime Libz
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("")))
 v = CSV.parsefield(io,DateTime,CSV.Options(),1,1)
@@ -1229,3 +1249,13 @@ v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
 @test isnull(v)
 v = CSV.parsefield(io,Date,CSV.Options(),1,1)
 @test isnull(v)
+
+# Custom type
+type CustomInt
+    val::Int
+end
+Base.parse(::Type{CustomInt}, x) = CustomInt(parse(Int, x))
+
+io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1")))
+v = CSV.parsefield(io, CustomInt, CSV.Options(),1,1)
+@test get(v).val == 1
