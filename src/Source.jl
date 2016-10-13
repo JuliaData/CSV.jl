@@ -10,7 +10,7 @@ function Source(fullpath::Union{AbstractString,IO};
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
               nullable::Bool=true,
-              dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateTimeFormat,
+              dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateFormat,
 
               footerskip::Int=0,
               rows_for_type_detect::Int=100,
@@ -22,8 +22,8 @@ function Source(fullpath::Union{AbstractString,IO};
     isascii(escapechar) || throw(ArgumentError("non-ASCII characters not supported for escapechar argument: $escapechar"))
     dateformat = isa(dateformat, Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat)
     return CSV.Source(fullpath=fullpath,
-                        options=CSV.Options(delim=delim % UInt8,quotechar=quotechar % UInt8,escapechar=escapechar % UInt8,
-                                    null=null,dateformat=dateformat),
+                        options=CSV.Options(delim=delim % UInt8, quotechar=quotechar % UInt8, escapechar=escapechar % UInt8,
+                                    null=null, dateformat=dateformat),
                         header=header, datarow=datarow, types=types, nullable=nullable, footerskip=footerskip,
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
