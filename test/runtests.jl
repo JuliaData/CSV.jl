@@ -1,7 +1,6 @@
 using CSV
 using Base.Test, DataStreams, DataFrames, NullableArrays, WeakRefStrings, Libz, DecFP
 
-
 include("parsefields.jl")
 include("io.jl")
 
@@ -10,7 +9,8 @@ dir = joinpath(dirname(@__FILE__),"test_files/")
 
 include("source.jl")
 
-Pkg.clone("https://github.com/JuliaData/DataStreamsIntegrationTests")
+installed = Pkg.installed()
+haskey(installed, "DataStreamsIntegrationTests") || Pkg.clone("https://github.com/JuliaData/DataStreamsIntegrationTests")
 using DataStreamsIntegrationTests
 
 include("datastreams.jl")
