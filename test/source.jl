@@ -100,19 +100,19 @@ f = CSV.Source(joinpath(dir, "test_mac_line_endings.csv"))
 @test Data.types(f) == [Nullable{Int},Nullable{Int},Nullable{Int}]
 
 #test headerrow, datarow, footerskips
-f = CSV.Source(joinpath(dir, "test_no_header.csv");header=0,datarow=1)
+f = CSV.Source(joinpath(dir, "test_no_header.csv"); header=0, datarow=1)
 @test Data.header(f) == ["Column1","Column2","Column3"]
 @test Data.types(f) == [Nullable{Float64},Nullable{Float64},Nullable{Float64}]
 @test size(f, 2) == 3
 @test size(f, 1) == 3
-f = CSV.Source(joinpath(dir, "test_2_footer_rows.csv");header=4,datarow=5,footerskip=2)
+f = CSV.Source(joinpath(dir, "test_2_footer_rows.csv"); header=4, datarow=5, footerskip=2)
 @test Data.header(f) == ["col1","col2","col3"]
 @test Data.types(f) == [Nullable{Int},Nullable{Int},Nullable{Int}]
 @test size(f, 2) == 3
 @test size(f, 1) == 3
 
 #test dates, dateformats
-f = CSV.Source(joinpath(dir, "test_dates.csv");types=[Date],dateformat="yyyy-mm-dd")
+f = CSV.Source(joinpath(dir, "test_dates.csv"); types=[Date], dateformat="yyyy-mm-dd")
 @test size(f, 2) == 1
 @test size(f, 1) == 3
 @test Data.types(f) == [Nullable{Date}]
@@ -120,11 +120,15 @@ ds = Data.stream!(f, DataFrame)
 @test ds[1,1].value == Date(2015,1,1)
 @test ds[2,1].value == Date(2015,1,2)
 @test ds[3,1].value == Date(2015,1,3)
-f = CSV.Source(joinpath(dir, "test_excel_date_formats.csv");types=[Date],dateformat="mm/dd/yy")
+f = CSV.Source(joinpath(dir, "test_excel_date_formats.csv"); dateformat="mm/dd/yy")
+@test size(f, 2) == 1
+@test size(f, 1) == 3
+@test Data.types(f) == [Nullable{DateTime}]
+f = CSV.Source(joinpath(dir, "test_excel_date_formats.csv"); types=[Date], dateformat="mm/dd/yy")
 @test size(f, 2) == 1
 @test size(f, 1) == 3
 @test Data.types(f) == [Nullable{Date}]
-f = CSV.Source(joinpath(dir, "test_datetimes.csv");types=[DateTime],dateformat="yyyy-mm-dd HH:MM:SS.s")
+f = CSV.Source(joinpath(dir, "test_datetimes.csv"); dateformat="yyyy-mm-dd HH:MM:SS.s")
 @test size(f, 2) == 1
 @test size(f, 1) == 3
 @test Data.types(f) == [Nullable{DateTime}]
@@ -134,7 +138,7 @@ ds = Data.stream!(f, DataFrame)
 @test ds[3,1].value == DateTime(2015,1,3,0,12,0,1)
 
 #test bad types
-f = CSV.Source(joinpath(dir, "test_float_in_int_column.csv");types=[Int,Int,Int])
+f = CSV.Source(joinpath(dir, "test_float_in_int_column.csv"); types=[Int,Int,Int])
 @test_throws CSV.CSVError Data.stream!(f, DataFrame)
 
 #test null/missing values
@@ -271,3 +275,28 @@ f = CSV.Source(joinpath(dir, "test_basic_pipe.csv");delim='|',footerskip=1)
 @test Data.types(f) == [Nullable{Int},Nullable{Int},Nullable{Int}]
 @test f.options.delim == UInt8('|')
 ds = Data.stream!(f, DataFrame)
+@show f
+
+t = tempname()
+f = CSV.Sink(t)
+@show f
+
+f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"))
+types = Data.types(f)
+@test isequal(CSV.parsefield(f, types[1]), Nullable(1.0))
+@test isequal(CSV.parsefield(f, types[2]), Nullable("2.0"))
+@test isequal(CSV.parsefield(f, eltype(types[3])), 3.0)
+
+t = tempname()
+f = open(t, "w")
+Base.write(f, readstring(joinpath(dir, "test_missing_value_NULL.csv")))
+seekstart(f)
+source = CSV.Source(f; header=[], datarow=2, nullable=false)
+df = CSV.read(source)
+@test Data.header(df) == ["Column1", "Column2", "Column3"]
+
+CSV.reset!(source)
+df2 = CSV.read(source)
+@test isequal(df, df2)
+
+@test_throws ArgumentError CSV.Source(f; types = [Int, Int, Int, Int])

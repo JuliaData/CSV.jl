@@ -125,7 +125,7 @@ end
 immutable NullField end
 
 # try to infer the type of the value in `val`. The precedence of type checking is `Int` => `Float64` => `Date` => `DateTime` => `String`
-function detecttype(val::AbstractString, format, null)
+function detecttype(val::AbstractString, format, datecheck, null)
     (val == "" || val == null) && return NullField
     try
         v = parsefield(IOBuffer(replace(val, Char(COMMA), "")), Int)
@@ -135,13 +135,9 @@ function detecttype(val::AbstractString, format, null)
         v = CSV.parsefield(IOBuffer(replace(val, Char(COMMA), "")), Float64)
         !isnull(v) && return Float64
     end
-    if format != Dates.ISODateTimeFormat
-        try # it might be nice to throw an error when a format is specifically given but doesn't parse
-            Date(IOBuffer(val),format)
-            return Date
-        end
+    if !datecheck
         try
-            DateTime(IOBuffer(val),format)
+            DateTime(val, format)
             return DateTime
         end
     else

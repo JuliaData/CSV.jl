@@ -126,8 +126,6 @@ parsefield(source::CSV.Source, ::Type{Nullable{WeakRefString{UInt8}}}, row=0, co
         return Nullable{T}(ifelse(negative, -v, v))
     elseif CSV.checknullend(io, T, b, opt, row, col, state)
         return Nullable{T}()
-    else
-        throw(CSVError("couldn't parse Int"))
     end
 end
 
@@ -148,8 +146,6 @@ const REF = Array(Ptr{UInt8},1)
         return Nullable{T}(v)
     elseif checknullend(io, T, b, opt, row, col, state)
         return Nullable{T}()
-    else
-        throw(CSVError("couldn't parse $T"))
     end
 end
 
@@ -180,7 +176,6 @@ end
         Base.write(buf, b)
         eof(io) && return getfloat(io, T, b, opt, row, col, buf, state)
     end
-    throw(CSVError("couldn't parse $T"))
 end
 
 const NULLSTRING = Nullable{WeakRefString{UInt8}}(WeakRefStrings.NULLSTRING, true)
@@ -287,11 +282,7 @@ function parsefield(io::IO, ::Type{Date}, opt::CSV.Options=CSV.Options(), row=0,
             return Nullable{Date}(Date(year, month, day))
         elseif checknullend(io, Date, b, opt, row, col, state)
             return Nullable{Date}()
-        else
-            throw(CSVError("couldn't parse Date"))
         end
-    # elseif opt.dateformat == EMPTY_DATEFORMAT
-    #     throw(ArgumentError("Can't parse a `Date` type with $EMPTY_DATEFORMAT; please provide a valid Dates.DateFormat or date format string"))
     else
         buf = IOBuffer()
         Base.write(buf, b)
@@ -348,11 +339,7 @@ function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), ro
             return Nullable{DateTime}(DateTime(year, month, day, hour, minute, second))
         elseif checknullend(io, DateTime, b, opt, row, col, state)
             return Nullable{DateTime}()
-        else
-            throw(CSVError("couldn't parse DateTime"))
         end
-    # elseif opt.dateformat == EMPTY_DATEFORMAT
-    #     throw(ArgumentError("Can't parse a `DateTime` type with $EMPTY_DATEFORMAT; please provide a valid Dates.DateFormat or date format string"))
     else
         buf = IOBuffer()
         Base.write(buf, b)
@@ -389,13 +376,13 @@ function getgeneric(io, T, b, opt, row, col, buf, state)
     str = takebuf_string(buf)
     try
         val = parse(T, str)::T
+        return Nullable{T}(val)
     catch e
         reset(io)
         b, null = CSV.checknullstart(io, opt, state)
         CSV.checknullend(io, T, b, opt, row, col, state) && return Nullable{T}()
         throw(CSVError(T, b, row, col))
     end
-    return Nullable{T}(val)
 end
 
 function parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
@@ -412,5 +399,4 @@ function parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0,
         Base.write(buf, b)
         eof(io) && return getgeneric(io, T, b, opt, row, col, buf, state)
     end
-    throw(CSVError("couldn't parse $T"))
 end
