@@ -38,15 +38,15 @@ end
 unsafe_peek(from::IO) = (mark(from); v = Base.read(from, UInt8); reset(from); return v)
 
 """
-Represents the various configuration settings for csv file parsing.
+Represents the various configuration settings for delimited text file parsing.
 
 Keyword Arguments:
 
- * `delim`::Union{Char,UInt8} = how fields in the file are delimited
- * `quotechar`::Union{Char,UInt8} = the character that indicates a quoted field that may contain the `delim` or newlines
- * `escapechar`::Union{Char,UInt8} = the character that escapes a `quotechar` in a quoted field
- * `null`::String = indicates how NULL values are represented in the dataset
- * `dateformat`::Union{AbstractString,Dates.DateFormat} = how dates/datetimes are represented in the dataset
+ * `delim::Union{Char,UInt8}`; how fields in the file are delimited
+ * `quotechar::Union{Char,UInt8}`; the character that indicates a quoted field that may contain the `delim` or newlines
+ * `escapechar::Union{Char,UInt8}`; the character that escapes a `quotechar` in a quoted field
+ * `null::String`; indicates how NULL values are represented in the dataset
+ * `dateformat::Union{AbstractString,Dates.DateFormat}`; how dates/datetimes are represented in the dataset
 """
 type Options
     delim::UInt8
@@ -76,9 +76,25 @@ function Base.show(io::IO,op::Options)
 end
 
 """
-constructs a `CSV.Source` file ready to start parsing data from
+A type that satisfies the `Data.Source` interface in the `DataStreams.jl` package.
 
-implements the `Data.Source` interface for providing convenient `Data.stream!` methods for various `Data.Sink` types
+A `CSV.Source` can be manually constructed in order to be re-used multiple times.
+
+`CSV.Source(file_or_io; kwargs...) => CSV.Source`
+
+Note that a filename string can be provided or any `IO` type. For the full list of supported
+keyword arguments, see the docs for [`CSV.read`](@ref) or type `?CSV.read` at the repl
+
+An example of re-using a `CSV.Source` is:
+```julia
+# manually construct a `CSV.Source` once, then stream its data to both a DataFrame
+# and SQLite table `sqlite_table` in the SQLite database `db`
+# note the use of `CSV.reset!` to ensure the `source` can be streamed from again
+source = CSV.Source(file)
+df1 = CSV.read(source, DataFrame)
+CSV.reset!(source)
+sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
+```
 """
 type Source <: Data.Source
     schema::Data.Schema
@@ -96,14 +112,30 @@ function Base.show(io::IO, f::Source)
 end
 
 """
-constructs a `CSV.Sink` file ready to start writing data to
+A type that satisfies the `Data.Sink` interface in the `DataStreams.jl` package.
 
-implements the `Data.Sink` interface for providing convenient `Data.stream!` methods for various `Data.Source` types
+A `CSV.Sink` can be manually constructed in order to be re-used multiple times.
+
+`CSV.Sink(file_or_io; kwargs...) => CSV.Sink`
+
+Note that a filename string can be provided or any `IO` type. For the full list of supported
+keyword arguments, see the docs for [`CSV.write`](@ref) or type `?CSV.write` at the repl
+
+An example of re-using a `CSV.Sink` is:
+```julia
+# manually construct a `CSV.Source` once, then stream its data to both a DataFrame
+# and SQLite table `sqlite_table` in the SQLite database `db`
+# note the use of `CSV.reset!` to ensure the `source` can be streamed from again
+source = CSV.Source(file)
+df1 = CSV.read(source, DataFrame)
+CSV.reset!(source)
+sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
+```
 """
 type Sink <: Data.Sink
     options::Options
     io::IOBuffer
-    fullpath::String
+    fullpath::Union{String, IO}
     datapos::Int # the position in the IOBuffer where the rows of data begins
     header::Bool
     colnames::Vector{String}
