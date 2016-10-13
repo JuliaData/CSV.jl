@@ -43,15 +43,16 @@ TYPES = !is_windows() ? (Int, Float64, WeakRefString{UInt8}, String, Date, DateT
             end
         end
     end
+    FILE = joinpath(dirname(@__FILE__), "randoms_small.csv")
 
     @benchgroup "CSV.read" begin
-        @bench "CSV.read" CSV.read("randoms_small.csv")
+        @bench "CSV.read" CSV.read(FILE)
     end
 
     @benchgroup "CSV.write" begin
-        df = CSV.read("randoms_small.csv")
-        @bench "CSV.write" CSV.write("randoms_small2.csv", df)
-        rm("randoms_small2.csv")
+        df = CSV.read(FILE)
+        t = tempname()
+        @bench "CSV.write" CSV.write(t, df)
     end
 
 end
