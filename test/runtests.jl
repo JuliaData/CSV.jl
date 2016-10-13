@@ -1,8 +1,9 @@
+Pkg.checkout("DataStreams")
+using DataStreams
+
 using CSV
 using Base.Test, DataFrames, NullableArrays, WeakRefStrings, Libz, DecFP
 
-Pkg.checkout("DataStreams")
-using DataStreams
 
 include("parsefields.jl")
 include("io.jl")
