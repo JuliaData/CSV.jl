@@ -71,6 +71,7 @@ CSVError{T}(::Type{T}, b, row, col) = CSV.CSVError("error parsing a `$T` value o
 end
 """
 `CSV.parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)` => `Nullable{T}`
+`CSV.parsefield{T}(s::CSV.Source, ::Type{T}, row=0, col=0)` => `Nullable{T}``
 
 `io` is an `IO` type that is positioned at the first byte/character of an delimited-file field (i.e. a single cell)
 leading whitespace is ignored for Integer and Float types.
@@ -81,8 +82,26 @@ For other types `T`, a generic fallback requires `parse(T, str::String)` to be d
 the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quotechar` results in a null field
 `opt.null` is also checked if there is a custom value provided (i.e. "NA", "\\N", etc.)
 For numeric fields, if field is non-null and non-digit characters are encountered at any point before a delimiter or newline, an error is thrown
+
+The second method of `CSV.parsefield` operates on a `CSV.Source` directly allowing for easy usage when writing custom parsing routines.
+Do note, however, that the `row` and `col` arguments are for error-reporting purposes only. A `CSV.Source` maintains internal state with
+regards to the underlying data buffer and can **only** parse fields sequentially. This means that `CSV.parsefield` needs to be called somewhat like:
+
+```julia
+source = CSV.Source(file)
+
+types = Data.types(source)
+
+for col = 1:length(types)
+    println(get(CSV.parsefield(source, types[col]), "\"\""))
+end
+```
 """
 function parsefield end
+
+parsefield{T}(source::CSV.Source, ::Type{T}, row=0, col=0) = get(CSV.parsefield(source.io, T, source.options, row, col, STATE))
+parsefield{T}(source::CSV.Source, ::Type{Nullable{T}}, row=0, col=0) = CSV.parsefield(source.io, T, source.options, row, col, STATE)
+parsefield(source::CSV.Source, ::Type{Nullable{WeakRefString{UInt8}}}, row=0, col=0) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, STATE, source.ptr)
 
 @inline function parsefield{T<:Integer}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
     v = zero(T)

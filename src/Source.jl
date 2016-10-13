@@ -1,4 +1,3 @@
-# Constructors
 # independent constructor
 function Source(fullpath::Union{AbstractString,IO};
 
@@ -41,7 +40,6 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 rows_for_type_detect::Int=100,
                 rows::Int=0,
                 use_mmap::Bool=true)
-    # delim=CSV.COMMA;quotechar=CSV.QUOTE;escapechar=CSV.ESCAPE;separator=CSV.COMMA;decimal=CSV.PERIOD;null="";header=1;datarow=2;types=DataType[];formats=UTF8String[];skipblankrows=true;footerskip=0;rows_for_type_detect=250;countrows=true
     # argument checks
     isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
@@ -173,8 +171,11 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     return Source(sch, options, source, Int(pointer(source.data)), fullpath, datapos)
 end
 
-# construct a new Source from a Sink that has been streamed to (i.e. DONE)
+# construct a new Source from a Sink
 Source(s::CSV.Sink) = CSV.Source(fullpath=s.fullpath, options=s.options)
+
+"reset a `CSV.Source` to its beginning to be ready to parse data from again"
+reset!(s::CSV.Source) = (seek(s.io, s.datapos); return nothing)
 
 # Data.Source interface
 Data.schema(source::CSV.Source, ::Type{Data.Field}) = source.schema
@@ -189,7 +190,7 @@ Data.reference(source::CSV.Source) = source.io.data
 `CSV.read(fullpath::Union{AbstractString,IO}, sink::Type{T}=DataFrame, args...; kwargs...)` => `typeof(sink)`
 `CSV.read(fullpath::Union{AbstractString,IO}, sink::Data.Sink; kwargs...)` => `Data.Sink`
 
-parses a delimited file into a Julia structure (a DataFrame by default, but any `Data.Sink` may be given).
+parses a delimited file into a Julia structure (a DataFrame by default, but any valid `Data.Sink` may be requested).
 
 Positional arguments:
 
@@ -213,6 +214,7 @@ Keyword Arguments:
 * `rows::Int`; indicates the total number of rows to read from the file; by default the file is pre-parsed to count the # of rows; `-1` can be passed to skip a full-file scan, but the `Data.Sink` must be setup account for a potentially unknown # of rows
 * `use_mmap::Bool=true`; whether the underlying file will be mmapped or not while parsing
 * `append::Bool=false`; if the `sink` argument provided is an existing table, `append=true` will append the source's data to the existing data instead of doing a full replace
+* `transforms::Dict{Union{String,Int},Function}`; a Dict of transforms to apply to values as they are parsed. Note that a column can be specified by either number or column name.
 
 Note by default, "string" or text columns will be parsed as the [`WeakRefString`](https://github.com/quinnj/WeakRefStrings.jl) type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
 To convert a `String` to a standard Julia string type, just call `string(::WeakRefString)`, this also works on an entire column.
@@ -229,7 +231,52 @@ julia> dt = CSV.read("bids.csv")
 │ 3       │ 2       │ "aa5f360084278b35d746fa6af3a7a1a5ra3xe" │ "wa00e" │ "home goods"     │ "phone2"    │
 ...
 ```
+
+Other example invocations may include:
+```julia
+# read in a tab-delimited file
+CSV.read(file; delim='\t')
+
+# read in a comma-delimited file with null values represented as '\N', such as a MySQL export
+CSV.read(file; null="\\N")
+
+# manually provided column names; must match # of columns of data in file
+# this assumes there is no header row in the file itself, so data parsing will start at the very beginning of the file
+CSV.read(file; header=["col1", "col2", "col3"])
+
+# manually provided column names, even though the file itself has column names on the first row
+# `datarow` is specified to ensure data parsing occurs at correct location
+CSV.read(file; header=["col1", "col2", "col3"], datarow=2)
+
+# types provided manually; as a vector, must match length of columns in actual data
+CSV.read(file; types=[Int, Int, Float64])
+
+# types provided manually; as a Dict, can specify columns by # or column name
+CSV.read(file; types=Dict(3=>Float64, 6=>String))
+CSV.read(file; types=Dict("col3"=>Float64, "col6"=>String))
+
+# manually provided # of rows; if known beforehand, this will improve parsing speed
+# this is also a way to limit the # of rows to be read in a file if only a sample is needed
+CSV.read(file; rows=10000)
+
+# for data files, `file` and `file2`, with the same structure, read both into a single DataFrame
+# note that `df` is used as a 2nd argument in the 2nd call to `CSV.read` and the keyword argument
+# `append=true` is passed
+df = CSV.read(file)
+df = CSV.read(file2, df; append=true)
+
+# manually construct a `CSV.Source` once, then stream its data to both a DataFrame
+# and SQLite table `sqlite_table` in the SQLite database `db`
+# note the use of `CSV.reset!` to ensure the `source` can be streamed from again
+source = CSV.Source(file)
+df1 = CSV.read(source, DataFrame)
+CSV.reset!(source)
+db = SQLite.DB()
+sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
+```
 """
+function read end
+
 function read(fullpath::Union{AbstractString,IO}, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
     source = Source(fullpath; kwargs...)
     sink = Data.stream!(source, sink, append, transforms, args...)

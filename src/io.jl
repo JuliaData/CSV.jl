@@ -2,7 +2,12 @@
 `CSV.readline(io::IO, q='"', e='\\', buf::IOBuffer=IOBuffer())` => `String`
 `CSV.readline(source::CSV.Source)` => `String`
 
-read a single line from `io` (any `IO` type) or a `CSV.Source` as a string, accounting for potentially embedded newlines in quoted fields (e.g. value1, value2, \"value3 with \n embedded newlines\"). Can optionally provide a `buf::IOBuffer` type for buffer reuse
+read a single line from `io` (any `IO` type) or a `CSV.Source` as a string,
+accounting for potentially embedded newlines in quoted fields
+(e.g. value1, value2, \"value3 with \n embedded newlines\").
+Can optionally provide a `buf::IOBuffer` type for buffer reuse
+
+This function basically mirrors `Base.readline` except it can account for quoted newlines to **not** as the true end of a line.
 """
 function readline end
 
@@ -37,7 +42,9 @@ readline(source::CSV.Source) = readline(source.io, source.options.quotechar, sou
 `CSV.readsplitline(io, d=',', q='"', e='\\', buf::IOBuffer=IOBuffer())` => `Vector{String}`
 `CSV.readsplitline(source::CSV.Source)` => `Vector{String}`
 
-read a single line from `io` (any `IO` type) as a `Vector{String}` with elements being delimited fields (separated by a delimiter `d`). Can optionally provide a `buf::IOBuffer` type for buffer reuse
+read a single, delimited line from `io` (any `IO` type) or a `CSV.Source` as a `Vector{String}`
+delimited fields are separated by an ascii character `d`).
+Can optionally provide a `buf::IOBuffer` type for buffer reuse
 """
 function readsplitline end
 

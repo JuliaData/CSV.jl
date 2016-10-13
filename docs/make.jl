@@ -2,9 +2,14 @@ using Documenter, CSV
 
 makedocs(
     modules = [CSV],
+    format = :html,
+    sitename = "CSV.jl",
+    pages = ["Home" => "index.md"]
 )
 
 deploydocs(
-    deps = Deps.pip("mkdocs", "mkdocs-material", "python-markdown-math"),
-    repo = "github.com/JuliaData/CSV.jl.git"
+    repo = "github.com/JuliaData/CSV.jl.git",
+    target = "build",
+    deps = nothing,
+    make = nothing
 )
