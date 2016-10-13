@@ -30,15 +30,28 @@ end
 
 TYPES = !is_windows() ? (Int, Float64, WeakRefString{UInt8}, String, Date, DateTime, Dec64) : (Int, Float64, WeakRefString{UInt8}, String, Date, DateTime)
 
-@benchgroup "CSV.parsefield" begin
-    opts = CSV.Options()
-    row = col = 1
-    state = Ref{CSV.ParsingState}(CSV.None)
-    for I in (IOBuffer, IOStream)
-        for T in TYPES
-            io, f = prep(I, T)
-            @bench "$I - $T" CSV.parsefield($io, $T, opts, row, col, state)
-            f()
+@benchgroup "CSV" begin
+    @benchgroup "CSV.parsefield" begin
+        opts = CSV.Options()
+        row = col = 1
+        state = Ref{CSV.ParsingState}(CSV.None)
+        for I in (IOBuffer, IOStream)
+            for T in TYPES
+                io, f = prep(I, T)
+                @bench "$I - $T" CSV.parsefield($io, $T, opts, row, col, state)
+                f()
+            end
         end
     end
+
+    @benchgroup "CSV.read" begin
+        @bench "CSV.read" CSV.read("randoms_small.csv")
+    end
+
+    @benchgroup "CSV.write" begin
+        df = CSV.read("randoms_small.csv")
+        @bench "CSV.write" CSV.write("randoms_small2.csv", df)
+        rm("randoms_small2.csv")
+    end
+
 end
