@@ -16,5 +16,4 @@ after_success:
   - julia -e 'Pkg.add("Documenter")'
   - julia -e 'cd(Pkg.dir("CSV")); include(joinpath("docs", "make.jl"))'
   - julia -e 'Pkg.add("PkgBenchmark")'
-  - git status
   - julia -e 'using PkgBenchmark; benchmarkpkg("CSV"; promptsave=false, promptoverwrite=false)'
