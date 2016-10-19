@@ -11,5 +11,7 @@ deploydocs(
     repo = "github.com/JuliaData/CSV.jl.git",
     target = "build",
     deps = nothing,
-    make = nothing
+    make = nothing,
+    julia = "0.5",
+    osname = "linux"
 )
