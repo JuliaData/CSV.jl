@@ -400,3 +400,20 @@ function parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0,
         eof(io) && return getgeneric(io, T, b, opt, row, col, buf, state)
     end
 end
+
+@inline function parsefield(io::IO, ::Type{Char}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
+    b, null = CSV.checknullstart(io, opt, state)
+    null && return Nullable{Char}()
+    eof(io) && (state[] = EOF; return Nullable{Char}(Char(b)))
+    if !isempty(opt.null.data) && b == opt.null.data[1]
+        CSV.checknullend(io, Char, b, opt, row, col, state) && return Nullable{Char}()
+    else
+        c = unsafe_read(io, UInt8)
+        c, done::Bool = CSV.checkdone(io, c, opt, state)
+        if done
+            return Nullable{Char}(b)
+        elseif CSV.checknullend(io, Char, c, opt, row, col, state)
+            return Nullable{Char}()
+        end
+    end
+end
