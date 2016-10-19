@@ -1259,3 +1259,99 @@ Base.parse(::Type{CustomInt}, x) = CustomInt(parse(Int, x))
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1")))
 v = CSV.parsefield(io, CustomInt, CSV.Options(),1,1)
 @test get(v).val == 1
+
+# Char
+io = IOBuffer("0")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test v === Nullable('0')
+
+io = IOBuffer("-")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test v === Nullable('-')
+
+io = IOBuffer("+")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test v === Nullable('+')
+
+io = IOBuffer("1")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test v === Nullable('1')
+
+io = IOBuffer("2000")
+@test_throws CSV.CSVError CSV.parsefield(io,Char,CSV.Options(),1,1)
+
+io = IOBuffer("0.0")
+@test_throws CSV.CSVError CSV.parsefield(io,Char,CSV.Options(),1,1)
+io = IOBuffer("0a")
+@test_throws CSV.CSVError CSV.parsefield(io,Char,CSV.Options(),1,1)
+io = IOBuffer("")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test isnull(v)
+
+io = IOBuffer(" ")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test isnull(v)
+
+io = IOBuffer("\t")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test isnull(v)
+
+io = IOBuffer(" \t 0")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test v === Nullable('0')
+
+io = IOBuffer("\"1_00a0\"")
+@test_throws CSV.CSVError CSV.parsefield(io,Char,CSV.Options(),1,1)
+io = IOBuffer("\"0\"")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test v === Nullable('0')
+
+io = IOBuffer("0\n")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test v === Nullable('0')
+
+io = IOBuffer("0\r")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test v === Nullable('0')
+
+io = IOBuffer("0\r\n")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test v === Nullable('0')
+
+io = IOBuffer("0a\n")
+@test_throws CSV.CSVError CSV.parsefield(io,Char,CSV.Options(),1,1)
+# Should we handle trailing whitespace?
+io = IOBuffer("\t0\t\n")
+@test_throws CSV.CSVError CSV.parsefield(io,Char,CSV.Options(),1,1)
+
+io = IOBuffer("0,")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test v === Nullable('0')
+
+io = IOBuffer("0,\n")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test v === Nullable('0')
+
+io = IOBuffer("\n")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test isnull(v)
+
+io = IOBuffer("\r")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test isnull(v)
+
+io = IOBuffer("\r\n")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test isnull(v)
+
+io = IOBuffer("\"\"")
+v = CSV.parsefield(io,Char,CSV.Options(),1,1)
+@test isnull(v)
+
+io = IOBuffer("\\N")
+v = CSV.parsefield(io,Char,CSV.Options(null="\\N"),1,1)
+@test isnull(v)
+
+io = IOBuffer("\"\\N\"")
+v = CSV.parsefield(io,Char,CSV.Options(null="\\N"),1,1)
+@test isnull(v)
