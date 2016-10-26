@@ -178,7 +178,7 @@ end
     end
 end
 
-const NULLSTRING = Nullable{WeakRefString{UInt8}}(WeakRefStrings.NULLSTRING, true)
+const NULLSTRING = Nullable{WeakRefString{UInt8}}()
 
 @inline function parsefield(io::IOBuffer, ::Type{WeakRefString{UInt8}}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE, start_ptr=Int(pointer(io.data)))
     eof(io) && (state[] = EOF; return NULLSTRING)
