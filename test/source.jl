@@ -280,6 +280,7 @@ ds = Data.stream!(f, DataFrame)
 t = tempname()
 f = CSV.Sink(t)
 @show f
+rm(t)
 
 f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"))
 types = Data.types(f)
@@ -300,3 +301,5 @@ df2 = CSV.read(source)
 @test isequal(df, df2)
 
 @test_throws ArgumentError CSV.Source(f; types = [Int, Int, Int, Int])
+close(f)
+rm(t)
