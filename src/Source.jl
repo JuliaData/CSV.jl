@@ -10,6 +10,7 @@ function Source(fullpath::Union{AbstractString,IO};
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
               nullable::Bool=true,
+              weakrefstrings::Bool=true,
               dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateFormat,
 
               footerskip::Int=0,
@@ -24,7 +25,7 @@ function Source(fullpath::Union{AbstractString,IO};
     return CSV.Source(fullpath=fullpath,
                         options=CSV.Options(delim=delim % UInt8, quotechar=quotechar % UInt8, escapechar=escapechar % UInt8,
                                     null=null, dateformat=dateformat),
-                        header=header, datarow=datarow, types=types, nullable=nullable, footerskip=footerskip,
+                        header=header, datarow=datarow, types=types, nullable=nullable, weakrefstrings=weakrefstrings, footerskip=footerskip,
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
 
@@ -35,6 +36,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
                 types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
                 nullable::Bool=true,
+                weakrefstrings::Bool=true,
 
                 footerskip::Int=0,
                 rows_for_type_detect::Int=100,
@@ -160,11 +162,12 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             columntypes[c] = typ
         end
     end
-    if nullable
-        columntypes = DataType[T <: Nullable ? T : Nullable{T} for T in columntypes]
-    else
+    if !nullable || !weakrefstrings
         # WeakRefStrings won't be safe if they don't end up in a NullableArray
         columntypes = DataType[T <: WeakRefString ? String : T for T in columntypes]
+    end
+    if nullable
+        columntypes = DataType[T <: Nullable ? T : Nullable{T} for T in columntypes]
     end
     seek(source, datapos)
     sch = Data.Schema(columnnames, columntypes, rows)
