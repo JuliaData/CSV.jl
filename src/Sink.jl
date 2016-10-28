@@ -77,7 +77,9 @@ end
 
 """
 `CSV.write(file_or_io::Union{AbstractString,IO}, source::Type{T}, args...; kwargs...)` => `CSV.Sink`
+
 `CSV.write(file_or_io::Union{AbstractString,IO}, source::Data.Source; kwargs...)` => `CSV.Sink`
+
 
 write a `Data.Source` out to a `file_or_io`.
 
