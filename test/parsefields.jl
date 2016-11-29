@@ -1355,3 +1355,7 @@ v = CSV.parsefield(io,Char,CSV.Options(null="\\N"),1,1)
 io = IOBuffer("\"\\N\"")
 v = CSV.parsefield(io,Char,CSV.Options(null="\\N"),1,1)
 @test isnull(v)
+
+io = IOBuffer("\t")
+v = CSV.parsefield(io,Int64,CSV.Options(delim='\t'),1,1)
+@test isnull(v)
