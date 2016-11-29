@@ -302,3 +302,10 @@ df2 = CSV.read(source)
 @test_throws ArgumentError CSV.Source(f; types = [Int, Int, Int, Int])
 close(f)
 rm(t)
+
+# test tab-delimited nulls
+d = CSV.read(joinpath(dir, "test_tab_null_empty.txt"); delim='\t')
+@test isnull(d[2, :B])
+
+d = CSV.read(joinpath(dir, "test_tab_null_string.txt"); delim='\t', null="NULL")
+@test isnull(d[2, :B])
