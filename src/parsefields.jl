@@ -8,7 +8,7 @@ const STATE = Ref(None)
 @inline function checknullstart(io::IO, opt::CSV.Options, state)
     eof(io) && (state[] = EOF; return 0x00, true)
     b = unsafe_read(io, UInt8)
-    while b == CSV.SPACE || b == CSV.TAB || b == opt.quotechar
+    while b != opt.delim && (b == CSV.SPACE || b == CSV.TAB || b == opt.quotechar)
         eof(io) && (state[] = EOF; return b, true)
         b = unsafe_read(io, UInt8)
     end
@@ -417,3 +417,4 @@ end
         end
     end
 end
+
