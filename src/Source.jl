@@ -74,7 +74,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         unsafe_read(source, UInt8) == 0xbf || seekstart(source)
     end
     datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
-    rows = rows - datarow + 1 - footerskip # rows now equals the actual number of rows in the dataset
+    rows = max(-1, rows - datarow + 1 - footerskip) # rows now equals the actual number of rows in the dataset
 
     # figure out # of columns and header, either an Integer, Range, or Vector{String}
     # also ensure that `f` is positioned at the start of data
