@@ -301,6 +301,7 @@ df2 = CSV.read(source)
 
 @test_throws ArgumentError CSV.Source(f; types = [Int, Int, Int, Int])
 close(f)
+f = source = nothing; gc(); gc()
 rm(t)
 
 # test tab-delimited nulls
