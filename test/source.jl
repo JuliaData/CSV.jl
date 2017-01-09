@@ -310,3 +310,14 @@ d = CSV.read(joinpath(dir, "test_tab_null_empty.txt"); delim='\t')
 
 d = CSV.read(joinpath(dir, "test_tab_null_string.txt"); delim='\t', null="NULL")
 @test isnull(d[2, :B])
+
+# read a write protected file
+let fn = tempname()
+    open(fn, "w") do f
+        write(f, "Julia")
+    end
+    chmod(fn, 0o444)
+    names(CSV.read(fn))[1] == :Julia
+    rm(fn)
+end
+

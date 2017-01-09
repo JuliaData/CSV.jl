@@ -58,7 +58,10 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         fs = nb_available(fullpath)
         fullpath = isdefined(fullpath, :name) ? fullpath.name : "__IO__"
     else
-        source = IOBuffer(use_mmap ? Mmap.mmap(fullpath) : open(Base.read, fullpath))
+        # source = IOBuffer(use_mmap ? Mmap.mmap(fullpath) : open(Base.read, fullpath))
+        source = open(fullpath, "r") do f
+            IOBuffer(use_mmap ? Mmap.mmap(f) : Base.read(f))
+        end
         fs = filesize(fullpath)
     end
     options.datarow != -1 && (datarow = options.datarow)
