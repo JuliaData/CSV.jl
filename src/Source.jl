@@ -23,8 +23,10 @@ function Source(fullpath::Union{AbstractString,IO};
     isascii(escapechar) || throw(ArgumentError("non-ASCII characters not supported for escapechar argument: $escapechar"))
     dateformat = isa(dateformat, Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat)
     return CSV.Source(fullpath=fullpath,
-                        options=CSV.Options(delim=delim % UInt8, quotechar=quotechar % UInt8, escapechar=escapechar % UInt8,
-                                    null=null, dateformat=dateformat),
+                        options=CSV.Options(delim=typeof(delim) <: String ? UInt8(first(delim)) : (delim % UInt8),
+                                            quotechar=typeof(quotechar) <: String ? UInt8(first(quotechar)) : (quotechar % UInt8),
+                                            escapechar=typeof(escapechar) <: String ? UInt8(first(escapechar)) : (escapechar % UInt8),
+                                            null=null, dateformat=dateformat),
                         header=header, datarow=datarow, types=types, nullable=nullable, weakrefstrings=weakrefstrings, footerskip=footerskip,
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
@@ -58,7 +60,6 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         fs = nb_available(fullpath)
         fullpath = isdefined(fullpath, :name) ? fullpath.name : "__IO__"
     else
-        # source = IOBuffer(use_mmap ? Mmap.mmap(fullpath) : open(Base.read, fullpath))
         source = open(fullpath, "r") do f
             IOBuffer(use_mmap ? Mmap.mmap(f) : Base.read(f))
         end
