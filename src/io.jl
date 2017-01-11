@@ -33,7 +33,7 @@ function readline(io::IO, q::UInt8, e::UInt8, buf::IOBuffer=IOBuffer())
             break
         end
     end
-    return takebuf_string(buf)
+    return String(take!(buf))
 end
 readline(io::IO, q='"', e='\\', buf::IOBuffer=IOBuffer()) = readline(io, UInt8(q), UInt8(e), buf)
 readline(source::CSV.Source) = readline(source.io, source.options.quotechar, source.options.escapechar)
@@ -66,7 +66,7 @@ function readsplitline(io::IO, d::UInt8, q::UInt8, e::UInt8, buf::IOBuffer=IOBuf
                 end
             end
         elseif b == d
-            push!(vals,takebuf_string(buf))
+            push!(vals,String(take!(buf)))
         elseif b == NEWLINE
             break
         elseif b == RETURN
@@ -76,7 +76,7 @@ function readsplitline(io::IO, d::UInt8, q::UInt8, e::UInt8, buf::IOBuffer=IOBuf
             Base.write(buf, b)
         end
     end
-    return push!(vals,takebuf_string(buf))
+    return push!(vals,String(take!(buf)))
 end
 readsplitline(io::IO, d=',', q='"', e='\\', buf::IOBuffer=IOBuffer()) = readsplitline(io, UInt8(d), UInt8(q), UInt8(e), buf)
 readsplitline(source::CSV.Source) = readsplitline(source.io, source.options.delim, source.options.quotechar, source.options.escapechar)

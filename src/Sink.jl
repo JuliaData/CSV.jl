@@ -70,7 +70,7 @@ end
 
 function Data.close!(sink::CSV.Sink)
     io = isa(sink.fullpath, AbstractString) ? open(sink.fullpath, sink.append ? "a" : "w") : sink.fullpath
-    Base.write(io, takebuf_array(sink.io))
+    Base.write(io, take!(sink.io))
     applicable(close, io) && close(io)
     return nothing
 end
