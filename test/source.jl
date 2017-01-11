@@ -318,6 +318,7 @@ let fn = tempname()
     end
     chmod(fn, 0o444)
     names(CSV.read(fn))[1] == :Julia
+    gc(); gc()
     rm(fn)
 end
 
