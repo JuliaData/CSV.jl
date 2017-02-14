@@ -1,9 +1,9 @@
 __precompile__(true)
 module CSV
 
-using Compat, DataStreams, DataFrames, WeakRefStrings
+using Compat, DataStreams, DataTables, WeakRefStrings
 
-export Data, DataFrame
+export Data, DataTable
 
 immutable CSVError <: Exception
     msg::String
@@ -87,11 +87,11 @@ keyword arguments, see the docs for [`CSV.read`](@ref) or type `?CSV.read` at th
 
 An example of re-using a `CSV.Source` is:
 ```julia
-# manually construct a `CSV.Source` once, then stream its data to both a DataFrame
+# manually construct a `CSV.Source` once, then stream its data to both a DataTable
 # and SQLite table `sqlite_table` in the SQLite database `db`
 # note the use of `CSV.reset!` to ensure the `source` can be streamed from again
 source = CSV.Source(file)
-df1 = CSV.read(source, DataFrame)
+df1 = CSV.read(source, DataTable)
 CSV.reset!(source)
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 ```
@@ -123,11 +123,11 @@ keyword arguments, see the docs for [`CSV.write`](@ref) or type `?CSV.write` at 
 
 An example of re-using a `CSV.Sink` is:
 ```julia
-# manually construct a `CSV.Source` once, then stream its data to both a DataFrame
+# manually construct a `CSV.Source` once, then stream its data to both a DataTable
 # and SQLite table `sqlite_table` in the SQLite database `db`
 # note the use of `CSV.reset!` to ensure the `source` can be streamed from again
 source = CSV.Source(file)
-df1 = CSV.read(source, DataFrame)
+df1 = CSV.read(source, DataTable)
 CSV.reset!(source)
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 ```

@@ -102,24 +102,24 @@ Keyword Arguments:
 
 A few example invocations include:
 ```julia
-# write out a DataFrame `df` to a file name "out.csv" with all defaults, including comma as delimiter
+# write out a DataTable `df` to a file name "out.csv" with all defaults, including comma as delimiter
 CSV.write("out.csv", df)
 
-# write out a DataFrame, this time as a tab-delimited file
+# write out a DataTable, this time as a tab-delimited file
 CSV.write("out.csv", df; delim='\t')
 
-# write out a DataFrame, with null values represented by the string "NA"
+# write out a DataTable, with null values represented by the string "NA"
 CSV.write("out.csv", df; null="NA")
 
 # write out a "header-less" file, with actual data starting on row 1
 CSV.write("out.csv", df; header=false)
 
-# write out a DataFrame `df` twice to a file, the resulting file with have twice the # of rows as the DataFrame
+# write out a DataTable `df` twice to a file, the resulting file with have twice the # of rows as the DataTable
 # note the usage of the keyword argument `append=true` in the 2nd call
 CSV.write("out.csv", df)
 CSV.write("out.csv", df; append=true)
 
-# write a DataFrame out to an IOBuffer instead of a file
+# write a DataTable out to an IOBuffer instead of a file
 io = IOBuffer
 CSV.write(io, df)
 

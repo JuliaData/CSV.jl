@@ -14,7 +14,7 @@ f = CSV.Source(joinpath(dir, "test_utf8.csv"))
 @test size(f, 1) == 3
 @test Data.header(f) == ["col1","col2","col3"]
 @test Data.types(f) == [Nullable{Float64},Nullable{Float64},Nullable{Float64}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 @test ds[1,1].value == 1.0
 @test ds[2,1].value == 4.0
 @test ds[3,1].value == 7.0
@@ -31,7 +31,7 @@ so = CSV.Source(si)
 @test Data.header(so) == ["col1","col2","col3"]
 @test Data.types(so) == [Nullable{Float64},Nullable{Float64},Nullable{Float64}]
 # @test so.iopos == 21
-ds = Data.stream!(so, DataFrame)
+ds = Data.stream!(so, DataTable)
 @test ds[1,1].value == 1.0
 @test ds[2,1].value == 4.0
 @test ds[3,1].value == 7.0
@@ -56,7 +56,7 @@ f = CSV.Source(joinpath(dir, "test_single_column.csv"))
 @test size(f, 1) == 3
 @test Data.header(f) == ["col1"]
 @test Data.types(f) == [Nullable{Int}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 @test ds[1,1].value == 1
 @test ds[2,1].value == 2
 @test ds[3,1].value == 3
@@ -76,7 +76,7 @@ f = CSV.Source(joinpath(dir, "test_empty_file_newlines.csv"))
 f = CSV.Source(joinpath(dir, "test_simple_quoted.csv"))
 @test size(f, 2) == 2
 @test size(f, 1) == 1
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 @test string(ds[1,1].value) == "quoted field 1"
 @test string(ds[1,2].value) == "quoted field 2"
 f = CSV.Source(joinpath(dir, "test_quoted_delim_and_newline.csv"))
@@ -88,7 +88,7 @@ f = CSV.Source(joinpath(dir, "test_crlf_line_endings.csv"))
 @test Data.header(f) == ["col1","col2","col3"]
 @test size(f, 2) == 3
 @test Data.types(f) == [Nullable{Int},Nullable{Int},Nullable{Int}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 @test ds[1,1].value == 1
 f = CSV.Source(joinpath(dir, "test_newline_line_endings.csv"))
 @test Data.header(f) == ["col1","col2","col3"]
@@ -116,7 +116,7 @@ f = CSV.Source(joinpath(dir, "test_dates.csv"); types=[Date], dateformat="yyyy-m
 @test size(f, 2) == 1
 @test size(f, 1) == 3
 @test Data.types(f) == [Nullable{Date}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 @test ds[1,1].value == Date(2015,1,1)
 @test ds[2,1].value == Date(2015,1,2)
 @test ds[3,1].value == Date(2015,1,3)
@@ -132,21 +132,21 @@ f = CSV.Source(joinpath(dir, "test_datetimes.csv"); dateformat="yyyy-mm-dd HH:MM
 @test size(f, 2) == 1
 @test size(f, 1) == 3
 @test Data.types(f) == [Nullable{DateTime}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 @test ds[1,1].value == DateTime(2015,1,1)
 @test ds[2,1].value == DateTime(2015,1,2,0,0,1)
 @test ds[3,1].value == DateTime(2015,1,3,0,12,0,1)
 
 #test bad types
 f = CSV.Source(joinpath(dir, "test_float_in_int_column.csv"); types=[Int,Int,Int])
-@test_throws CSV.CSVError Data.stream!(f, DataFrame)
+@test_throws CSV.CSVError Data.stream!(f, DataTable)
 
 #test null/missing values
 f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"))
 @test size(f, 2) == 3
 @test size(f, 1) == 3
 @test Data.types(f) == [Nullable{Float64},Nullable{WeakRefString{UInt8}},Nullable{Float64}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 @test ds[1,1].value == 1.0
 @test string(ds[1,2].value) == "2.0"
 @test string(ds[2,2].value) == "NULL"
@@ -155,7 +155,7 @@ f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"); null="NULL")
 @test size(f, 1) == 3
 @test f.options.null == "NULL"
 @test Data.types(f) == [Nullable{Float64},Nullable{Float64},Nullable{Float64}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 @test ds[1,1].value == 1.0
 @test string(ds[1,2].value) == "2.0"
 @test isnull(ds[2,2])
@@ -172,109 +172,109 @@ f = CSV.Source(joinpath(dir, "baseball.csv"))
 @test size(f, 1) == 35
 @test Data.header(f) == ["Rk","Year","Age","Tm","Lg","","W","L","W-L%","G","Finish","Wpost","Lpost","W-L%post",""]
 @test Data.types(f) == [Nullable{Int},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Int},Nullable{Int},Nullable{Float64},Nullable{WeakRefString{UInt8}}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 
 f = CSV.Source(joinpath(dir, "FL_insurance_sample.csv");types=Dict(10=>Float64,12=>Float64))
 @test size(f, 2) == 18
 @test size(f, 1) == 36634
 @test Data.header(f) == ["policyID","statecode","county","eq_site_limit","hu_site_limit","fl_site_limit","fr_site_limit","tiv_2011","tiv_2012","eq_site_deductible","hu_site_deductible","fl_site_deductible","fr_site_deductible","point_latitude","point_longitude","line","construction","point_granularity"]
 @test Data.types(f) == [Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Float64},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 
 f = CSV.Source(joinpath(dir, "FL_insurance_sample.csv");types=Dict{String,DataType}("eq_site_deductible"=>Float64,"fl_site_deductible"=>Float64))
 @test size(f, 2) == 18
 @test size(f, 1) == 36634
 @test Data.header(f) == ["policyID","statecode","county","eq_site_limit","hu_site_limit","fl_site_limit","fr_site_limit","tiv_2011","tiv_2012","eq_site_deductible","hu_site_deductible","fl_site_deductible","fr_site_deductible","point_latitude","point_longitude","line","construction","point_granularity"]
 @test Data.types(f) == [Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Float64},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 
 f = CSV.Source(joinpath(dir, "SacramentocrimeJanuary2006.csv"))
 @test size(f, 2) == 9
 @test size(f, 1) == 7584
 @test Data.header(f) == ["cdatetime","address","district","beat","grid","crimedescr","ucr_ncic_code","latitude","longitude"]
 @test Data.types(f) == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Float64},Nullable{Float64}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 
 f = CSV.Source(joinpath(dir, "Sacramentorealestatetransactions.csv"))
 @test size(f, 2) == 12
 @test size(f, 1) == 985
 @test Data.header(f) == ["street","city","zip","state","beds","baths","sq__ft","type","sale_date","price","latitude","longitude"]
 @test Data.types(f) == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Float64},Nullable{Float64}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 
 f = CSV.Source(joinpath(dir, "SalesJan2009.csv"))
 @test size(f, 2) == 12
 @test size(f, 1) == 998
 @test Data.header(f) == ["Transaction_date","Product","Price","Payment_Type","Name","City","State","Country","Account_Created","Last_Login","Latitude","Longitude"]
 @test Data.types(f) == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Float64},Nullable{Float64}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 
 f = CSV.Source(joinpath(dir, "stocks.csv"))
 @test size(f, 2) == 2
 @test size(f, 1) == 30
 @test Data.header(f) == ["Stock Name","Company Name"]
 @test Data.types(f) == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 
 f = CSV.Source(joinpath(dir, "TechCrunchcontinentalUSA.csv"))
 @test size(f, 2) == 10
 @test size(f, 1) == 1460
 @test Data.header(f) == ["permalink","company","numEmps","category","city","state","fundedDate","raisedAmt","raisedCurrency","round"]
 @test Data.types(f) == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 
 f = CSV.Source(joinpath(dir, "Fielding.csv"))
 @test size(f, 2) == 18
 @test size(f, 1) == 167938
 @test Data.header(f) == ["playerID","yearID","stint","teamID","lgID","POS","G","GS","InnOuts","PO","A","E","DP","PB","WP","SB","CS","ZR"]
 @test Data.types(f) == [Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{Int},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 
 f = CSV.Source(joinpath(dir, "latest (1).csv"); header=0, null="\\N")
 @test size(f, 2) == 25
 @test size(f, 1) == 1000
 @test Data.header(f) == ["Column$i" for i = 1:size(f, 2)]
 @test Data.types(f) == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Date},Nullable{Date},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Float64},Nullable{Float64}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 
 f = CSV.Source(joinpath(dir, "pandas_zeros.csv"))
 @test size(f, 2) == 50
 @test size(f, 1) == 100000
 @test Data.header(f) == [string(i) for i = 0:49]
 @test Data.types(f) == repmat([Nullable{Int}],50)
-@time ds = Data.stream!(f, DataFrame)
+@time ds = Data.stream!(f, DataTable)
 
 f = CSV.Source(joinpath(dir, "test_header_range.csv");header=1:3)
 @test size(f, 2) == 3
 @test size(f, 1) == 3
 @test Data.header(f) == ["col1_sub1_part1","col2_sub2_part2","col3_sub3_part3"]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 
 f = CSV.Source(joinpath(dir, "test_header_range.csv");header=["col1_sub1_part1","col2_sub2_part2","col3_sub3_part3"],datarow=4)
 @test size(f, 2) == 3
 @test size(f, 1) == 3
 @test Data.header(f) == ["col1_sub1_part1","col2_sub2_part2","col3_sub3_part3"]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 
 f = CSV.Source(joinpath(dir, "test_basic.csv");types=Dict(2=>Float64))
 @test size(f, 2) == 3
 @test size(f, 1) == 3
 @test Data.types(f) == [Nullable{Int},Nullable{Float64},Nullable{Int}]
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 
 f = CSV.Source(joinpath(dir, "test_basic_pipe.csv");delim='|')
 @test size(f, 2) == 3
 @test size(f, 1) == 3
 @test Data.types(f) == [Nullable{Int},Nullable{Int},Nullable{Int}]
 @test f.options.delim == UInt8('|')
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 
 f = CSV.Source(joinpath(dir, "test_basic_pipe.csv");delim='|',footerskip=1)
 @test size(f, 2) == 3
 @test size(f, 1) == 2
 @test Data.types(f) == [Nullable{Int},Nullable{Int},Nullable{Int}]
 @test f.options.delim == UInt8('|')
-ds = Data.stream!(f, DataFrame)
+ds = Data.stream!(f, DataTable)
 @show f
 
 t = tempname()
