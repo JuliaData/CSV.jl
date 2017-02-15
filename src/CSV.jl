@@ -91,7 +91,7 @@ An example of re-using a `CSV.Source` is:
 # and SQLite table `sqlite_table` in the SQLite database `db`
 # note the use of `CSV.reset!` to ensure the `source` can be streamed from again
 source = CSV.Source(file)
-df1 = CSV.read(source, DataTable)
+dt1 = CSV.read(source, DataTable)
 CSV.reset!(source)
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 ```
@@ -127,7 +127,7 @@ An example of re-using a `CSV.Sink` is:
 # and SQLite table `sqlite_table` in the SQLite database `db`
 # note the use of `CSV.reset!` to ensure the `source` can be streamed from again
 source = CSV.Source(file)
-df1 = CSV.read(source, DataTable)
+dt1 = CSV.read(source, DataTable)
 CSV.reset!(source)
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 ```

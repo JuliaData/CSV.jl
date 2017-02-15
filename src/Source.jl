@@ -270,16 +270,16 @@ CSV.read(file; types=Dict("col3"=>Float64, "col6"=>String))
 CSV.read(file; rows=10000)
 
 # for data files, `file` and `file2`, with the same structure, read both into a single DataTable
-# note that `df` is used as a 2nd argument in the 2nd call to `CSV.read` and the keyword argument
+# note that `dt` is used as a 2nd argument in the 2nd call to `CSV.read` and the keyword argument
 # `append=true` is passed
-df = CSV.read(file)
-df = CSV.read(file2, df; append=true)
+dt = CSV.read(file)
+dt = CSV.read(file2, dt; append=true)
 
 # manually construct a `CSV.Source` once, then stream its data to both a DataTable
 # and SQLite table `sqlite_table` in the SQLite database `db`
 # note the use of `CSV.reset!` to ensure the `source` can be streamed from again
 source = CSV.Source(file)
-df1 = CSV.read(source, DataTable)
+dt1 = CSV.read(source, DataTable)
 CSV.reset!(source)
 db = SQLite.DB()
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")

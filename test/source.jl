@@ -292,12 +292,12 @@ f = open(t, "w")
 Base.write(f, readstring(joinpath(dir, "test_missing_value_NULL.csv")))
 seekstart(f)
 source = CSV.Source(f; header=[], datarow=2, nullable=false)
-df = CSV.read(source)
-@test Data.header(df) == ["Column1", "Column2", "Column3"]
+dt = CSV.read(source)
+@test Data.header(dt) == ["Column1", "Column2", "Column3"]
 
 CSV.reset!(source)
-df2 = CSV.read(source)
-@test isequal(df, df2)
+dt2 = CSV.read(source)
+@test isequal(dt, dt2)
 
 @test_throws ArgumentError CSV.Source(f; types = [Int, Int, Int, Int])
 close(f)
@@ -321,4 +321,3 @@ let fn = tempname()
     gc(); gc()
     rm(fn)
 end
-

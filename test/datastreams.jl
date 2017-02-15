@@ -1,10 +1,10 @@
 
 # DataTables
 FILE = joinpath(DSTESTDIR, "randoms_small.csv")
-DF = CSV.read(FILE)
-DF2 = CSV.read(FILE)
-dfsource = Tester("DataTable", x->x, false, DataTable, (:DF,), scalartransforms, vectortransforms, x->x, x->nothing)
-dfsink = Tester("DataTable", x->x, false, DataTable, (:DF2,), scalartransforms, vectortransforms, x->x, x->nothing)
+DT = CSV.read(FILE)
+DT2 = CSV.read(FILE)
+dtsource = Tester("DataTable", x->x, false, DataTable, (:DT,), scalartransforms, vectortransforms, x->x, x->nothing)
+dtsink = Tester("DataTable", x->x, false, DataTable, (:DT2,), scalartransforms, vectortransforms, x->x, x->nothing)
 function DataTables.DataTable(sym::Symbol; append::Bool=false)
     return @eval $sym
 end
@@ -46,4 +46,4 @@ FILE2 = joinpath(DSTESTDIR, "randoms2_small.csv")
 csvsource = Tester("CSV.Source", CSV.read, true, CSV.Source, (FILE,), scalartransforms, vectortransforms, x->x, x->nothing)
 csvsink = Tester("CSV.Sink", CSV.write, true, CSV.Sink, (FILE2,), scalartransforms, vectortransforms, x->CSV.read(FILE2; use_mmap=false), x->rm(FILE2))
 
-DataStreamsIntegrationTests.teststream([dfsource, csvsource], [dfsink, csvsink]; rows=99)
+DataStreamsIntegrationTests.teststream([dtsource, csvsource], [dtsink, csvsink]; rows=99)
