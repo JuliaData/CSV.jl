@@ -212,7 +212,7 @@ Keyword Arguments:
 * `delim::Union{Char,UInt8}`; a single character or ascii-compatible byte that indicates how fields in the file are delimited; default is `UInt8(',')`
 * `quotechar::Union{Char,UInt8}`; the character that indicates a quoted field that may contain the `delim` or newlines; default is `UInt8('"')`
 * `escapechar::Union{Char,UInt8}`; the character that escapes a `quotechar` in a quoted field; default is `UInt8('\\')`
-* `null::String`; an ascii string that indicates how NULL values are represented in the dataset; default is the empty string, `""`
+* `null::String`; an ASCII string that indicates how NULL values are represented in the dataset; default is the empty string, `""`
 * `header`; column names can be provided manually as a complete Vector{String}, or as an Int/Range which indicates the row/rows that contain the column names
 * `datarow::Int`; specifies the row on which the actual data starts in the file; by default, the data is expected on the next row after the header row(s); for a file without column names (header), specify `datarow=1`
 * `types`; column types can be provided manually as a complete Vector{DataType}, or in a Dict to reference individual columns by name or number
