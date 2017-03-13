@@ -43,7 +43,7 @@ end
 Data.streamto!(sink::Sink, ::Type{Data.Field}, val, row, col, sch) = (col == size(sch, 2) ? println(sink.io, val) : print(sink.io, val, Char(sink.options.delim)); return nothing)
 function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::AbstractString, row, col, sch)
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
-    print(sink.io, q, replace(string(val), q, "$e$q"), q)
+    print(sink.io, q, replace(string(val), q, string(e,q)), q)
     print(sink.io, ifelse(col == size(sch, 2), Char(NEWLINE), Char(sink.options.delim)))
     return nothing
 end
