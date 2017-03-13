@@ -82,28 +82,26 @@ function Source(;fullpath::Union{AbstractString,IO}="",
 
     # figure out # of columns and header, either an Integer, Range, or Vector{String}
     # also ensure that `f` is positioned at the start of data
-    cols = 0
+    row_vals = Vector{RawField}()
     if isa(header, Integer)
         # default header = 1
         if header <= 0
             CSV.skipto!(source,1,datarow,options.quotechar,options.escapechar)
             datapos = position(source)
-            cols = length(CSV.readsplitline(source,options.delim,options.quotechar,options.escapechar))
+            CSV.readsplitline!(row_vals, source,options.delim,options.quotechar,options.escapechar)
             seek(source, datapos)
-            columnnames = ["Column$i" for i = 1:cols]
+            columnnames = ["Column$i" for i = eachindex(row_vals)]
         else
             CSV.skipto!(source,1,header,options.quotechar,options.escapechar)
-            columnnames = [x for x in CSV.readsplitline(source,options.delim,options.quotechar,options.escapechar)]
-            cols = length(columnnames)
+            columnnames = [x.value for x in CSV.readsplitline!(row_vals, source,options.delim,options.quotechar,options.escapechar)]
             datarow != header+1 && CSV.skipto!(source,header+1,datarow,options.quotechar,options.escapechar)
             datapos = position(source)
         end
     elseif isa(header,Range)
         CSV.skipto!(source,1,first(header),options.quotechar,options.escapechar)
-        columnnames = [x for x in readsplitline(source,options.delim,options.quotechar,options.escapechar)]
-        cols = length(columnnames)
+        columnnames = [x.value for x in readsplitline!(row_vals,source,options.delim,options.quotechar,options.escapechar)]
         for row = first(header):(last(header)-1)
-            for (i,c) in enumerate([x for x in readsplitline(source,options.delim,options.quotechar,options.escapechar)])
+            for (i,c) in enumerate([x.value for x in readsplitline!(row_vals,source,options.delim,options.quotechar,options.escapechar)])
                 columnnames[i] *= "_" * c
             end
         end
@@ -112,30 +110,31 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     else
         CSV.skipto!(source,1,datarow,options.quotechar,options.escapechar)
         datapos = position(source)
-        cols = length(readsplitline(source,options.delim,options.quotechar,options.escapechar))
+        readsplitline!(row_vals,source,options.delim,options.quotechar,options.escapechar)
         seek(source,datapos)
         if isempty(header)
-            columnnames = ["Column$i" for i = 1:cols]
+            columnnames = ["Column$i" for i in eachindex(row_vals)]
         else
-            length(header) == cols || throw(ArgumentError("length of provided header doesn't match number of columns of data at row $datarow"))
+            length(header) == length(row_vals) || throw(ArgumentError("The length of provided header ($(length(header))) doesn't match the number of columns at row $datarow ($(length(row_vals)))"))
             columnnames = header
         end
     end
 
     # Detect column types
-    columntypes = Array(DataType,cols)
+    cols = length(columnnames)
+    columntypes = Vector{DataType}(cols)
     if isa(types,Vector) && length(types) == cols
         columntypes = types
     elseif isa(types,Dict) || isempty(types)
-        poss_types = Array(DataType, min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect), cols)
+        poss_types = Matrix{DataType}(min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect), cols)
         fill!(poss_types, NullField)
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
-            vals = CSV.readsplitline(source, options.delim, options.quotechar, options.escapechar)
+            CSV.readsplitline!(row_vals, source, options.delim, options.quotechar, options.escapechar)
             lineschecked += 1
             for i = 1:cols
-                i > length(vals) && continue
-                poss_types[lineschecked, i] = CSV.detecttype(vals[i], options.dateformat, options.datecheck, options.null)
+                i > length(row_vals) && continue
+                poss_types[lineschecked, i] = CSV.detecttype(row_vals[i], options.dateformat, options.datecheck, options.null)
             end
         end
         # detect most common/general type of each column of types
