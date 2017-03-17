@@ -125,8 +125,8 @@ end
 immutable NullField end
 
 # try to infer the type of the value in `val`. The precedence of type checking is `Int` => `Float64` => `Date` => `DateTime` => `String`
-slottype{T}(df::Dates.Slot{T}) = T
-timetype(df::Dates.DateFormat) = any(slottype(T) in (Dates.Hour,Dates.Minute,Dates.Second,Dates.Millisecond) for T in df.slots) ? DateTime : Date
+slottype{T}(dt::Dates.Slot{T}) = T
+timetype(dt::Dates.DateFormat) = any(slottype(T) in (Dates.Hour,Dates.Minute,Dates.Second,Dates.Millisecond) for T in dt.slots) ? DateTime : Date
 
 function detecttype(val::AbstractString, format, datecheck, null)
     (val == "" || val == null) && return NullField

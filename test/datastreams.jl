@@ -1,17 +1,17 @@
 
-# DataFrames
+# DataTables
 FILE = joinpath(DSTESTDIR, "randoms_small.csv")
-DF = CSV.read(FILE)
-DF2 = CSV.read(FILE)
-dfsource = Tester("DataFrame", x->x, false, DataFrame, (:DF,), scalartransforms, vectortransforms, x->x, x->nothing)
-dfsink = Tester("DataFrame", x->x, false, DataFrame, (:DF2,), scalartransforms, vectortransforms, x->x, x->nothing)
-function DataFrames.DataFrame(sym::Symbol; append::Bool=false)
+DT = CSV.read(FILE)
+DT2 = CSV.read(FILE)
+dtsource = Tester("DataTable", x->x, false, DataTable, (:DT,), scalartransforms, vectortransforms, x->x, x->nothing)
+dtsink = Tester("DataTable", x->x, false, DataTable, (:DT2,), scalartransforms, vectortransforms, x->x, x->nothing)
+function DataTables.DataTable(sym::Symbol; append::Bool=false)
     return @eval $sym
 end
-function DataFrames.DataFrame(sch::Data.Schema, ::Type{Data.Field}, append::Bool, ref::Vector{UInt8}, sym::Symbol)
-    return DataFrame(DataFrame(sym), sch, Data.Field, append, ref)
+function DataTables.DataTable(sch::Data.Schema, ::Type{Data.Field}, append::Bool, ref::Vector{UInt8}, sym::Symbol)
+    return DataTable(DataTable(sym), sch, Data.Field, append, ref)
 end
-function DataFrame(sink, sch::Data.Schema, ::Type{Data.Field}, append::Bool, ref::Vector{UInt8})
+function DataTable(sink, sch::Data.Schema, ::Type{Data.Field}, append::Bool, ref::Vector{UInt8})
     rows, cols = size(sch)
     newsize = max(0, rows + (append ? size(sink, 1) : 0))
     # need to make sure we don't break a NullableVector{WeakRefString{UInt8}} when appending
@@ -46,4 +46,4 @@ FILE2 = joinpath(DSTESTDIR, "randoms2_small.csv")
 csvsource = Tester("CSV.Source", CSV.read, true, CSV.Source, (FILE,), scalartransforms, vectortransforms, x->x, x->nothing)
 csvsink = Tester("CSV.Sink", CSV.write, true, CSV.Sink, (FILE2,), scalartransforms, vectortransforms, x->CSV.read(FILE2; use_mmap=false), x->rm(FILE2))
 
-DataStreamsIntegrationTests.teststream([dfsource, csvsource], [dfsink, csvsink]; rows=99)
+DataStreamsIntegrationTests.teststream([dtsource, csvsource], [dtsink, csvsink]; rows=99)

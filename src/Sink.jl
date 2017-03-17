@@ -102,26 +102,26 @@ Keyword Arguments:
 
 A few example invocations include:
 ```julia
-# write out a DataFrame `df` to a file name "out.csv" with all defaults, including comma as delimiter
-CSV.write("out.csv", df)
+# write out a DataTable `dt` to a file name "out.csv" with all defaults, including comma as delimiter
+CSV.write("out.csv", dt)
 
-# write out a DataFrame, this time as a tab-delimited file
-CSV.write("out.csv", df; delim='\t')
+# write out a DataTable, this time as a tab-delimited file
+CSV.write("out.csv", dt; delim='\t')
 
-# write out a DataFrame, with null values represented by the string "NA"
-CSV.write("out.csv", df; null="NA")
+# write out a DataTable, with null values represented by the string "NA"
+CSV.write("out.csv", dt; null="NA")
 
 # write out a "header-less" file, with actual data starting on row 1
-CSV.write("out.csv", df; header=false)
+CSV.write("out.csv", dt; header=false)
 
-# write out a DataFrame `df` twice to a file, the resulting file with have twice the # of rows as the DataFrame
+# write out a DataTable `dt` twice to a file, the resulting file with have twice the # of rows as the DataTable
 # note the usage of the keyword argument `append=true` in the 2nd call
-CSV.write("out.csv", df)
-CSV.write("out.csv", df; append=true)
+CSV.write("out.csv", dt)
+CSV.write("out.csv", dt; append=true)
 
-# write a DataFrame out to an IOBuffer instead of a file
+# write a DataTable out to an IOBuffer instead of a file
 io = IOBuffer
-CSV.write(io, df)
+CSV.write(io, dt)
 
 # write the result of an SQLite query out to a comma-delimited file
 db = SQLite.DB()

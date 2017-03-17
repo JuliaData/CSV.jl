@@ -50,9 +50,9 @@ TYPES = !is_windows() ? (Int, Float64, WeakRefString{UInt8}, String, Date, DateT
     end
 
     @benchgroup "CSV.write" begin
-        df = CSV.read(FILE)
+        dt = CSV.read(FILE)
         t = tempname()
-        @bench "CSV.write" CSV.write(t, df)
+        @bench "CSV.write" CSV.write(t, dt)
     end
 
 end
