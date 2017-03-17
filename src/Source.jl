@@ -217,7 +217,7 @@ Keyword Arguments:
 * `datarow::Int`; specifies the row on which the actual data starts in the file; by default, the data is expected on the next row after the header row(s); for a file without column names (header), specify `datarow=1`
 * `types`; column types can be provided manually as a complete Vector{DataType}, or in a Dict to reference individual columns by name or number
 * `nullable::Bool`; indicates whether values can be nullable or not; `true` by default. If set to `false` and missing values are encountered, a `NullException` will be thrown
-* `weakrefstrings::Bool=true`: indicates whether string-type columns should use the `WeakRefString` (for efficiency) or a regular `String` type
+* `weakrefstrings::Bool=false`: indicates whether string-type columns should use the `WeakRefString` (for efficiency) or a regular `String` type
 * `dateformat::Union{AbstractString,Dates.DateFormat}`; how all dates/datetimes in the dataset are formatted
 * `footerskip::Int`; indicates the number of rows to skip at the end of the file
 * `rows_for_type_detect::Int=100`; indicates how many rows should be read to infer the types of columns
