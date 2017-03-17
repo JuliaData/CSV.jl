@@ -66,7 +66,7 @@ f = CSV.Source(joinpath(dir, "test_empty_file.csv"))
 @test size(f, 1) == 0
 
 #test file with just newlines
-f = CSV.Source(joinpath(dir, "test_empty_file_newlines.csv"))
+f = CSV.Source(joinpath(dir, "test_empty_file_newlines.csv"), weakrefstrings=true)
 @test size(f, 2) == 1
 @test size(f, 1) == 9
 @test Data.header(f) == [""]
@@ -142,7 +142,7 @@ f = CSV.Source(joinpath(dir, "test_float_in_int_column.csv"); types=[Int,Int,Int
 @test_throws CSV.CSVError Data.stream!(f, DataTable)
 
 #test null/missing values
-f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"))
+f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"), weakrefstrings=true)
 @test size(f, 2) == 3
 @test size(f, 1) == 3
 @test Data.types(f) == [Nullable{Float64},Nullable{WeakRefString{UInt8}},Nullable{Float64}]
@@ -167,70 +167,70 @@ f = CSV.Source(joinpath(dir, "test_missing_value.csv"))
 @test Data.types(f) == [Nullable{Float64},Nullable{Float64},Nullable{Float64}]
 
 #other various files found around the internet
-f = CSV.Source(joinpath(dir, "baseball.csv"))
+f = CSV.Source(joinpath(dir, "baseball.csv"), weakrefstrings=true)
 @test size(f, 2) == 15
 @test size(f, 1) == 35
 @test Data.header(f) == ["Rk","Year","Age","Tm","Lg","","W","L","W-L%","G","Finish","Wpost","Lpost","W-L%post",""]
 @test Data.types(f) == [Nullable{Int},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Int},Nullable{Int},Nullable{Float64},Nullable{WeakRefString{UInt8}}]
 ds = Data.stream!(f, DataTable)
 
-f = CSV.Source(joinpath(dir, "FL_insurance_sample.csv");types=Dict(10=>Float64,12=>Float64))
+f = CSV.Source(joinpath(dir, "FL_insurance_sample.csv");types=Dict(10=>Float64,12=>Float64), weakrefstrings=true)
 @test size(f, 2) == 18
 @test size(f, 1) == 36634
 @test Data.header(f) == ["policyID","statecode","county","eq_site_limit","hu_site_limit","fl_site_limit","fr_site_limit","tiv_2011","tiv_2012","eq_site_deductible","hu_site_deductible","fl_site_deductible","fr_site_deductible","point_latitude","point_longitude","line","construction","point_granularity"]
 @test Data.types(f) == [Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Float64},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int}]
 ds = Data.stream!(f, DataTable)
 
-f = CSV.Source(joinpath(dir, "FL_insurance_sample.csv");types=Dict{String,DataType}("eq_site_deductible"=>Float64,"fl_site_deductible"=>Float64))
+f = CSV.Source(joinpath(dir, "FL_insurance_sample.csv");types=Dict{String,DataType}("eq_site_deductible"=>Float64,"fl_site_deductible"=>Float64), weakrefstrings=true)
 @test size(f, 2) == 18
 @test size(f, 1) == 36634
 @test Data.header(f) == ["policyID","statecode","county","eq_site_limit","hu_site_limit","fl_site_limit","fr_site_limit","tiv_2011","tiv_2012","eq_site_deductible","hu_site_deductible","fl_site_deductible","fr_site_deductible","point_latitude","point_longitude","line","construction","point_granularity"]
 @test Data.types(f) == [Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Float64},Nullable{Int},Nullable{Float64},Nullable{Float64},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int}]
 ds = Data.stream!(f, DataTable)
 
-f = CSV.Source(joinpath(dir, "SacramentocrimeJanuary2006.csv"))
+f = CSV.Source(joinpath(dir, "SacramentocrimeJanuary2006.csv"), weakrefstrings=true)
 @test size(f, 2) == 9
 @test size(f, 1) == 7584
 @test Data.header(f) == ["cdatetime","address","district","beat","grid","crimedescr","ucr_ncic_code","latitude","longitude"]
 @test Data.types(f) == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Float64},Nullable{Float64}]
 ds = Data.stream!(f, DataTable)
 
-f = CSV.Source(joinpath(dir, "Sacramentorealestatetransactions.csv"))
+f = CSV.Source(joinpath(dir, "Sacramentorealestatetransactions.csv"), weakrefstrings=true)
 @test size(f, 2) == 12
 @test size(f, 1) == 985
 @test Data.header(f) == ["street","city","zip","state","beds","baths","sq__ft","type","sale_date","price","latitude","longitude"]
 @test Data.types(f) == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Float64},Nullable{Float64}]
 ds = Data.stream!(f, DataTable)
 
-f = CSV.Source(joinpath(dir, "SalesJan2009.csv"))
+f = CSV.Source(joinpath(dir, "SalesJan2009.csv"), weakrefstrings=true)
 @test size(f, 2) == 12
 @test size(f, 1) == 998
 @test Data.header(f) == ["Transaction_date","Product","Price","Payment_Type","Name","City","State","Country","Account_Created","Last_Login","Latitude","Longitude"]
 @test Data.types(f) == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Float64},Nullable{Float64}]
 ds = Data.stream!(f, DataTable)
 
-f = CSV.Source(joinpath(dir, "stocks.csv"))
+f = CSV.Source(joinpath(dir, "stocks.csv"), weakrefstrings=true)
 @test size(f, 2) == 2
 @test size(f, 1) == 30
 @test Data.header(f) == ["Stock Name","Company Name"]
 @test Data.types(f) == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}}]
 ds = Data.stream!(f, DataTable)
 
-f = CSV.Source(joinpath(dir, "TechCrunchcontinentalUSA.csv"))
+f = CSV.Source(joinpath(dir, "TechCrunchcontinentalUSA.csv"), weakrefstrings=true)
 @test size(f, 2) == 10
 @test size(f, 1) == 1460
 @test Data.header(f) == ["permalink","company","numEmps","category","city","state","fundedDate","raisedAmt","raisedCurrency","round"]
 @test Data.types(f) == [Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}}]
 ds = Data.stream!(f, DataTable)
 
-f = CSV.Source(joinpath(dir, "Fielding.csv"))
+f = CSV.Source(joinpath(dir, "Fielding.csv"), weakrefstrings=true)
 @test size(f, 2) == 18
 @test size(f, 1) == 167938
 @test Data.header(f) == ["playerID","yearID","stint","teamID","lgID","POS","G","GS","InnOuts","PO","A","E","DP","PB","WP","SB","CS","ZR"]
 @test Data.types(f) == [Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{Int},Nullable{Int},Nullable{Int},Nullable{Int},Nullable{Int},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}},Nullable{WeakRefString{UInt8}}]
 ds = Data.stream!(f, DataTable)
 
-f = CSV.Source(joinpath(dir, "latest (1).csv"); header=0, null="\\N")
+f = CSV.Source(joinpath(dir, "latest (1).csv"); header=0, null="\\N", weakrefstrings=true)
 @test size(f, 2) == 25
 @test size(f, 1) == 1000
 @test Data.header(f) == ["Column$i" for i = 1:size(f, 2)]

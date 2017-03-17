@@ -10,7 +10,7 @@ function Source(fullpath::Union{AbstractString,IO};
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
               nullable::Bool=true,
-              weakrefstrings::Bool=true,
+              weakrefstrings::Bool=false,
               dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateFormat,
 
               footerskip::Int=0,
@@ -38,7 +38,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
                 types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
                 nullable::Bool=true,
-                weakrefstrings::Bool=true,
+                weakrefstrings::Bool=false,
 
                 footerskip::Int=0,
                 rows_for_type_detect::Int=100,
