@@ -129,7 +129,7 @@ parsefield(source::CSV.Source, ::Type{Nullable{WeakRefString{UInt8}}}, row=0, co
     end
 end
 
-const REF = Array(Ptr{UInt8},1)
+const REF = Vector{Ptr{UInt8}}(1)
 
 @inline function parsefield{T<:AbstractFloat}(io::IOBuffer, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
     b, null = CSV.checknullstart(io, opt, state)
