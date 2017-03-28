@@ -83,6 +83,14 @@ f = CSV.Source(joinpath(dir, "test_quoted_delim_and_newline.csv"))
 @test size(f, 2) == 2
 @test size(f, 1) == 1
 
+@testset "quoted numbers detected as string column" begin
+    f = CSV.Source(joinpath(dir, "test_quoted_numbers.csv"))
+    @test size(f, 2) == 3
+    @test size(f, 1) == 3
+    ds = Data.stream!(f, DataFrame)
+    @test Data.types(f) == [Nullable{WeakRefString{UInt8}}, Nullable{WeakRefString{UInt8}}, Nullable{Int}]
+end
+
 #test various newlines
 f = CSV.Source(joinpath(dir, "test_crlf_line_endings.csv"))
 @test Data.header(f) == ["col1","col2","col3"]

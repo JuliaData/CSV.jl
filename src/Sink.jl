@@ -43,7 +43,7 @@ end
 Data.streamto!(sink::Sink, ::Type{Data.Field}, val, row, col, sch) = (col == size(sch, 2) ? println(sink.io, val) : print(sink.io, val, Char(sink.options.delim)); return nothing)
 function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::AbstractString, row, col, sch)
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
-    print(sink.io, q, replace(string(val), q, "$e$q"), q)
+    print(sink.io, q, replace(string(val), q, string(e,q)), q)
     print(sink.io, ifelse(col == size(sch, 2), Char(NEWLINE), Char(sink.options.delim)))
     return nothing
 end
@@ -57,13 +57,23 @@ function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::Dates.TimeType, row
 end
 
 function Data.streamto!{T}(sink::Sink, ::Type{Data.Field}, val::Nullable{T}, row, col, sch)
-    Data.streamto!(sink, Data.Field, isnull(val) ? sink.options.null : get(val), row, col, sch)
+    if isnull(val)
+        # print null string unquoted and unescaped
+        # FIXME if the null strings should be escaped, add options.out_null = preescaped version of null
+        print(sink.io, sink.options.null,
+                       ifelse(col == size(sch, 2), Char(NEWLINE), Char(sink.options.delim)))
+    else
+        Data.streamto!(sink, Data.Field, unsafe_get(val), row, col, sch)
+    end
     return nothing
 end
 
 if isdefined(:NAtype)
 function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::NAtype, row, col, sch)
-    Data.streamto!(sink, Data.Field, sink.options.null, row, col, sch)
+    # print null string unquoted and unescaped
+    # FIXME if the null strings should be escaped, add options.out_null = preescaped version of null
+    print(sink.io, sink.options.null,
+                   ifelse(col == size(sch, 2), Char(NEWLINE), Char(sink.options.delim)))
     return nothing
 end
 end
