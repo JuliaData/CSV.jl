@@ -329,3 +329,10 @@ let fn = tempname()
     gc(); gc()
     rm(fn)
 end
+
+# CSV with header and no data is treated the same as an empty buffer with header supplied
+df1 = CSV.read(IOBuffer("a,b,c"))
+df2 = CSV.read(IOBuffer(""); header=["a", "b", "c"])
+@test size(df1) == (0, 3)
+@test size(df2) == (0, 3)
+@test df1 == df2
