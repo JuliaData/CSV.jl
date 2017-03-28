@@ -56,8 +56,8 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         fullpath = "<IOBuffer>"
         fs = nb_available(source)
     elseif isa(fullpath, IO)
-        source = IOBuffer(Base.read(fullpath))
         fs = nb_available(fullpath)
+        source = IOBuffer(Base.read(fullpath))
         fullpath = isdefined(fullpath, :name) ? fullpath.name : "__IO__"
     else
         source = open(fullpath, "r") do f
@@ -78,7 +78,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         unsafe_read(source, UInt8) == 0xbf || seekstart(source)
     end
     datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
-    rows = max(-1, rows - datarow + 1 - footerskip) # rows now equals the actual number of rows in the dataset
+    rows = fs == 0 ? 0 : max(-1, rows - datarow + 1 - footerskip) # rows now equals the actual number of rows in the dataset
 
     # figure out # of columns and header, either an Integer, Range, or Vector{String}
     # also ensure that `f` is positioned at the start of data
@@ -109,6 +109,10 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         end
         datarow != last(header)+1 && CSV.skipto!(source,last(header)+1,datarow,options.quotechar,options.escapechar)
         datapos = position(source)
+    elseif fs == 0
+        datapos = position(source)
+        columnnames = header
+        cols = length(columnnames)
     else
         CSV.skipto!(source,1,datarow,options.quotechar,options.escapechar)
         datapos = position(source)
