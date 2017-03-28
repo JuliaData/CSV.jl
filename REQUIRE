@@ -1,5 +1,5 @@
 julia 0.5
-Compat 0.10.0
+Compat 0.9.5
 DataStreams 0.1.0
 DataFrames
 WeakRefStrings 0.1.3
