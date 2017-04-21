@@ -350,3 +350,15 @@ df4 = CSV.read(IOBuffer("a,b,c"); nullable=false)
 @test size(df3) == (0, 3)
 @test size(df4) == (0, 3)
 @test df3 == df4
+
+let fn = tempname()
+    df = CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"), CSV.Sink(fn); nullable=false, transforms=transforms)
+    @test readstring(fn) == "\"a\",\"b\",\"c\"\n1,\"b2\",3\n4,\"b5\",6\n"
+    rm(fn)
+end
+
+let fn = tempname()
+    df = CSV.read(IOBuffer("a,b,c"), CSV.Sink(fn); nullable=false, transforms=transforms)
+    @test readstring(fn) == "\"a\",\"b\",\"c\"\n"
+    rm(fn)
+end
