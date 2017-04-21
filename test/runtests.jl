@@ -8,6 +8,7 @@ dir = joinpath(dirname(@__FILE__),"test_files/")
 # dir = joinpath(Pkg.dir("CSV"), "test/test_files")
 
 include("source.jl")
+include("multistream.jl")
 
 using DataStreamsIntegrationTests
 
