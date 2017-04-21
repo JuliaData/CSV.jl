@@ -56,8 +56,8 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         fullpath = "<IOBuffer>"
         fs = nb_available(source)
     elseif isa(fullpath, IO)
-        fs = nb_available(fullpath)
         source = IOBuffer(Base.read(fullpath))
+        fs = nb_available(source)
         fullpath = isdefined(fullpath, :name) ? fullpath.name : "__IO__"
     else
         source = open(fullpath, "r") do f
