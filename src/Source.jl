@@ -290,8 +290,12 @@ sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 """
 function read end
 
-function read(fullpath::Union{AbstractString,IO}, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
+function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
     source = Source(fullpath; kwargs...)
+    if source.schema.rows == 0
+        # If the source is empty, ignore transforms to prevent type conversion errors.
+        transforms = Dict{Int,Function}()
+    end
     sink = Data.stream!(source, sink, append, transforms, args...)
     Data.close!(sink)
     return sink
@@ -299,6 +303,10 @@ end
 
 function read{T}(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
     source = Source(fullpath; kwargs...)
+    if source.schema.rows == 0
+        # If the source is empty, ignore transforms to prevent type conversion errors.
+        transforms = Dict{Int,Function}()
+    end
     sink = Data.stream!(source, sink, append, transforms)
     Data.close!(sink)
     return sink
