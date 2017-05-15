@@ -1,7 +1,7 @@
 __precompile__(true)
 module CSV
 
-using Compat, DataStreams, DataFrames, WeakRefStrings
+using Compat, DataStreams, DataFrames, WeakRefStrings, Nulls
 
 export Data, DataFrame
 

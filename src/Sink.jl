@@ -26,7 +26,7 @@ function writeheaders(io::IOBuffer, h::Vector{String}, options)
 end
 
 # DataStreams interface
-Data.streamtypes{T<:CSV.Sink}(::Type{T}) = [Data.Field]
+Data.streamtypes{T<:CSV.Sink}(::Type{T}) = [Data.Row]
 
 # Constructors
 function Sink{T}(sch::Data.Schema, ::Type{T}, append::Bool, ref::Vector{UInt8}, file::AbstractString; kwargs...)
@@ -40,15 +40,15 @@ function Sink{T}(sink, sch::Data.Schema, ::Type{T}, append::Bool, ref::Vector{UI
     return sink
 end
 
-Data.streamto!(sink::Sink, ::Type{Data.Field}, val, row, col, sch) = (col == size(sch, 2) ? println(sink.io, val) : print(sink.io, val, Char(sink.options.delim)); return nothing)
-function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::AbstractString, row, col, sch)
+Data.streamto!(sink::Sink, ::Type{Data.Row}, val, row, col, sch) = (col == size(sch, 2) ? println(sink.io, val) : print(sink.io, val, Char(sink.options.delim)); return nothing)
+function Data.streamto!(sink::Sink, ::Type{Data.Row}, val::AbstractString, row, col, sch)
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
     print(sink.io, q, replace(string(val), q, string(e,q)), q)
     print(sink.io, ifelse(col == size(sch, 2), Char(NEWLINE), Char(sink.options.delim)))
     return nothing
 end
 
-function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::Dates.TimeType, row, col, sch)
+function Data.streamto!(sink::Sink, ::Type{Data.Row}, val::Dates.TimeType, row, col, sch)
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar)
     val = sink.options.datecheck ? string(val) : Dates.format(val, sink.options.dateformat)
     print(sink.io, val)
@@ -56,20 +56,20 @@ function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::Dates.TimeType, row
     return nothing
 end
 
-function Data.streamto!{T}(sink::Sink, ::Type{Data.Field}, val::Nullable{T}, row, col, sch)
+function Data.streamto!{T}(sink::Sink, ::Type{Data.Row}, val::Nullable{T}, row, col, sch)
     if isnull(val)
         # print null string unquoted and unescaped
         # FIXME if the null strings should be escaped, add options.out_null = preescaped version of null
         print(sink.io, sink.options.null,
                        ifelse(col == size(sch, 2), Char(NEWLINE), Char(sink.options.delim)))
     else
-        Data.streamto!(sink, Data.Field, unsafe_get(val), row, col, sch)
+        Data.streamto!(sink, Data.Row, unsafe_get(val), row, col, sch)
     end
     return nothing
 end
 
 if isdefined(:NAtype)
-function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::NAtype, row, col, sch)
+function Data.streamto!(sink::Sink, ::Type{Data.Row}, val::NAtype, row, col, sch)
     # print null string unquoted and unescaped
     # FIXME if the null strings should be escaped, add options.out_null = preescaped version of null
     print(sink.io, sink.options.null,

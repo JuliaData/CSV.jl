@@ -8,7 +8,7 @@ function Source(fullpath::Union{AbstractString,IO};
 
               header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
-              types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
+              types::Union{Dict{Int,Type},Dict{String,Type},Vector{Type}}=Type[],
               nullable::Bool=true,
               weakrefstrings::Bool=true,
               dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateFormat,
@@ -36,7 +36,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
 
                 header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
-                types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}=DataType[],
+                types::Union{Dict{Int,Type},Dict{String,Type},Vector{Type}}=Type[],
                 nullable::Bool=true,
                 weakrefstrings::Bool=true,
 
@@ -68,7 +68,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     options.datarow != -1 && (datarow = options.datarow)
     options.rows != 0 && (rows = options.rows)
     options.header != 1 && (header = options.header)
-    options.types != DataType[] && (types = options.types)
+    options.types != Type[] && (types = options.types)
     rows = rows == 0 ? CSV.countlines(source, options.quotechar, options.escapechar) : rows
     seekstart(source)
     # BOM character detection
@@ -126,11 +126,11 @@ function Source(;fullpath::Union{AbstractString,IO}="",
 
     # Detect column types
     cols = length(columnnames)
-    columntypes = Vector{DataType}(cols)
+    columntypes = Vector{Type}(cols)
     if isa(types,Vector) && length(types) == cols
         columntypes = types
     elseif isa(types,Dict) || isempty(types)
-        poss_types = Matrix{DataType}(min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect), cols)
+        poss_types = Matrix{Type}(min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect), cols)
         fill!(poss_types, NullField)
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
@@ -142,28 +142,28 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             end
         end
         # detect most common/general type of each column of types
-        d = Set{DataType}()
+        d = Set{Type}()
         for i = 1:cols
             for n = 1:lineschecked
                 t = poss_types[n, i]
                 t == NullField && continue
                 push!(d, t)
             end
-            columntypes[i] = (isempty(d) || WeakRefString{UInt8} in d ) ? WeakRefString{UInt8} :
-                                (Date     in d) ? Date :
-                                (DateTime in d) ? DateTime :
-                                (Float64  in d) ? Float64 :
-                                (Int      in d) ? Int : WeakRefString{UInt8}
+            columntypes[i] = (isempty(d) || WeakRefString{UInt8} in d ) ? ?(WeakRefString{UInt8}) :
+                                (Date     in d) ? ?(Date) :
+                                (DateTime in d) ? ?(DateTime) :
+                                (Float64  in d) ? ?(Float64) :
+                                (Int      in d) ? ?(Int) : ?(WeakRefString{UInt8})
             empty!(d)
         end
     else
         throw(ArgumentError("$cols number of columns detected; `types` argument has $(length(types)) entries"))
     end
-    if isa(types, Dict{Int, DataType})
+    if isa(types, Dict{Int, Type})
         for (col, typ) in types
             columntypes[col] = typ
         end
-    elseif isa(types, Dict{String, DataType})
+    elseif isa(types, Dict{String, Type})
         for (col,typ) in types
             c = findfirst(columnnames, col)
             columntypes[c] = typ
@@ -171,15 +171,18 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     end
     if !nullable || !weakrefstrings
         # WeakRefStrings won't be safe if they don't end up in a NullableArray
-        columntypes = DataType[T <: WeakRefString ? String : T for T in columntypes]
+        columntypes = Type[T <: ?(WeakRefString) ? ?(String) : T for T in columntypes]
     end
-    if nullable
-        columntypes = DataType[T <: Nullable ? T : Nullable{T} for T in columntypes]
-    end
+    # if nullable
+    #     columntypes = Type[T <: Nullable ? T : Nullable{T} for T in columntypes]
+    # end
     seek(source, datapos)
     sch = Data.Schema(columnnames, columntypes, rows)
+    push!(GLOBAL_HEAP, source)
     return Source(sch, options, source, Int(pointer(source.data)), fullpath, datapos)
 end
+
+const GLOBAL_HEAP = []
 
 # construct a new Source from a Sink
 Source(s::CSV.Sink) = CSV.Source(fullpath=s.fullpath, options=s.options)
@@ -188,13 +191,13 @@ Source(s::CSV.Sink) = CSV.Source(fullpath=s.fullpath, options=s.options)
 reset!(s::CSV.Source) = (seek(s.io, s.datapos); return nothing)
 
 # Data.Source interface
-Data.schema(source::CSV.Source, ::Type{Data.Field}) = source.schema
-Data.isdone(io::CSV.Source, row, col) = eof(io.io) || (row > io.schema.rows && io.schema.rows > -1)
-Data.streamtype{T<:CSV.Source}(::Type{T}, ::Type{Data.Field}) = true
-Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col) = get(CSV.parsefield(source.io, T, source.options, row, col))
-Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{Nullable{T}}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
-Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{Nullable{WeakRefString{UInt8}}}, row, col) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, STATE, source.ptr)
-Data.reference(source::CSV.Source) = source.io.data
+Data.schema(source::CSV.Source) = source.schema
+Data.isdone(io::CSV.Source, row, col) = eof(io.io) || (!isnull(io.schema.rows) && row > io.schema.rows)
+Data.streamtype{T<:CSV.Source}(::Type{T}, ::Type{Data.Row}) = true
+Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Row}, ::Type{T}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
+# Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Row}, ::Type{Nullable{T}}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
+# Data.streamfrom(source::CSV.Source, ::Type{Data.Row}, ::Type{Nullable{WeakRefString{UInt8}}}, row, col) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, STATE, source.ptr)
+# Data.reference(source::CSV.Source) = source.io.data
 
 """
 `CSV.read(fullpath::Union{AbstractString,IO}, sink::Type{T}=DataFrame, args...; kwargs...)` => `typeof(sink)`
@@ -207,7 +210,7 @@ parses a delimited file into a Julia structure (a DataFrame by default, but any 
 Positional arguments:
 
 * `fullpath`; can be a file name (string) or other `IO` instance
-* `sink::Type{T}`; `DataFrame` by default, but may also be other `Data.Sink` types that support streaming via `Data.Field` interface; note that the method argument can be the *type* of `Data.Sink`, plus any required arguments the sink may need (`args...`).
+* `sink::Type{T}`; `DataFrame` by default, but may also be other `Data.Sink` types that support streaming via `Data.Row` interface; note that the method argument can be the *type* of `Data.Sink`, plus any required arguments the sink may need (`args...`).
                     or an already constructed `sink` may be passed (2nd method above)
 
 Keyword Arguments:
@@ -218,7 +221,7 @@ Keyword Arguments:
 * `null::String`; an ASCII string that indicates how NULL values are represented in the dataset; default is the empty string, `""`
 * `header`; column names can be provided manually as a complete Vector{String}, or as an Int/Range which indicates the row/rows that contain the column names
 * `datarow::Int`; specifies the row on which the actual data starts in the file; by default, the data is expected on the next row after the header row(s); for a file without column names (header), specify `datarow=1`
-* `types`; column types can be provided manually as a complete Vector{DataType}, or in a Dict to reference individual columns by name or number
+* `types`; column types can be provided manually as a complete Vector{Type}, or in a Dict to reference individual columns by name or number
 * `nullable::Bool`; indicates whether values can be nullable or not; `true` by default. If set to `false` and missing values are encountered, a `NullException` will be thrown
 * `weakrefstrings::Bool=true`: indicates whether string-type columns should use the `WeakRefString` (for efficiency) or a regular `String` type
 * `dateformat::Union{AbstractString,Dates.DateFormat}`; how all dates/datetimes in the dataset are formatted
@@ -296,7 +299,7 @@ function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...;
         # If the source is empty, ignore transforms to prevent type conversion errors.
         transforms = Dict{Int,Function}()
     end
-    sink = Data.stream!(source, sink, append, transforms, args...)
+    sink = Data.stream!(source, sink, args; append=append, transforms=transforms)
     Data.close!(sink)
     return sink
 end
@@ -307,7 +310,7 @@ function read{T}(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false
         # If the source is empty, ignore transforms to prevent type conversion errors.
         transforms = Dict{Int,Function}()
     end
-    sink = Data.stream!(source, sink, append, transforms)
+    sink = Data.stream!(source, sink; append=append, transforms=transforms)
     Data.close!(sink)
     return sink
 end
