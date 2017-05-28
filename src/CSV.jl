@@ -52,7 +52,7 @@ type Options
     delim::UInt8
     quotechar::UInt8
     escapechar::UInt8
-    null::String
+    null::Vector{UInt8}
     nullcheck::Bool
     dateformat::Dates.DateFormat
     datecheck::Bool
@@ -63,15 +63,15 @@ type Options
     types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}
 end
 
-Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, null=String(""), dateformat=Dates.ISODateFormat, datarow=-1, rows=0, header=1, types=DataType[]) =
+Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, null="", dateformat=Dates.ISODateFormat, datarow=-1, rows=0, header=1, types=DataType[]) =
     Options(delim%UInt8, quotechar%UInt8, escapechar%UInt8,
-            ascii(null), null != "", isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat), dateformat == Dates.ISODateTimeFormat || dateformat == Dates.ISODateFormat, datarow, rows, header, types)
+            map(UInt8, collect(ascii(null))), null != "", isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat), dateformat == Dates.ISODateTimeFormat || dateformat == Dates.ISODateFormat, datarow, rows, header, types)
 function Base.show(io::IO,op::Options)
     println(io, "    CSV.Options:")
     println(io, "        delim: '", Char(op.delim), "'")
     println(io, "        quotechar: '", Char(op.quotechar), "'")
     print(io, "        escapechar: '"); escape_string(io, string(Char(op.escapechar)), "\\"); println(io, "'")
-    print(io, "        null: \""); escape_string(io, op.null, "\\"); println(io, "\"")
+    print(io, "        null: \""); escape_string(io, isempty(op.null) ? "" : String(collect(op.null)), "\\"); println(io, "\"")
     print(io, "        dateformat: ", op.dateformat)
 end
 

@@ -149,11 +149,11 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 t == NullField && continue
                 push!(d, t)
             end
-            columntypes[i] = (isempty(d) || WeakRefString{UInt8} in d ) ? ?(WeakRefString{UInt8}) :
-                                (Date     in d) ? ?(Date) :
-                                (DateTime in d) ? ?(DateTime) :
-                                (Float64  in d) ? ?(Float64) :
-                                (Int      in d) ? ?(Int) : ?(WeakRefString{UInt8})
+            columntypes[i] = (isempty(d) || WeakRefString{UInt8} in d ) ? WeakRefString{UInt8} :
+                                (Date     in d) ? Date :
+                                (DateTime in d) ? DateTime :
+                                (Float64  in d) ? Float64 :
+                                (Int      in d) ? Int : WeakRefString{UInt8}
             empty!(d)
         end
     else
@@ -169,13 +169,13 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             columntypes[c] = typ
         end
     end
-    if !nullable || !weakrefstrings
-        # WeakRefStrings won't be safe if they don't end up in a NullableArray
-        columntypes = Type[T <: ?(WeakRefString) ? ?(String) : T for T in columntypes]
-    end
-    # if nullable
-    #     columntypes = Type[T <: Nullable ? T : Nullable{T} for T in columntypes]
+    # if !nullable || !weakrefstrings
+    #     # WeakRefStrings won't be safe if they don't end up in a NullableArray
+    #     columntypes = Type[T <: WeakRefString ? String : T for T in columntypes]
     # end
+    if nullable
+        columntypes = Type[T >: Null ? T : ?T for T in columntypes]
+    end
     seek(source, datapos)
     sch = Data.Schema(columnnames, columntypes, rows)
     push!(GLOBAL_HEAP, source)
@@ -193,10 +193,11 @@ reset!(s::CSV.Source) = (seek(s.io, s.datapos); return nothing)
 # Data.Source interface
 Data.schema(source::CSV.Source) = source.schema
 Data.isdone(io::CSV.Source, row, col) = eof(io.io) || (!isnull(io.schema.rows) && row > io.schema.rows)
-Data.streamtype{T<:CSV.Source}(::Type{T}, ::Type{Data.Row}) = true
-Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Row}, ::Type{T}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
-# Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Row}, ::Type{Nullable{T}}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
-# Data.streamfrom(source::CSV.Source, ::Type{Data.Row}, ::Type{Nullable{WeakRefString{UInt8}}}, row, col) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, STATE, source.ptr)
+Data.streamtype{T<:CSV.Source}(::Type{T}, ::Type{Data.Field}) = true
+@inline Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
+# @inline Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{Union{T, Null}}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
+# Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{Nullable{T}}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
+@inline Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{WeakRefString{UInt8}}, row, col) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, STATE, source.ptr)
 # Data.reference(source::CSV.Source) = source.io.data
 
 """
@@ -210,7 +211,7 @@ parses a delimited file into a Julia structure (a DataFrame by default, but any 
 Positional arguments:
 
 * `fullpath`; can be a file name (string) or other `IO` instance
-* `sink::Type{T}`; `DataFrame` by default, but may also be other `Data.Sink` types that support streaming via `Data.Row` interface; note that the method argument can be the *type* of `Data.Sink`, plus any required arguments the sink may need (`args...`).
+* `sink::Type{T}`; `DataFrame` by default, but may also be other `Data.Sink` types that support streaming via `Data.Field` interface; note that the method argument can be the *type* of `Data.Sink`, plus any required arguments the sink may need (`args...`).
                     or an already constructed `sink` may be passed (2nd method above)
 
 Keyword Arguments:
@@ -300,8 +301,7 @@ function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...;
         transforms = Dict{Int,Function}()
     end
     sink = Data.stream!(source, sink, args; append=append, transforms=transforms)
-    Data.close!(sink)
-    return sink
+    return Data.close!(sink)
 end
 
 function read{T}(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
@@ -311,9 +311,8 @@ function read{T}(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false
         transforms = Dict{Int,Function}()
     end
     sink = Data.stream!(source, sink; append=append, transforms=transforms)
-    Data.close!(sink)
-    return sink
+    return Data.close!(sink)
 end
 
-read(source::CSV.Source, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, append, transforms, args...); Data.close!(sink); return sink)
-read{T}(source::CSV.Source, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, append, transforms); Data.close!(sink); return sink)
+read(source::CSV.Source, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, append, transforms, args...); return Data.close!(sink))
+read{T}(source::CSV.Source, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, append, transforms); return Data.close!(sink))
