@@ -198,7 +198,7 @@ Data.streamtype{T<:CSV.Source}(::Type{T}, ::Type{Data.Field}) = true
 # @inline Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{Union{T, Null}}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
 # Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{Nullable{T}}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
 @inline Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{WeakRefString{UInt8}}, row, col) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, STATE, source.ptr)
-# Data.reference(source::CSV.Source) = source.io.data
+Data.reference(source::CSV.Source) = source.io.data
 
 """
 `CSV.read(fullpath::Union{AbstractString,IO}, sink::Type{T}=DataFrame, args...; kwargs...)` => `typeof(sink)`

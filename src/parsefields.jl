@@ -246,7 +246,7 @@ end
         elseif b == opt.delim
             state[] = Delimiter
             break
-        elseif b == b == NEWLINE
+        elseif b == NEWLINE
             state[] = Newline
             break
         elseif b == RETURN
@@ -286,7 +286,7 @@ end
         elseif b == opt.delim
             state[] = Delimiter
             break
-        elseif b == b == NEWLINE
+        elseif b == NEWLINE
             state[] = Newline
             break
         elseif b == RETURN
