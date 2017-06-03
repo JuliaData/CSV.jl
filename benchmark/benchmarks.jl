@@ -74,49 +74,53 @@ for i in (1001, 100.1, WeakRefString{UInt8}(pointer(val), 3, 0), Date(2008, 1, 3
 end
 
 using CSV, TextParse
-for T in (Int, Float64, WeakRefString{UInt8}, Date, DateTime)
+for T in (Int, Float64, WeakRefStrings.WeakRefString{UInt8}, Date, DateTime)
     println("comparing for T = $T...")
-    @time CSV.read("/Users/jacobquinn/Downloads/randoms_$(T).csv"; nullable=false, rows=999999)
-    @time TextParse.csvread("/Users/jacobquinn/Downloads/randoms_$(T).csv")
+    @time CSV.read("/Users/jacobquinn/Downloads/randoms_$(T).csv"; nullable=false);
+    @time TextParse.csvread("/Users/jacobquinn/Downloads/randoms_$(T).csv");
 end
-# julia> for T in (Int, Float64, WeakRefString{UInt8}, Date, DateTime)
+
+@time df = CSV.read("/Users/jacobquinn/Downloads/file.txt"; delim=' ');
+@time TextParse.csvread("/Users/jacobquinn/Downloads/randoms_$(T).csv")
+# julia> for T in (Int, Float64, WeakRefStrings.WeakRefString{UInt8}, Date, DateTime)
 #            println("comparing for T = $T...")
-#            @time CSV.read("/Users/jacobquinn/Downloads/randoms_$(T).csv"; nullable=false)
-#            @time TextParse.csvread("/Users/jacobquinn/Downloads/randoms_$(T).csv")
+#            @time CSV.read("/Users/jacobquinn/Downloads/randoms_$(T).csv");
+#            @time TextParse.csvread("/Users/jacobquinn/Downloads/randoms_$(T).csv");
 #        end
 # comparing for T = Int64...
 # pre-allocating DataFrame w/ rows = 999999
-#   0.035043 seconds (2.40 k allocations: 7.758 MiB, 24.25% gc time)
-#   0.052334 seconds (457 allocations: 15.574 MiB)
+#   0.043684 seconds (1.00 M allocations: 22.929 MiB, 31.61% gc time)
+#   0.045556 seconds (460 allocations: 15.575 MiB, 3.20% gc time)
 # comparing for T = Float64...
 # pre-allocating DataFrame w/ rows = 999999
-#   0.086990 seconds (3.90 k allocations: 7.841 MiB, 6.02% gc time)
-#   0.088458 seconds (457 allocations: 16.528 MiB)
+#   0.080026 seconds (1.00 M allocations: 22.974 MiB, 23.80% gc time)
+#   0.082530 seconds (457 allocations: 16.528 MiB)
 # comparing for T = WeakRefString{UInt8}...
 # pre-allocating DataFrame w/ rows = 999999
-#   0.147004 seconds (9.31 k allocations: 23.408 MiB, 3.91% gc time)
-#   0.074228 seconds (595 allocations: 5.188 MiB)
+#   0.058446 seconds (1.89 k allocations: 22.986 MiB, 8.53% gc time)
+#   0.069034 seconds (595 allocations: 5.188 MiB)
 # comparing for T = Date...
 # pre-allocating DataFrame w/ rows = 999999
-#   0.207697 seconds (6.01 M allocations: 114.772 MiB, 14.71% gc time)
-#   0.158652 seconds (1.00 M allocations: 51.846 MiB, 4.77% gc time)
+#   0.125229 seconds (2.00 M allocations: 53.504 MiB, 20.94% gc time)
+#   0.120472 seconds (1.00 M allocations: 51.846 MiB, 6.73% gc time)
 # comparing for T = DateTime...
 # pre-allocating DataFrame w/ rows = 999999
-#   0.282168 seconds (6.01 M allocations: 114.899 MiB, 12.61% gc time)
-#   0.192103 seconds (1.00 M allocations: 60.516 MiB, 4.63% gc time)
+#   0.175855 seconds (2.00 M allocations: 53.504 MiB, 23.30% gc time)
+#   0.187619 seconds (1.00 M allocations: 60.516 MiB, 4.40% gc time)
+
 
 T = Int64
-@time source = CSV.Source("/Users/jacobquinn/Downloads/randoms_$(T).csv"; nullable=false, row)
-@time CSV.read(source)
+@time source = CSV.Source("/Users/jacobquinn/Downloads/randoms_$(T).csv"; )
+@time CSV.read(source);
 sink = Si = DataFrames.DataFrame
 transforms = Dict{Int,Function}()
 append = false
 args = kwargs = ()
 source_schema = DataStreams.Data.schema(source)
 @code_warntype DataStreams.Data.transform(source_schema, transforms)
-sink_schema, transforms2 = DataStreams.Data.transform(source_schema, transforms)
+sink_schema, transforms2 = DataStreams.Data.transform(source_schema, transforms, true);
 sinkstreamtype = DataStreams.Data.Field
-sink = Si(sink_schema, sinkstreamtype, append, args...; kwargs...)
+sink = Si(sink_schema, sinkstreamtype, append, args...; kwargs...);
 columns = []
 filter = x->true
 @code_warntype DataStreams.Data.stream!(source, sinkstreamtype, sink, source_schema, sink_schema, transforms2, filter, columns)
@@ -143,7 +147,7 @@ end
 @code_warntype get_then_set(A)
 @benchmark get_then_set(A) # 20ns
 
-g2(x) = x < 5 ? x : nothing
+@inline g3(x) = g2(x)
 @inline function g2(x)
     if x < 20
         return x * 20
@@ -171,7 +175,12 @@ A = Union{Int, Void}[i for i = 1:10]
 function get_then_set2(A)
     @simd for i = 1:10
         # Base.arrayset(A, g2(i), i)
-        @inbounds A[i] = g2(i)#::Union{Int, Void}
+        val = g3(i)
+        if val isa Void
+            @inbounds A[i] = val#::Union{Int, Void}
+        else
+            @inbounds A[i] = val#::Union{Int, Void}
+        end
     end
     return A
 end

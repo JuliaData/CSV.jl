@@ -36,7 +36,7 @@ end
 readline(io::IO, q='"', e='\\', buf::IOBuffer=IOBuffer()) = readline(io, UInt8(q), UInt8(e), buf)
 readline(source::CSV.Source) = readline(source.io, source.options.quotechar, source.options.escapechar)
 
-# contents of a single  CSV table field as returned by readsplitline!()
+# contents of a single CSV table field as returned by readsplitline!()
 immutable RawField
     value::String   # uparsed contents
     isquoted::Bool  # whether the field value was quoted or not
@@ -165,43 +165,90 @@ function skipto!(f::IO, cur, dest, q, e)
     return
 end
 
-# NullField is used only during the type detection process
-immutable NullField end
-
 # try to infer the type of the value in `val`. The precedence of type checking is `Int` => `Float64` => `Date` => `DateTime` => `String`
 if VERSION > v"0.6.0-dev.2307"
-    timetype(df::Dates.DateFormat) = any(typeof(T) in (Dates.DatePart{'H'}, Dates.DatePart{'M'}, Dates.DatePart{'S'}, Dates.DatePart{'s'}) for T in df.tokens) ? DateTime : Date
+    timetype{D <: Dates.DateFormat}(df::D) = any(typeof(T) in (Dates.DatePart{'H'}, Dates.DatePart{'M'}, Dates.DatePart{'S'}, Dates.DatePart{'s'}) for T in df.tokens) ? DateTime : Date
 else
     slottype{T}(df::Dates.Slot{T}) = T
-    timetype(df::Dates.DateFormat) = any(slottype(T) in (Dates.Hour,Dates.Minute,Dates.Second,Dates.Millisecond) for T in df.slots) ? DateTime : Date
+    timetype{D <: Dates.DateFormat}(df::D) = any(slottype(T) in (Dates.Hour,Dates.Minute,Dates.Second,Dates.Millisecond) for T in df.slots) ? DateTime : Date
 end
 
-function detecttype(val::RawField, format, datecheck, null)
-    val.isquoted && return WeakRefString{UInt8} # quoted is always a string
-    (isempty(val.value) || val.value == null) && return NullField
+# column types start out as Any, but we get rid of them as soon as possible
+promote_type2(T::Type{<:Any}, ::Type{Any}) = T
+promote_type2(::Type{Any}, T::Type{<:Any}) = T
+# same types
+promote_type2{T}(::Type{T}, ::Type{T}) = T
+# if we come across a Null field, turn that column type into a ?T
+promote_type2(T::Type{<:Any}, ::Type{Null}) = Union{T, Null}
+promote_type2(::Type{Null}, T::Type{<:Any}) = Union{T, Null}
+# these definitions allow ?Int to promote to ?Float64
+promote_type2{T, S}(::Type{Union{T, Null}}, ::Type{S}) = Union{promote_type2(T, S), Null}
+promote_type2{T, S}(::Type{S}, ::Type{Union{T, Null}}) = Union{promote_type2(T, S), Null}
+promote_type2{T, S}(::Type{Union{T, Null}}, ::Type{Union{S, Null}}) = Union{promote_type2(T, S), Null}
+# basic promote type definitions from Base
+promote_type2(::Type{Int}, ::Type{Float64}) = Float64
+promote_type2(::Type{Float64}, ::Type{Int}) = Float64
+promote_type2(::Type{Date}, ::Type{DateTime}) = DateTime
+promote_type2(::Type{DateTime}, ::Type{Date}) = DateTime
+# for cases when our current type can't widen, just promote to WeakRefString
+promote_type2(::Type{Int}, ::Type{<:Dates.TimeType}) = WeakRefString{UInt8}
+promote_type2(::Type{<:Dates.TimeType}, ::Type{Int}) = WeakRefString{UInt8}
+promote_type2(::Type{Float64}, ::Type{<:Dates.TimeType}) = WeakRefString{UInt8}
+promote_type2(::Type{<:Dates.TimeType}, ::Type{Float64}) = WeakRefString{UInt8}
+promote_type2(::Type{<:Any}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
+promote_type2(::Type{WeakRefString{UInt8}}, ::Type{<:Any}) = WeakRefString{UInt8}
+# avoid ambiguity
+promote_type2(::Type{Any}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
+promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Any}) = WeakRefString{UInt8}
+promote_type2(::Type{WeakRefString{UInt8}}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
+promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Null}) = ?WeakRefString{UInt8}
+promote_type2(::Type{Null}, ::Type{WeakRefString{UInt8}}) = ?WeakRefString{UInt8}
+
+const DATE_OPTIONS = CSV.Options(dateformat=Dates.ISODateFormat)
+const DATETIME_OPTIONS = CSV.Options(dateformat=Dates.ISODateTimeFormat)
+
+function detecttype{D}(source, options::CSV.Options{D}, T)
+    # val.isquoted && return WeakRefString{UInt8} # quoted is always a string
+    # (isempty(val.value) || val.value == null) && return Null
+    unmark(source)
     try
-        v = parsefield(IOBuffer(replace(val.value, Char(COMMA), "")), Int)
-        !isnull(v) && return Int
+        mark(source)
+        v1 = CSV.parsefield(source, Nulls.?Int, options)
+        return v1 isa Null ? Null : Int
     end
     try
-        v = CSV.parsefield(IOBuffer(replace(val.value, Char(COMMA), "")), Float64)
-        !isnull(v) && return Float64
+        reset(source)
+        mark(source)
+        v2 = CSV.parsefield(source, Nulls.?Float64, options)
+        return v2 isa Null ? Null : Float64
     end
-    if !datecheck
+    if D == Dates.ISODateTimeFormat
         try
-            T = timetype(format)
-            T(val.value, format)
-            return T
+            reset(source)
+            mark(source)
+            v3 = CSV.parsefield(source, Nulls.?Date, DATE_OPTIONS)
+            return v3 isa Null ? Null : Date
+        end
+        try
+            reset(source)
+            mark(source)
+            v4 = CSV.parsefield(source, Nulls.?DateTime, DATETIME_OPTIONS)
+            return v4 isa Null ? Null : DateTime
         end
     else
         try
-            v = CSV.parsefield(IOBuffer(val.value), Date, CSV.Options(dateformat=Dates.ISODateFormat))
-            !isnull(v) && return Date
+            reset(source)
+            mark(source)
+            v5 = CSV.parsefield(source, Nulls.?T, options)
+            return v5 isa Null ? Null : T
         end
-        try
-            v = CSV.parsefield(IOBuffer(val.value), DateTime, CSV.Options(dateformat=Dates.ISODateTimeFormat))
-            !isnull(v) && return DateTime
-        end
+    end
+    reset(source)
+    b = unsafe_read(source)
+    b, done = checkdone(source, b, options, STATE)
+    while !done
+        b = unsafe_read(source)
+        b, done = checkdone(source, b, options, STATE)
     end
     return WeakRefString{UInt8}
 end

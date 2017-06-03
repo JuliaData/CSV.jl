@@ -9,39 +9,36 @@ function Source(fullpath::Union{AbstractString,IO};
               header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types::Union{Dict{Int,Type},Dict{String,Type},Vector{Type}}=Type[],
-              nullable::Bool=true,
-              weakrefstrings::Bool=true,
-              dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateFormat,
+              nullable::Bool=false,
+              dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateTimeFormat,
 
               footerskip::Int=0,
-              rows_for_type_detect::Int=100,
+              rows_for_type_detect::Int=20,
               rows::Int=0,
               use_mmap::Bool=true)
     # make sure character args are UInt8
     isascii(delim) || throw(ArgumentError("non-ASCII characters not supported for delim argument: $delim"))
     isascii(quotechar) || throw(ArgumentError("non-ASCII characters not supported for quotechar argument: $quotechar"))
     isascii(escapechar) || throw(ArgumentError("non-ASCII characters not supported for escapechar argument: $escapechar"))
-    dateformat = isa(dateformat, Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat)
     return CSV.Source(fullpath=fullpath,
                         options=CSV.Options(delim=typeof(delim) <: String ? UInt8(first(delim)) : (delim % UInt8),
                                             quotechar=typeof(quotechar) <: String ? UInt8(first(quotechar)) : (quotechar % UInt8),
                                             escapechar=typeof(escapechar) <: String ? UInt8(first(escapechar)) : (escapechar % UInt8),
                                             null=null, dateformat=dateformat),
-                        header=header, datarow=datarow, types=types, nullable=nullable, weakrefstrings=weakrefstrings, footerskip=footerskip,
+                        header=header, datarow=datarow, types=types, nullable=nullable, footerskip=footerskip,
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
 
-function Source(;fullpath::Union{AbstractString,IO}="",
-                options::CSV.Options=CSV.Options(),
+function Source{D}(;fullpath::Union{AbstractString,IO}="",
+                options::CSV.Options{D}=CSV.Options(),
 
                 header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
                 types::Union{Dict{Int,Type},Dict{String,Type},Vector{Type}}=Type[],
-                nullable::Bool=true,
-                weakrefstrings::Bool=true,
+                nullable::Bool=false,
 
                 footerskip::Int=0,
-                rows_for_type_detect::Int=100,
+                rows_for_type_detect::Int=20,
                 rows::Int=0,
                 use_mmap::Bool=true)
     # argument checks
@@ -68,7 +65,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     options.datarow != -1 && (datarow = options.datarow)
     options.rows != 0 && (rows = options.rows)
     options.header != 1 && (header = options.header)
-    options.types != Type[] && (types = options.types)
+    !isempty(options.types) && (types = options.types)
     rows = rows == 0 ? CSV.countlines(source, options.quotechar, options.escapechar) : rows
     seekstart(source)
     # BOM character detection
@@ -126,35 +123,22 @@ function Source(;fullpath::Union{AbstractString,IO}="",
 
     # Detect column types
     cols = length(columnnames)
-    columntypes = Vector{Type}(cols)
     if isa(types,Vector) && length(types) == cols
         columntypes = types
     elseif isa(types,Dict) || isempty(types)
-        poss_types = Matrix{Type}(min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect), cols)
-        fill!(poss_types, NullField)
+        columntypes = Vector{Type}(cols)
+        fill!(columntypes, Any)
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
-            CSV.readsplitline!(row_vals, source, options.delim, options.quotechar, options.escapechar)
             lineschecked += 1
+            # println("type detecting on row = $lineschecked...")
             for i = 1:cols
-                i > length(row_vals) && continue
-                poss_types[lineschecked, i] = CSV.detecttype(row_vals[i], options.dateformat, options.datecheck, options.null)
+                # print("\tdetecting col = $i...")
+                typ = CSV.detecttype(source, options, timetype(options.dateformat))::Type
+                # print(typ)
+                columntypes[i] = promote_type2(columntypes[i], typ)
+                # println("...promoting to: ", columntypes[i])
             end
-        end
-        # detect most common/general type of each column of types
-        d = Set{Type}()
-        for i = 1:cols
-            for n = 1:lineschecked
-                t = poss_types[n, i]
-                t == NullField && continue
-                push!(d, t)
-            end
-            columntypes[i] = (isempty(d) || WeakRefString{UInt8} in d ) ? WeakRefString{UInt8} :
-                                (Date     in d) ? Date :
-                                (DateTime in d) ? DateTime :
-                                (Float64  in d) ? Float64 :
-                                (Int      in d) ? Int : WeakRefString{UInt8}
-            empty!(d)
         end
     else
         throw(ArgumentError("$cols number of columns detected; `types` argument has $(length(types)) entries"))
@@ -169,20 +153,16 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             columntypes[c] = typ
         end
     end
-    # if !nullable || !weakrefstrings
-    #     # WeakRefStrings won't be safe if they don't end up in a NullableArray
-    #     columntypes = Type[T <: WeakRefString ? String : T for T in columntypes]
-    # end
     if nullable
-        columntypes = Type[T >: Null ? T : ?T for T in columntypes]
+        for i = 1:cols
+            T = columntypes[i]
+            columntypes[i] = ifelse(T >: Null, T, ?T)
+        end
     end
     seek(source, datapos)
     sch = Data.Schema(columnnames, columntypes, rows)
-    push!(GLOBAL_HEAP, source)
     return Source(sch, options, source, Int(pointer(source.data)), fullpath, datapos)
 end
-
-const GLOBAL_HEAP = []
 
 # construct a new Source from a Sink
 Source(s::CSV.Sink) = CSV.Source(fullpath=s.fullpath, options=s.options)
@@ -194,10 +174,10 @@ reset!(s::CSV.Source) = (seek(s.io, s.datapos); return nothing)
 Data.schema(source::CSV.Source) = source.schema
 Data.isdone(io::CSV.Source, row, col) = eof(io.io) || (!isnull(io.schema.rows) && row > io.schema.rows)
 Data.streamtype{T<:CSV.Source}(::Type{T}, ::Type{Data.Field}) = true
-@inline Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
+@inline Data.streamfrom{T, D}(source::CSV.Source{D}, ::Type{Data.Field}, ::Type{T}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
 # @inline Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{Union{T, Null}}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
 # Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{Nullable{T}}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
-@inline Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{WeakRefString{UInt8}}, row, col) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, STATE, source.ptr)
+@inline Data.streamfrom{D}(source::CSV.Source{D}, ::Type{Data.Field}, ::Type{WeakRefString{UInt8}}, row, col) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, STATE, source.ptr)
 Data.reference(source::CSV.Source) = source.io.data
 
 """
@@ -224,7 +204,6 @@ Keyword Arguments:
 * `datarow::Int`; specifies the row on which the actual data starts in the file; by default, the data is expected on the next row after the header row(s); for a file without column names (header), specify `datarow=1`
 * `types`; column types can be provided manually as a complete Vector{Type}, or in a Dict to reference individual columns by name or number
 * `nullable::Bool`; indicates whether values can be nullable or not; `true` by default. If set to `false` and missing values are encountered, a `NullException` will be thrown
-* `weakrefstrings::Bool=true`: indicates whether string-type columns should use the `WeakRefString` (for efficiency) or a regular `String` type
 * `dateformat::Union{AbstractString,Dates.DateFormat}`; how all dates/datetimes in the dataset are formatted
 * `footerskip::Int`; indicates the number of rows to skip at the end of the file
 * `rows_for_type_detect::Int=100`; indicates how many rows should be read to infer the types of columns
@@ -294,7 +273,7 @@ sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 """
 function read end
 
-function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
+function read(fullpath::Union{AbstractString,IO}, sink::Type=NamedTuple, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
     source = Source(fullpath; kwargs...)
     if source.schema.rows == 0
         # If the source is empty, ignore transforms to prevent type conversion errors.

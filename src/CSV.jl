@@ -1,7 +1,7 @@
 __precompile__(true)
 module CSV
 
-using Compat, DataStreams, DataFrames, WeakRefStrings, Nulls
+using Compat, DataStreams, WeakRefStrings, Nulls
 
 export Data, DataFrame
 
@@ -48,14 +48,13 @@ Keyword Arguments:
  * `null::String`; indicates how NULL values are represented in the dataset
  * `dateformat::Union{AbstractString,Dates.DateFormat}`; how dates/datetimes are represented in the dataset
 """
-type Options
+type Options{D}
     delim::UInt8
     quotechar::UInt8
     escapechar::UInt8
     null::Vector{UInt8}
     nullcheck::Bool
-    dateformat::Dates.DateFormat
-    datecheck::Bool
+    dateformat::D
     # non-public for now
     datarow::Int
     rows::Int
@@ -63,9 +62,9 @@ type Options
     types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}
 end
 
-Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, null="", dateformat=Dates.ISODateFormat, datarow=-1, rows=0, header=1, types=DataType[]) =
+Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, null="", dateformat=Dates.ISODateTimeFormat, datarow=-1, rows=0, header=1, types=DataType[]) =
     Options(delim%UInt8, quotechar%UInt8, escapechar%UInt8,
-            map(UInt8, collect(ascii(null))), null != "", isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat), dateformat == Dates.ISODateTimeFormat || dateformat == Dates.ISODateFormat, datarow, rows, header, types)
+            map(UInt8, collect(ascii(null))), null != "", isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat), datarow, rows, header, types)
 function Base.show(io::IO,op::Options)
     println(io, "    CSV.Options:")
     println(io, "        delim: '", Char(op.delim), "'")
@@ -96,9 +95,9 @@ CSV.reset!(source)
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 ```
 """
-type Source <: Data.Source
+type Source{D} <: Data.Source
     schema::Data.Schema
-    options::Options
+    options::Options{D}
     io::IOBuffer
     ptr::Int # pointer to underlying data buffer
     fullpath::String
@@ -109,6 +108,16 @@ function Base.show(io::IO, f::Source)
     println(io, "CSV.Source: ", f.fullpath)
     println(io, f.options)
     show(io, f.schema)
+end
+
+type TransposedSource{D} <: Data.Source
+    schema::Data.Schema
+    options::Options{D}
+    io::IOBuffer
+    ptr::Int # pointer to underlying data buffer
+    fullpath::String
+    datapos::Int # the position in the IOBuffer where the rows of data begins
+    columnpositions::Vector{Int}
 end
 
 """
@@ -145,6 +154,7 @@ end
 include("parsefields.jl")
 include("io.jl")
 include("Source.jl")
+include("TransposedSource.jl")
 include("Sink.jl")
 
 end # module
