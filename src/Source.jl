@@ -9,7 +9,7 @@ function Source(fullpath::Union{AbstractString,IO};
               header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types::Union{Dict{Int,Type},Dict{String,Type},Vector{Type}}=Type[],
-              nullable::Bool=false,
+              nullable::(?Bool)=Nulls.null,
               dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateTimeFormat,
 
               footerskip::Int=0,
@@ -35,7 +35,7 @@ function Source{D}(;fullpath::Union{AbstractString,IO}="",
                 header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
                 types::Union{Dict{Int,Type},Dict{String,Type},Vector{Type}}=Type[],
-                nullable::Bool=false,
+                nullable::(?Bool)=null,
 
                 footerskip::Int=0,
                 rows_for_type_detect::Int=20,
@@ -49,16 +49,17 @@ function Source{D}(;fullpath::Union{AbstractString,IO}="",
 
     # open the file for property detection
     if isa(fullpath, IOBuffer)
-        source = fullpath
+        source = Buffer(fullpath.data)
+        source.pos = fullpath.ptr
+        fs = nb_available(fullpath)
         fullpath = "<IOBuffer>"
-        fs = nb_available(source)
     elseif isa(fullpath, IO)
-        source = IOBuffer(Base.read(fullpath))
-        fs = nb_available(source)
+        source = Buffer(Base.read(fullpath))
+        fs = nb_available(fullpath)
         fullpath = isdefined(fullpath, :name) ? fullpath.name : "__IO__"
     else
         source = open(fullpath, "r") do f
-            IOBuffer(use_mmap ? Mmap.mmap(f) : Base.read(f))
+            CSV.Buffer(use_mmap ? Mmap.mmap(f) : Base.read(f))
         end
         fs = filesize(fullpath)
     end
@@ -66,13 +67,14 @@ function Source{D}(;fullpath::Union{AbstractString,IO}="",
     options.rows != 0 && (rows = options.rows)
     options.header != 1 && (header = options.header)
     !isempty(options.types) && (types = options.types)
+    startpos = position(source)
     rows = rows == 0 ? CSV.countlines(source, options.quotechar, options.escapechar) : rows
-    seekstart(source)
+    seek(source, startpos)
     # BOM character detection
-    if fs > 0 && unsafe_peek(source) == 0xef
-        unsafe_read(source, UInt8)
-        unsafe_read(source, UInt8) == 0xbb || seekstart(source)
-        unsafe_read(source, UInt8) == 0xbf || seekstart(source)
+    if fs > 0 && Base.peek(source) == 0xef
+        Base.read(source, UInt8)
+        Base.read(source, UInt8) == 0xbb || seek(source, startpos)
+        Base.read(source, UInt8) == 0xbf || seek(source, startpos)
     end
     datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
     rows = fs == 0 ? 0 : max(-1, rows - datarow + 1 - footerskip) # rows now equals the actual number of rows in the dataset
@@ -123,7 +125,7 @@ function Source{D}(;fullpath::Union{AbstractString,IO}="",
 
     # Detect column types
     cols = length(columnnames)
-    if isa(types,Vector) && length(types) == cols
+    if isa(types, Vector) && length(types) == cols
         columntypes = types
     elseif isa(types,Dict) || isempty(types)
         columntypes = Vector{Type}(cols)
@@ -134,9 +136,9 @@ function Source{D}(;fullpath::Union{AbstractString,IO}="",
             # println("type detecting on row = $lineschecked...")
             for i = 1:cols
                 # print("\tdetecting col = $i...")
-                typ = CSV.detecttype(source, options, timetype(options.dateformat))::Type
+                typ = CSV.detecttype(source, options, CSV.timetype(options.dateformat), columntypes[i])::Type
                 # print(typ)
-                columntypes[i] = promote_type2(columntypes[i], typ)
+                columntypes[i] = CSV.promote_type2(columntypes[i], typ)
                 # println("...promoting to: ", columntypes[i])
             end
         end
@@ -153,10 +155,17 @@ function Source{D}(;fullpath::Union{AbstractString,IO}="",
             columntypes[c] = typ
         end
     end
-    if nullable
-        for i = 1:cols
-            T = columntypes[i]
-            columntypes[i] = ifelse(T >: Null, T, ?T)
+    if !isnull(nullable)
+        if nullable
+            for i = 1:cols
+                T = columntypes[i]
+                columntypes[i] = ifelse(T >: Null, T, ?T)
+            end
+        else
+            for i = 1:cols
+                T = columntypes[i]
+                columntypes[i] = ifelse(T >: Null, Nulls.T(T), T)
+            end
         end
     end
     seek(source, datapos)
@@ -172,26 +181,26 @@ reset!(s::CSV.Source) = (seek(s.io, s.datapos); return nothing)
 
 # Data.Source interface
 Data.schema(source::CSV.Source) = source.schema
-Data.isdone(io::CSV.Source, row, col) = eof(io.io) || (!isnull(io.schema.rows) && row > io.schema.rows)
+@inline Data.isdone(io::CSV.Source, row, col) = eof(io.io) || (!isnull(io.schema.rows) && row > io.schema.rows)
 Data.streamtype{T<:CSV.Source}(::Type{T}, ::Type{Data.Field}) = true
 @inline Data.streamfrom{T, D}(source::CSV.Source{D}, ::Type{Data.Field}, ::Type{T}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
 # @inline Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{Union{T, Null}}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
 # Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{Nullable{T}}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
-@inline Data.streamfrom{D}(source::CSV.Source{D}, ::Type{Data.Field}, ::Type{WeakRefString{UInt8}}, row, col) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, STATE, source.ptr)
+# @inline Data.streamfrom{D}(source::CSV.Source{D}, ::Type{Data.Field}, ::Type{WeakRefString{UInt8}}, row, col) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, STATE, source.ptr)
 Data.reference(source::CSV.Source) = source.io.data
 
 """
-`CSV.read(fullpath::Union{AbstractString,IO}, sink::Type{T}=DataFrame, args...; kwargs...)` => `typeof(sink)`
+`CSV.read(fullpath::Union{AbstractString,IO}, sink::Type{T}=NamedTuple, args...; kwargs...)` => `typeof(sink)`
 
 `CSV.read(fullpath::Union{AbstractString,IO}, sink::Data.Sink; kwargs...)` => `Data.Sink`
 
 
-parses a delimited file into a Julia structure (a DataFrame by default, but any valid `Data.Sink` may be requested).
+parses a delimited file into a Julia structure (a NamedTuple by default, but any valid `Data.Sink` may be requested).
 
 Positional arguments:
 
 * `fullpath`; can be a file name (string) or other `IO` instance
-* `sink::Type{T}`; `DataFrame` by default, but may also be other `Data.Sink` types that support streaming via `Data.Field` interface; note that the method argument can be the *type* of `Data.Sink`, plus any required arguments the sink may need (`args...`).
+* `sink::Type{T}`; `NamedTuple` by default, but may also be other `Data.Sink` types that support streaming via `Data.Field` interface; note that the method argument can be the *type* of `Data.Sink`, plus any required arguments the sink may need (`args...`).
                     or an already constructed `sink` may be passed (2nd method above)
 
 Keyword Arguments:
@@ -219,7 +228,7 @@ Oftentimes, however, it can be convenient to work with `WeakRefStrings` dependin
 Example usage:
 ```
 julia> dt = CSV.read("bids.csv")
-7656334×9 DataFrames.DataFrame
+7656334×9 NamedTuples.NamedTuple
 │ Row     │ bid_id  │ bidder_id                               │ auction │ merchandise      │ device      │
 ├─────────┼─────────┼─────────────────────────────────────────┼─────────┼──────────────────┼─────────────┤
 │ 1       │ 0       │ "8dac2b259fd1c6d1120e519fb1ac14fbqvax8" │ "ewmzr" │ "jewelry"        │ "phone0"    │
@@ -255,17 +264,17 @@ CSV.read(file; types=Dict("col3"=>Float64, "col6"=>String))
 # this is also a way to limit the # of rows to be read in a file if only a sample is needed
 CSV.read(file; rows=10000)
 
-# for data files, `file` and `file2`, with the same structure, read both into a single DataFrame
+# for data files, `file` and `file2`, with the same structure, read both into a single NamedTuple
 # note that `df` is used as a 2nd argument in the 2nd call to `CSV.read` and the keyword argument
 # `append=true` is passed
 df = CSV.read(file)
 df = CSV.read(file2, df; append=true)
 
-# manually construct a `CSV.Source` once, then stream its data to both a DataFrame
+# manually construct a `CSV.Source` once, then stream its data to both a NamedTuple
 # and SQLite table `sqlite_table` in the SQLite database `db`
 # note the use of `CSV.reset!` to ensure the `source` can be streamed from again
 source = CSV.Source(file)
-df1 = CSV.read(source, DataFrame)
+df1 = CSV.read(source, NamedTuple)
 CSV.reset!(source)
 db = SQLite.DB()
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
@@ -279,7 +288,7 @@ function read(fullpath::Union{AbstractString,IO}, sink::Type=NamedTuple, args...
         # If the source is empty, ignore transforms to prevent type conversion errors.
         transforms = Dict{Int,Function}()
     end
-    sink = Data.stream!(source, sink, args; append=append, transforms=transforms)
+    sink = Data.stream!(source, sink, args...; append=append, transforms=transforms)
     return Data.close!(sink)
 end
 
@@ -293,5 +302,5 @@ function read{T}(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false
     return Data.close!(sink)
 end
 
-read(source::CSV.Source, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, append, transforms, args...); return Data.close!(sink))
-read{T}(source::CSV.Source, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, append, transforms); return Data.close!(sink))
+read(source::CSV.Source, sink=NamedTuple, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, args...; append=append, transforms=transforms); return Data.close!(sink))
+read{T}(source::CSV.Source, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink; append=append, transforms=transforms); return Data.close!(sink))

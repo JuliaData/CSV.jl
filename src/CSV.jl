@@ -5,7 +5,9 @@ using Compat, DataStreams, WeakRefStrings, Nulls
 
 export Data, DataFrame
 
-immutable CSVError <: Exception
+include("buffer.jl")
+
+struct CSVError <: Exception
     msg::String
 end
 
@@ -24,19 +26,6 @@ const ZERO    = UInt8('0')
 const TEN     = UInt8('9')+UInt8(1)
 Base.isascii(c::UInt8) = c < 0x80
 
-@inline function unsafe_read(from::Base.AbstractIOBuffer, ::Type{UInt8}=UInt8)
-    @inbounds byte = from.data[from.ptr]
-    from.ptr = from.ptr + 1
-    return byte
-end
-unsafe_read(from::IO, T) = Base.read(from, T)
-
-@inline function unsafe_peek(from::Base.AbstractIOBuffer)
-    @inbounds byte = from.data[from.ptr]
-    return byte
-end
-unsafe_peek(from::IO) = (mark(from); v = Base.read(from, UInt8); reset(from); return v)
-
 """
 Represents the various configuration settings for delimited text file parsing.
 
@@ -48,7 +37,7 @@ Keyword Arguments:
  * `null::String`; indicates how NULL values are represented in the dataset
  * `dateformat::Union{AbstractString,Dates.DateFormat}`; how dates/datetimes are represented in the dataset
 """
-type Options{D}
+mutable struct Options{D}
     delim::UInt8
     quotechar::UInt8
     escapechar::UInt8
@@ -95,10 +84,10 @@ CSV.reset!(source)
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 ```
 """
-type Source{D} <: Data.Source
+mutable struct Source{D, I, P1, P2} <: Data.Source
     schema::Data.Schema
     options::Options{D}
-    io::IOBuffer
+    io::Buffer{I, P1, P2}
     ptr::Int # pointer to underlying data buffer
     fullpath::String
     datapos::Int # the position in the IOBuffer where the rows of data begins
@@ -110,7 +99,7 @@ function Base.show(io::IO, f::Source)
     show(io, f.schema)
 end
 
-type TransposedSource{D} <: Data.Source
+mutable struct TransposedSource{D} <: Data.Source
     schema::Data.Schema
     options::Options{D}
     io::IOBuffer
@@ -141,7 +130,7 @@ CSV.reset!(source)
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 ```
 """
-type Sink <: Data.Sink
+mutable struct Sink <: Data.Sink
     options::Options
     io::IOBuffer
     fullpath::Union{String, IO}
@@ -152,6 +141,7 @@ type Sink <: Data.Sink
 end
 
 include("parsefields.jl")
+include("float.jl")
 include("io.jl")
 include("Source.jl")
 include("TransposedSource.jl")

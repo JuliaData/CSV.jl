@@ -3,7 +3,7 @@
 # (see issue #77). This test verifies that even when nb_available would return 0 on a stream
 # the full stream is still read.
 
-type MultiStream{S<:IO} <: IO
+mutable struct MultiStream{S<:IO} <: IO
     streams::Array{S}
     index::Int
 end
@@ -45,4 +45,5 @@ stream = MultiStream(
 )
 
 @test nb_available(stream) == 0
+#FIXME
 @test isequal(CSV.read(stream), CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6")))

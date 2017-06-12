@@ -13,14 +13,14 @@ f = CSV.Source(joinpath(dir, "test_utf8.csv"))
 @test size(f, 2) == 3
 @test size(f, 1) == 3
 @test Data.header(f) == ["col1","col2","col3"]
-@test Data.types(f) == [Nullable{Float64},Nullable{Float64},Nullable{Float64}]
-ds = Data.stream!(f, DataFrame)
+@test Data.types(f) == [Float64,Float64,Float64]
+ds = Data.stream!(f, NamedTuple)
 @test ds[1,1].value == 1.0
 @test ds[2,1].value == 4.0
 @test ds[3,1].value == 7.0
 @test ds[1,2].value == 2.0
 @test Data.header(ds) == Data.header(f)
-@test Data.types(ds, Data.Column) == [NullableVector{Float64},NullableVector{Float64},NullableVector{Float64}]
+@test Data.types(ds) == [Vector{Float64},Vector{Float64},Vector{Float64}]
 
 f = CSV.Source(joinpath(dir, "test_utf8.csv"))
 si = CSV.write(joinpath(dir, "new_test_utf8.csv"), f)
@@ -29,7 +29,7 @@ so = CSV.Source(si)
 @test size(so, 2) == 3
 @test size(so, 1) == 3
 @test Data.header(so) == ["col1","col2","col3"]
-@test Data.types(so) == [Nullable{Float64},Nullable{Float64},Nullable{Float64}]
+@test Data.types(so) == [Float64,Float64,Float64]
 # @test so.iopos == 21
 ds = Data.stream!(so, DataFrame)
 @test ds[1,1].value == 1.0
@@ -250,7 +250,7 @@ f = CSV.Source(joinpath(dir, "pandas_zeros.csv"))
 @test size(f, 1) == 100000
 @test Data.header(f) == [string(i) for i = 0:49]
 @test Data.types(f) == repmat([Nullable{Int}],50)
-@time ds = Data.stream!(f, DataFrame)
+@time ds = Data.stream!(f, NamedTuple)
 
 f = CSV.Source(joinpath(dir, "test_header_range.csv");header=1:3)
 @test size(f, 2) == 3

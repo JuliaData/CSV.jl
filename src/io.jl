@@ -11,14 +11,14 @@ function readline end
 
 function readline(io::IO, q::UInt8, e::UInt8, buf::IOBuffer=IOBuffer())
     while !eof(io)
-        b = unsafe_read(io, UInt8)
+        b = Base.read(io, UInt8)
         Base.write(buf, b)
         if b == q
             while !eof(io)
-                b = unsafe_read(io, UInt8)
+                b = Base.read(io, UInt8)
                 Base.write(buf, b)
                 if b == e
-                    b = unsafe_read(io, UInt8)
+                    b = Base.read(io, UInt8)
                     Base.write(buf, b)
                 elseif b == q
                     break
@@ -27,7 +27,7 @@ function readline(io::IO, q::UInt8, e::UInt8, buf::IOBuffer=IOBuffer())
         elseif b == NEWLINE
             break
         elseif b == RETURN
-            !eof(io) && unsafe_peek(io) == NEWLINE && Base.write(buf, unsafe_read(io, UInt8))
+            !eof(io) && Base.peek(io) == NEWLINE && Base.write(buf, Base.read(io, UInt8))
             break
         end
     end
@@ -37,7 +37,7 @@ readline(io::IO, q='"', e='\\', buf::IOBuffer=IOBuffer()) = readline(io, UInt8(q
 readline(source::CSV.Source) = readline(source.io, source.options.quotechar, source.options.escapechar)
 
 # contents of a single CSV table field as returned by readsplitline!()
-immutable RawField
+struct RawField
     value::String   # uparsed contents
     isquoted::Bool  # whether the field value was quoted or not
 end
@@ -63,15 +63,15 @@ function readsplitline!(vals::Vector{RawField}, io::IO, d::UInt8, q::UInt8, e::U
     state = RSL_AFTER_DELIM
     push_buf_to_vals!() = push!(vals, RawField(String(take!(buf)), state==RSL_AFTER_QUOTE))
     while !eof(io)
-        b = unsafe_read(io, UInt8)
+        b = Base.read(io, UInt8)
         if state == RSL_IN_QUOTE # in the quoted string
-            if b == q # end the quoted string
-                state = RSL_AFTER_QUOTE
-            elseif b == e # the escape character, read the next after it
+            if b == e # the escape character, read the next after it
                 Base.write(buf, b)
                 @assert !eof(io)
-                b = unsafe_read(io, UInt8)
+                b = Base.read(io, UInt8)
                 Base.write(buf, b)
+            elseif b == q # end the quoted string
+                state = RSL_AFTER_QUOTE
             else
                 Base.write(buf, b)
             end
@@ -93,7 +93,7 @@ function readsplitline!(vals::Vector{RawField}, io::IO, d::UInt8, q::UInt8, e::U
             state = RSL_AFTER_NEWLINE
             break
         elseif b == RETURN
-            !eof(io) && unsafe_peek(io) == NEWLINE && unsafe_read(io, UInt8)
+            !eof(io) && Base.peek(io) == NEWLINE && Base.read(io, UInt8)
             push_buf_to_vals!() # add the last field
             state = RSL_AFTER_NEWLINE
             break
@@ -103,7 +103,7 @@ function readsplitline!(vals::Vector{RawField}, io::IO, d::UInt8, q::UInt8, e::U
             elseif b == e # the escape character, read the next after it
                 Base.write(buf, b)
                 @assert !eof(io)
-                b = unsafe_read(io, UInt8)
+                b = Base.read(io, UInt8)
             end
             Base.write(buf, b)
             state = RSL_IN_FIELD
@@ -113,7 +113,7 @@ function readsplitline!(vals::Vector{RawField}, io::IO, d::UInt8, q::UInt8, e::U
         @assert eof(io)
         throw(CSVError("EOF while trying to read the closing quote"))
     elseif state == RSL_IN_FIELD || state == RSL_AFTER_DELIM # file ended without the newline, store the current buf
-        @assert eof(io)
+        @assert position(io) == 1 || eof(io)
         push_buf_to_vals!()
     end
     return vals
@@ -135,12 +135,12 @@ function countlines(io::IO, q::UInt8, e::UInt8)
     nl = 1
     b = 0x00
     while !eof(io)
-        b = unsafe_read(io, UInt8)
+        b = Base.read(io, UInt8)
         if b == q
             while !eof(io)
-                b = unsafe_read(io, UInt8)
+                b = Base.read(io, UInt8)
                 if b == e
-                    b = unsafe_read(io, UInt8)
+                    b = Base.read(io, UInt8)
                 elseif b == q
                     break
                 end
@@ -149,7 +149,7 @@ function countlines(io::IO, q::UInt8, e::UInt8)
             nl += 1
         elseif b == RETURN
             nl += 1
-            !eof(io) && unsafe_peek(io) == NEWLINE && unsafe_read(io, UInt8)
+            !eof(io) && Base.peek(io) == NEWLINE && Base.read(io, UInt8)
         end
     end
     return nl - (b == NEWLINE || b == RETURN)
@@ -207,48 +207,53 @@ promote_type2(::Type{Null}, ::Type{WeakRefString{UInt8}}) = ?WeakRefString{UInt8
 const DATE_OPTIONS = CSV.Options(dateformat=Dates.ISODateFormat)
 const DATETIME_OPTIONS = CSV.Options(dateformat=Dates.ISODateTimeFormat)
 
-function detecttype{D}(source, options::CSV.Options{D}, T)
-    # val.isquoted && return WeakRefString{UInt8} # quoted is always a string
-    # (isempty(val.value) || val.value == null) && return Null
-    unmark(source)
-    try
-        mark(source)
-        v1 = CSV.parsefield(source, Nulls.?Int, options)
-        return v1 isa Null ? Null : Int
-    end
-    try
-        reset(source)
-        mark(source)
-        v2 = CSV.parsefield(source, Nulls.?Float64, options)
-        return v2 isa Null ? Null : Float64
-    end
-    if D == Dates.ISODateTimeFormat
+function detecttype{D}(io, opt::CSV.Options{D}, T, prevT)
+    pos = position(io)
+    if Int <: prevT
         try
-            reset(source)
-            mark(source)
-            v3 = CSV.parsefield(source, Nulls.?Date, DATE_OPTIONS)
-            return v3 isa Null ? Null : Date
-        end
-        try
-            reset(source)
-            mark(source)
-            v4 = CSV.parsefield(source, Nulls.?DateTime, DATETIME_OPTIONS)
-            return v4 isa Null ? Null : DateTime
-        end
-    else
-        try
-            reset(source)
-            mark(source)
-            v5 = CSV.parsefield(source, Nulls.?T, options)
-            return v5 isa Null ? Null : T
+            v1 = CSV.parsefield(io, Nulls.?Int, opt)
+            # print("...parsed = '$v1'...")
+            return v1 isa Null ? Null : Int
         end
     end
-    reset(source)
-    b = unsafe_read(source)
-    b, done = checkdone(source, b, options, STATE)
-    while !done
-        b = unsafe_read(source)
-        b, done = checkdone(source, b, options, STATE)
+    if Float64 <: prevT
+        try
+            seek(io, pos)
+            v2 = CSV.parsefield(io, Nulls.?Float64, opt)
+            # print("...parsed = '$v2'...")
+            return v2 isa Null ? Null : Float64
+        end
     end
+    if prevT == Any || Date <: prevT || DateTime <: prevT
+        if D == typeof(Dates.ISODateTimeFormat)
+            try
+                seek(io, pos)
+                v3 = CSV.parsefield(io, Nulls.?Date, DATE_OPTIONS)
+                # print("...parsed = '$v3'...")
+                return v3 isa Null ? Null : Date
+            end
+            try
+                seek(io, pos)
+                v4 = CSV.parsefield(io, Nulls.?DateTime, DATETIME_OPTIONS)
+                # print("...parsed = '$v4'...")
+                return v4 isa Null ? Null : DateTime
+            end
+        else
+            try
+                seek(io, pos)
+                v5 = CSV.parsefield(io, Nulls.?T, opt)
+                # print("...parsed = '$v5'...")
+                return v5 isa Null ? Null : T
+            end
+        end
+    end
+    seek(io, pos)
+    b = Base.read(io, UInt8)
+    @checkdone(done)
+    while true
+        b = Base.read(io)
+        @checkdone(done)
+    end
+    @label done
     return WeakRefString{UInt8}
 end
