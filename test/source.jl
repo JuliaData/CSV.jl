@@ -9,18 +9,20 @@ f = CSV.Source(joinpath(dir, "test_utf8_with_BOM.csv"))
 @test Data.header(f) == ["col1","col2","col3"]
 
 f = CSV.Source(joinpath(dir, "test_utf8.csv"))
+sch = Data.schema(f)
 @test f.options.delim == UInt8(',')
-@test size(f, 2) == 3
-@test size(f, 1) == 3
-@test Data.header(f) == ["col1","col2","col3"]
-@test Data.types(f) == [Float64,Float64,Float64]
-ds = Data.stream!(f, NamedTuple)
+@test size(sch, 2) == 3
+@test size(sch, 1) == 3
+@test Data.header(sch) == ["col1","col2","col3"]
+@test Data.types(sch) == [Float64,Float64,Float64]
+ds = CSV.read(f)
 @test ds[1,1].value == 1.0
 @test ds[2,1].value == 4.0
 @test ds[3,1].value == 7.0
 @test ds[1,2].value == 2.0
-@test Data.header(ds) == Data.header(f)
-@test Data.types(ds) == [Vector{Float64},Vector{Float64},Vector{Float64}]
+sch2 = Data.schema(ds)
+@test Data.header(sch2) == Data.header(sch)
+@test Data.types(sch) == [Vector{Float64},Vector{Float64},Vector{Float64}]
 
 f = CSV.Source(joinpath(dir, "test_utf8.csv"))
 si = CSV.write(joinpath(dir, "new_test_utf8.csv"), f)

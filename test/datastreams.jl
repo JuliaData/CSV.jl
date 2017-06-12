@@ -3,14 +3,8 @@ reload("Nulls"); reload("WeakRefStrings"); reload("DataStreams"); reload("CSV");
 FILE = joinpath(DataStreamsIntegrationTests.DSTESTDIR, "randoms_small.csv")
 DF = CSV.read(FILE)
 DF2 = CSV.read(FILE)
-dfsource = DataStreamsIntegrationTests.Tester("NamedTuple", x->x, false, NamedTuple, (:DF,), DataStreamsIntegrationTests.scalartransforms, DataStreamsIntegrationTests.vectortransforms, x->x, x->nothing)
-dfsink = DataStreamsIntegrationTests.Tester("NamedTuple", x->x, false, NamedTuple, (:DF2,), DataStreamsIntegrationTests.scalartransforms, DataStreamsIntegrationTests.vectortransforms, x->x, x->nothing)
-function NamedTuple(sym::Symbol; append::Bool=false)
-    return @eval $sym
-end
-function NamedTuples.NamedTuple(sch::Data.Schema, ::Type{Data.Field}, append::Bool, ref::Vector{UInt8}, sym::Symbol)
-    return NamedTuple(NamedTuple(sym), sch, Data.Field, append, ref)
-end
+dfsource = DataStreamsIntegrationTests.Tester("NamedTuple", x->x, false, NamedTuple, (DF,), DataStreamsIntegrationTests.scalartransforms, DataStreamsIntegrationTests.vectortransforms, x->x, x->nothing)
+dfsink = DataStreamsIntegrationTests.Tester("NamedTuple", x->x, false, NamedTuple, (DF2,), DataStreamsIntegrationTests.scalartransforms, DataStreamsIntegrationTests.vectortransforms, x->x, x->nothing)
 
 # CSV
 FILE2 = joinpath(DataStreamsIntegrationTests.DSTESTDIR, "randoms2_small.csv")

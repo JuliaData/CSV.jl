@@ -110,14 +110,16 @@ end
 
 
 T = Int64
-@time source = CSV.Source("/Users/jacobquinn/Downloads/randoms_$(T).csv"; )
-@time CSV.read(source);
-sink = Si = DataFrames.DataFrame
-transforms = Dict{Int,Function}()
+@time source = CSV.Source("/Users/jacobquinn/Downloads/randoms_$(T).csv";)
+@time source = CSV.Source("/Users/jacobquinn/Downloads/randoms_small.csv"; nullable=true)
+@time source = CSV.Source("/Users/jacobquinn/Downloads/randoms_small.csv"; nullable=false)
+# source.schema = DataStreams.Data.Schema(DataStreams.Data.header(source.schema), (Int, String, String, Float64, Float64, Date, DateTime), 9)
+# @time df = CSV.read(source, NamedTuple);
+sink = Si = NamedTuple
+transforms = Dict{Int,Function}(1=>x->x-1)
 append = false
 args = kwargs = ()
 source_schema = DataStreams.Data.schema(source)
-@code_warntype DataStreams.Data.transform(source_schema, transforms)
 sink_schema, transforms2 = DataStreams.Data.transform(source_schema, transforms, true);
 sinkstreamtype = DataStreams.Data.Field
 sink = Si(sink_schema, sinkstreamtype, append, args...; kwargs...);
@@ -126,7 +128,24 @@ filter = x->true
 @code_warntype DataStreams.Data.stream!(source, sinkstreamtype, sink, source_schema, sink_schema, transforms2, filter, columns)
 @time DataStreams.Data.stream!(source, sinkstreamtype, sink, source_schema, sink_schema, transforms2, filter, columns)
 
+function testt(t)
+    a = getfield(t, 1)
+    b = getfield(t, 2)
+    c = getfield(t, 3)
+    d = getfield(t, 4)
+    e = getfield(t, 5)
+    f = getfield(t, 6)
+    g = getfield(t, 7)
+    return (a, b, c, d, e, f, g)
+end
+@code_warntype testt((i1=(?Int)[], i2=(?String)[], i3=(?String)[], i4=(?Float64)[], i5=(?Float64)[], i6=(?Date)[], i7=(?DateTime)[]))
+
+@code_llvm DataStreams.Data.stream!(source, sinkstreamtype, sink, source_schema, sink_schema, transforms2, filter, columns)
+@time DataStreams.Data.stream!(source, sinkstreamtype, sink, source_schema, sink_schema, transforms2, filter, columns)
+
 @code_warntype @time CSV.parsefield(IOBuffer(), ?Int, CSV.Options(), 0, 0, CSV.STATE)
+
+t = Vector{Int}(1000000)
 
 # having CSV.parsefield(io, T) where T !>: Null decreases allocations by 1.00M
 # inlining CSV.parsefield also dropped allocations
@@ -172,7 +191,7 @@ end
 end
 
 A = Union{Int, Void}[i for i = 1:10]
-function get_then_set2(A)
+@inline function get_then_set2(A)
     @simd for i = 1:10
         # Base.arrayset(A, g2(i), i)
         val = g3(i)
@@ -184,6 +203,14 @@ function get_then_set2(A)
     end
     return A
 end
+function run_lots(N)
+    A = Union{Int, Void}[i for i = 1:10]
+    for i = 1:N
+        get_then_set2(A)
+    end
+    return
+end
+
 @code_warntype g2(1)
 @code_warntype get_then_set2(A)
 @code_llvm get_then_set2(A)
