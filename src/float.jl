@@ -61,19 +61,19 @@ const LITTLEY = UInt8('y')
 const BIGE = UInt8('E')
 const LITTLEE = UInt8('e')
 
-CSVError(::Type{<:AbstractFloat}, exp::Signed, row, col) = CSV.CSVError("error parsing a `$T` value on column $col, row $row; exponent out of range: $exp")
+ParsingException(::Type{<:AbstractFloat}, exp::Signed, row, col) = ParsingException("error parsing a `$T` value on column $col, row $row; exponent out of range: $exp")
 
 scale(exp, frac, v, row, col) = scale(exp - frac, v, row, col)
 
 function scale(exp, v::T, row, col) where T
     if exp >= 0
         max_exp = maxexponent(T)
-        return exp <= max_exp ? v * pow10(exp) : throw(CSVError(T, exp, row, col))
+        return exp <= max_exp ? v * pow10(exp) : throw(ParsingException(T, exp, row, col))
     else
         min_exp = minexponent(T)
         # compensate roundoff?
         if exp < min_exp
-            -exp + min_exp > -min_exp && throw(CSVError(T, exp, row, col))
+            -exp + min_exp > -min_exp && throw(ParsingException(T, exp, row, col))
             result = v / pow10(-min_exp)
             return result / pow10(-exp + min_exp)
         else
@@ -109,9 +109,9 @@ end
         if b == LITTLEN || b == BIGN
             eof(io) && @goto checknullend
             b = Base.read(io, UInt8)
-            b == LITTLEA || b == BIGA || !eof(io) || (seek(io, pos); b = Base.read(io, UInt8); @goto checknullend)
+            (!(b == LITTLEA || b == BIGA) || eof(io)) && (seek(io, pos); b = Base.read(io, UInt8); @goto checknullend)
             b = Base.read(io, UInt8)
-            b == LITTLEN || b == BIGN || !eof(io) || (seek(io, pos); b = Base.read(io, UInt8); @goto checknullend)
+            !(b == LITTLEN || b == BIGN) && (seek(io, pos); b = Base.read(io, UInt8); @goto checknullend)
             result = T(NaN)
             eof(io) && @goto done
             b = Base.read(io, UInt8)
@@ -119,9 +119,9 @@ end
         elseif b == LITTLEI || b == BIGI
             eof(io) && @goto checknullend
             b = Base.read(io, UInt8)
-            b == LITTLEN || b == BIGN || !eof(io) || (seek(io, pos); b = Base.read(io, UInt8); @goto checknullend)
+            (!(b == LITTLEN || b == BIGN) || eof(io)) && (seek(io, pos); b = Base.read(io, UInt8); @goto checknullend)
             b = Base.read(io, UInt8)
-            b == LITTLEF || b == BIGF || !eof(io) || (seek(io, pos); b = Base.read(io, UInt8); @goto checknullend)
+            !(b == LITTLEF || b == BIGF) && (seek(io, pos); b = Base.read(io, UInt8); @goto checknullend)
             result = T(Inf)
             eof(io) && @goto done
             b = Base.read(io, UInt8)
@@ -213,8 +213,8 @@ end
     return T(ifelse(negative, -result, result))
 
     @label null
-    return ifnull()
+    return ifnull(row, col)
 
     @label error
-    throw(CSVError(T, b, row, col))
+    throw(ParsingException(T, b, row, col))
 end

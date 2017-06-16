@@ -50,20 +50,20 @@ source = CSV.Source(IOBuffer(str); header=["col1","col2","col3","col4"])
     @testset "missing quote" begin
         str1 = "field1,field2,\"quoted \\\"field with \n embedded newline,field3"
         io = IOBuffer(str1)
-        @test_throws CSV.CSVError CSV.readsplitline(io)
+        @test_throws CSV.ParsingException CSV.readsplitline(io)
     end
 
     @testset "misplaced quote" begin
         str1 = "fi\"eld1\",field2,\"quoted \\\"field with \n embedded newline\",field3"
         io = IOBuffer(str1)
-        @test_throws CSV.CSVError CSV.readsplitline(io)
+        @test_throws CSV.ParsingException CSV.readsplitline(io)
 
         str2 = "field1,field2,\"quoted \\\"field with \n\"\" embedded newline\",field3"
         io = IOBuffer(str2)
-        @test_throws CSV.CSVError CSV.readsplitline(io)
+        @test_throws CSV.ParsingException CSV.readsplitline(io)
 
         str3 = "\"field\"1,field2,\"quoted \\\"field with \n embedded newline\",field3"
         io = IOBuffer(str3)
-        @test_throws CSV.CSVError CSV.readsplitline(io)
+        @test_throws CSV.ParsingException CSV.readsplitline(io)
     end
 end

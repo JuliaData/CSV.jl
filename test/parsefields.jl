@@ -26,18 +26,18 @@ v = CSV.parsefield(io,Int)
 @test v === 2000
 
 io = CSV.Buffer("0.0")
-@test_throws CSV.CSVError CSV.parsefield(io,Int)
+@test_throws CSV.ParsingException CSV.parsefield(io,Int)
 io = CSV.Buffer("0a")
-@test_throws CSV.CSVError CSV.parsefield(io,Int)
+@test_throws CSV.ParsingException CSV.parsefield(io,Int)
 io = CSV.Buffer("")
-@test_throws NullException v = CSV.parsefield(io,Int)
+@test_throws Data.NullException v = CSV.parsefield(io,Int)
 @test isnull(CSV.parsefield(CSV.Buffer(""),?Int))
 
 io = CSV.Buffer(" ")
 @test isnull(CSV.parsefield(io,?Int))
-@test_throws NullException CSV.parsefield(CSV.Buffer(" "),Int)
+@test_throws Data.NullException CSV.parsefield(CSV.Buffer(" "),Int)
 
-@test_throws NullException CSV.parsefield(CSV.Buffer("\t"),Int)
+@test_throws Data.NullException CSV.parsefield(CSV.Buffer("\t"),Int)
 @test isnull(CSV.parsefield(CSV.Buffer("\t"),?Int))
 
 io = CSV.Buffer(" \t 010")
@@ -45,7 +45,7 @@ v = CSV.parsefield(io,Int)
 @test v === 10
 
 io = CSV.Buffer("\"1_00a0\"")
-@test_throws CSV.CSVError CSV.parsefield(io,Int)
+@test_throws CSV.ParsingException CSV.parsefield(io,Int)
 io = CSV.Buffer("\"0\"")
 v = CSV.parsefield(io,Int)
 @test v === 0
@@ -63,10 +63,10 @@ v = CSV.parsefield(io,?Int)
 @test v === 0
 
 io = CSV.Buffer("0a\n")
-@test_throws CSV.CSVError CSV.parsefield(io,Int)
+@test_throws CSV.ParsingException CSV.parsefield(io,Int)
 # Should we handle trailing whitespace?
 io = CSV.Buffer("\t0\t\n")
-@test_throws CSV.CSVError CSV.parsefield(io,?Int)
+@test_throws CSV.ParsingException CSV.parsefield(io,?Int)
 
 io = CSV.Buffer("0,")
 v = CSV.parsefield(io,Int)
@@ -81,14 +81,14 @@ v = CSV.parsefield(io,?Int)
 @test isnull(v)
 
 io = CSV.Buffer("\r")
-@test_throws NullException CSV.parsefield(io,Int)
+@test_throws Data.NullException CSV.parsefield(io,Int)
 
 io = CSV.Buffer("\r\n")
 v = CSV.parsefield(io,?Int)
 @test isnull(v)
 
 io = CSV.Buffer("\"\"")
-@test_throws NullException CSV.parsefield(io,Int)
+@test_throws Data.NullException CSV.parsefield(io,Int)
 
 io = CSV.Buffer("1234567890")
 v = CSV.parsefield(io,Int)
@@ -99,7 +99,7 @@ v = CSV.parsefield(io,?Int,CSV.Options(null="\\N"))
 @test isnull(v)
 
 io = CSV.Buffer("\"\\N\"")
-@test_throws NullException CSV.parsefield(io,Int,CSV.Options(null="\\N"))
+@test_throws Data.NullException CSV.parsefield(io,Int,CSV.Options(null="\\N"))
 
 end # @testset "Int"
 
@@ -122,15 +122,15 @@ v = CSV.parsefield(io,Int)
 @test v === 2000
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0.0"))))
-@test_throws CSV.CSVError CSV.parsefield(io,?Int)
+@test_throws CSV.ParsingException CSV.parsefield(io,?Int)
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a"))))
-@test_throws CSV.CSVError CSV.parsefield(io,Int)
+@test_throws CSV.ParsingException CSV.parsefield(io,Int)
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(""))))
 v = CSV.parsefield(io,?Int)
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" "))))
-@test_throws NullException CSV.parsefield(io,Int)
+@test_throws Data.NullException CSV.parsefield(io,Int)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t"))))
 v = CSV.parsefield(io,?Int)
@@ -141,7 +141,7 @@ v = CSV.parsefield(io,Int)
 @test v === 10
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"1_00a0\""))))
-@test_throws CSV.CSVError CSV.parsefield(io,?Int)
+@test_throws CSV.ParsingException CSV.parsefield(io,?Int)
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"0\""))))
 v = CSV.parsefield(io,Int)
 @test v === 0
@@ -159,10 +159,10 @@ v = CSV.parsefield(io,?Int)
 @test v === 0
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a\n"))))
-@test_throws CSV.CSVError CSV.parsefield(io,Int)
+@test_throws CSV.ParsingException CSV.parsefield(io,Int)
 # Should we handle trailing whitespace?
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t0\t\n"))))
-@test_throws CSV.CSVError CSV.parsefield(io,?Int)
+@test_throws CSV.ParsingException CSV.parsefield(io,?Int)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,"))))
 v = CSV.parsefield(io,Int)
@@ -173,14 +173,14 @@ v = CSV.parsefield(io,?Int)
 @test v === 0
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n"))))
-@test_throws NullException CSV.parsefield(io,Int)
+@test_throws Data.NullException CSV.parsefield(io,Int)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r"))))
 v = CSV.parsefield(io,?Int)
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n"))))
-@test_throws NullException CSV.parsefield(io,Int)
+@test_throws Data.NullException CSV.parsefield(io,Int)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\""))))
 v = CSV.parsefield(io,?Int)
@@ -191,7 +191,7 @@ v = CSV.parsefield(io,Int)
 @test v === 1234567890
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N"))))
-@test_throws NullException CSV.parsefield(io,Int,CSV.Options(null="\\N"))
+@test_throws Data.NullException CSV.parsefield(io,Int,CSV.Options(null="\\N"))
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\""))))
 v = CSV.parsefield(io,?Int,CSV.Options(null="\\N"))
@@ -218,13 +218,13 @@ v = CSV.parsefield(io,?Float64)
 @test v === 2000.0
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a"))))
-@test_throws CSV.CSVError CSV.parsefield(io,Float64)
+@test_throws CSV.ParsingException CSV.parsefield(io,Float64)
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(""))))
 v = CSV.parsefield(io,?Float64)
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" "))))
-@test_throws NullException CSV.parsefield(io,Float64)
+@test_throws Data.NullException CSV.parsefield(io,Float64)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t"))))
 v = CSV.parsefield(io,?Float64)
@@ -235,7 +235,7 @@ v = CSV.parsefield(io,Float64)
 @test v === 10.0
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"1_00a0\""))))
-@test_throws CSV.CSVError CSV.parsefield(io,?Float64)
+@test_throws CSV.ParsingException CSV.parsefield(io,?Float64)
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"0\""))))
 v = CSV.parsefield(io,Float64)
 @test v === 0.0
@@ -253,10 +253,10 @@ v = CSV.parsefield(io,?Float64)
 @test v === 0.0
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a\n"))))
-@test_throws CSV.CSVError CSV.parsefield(io,Float64)
+@test_throws CSV.ParsingException CSV.parsefield(io,Float64)
 # Should we handle trailing whitespace?
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t0\t\n"))))
-@test_throws CSV.CSVError CSV.parsefield(io,?Float64)
+@test_throws CSV.ParsingException CSV.parsefield(io,?Float64)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,"))))
 v = CSV.parsefield(io,Float64)
@@ -267,14 +267,14 @@ v = CSV.parsefield(io,?Float64)
 @test v === 0.0
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n"))))
-@test_throws NullException CSV.parsefield(io,Float64)
+@test_throws Data.NullException CSV.parsefield(io,Float64)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r"))))
 v = CSV.parsefield(io,?Float64)
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n"))))
-@test_throws NullException CSV.parsefield(io,Float64)
+@test_throws Data.NullException CSV.parsefield(io,Float64)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\""))))
 v = CSV.parsefield(io,?Float64)
@@ -313,7 +313,7 @@ v = CSV.parsefield(io,?Float64)
 @test v === Inf
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N"))))
-@test_throws NullException CSV.parsefield(io,Float64,CSV.Options(null="\\N"))
+@test_throws Data.NullException CSV.parsefield(io,Float64,CSV.Options(null="\\N"))
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\""))))
 v = CSV.parsefield(io,?Float64,CSV.Options(null="\\N"))
@@ -341,13 +341,13 @@ v = CSV.parsefield(io,?Float64)
 @test v === 2000.0
 
 io = CSV.Buffer("0a")
-@test_throws CSV.CSVError CSV.parsefield(io,Float64)
+@test_throws CSV.ParsingException CSV.parsefield(io,Float64)
 io = CSV.Buffer("")
 v = CSV.parsefield(io,?Float64)
 @test isnull(v)
 
 io = CSV.Buffer(" ")
-@test_throws NullException CSV.parsefield(io,Float64)
+@test_throws Data.NullException CSV.parsefield(io,Float64)
 
 io = CSV.Buffer("\t")
 v = CSV.parsefield(io,?Float64)
@@ -358,7 +358,7 @@ v = CSV.parsefield(io,Float64)
 @test v === 10.0
 
 io = CSV.Buffer("\"1_00a0\"")
-@test_throws CSV.CSVError CSV.parsefield(io,?Float64)
+@test_throws CSV.ParsingException CSV.parsefield(io,?Float64)
 io = CSV.Buffer("\"0\"")
 v = CSV.parsefield(io,Float64)
 @test v === 0.0
@@ -376,10 +376,10 @@ v = CSV.parsefield(io,?Float64)
 @test v === 0.0
 
 io = CSV.Buffer("0a\n")
-@test_throws CSV.CSVError CSV.parsefield(io,Float64)
+@test_throws CSV.ParsingException CSV.parsefield(io,Float64)
 # Should we handle trailing whitespace?
 io = CSV.Buffer("\t0\t\n")
-@test_throws CSV.CSVError CSV.parsefield(io,?Float64)
+@test_throws CSV.ParsingException CSV.parsefield(io,?Float64)
 
 io = CSV.Buffer("0,")
 v = CSV.parsefield(io,Float64)
@@ -390,14 +390,14 @@ v = CSV.parsefield(io,?Float64)
 @test v === 0.0
 
 io = CSV.Buffer("\n")
-@test_throws NullException CSV.parsefield(io,Float64)
+@test_throws Data.NullException CSV.parsefield(io,Float64)
 
 io = CSV.Buffer("\r")
 v = CSV.parsefield(io,?Float64)
 @test isnull(v)
 
 io = CSV.Buffer("\r\n")
-@test_throws NullException CSV.parsefield(io,Float64)
+@test_throws Data.NullException CSV.parsefield(io,Float64)
 
 io = CSV.Buffer("\"\"")
 v = CSV.parsefield(io,?Float64)
@@ -468,7 +468,7 @@ v = CSV.parsefield(io,?Float64)
 @test v === Inf
 
 io = CSV.Buffer("\\N")
-@test_throws NullException CSV.parsefield(io,Float64,CSV.Options(null="\\N"))
+@test_throws Data.NullException CSV.parsefield(io,Float64,CSV.Options(null="\\N"))
 
 io = CSV.Buffer("\"\\N\"")
 v = CSV.parsefield(io,?Float64,CSV.Options(null="\\N"))
@@ -548,14 +548,14 @@ v = CSV.parsefield(io,?Dec64)
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r"))))
-@test_throws NullException CSV.parsefield(io,Dec64)
+@test_throws Data.NullException CSV.parsefield(io,Dec64)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n"))))
 v = CSV.parsefield(io,?Dec64)
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\""))))
-@test_throws NullException CSV.parsefield(io,Dec64)
+@test_throws Data.NullException CSV.parsefield(io,Dec64)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1234567890"))))
 v = CSV.parsefield(io,?Dec64)
@@ -594,7 +594,7 @@ v = CSV.parsefield(io,?Dec64,CSV.Options(null="\\N"))
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\""))))
-@test_throws NullException CSV.parsefield(io,Dec64,CSV.Options(null="\\N"))
+@test_throws Data.NullException CSV.parsefield(io,Dec64,CSV.Options(null="\\N"))
 
 end # @testset "DecFP Libz"
 
@@ -666,14 +666,14 @@ v = CSV.parsefield(io,?Dec64)
 @test v === Dec64(0.0)
 
 io = CSV.Buffer("\n")
-@test_throws NullException CSV.parsefield(io,Dec64)
+@test_throws Data.NullException CSV.parsefield(io,Dec64)
 
 io = CSV.Buffer("\r")
 v = CSV.parsefield(io,?Dec64)
 @test isnull(v)
 
 io = CSV.Buffer("\r\n")
-@test_throws NullException CSV.parsefield(io,Dec64)
+@test_throws Data.NullException CSV.parsefield(io,Dec64)
 
 io = CSV.Buffer("\"\"")
 v = CSV.parsefield(io,?Dec64)
@@ -712,7 +712,7 @@ v = CSV.parsefield(io,?Dec64)
 @test v === Dec64(Inf)
 
 io = CSV.Buffer("\\N")
-@test_throws NullException CSV.parsefield(io,Dec64,CSV.Options(null="\\N"))
+@test_throws Data.NullException CSV.parsefield(io,Dec64,CSV.Options(null="\\N"))
 
 io = CSV.Buffer("\"\\N\"")
 v = CSV.parsefield(io,?Dec64,CSV.Options(null="\\N"))
@@ -800,14 +800,14 @@ v = CSV.parsefield(io,?WeakRefString{UInt8})
 @test v == "0"
 
 io = CSV.Buffer("\n")
-@test_throws NullException CSV.parsefield(io,WeakRefString{UInt8})
+@test_throws Data.NullException CSV.parsefield(io,WeakRefString{UInt8})
 
 io = CSV.Buffer("\r")
 v = CSV.parsefield(io,?WeakRefString{UInt8})
 @test isnull(v)
 
 io = CSV.Buffer("\r\n")
-@test_throws NullException CSV.parsefield(io,WeakRefString{UInt8})
+@test_throws Data.NullException CSV.parsefield(io,WeakRefString{UInt8})
 
 io = CSV.Buffer("\"\"")
 v = CSV.parsefield(io,?WeakRefString{UInt8})
@@ -822,7 +822,7 @@ v = CSV.parsefield(io,?WeakRefString{UInt8})
 @test v == "hey there\\\"quoted field\\\""
 
 io = CSV.Buffer("\\N")
-@test_throws NullException CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(null="\\N"))
+@test_throws Data.NullException CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(null="\\N"))
 
 io = CSV.Buffer("\"\\N\"")
 v = CSV.parsefield(io,?WeakRefString{UInt8},CSV.Options(null="\\N"))
@@ -858,7 +858,7 @@ v = CSV.parsefield(io,String)
 @test v == "0a"
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(""))))
-@test_throws NullException CSV.parsefield(io,String)
+@test_throws Data.NullException CSV.parsefield(io,String)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" "))))
 v = CSV.parsefield(io,String)
@@ -910,14 +910,14 @@ v = CSV.parsefield(io,String)
 @test v == "0"
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n"))))
-@test_throws NullException CSV.parsefield(io,String)
+@test_throws Data.NullException CSV.parsefield(io,String)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r"))))
 v = CSV.parsefield(io,?String)
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n"))))
-@test_throws NullException CSV.parsefield(io,String)
+@test_throws Data.NullException CSV.parsefield(io,String)
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\""))))
@@ -933,7 +933,7 @@ v = CSV.parsefield(io,String)
 @test v == "hey there\\\"quoted field\\\""
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N"))))
-@test_throws NullException CSV.parsefield(io,String,CSV.Options(null="\\N"))
+@test_throws Data.NullException CSV.parsefield(io,String,CSV.Options(null="\\N"))
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\""))))
 v = CSV.parsefield(io,?String,CSV.Options(null="\\N"))
@@ -949,28 +949,28 @@ v = CSV.parsefield(io,?Date)
 @test isnull(v)
 
 io = CSV.Buffer(",")
-@test_throws NullException CSV.parsefield(io,Date)
+@test_throws Data.NullException CSV.parsefield(io,Date)
 
 io = CSV.Buffer("\n")
 v = CSV.parsefield(io,?Date)
 @test isnull(v)
 
 io = CSV.Buffer("\r")
-@test_throws NullException CSV.parsefield(io,Date)
+@test_throws Data.NullException CSV.parsefield(io,Date)
 
 io = CSV.Buffer("\r\n")
 v = CSV.parsefield(io,?Date)
 @test isnull(v)
 
 io = CSV.Buffer("\"\"")
-@test_throws NullException CSV.parsefield(io,Date)
+@test_throws Data.NullException CSV.parsefield(io,Date)
 
 io = CSV.Buffer("\\N")
 v = CSV.parsefield(io,?Date,CSV.Options(null="\\N"))
 @test isnull(v)
 
 io = CSV.Buffer("\"\\N\"")
-@test_throws NullException CSV.parsefield(io,Date,CSV.Options(null="\\N"))
+@test_throws Data.NullException CSV.parsefield(io,Date,CSV.Options(null="\\N"))
 
 io = CSV.Buffer("2015-10-05")
 v = CSV.parsefield(io,Date)
@@ -1025,28 +1025,28 @@ v = CSV.parsefield(io,?Date)
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(","))))
-@test_throws NullException CSV.parsefield(io,Date)
+@test_throws Data.NullException CSV.parsefield(io,Date)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n"))))
 v = CSV.parsefield(io,?Date)
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r"))))
-@test_throws NullException CSV.parsefield(io,Date)
+@test_throws Data.NullException CSV.parsefield(io,Date)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n"))))
 v = CSV.parsefield(io,?Date)
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\""))))
-@test_throws NullException CSV.parsefield(io,Date)
+@test_throws Data.NullException CSV.parsefield(io,Date)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N"))))
 v = CSV.parsefield(io,?Date,CSV.Options(null="\\N"))
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\""))))
-@test_throws NullException CSV.parsefield(io,Date,CSV.Options(null="\\N"))
+@test_throws Data.NullException CSV.parsefield(io,Date,CSV.Options(null="\\N"))
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05"))))
 v = CSV.parsefield(io,Date)
@@ -1093,27 +1093,27 @@ v = CSV.parsefield(io,?DateTime)
 @test isnull(v)
 
 io = CSV.Buffer(",")
-@test_throws NullException CSV.parsefield(io,DateTime)
+@test_throws Data.NullException CSV.parsefield(io,DateTime)
 
 io = CSV.Buffer("\n")
 v = CSV.parsefield(io,?DateTime)
 
 io = CSV.Buffer("\r")
-@test_throws NullException CSV.parsefield(io,DateTime)
+@test_throws Data.NullException CSV.parsefield(io,DateTime)
 
 io = CSV.Buffer("\r\n")
 v = CSV.parsefield(io,?DateTime)
 @test isnull(v)
 
 io = CSV.Buffer("\"\"")
-@test_throws NullException CSV.parsefield(io,DateTime)
+@test_throws Data.NullException CSV.parsefield(io,DateTime)
 
 io = CSV.Buffer("\\N")
 v = CSV.parsefield(io,?DateTime,CSV.Options(null="\\N"))
 @test isnull(v)
 
 io = CSV.Buffer("\"\\N\"")
-@test_throws NullException CSV.parsefield(io,DateTime,CSV.Options(null="\\N"))
+@test_throws Data.NullException CSV.parsefield(io,DateTime,CSV.Options(null="\\N"))
 
 io = CSV.Buffer("2015-10-05T00:00:01")
 v = CSV.parsefield(io,DateTime)
@@ -1168,28 +1168,28 @@ v = CSV.parsefield(io,?DateTime)
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(","))))
-@test_throws NullException CSV.parsefield(io,DateTime)
+@test_throws Data.NullException CSV.parsefield(io,DateTime)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n"))))
 v = CSV.parsefield(io,?DateTime)
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r"))))
-@test_throws NullException CSV.parsefield(io,DateTime)
+@test_throws Data.NullException CSV.parsefield(io,DateTime)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n"))))
 v = CSV.parsefield(io,?DateTime)
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\""))))
-@test_throws NullException CSV.parsefield(io,DateTime)
+@test_throws Data.NullException CSV.parsefield(io,DateTime)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N"))))
 v = CSV.parsefield(io,?DateTime,CSV.Options(null="\\N"))
 @test isnull(v)
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\""))))
-@test_throws NullException CSV.parsefield(io,DateTime,CSV.Options(null="\\N"))
+@test_throws Data.NullException CSV.parsefield(io,DateTime,CSV.Options(null="\\N"))
 
 io = CSV.Buffer(ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05T00:00:01"))))
 v = CSV.parsefield(io,DateTime)
@@ -1267,11 +1267,11 @@ v = CSV.parsefield(io,Float64)
 @test v === 1.0
 v = CSV.parsefield(io,?WeakRefString{UInt8})
 @test isnull(v)
-@test_throws NullException CSV.parsefield(io,Date)
+@test_throws Data.NullException CSV.parsefield(io,Date)
 
 v = CSV.parsefield(io,?Int)
 @test isnull(v)
-@test_throws NullException CSV.parsefield(io,Float64)
+@test_throws Data.NullException CSV.parsefield(io,Float64)
 v = CSV.parsefield(io,?WeakRefString{UInt8})
 @test isnull(v)
 
@@ -1293,18 +1293,18 @@ v = CSV.parsefield(io,Char)
 @test v === '1'
 
 io = CSV.Buffer("2000")
-@test_throws CSV.CSVError CSV.parsefield(io,Char)
+@test_throws CSV.ParsingException CSV.parsefield(io,Char)
 
 io = CSV.Buffer("0.0")
-@test_throws CSV.CSVError CSV.parsefield(io,Char)
+@test_throws CSV.ParsingException CSV.parsefield(io,Char)
 io = CSV.Buffer("0a")
-@test_throws CSV.CSVError CSV.parsefield(io,Char)
+@test_throws CSV.ParsingException CSV.parsefield(io,Char)
 io = CSV.Buffer("")
 v = CSV.parsefield(io,?Char)
 @test isnull(v)
 
 io = CSV.Buffer(" ")
-@test_throws NullException CSV.parsefield(io,Char)
+@test_throws Data.NullException CSV.parsefield(io,Char)
 
 io = CSV.Buffer("\t")
 v = CSV.parsefield(io,?Char)
@@ -1315,7 +1315,7 @@ v = CSV.parsefield(io,Char)
 @test v === '0'
 
 io = CSV.Buffer("\"1_00a0\"")
-@test_throws CSV.CSVError CSV.parsefield(io,Char)
+@test_throws CSV.ParsingException CSV.parsefield(io,Char)
 io = CSV.Buffer("\"0\"")
 v = CSV.parsefield(io,Char)
 @test v === '0'
@@ -1333,10 +1333,10 @@ v = CSV.parsefield(io,Char)
 @test v === '0'
 
 io = CSV.Buffer("0a\n")
-@test_throws CSV.CSVError CSV.parsefield(io,Char)
+@test_throws CSV.ParsingException CSV.parsefield(io,Char)
 # Should we handle trailing whitespace?
 io = CSV.Buffer("\t0\t\n")
-@test_throws CSV.CSVError CSV.parsefield(io,Char)
+@test_throws CSV.ParsingException CSV.parsefield(io,Char)
 
 io = CSV.Buffer("0,")
 v = CSV.parsefield(io,Char)
@@ -1351,21 +1351,21 @@ v = CSV.parsefield(io,?Char)
 @test isnull(v)
 
 io = CSV.Buffer("\r")
-@test_throws NullException CSV.parsefield(io,Char)
+@test_throws Data.NullException CSV.parsefield(io,Char)
 
 io = CSV.Buffer("\r\n")
 v = CSV.parsefield(io,?Char)
 @test isnull(v)
 
 io = CSV.Buffer("\"\"")
-@test_throws NullException CSV.parsefield(io,Char)
+@test_throws Data.NullException CSV.parsefield(io,Char)
 
 io = CSV.Buffer("\\N")
 v = CSV.parsefield(io,?Char,CSV.Options(null="\\N"))
 @test isnull(v)
 
 io = CSV.Buffer("\"\\N\"")
-@test_throws NullException CSV.parsefield(io,Char,CSV.Options(null="\\N"))
+@test_throws Data.NullException CSV.parsefield(io,Char,CSV.Options(null="\\N"))
 
 io = CSV.Buffer("\t")
 v = CSV.parsefield(io,?Int64,CSV.Options(delim='\t'))
@@ -1375,7 +1375,7 @@ end # @testset "All types"
 end # @testset "CSV.parsefield"
 
 # Custom type
-type CustomInt
+struct CustomInt
     val::Int
 end
 Base.parse(::Type{CustomInt}, x) = CustomInt(parse(Int, x))

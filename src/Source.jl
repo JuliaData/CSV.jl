@@ -8,7 +8,7 @@ function Source(fullpath::Union{AbstractString,IO};
 
               header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
-              types::Union{Dict{Int,Type},Dict{String,Type},Vector{Type}}=Type[],
+              types=Type[],
               nullable::(?Bool)=Nulls.null,
               dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateTimeFormat,
 
@@ -34,7 +34,7 @@ function Source{D}(;fullpath::Union{AbstractString,IO}="",
 
                 header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
-                types::Union{Dict{Int,Type},Dict{String,Type},Vector{Type}}=Type[],
+                types=Type[],
                 nullable::(?Bool)=null,
 
                 footerskip::Int=0,
@@ -77,7 +77,7 @@ function Source{D}(;fullpath::Union{AbstractString,IO}="",
         Base.read(source, UInt8) == 0xbf || seek(source, startpos)
     end
     datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
-    rows = fs == 0 ? 0 : max(-1, rows - datarow + 1 - footerskip) # rows now equals the actual number of rows in the dataset
+    rows = fs == 0 ? -1 : max(-1, rows - datarow + 1 - footerskip) # rows now equals the actual number of rows in the dataset
 
     # figure out # of columns and header, either an Integer, Range, or Vector{String}
     # also ensure that `f` is positioned at the start of data
@@ -127,7 +127,7 @@ function Source{D}(;fullpath::Union{AbstractString,IO}="",
     cols = length(columnnames)
     if isa(types, Vector) && length(types) == cols
         columntypes = types
-    elseif isa(types,Dict) || isempty(types)
+    elseif isa(types, Dict) || isempty(types)
         columntypes = Vector{Type}(cols)
         fill!(columntypes, Any)
         lineschecked = 0
@@ -145,11 +145,11 @@ function Source{D}(;fullpath::Union{AbstractString,IO}="",
     else
         throw(ArgumentError("$cols number of columns detected; `types` argument has $(length(types)) entries"))
     end
-    if isa(types, Dict{Int, Type})
+    if isa(types, Dict{Int, <:Any})
         for (col, typ) in types
             columntypes[col] = typ
         end
-    elseif isa(types, Dict{String, Type})
+    elseif isa(types, Dict{String, <:Any})
         for (col,typ) in types
             c = findfirst(columnnames, col)
             columntypes[c] = typ
@@ -169,24 +169,21 @@ function Source{D}(;fullpath::Union{AbstractString,IO}="",
         end
     end
     seek(source, datapos)
-    sch = Data.Schema(columnnames, columntypes, rows)
-    return Source(sch, options, source, Int(pointer(source.data)), fullpath, datapos)
+    sch = Data.Schema(columnnames, columntypes, ifelse(rows < 0, null, rows))
+    return Source(sch, options, source, Int(pointer(source.data)), String(fullpath), datapos)
 end
 
 # construct a new Source from a Sink
 Source(s::CSV.Sink) = CSV.Source(fullpath=s.fullpath, options=s.options)
 
-"reset a `CSV.Source` to its beginning to be ready to parse data from again"
-reset!(s::CSV.Source) = (seek(s.io, s.datapos); return nothing)
-
 # Data.Source interface
+"reset a `CSV.Source` to its beginning to be ready to parse data from again"
+Data.reset!(s::CSV.Source) = (seek(s.io, s.datapos); return nothing)
 Data.schema(source::CSV.Source) = source.schema
-@inline Data.isdone(io::CSV.Source, row, col) = eof(io.io) || (!isnull(io.schema.rows) && row > io.schema.rows)
-Data.streamtype{T<:CSV.Source}(::Type{T}, ::Type{Data.Field}) = true
-@inline Data.streamfrom{T, D}(source::CSV.Source{D}, ::Type{Data.Field}, ::Type{T}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
-# @inline Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{Union{T, Null}}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
-# Data.streamfrom{T}(source::CSV.Source, ::Type{Data.Field}, ::Type{Nullable{T}}, row, col) = CSV.parsefield(source.io, T, source.options, row, col)
-# @inline Data.streamfrom{D}(source::CSV.Source{D}, ::Type{Data.Field}, ::Type{WeakRefString{UInt8}}, row, col) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, STATE, source.ptr)
+@inline Data.isdone(io::CSV.Source, row, col, rows, cols) = eof(io.io) || (!isnull(rows) && row > rows)
+@inline Data.isdone(io::Source, row, col) = Data.isdone(io, row, col, size(io.schema)...)
+Data.streamtype(::Type{<:CSV.Source}, ::Type{Data.Field}) = true
+@inline Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col) where {T} = CSV.parsefield(source.io, T, source.options, row, col)
 Data.reference(source::CSV.Source) = source.io.data
 
 """
@@ -212,7 +209,7 @@ Keyword Arguments:
 * `header`; column names can be provided manually as a complete Vector{String}, or as an Int/Range which indicates the row/rows that contain the column names
 * `datarow::Int`; specifies the row on which the actual data starts in the file; by default, the data is expected on the next row after the header row(s); for a file without column names (header), specify `datarow=1`
 * `types`; column types can be provided manually as a complete Vector{Type}, or in a Dict to reference individual columns by name or number
-* `nullable::Bool`; indicates whether values can be nullable or not; `true` by default. If set to `false` and missing values are encountered, a `NullException` will be thrown
+* `nullable::Bool`; indicates whether values can be nullable or not; `true` by default. If set to `false` and missing values are encountered, a `Data.NullException` will be thrown
 * `dateformat::Union{AbstractString,Dates.DateFormat}`; how all dates/datetimes in the dataset are formatted
 * `footerskip::Int`; indicates the number of rows to skip at the end of the file
 * `rows_for_type_detect::Int=100`; indicates how many rows should be read to infer the types of columns

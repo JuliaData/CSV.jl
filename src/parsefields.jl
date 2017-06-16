@@ -49,7 +49,7 @@ macro checkdone(label)
     end)
 end
 
-CSVError{T}(::Type{T}, b, row, col) = CSV.CSVError("error parsing a `$T` value on column $col, row $row; encountered '$(Char(b))'")
+ParsingException{T}(::Type{T}, b, row, col) = CSV.ParsingException("error parsing a `$T` value on column $col, row $row; encountered '$(Char(b))'")
 
 # as a last ditch effort, after we've trying parsing the correct type,
 # we check if the field is equal to a custom null type
@@ -102,12 +102,11 @@ end
 """
 function parsefield end
 
-# parsefield{T}(source::CSV.Source, ::Type{T}, row=0, col=0) = get(CSV.parsefield(source.io, T, source.options, row, col, STATE))
-# parsefield{T}(source::CSV.Source, ::Type{Nullable{T}}, row=0, col=0) = CSV.parsefield(source.io, T, source.options, row, col, STATE)
-# parsefield(source::CSV.Source, ::Type{Nullable{WeakRefString{UInt8}}}, row=0, col=0) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, STATE, source.ptr)
+parsefield(source::CSV.Source, ::Type{T}, row=0, col=0) where {T} = CSV.parsefield(source.io, T, source.options, row, col, NULLTHROW)
+parsefield(source::CSV.Source, ::Type{Union{T, Null}}, row=0, col=0) where {T} = CSV.parsefield(source.io, T, source.options, row, col, NULLRETURN)
 
-const NULLTHROW = ()->throw(NullException())
-const NULLRETURN = ()->null
+const NULLTHROW = (row, col)->throw(Data.NullException("encountered a null value for a non-null column type on row = $row, col = $col"))
+const NULLRETURN = (row, col)->null
 
 @inline parsefield(io::Buffer, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0) where {T} = parsefield(io, T, opt, row, col, NULLTHROW)
 @inline parsefield(io::Buffer, ::Type{Union{T, Null}}, opt::CSV.Options=CSV.Options(), row=0, col=0) where {T} = parsefield(io, T, opt, row, col, NULLRETURN)
@@ -136,10 +135,10 @@ const NULLRETURN = ()->null
     return ifelse(negative, -v, v)
 
     @label null
-    return ifnull()
+    return ifnull(row, col)
 
     @label error
-    throw(CSVError(T, b, row, col))
+    throw(ParsingException(T, b, row, col))
 end
 
 make(::Type{WeakRefString{UInt8}}, ptr, len, pos) = WeakRefString(Ptr{UInt8}(ptr), len, pos)
@@ -188,16 +187,16 @@ make(::Type{String}, ptr, len, pos) = unsafe_string(ptr, len)
     return make(T, ptr, len, pos)
 
     @label null
-    return ifnull()
+    return ifnull(row, col)
 end
 
 @inline function parsefield(io::Buffer, ::Type{Date}, opt::CSV.Options, row, col, ifnull::Function)
     v = parsefield(io, WeakRefString{UInt8}, opt, row, col, ifnull)
-    return v isa Null ? ifnull() : Date(v, opt.dateformat)
+    return v isa Null ? ifnull(row, col) : Date(v, opt.dateformat)
 end
 @inline function parsefield(io::Buffer, ::Type{DateTime}, opt::CSV.Options, row, col, ifnull::Function)
     v = parsefield(io, WeakRefString{UInt8}, opt, row, col, ifnull)
-    return v isa Null ? ifnull() : DateTime(v, opt.dateformat)
+    return v isa Null ? ifnull(row, col) : DateTime(v, opt.dateformat)
 end
 
 @inline function parsefield(io::Buffer, ::Type{Char}, opt::CSV.Options, row, col, ifnull::Function)
@@ -213,14 +212,14 @@ end
     return Char(c)
 
     @label null
-    return ifnull()
+    return ifnull(row, col)
 
     @label error
-    throw(CSVError(Char, b, row, col))
+    throw(ParsingException(Char, b, row, col))
 end
 
 # Generic fallback
 @inline function parsefield(io::Buffer, T, opt::CSV.Options, row, col, ifnull::Function)
     v = parsefield(io, String, opt, row, col, ifnull)
-    return v isa Null ? ifnull() : parse(T, v)
+    return v isa Null ? ifnull(row, col) : parse(T, v)
 end

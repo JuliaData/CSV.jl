@@ -86,7 +86,7 @@ function readsplitline!(vals::Vector{RawField}, io::IO, d::UInt8, q::UInt8, e::U
             if state == RSL_AFTER_DELIM
                 state = RSL_IN_QUOTE
             else
-                throw(CSVError("Unexpected start of quote ($q), use \"$e$q\" to type \"$q\""))
+                throw(ParsingException("Unexpected start of quote ($q), use \"$e$q\" to type \"$q\""))
             end
         elseif b == NEWLINE
             push_buf_to_vals!() # add the last field
@@ -99,7 +99,7 @@ function readsplitline!(vals::Vector{RawField}, io::IO, d::UInt8, q::UInt8, e::U
             break
         else
             if state == RSL_AFTER_QUOTE
-                throw(CSVError("Unexpected character ($b) after the end of quote ($q)"))
+                throw(ParsingException("Unexpected character ($b) after the end of quote ($q)"))
             elseif b == e # the escape character, read the next after it
                 Base.write(buf, b)
                 @assert !eof(io)
@@ -111,7 +111,7 @@ function readsplitline!(vals::Vector{RawField}, io::IO, d::UInt8, q::UInt8, e::U
     end
     if state == RSL_IN_QUOTE
         @assert eof(io)
-        throw(CSVError("EOF while trying to read the closing quote"))
+        throw(ParsingException("EOF while trying to read the closing quote"))
     elseif state == RSL_IN_FIELD || state == RSL_AFTER_DELIM # file ended without the newline, store the current buf
         @assert position(io) == 1 || eof(io)
         push_buf_to_vals!()
@@ -145,14 +145,14 @@ function countlines(io::IO, q::UInt8, e::UInt8)
                     break
                 end
             end
-        elseif b == NEWLINE
+        elseif b == CSV.NEWLINE
             nl += 1
-        elseif b == RETURN
+        elseif b == CSV.RETURN
             nl += 1
-            !eof(io) && Base.peek(io) == NEWLINE && Base.read(io, UInt8)
+            !eof(io) && Base.peek(io) == CSV.NEWLINE && Base.read(io, UInt8)
         end
     end
-    return nl - (b == NEWLINE || b == RETURN)
+    return nl - (b == CSV.NEWLINE || b == CSV.RETURN)
 end
 countlines(io::IO, q='"', e='\\') = countlines(io, UInt8(q), UInt8(e))
 countlines(source::CSV.Source) = countlines(source.io, source.options.quotechar, source.options.escapechar)
@@ -185,6 +185,8 @@ promote_type2(::Type{Null}, T::Type{<:Any}) = Union{T, Null}
 promote_type2{T, S}(::Type{Union{T, Null}}, ::Type{S}) = Union{promote_type2(T, S), Null}
 promote_type2{T, S}(::Type{S}, ::Type{Union{T, Null}}) = Union{promote_type2(T, S), Null}
 promote_type2{T, S}(::Type{Union{T, Null}}, ::Type{Union{S, Null}}) = Union{promote_type2(T, S), Null}
+promote_type2(::Type{Union{WeakRefString{UInt8}, Null}}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefString{UInt8}, Null}
+promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Union{WeakRefString{UInt8}, Null}}) = Union{WeakRefString{UInt8}, Null}
 # basic promote type definitions from Base
 promote_type2(::Type{Int}, ::Type{Float64}) = Float64
 promote_type2(::Type{Float64}, ::Type{Int}) = Float64
@@ -203,20 +205,22 @@ promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Any}) = WeakRefString{UInt8}
 promote_type2(::Type{WeakRefString{UInt8}}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
 promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Null}) = ?WeakRefString{UInt8}
 promote_type2(::Type{Null}, ::Type{WeakRefString{UInt8}}) = ?WeakRefString{UInt8}
+promote_type2(::Type{Any}, ::Type{Null}) = Null
+promote_type2(::Type{Null}, ::Type{Null}) = Null
 
 const DATE_OPTIONS = CSV.Options(dateformat=Dates.ISODateFormat)
 const DATETIME_OPTIONS = CSV.Options(dateformat=Dates.ISODateTimeFormat)
 
 function detecttype{D}(io, opt::CSV.Options{D}, T, prevT)
     pos = position(io)
-    if Int <: prevT
+    if Int <: prevT || prevT == Null
         try
             v1 = CSV.parsefield(io, Nulls.?Int, opt)
             # print("...parsed = '$v1'...")
             return v1 isa Null ? Null : Int
         end
     end
-    if Float64 <: prevT
+    if Float64 <: prevT || Int <: prevT || prevT == Null
         try
             seek(io, pos)
             v2 = CSV.parsefield(io, Nulls.?Float64, opt)
@@ -224,7 +228,7 @@ function detecttype{D}(io, opt::CSV.Options{D}, T, prevT)
             return v2 isa Null ? Null : Float64
         end
     end
-    if prevT == Any || Date <: prevT || DateTime <: prevT
+    if prevT == Any || Date <: prevT || DateTime <: prevT || prevT == Null
         if D == typeof(Dates.ISODateTimeFormat)
             try
                 seek(io, pos)
@@ -247,13 +251,11 @@ function detecttype{D}(io, opt::CSV.Options{D}, T, prevT)
             end
         end
     end
-    seek(io, pos)
-    b = Base.read(io, UInt8)
-    @checkdone(done)
-    while true
-        b = Base.read(io)
-        @checkdone(done)
+    try
+        seek(io, pos)
+        v1 = CSV.parsefield(io, Nulls.?WeakRefString{UInt8}, opt)
+        # print("...parsed = '$v1'...")
+        return v1 isa Null ? Null : WeakRefString{UInt8}
     end
-    @label done
-    return WeakRefString{UInt8}
+    return Null
 end

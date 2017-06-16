@@ -25,6 +25,7 @@ Buffer(str::String) = Buffer(Vector{UInt8}(str))
 Buffer(io::Vector{UInt8}) = Buffer{Vector{UInt8}, C_NULL, C_NULL}(io, io, 1, length(io))
 
 Base.position(io::Buffer) = io.pos
+Base.length(io::Buffer) = io.len
 
 Base.peek(io::Buffer) = (@inbounds byte = io.data[io.pos]; return byte)
 Base.read(io::Buffer, ::Type{UInt8}=UInt8) = (@inbounds byte = io.data[io.pos]; io.pos += 1; return byte)
@@ -48,9 +49,10 @@ Base.seek(io::Buffer, pos::Int) = (io.pos = pos; return nothing)
 # end
 
 @inline function Base.eof(io::Buffer{Vector{UInt8}})
-    if io.pos > io.len
-        io.pos = 1
-        return true
-    end
-    return false
+    return io.pos > io.len
+    # if io.pos > io.len
+    #     io.pos = 1
+    #     return true
+    # end
+    # return false
 end

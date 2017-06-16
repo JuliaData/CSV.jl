@@ -45,5 +45,4 @@ stream = MultiStream(
 )
 
 @test nb_available(stream) == 0
-#FIXME
-@test isequal(CSV.read(stream), CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6")))
+@test CSV.read(stream) == CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"))

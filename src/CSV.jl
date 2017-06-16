@@ -7,7 +7,10 @@ export Data, DataFrame
 
 include("buffer.jl")
 
-struct CSVError <: Exception
+struct ParsingException <: Exception
+    msg::String
+end
+struct NullException <: Exception
     msg::String
 end
 
@@ -48,10 +51,10 @@ mutable struct Options{D}
     datarow::Int
     rows::Int
     header::Union{Integer,UnitRange{Int},Vector}
-    types::Union{Dict{Int,DataType},Dict{String,DataType},Vector{DataType}}
+    types
 end
 
-Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, null="", dateformat=Dates.ISODateTimeFormat, datarow=-1, rows=0, header=1, types=DataType[]) =
+Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, null="", dateformat=Dates.ISODateTimeFormat, datarow=-1, rows=0, header=1, types=Type[]) =
     Options(delim%UInt8, quotechar%UInt8, escapechar%UInt8,
             map(UInt8, collect(ascii(null))), null != "", isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat), datarow, rows, header, types)
 function Base.show(io::IO,op::Options)
@@ -130,14 +133,16 @@ CSV.reset!(source)
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 ```
 """
-mutable struct Sink <: Data.Sink
-    options::Options
+mutable struct Sink{D, B} <: Data.Sink
+    options::Options{D}
     io::IOBuffer
     fullpath::Union{String, IO}
     datapos::Int # the position in the IOBuffer where the rows of data begins
     header::Bool
     colnames::Vector{String}
+    cols::Int
     append::Bool
+    quotefields::B
 end
 
 include("parsefields.jl")
