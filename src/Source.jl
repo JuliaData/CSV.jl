@@ -250,7 +250,7 @@ Other example invocations may include:
 # read in a tab-delimited file
 CSV.read(file; delim='\t')
 
-# read in a comma-delimited file with null values represented as '\N', such as a MySQL export
+# read in a comma-delimited file with null values represented as '\\N', such as a MySQL export
 CSV.read(file; null="\\N")
 
 # manually provided column names; must match # of columns of data in file
