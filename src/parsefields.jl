@@ -217,7 +217,7 @@ const NULLSTRING = Nullable{WeakRefString{UInt8}}()
         end
     end
     eof(io) && (state[] = EOF)
-    return (len == 0 || nullcheck) ? NULLSTRING : Nullable{WeakRefString{UInt8}}(WeakRefString(Ptr{UInt8}(ptr), len, ptr - start_ptr))
+    return (len == 0 || nullcheck) ? NULLSTRING : Nullable{WeakRefString{UInt8}}(WeakRefString(Ptr{UInt8}(ptr), len, ptr - start_ptr + 1))
 end
 
 function parsefield{T<:AbstractString}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
