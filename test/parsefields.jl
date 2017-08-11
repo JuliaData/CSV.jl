@@ -798,6 +798,15 @@ io = IOBuffer("\"\\N\"")
 v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(null="\\N"),1,1)
 @test isnull(v)
 
+io = IOBuffer("test index")
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
+@test string(get(v)) == "test index"
+@test get(v).ind == 1
+seek(io, 5)
+v = CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(),1,1)
+@test string(get(v)) == "index"
+@test get(v).ind == 6
+
 # Libz
 io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0")))
 v = CSV.parsefield(io,String,CSV.Options(),1,1)
