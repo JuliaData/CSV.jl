@@ -11,14 +11,14 @@ function readline end
 
 function readline(io::IO, q::UInt8, e::UInt8, buf::IOBuffer=IOBuffer())
     while !eof(io)
-        b = Base.read(io, UInt8)
+        b = readbyte(io)
         Base.write(buf, b)
         if b == q
             while !eof(io)
-                b = Base.read(io, UInt8)
+                b = readbyte(io)
                 Base.write(buf, b)
                 if b == e
-                    b = Base.read(io, UInt8)
+                    b = readbyte(io)
                     Base.write(buf, b)
                 elseif b == q
                     break
@@ -27,7 +27,7 @@ function readline(io::IO, q::UInt8, e::UInt8, buf::IOBuffer=IOBuffer())
         elseif b == NEWLINE
             break
         elseif b == RETURN
-            !eof(io) && Base.peek(io) == NEWLINE && Base.write(buf, Base.read(io, UInt8))
+            !eof(io) && peekbyte(io) == NEWLINE && Base.write(buf, readbyte(io))
             break
         end
     end
@@ -63,12 +63,12 @@ function readsplitline!(vals::Vector{RawField}, io::IO, d::UInt8, q::UInt8, e::U
     state = RSL_AFTER_DELIM
     push_buf_to_vals!() = push!(vals, RawField(String(take!(buf)), state==RSL_AFTER_QUOTE))
     while !eof(io)
-        b = Base.read(io, UInt8)
+        b = readbyte(io)
         if state == RSL_IN_QUOTE # in the quoted string
             if b == e # the escape character, read the next after it
                 Base.write(buf, b)
                 @assert !eof(io)
-                b = Base.read(io, UInt8)
+                b = readbyte(io)
                 Base.write(buf, b)
             elseif b == q # end the quoted string
                 state = RSL_AFTER_QUOTE
@@ -93,7 +93,7 @@ function readsplitline!(vals::Vector{RawField}, io::IO, d::UInt8, q::UInt8, e::U
             state = RSL_AFTER_NEWLINE
             break
         elseif b == RETURN
-            !eof(io) && Base.peek(io) == NEWLINE && Base.read(io, UInt8)
+            !eof(io) && peekbyte(io) == NEWLINE && readbyte(io)
             push_buf_to_vals!() # add the last field
             state = RSL_AFTER_NEWLINE
             break
@@ -103,7 +103,7 @@ function readsplitline!(vals::Vector{RawField}, io::IO, d::UInt8, q::UInt8, e::U
             elseif b == e # the escape character, read the next after it
                 Base.write(buf, b)
                 @assert !eof(io)
-                b = Base.read(io, UInt8)
+                b = readbyte(io)
             end
             Base.write(buf, b)
             state = RSL_IN_FIELD
@@ -113,7 +113,7 @@ function readsplitline!(vals::Vector{RawField}, io::IO, d::UInt8, q::UInt8, e::U
         @assert eof(io)
         throw(ParsingException("EOF while trying to read the closing quote"))
     elseif state == RSL_IN_FIELD || state == RSL_AFTER_DELIM # file ended without the newline, store the current buf
-        @assert position(io) == 1 || eof(io)
+        eof(io)
         push_buf_to_vals!()
     end
     return vals
@@ -135,12 +135,12 @@ function countlines(io::IO, q::UInt8, e::UInt8)
     nl = 1
     b = 0x00
     while !eof(io)
-        b = Base.read(io, UInt8)
+        b = readbyte(io)
         if b == q
             while !eof(io)
-                b = Base.read(io, UInt8)
+                b = readbyte(io)
                 if b == e
-                    b = Base.read(io, UInt8)
+                    b = readbyte(io)
                 elseif b == q
                     break
                 end
@@ -149,7 +149,7 @@ function countlines(io::IO, q::UInt8, e::UInt8)
             nl += 1
         elseif b == CSV.RETURN
             nl += 1
-            !eof(io) && Base.peek(io) == CSV.NEWLINE && Base.read(io, UInt8)
+            !eof(io) && peekbyte(io) == CSV.NEWLINE && readbyte(io)
         end
     end
     return nl - (b == CSV.NEWLINE || b == CSV.RETURN)

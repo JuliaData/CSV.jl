@@ -70,7 +70,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     rows = rows == 0 ? CSV.countlines(source, options.quotechar, options.escapechar) : rows
     seek(source, startpos)
     # BOM character detection
-    if fs > 0 && Base.peek(source) == 0xef
+    if fs > 0 && peekbyte(source) == 0xef
         readbyte(source)
         readbyte(source) == 0xbb || seek(source, startpos)
         readbyte(source) == 0xbf || seek(source, startpos)
