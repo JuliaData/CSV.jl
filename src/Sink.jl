@@ -29,8 +29,8 @@ function writeheaders(io::IOBuffer, h::Vector{String}, options, quotefields)
 end
 
 # DataStreams interface
-Data.streamtypes(::Type{<:CSV.Sink}) = [Data.Field]
-Data.weakrefstrings(::Type{<:CSV.Sink}) = true
+Data.streamtypes(::Type{CSV.Sink}) = [Data.Field]
+Data.weakrefstrings(::Type{CSV.Sink}) = true
 
 # Constructors
 function Sink(sch::Data.Schema, T, append, file::AbstractString; reference::Vector{UInt8}=UInt8[], kwargs...)
@@ -38,7 +38,7 @@ function Sink(sch::Data.Schema, T, append, file::AbstractString; reference::Vect
     return sink
 end
 
-function (::Type{S})(sink, sch::Data.Schema, T, append; reference::Vector{UInt8}=UInt8[]) where {S <: Sink}
+function Sink(sink, sch::Data.Schema, T, append; reference::Vector{UInt8}=UInt8[])
     sink.append = append
     sink.cols = size(sch, 2)
     !sink.header && !append && writeheaders(sink.io, Data.header(sch), sink.options, sink.quotefields)

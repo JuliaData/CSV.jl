@@ -9,7 +9,3 @@ dir = joinpath(dirname(@__FILE__),"test_files/")
 
 include("source.jl")
 include("multistream.jl")
-
-# using DataStreamsIntegrationTests
-#
-# include("datastreams.jl")

@@ -8,7 +8,7 @@ mutable struct MultiStream{S<:IO} <: IO
     index::Int
 end
 
-function MultiStream{S<:IO}(streams::AbstractArray{S})
+function MultiStream(streams::AbstractArray{S}) where {S <: IO}
     MultiStream(streams, 1)
 end
 

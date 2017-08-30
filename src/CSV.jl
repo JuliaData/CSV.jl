@@ -1,16 +1,9 @@
 __precompile__(true)
 module CSV
 
-using Compat, DataStreams, WeakRefStrings, Nulls
-
-export Data, DataFrame
-
-include("buffer.jl")
+using DataStreams, WeakRefStrings, Nulls
 
 struct ParsingException <: Exception
-    msg::String
-end
-struct NullException <: Exception
     msg::String
 end
 
@@ -28,6 +21,20 @@ const NEG_ONE = UInt8('0')-UInt8(1)
 const ZERO    = UInt8('0')
 const TEN     = UInt8('9')+UInt8(1)
 Base.isascii(c::UInt8) = c < 0x80
+
+readbyte(from::IO) = Base.read(from, UInt8)
+peekbyte(from::IO) = Base.peek(from)
+
+@inline function readbyte(from::IOBuffer)
+    @inbounds byte = from.data[from.ptr]
+    from.ptr = from.ptr + 1
+    return byte
+end
+
+@inline function peekbyte(from::IOBuffer)
+    @inbounds byte = from.data[from.ptr]
+    return byte
+end
 
 """
 Represents the various configuration settings for delimited text file parsing.
@@ -87,10 +94,10 @@ CSV.reset!(source)
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 ```
 """
-mutable struct Source{D, I, P1, P2} <: Data.Source
+mutable struct Source{I, D} <: Data.Source
     schema::Data.Schema
     options::Options{D}
-    io::Buffer{I, P1, P2}
+    io::I
     ptr::Int # pointer to underlying data buffer
     fullpath::String
     datapos::Int # the position in the IOBuffer where the rows of data begins
@@ -102,10 +109,10 @@ function Base.show(io::IO, f::Source)
     show(io, f.schema)
 end
 
-mutable struct TransposedSource{D} <: Data.Source
+mutable struct TransposedSource{I, D} <: Data.Source
     schema::Data.Schema
     options::Options{D}
-    io::IOBuffer
+    io::I
     ptr::Int # pointer to underlying data buffer
     fullpath::String
     datapos::Int # the position in the IOBuffer where the rows of data begins
@@ -149,7 +156,7 @@ include("parsefields.jl")
 include("float.jl")
 include("io.jl")
 include("Source.jl")
-include("TransposedSource.jl")
+# include("TransposedSource.jl")
 include("Sink.jl")
 
 end # module

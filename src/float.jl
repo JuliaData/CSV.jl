@@ -32,7 +32,7 @@ const EXPONENTS = [
     1e300, 1e301, 1e302, 1e303, 1e304, 1e305, 1e306, 1e307, 1e308,
 ]
 
-pow10(exp) = EXPONENTS[exp+1]
+pow10(exp) = (@inbounds v = EXPONENTS[exp+1]; return v)
 
 maxexponent(::Type{Int16}) = 4
 maxexponent(::Type{Int32}) = 38
@@ -63,12 +63,17 @@ const LITTLEE = UInt8('e')
 
 ParsingException(::Type{<:AbstractFloat}, exp::Signed, row, col) = ParsingException("error parsing a `$T` value on column $col, row $row; exponent out of range: $exp")
 
-scale(exp, frac, v, row, col) = scale(exp - frac, v, row, col)
-
-function scale(exp, v::T, row, col) where T
+function scale(exp, v::T, frac, row, col) where T
     if exp >= 0
         max_exp = maxexponent(T)
-        return exp <= max_exp ? v * pow10(exp) : throw(ParsingException(T, exp, row, col))
+        exp > max_exp && throw(ParsingException(T, exp, row, col))
+        if frac > 14
+            fin2 = BigFloat(v) * BigFloat(pow10(exp))
+            fin = Float64(fin2)
+        else
+            fin = v * pow10(exp)
+        end
+        return fin
     else
         min_exp = minexponent(T)
         # compensate roundoff?
@@ -77,19 +82,26 @@ function scale(exp, v::T, row, col) where T
             result = v / pow10(-min_exp)
             return result / pow10(-exp + min_exp)
         else
-            return v / pow10(-exp)
+            if -22 < exp < -15
+                fin2 = BigFloat(v) / BigFloat(pow10(-exp))
+                fin = Float64(fin2)
+            else
+                fin = v / pow10(-exp)
+            end
+            return fin
         end
     end
 end
 
-@inline function parsefield(io::Buffer, ::Type{T}, opt::CSV.Options, row, col, ifnull::Function) where {T <: Union{Float16, Float32, Float64}}
+@inline function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, ifnull::Function) where {T <: Union{Float16, Float32, Float64}}
+    mark(io)
     @checknullstart()
     negative = false
     if b == MINUS # check for leading '-' or '+'
         negative = true
-        b = Base.read(io, UInt8)
+        b = readbyte(io)
     elseif b == PLUS
-        b = Base.read(io, UInt8)
+        b = readbyte(io)
     end
     # float digit parsing
     iT = inttype(T)
@@ -101,46 +113,45 @@ end
         v *= iT(10)
         v += iT(b - ZERO)
         eof(io) && (state = EOF; result = T(v); @goto done)
-        b = Base.read(io, UInt8)
+        b = readbyte(io)
     end
     # if we didn't get any digits, check for NaN/Inf or leading dot
     if !parseddigits
-        pos = position(io)-1
         if b == LITTLEN || b == BIGN
             eof(io) && @goto checknullend
-            b = Base.read(io, UInt8)
-            (!(b == LITTLEA || b == BIGA) || eof(io)) && (seek(io, pos); b = Base.read(io, UInt8); @goto checknullend)
-            b = Base.read(io, UInt8)
-            !(b == LITTLEN || b == BIGN) && (seek(io, pos); b = Base.read(io, UInt8); @goto checknullend)
+            b = readbyte(io)
+            (!(b == LITTLEA || b == BIGA) || eof(io)) && (reset(io); b = readbyte(io); @goto checknullend)
+            b = readbyte(io)
+            !(b == LITTLEN || b == BIGN) && (reset(io); b = readbyte(io); @goto checknullend)
             result = T(NaN)
             eof(io) && @goto done
-            b = Base.read(io, UInt8)
+            b = readbyte(io)
             @goto checkdone
         elseif b == LITTLEI || b == BIGI
             eof(io) && @goto checknullend
-            b = Base.read(io, UInt8)
-            (!(b == LITTLEN || b == BIGN) || eof(io)) && (seek(io, pos); b = Base.read(io, UInt8); @goto checknullend)
-            b = Base.read(io, UInt8)
-            !(b == LITTLEF || b == BIGF) && (seek(io, pos); b = Base.read(io, UInt8); @goto checknullend)
+            b = readbyte(io)
+            (!(b == LITTLEN || b == BIGN) || eof(io)) && (reset(io); b = readbyte(io); @goto checknullend)
+            b = readbyte(io)
+            !(b == LITTLEF || b == BIGF) && (reset(io); b = readbyte(io); @goto checknullend)
             result = T(Inf)
             eof(io) && @goto done
-            b = Base.read(io, UInt8)
+            b = readbyte(io)
             if b == LITTLEI || b == BIGI
                 # read the rest of INFINITY
                 eof(io) && @goto done
-                b = Base.read(io, UInt8)
+                b = readbyte(io)
                 b == LITTLEN || b == BIGN || @goto checkdone
                 eof(io) && @goto done
-                b = Base.read(io, UInt8)
+                b = readbyte(io)
                 b == LITTLEI || b == BIGI || @goto checkdone
                 eof(io) && @goto done
-                b = Base.read(io, UInt8)
+                b = readbyte(io)
                 b == LITTLET || b == BIGT || @goto checkdone
                 eof(io) && @goto done
-                b = Base.read(io, UInt8)
+                b = readbyte(io)
                 b == LITTLEY || b == BIGY || @goto checkdone
                 eof(io) && @goto done
-                b = Base.read(io, UInt8)
+                b = readbyte(io)
             end
             @goto checkdone
         elseif b == PERIOD
@@ -153,13 +164,8 @@ end
     frac = 0
     result = T(v)
     if b == PERIOD
-        if eof(io)
-            if parseddigits
-                @goto done
-            end
-            @goto error
-        end
-        b = Base.read(io, UInt8)
+        eof(io) && (parseddigits ? @goto(done) : @goto(error))
+        b = readbyte(io)
     elseif b == LITTLEE || b == BIGE
         @goto parseexp
     else
@@ -171,21 +177,21 @@ end
         # process digits
         v *= iT(10)
         v += iT(b - ZERO)
-        eof(io) && (state = EOF; result = scale(-frac, v, row, col); @goto done)
-        b = Base.read(io, UInt8)
+        eof(io) && (state = EOF; result = scale(-frac, v, 0, row, col); @goto done)
+        b = readbyte(io)
     end
     # parse potential exp
     if b == LITTLEE || b == BIGE
         @label parseexp
-        eof(io) && (state = EOF; result = scale(-frac, v, row, col); @goto done)
-        b = Base.read(io, UInt8)
+        eof(io) && (state = EOF; result = scale(-frac, v, 0, row, col); @goto done)
+        b = readbyte(io)
         exp = zero(iT)
         negativeexp = false
         if b == MINUS
             negativeexp = true
-            b = Base.read(io, UInt8)
+            b = readbyte(io)
         elseif b == PLUS
-            b = Base.read(io, UInt8)
+            b = readbyte(io)
         end
         parseddigits = false
         while NEG_ONE < b < TEN
@@ -193,12 +199,12 @@ end
             # process digits
             exp *= iT(10)
             exp += iT(b - ZERO)
-            eof(io) && (state = EOF; result = scale(ifelse(negativeexp, -exp, exp), frac, v, row, col); @goto done)
-            b = Base.read(io, UInt8)
+            eof(io) && (state = EOF; result = scale(ifelse(negativeexp, -exp, exp) - frac, v, frac, row, col); @goto done)
+            b = readbyte(io)
         end
-        result = parseddigits ? scale(ifelse(negativeexp, -exp, exp), frac, v, row, col) : scale(-frac, v, row, col)
+        result = parseddigits ? scale(ifelse(negativeexp, -exp, exp) - frac, v, frac, row, col) : scale(-frac, v, 0, row, col)
     else
-        result = scale(-frac, v, row, col)
+        result = scale(-frac, v, 0, row, col)
     end
 
     @label checkdone

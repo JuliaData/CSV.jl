@@ -9,7 +9,7 @@ function Source(fullpath::Union{AbstractString,IO};
               header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types=Type[],
-              nullable::(?Bool)=Nulls.null,
+              nullable::Union{Bool, Null}=Nulls.null,
               dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateTimeFormat,
 
               footerskip::Int=0,
@@ -29,18 +29,18 @@ function Source(fullpath::Union{AbstractString,IO};
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
 
-function Source{D}(;fullpath::Union{AbstractString,IO}="",
+function Source(;fullpath::Union{AbstractString,IO}="",
                 options::CSV.Options{D}=CSV.Options(),
 
                 header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
                 types=Type[],
-                nullable::(?Bool)=null,
+                nullable::Union{Bool, Null}=null,
 
                 footerskip::Int=0,
                 rows_for_type_detect::Int=20,
                 rows::Int=0,
-                use_mmap::Bool=true)
+                use_mmap::Bool=true) where {D}
     # argument checks
     isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
@@ -49,17 +49,16 @@ function Source{D}(;fullpath::Union{AbstractString,IO}="",
 
     # open the file for property detection
     if isa(fullpath, IOBuffer)
-        source = Buffer(fullpath.data)
-        source.pos = fullpath.ptr
+        source = fullpath
         fs = nb_available(fullpath)
         fullpath = "<IOBuffer>"
     elseif isa(fullpath, IO)
-        source = Buffer(Base.read(fullpath))
+        source = IOBuffer(Base.read(fullpath))
         fs = nb_available(fullpath)
         fullpath = isdefined(fullpath, :name) ? fullpath.name : "__IO__"
     else
         source = open(fullpath, "r") do f
-            CSV.Buffer(use_mmap ? Mmap.mmap(f) : Base.read(f))
+            IOBuffer(use_mmap ? Mmap.mmap(f) : Base.read(f))
         end
         fs = filesize(fullpath)
     end
@@ -72,9 +71,9 @@ function Source{D}(;fullpath::Union{AbstractString,IO}="",
     seek(source, startpos)
     # BOM character detection
     if fs > 0 && Base.peek(source) == 0xef
-        Base.read(source, UInt8)
-        Base.read(source, UInt8) == 0xbb || seek(source, startpos)
-        Base.read(source, UInt8) == 0xbf || seek(source, startpos)
+        readbyte(source)
+        readbyte(source) == 0xbb || seek(source, startpos)
+        readbyte(source) == 0xbf || seek(source, startpos)
     end
     datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
     rows = fs == 0 ? -1 : max(-1, rows - datarow + 1 - footerskip) # rows now equals the actual number of rows in the dataset
@@ -159,7 +158,7 @@ function Source{D}(;fullpath::Union{AbstractString,IO}="",
         if nullable
             for i = 1:cols
                 T = columntypes[i]
-                columntypes[i] = ifelse(T >: Null, T, ?T)
+                columntypes[i] = ifelse(T >: Null, T, Union{T, Null})
             end
         else
             for i = 1:cols
@@ -169,7 +168,7 @@ function Source{D}(;fullpath::Union{AbstractString,IO}="",
         end
     end
     seek(source, datapos)
-    sch = Data.Schema(columnnames, columntypes, ifelse(rows < 0, null, rows))
+    sch = Data.Schema(columntypes, columnnames, ifelse(rows < 0, null, rows))
     return Source(sch, options, source, Int(pointer(source.data)), String(fullpath), datapos)
 end
 
@@ -180,10 +179,11 @@ Source(s::CSV.Sink) = CSV.Source(fullpath=s.fullpath, options=s.options)
 "reset a `CSV.Source` to its beginning to be ready to parse data from again"
 Data.reset!(s::CSV.Source) = (seek(s.io, s.datapos); return nothing)
 Data.schema(source::CSV.Source) = source.schema
-@inline Data.isdone(io::CSV.Source, row, col, rows, cols) = eof(io.io) || (!isnull(rows) && row > rows)
+Data.accesspattern(::Type{<:CSV.Source}) = Data.Sequential
+@inline Data.isdone(io::CSV.Source, row, col, rows, cols) = eof(io.io) || (!isnull(rows) && row > unsafe_get(rows))
 @inline Data.isdone(io::Source, row, col) = Data.isdone(io, row, col, size(io.schema)...)
 Data.streamtype(::Type{<:CSV.Source}, ::Type{Data.Field}) = true
-@inline Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col) where {T} = CSV.parsefield(source.io, T, source.options, row, col)
+@inline Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T} = CSV.parsefield(source.io, T, source.options, row, col)
 Data.reference(source::CSV.Source) = source.io.data
 
 """
@@ -281,23 +281,15 @@ function read end
 
 function read(fullpath::Union{AbstractString,IO}, sink::Type=NamedTuple, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
     source = Source(fullpath; kwargs...)
-    if source.schema.rows == 0
-        # If the source is empty, ignore transforms to prevent type conversion errors.
-        transforms = Dict{Int,Function}()
-    end
     sink = Data.stream!(source, sink, args...; append=append, transforms=transforms)
     return Data.close!(sink)
 end
 
-function read{T}(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
+function read(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...) where {T}
     source = Source(fullpath; kwargs...)
-    if source.schema.rows == 0
-        # If the source is empty, ignore transforms to prevent type conversion errors.
-        transforms = Dict{Int,Function}()
-    end
     sink = Data.stream!(source, sink; append=append, transforms=transforms)
     return Data.close!(sink)
 end
 
 read(source::CSV.Source, sink=NamedTuple, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, args...; append=append, transforms=transforms); return Data.close!(sink))
-read{T}(source::CSV.Source, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink; append=append, transforms=transforms); return Data.close!(sink))
+read(source::CSV.Source, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) where {T} = (sink = Data.stream!(source, sink; append=append, transforms=transforms); return Data.close!(sink))

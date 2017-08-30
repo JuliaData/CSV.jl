@@ -166,25 +166,20 @@ function skipto!(f::IO, cur, dest, q, e)
 end
 
 # try to infer the type of the value in `val`. The precedence of type checking is `Int` => `Float64` => `Date` => `DateTime` => `String`
-if VERSION > v"0.6.0-dev.2307"
-    timetype{D <: Dates.DateFormat}(df::D) = any(typeof(T) in (Dates.DatePart{'H'}, Dates.DatePart{'M'}, Dates.DatePart{'S'}, Dates.DatePart{'s'}) for T in df.tokens) ? DateTime : Date
-else
-    slottype{T}(df::Dates.Slot{T}) = T
-    timetype{D <: Dates.DateFormat}(df::D) = any(slottype(T) in (Dates.Hour,Dates.Minute,Dates.Second,Dates.Millisecond) for T in df.slots) ? DateTime : Date
-end
+timetype(df::Dates.DateFormat) = any(typeof(T) in (Dates.DatePart{'H'}, Dates.DatePart{'M'}, Dates.DatePart{'S'}, Dates.DatePart{'s'}) for T in df.tokens) ? DateTime : Date
 
 # column types start out as Any, but we get rid of them as soon as possible
 promote_type2(T::Type{<:Any}, ::Type{Any}) = T
 promote_type2(::Type{Any}, T::Type{<:Any}) = T
 # same types
-promote_type2{T}(::Type{T}, ::Type{T}) = T
-# if we come across a Null field, turn that column type into a ?T
+promote_type2(::Type{T}, ::Type{T}) where {T} = T
+# if we come across a Null field, turn that column type into a Union{T, Null}
 promote_type2(T::Type{<:Any}, ::Type{Null}) = Union{T, Null}
 promote_type2(::Type{Null}, T::Type{<:Any}) = Union{T, Null}
-# these definitions allow ?Int to promote to ?Float64
-promote_type2{T, S}(::Type{Union{T, Null}}, ::Type{S}) = Union{promote_type2(T, S), Null}
-promote_type2{T, S}(::Type{S}, ::Type{Union{T, Null}}) = Union{promote_type2(T, S), Null}
-promote_type2{T, S}(::Type{Union{T, Null}}, ::Type{Union{S, Null}}) = Union{promote_type2(T, S), Null}
+# these definitions allow Union{Int, Null} to promote to Union{Float64, Null}
+promote_type2(::Type{Union{T, Null}}, ::Type{S}) where {T, S} = Union{promote_type2(T, S), Null}
+promote_type2(::Type{S}, ::Type{Union{T, Null}}) where {T, S} = Union{promote_type2(T, S), Null}
+promote_type2(::Type{Union{T, Null}}, ::Type{Union{S, Null}}) where {T, S} = Union{promote_type2(T, S), Null}
 promote_type2(::Type{Union{WeakRefString{UInt8}, Null}}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefString{UInt8}, Null}
 promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Union{WeakRefString{UInt8}, Null}}) = Union{WeakRefString{UInt8}, Null}
 # basic promote type definitions from Base
@@ -203,19 +198,19 @@ promote_type2(::Type{WeakRefString{UInt8}}, ::Type{<:Any}) = WeakRefString{UInt8
 promote_type2(::Type{Any}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
 promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Any}) = WeakRefString{UInt8}
 promote_type2(::Type{WeakRefString{UInt8}}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Null}) = ?WeakRefString{UInt8}
-promote_type2(::Type{Null}, ::Type{WeakRefString{UInt8}}) = ?WeakRefString{UInt8}
+promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Null}) = Union{WeakRefString{UInt8}, Null}
+promote_type2(::Type{Null}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefString{UInt8}, Null}
 promote_type2(::Type{Any}, ::Type{Null}) = Null
 promote_type2(::Type{Null}, ::Type{Null}) = Null
 
 const DATE_OPTIONS = CSV.Options(dateformat=Dates.ISODateFormat)
 const DATETIME_OPTIONS = CSV.Options(dateformat=Dates.ISODateTimeFormat)
 
-function detecttype{D}(io, opt::CSV.Options{D}, T, prevT)
+function detecttype(io, opt::CSV.Options{D}, T, prevT) where {D}
     pos = position(io)
     if Int <: prevT || prevT == Null
         try
-            v1 = CSV.parsefield(io, Nulls.?Int, opt)
+            v1 = CSV.parsefield(io, Union{Int, Null}, opt)
             # print("...parsed = '$v1'...")
             return v1 isa Null ? Null : Int
         end
@@ -223,7 +218,7 @@ function detecttype{D}(io, opt::CSV.Options{D}, T, prevT)
     if Float64 <: prevT || Int <: prevT || prevT == Null
         try
             seek(io, pos)
-            v2 = CSV.parsefield(io, Nulls.?Float64, opt)
+            v2 = CSV.parsefield(io, Union{Float64, Null}, opt)
             # print("...parsed = '$v2'...")
             return v2 isa Null ? Null : Float64
         end
@@ -232,20 +227,20 @@ function detecttype{D}(io, opt::CSV.Options{D}, T, prevT)
         if D == typeof(Dates.ISODateTimeFormat)
             try
                 seek(io, pos)
-                v3 = CSV.parsefield(io, Nulls.?Date, DATE_OPTIONS)
+                v3 = CSV.parsefield(io, Union{Date, Null}, DATE_OPTIONS)
                 # print("...parsed = '$v3'...")
                 return v3 isa Null ? Null : Date
             end
             try
                 seek(io, pos)
-                v4 = CSV.parsefield(io, Nulls.?DateTime, DATETIME_OPTIONS)
+                v4 = CSV.parsefield(io, Union{DateTime, Null}, DATETIME_OPTIONS)
                 # print("...parsed = '$v4'...")
                 return v4 isa Null ? Null : DateTime
             end
         else
             try
                 seek(io, pos)
-                v5 = CSV.parsefield(io, Nulls.?T, opt)
+                v5 = CSV.parsefield(io, Union{T, Null}, opt)
                 # print("...parsed = '$v5'...")
                 return v5 isa Null ? Null : T
             end
@@ -253,7 +248,7 @@ function detecttype{D}(io, opt::CSV.Options{D}, T, prevT)
     end
     try
         seek(io, pos)
-        v1 = CSV.parsefield(io, Nulls.?WeakRefString{UInt8}, opt)
+        v1 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null}, opt)
         # print("...parsed = '$v1'...")
         return v1 isa Null ? Null : WeakRefString{UInt8}
     end

@@ -76,9 +76,19 @@ end
 using CSV, TextParse
 for T in (Int, Float64, WeakRefStrings.WeakRefString{UInt8}, Date, DateTime)
     println("comparing for T = $T...")
-    @time CSV.read("/Users/jacobquinn/Downloads/randoms_$(T).csv"; nullable=false);
-    @time TextParse.csvread("/Users/jacobquinn/Downloads/randoms_$(T).csv");
+    # T == WeakRefStrings.WeakRefString{UInt8} && continue
+    @time CSV.read("/Users/jacobquinn/Downloads/randoms_$(T).csv"; nullable=true);
+    # @time TextParse.csvread("/Users/jacobquinn/Downloads/randoms_$T.csv");
 end
+
+@time CSV.read("/Users/jacobquinn/Downloads/yellow_tripdata_2015-01.csv");
+
+for T in ('Int64', 'Float64', 'WeakRefString{UInt8}', 'Date', 'DateTime'):
+    start = time.time()
+    delim = ','
+    table = pandas.read_csv("/Users/jacobquinn/Downloads/randoms_" + T + ".csv", delimiter=delim)
+    end = time.time()
+    print(end - start)
 
 @time df = CSV.read("/Users/jacobquinn/Downloads/file.txt"; delim=' ');
 @time TextParse.csvread("/Users/jacobquinn/Downloads/randoms_$(T).csv")
