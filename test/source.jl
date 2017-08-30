@@ -363,3 +363,8 @@ let fn = tempname()
     @test String(read(fn)) == "a,b,c\n"
     rm(fn)
 end
+
+source = IOBuffer("col1,col2,col3") # empty dataset
+df = CSV.read(source; transforms=Dict(2 => floor))
+@test size(Data.schema(df)) == (0, 3)
+@test Data.types(Data.schema(df)) == (Any, Any, Any)
