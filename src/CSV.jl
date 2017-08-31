@@ -109,15 +109,15 @@ function Base.show(io::IO, f::Source)
     show(io, f.schema)
 end
 
-mutable struct TransposedSource{I, D} <: Data.Source
-    schema::Data.Schema
-    options::Options{D}
-    io::I
-    ptr::Int # pointer to underlying data buffer
-    fullpath::String
-    datapos::Int # the position in the IOBuffer where the rows of data begins
-    columnpositions::Vector{Int}
-end
+# mutable struct TransposedSource{I, D} <: Data.Source
+#     schema::Data.Schema
+#     options::Options{D}
+#     io::I
+#     ptr::Int # pointer to underlying data buffer
+#     fullpath::String
+#     datapos::Int # the position in the IOBuffer where the rows of data begins
+#     columnpositions::Vector{Int}
+# end
 
 """
 A type that satisfies the `Data.Sink` interface in the `DataStreams.jl` package.
