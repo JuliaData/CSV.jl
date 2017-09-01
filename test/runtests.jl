@@ -1,5 +1,5 @@
 using CSV
-using Base.Test, DataStreams, Nulls, DecFP, WeakRefStrings, Libz
+using Base.Test, DataStreams, Nulls, WeakRefStrings
 
 include("parsefields.jl")
 include("io.jl")

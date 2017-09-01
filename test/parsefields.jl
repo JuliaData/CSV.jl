@@ -1,4 +1,15 @@
-using Base.Test, CSV, Libz, DecFP, WeakRefStrings, Nulls
+using Base.Test, CSV, DecFP, WeakRefStrings, Nulls
+
+# custom IO type to test non-IOBuffer code paths
+mutable struct Buffer <: IO
+    io::IOBuffer
+end
+Base.eof(b::Buffer) = eof(b.io)
+Base.read(b::Buffer, ::Type{UInt8}) = Base.read(b.io, UInt8)
+Base.peek(b::Buffer) = Base.peek(b.io)
+Base.mark(b::Buffer) = Base.mark(b.io)
+Base.reset(b::Buffer) = Base.reset(b.io)
+Base.position(b::Buffer) = Base.position(b.io)
 
 @testset "Int" begin
 # Int
@@ -100,223 +111,223 @@ io = IOBuffer("\"\\N\"")
 
 end # @testset "Int"
 
-@testset "Int Libz" begin
+@testset "Int Custom IO" begin
 # Int64 Libz
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0")))
+io = Buffer(IOBuffer("0"))
 v = CSV.parsefield(io, Union{Int, Null})
 @test v === 0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("-1")))
+io = Buffer(IOBuffer("-1"))
 v = CSV.parsefield(io,Int)
 @test v === -1
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1")))
+io = Buffer(IOBuffer("1"))
 v = CSV.parsefield(io, Union{Int, Null})
 @test v === 1
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2000")))
+io = Buffer(IOBuffer("2000"))
 v = CSV.parsefield(io,Int)
 @test v === 2000
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0.0")))
+io = Buffer(IOBuffer("0.0"))
 @test_throws CSV.ParsingException CSV.parsefield(io, Union{Int, Null})
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a")))
+io = Buffer(IOBuffer("0a"))
 @test_throws CSV.ParsingException CSV.parsefield(io,Int)
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("")))
+io = Buffer(IOBuffer(""))
 v = CSV.parsefield(io, Union{Int, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" ")))
+io = Buffer(IOBuffer(" "))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Int)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t")))
+io = Buffer(IOBuffer("\t"))
 v = CSV.parsefield(io, Union{Int, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" \t 010")))
+io = Buffer(IOBuffer(" \t 010"))
 v = CSV.parsefield(io,Int)
 @test v === 10
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"1_00a0\"")))
+io = Buffer(IOBuffer("\"1_00a0\""))
 @test_throws CSV.ParsingException CSV.parsefield(io, Union{Int, Null})
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"0\"")))
+io = Buffer(IOBuffer("\"0\""))
 v = CSV.parsefield(io,Int)
 @test v === 0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\n")))
+io = Buffer(IOBuffer("0\n"))
 v = CSV.parsefield(io, Union{Int, Null})
 @test v === 0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r")))
+io = Buffer(IOBuffer("0\r"))
 v = CSV.parsefield(io,Int)
 @test v === 0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r\n")))
+io = Buffer(IOBuffer("0\r\n"))
 v = CSV.parsefield(io, Union{Int, Null})
 @test v === 0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a\n")))
+io = Buffer(IOBuffer("0a\n"))
 @test_throws CSV.ParsingException CSV.parsefield(io,Int)
 # Should we handle trailing whitespace?
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t0\t\n")))
+io = Buffer(IOBuffer("\t0\t\n"))
 @test_throws CSV.ParsingException CSV.parsefield(io, Union{Int, Null})
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,")))
+io = Buffer(IOBuffer("0,"))
 v = CSV.parsefield(io,Int)
 @test v === 0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,\n")))
+io = Buffer(IOBuffer("0,\n"))
 v = CSV.parsefield(io, Union{Int, Null})
 @test v === 0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n")))
+io = Buffer(IOBuffer("\n"))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Int)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r")))
+io = Buffer(IOBuffer("\r"))
 v = CSV.parsefield(io, Union{Int, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n")))
+io = Buffer(IOBuffer("\r\n"))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Int)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\"")))
+io = Buffer(IOBuffer("\"\""))
 v = CSV.parsefield(io, Union{Int, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1234567890")))
+io = Buffer(IOBuffer("1234567890"))
 v = CSV.parsefield(io,Int)
 @test v === 1234567890
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N")))
+io = Buffer(IOBuffer("\\N"))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Int,CSV.Options(null="\\N"))
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\"")))
+io = Buffer(IOBuffer("\"\\N\""))
 v = CSV.parsefield(io, Union{Int, Null}, CSV.Options(null="\\N"))
 @test isnull(v)
-end # @testset "Int Libz"
+end # @testset "Int Custom IO"
 
-@testset "Float64 Libz" begin
+@testset "Float64 Custom IO" begin
 
 # Float64 Libz
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1")))
+io = Buffer(IOBuffer("1"))
 v = CSV.parsefield(io,Float64)
 @test v === 1.0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("-1.0")))
+io = Buffer(IOBuffer("-1.0"))
 v = CSV.parsefield(io, Union{Float64, Null})
 @test v === -1.0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0")))
+io = Buffer(IOBuffer("0"))
 v = CSV.parsefield(io,Float64)
 @test v === 0.0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2000")))
+io = Buffer(IOBuffer("2000"))
 v = CSV.parsefield(io, Union{Float64, Null})
 @test v === 2000.0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a")))
+io = Buffer(IOBuffer("0a"))
 @test_throws CSV.ParsingException CSV.parsefield(io,Float64)
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("")))
+io = Buffer(IOBuffer(""))
 v = CSV.parsefield(io, Union{Float64, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" ")))
+io = Buffer(IOBuffer(" "))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Float64)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t")))
+io = Buffer(IOBuffer("\t"))
 v = CSV.parsefield(io, Union{Float64, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" \t 010")))
+io = Buffer(IOBuffer(" \t 010"))
 v = CSV.parsefield(io,Float64)
 @test v === 10.0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"1_00a0\"")))
+io = Buffer(IOBuffer("\"1_00a0\""))
 @test_throws CSV.ParsingException CSV.parsefield(io, Union{Float64, Null})
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"0\"")))
+io = Buffer(IOBuffer("\"0\""))
 v = CSV.parsefield(io,Float64)
 @test v === 0.0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\n")))
+io = Buffer(IOBuffer("0\n"))
 v = CSV.parsefield(io, Union{Float64, Null})
 @test v === 0.0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r")))
+io = Buffer(IOBuffer("0\r"))
 v = CSV.parsefield(io,Float64)
 @test v === 0.0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r\n")))
+io = Buffer(IOBuffer("0\r\n"))
 v = CSV.parsefield(io, Union{Float64, Null})
 @test v === 0.0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a\n")))
+io = Buffer(IOBuffer("0a\n"))
 @test_throws CSV.ParsingException CSV.parsefield(io,Float64)
 # Should we handle trailing whitespace?
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t0\t\n")))
+io = Buffer(IOBuffer("\t0\t\n"))
 @test_throws CSV.ParsingException CSV.parsefield(io, Union{Float64, Null})
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,")))
+io = Buffer(IOBuffer("0,"))
 v = CSV.parsefield(io,Float64)
 @test v === 0.0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,\n")))
+io = Buffer(IOBuffer("0,\n"))
 v = CSV.parsefield(io, Union{Float64, Null})
 @test v === 0.0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n")))
+io = Buffer(IOBuffer("\n"))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Float64)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r")))
+io = Buffer(IOBuffer("\r"))
 v = CSV.parsefield(io, Union{Float64, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n")))
+io = Buffer(IOBuffer("\r\n"))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Float64)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\"")))
+io = Buffer(IOBuffer("\"\""))
 v = CSV.parsefield(io, Union{Float64, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1234567890")))
+io = Buffer(IOBuffer("1234567890"))
 v = CSV.parsefield(io,Float64)
 @test v === 1234567890.0
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(".1234567890")))
+io = Buffer(IOBuffer(".1234567890"))
 v = CSV.parsefield(io, Union{Float64, Null})
 @test v === .1234567890
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0.1234567890")))
+io = Buffer(IOBuffer("0.1234567890"))
 v = CSV.parsefield(io,Float64)
 @test v === .1234567890
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"0.1234567890\"")))
+io = Buffer(IOBuffer("\"0.1234567890\""))
 v = CSV.parsefield(io, Union{Float64, Null})
 @test v === .1234567890
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("nan")))
+io = Buffer(IOBuffer("nan"))
 v = CSV.parsefield(io,Float64)
 @test v === NaN
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("NaN")))
+io = Buffer(IOBuffer("NaN"))
 v = CSV.parsefield(io, Union{Float64, Null})
 @test v === NaN
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("inf")))
+io = Buffer(IOBuffer("inf"))
 v = CSV.parsefield(io,Float64)
 @test v === Inf
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("infinity")))
+io = Buffer(IOBuffer("infinity"))
 v = CSV.parsefield(io, Union{Float64, Null})
 @test v === Inf
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N")))
+io = Buffer(IOBuffer("\\N"))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Float64,CSV.Options(null="\\N"))
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\"")))
+io = Buffer(IOBuffer("\"\\N\""))
 v = CSV.parsefield(io, Union{Float64, Null}, CSV.Options(null="\\N"))
 @test isnull(v)
 
-end # @testset "Float64 Libz"
+end # @testset "Float64 Custom IO"
 
 @testset "Float64" begin
 
@@ -473,127 +484,127 @@ v = CSV.parsefield(io, Union{Float64, Null}, CSV.Options(null="\\N"))
 
 end # @testset "Float64"
 
-@testset "DecFP Libz" begin
+@testset "DecFP Custom IO" begin
 
 # DecFP Libz
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1")))
+io = Buffer(IOBuffer("1"))
 v = CSV.parsefield(io,Dec64)
 @test v === Dec64(1.0)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("-1.0")))
+io = Buffer(IOBuffer("-1.0"))
 v = CSV.parsefield(io, Union{Dec64, Null})
 @test v == Dec64(-1.0)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0")))
+io = Buffer(IOBuffer("0"))
 v = CSV.parsefield(io,Dec64)
 @test v === Dec64(0.0)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2000")))
+io = Buffer(IOBuffer("2000"))
 v = CSV.parsefield(io, Union{Dec64, Null})
 @test v === Dec64(2000.0)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a")))
+io = Buffer(IOBuffer("0a"))
 @test_throws ArgumentError CSV.parsefield(io,Dec64)
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("")))
+io = Buffer(IOBuffer(""))
 v = CSV.parsefield(io, Union{Dec64, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" ")))
+io = Buffer(IOBuffer(" "))
 @test_throws ArgumentError CSV.parsefield(io,Dec64)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t")))
+io = Buffer(IOBuffer("\t"))
 @test_throws ArgumentError CSV.parsefield(io, Union{Dec64, Null})
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" \t 010")))
+io = Buffer(IOBuffer(" \t 010"))
 v = CSV.parsefield(io,Dec64)
 @test v === Dec64(10.0)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"1_00a0\"")))
+io = Buffer(IOBuffer("\"1_00a0\""))
 @test_throws ArgumentError CSV.parsefield(io, Union{Dec64, Null})
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"0\"")))
+io = Buffer(IOBuffer("\"0\""))
 v = CSV.parsefield(io,Dec64)
 @test v === Dec64(0.0)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\n")))
+io = Buffer(IOBuffer("0\n"))
 v = CSV.parsefield(io,Dec64)
 @test v === Dec64(0.0)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r")))
+io = Buffer(IOBuffer("0\r"))
 v = CSV.parsefield(io, Union{Dec64, Null})
 @test v === Dec64(0.0)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r\n")))
+io = Buffer(IOBuffer("0\r\n"))
 v = CSV.parsefield(io,Dec64)
 @test v === Dec64(0.0)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a\n")))
+io = Buffer(IOBuffer("0a\n"))
 @test_throws ArgumentError CSV.parsefield(io, Union{Dec64, Null})
 # Should we handle trailing whitespace?
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t0\t\n")))
+io = Buffer(IOBuffer("\t0\t\n"))
 @test_throws ArgumentError CSV.parsefield(io,Dec64)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,")))
+io = Buffer(IOBuffer("0,"))
 v = CSV.parsefield(io, Union{Dec64, Null})
 @test v === Dec64(0.0)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,\n")))
+io = Buffer(IOBuffer("0,\n"))
 v = CSV.parsefield(io,Dec64)
 @test v === Dec64(0.0)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n")))
+io = Buffer(IOBuffer("\n"))
 v = CSV.parsefield(io, Union{Dec64, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r")))
+io = Buffer(IOBuffer("\r"))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Dec64)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n")))
+io = Buffer(IOBuffer("\r\n"))
 v = CSV.parsefield(io, Union{Dec64, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\"")))
+io = Buffer(IOBuffer("\"\""))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Dec64)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1234567890")))
+io = Buffer(IOBuffer("1234567890"))
 v = CSV.parsefield(io, Union{Dec64, Null})
 @test v === Dec64(1234567890.0)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(".1234567890")))
+io = Buffer(IOBuffer(".1234567890"))
 v = CSV.parsefield(io,Dec64)
 @test v == Dec64(.1234567890)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0.1234567890")))
+io = Buffer(IOBuffer("0.1234567890"))
 v = CSV.parsefield(io, Union{Dec64, Null})
 @test v == Dec64(.1234567890)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"0.1234567890\"")))
+io = Buffer(IOBuffer("\"0.1234567890\""))
 v = CSV.parsefield(io,Dec64)
 @test v == Dec64(.1234567890)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("nan")))
+io = Buffer(IOBuffer("nan"))
 v = CSV.parsefield(io, Union{Dec64, Null})
 @test v === Dec64(NaN)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("NaN")))
+io = Buffer(IOBuffer("NaN"))
 v = CSV.parsefield(io,Dec64)
 @test v === Dec64(NaN)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("inf")))
+io = Buffer(IOBuffer("inf"))
 v = CSV.parsefield(io, Union{Dec64, Null})
 @test v === Dec64(Inf)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("infinity")))
+io = Buffer(IOBuffer("infinity"))
 v = CSV.parsefield(io,Dec64)
 @test v === Dec64(Inf)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N")))
+io = Buffer(IOBuffer("\\N"))
 v = CSV.parsefield(io, Union{Dec64, Null}, CSV.Options(null="\\N"))
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\"")))
+io = Buffer(IOBuffer("\"\\N\""))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Dec64,CSV.Options(null="\\N"))
 
-end # @testset "DecFP Libz"
+end # @testset "DecFP Custom IO"
 
 @testset "DecFP" begin
 
@@ -827,116 +838,116 @@ v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null}, CSV.Options(null="\\N"
 
 end # @testset "WeakRefString"
 
-@testset "String Libz" begin
+@testset "String Custom IO" begin
 
 # Libz
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0")))
+io = Buffer(IOBuffer("0"))
 v = CSV.parsefield(io,String)
 @test v == "0"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("-1")))
+io = Buffer(IOBuffer("-1"))
 v = CSV.parsefield(io,String)
 @test v == "-1"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1")))
+io = Buffer(IOBuffer("1"))
 v = CSV.parsefield(io,String)
 @test v == "1"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2000")))
+io = Buffer(IOBuffer("2000"))
 v = CSV.parsefield(io,String)
 @test v == "2000"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0.0")))
+io = Buffer(IOBuffer("0.0"))
 v = CSV.parsefield(io,String)
 @test v == "0.0"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a")))
+io = Buffer(IOBuffer("0a"))
 v = CSV.parsefield(io,String)
 @test v == "0a"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("")))
+io = Buffer(IOBuffer(""))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,String)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" ")))
+io = Buffer(IOBuffer(" "))
 v = CSV.parsefield(io,String)
 @test v == " "
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t")))
+io = Buffer(IOBuffer("\t"))
 v = CSV.parsefield(io,String)
 @test v == "\t"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(" \t 010")))
+io = Buffer(IOBuffer(" \t 010"))
 v = CSV.parsefield(io,String)
 @test v == " \t 010"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"1_00a0\"")))
+io = Buffer(IOBuffer("\"1_00a0\""))
 v = CSV.parsefield(io,String)
 @test v == "1_00a0"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"0\"")))
+io = Buffer(IOBuffer("\"0\""))
 v = CSV.parsefield(io,String)
 @test v == "0"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\n")))
+io = Buffer(IOBuffer("0\n"))
 v = CSV.parsefield(io,String)
 @test v == "0"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r")))
+io = Buffer(IOBuffer("0\r"))
 v = CSV.parsefield(io,String)
 @test v == "0"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0\r\n")))
+io = Buffer(IOBuffer("0\r\n"))
 v = CSV.parsefield(io,String)
 @test v == "0"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0a\n")))
+io = Buffer(IOBuffer("0a\n"))
 v = CSV.parsefield(io,String)
 @test v == "0a"
 
 # Should we handle trailing whitespace?
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\t0\t\n")))
+io = Buffer(IOBuffer("\t0\t\n"))
 v = CSV.parsefield(io,String)
 @test v == "\t0\t"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,")))
+io = Buffer(IOBuffer("0,"))
 v = CSV.parsefield(io,String)
 @test v == "0"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("0,\n")))
+io = Buffer(IOBuffer("0,\n"))
 v = CSV.parsefield(io,String)
 @test v == "0"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n")))
+io = Buffer(IOBuffer("\n"))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,String)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r")))
+io = Buffer(IOBuffer("\r"))
 v = CSV.parsefield(io, Union{String, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n")))
+io = Buffer(IOBuffer("\r\n"))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,String)
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\"")))
+io = Buffer(IOBuffer("\"\""))
 v = CSV.parsefield(io, Union{String, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1234567890")))
+io = Buffer(IOBuffer("1234567890"))
 v = CSV.parsefield(io,String)
 @test v == "1234567890"
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"hey there\\\"quoted field\\\"\"")))
+io = Buffer(IOBuffer("\"hey there\\\"quoted field\\\"\""))
 v = CSV.parsefield(io,String)
 @test v == "hey there\\\"quoted field\\\""
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N")))
+io = Buffer(IOBuffer("\\N"))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,String,CSV.Options(null="\\N"))
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\"")))
+io = Buffer(IOBuffer("\"\\N\""))
 v = CSV.parsefield(io, Union{String, Null}, CSV.Options(null="\\N"))
 @test isnull(v)
 
-end # @testset "String Libz"
+end # @testset "String Custom IO"
 
 @testset "Date" begin
 
@@ -1014,73 +1025,73 @@ v = CSV.parsefield(io,Date,CSV.Options(dateformat=dateformat"mm/dd/yyyy"))
 
 end # @testset "Date"
 
-@testset "Date Libz" begin
+@testset "Date Custom IO" begin
 
 # Date Libz
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("")))
+io = Buffer(IOBuffer(""))
 v = CSV.parsefield(io, Union{Date, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(",")))
+io = Buffer(IOBuffer(","))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Date)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n")))
+io = Buffer(IOBuffer("\n"))
 v = CSV.parsefield(io, Union{Date, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r")))
+io = Buffer(IOBuffer("\r"))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Date)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n")))
+io = Buffer(IOBuffer("\r\n"))
 v = CSV.parsefield(io, Union{Date, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\"")))
+io = Buffer(IOBuffer("\"\""))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Date)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N")))
+io = Buffer(IOBuffer("\\N"))
 v = CSV.parsefield(io, Union{Date, Null}, CSV.Options(null="\\N"))
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\"")))
+io = Buffer(IOBuffer("\"\\N\""))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Date,CSV.Options(null="\\N"))
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05")))
+io = Buffer(IOBuffer("2015-10-05"))
 v = CSV.parsefield(io,Date)
 @test v === Date(2015,10,5)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"2015-10-05\"")))
+io = Buffer(IOBuffer("\"2015-10-05\""))
 v = CSV.parsefield(io,Date)
 @test v === Date(2015,10,5)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05,")))
+io = Buffer(IOBuffer("2015-10-05,"))
 v = CSV.parsefield(io,Date)
 @test v === Date(2015,10,5)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05\n")))
+io = Buffer(IOBuffer("2015-10-05\n"))
 v = CSV.parsefield(io,Date)
 @test v === Date(2015,10,5)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05\r")))
+io = Buffer(IOBuffer("2015-10-05\r"))
 v = CSV.parsefield(io,Date)
 @test v === Date(2015,10,5)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05\r\n")))
+io = Buffer(IOBuffer("2015-10-05\r\n"))
 v = CSV.parsefield(io,Date)
 @test v === Date(2015,10,5)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("  \"2015-10-05\",")))
+io = Buffer(IOBuffer("  \"2015-10-05\","))
 @test_throws ArgumentError CSV.parsefield(io,Date)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"2015-10-05\"\n")))
+io = Buffer(IOBuffer("\"2015-10-05\"\n"))
 v = CSV.parsefield(io,Date)
 @test v === Date(2015,10,5)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"10/5/2015\"\n")))
+io = Buffer(IOBuffer("\"10/5/2015\"\n"))
 v = CSV.parsefield(io,Date,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy")))
 @test v === Date(2015,10,5)
 
-end # @testset "Date Libz"
+end # @testset "Date Custom IO"
 
 @testset "DateTime" begin
 
@@ -1157,74 +1168,74 @@ v = CSV.parsefield(io,DateTime,CSV.Options(dateformat=dateformat"mm/dd/yyyy HH:M
 
 end # @testset "DateTime"
 
-@testset "DateTime Libz" begin
+@testset "DateTime Custom IO" begin
 
 # DateTime Libz
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("")))
+io = Buffer(IOBuffer(""))
 v = CSV.parsefield(io, Union{DateTime, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer(",")))
+io = Buffer(IOBuffer(","))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,DateTime)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\n")))
+io = Buffer(IOBuffer("\n"))
 v = CSV.parsefield(io, Union{DateTime, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r")))
+io = Buffer(IOBuffer("\r"))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,DateTime)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\r\n")))
+io = Buffer(IOBuffer("\r\n"))
 v = CSV.parsefield(io, Union{DateTime, Null})
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\"")))
+io = Buffer(IOBuffer("\"\""))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,DateTime)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\\N")))
+io = Buffer(IOBuffer("\\N"))
 v = CSV.parsefield(io, Union{DateTime, Null}, CSV.Options(null="\\N"))
 @test isnull(v)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"\\N\"")))
+io = Buffer(IOBuffer("\"\\N\""))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,DateTime,CSV.Options(null="\\N"))
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05T00:00:01")))
+io = Buffer(IOBuffer("2015-10-05T00:00:01"))
 v = CSV.parsefield(io,DateTime)
 @test v === DateTime(2015,10,5,0,0,1)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"2015-10-05T00:00:01\"")))
+io = Buffer(IOBuffer("\"2015-10-05T00:00:01\""))
 v = CSV.parsefield(io,DateTime)
 @test v === DateTime(2015,10,5,0,0,1)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05T00:00:01,")))
+io = Buffer(IOBuffer("2015-10-05T00:00:01,"))
 v = CSV.parsefield(io,DateTime)
 @test v === DateTime(2015,10,5,0,0,1)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05T00:00:01\n")))
+io = Buffer(IOBuffer("2015-10-05T00:00:01\n"))
 v = CSV.parsefield(io,DateTime)
 @test v === DateTime(2015,10,5,0,0,1)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05T00:00:01\r")))
+io = Buffer(IOBuffer("2015-10-05T00:00:01\r"))
 v = CSV.parsefield(io,DateTime)
 @test v === DateTime(2015,10,5,0,0,1)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("2015-10-05T00:00:01\r\n")))
+io = Buffer(IOBuffer("2015-10-05T00:00:01\r\n"))
 v = CSV.parsefield(io,DateTime)
 @test v === DateTime(2015,10,5,0,0,1)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("  \"2015-10-05T00:00:01\",")))
+io = Buffer(IOBuffer("  \"2015-10-05T00:00:01\","))
 @test_throws ArgumentError CSV.parsefield(io,DateTime)
 @test v === DateTime(2015,10,5,0,0,1)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"2015-10-05T00:00:01\"\n")))
+io = Buffer(IOBuffer("\"2015-10-05T00:00:01\"\n"))
 v = CSV.parsefield(io,DateTime)
 @test v === DateTime(2015,10,5,0,0,1)
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("\"10/5/2015 00:00:01\"\n")))
+io = Buffer(IOBuffer("\"10/5/2015 00:00:01\"\n"))
 v = CSV.parsefield(io,DateTime,CSV.Options(dateformat=dateformat"mm/dd/yyyy HH:MM:SS"))
 @test v === DateTime(2015,10,5,0,0,1)
 
-end # @testset "DateTime Libz"
+end # @testset "DateTime Custom IO"
 
 @testset "All types" begin
 
@@ -1376,6 +1387,6 @@ struct CustomInt
 end
 Base.parse(::Type{CustomInt}, x) = CustomInt(parse(Int, x))
 
-io = ZlibInflateInputStream(ZlibDeflateInputStream(IOBuffer("1")))
+io = Buffer(IOBuffer("1"))
 v = CSV.parsefield(io, CustomInt, CSV.Options())
 @test v.val == 1
