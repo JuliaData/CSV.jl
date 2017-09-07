@@ -1,73 +1,75 @@
 @enum ParsingState None Delimiter EOF Newline
 
-const STATE = Ref(None)
-
 # at start of field: check if eof, remove leading whitespace, check if empty field
 # returns `true` if result of initial parsing is a null field
 # also return `b` which is last byte read
-@inline function checknullstart(io::IO, opt::CSV.Options, state)
-    eof(io) && (state[] = EOF; return 0x00, true)
-    b = unsafe_read(io, UInt8)
-    while b != opt.delim && (b == CSV.SPACE || b == CSV.TAB || b == opt.quotechar)
-        eof(io) && (state[] = EOF; return b, true)
-        b = unsafe_read(io, UInt8)
-    end
-    if b == opt.delim
-        state[] = Delimiter
-        return b, true
-    elseif b == NEWLINE # check for empty field
-        state[] = Newline
-        return b, true
-    elseif b == RETURN
-        state[] = Newline
-        !eof(io) && unsafe_peek(io) == NEWLINE && unsafe_read(io, UInt8)
-        return b, true
-    end
-    return b, false
+macro checknullstart()
+    return esc(quote
+        state = None
+        eof(io) && (state = EOF; @goto null)
+        b = readbyte(io)
+        while b != opt.delim && (b == CSV.SPACE || b == CSV.TAB || b == opt.quotechar)
+            eof(io) && (state = EOF; @goto null)
+            b = readbyte(io)
+        end
+        if b == opt.delim
+            state = Delimiter
+            @goto null
+        elseif b == NEWLINE
+            state = Newline
+            @goto null
+        elseif b == RETURN
+            state = Newline
+            !eof(io) && peekbyte(io) == NEWLINE && readbyte(io)
+            @goto null
+        end
+    end)
 end
 
 # check if we've successfully finished parsing a field by whether
 # we've encountered a delimiter or newline break or reached eof
-@inline function checkdone(io::IO, b::UInt8, opt::CSV.Options, state)
-    b == opt.quotechar && !eof(io) && (b = unsafe_read(io, UInt8))
-    if b == opt.delim
-        state[] = Delimiter
-        return b, true
-    elseif b == NEWLINE
-        state[] = Newline
-        return b, true
-    elseif b == RETURN
-        state[] = Newline
-        !eof(io) && unsafe_peek(io) == NEWLINE && unsafe_read(io, UInt8)
-        return b, true
-    elseif eof(io) && b == opt.quotechar
-        state[] = EOF
-        return b, true
-    end
-    return b, false
+macro checkdone(label)
+    return esc(quote
+        b == opt.quotechar && !eof(io) && (b = readbyte(io))
+        if b == opt.delim
+            state = Delimiter
+            @goto $label
+        elseif b == NEWLINE
+            state = Newline
+            @goto $label
+        elseif b == RETURN
+            state = Newline
+            !eof(io) && peekbyte(io) == NEWLINE && readbyte(io)
+            @goto $label
+        elseif b == opt.quotechar && eof(io)
+            state = EOF
+            @goto $label
+        end
+    end)
 end
 
-CSVError{T}(::Type{T}, b, row, col) = CSV.CSVError("error parsing a `$T` value on column $col, row $row; encountered '$(Char(b))'")
+ParsingException(::Type{T}, b, row, col) where {T} = CSV.ParsingException("error parsing a `$T` value on column $col, row $row; encountered '$(Char(b))'")
 
 # as a last ditch effort, after we've trying parsing the correct type,
 # we check if the field is equal to a custom null type
 # otherwise we give up and throw an error
-@inline function checknullend{T}(io::IO, ::Type{T}, b::UInt8, opt::CSV.Options, row, col, state)
-    !opt.nullcheck && throw(CSVError(T, b, row, col))
-    i = 1
-    while true
-        b == Vector{UInt8}(opt.null)[i] || throw(CSVError(T, b, row, col))
-        (eof(io) || i == length(opt.null)) && break
-        b = unsafe_read(io, UInt8)
-        i += 1
-    end
-    if !eof(io)
-        b = unsafe_read(io, UInt8)
-        b, done = checkdone(io, b, opt, state)
-        done ? (return true) : throw(CSVError(T, b, row, col))
-    end
-    state[] = EOF
-    return true
+macro checknullend()
+    return esc(quote
+        !opt.nullcheck && @goto error
+        i = 1
+        while true
+            b == opt.null[i] || @goto error
+            (i == length(opt.null) || eof(io)) && break
+            b = readbyte(io)
+            i += 1
+        end
+        if !eof(io)
+            b = readbyte(io)
+            @checkdone(null)
+        end
+        state = EOF
+        @goto null
+    end)
 end
 """
 `CSV.parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)` => `Nullable{T}`
@@ -99,322 +101,132 @@ end
 """
 function parsefield end
 
-parsefield{T}(source::CSV.Source, ::Type{T}, row=0, col=0) = get(CSV.parsefield(source.io, T, source.options, row, col, STATE))
-parsefield{T}(source::CSV.Source, ::Type{Nullable{T}}, row=0, col=0) = CSV.parsefield(source.io, T, source.options, row, col, STATE)
-parsefield(source::CSV.Source, ::Type{Nullable{WeakRefString{UInt8}}}, row=0, col=0) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, STATE, source.ptr)
+const NULLTHROW = (row, col)->throw(Data.NullException("encountered a null value for a non-null column type on row = $row, col = $col"))
+const NULLRETURN = (row, col)->null
 
-@inline function parsefield{T<:Integer}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
+parsefield(source::CSV.Source, ::Type{T}, row=0, col=0) where {T} = CSV.parsefield(source.io, T, source.options, row, col, NULLTHROW)
+parsefield(source::CSV.Source, ::Type{Union{T, Null}}, row=0, col=0) where {T} = CSV.parsefield(source.io, T, source.options, row, col, NULLRETURN)
+
+@inline parsefield(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0) where {T} = parsefield(io, T, opt, row, col, NULLTHROW)
+@inline parsefield(io::IO, ::Type{Union{T, Null}}, opt::CSV.Options=CSV.Options(), row=0, col=0) where {T} = parsefield(io, T, opt, row, col, NULLRETURN)
+
+@inline function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, ifnull::Function) where {T <: Integer}
+    @checknullstart()
     v = zero(T)
-    b, null = CSV.checknullstart(io, opt, state)
-    null && return Nullable{T}()
     negative = false
-    if b == CSV.MINUS # check for leading '-' or '+'
+    if b == MINUS # check for leading '-' or '+'
         negative = true
-        b = unsafe_read(io, UInt8)
-    elseif b == CSV.PLUS
-        b = unsafe_read(io, UInt8)
+        b = readbyte(io)
+    elseif b == PLUS
+        b = readbyte(io)
     end
-    while CSV.NEG_ONE < b < CSV.TEN
+    while NEG_ONE < b < TEN
         # process digits
-        v *= 10
-        v += b - CSV.ZERO
-        eof(io) && (state[] = EOF; return Nullable{T}(ifelse(negative, -v, v)))
-        b = unsafe_read(io, UInt8)
+        v *= T(10)
+        v += T(b - ZERO)
+        eof(io) && (state = EOF; @goto done)
+        b = readbyte(io)
     end
-    b, done::Bool = CSV.checkdone(io, b, opt, state)
-    if done
-        return Nullable{T}(ifelse(negative, -v, v))
-    elseif CSV.checknullend(io, T, b, opt, row, col, state)
-        return Nullable{T}()
-    end
+    @checkdone(done)
+    @checknullend()
+
+    @label done
+    return ifelse(negative, -v, v)
+
+    @label null
+    return ifnull(row, col)
+
+    @label error
+    throw(ParsingException(T, b, row, col))
 end
 
-const REF = Vector{Ptr{UInt8}}(1)
+const BUF = IOBuffer()
 
-@inline function parsefield{T<:AbstractFloat}(io::IOBuffer, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
-    b, null = CSV.checknullstart(io, opt, state)
-    v = zero(T)
-    null && return Nullable{T}()
-    # subtract 1 because we just read a valid byte, so position(io) is +1 from where a digit should be
-    ptr = pointer(io.data) + position(io) - 1
-    v = convert(T, ccall(:jl_strtod_c, Float64, (Ptr{UInt8}, Ptr{Ptr{UInt8}}), ptr, REF))
-    io.ptr += REF[1] - ptr - 1 # Hopefully io.ptr doesn't change for IOBuffer?
-    eof(io) && (state[] = EOF; return Nullable{T}(v))
-    b = unsafe_read(io, UInt8)
-    b, done = checkdone(io, b, opt, state)
-    if done
-        return Nullable{T}(v)
-    elseif checknullend(io, T, b, opt, row, col, state)
-        return Nullable{T}()
-    end
-end
+getptr(io::IO) = C_NULL
+getptr(io::IOBuffer) = pointer(io.data, io.ptr)
+incr(io::IO, b) = Base.write(BUF, b)
+incr(io::IOBuffer, b) = 1
 
-function getfloat(io, T, b, opt, row, col, buf, state)
-    ptr = pointer(buf.data)
-    v = convert(T, ccall(:jl_strtod_c, Float64, (Ptr{UInt8}, Ptr{Ptr{UInt8}}), ptr, CSV.REF))
-    if (CSV.REF[1] - ptr) != position(buf)
-        reset(io)
-        b, null = CSV.checknullstart(io, opt, state)
-        CSV.checknullend(io, T, b, opt, row, col, state) && return Nullable{T}()
-        throw(CSVError(T, b, row, col))
-    end
-    return Nullable{T}(v)
-end
+make(io::IOBuffer, ::Type{WeakRefString{UInt8}}, ptr, len) = WeakRefString(Ptr{UInt8}(ptr), len)
+make(io::IOBuffer, ::Type{String}, ptr, len) = unsafe_string(ptr, len)
+make(io::IO, ::Type{WeakRefString{UInt8}}, ptr, len) = String(take!(BUF))
+make(io::IO, ::Type{String}, ptr, len) = String(take!(BUF))
 
-@inline function parsefield{T<:AbstractFloat}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
-    mark(io)
-    b, null = CSV.checknullstart(io, opt, state)
-    v = zero(T)
-    null && return Nullable{T}()
-    buf = IOBuffer(zeros(UInt8, 18), true, true)
-    Base.write(buf, b)
-    eof(io) && return getfloat(io, T, b, opt, row, col, buf, state)
-    while true
-        b = unsafe_read(io, UInt8)
-        b, isdone = CSV.checkdone(io, b, opt, state)
-        isdone && return getfloat(io, T, b, opt, row, col, buf, state)
-        Base.write(buf, b)
-        eof(io) && return getfloat(io, T, b, opt, row, col, buf, state)
-    end
-end
-
-const NULLSTRING = Nullable{WeakRefString{UInt8}}()
-
-@inline function parsefield(io::IOBuffer, ::Type{WeakRefString{UInt8}}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE, start_ptr=Int(pointer(io.data)))
-    eof(io) && (state[] = EOF; return NULLSTRING)
-    ptr = start_ptr + position(io)
-    len = 0
-    nullcheck = opt.nullcheck # if null is "", then we don't need to byte match it
-    nulllen = length(Vector{UInt8}(opt.null))
-    @inbounds while !eof(io)
-        b = unsafe_read(io, UInt8)
-        if b == opt.quotechar
-            ptr += 1
-            while !eof(io)
-                b = unsafe_read(io, UInt8)
-                if b == opt.escapechar
-                    b = unsafe_read(io, UInt8)
-                    len += 1
-                elseif b == opt.quotechar
-                    break
-                end
-                (nullcheck && len+1 <= nulllen && b == Vector{UInt8}(opt.null)[len+1]) || (nullcheck = false)
-                len += 1
-            end
-        elseif b == opt.delim
-            state[] = Delimiter
-            break
-        elseif b == b == NEWLINE
-            state[] = Newline
-            break
-        elseif b == RETURN
-            state[] = Newline
-            !eof(io) && unsafe_peek(io) == NEWLINE && unsafe_read(io, UInt8)
-            break
-        else
-            (nullcheck && len+1 <= nulllen && b == Vector{UInt8}(opt.null)[len+1]) || (nullcheck = false)
-            len += 1
-        end
-    end
-    eof(io) && (state[] = EOF)
-    return (len == 0 || nullcheck) ? NULLSTRING : Nullable{WeakRefString{UInt8}}(WeakRefString(Ptr{UInt8}(ptr), len, ptr - start_ptr + 1))
-end
-
-function parsefield{T<:AbstractString}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
-    eof(io) && (state[] = EOF; return Nullable{T}())
-    buf = IOBuffer()
+@inline function parsefield(io::IO, T::Type{<:AbstractString}, opt::CSV.Options, row, col, ifnull::Function)
+    eof(io) && (state = EOF; @goto null)
+    ptr = getptr(io)
     len = 0
     nullcheck = opt.nullcheck # if null is "", then we don't need to byte match it
     nulllen = length(opt.null)
     @inbounds while !eof(io)
-        b = unsafe_read(io, UInt8)
+        b = readbyte(io)
         if b == opt.quotechar
+            ptr += 1
             while !eof(io)
-                b = unsafe_read(io, UInt8)
+                b = readbyte(io)
                 if b == opt.escapechar
-                    Base.write(buf, b)
-                    b = unsafe_read(io, UInt8)
-                    len += 1
+                    len += incr(io, b)
+                    b = readbyte(io)
                 elseif b == opt.quotechar
                     break
                 end
-                (nullcheck && len+1 <= nulllen && b == Vector{UInt8}(opt.null)[len+1]) || (nullcheck = false)
-                Base.write(buf, b)
-                len += 1
+                (nullcheck && len+1 <= nulllen && b == opt.null[len+1]) || (nullcheck = false)
+                len += incr(io, b)
             end
         elseif b == opt.delim
-            state[] = Delimiter
+            state = Delimiter
             break
         elseif b == NEWLINE
-            state[] = Newline
+            state = Newline
             break
         elseif b == RETURN
-            state[] = Newline
-            !eof(io) && unsafe_peek(io) == NEWLINE && unsafe_read(io, UInt8)
+            state = Newline
+            !eof(io) && peekbyte(io) == NEWLINE && readbyte(io)
             break
         else
-            (nullcheck && len+1 <= nulllen && b == Vector{UInt8}(opt.null)[len+1]) || (nullcheck = false)
-            Base.write(buf, b)
-            len += 1
+            (nullcheck && len+1 <= nulllen && b == opt.null[len+1]) || (nullcheck = false)
+            len += incr(io, b)
         end
     end
-    eof(io) && (state[] = EOF)
-    return (len == 0 || nullcheck) ? Nullable{T}() : Nullable{T}(convert(T, String(take!(buf))))
+    eof(io) && (state = EOF)
+    (len == 0 || nullcheck) && @goto null
+    return make(io, T, ptr, len)
+
+    @label null
+    take!(BUF)
+    return ifnull(row, col)
 end
 
-@inline itr(io,n,val) = (for i = 1:n; val *= 10; val += unsafe_read(io, UInt8) - CSV.ZERO; end; return val)
-
-function parsefield(io::IO, ::Type{Date}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
-    b, null = CSV.checknullstart(io, opt, state)
-    null && return Nullable{Date}()
-    if opt.datecheck # optimize for default yyyy-mm-dd
-        if CSV.NEG_ONE < b < CSV.TEN
-            year = CSV.itr(io, 3, Int(b - CSV.ZERO))
-            unsafe_read(io, UInt8)
-            month = CSV.itr(io, 2, 0)
-            unsafe_read(io, UInt8)
-            day = CSV.itr(io, 2, 0)
-            eof(io) && (state[] = EOF; return Nullable{Date}(Date(year, month, day)))
-            b = unsafe_read(io, UInt8)
-        end
-        b, done = checkdone(io, b, opt, state)
-        if done
-            return Nullable{Date}(Date(year, month, day))
-        elseif checknullend(io, Date, b, opt, row, col, state)
-            return Nullable{Date}()
-        end
-    else
-        buf = IOBuffer()
-        Base.write(buf, b)
-        while true
-            b = unsafe_read(io, UInt8)
-            if b == opt.delim
-                state[] = Delimiter
-                break
-            elseif b == CSV.NEWLINE
-                state[] = Newline
-                break
-            elseif b == CSV.RETURN
-                state[] = Newline
-                !eof(io) && unsafe_peek(io) == CSV.NEWLINE && unsafe_read(io, UInt8)
-                break
-            elseif eof(io)
-                state[] = EOF
-                Base.write(buf, b)
-                break
-            elseif b == opt.quotechar
-                b, done = checkdone(io, b, opt, state)
-                break
-            end
-            Base.write(buf, b)
-        end
-        val = String(take!(buf))
-        val == opt.null && return Nullable{Date}()
-        return Nullable{Date}(Date(val, opt.dateformat)::Date)
-    end
+@inline function parsefield(io::IO, ::Type{Date}, opt::CSV.Options, row, col, ifnull::Function)
+    v = parsefield(io, WeakRefString{UInt8}, opt, row, col, ifnull)
+    return v isa Null ? ifnull(row, col) : Date(v, opt.dateformat)
+end
+@inline function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options, row, col, ifnull::Function)
+    v = parsefield(io, WeakRefString{UInt8}, opt, row, col, ifnull)
+    return v isa Null ? ifnull(row, col) : DateTime(v, opt.dateformat)
 end
 
-function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
-    b, null = CSV.checknullstart(io, opt, state)
-    null && return Nullable{DateTime}()
-    if opt.datecheck # optimize for default yyyy-mm-ddTHH:MM:SS
-        if CSV.NEG_ONE < b < CSV.TEN
-            year = CSV.itr(io, 3, Int(b - CSV.ZERO))
-            unsafe_read(io, UInt8)
-            month = CSV.itr(io, 2, 0)
-            unsafe_read(io, UInt8)
-            day = CSV.itr(io, 2, 0)
-            eof(io) && (state[] = EOF; return Nullable{DateTime}(DateTime(year, month, day)))
-            b = unsafe_read(io, UInt8) # read the `T`
-            hour = CSV.itr(io, 2, 0)
-            unsafe_read(io, UInt8)
-            minute = CSV.itr(io, 2, 0)
-            unsafe_read(io, UInt8)
-            second = CSV.itr(io, 2, 0)
-            eof(io) && (state[] = EOF; return Nullable{DateTime}(DateTime(year, month, day, hour, minute, second)))
-            b = unsafe_read(io, UInt8)
-        end
-        b, done = checkdone(io, b, opt, state)
-        if done
-            return Nullable{DateTime}(DateTime(year, month, day, hour, minute, second))
-        elseif checknullend(io, DateTime, b, opt, row, col, state)
-            return Nullable{DateTime}()
-        end
-    else
-        buf = IOBuffer()
-        Base.write(buf, b)
-        while true
-            b = unsafe_read(io, UInt8)
-            if b == opt.delim
-                state[] = Delimiter
-                break
-            elseif b == CSV.NEWLINE
-                state[] = Newline
-                break
-            elseif b == CSV.RETURN
-                state[] = Newline
-                !eof(io) && unsafe_peek(io) == CSV.NEWLINE && unsafe_read(io, UInt8)
-                break
-            elseif eof(io)
-                state[] = EOF
-                Base.write(buf, b)
-                break
-            elseif b == opt.quotechar
-                b, done = checkdone(io, b, opt, state)
-                break
-            end
-            Base.write(buf, b)
-        end
-        val = String(take!(buf))
-        val == opt.null && return Nullable{DateTime}()
-        return Nullable{DateTime}(DateTime(val, opt.dateformat)::DateTime)
-    end
+@inline function parsefield(io::IO, ::Type{Char}, opt::CSV.Options, row, col, ifnull::Function)
+    @checknullstart()
+    c = b
+    eof(io) && (state = EOF; @goto done)
+    opt.nullcheck && b == opt.null[1] && @goto null
+    b = readbyte(io)
+    @checkdone(done)
+    @checknullend()
+
+    @label done
+    return Char(c)
+
+    @label null
+    return ifnull(row, col)
+
+    @label error
+    throw(ParsingException(Char, b, row, col))
 end
 
 # Generic fallback
-function getgeneric(io, T, b, opt, row, col, buf, state)
-    str = String(take!(buf))
-    try
-        val = parse(T, str)::T
-        return Nullable{T}(val)
-    catch e
-        reset(io)
-        b, null = CSV.checknullstart(io, opt, state)
-        CSV.checknullend(io, T, b, opt, row, col, state) && return Nullable{T}()
-        throw(CSVError(T, b, row, col))
-    end
+@inline function parsefield(io::IO, T, opt::CSV.Options, row, col, ifnull::Function)
+    v = parsefield(io, String, opt, row, col, ifnull)
+    return v isa Null ? ifnull(row, col) : parse(T, v)
 end
-
-function parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
-    mark(io)
-    b, null = CSV.checknullstart(io, opt, state)
-    null && return Nullable{T}()
-    buf = IOBuffer()
-    Base.write(buf, b)
-    eof(io) && (state[] = EOF; return getgeneric(io, T, b, opt, row, col, buf, state))
-    while true
-        b = unsafe_read(io, UInt8)
-        b, isdone = CSV.checkdone(io, b, opt, state)
-        isdone && return getgeneric(io, T, b, opt, row, col, buf, state)
-        Base.write(buf, b)
-        eof(io) && return getgeneric(io, T, b, opt, row, col, buf, state)
-    end
-end
-
-@inline function parsefield(io::IO, ::Type{Char}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::Ref{ParsingState}=STATE)
-    b, null = CSV.checknullstart(io, opt, state)
-    null && return Nullable{Char}()
-    eof(io) && (state[] = EOF; return Nullable{Char}(Char(b)))
-    if !isempty(Vector{UInt8}(opt.null)) && b == Vector{UInt8}(opt.null)[1]
-        CSV.checknullend(io, Char, b, opt, row, col, state) && return Nullable{Char}()
-    else
-        c = unsafe_read(io, UInt8)
-        c, done::Bool = CSV.checkdone(io, c, opt, state)
-        if done
-            return Nullable{Char}(b)
-        elseif CSV.checknullend(io, Char, c, opt, row, col, state)
-            return Nullable{Char}()
-        end
-    end
-end
-
