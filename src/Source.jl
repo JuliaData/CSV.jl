@@ -187,17 +187,17 @@ Data.streamtype(::Type{<:CSV.Source}, ::Type{Data.Field}) = true
 Data.reference(source::CSV.Source) = source.io.data
 
 """
-`CSV.read(fullpath::Union{AbstractString,IO}, sink::Type{T}=NamedTuple, args...; kwargs...)` => `typeof(sink)`
+`CSV.read(fullpath::Union{AbstractString,IO}, sink::Type{T}=DataFrame, args...; kwargs...)` => `typeof(sink)`
 
 `CSV.read(fullpath::Union{AbstractString,IO}, sink::Data.Sink; kwargs...)` => `Data.Sink`
 
 
-parses a delimited file into a Julia structure (a NamedTuple by default, but any valid `Data.Sink` may be requested).
+parses a delimited file into a Julia structure (a DataFrame by default, but any valid `Data.Sink` may be requested).
 
 Positional arguments:
 
 * `fullpath`; can be a file name (string) or other `IO` instance
-* `sink::Type{T}`; `NamedTuple` by default, but may also be other `Data.Sink` types that support streaming via `Data.Field` interface; note that the method argument can be the *type* of `Data.Sink`, plus any required arguments the sink may need (`args...`).
+* `sink::Type{T}`; `DataFrame` by default, but may also be other `Data.Sink` types that support streaming via `Data.Field` interface; note that the method argument can be the *type* of `Data.Sink`, plus any required arguments the sink may need (`args...`).
                     or an already constructed `sink` may be passed (2nd method above)
 
 Keyword Arguments:
@@ -225,7 +225,7 @@ Oftentimes, however, it can be convenient to work with `WeakRefStrings` dependin
 Example usage:
 ```
 julia> dt = CSV.read("bids.csv")
-7656334×9 NamedTuples.NamedTuple
+7656334×9 DataFrames.DataFrame
 │ Row     │ bid_id  │ bidder_id                               │ auction │ merchandise      │ device      │
 ├─────────┼─────────┼─────────────────────────────────────────┼─────────┼──────────────────┼─────────────┤
 │ 1       │ 0       │ "8dac2b259fd1c6d1120e519fb1ac14fbqvax8" │ "ewmzr" │ "jewelry"        │ "phone0"    │
@@ -261,17 +261,17 @@ CSV.read(file; types=Dict("col3"=>Float64, "col6"=>String))
 # this is also a way to limit the # of rows to be read in a file if only a sample is needed
 CSV.read(file; rows=10000)
 
-# for data files, `file` and `file2`, with the same structure, read both into a single NamedTuple
+# for data files, `file` and `file2`, with the same structure, read both into a single DataFrame
 # note that `df` is used as a 2nd argument in the 2nd call to `CSV.read` and the keyword argument
 # `append=true` is passed
 df = CSV.read(file)
 df = CSV.read(file2, df; append=true)
 
-# manually construct a `CSV.Source` once, then stream its data to both a NamedTuple
+# manually construct a `CSV.Source` once, then stream its data to both a DataFrame
 # and SQLite table `sqlite_table` in the SQLite database `db`
 # note the use of `CSV.reset!` to ensure the `source` can be streamed from again
 source = CSV.Source(file)
-df1 = CSV.read(source, NamedTuple)
+df1 = CSV.read(source, DataFrame)
 CSV.reset!(source)
 db = SQLite.DB()
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
@@ -279,7 +279,7 @@ sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 """
 function read end
 
-function read(fullpath::Union{AbstractString,IO}, sink::Type=NamedTuple, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
+function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
     source = Source(fullpath; kwargs...)
     sink = Data.stream!(source, sink, args...; append=append, transforms=transforms)
     return Data.close!(sink)
@@ -291,5 +291,5 @@ function read(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, t
     return Data.close!(sink)
 end
 
-read(source::CSV.Source, sink=NamedTuple, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, args...; append=append, transforms=transforms); return Data.close!(sink))
+read(source::CSV.Source, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, args...; append=append, transforms=transforms); return Data.close!(sink))
 read(source::CSV.Source, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) where {T} = (sink = Data.stream!(source, sink; append=append, transforms=transforms); return Data.close!(sink))

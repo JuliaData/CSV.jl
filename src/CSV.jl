@@ -1,7 +1,7 @@
 __precompile__(true)
 module CSV
 
-using DataStreams, WeakRefStrings, Nulls
+using DataStreams, WeakRefStrings, Nulls, DataFrames
 
 struct ParsingException <: Exception
     msg::String
