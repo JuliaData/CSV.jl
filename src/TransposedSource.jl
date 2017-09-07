@@ -205,8 +205,8 @@ reset!(s::CSV.TransposedSource) = (seek(s.io, s.datapos); return nothing)
 # Data.Source interface
 Data.schema(source::CSV.TransposedSource) = source.schema
 Data.isdone(io::CSV.TransposedSource, row, col) = eof(io.io) || (!isnull(io.schema.rows) && row > io.schema.rows)
-Data.streamtype{T<:CSV.TransposedSource}(::Type{T}, ::Type{Data.Field}) = true
-@inline function Data.streamfrom{T}(source::CSV.TransposedSource, ::Type{Data.Field}, ::Type{T}, row, col)
+Data.streamtype(::Type{T}, ::Type{Data.Field}) where {T<:CSV.TransposedSource} = true
+@inline function Data.streamfrom(source::CSV.TransposedSource, ::Type{Data.Field}, ::Type{T}, row, col) where T
     seek(source.io, source.columnpositions[col])
     v = CSV.parsefield(source.io, T, source.options, row, col)
     source.columnpositions[col] = position(source.io)
@@ -317,4 +317,4 @@ Data.reference(source::CSV.TransposedSource) = source.io.data
 function read end
 
 read(source::CSV.TransposedSource, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, append, transforms, args...); return Data.close!(sink))
-read{T}(source::CSV.TransposedSource, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, append, transforms); return Data.close!(sink))
+read(source::CSV.TransposedSource, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) where {T} = (sink = Data.stream!(source, sink, append, transforms); return Data.close!(sink))
