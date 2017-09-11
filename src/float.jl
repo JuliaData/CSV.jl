@@ -98,10 +98,16 @@ end
     @checknullstart()
     negative = false
     if b == MINUS # check for leading '-' or '+'
-        negative = true
-        b = readbyte(io)
+        c = peekbyte(io) 
+        if NEG_ONE < c < TEN
+            negative = true
+            b = readbyte(io)
+        end
     elseif b == PLUS
-        b = readbyte(io)
+        c = peekbyte(io) 
+        if NEG_ONE < c < TEN
+            b = readbyte(io)
+        end
     end
     # float digit parsing
     iT = inttype(T)
