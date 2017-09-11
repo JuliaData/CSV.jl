@@ -378,3 +378,10 @@ df = CSV.read(joinpath(dir, "dash_as_null.csv"); null="-")
 
 df = CSV.read(joinpath(dir, "plus_as_null.csv"); null="+")
 @test df[1][2] == null
+
+# #83
+df = CSV.read(joinpath(dir, "comma_decimal.csv"); delim=';', decimal=',')
+@test df[1][1] === 3.14
+@test df[1][2] === 1.0
+@test df[2][1] === 1
+@test df[2][2] === 1

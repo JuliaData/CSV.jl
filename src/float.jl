@@ -160,7 +160,7 @@ end
                 b = readbyte(io)
             end
             @goto checkdone
-        elseif b == PERIOD
+        elseif b == opt.decimal
             # keep parsing fractional part below
         else
             @goto checknullend
@@ -169,7 +169,7 @@ end
     # parse fractional part
     frac = 0
     result = T(v)
-    if b == PERIOD
+    if b == opt.decimal
         eof(io) && (parseddigits ? @goto(done) : @goto(error))
         b = readbyte(io)
     elseif b == LITTLEE || b == BIGE
