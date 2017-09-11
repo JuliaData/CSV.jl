@@ -122,8 +122,9 @@ parsefield(source::CSV.Source, ::Type{Union{T, Null}}, row=0, col=0) where {T} =
     end
     while NEG_ONE < b < TEN
         # process digits
-        v *= T(10)
-        v += T(b - ZERO)
+        v, ov_mul = Base.mul_with_overflow(v, T(10))
+        v, ov_add = Base.add_with_overflow(v, T(b - ZERO))
+        (ov_mul | ov_add) && throw(OverflowError("overflow parsing $T, parsed $v"))
         eof(io) && (state = EOF; @goto done)
         b = readbyte(io)
     end
