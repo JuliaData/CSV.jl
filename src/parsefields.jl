@@ -115,10 +115,16 @@ parsefield(source::CSV.Source, ::Type{Union{T, Null}}, row=0, col=0) where {T} =
     v = zero(T)
     negative = false
     if b == MINUS # check for leading '-' or '+'
-        negative = true
-        b = readbyte(io)
+        c = peekbyte(io) 
+        if NEG_ONE < c < TEN
+            negative = true
+            b = readbyte(io)
+        end
     elseif b == PLUS
-        b = readbyte(io)
+        c = peekbyte(io) 
+        if NEG_ONE < c < TEN
+            b = readbyte(io)
+        end
     end
     while NEG_ONE < b < TEN
         # process digits

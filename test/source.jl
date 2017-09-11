@@ -371,3 +371,10 @@ df = CSV.read(source; transforms=Dict(2 => floor))
 
 # Integer overflow; #100
 @test_throws OverflowError CSV.read(joinpath(dir, "int8_overflow.csv"); types=[Int8])
+
+# dash as null; #92
+df = CSV.read(joinpath(dir, "dash_as_null.csv"); null="-")
+@test df[1][2] == null
+
+df = CSV.read(joinpath(dir, "plus_as_null.csv"); null="+")
+@test df[1][2] == null
