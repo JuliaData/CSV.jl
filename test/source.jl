@@ -368,3 +368,6 @@ source = IOBuffer("col1,col2,col3") # empty dataset
 df = CSV.read(source; transforms=Dict(2 => floor))
 @test size(Data.schema(df)) == (0, 3)
 @test Data.types(Data.schema(df)) == (Any, Any, Any)
+
+# Integer overflow; #100
+@test_throws OverflowError CSV.read(joinpath(dir, "int8_overflow.csv"); types=[Int8])
