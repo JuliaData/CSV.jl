@@ -164,23 +164,32 @@ make(io::IO, ::Type{String}, ptr, len) = String(take!(BUF))
     ptr = getptr(io)
     len = 0
     nullcheck = opt.nullcheck # if null is "", then we don't need to byte match it
-    nulllen = length(opt.null)
+    n = opt.null
+    q = opt.quotechar
+    e = opt.escapechar
+    d = opt.delim
+    nulllen = length(n)
     @inbounds while !eof(io)
         b = readbyte(io)
-        if b == opt.quotechar
+        if b == q
             ptr += 1
             while !eof(io)
                 b = readbyte(io)
-                if b == opt.escapechar
+                if b == e
+                    if eof(io)
+                        break
+                    elseif e == q && peekbyte(io) != q
+                        break
+                    end
                     len += incr(io, b)
                     b = readbyte(io)
-                elseif b == opt.quotechar
+                elseif b == q
                     break
                 end
-                (nullcheck && len+1 <= nulllen && b == opt.null[len+1]) || (nullcheck = false)
+                (nullcheck && len+1 <= nulllen && b == n[len+1]) || (nullcheck = false)
                 len += incr(io, b)
             end
-        elseif b == opt.delim
+        elseif b == d
             state = Delimiter
             break
         elseif b == NEWLINE
@@ -191,7 +200,7 @@ make(io::IO, ::Type{String}, ptr, len) = String(take!(BUF))
             !eof(io) && peekbyte(io) == NEWLINE && readbyte(io)
             break
         else
-            (nullcheck && len+1 <= nulllen && b == opt.null[len+1]) || (nullcheck = false)
+            (nullcheck && len+1 <= nulllen && b == n[len+1]) || (nullcheck = false)
             len += incr(io, b)
         end
     end
