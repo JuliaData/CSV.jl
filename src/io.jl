@@ -18,6 +18,11 @@ function readline(io::IO, q::UInt8, e::UInt8, buf::IOBuffer=IOBuffer())
                 b = readbyte(io)
                 Base.write(buf, b)
                 if b == e
+                    if eof(io)
+                        break
+                    elseif e == q && peekbyte(io) != q
+                        break
+                    end
                     b = readbyte(io)
                     Base.write(buf, b)
                 elseif b == q
@@ -68,6 +73,10 @@ function readsplitline!(vals::Vector{RawField}, io::IO, d::UInt8, q::UInt8, e::U
             if b == e # the escape character, read the next after it
                 Base.write(buf, b)
                 @assert !eof(io)
+                if e == q && peekbyte(io) != q
+                    state = RSL_AFTER_QUOTE
+                    break
+                end
                 b = readbyte(io)
                 Base.write(buf, b)
             elseif b == q # end the quoted string
@@ -140,6 +149,11 @@ function countlines(io::IO, q::UInt8, e::UInt8)
             while !eof(io)
                 b = readbyte(io)
                 if b == e
+                    if eof(io)
+                        break
+                    elseif e == q && peekbyte(io) != q
+                        break
+                    end
                     b = readbyte(io)
                 elseif b == q
                     break

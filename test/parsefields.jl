@@ -836,6 +836,14 @@ io = IOBuffer("\"\\N\"")
 v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null}, CSV.Options(null="\\N"))
 @test isnull(v)
 
+io = IOBuffer("\"NORTH DAKOTA STATE \"\"A\"\" #1\"")
+v = CSV.parsefield(io, WeakRefString{UInt8}, CSV.Options(escapechar='"'))
+@test v == "NORTH DAKOTA STATE \"\"A\"\" #1"
+
+io = IOBuffer("\"NORTH DAKOTA STATE \"\"A\"\" #1\",")
+v = CSV.parsefield(io, WeakRefString{UInt8}, CSV.Options(escapechar='"'))
+@test v == "NORTH DAKOTA STATE \"\"A\"\" #1"
+
 end # @testset "WeakRefString"
 
 @testset "String Custom IO" begin
@@ -946,6 +954,14 @@ io = Buffer(IOBuffer("\\N"))
 io = Buffer(IOBuffer("\"\\N\""))
 v = CSV.parsefield(io, Union{String, Null}, CSV.Options(null="\\N"))
 @test isnull(v)
+
+io = Buffer(IOBuffer("\"NORTH DAKOTA STATE \"\"A\"\" #1\""))
+v = CSV.parsefield(io, String, CSV.Options(escapechar='"'))
+@test v == "NORTH DAKOTA STATE \"\"A\"\" #1"
+
+io = Buffer(IOBuffer("\"NORTH DAKOTA STATE \"\"A\"\" #1\","))
+v = CSV.parsefield(io, String, CSV.Options(escapechar='"'))
+@test v == "NORTH DAKOTA STATE \"\"A\"\" #1"
 
 end # @testset "String Custom IO"
 

@@ -99,13 +99,13 @@ end
     negative = false
     if b == MINUS # check for leading '-' or '+'
         c = peekbyte(io) 
-        if NEG_ONE < c < TEN
+        if (NEG_ONE < c < TEN) || c == opt.decimal
             negative = true
             b = readbyte(io)
         end
     elseif b == PLUS
         c = peekbyte(io) 
-        if NEG_ONE < c < TEN
+        if (NEG_ONE < c < TEN) || c == opt.decimal
             b = readbyte(io)
         end
     end
