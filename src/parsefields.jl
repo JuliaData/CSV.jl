@@ -261,6 +261,56 @@ end
     throw(ParsingException(Char, b, row, col))
 end
 
+@inline function parsefield(io::IO, ::Type{Bool}, opt::CSV.Options, row, col, state, ifnull::Function)
+    @checknullstart()
+    truestring = opt.truestring
+    falsestring = opt.falsestring
+    i = 1
+    if b == truestring[i]
+        v = true
+        while true
+            if eof(io)
+                if i == length(truestring)
+                    state[] = EOF
+                    @goto done
+                end
+                @goto error
+            end
+            b = readbyte(io)
+            i += 1
+            i > length(truestring) && break
+            b == truestring[i] || @goto error
+        end
+        @checkdone(done)
+    elseif b == falsestring[i]
+        v = false
+        while true
+            if eof(io)
+                if i == length(falsestring)
+                    state[] = EOF
+                    @goto done
+                end
+                @goto error
+            end
+            b = readbyte(io)
+            i += 1
+            i > length(falsestring) && break
+            b == falsestring[i] || @goto error
+        end
+        @checkdone(done)
+    end
+    @checknullend()
+    
+    @label done
+    return v
+
+    @label null
+    return ifnull(row, col)
+
+    @label error
+    throw(ParsingException(Bool, b, row, col))
+end
+
 # Generic fallback
 @inline function parsefield(io::IO, T, opt::CSV.Options, row, col, state, ifnull::Function)
     v = parsefield(io, String, opt, row, col, state, ifnull)

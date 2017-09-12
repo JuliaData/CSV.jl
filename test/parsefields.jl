@@ -1256,53 +1256,8 @@ v = CSV.parsefield(io,DateTime,CSV.Options(dateformat=dateformat"mm/dd/yyyy HH:M
 
 end # @testset "DateTime Custom IO"
 
-@testset "All types" begin
-opt = CSV.Options(dateformat=Dates.ISODateFormat)
-# All types
-io = IOBuffer("1,1.0,hey there sailor,2015-10-05\n,1.0,hey there sailor,\n1,,hey there sailor,2015-10-05\n1,1.0,,\n,,,")
-# io = CSV.Source(io)
-v = CSV.parsefield(io,Int)
-@test v === 1
-v = CSV.parsefield(io,Float64)
-@test v === 1.0
-v = CSV.parsefield(io,WeakRefString{UInt8})
-@test v == "hey there sailor"
-v = CSV.parsefield(io,Date,opt)
-@test v === Date(2015,10,5)
+@testset "Char" begin
 
-v = CSV.parsefield(io, Union{Int, Null})
-@test isnull(v)
-v = CSV.parsefield(io,Float64)
-@test v === 1.0
-v = CSV.parsefield(io,WeakRefString{UInt8})
-@test v == "hey there sailor"
-v = CSV.parsefield(io, Union{Date, Null},opt)
-@test isnull(v)
-
-v = CSV.parsefield(io,Int)
-@test v === 1
-v = CSV.parsefield(io, Union{Float64, Null})
-@test isnull(v)
-v = CSV.parsefield(io,WeakRefString{UInt8})
-@test v == "hey there sailor"
-v = CSV.parsefield(io,Date,opt)
-@test v === Date(2015,10,5)
-
-v = CSV.parsefield(io,Int)
-@test v === 1
-v = CSV.parsefield(io,Float64)
-@test v === 1.0
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null})
-@test isnull(v)
-@test_throws DataStreams.Data.NullException CSV.parsefield(io,Date,opt)
-
-v = CSV.parsefield(io, Union{Int, Null})
-@test isnull(v)
-@test_throws DataStreams.Data.NullException CSV.parsefield(io,Float64)
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null})
-@test isnull(v)
-
-# Char
 io = IOBuffer("0")
 v = CSV.parsefield(io,Char)
 @test v === '0'
@@ -1396,7 +1351,146 @@ io = IOBuffer("\"\\N\"")
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Char,CSV.Options(null="\\N"))
 
 io = IOBuffer("\t")
-v = CSV.parsefield(io, Union{Int64, Null}, CSV.Options(delim='\t'))
+v = CSV.parsefield(io, Union{Char, Null}, CSV.Options(delim='\t'))
+@test isnull(v)
+
+end # @testset "Char"
+
+@testset "Bool" begin
+
+io = IOBuffer("")
+v = CSV.parsefield(io, Union{Bool, Null})
+@test isnull(v)
+
+io = IOBuffer(" ")
+@test_throws DataStreams.Data.NullException CSV.parsefield(io,Bool)
+
+io = IOBuffer("\t")
+v = CSV.parsefield(io, Union{Bool, Null})
+@test isnull(v)
+
+io = IOBuffer("true\n")
+v = CSV.parsefield(io,Bool)
+@test v
+
+io = IOBuffer("true\r")
+v = CSV.parsefield(io,Bool)
+@test v
+
+io = IOBuffer("true\r\n")
+v = CSV.parsefield(io,Bool)
+@test v
+
+io = IOBuffer("truea\n")
+@test_throws CSV.ParsingException CSV.parsefield(io,Bool)
+
+io = IOBuffer("\ttrue\t\n")
+v = CSV.parsefield(io,Bool)
+@test v
+
+io = IOBuffer("true,")
+v = CSV.parsefield(io,Bool)
+@test v
+
+io = IOBuffer("false,\n")
+v = CSV.parsefield(io,Bool)
+@test !v
+
+io = IOBuffer("\n")
+v = CSV.parsefield(io, Union{Bool, Null})
+@test isnull(v)
+
+io = IOBuffer("\r")
+@test_throws DataStreams.Data.NullException CSV.parsefield(io,Bool)
+
+io = IOBuffer("\r\n")
+v = CSV.parsefield(io, Union{Bool, Null})
+@test isnull(v)
+
+io = IOBuffer("\"\"")
+@test_throws DataStreams.Data.NullException CSV.parsefield(io,Bool)
+
+io = IOBuffer("\\N")
+v = CSV.parsefield(io, Union{Bool, Null}, CSV.Options(null="\\N"))
+@test isnull(v)
+
+io = IOBuffer("\"\\N\"")
+@test_throws DataStreams.Data.NullException CSV.parsefield(io,Bool,CSV.Options(null="\\N"))
+
+io = IOBuffer("\t")
+v = CSV.parsefield(io, Union{Bool, Null}, CSV.Options(delim='\t'))
+@test isnull(v)
+
+io = IOBuffer("T")
+v = CSV.parsefield(io, Bool, CSV.Options(truestring="T"))
+@test v
+
+io = IOBuffer("T,")
+v = CSV.parsefield(io, Bool, CSV.Options(truestring="T"))
+@test v
+
+io = IOBuffer("T\n")
+v = CSV.parsefield(io, Bool, CSV.Options(truestring="T"))
+@test v
+
+io = IOBuffer("F")
+v = CSV.parsefield(io, Bool, CSV.Options(falsestring="F"))
+@test !v
+
+io = IOBuffer("F,")
+v = CSV.parsefield(io, Bool, CSV.Options(falsestring="F"))
+@test !v
+
+io = IOBuffer("F\n")
+v = CSV.parsefield(io, Bool, CSV.Options(falsestring="F"))
+@test !v
+
+end # @testset "Bool"
+
+@testset "All types" begin
+opt = CSV.Options(dateformat=Dates.ISODateFormat)
+# All types
+io = IOBuffer("1,1.0,hey there sailor,2015-10-05\n,1.0,hey there sailor,\n1,,hey there sailor,2015-10-05\n1,1.0,,\n,,,")
+# io = CSV.Source(io)
+v = CSV.parsefield(io,Int)
+@test v === 1
+v = CSV.parsefield(io,Float64)
+@test v === 1.0
+v = CSV.parsefield(io,WeakRefString{UInt8})
+@test v == "hey there sailor"
+v = CSV.parsefield(io,Date,opt)
+@test v === Date(2015,10,5)
+
+v = CSV.parsefield(io, Union{Int, Null})
+@test isnull(v)
+v = CSV.parsefield(io,Float64)
+@test v === 1.0
+v = CSV.parsefield(io,WeakRefString{UInt8})
+@test v == "hey there sailor"
+v = CSV.parsefield(io, Union{Date, Null},opt)
+@test isnull(v)
+
+v = CSV.parsefield(io,Int)
+@test v === 1
+v = CSV.parsefield(io, Union{Float64, Null})
+@test isnull(v)
+v = CSV.parsefield(io,WeakRefString{UInt8})
+@test v == "hey there sailor"
+v = CSV.parsefield(io,Date,opt)
+@test v === Date(2015,10,5)
+
+v = CSV.parsefield(io,Int)
+@test v === 1
+v = CSV.parsefield(io,Float64)
+@test v === 1.0
+v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null})
+@test isnull(v)
+@test_throws DataStreams.Data.NullException CSV.parsefield(io,Date,opt)
+
+v = CSV.parsefield(io, Union{Int, Null})
+@test isnull(v)
+@test_throws DataStreams.Data.NullException CSV.parsefield(io,Float64)
+v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null})
 @test isnull(v)
 
 end # @testset "All types"

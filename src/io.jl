@@ -202,10 +202,8 @@ promote_type2(::Type{Float64}, ::Type{Int}) = Float64
 promote_type2(::Type{Date}, ::Type{DateTime}) = DateTime
 promote_type2(::Type{DateTime}, ::Type{Date}) = DateTime
 # for cases when our current type can't widen, just promote to WeakRefString
-promote_type2(::Type{Int}, ::Type{<:Dates.TimeType}) = WeakRefString{UInt8}
-promote_type2(::Type{<:Dates.TimeType}, ::Type{Int}) = WeakRefString{UInt8}
-promote_type2(::Type{Float64}, ::Type{<:Dates.TimeType}) = WeakRefString{UInt8}
-promote_type2(::Type{<:Dates.TimeType}, ::Type{Float64}) = WeakRefString{UInt8}
+promote_type2(::Type{<:Real}, ::Type{<:Dates.TimeType}) = WeakRefString{UInt8}
+promote_type2(::Type{<:Dates.TimeType}, ::Type{<:Real}) = WeakRefString{UInt8}
 promote_type2(::Type{<:Any}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
 promote_type2(::Type{WeakRefString{UInt8}}, ::Type{<:Any}) = WeakRefString{UInt8}
 # avoid ambiguity
