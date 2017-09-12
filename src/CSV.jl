@@ -48,7 +48,7 @@ Keyword Arguments:
  * `dateformat::Union{AbstractString,Dates.DateFormat}`: how dates/datetimes are represented in the dataset; default `Base.Dates.ISODateTimeFormat`
  * `decimal::Union{Char,UInt8}`: character to recognize as the decimal point in a float number, e.g. `3.14` or `3,14`; default `'.'`
 """
-mutable struct Options{D}
+struct Options{D}
     delim::UInt8
     quotechar::UInt8
     escapechar::UInt8
@@ -63,9 +63,9 @@ mutable struct Options{D}
     types
 end
 
-Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, null="", dateformat=Dates.ISODateTimeFormat, decimal=PERIOD, datarow=-1, rows=0, header=1, types=Type[]) =
+Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, null="", dateformat=null, decimal=PERIOD, datarow=-1, rows=0, header=1, types=Type[]) =
     Options(delim%UInt8, quotechar%UInt8, escapechar%UInt8,
-            map(UInt8, collect(ascii(null))), null != "", isa(dateformat,Dates.DateFormat) ? dateformat : Dates.DateFormat(dateformat), decimal%UInt8, datarow, rows, header, types)
+            map(UInt8, collect(ascii(String(null)))), null != "", isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat, decimal%UInt8, datarow, rows, header, types)
 function Base.show(io::IO,op::Options)
     println(io, "    CSV.Options:")
     println(io, "        delim: '", Char(op.delim), "'")
@@ -101,7 +101,6 @@ mutable struct Source{I, D} <: Data.Source
     schema::Data.Schema
     options::Options{D}
     io::I
-    ptr::Int # pointer to underlying data buffer
     fullpath::String
     datapos::Int # the position in the IOBuffer where the rows of data begins
 end
@@ -161,5 +160,6 @@ include("io.jl")
 include("Source.jl")
 # include("TransposedSource.jl")
 include("Sink.jl")
+include("validate.jl")
 
 end # module

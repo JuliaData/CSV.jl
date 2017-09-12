@@ -9,3 +9,4 @@ dir = joinpath(dirname(@__FILE__),"test_files/")
 
 include("source.jl")
 include("multistream.jl")
+include("validate.jl")

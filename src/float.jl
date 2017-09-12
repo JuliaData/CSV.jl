@@ -93,7 +93,7 @@ function scale(exp, v::T, frac, row, col) where T
     end
 end
 
-@inline function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, ifnull::Function) where {T <: Union{Float16, Float32, Float64}}
+@inline function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifnull::Function) where {T <: Union{Float16, Float32, Float64}}
     mark(io)
     @checknullstart()
     negative = false
@@ -118,7 +118,7 @@ end
         # process digits
         v *= iT(10)
         v += iT(b - ZERO)
-        eof(io) && (state = EOF; result = T(v); @goto done)
+        eof(io) && (state[] = EOF; result = T(v); @goto done)
         b = readbyte(io)
     end
     # if we didn't get any digits, check for NaN/Inf or leading dot
@@ -130,7 +130,7 @@ end
             b = readbyte(io)
             !(b == LITTLEN || b == BIGN) && (reset(io); b = readbyte(io); @goto checknullend)
             result = T(NaN)
-            eof(io) && @goto done
+            eof(io) && (state[] = EOF; @goto done)
             b = readbyte(io)
             @goto checkdone
         elseif b == LITTLEI || b == BIGI
@@ -140,23 +140,23 @@ end
             b = readbyte(io)
             !(b == LITTLEF || b == BIGF) && (reset(io); b = readbyte(io); @goto checknullend)
             result = T(Inf)
-            eof(io) && @goto done
+            eof(io) && (state[] = EOF; @goto done)
             b = readbyte(io)
             if b == LITTLEI || b == BIGI
                 # read the rest of INFINITY
-                eof(io) && @goto done
+                eof(io) && (state[] = EOF; @goto done)
                 b = readbyte(io)
                 b == LITTLEN || b == BIGN || @goto checkdone
-                eof(io) && @goto done
+                eof(io) && (state[] = EOF; @goto done)
                 b = readbyte(io)
                 b == LITTLEI || b == BIGI || @goto checkdone
-                eof(io) && @goto done
+                eof(io) && (state[] = EOF; @goto done)
                 b = readbyte(io)
                 b == LITTLET || b == BIGT || @goto checkdone
-                eof(io) && @goto done
+                eof(io) && (state[] = EOF; @goto done)
                 b = readbyte(io)
                 b == LITTLEY || b == BIGY || @goto checkdone
-                eof(io) && @goto done
+                eof(io) && (state[] = EOF; @goto done)
                 b = readbyte(io)
             end
             @goto checkdone
@@ -170,7 +170,7 @@ end
     frac = 0
     result = T(v)
     if b == opt.decimal
-        eof(io) && (parseddigits ? @goto(done) : @goto(error))
+        eof(io) && (state[] = EOF; parseddigits ? @goto(done) : @goto(error))
         b = readbyte(io)
     elseif b == LITTLEE || b == BIGE
         @goto parseexp
@@ -183,13 +183,13 @@ end
         # process digits
         v *= iT(10)
         v += iT(b - ZERO)
-        eof(io) && (state = EOF; result = scale(-frac, v, 0, row, col); @goto done)
+        eof(io) && (state[] = EOF; result = scale(-frac, v, 0, row, col); @goto done)
         b = readbyte(io)
     end
     # parse potential exp
     if b == LITTLEE || b == BIGE
         @label parseexp
-        eof(io) && (state = EOF; result = scale(-frac, v, 0, row, col); @goto done)
+        eof(io) && (state[] = EOF; result = scale(-frac, v, 0, row, col); @goto done)
         b = readbyte(io)
         exp = zero(iT)
         negativeexp = false
@@ -205,7 +205,7 @@ end
             # process digits
             exp *= iT(10)
             exp += iT(b - ZERO)
-            eof(io) && (state = EOF; result = scale(ifelse(negativeexp, -exp, exp) - frac, v, frac, row, col); @goto done)
+            eof(io) && (state[] = EOF; result = scale(ifelse(negativeexp, -exp, exp) - frac, v, frac, row, col); @goto done)
             b = readbyte(io)
         end
         result = parseddigits ? scale(ifelse(negativeexp, -exp, exp) - frac, v, frac, row, col) : scale(-frac, v, 0, row, col)

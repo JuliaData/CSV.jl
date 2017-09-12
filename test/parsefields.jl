@@ -969,7 +969,7 @@ v = CSV.parsefield(io, String, CSV.Options(escapechar='"'))
 end # @testset "String Custom IO"
 
 @testset "Date" begin
-
+opt = CSV.Options(dateformat=Dates.ISODateFormat)
 # Date
 io = IOBuffer("")
 v = CSV.parsefield(io, Union{Date, Null})
@@ -1000,34 +1000,34 @@ io = IOBuffer("\"\\N\"")
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Date,CSV.Options(null="\\N"))
 
 io = IOBuffer("2015-10-05")
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io, Date, opt)
 @test v === Date(2015,10,5)
 
 io = IOBuffer("\"2015-10-05\"")
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 io = IOBuffer("2015-10-05,")
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 io = IOBuffer("2015-10-05\n")
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 io = IOBuffer("2015-10-05\r")
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 io = IOBuffer("2015-10-05\r\n")
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 io = IOBuffer("  \"2015-10-05\",")
-@test_throws ArgumentError CSV.parsefield(io,Date)
+@test_throws ArgumentError CSV.parsefield(io,Date,opt)
 
 io = IOBuffer("\"2015-10-05\"\n")
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 io = IOBuffer("\"10/5/2015\"\n")
@@ -1045,7 +1045,7 @@ v = CSV.parsefield(io,Date,CSV.Options(dateformat=dateformat"mm/dd/yyyy"))
 end # @testset "Date"
 
 @testset "Date Custom IO" begin
-
+opt = CSV.Options(dateformat=Dates.ISODateFormat)
 # Date Libz
 io = Buffer(IOBuffer(""))
 v = CSV.parsefield(io, Union{Date, Null})
@@ -1076,34 +1076,34 @@ io = Buffer(IOBuffer("\"\\N\""))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,Date,CSV.Options(null="\\N"))
 
 io = Buffer(IOBuffer("2015-10-05"))
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 io = Buffer(IOBuffer("\"2015-10-05\""))
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 io = Buffer(IOBuffer("2015-10-05,"))
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 io = Buffer(IOBuffer("2015-10-05\n"))
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 io = Buffer(IOBuffer("2015-10-05\r"))
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 io = Buffer(IOBuffer("2015-10-05\r\n"))
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 io = Buffer(IOBuffer("  \"2015-10-05\","))
-@test_throws ArgumentError CSV.parsefield(io,Date)
+@test_throws ArgumentError CSV.parsefield(io,Date,opt)
 
 io = Buffer(IOBuffer("\"2015-10-05\"\n"))
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 io = Buffer(IOBuffer("\"10/5/2015\"\n"))
@@ -1113,7 +1113,7 @@ v = CSV.parsefield(io,Date,CSV.Options(null="",dateformat=Dates.DateFormat("mm/d
 end # @testset "Date Custom IO"
 
 @testset "DateTime" begin
-
+opt = CSV.Options(dateformat=Dates.ISODateTimeFormat)
 # DateTime
 io = IOBuffer("")
 v = CSV.parsefield(io, Union{DateTime, Null})
@@ -1143,34 +1143,34 @@ io = IOBuffer("\"\\N\"")
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,DateTime,CSV.Options(null="\\N"))
 
 io = IOBuffer("2015-10-05T00:00:01")
-v = CSV.parsefield(io,DateTime)
+v = CSV.parsefield(io,DateTime,opt)
 @test v === DateTime(2015,10,5,0,0,1)
 
 io = IOBuffer("\"2015-10-05T00:00:01\"")
-v = CSV.parsefield(io,DateTime)
+v = CSV.parsefield(io,DateTime,opt)
 @test v === DateTime(2015,10,5,0,0,1)
 
 io = IOBuffer("2015-10-05T00:00:01,")
-v = CSV.parsefield(io,DateTime)
+v = CSV.parsefield(io,DateTime,opt)
 @test v === DateTime(2015,10,5,0,0,1)
 
 io = IOBuffer("2015-10-05T00:00:01\n")
-v = CSV.parsefield(io,DateTime)
+v = CSV.parsefield(io,DateTime,opt)
 @test v === DateTime(2015,10,5,0,0,1)
 
 io = IOBuffer("2015-10-05T00:00:01\r")
-v = CSV.parsefield(io,DateTime)
+v = CSV.parsefield(io,DateTime,opt)
 @test v === DateTime(2015,10,5,0,0,1)
 
 io = IOBuffer("2015-10-05T00:00:01\r\n")
-v = CSV.parsefield(io,DateTime)
+v = CSV.parsefield(io,DateTime,opt)
 @test v === DateTime(2015,10,5,0,0,1)
 
 io = IOBuffer("  \"2015-10-05T00:00:01\",")
-@test_throws ArgumentError CSV.parsefield(io,DateTime)
+@test_throws ArgumentError CSV.parsefield(io,DateTime,opt)
 
 io = IOBuffer("\"2015-10-05T00:00:01\"\n")
-v = CSV.parsefield(io,DateTime)
+v = CSV.parsefield(io,DateTime,opt)
 @test v === DateTime(2015,10,5,0,0,1)
 
 io = IOBuffer("\"10/5/2015 00:00:01\"\n")
@@ -1188,7 +1188,7 @@ v = CSV.parsefield(io,DateTime,CSV.Options(dateformat=dateformat"mm/dd/yyyy HH:M
 end # @testset "DateTime"
 
 @testset "DateTime Custom IO" begin
-
+opt = CSV.Options(dateformat=Dates.ISODateTimeFormat)
 # DateTime Libz
 io = Buffer(IOBuffer(""))
 v = CSV.parsefield(io, Union{DateTime, Null})
@@ -1219,35 +1219,35 @@ io = Buffer(IOBuffer("\"\\N\""))
 @test_throws DataStreams.Data.NullException CSV.parsefield(io,DateTime,CSV.Options(null="\\N"))
 
 io = Buffer(IOBuffer("2015-10-05T00:00:01"))
-v = CSV.parsefield(io,DateTime)
+v = CSV.parsefield(io,DateTime,opt)
 @test v === DateTime(2015,10,5,0,0,1)
 
 io = Buffer(IOBuffer("\"2015-10-05T00:00:01\""))
-v = CSV.parsefield(io,DateTime)
+v = CSV.parsefield(io,DateTime,opt)
 @test v === DateTime(2015,10,5,0,0,1)
 
 io = Buffer(IOBuffer("2015-10-05T00:00:01,"))
-v = CSV.parsefield(io,DateTime)
+v = CSV.parsefield(io,DateTime,opt)
 @test v === DateTime(2015,10,5,0,0,1)
 
 io = Buffer(IOBuffer("2015-10-05T00:00:01\n"))
-v = CSV.parsefield(io,DateTime)
+v = CSV.parsefield(io,DateTime,opt)
 @test v === DateTime(2015,10,5,0,0,1)
 
 io = Buffer(IOBuffer("2015-10-05T00:00:01\r"))
-v = CSV.parsefield(io,DateTime)
+v = CSV.parsefield(io,DateTime,opt)
 @test v === DateTime(2015,10,5,0,0,1)
 
 io = Buffer(IOBuffer("2015-10-05T00:00:01\r\n"))
-v = CSV.parsefield(io,DateTime)
+v = CSV.parsefield(io,DateTime,opt)
 @test v === DateTime(2015,10,5,0,0,1)
 
 io = Buffer(IOBuffer("  \"2015-10-05T00:00:01\","))
-@test_throws ArgumentError CSV.parsefield(io,DateTime)
+@test_throws ArgumentError CSV.parsefield(io,DateTime,opt)
 @test v === DateTime(2015,10,5,0,0,1)
 
 io = Buffer(IOBuffer("\"2015-10-05T00:00:01\"\n"))
-v = CSV.parsefield(io,DateTime)
+v = CSV.parsefield(io,DateTime,opt)
 @test v === DateTime(2015,10,5,0,0,1)
 
 io = Buffer(IOBuffer("\"10/5/2015 00:00:01\"\n"))
@@ -1257,7 +1257,7 @@ v = CSV.parsefield(io,DateTime,CSV.Options(dateformat=dateformat"mm/dd/yyyy HH:M
 end # @testset "DateTime Custom IO"
 
 @testset "All types" begin
-
+opt = CSV.Options(dateformat=Dates.ISODateFormat)
 # All types
 io = IOBuffer("1,1.0,hey there sailor,2015-10-05\n,1.0,hey there sailor,\n1,,hey there sailor,2015-10-05\n1,1.0,,\n,,,")
 # io = CSV.Source(io)
@@ -1267,7 +1267,7 @@ v = CSV.parsefield(io,Float64)
 @test v === 1.0
 v = CSV.parsefield(io,WeakRefString{UInt8})
 @test v == "hey there sailor"
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 v = CSV.parsefield(io, Union{Int, Null})
@@ -1276,7 +1276,7 @@ v = CSV.parsefield(io,Float64)
 @test v === 1.0
 v = CSV.parsefield(io,WeakRefString{UInt8})
 @test v == "hey there sailor"
-v = CSV.parsefield(io, Union{Date, Null})
+v = CSV.parsefield(io, Union{Date, Null},opt)
 @test isnull(v)
 
 v = CSV.parsefield(io,Int)
@@ -1285,7 +1285,7 @@ v = CSV.parsefield(io, Union{Float64, Null})
 @test isnull(v)
 v = CSV.parsefield(io,WeakRefString{UInt8})
 @test v == "hey there sailor"
-v = CSV.parsefield(io,Date)
+v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 v = CSV.parsefield(io,Int)
@@ -1294,7 +1294,7 @@ v = CSV.parsefield(io,Float64)
 @test v === 1.0
 v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null})
 @test isnull(v)
-@test_throws DataStreams.Data.NullException CSV.parsefield(io,Date)
+@test_throws DataStreams.Data.NullException CSV.parsefield(io,Date,opt)
 
 v = CSV.parsefield(io, Union{Int, Null})
 @test isnull(v)
