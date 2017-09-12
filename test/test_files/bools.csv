@@ -1,0 +1,5 @@
+col1,col2,col3
+true,false,1
+false,true,2
+true,true,3
+false,false,4

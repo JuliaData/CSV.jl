@@ -12,6 +12,8 @@ function Source(fullpath::Union{AbstractString,IO};
               nullable::Union{Bool, Null}=Nulls.null,
               dateformat=Nulls.null,
               decimal=PERIOD,
+              truestring="true",
+              falsestring="false",
 
               footerskip::Int=0,
               rows_for_type_detect::Int=20,
@@ -25,7 +27,7 @@ function Source(fullpath::Union{AbstractString,IO};
                         options=CSV.Options(delim=typeof(delim) <: String ? UInt8(first(delim)) : (delim % UInt8),
                                             quotechar=typeof(quotechar) <: String ? UInt8(first(quotechar)) : (quotechar % UInt8),
                                             escapechar=typeof(escapechar) <: String ? UInt8(first(escapechar)) : (escapechar % UInt8),
-                                            null=null, dateformat=dateformat, decimal=decimal),
+                                            null=null, dateformat=dateformat, decimal=decimal, truestring=truestring, falsestring=falsestring),
                         header=header, datarow=datarow, types=types, nullable=nullable, footerskip=footerskip,
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
@@ -215,6 +217,8 @@ Keyword Arguments:
 * `null::String`: indicates how NULL values are represented in the dataset; default `""`
 * `dateformat::Union{AbstractString,Dates.DateFormat}`: how dates/datetimes are represented in the dataset; default `Base.Dates.ISODateTimeFormat`
 * `decimal::Union{Char,UInt8}`: character to recognize as the decimal point in a float number, e.g. `3.14` or `3,14`; default `'.'`
+* `truestring`: string to represent `true::Bool` values in a csv file; default `"true"`. Note that `truestring` and `falsestring` cannot start with the same character.
+* `falsestring`: string to represent `false::Bool` values in a csv file; default `"false"`
 * `header`: column names can be provided manually as a complete Vector{String}, or as an Int/Range which indicates the row/rows that contain the column names
 * `datarow::Int`: specifies the row on which the actual data starts in the file; by default, the data is expected on the next row after the header row(s); for a file without column names (header), specify `datarow=1`
 * `types`: column types can be provided manually as a complete Vector{Type}, or in a Dict to reference individual columns by name or number
