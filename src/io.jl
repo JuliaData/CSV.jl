@@ -262,9 +262,9 @@ function detecttype(io, opt::CSV.Options{D}, T, prevT) where {D}
     end
     try
         seek(io, pos)
-        v1 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null}, opt)
+        v6 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null}, opt)
         # print("...parsed = '$v1'...")
-        return v1 isa Null ? Null : WeakRefString{UInt8}
+        return v6 isa Null ? Null : WeakRefString{UInt8}
     end
     return Null
 end
