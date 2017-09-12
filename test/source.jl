@@ -395,3 +395,10 @@ df = CSV.read(joinpath(dir, "double_quote_quotechar_and_escapechar.csv"); escape
 df = CSV.read(joinpath(dir, "census.txt"); delim='\t')
 @test eltype(df[9]) == Float64
 @test size(df) == (3, 9)
+
+# #79
+df = CSV.read(joinpath(dir, "bools.csv"))
+@test eltype(df[1]) == Bool
+@test df[1] == [true, false, true, false]
+@test df[2] == [false, true, true, false]
+@test df[3] == [1, 2, 3, 4]
