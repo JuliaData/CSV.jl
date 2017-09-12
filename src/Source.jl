@@ -6,11 +6,11 @@ function Source(fullpath::Union{AbstractString,IO};
               escapechar=ESCAPE,
               null::AbstractString="",
 
-              header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
+              header::Union{Integer, UnitRange{Int}, Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types=Type[],
               nullable::Union{Bool, Null}=Nulls.null,
-              dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateTimeFormat,
+              dateformat=Nulls.null,
               decimal=PERIOD,
 
               footerskip::Int=0,
@@ -136,11 +136,17 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             # println("type detecting on row = $lineschecked...")
             for i = 1:cols
                 # print("\tdetecting col = $i...")
-                typ = CSV.detecttype(source, options, CSV.timetype(options.dateformat), columntypes[i])::Type
+                typ = CSV.detecttype(source, options, columntypes[i])::Type
                 # print(typ)
                 columntypes[i] = CSV.promote_type2(columntypes[i], typ)
                 # println("...promoting to: ", columntypes[i])
             end
+        end
+        if options.dateformat == null && any(x->x <: Dates.TimeType, columntypes)
+            # auto-detected TimeType
+            options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
+                              null=options.null, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
+                              datarow=options.datarow, rows=options.rows, header=options.header, types=options.types)
         end
     else
         throw(ArgumentError("$cols number of columns detected; `types` argument has $(length(types)) entries"))
@@ -170,7 +176,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     end
     seek(source, datapos)
     sch = Data.Schema(columntypes, columnnames, ifelse(rows < 0, null, rows))
-    return Source(sch, options, source, Int(pointer(source.data)), String(fullpath), datapos)
+    return Source(sch, options, source, String(fullpath), datapos)
 end
 
 # construct a new Source from a Sink

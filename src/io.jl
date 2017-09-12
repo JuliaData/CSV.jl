@@ -217,10 +217,7 @@ promote_type2(::Type{Null}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefString{
 promote_type2(::Type{Any}, ::Type{Null}) = Null
 promote_type2(::Type{Null}, ::Type{Null}) = Null
 
-const DATE_OPTIONS = CSV.Options(dateformat=Dates.ISODateFormat)
-const DATETIME_OPTIONS = CSV.Options(dateformat=Dates.ISODateTimeFormat)
-
-function detecttype(io, opt::CSV.Options{D}, T, prevT) where {D}
+function detecttype(io, opt::CSV.Options{D}, prevT) where {D}
     pos = position(io)
     if Int <: prevT || prevT == Null
         try
@@ -237,25 +234,27 @@ function detecttype(io, opt::CSV.Options{D}, T, prevT) where {D}
             return v2 isa Null ? Null : Float64
         end
     end
-    if prevT == Any || Date <: prevT || DateTime <: prevT || prevT == Null
-        if D == typeof(Dates.ISODateTimeFormat)
+    if Date <: prevT || DateTime <: prevT || prevT == Null
+        if D == Null
+            # try to auto-detect TimeType
             try
                 seek(io, pos)
-                v3 = CSV.parsefield(io, Union{Date, Null}, DATE_OPTIONS)
+                v3 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null}, opt)
                 # print("...parsed = '$v3'...")
-                return v3 isa Null ? Null : Date
+                return v3 isa Null ? Null : (Date(v3, Dates.ISODateFormat); Date)
             end
             try
                 seek(io, pos)
-                v4 = CSV.parsefield(io, Union{DateTime, Null}, DATETIME_OPTIONS)
+                v4 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null}, opt)
                 # print("...parsed = '$v4'...")
-                return v4 isa Null ? Null : DateTime
+                return v4 isa Null ? Null : (DateTime(v4, Dates.ISODateTimeFormat); DateTime)
             end
         else
+            # use user-provided dateformat
             try
                 seek(io, pos)
+                T = timetype(opt.dateformat)
                 v5 = CSV.parsefield(io, Union{T, Null}, opt)
-                # print("...parsed = '$v5'...")
                 return v5 isa Null ? Null : T
             end
         end
