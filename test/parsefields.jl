@@ -72,9 +72,10 @@ v = CSV.parsefield(io, Union{Int, Null})
 
 io = IOBuffer("0a\n")
 @test_throws CSV.ParsingException CSV.parsefield(io,Int)
-# Should we handle trailing whitespace?
+
 io = IOBuffer("\t0\t\n")
-@test_throws CSV.ParsingException CSV.parsefield(io, Union{Int, Null})
+v = CSV.parsefield(io, Union{Int, Null})
+@test v === 0
 
 io = IOBuffer("0,")
 v = CSV.parsefield(io,Int)
@@ -168,9 +169,10 @@ v = CSV.parsefield(io, Union{Int, Null})
 
 io = Buffer(IOBuffer("0a\n"))
 @test_throws CSV.ParsingException CSV.parsefield(io,Int)
-# Should we handle trailing whitespace?
+
 io = Buffer(IOBuffer("\t0\t\n"))
-@test_throws CSV.ParsingException CSV.parsefield(io, Union{Int, Null})
+v = CSV.parsefield(io, Union{Int, Null})
+@test v === 0
 
 io = Buffer(IOBuffer("0,"))
 v = CSV.parsefield(io,Int)
@@ -262,9 +264,10 @@ v = CSV.parsefield(io, Union{Float64, Null})
 
 io = Buffer(IOBuffer("0a\n"))
 @test_throws CSV.ParsingException CSV.parsefield(io,Float64)
-# Should we handle trailing whitespace?
+
 io = Buffer(IOBuffer("\t0\t\n"))
-@test_throws CSV.ParsingException CSV.parsefield(io, Union{Float64, Null})
+v = CSV.parsefield(io, Union{Float64, Null})
+@test v === 0.0
 
 io = Buffer(IOBuffer("0,"))
 v = CSV.parsefield(io,Float64)
@@ -385,9 +388,10 @@ v = CSV.parsefield(io, Union{Float64, Null})
 
 io = IOBuffer("0a\n")
 @test_throws CSV.ParsingException CSV.parsefield(io,Float64)
-# Should we handle trailing whitespace?
+
 io = IOBuffer("\t0\t\n")
-@test_throws CSV.ParsingException CSV.parsefield(io, Union{Float64, Null})
+v = CSV.parsefield(io, Union{Float64, Null})
+@test v === 0.0
 
 io = IOBuffer("0,")
 v = CSV.parsefield(io,Float64)
@@ -912,7 +916,6 @@ io = Buffer(IOBuffer("0a\n"))
 v = CSV.parsefield(io,String)
 @test v == "0a"
 
-# Should we handle trailing whitespace?
 io = Buffer(IOBuffer("\t0\t\n"))
 v = CSV.parsefield(io,String)
 @test v == "\t0\t"
@@ -1358,9 +1361,10 @@ v = CSV.parsefield(io,Char)
 
 io = IOBuffer("0a\n")
 @test_throws CSV.ParsingException CSV.parsefield(io,Char)
-# Should we handle trailing whitespace?
+
 io = IOBuffer("\t0\t\n")
-@test_throws CSV.ParsingException CSV.parsefield(io,Char)
+v = CSV.parsefield(io,Char)
+@test v === '0'
 
 io = IOBuffer("0,")
 v = CSV.parsefield(io,Char)

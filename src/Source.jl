@@ -92,7 +92,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             columnnames = ["Column$i" for i = eachindex(row_vals)]
         else
             CSV.skipto!(source,1,header,options.quotechar,options.escapechar)
-            columnnames = [x.value for x in CSV.readsplitline!(row_vals, source,options.delim,options.quotechar,options.escapechar)]
+            columnnames = [strip(x.value) for x in CSV.readsplitline!(row_vals, source,options.delim,options.quotechar,options.escapechar)]
             datarow != header+1 && CSV.skipto!(source,header+1,datarow,options.quotechar,options.escapechar)
             datapos = position(source)
         end

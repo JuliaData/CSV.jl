@@ -44,6 +44,25 @@ macro checkdone(label)
         elseif b == opt.quotechar && eof(io)
             state = EOF
             @goto $label
+        elseif b == CSV.SPACE || b == CSV.TAB
+            # trailing whitespace
+            while !eof(io) && (b == CSV.SPACE || b == CSV.TAB)
+                b = readbyte(io)
+            end
+            if b == opt.delim
+                state = Delimiter
+                @goto $label
+            elseif b == NEWLINE
+                state = Newline
+                @goto $label
+            elseif b == RETURN
+                state = Newline
+                !eof(io) && peekbyte(io) == NEWLINE && readbyte(io)
+                @goto $label
+            elseif eof(io)
+                state = EOF
+                @goto $label
+            end
         end
     end)
 end

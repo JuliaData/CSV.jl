@@ -385,3 +385,13 @@ df = CSV.read(joinpath(dir, "comma_decimal.csv"); delim=';', decimal=',')
 @test df[1][2] === 1.0
 @test df[2][1] === 1
 @test df[2][2] === 1
+
+# #86
+df = CSV.read(joinpath(dir, "double_quote_quotechar_and_escapechar.csv"); escapechar='"')
+@test size(df) == (24, 5)
+@test df[5][24] == "NORTH DAKOTA STATE \"\"A\"\" #1"
+
+# #84
+df = CSV.read(joinpath(dir, "census.txt"); delim='\t')
+@test eltype(df[9]) == Float64
+@test size(df) == (3, 9)
