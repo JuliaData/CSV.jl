@@ -229,6 +229,7 @@ Keyword Arguments:
 * `use_mmap::Bool=true`: whether the underlying file will be mmapped or not while parsing; note that on Windows machines, the underlying file will not be "deletable" until Julia GC has run (can be run manually via `gc()`) due to the use of a finalizer when reading the file.
 * `append::Bool=false`: if the `sink` argument provided is an existing table, `append=true` will append the source's data to the existing data instead of doing a full replace
 * `transforms::Dict{Union{String,Int},Function}`: a Dict of transforms to apply to values as they are parsed. Note that a column can be specified by either number or column name.
+* `transpose::Bool=false`: when reading the underlying csv data, rows should be treated as columns and columns as rows, thus the resulting dataset will be the "transpose" of the actual csv data.
 
 Note by default, "string" or text columns will be parsed as the [`WeakRefString`](https://github.com/quinnj/WeakRefStrings.jl) type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
 To convert a `String` to a standard Julia string type, just call `string(::WeakRefString)`, this also works on an entire column.
@@ -253,6 +254,9 @@ CSV.read(file; delim='\t')
 
 # read in a comma-delimited file with null values represented as '\\N', such as a MySQL export
 CSV.read(file; null="\\N")
+
+# read a csv file that happens to have column names in the first column, and grouped data in rows instead of columns
+CSV.read(file; transpose=true)
 
 # manually provided column names; must match # of columns of data in file
 # this assumes there is no header row in the file itself, so data parsing will start at the very beginning of the file

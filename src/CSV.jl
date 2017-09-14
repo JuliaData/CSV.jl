@@ -118,6 +118,16 @@ function Base.show(io::IO, f::Source)
     show(io, f.schema)
 end
 
+"""
+`CSV.TransposedSource(file_or_io; kwargs...) => CSV.TransposedSource`
+
+Type that in all respects is identical to a `CSV.Source`, except when reading a csv file,
+the data will be parsed "transposed", i.e. rows will become columns / columns will become rows.
+This can be a huge convenience if the csv data happens to be transposed, as well as lead to huge
+performance gains as the resulting data set can be more consistently typed.
+
+Typical usage involves calling `CSV.read(file; transpose=true)`.
+"""
 mutable struct TransposedSource{I, D} <: Data.Source
     schema::Data.Schema
     options::Options{D}
