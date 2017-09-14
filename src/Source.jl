@@ -189,7 +189,7 @@ Source(s::CSV.Sink) = CSV.Source(fullpath=s.fullpath, options=s.options)
 Data.reset!(s::CSV.Source) = (seek(s.io, s.datapos); return nothing)
 Data.schema(source::CSV.Source) = source.schema
 Data.accesspattern(::Type{<:CSV.Source}) = Data.Sequential
-@inline Data.isdone(io::CSV.Source, row, col, rows, cols) = eof(io.io) || (!isnull(rows) && row > unsafe_get(rows))
+@inline Data.isdone(io::CSV.Source, row, col, rows, cols) = eof(io.io) || (!isnull(rows) && row > rows)
 @inline Data.isdone(io::Source, row, col) = Data.isdone(io, row, col, size(io.schema)...)
 Data.streamtype(::Type{<:CSV.Source}, ::Type{Data.Field}) = true
 @inline Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T} = CSV.parsefield(source.io, T, source.options, row, col)
@@ -291,17 +291,19 @@ sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 """
 function read end
 
-function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
-    source = Source(fullpath; kwargs...)
+function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), transpose::Bool=false, kwargs...)
+    source = transpose ? TransposedSource(fullpath; kwargs...) : Source(fullpath; kwargs...)
     sink = Data.stream!(source, sink, args...; append=append, transforms=transforms)
     return Data.close!(sink)
 end
 
-function read(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...) where {T}
-    source = Source(fullpath; kwargs...)
+function read(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}(), transpose::Bool=false, kwargs...) where {T}
+    source = transpose ? TransposedSource(fullpath; kwargs...) : Source(fullpath; kwargs...)
     sink = Data.stream!(source, sink; append=append, transforms=transforms)
     return Data.close!(sink)
 end
 
 read(source::CSV.Source, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, args...; append=append, transforms=transforms); return Data.close!(sink))
 read(source::CSV.Source, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) where {T} = (sink = Data.stream!(source, sink; append=append, transforms=transforms); return Data.close!(sink))
+read(source::CSV.TransposedSource, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, args...; append=append, transforms=transforms); return Data.close!(sink))
+read(source::CSV.TransposedSource, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) where {T} = (sink = Data.stream!(source, sink; append=append, transforms=transforms); return Data.close!(sink))

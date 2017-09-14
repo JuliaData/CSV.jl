@@ -81,7 +81,15 @@ for T in (Int, Float64, WeakRefStrings.WeakRefString{UInt8}, Date, DateTime)
     # @time TextParse.csvread("/Users/jacobquinn/Downloads/randoms_$T.csv");
 end
 
+for T in (Int, Float64, WeakRefStrings.WeakRefString{UInt8}, Date, DateTime)
+    println("comparing for T = $T...")
+    # T == WeakRefStrings.WeakRefString{UInt8} && continue
+    # @time CSV.read("/Users/jacobquinn/Downloads/randoms_$(T).csv"; nullable=true);
+    @time TextParse.csvread("/Users/jacobquinn/Downloads/randoms_$T.csv");
+end
+
 @time CSV.read("/Users/jacobquinn/Downloads/yellow_tripdata_2015-01.csv");
+@time TextParse.csvread("/Users/jacobquinn/Downloads/yellow_tripdata_2015-01.csv");
 
 for T in ('Int64', 'Float64', 'WeakRefString{UInt8}', 'Date', 'DateTime'):
     start = time.time()
@@ -90,6 +98,12 @@ for T in ('Int64', 'Float64', 'WeakRefString{UInt8}', 'Date', 'DateTime'):
     end = time.time()
     print(end - start)
 
+
+start = time.time()
+delim = ','
+table = pandas.read_csv("/Users/jacobquinn/Downloads/yellow_tripdata_2015-01.csv", delimiter=delim)
+end = time.time()
+print(end - start)
 @time df = CSV.read("/Users/jacobquinn/Downloads/file.txt"; delim=' ');
 @time TextParse.csvread("/Users/jacobquinn/Downloads/randoms_$(T).csv")
 # julia> for T in (Int, Float64, WeakRefStrings.WeakRefString{UInt8}, Date, DateTime)
@@ -259,3 +273,5 @@ end
 function getstatic{T}(t::T)
     return t[1]
 end
+
+
