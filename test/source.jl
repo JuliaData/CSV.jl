@@ -402,3 +402,28 @@ df = CSV.read(joinpath(dir, "bools.csv"))
 @test df[1] == [true, false, true, false]
 @test df[2] == [false, true, true, false]
 @test df[3] == [1, 2, 3, 4]
+
+# CSV.TransposedSource
+df = CSV.read(joinpath(dir, "transposed.csv"); transpose=true)
+@test size(df) == (3, 3)
+@test Data.header(Data.schema(df)) == ["col1", "col2", "col3"]
+@test df[1][1] == 1
+@test df[1][2] == 2
+@test df[1][3] == 3
+
+df = CSV.read(joinpath(dir, "transposed_1row.csv"); transpose=true)
+@test size(df) == (1, 1)
+
+df = CSV.read(joinpath(dir, "transposed_emtpy.csv"); transpose=true)
+@test size(df) == (0, 1)
+
+df = CSV.read(joinpath(dir, "transposed_extra_newline.csv"); transpose=true)
+@test size(df) == (2, 2)
+
+df = CSV.read(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=0)
+@test size(df) == (2, 3)
+@test Data.header(Data.schema(df)) == ["Column1", "Column2", "Column3"]
+
+df = CSV.read(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=["c1", "c2", "c3"])
+@test size(df) == (2, 3)
+@test Data.header(Data.schema(df)) == ["c1", "c2", "c3"]
