@@ -14,6 +14,7 @@ function TransposedSource(fullpath::Union{AbstractString,IO};
               decimal=PERIOD,
               truestring="true",
               falsestring="false",
+              categorical::Bool=true,
 
               footerskip::Int=0,
               rows_for_type_detect::Int=20,
@@ -28,7 +29,7 @@ function TransposedSource(fullpath::Union{AbstractString,IO};
                                             quotechar=typeof(quotechar) <: String ? UInt8(first(quotechar)) : (quotechar % UInt8),
                                             escapechar=typeof(escapechar) <: String ? UInt8(first(escapechar)) : (escapechar % UInt8),
                                             null=null, dateformat=dateformat, decimal=decimal, truestring=truestring, falsestring=falsestring),
-                        header=header, datarow=datarow, types=types, nullable=nullable, footerskip=footerskip,
+                        header=header, datarow=datarow, types=types, nullable=nullable, categorical=categorical, footerskip=footerskip,
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
 
@@ -39,6 +40,7 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
                 types=Type[],
                 nullable::Union{Bool, Null}=null,
+                categorical::Bool=true,
 
                 footerskip::Int=0,
                 rows_for_type_detect::Int=20,
@@ -93,7 +95,7 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
         columnpositions = [position(source)]
         datapos = position(source)
         rows = 0
-        b = peekbyte(source)
+        b = eof(source) ? 0x00 : peekbyte(source)
         while !eof(source) && b != NEWLINE && b != RETURN
             b = readbyte(source)
             rows += ifelse(b == options.delim, 1, 0)
@@ -116,7 +118,7 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
             cols += 1
             push!(columnnames, strip(parsefield(source, String, options, cols, row)))
             push!(columnpositions, position(source))
-            b = peekbyte(source)
+            b = eof(source) ? 0x00 : peekbyte(source)
             while !eof(source) && b != NEWLINE && b != RETURN
                 b = readbyte(source)
             end
@@ -184,6 +186,7 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
         columntypes = types
     elseif isa(types, Dict) || isempty(types)
         columntypes = Vector{Type}(cols)
+        levels = Dict{Int, Set{WeakRefString{UInt8}}}(i=>Set{WeakRefString{UInt8}}() for i = 1:cols)
         fill!(columntypes, Any)
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
@@ -192,7 +195,7 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
             for i = 1:cols
                 # print("\tdetecting col = $i...")
                 seek(source, columnpositions[i])
-                typ = CSV.detecttype(source, options, columntypes[i])::Type
+                typ = CSV.detecttype(source, options, columntypes[i], levels[i])::Type
                 columnpositions[i] = position(source)
                 # print(typ)
                 columntypes[i] = CSV.promote_type2(columntypes[i], typ)
@@ -204,6 +207,13 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
             options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
                               null=options.null, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
                               datarow=options.datarow, rows=options.rows, header=options.header, types=options.types)
+        end
+        if categorical
+            for i = 1:cols
+                T = columntypes[i]
+                columntypes[i] = ifelse(length(levels[i]) / rows_for_type_detect < .67 && T <: WeakRefString,
+                    CategoricalValue{String, UInt32}, T)
+            end
         end
     else
         throw(ArgumentError("$cols number of columns detected; `types` argument has $(length(types)) entries"))

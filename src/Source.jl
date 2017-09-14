@@ -14,6 +14,7 @@ function Source(fullpath::Union{AbstractString,IO};
               decimal=PERIOD,
               truestring="true",
               falsestring="false",
+              categorical::Bool=true,
 
               footerskip::Int=0,
               rows_for_type_detect::Int=20,
@@ -28,7 +29,7 @@ function Source(fullpath::Union{AbstractString,IO};
                                             quotechar=typeof(quotechar) <: String ? UInt8(first(quotechar)) : (quotechar % UInt8),
                                             escapechar=typeof(escapechar) <: String ? UInt8(first(escapechar)) : (escapechar % UInt8),
                                             null=null, dateformat=dateformat, decimal=decimal, truestring=truestring, falsestring=falsestring),
-                        header=header, datarow=datarow, types=types, nullable=nullable, footerskip=footerskip,
+                        header=header, datarow=datarow, types=types, nullable=nullable, categorical=categorical, footerskip=footerskip,
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
 
@@ -39,6 +40,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
                 types=Type[],
                 nullable::Union{Bool, Null}=null,
+                categorical::Bool=true,
 
                 footerskip::Int=0,
                 rows_for_type_detect::Int=20,
@@ -131,6 +133,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         columntypes = types
     elseif isa(types, Dict) || isempty(types)
         columntypes = Vector{Type}(cols)
+        levels = Dict{Int, Set{WeakRefString{UInt8}}}(i=>Set{WeakRefString{UInt8}}() for i = 1:cols)
         fill!(columntypes, Any)
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
@@ -138,7 +141,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             # println("type detecting on row = $lineschecked...")
             for i = 1:cols
                 # print("\tdetecting col = $i...")
-                typ = CSV.detecttype(source, options, columntypes[i])::Type
+                typ = CSV.detecttype(source, options, columntypes[i], levels[i])::Type
                 # print(typ)
                 columntypes[i] = CSV.promote_type2(columntypes[i], typ)
                 # println("...promoting to: ", columntypes[i])
@@ -149,6 +152,13 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
                               null=options.null, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
                               datarow=options.datarow, rows=options.rows, header=options.header, types=options.types)
+        end
+        if categorical
+            for i = 1:cols
+                T = columntypes[i]
+                columntypes[i] = ifelse(length(levels[i]) / rows_for_type_detect < .67 && T <: WeakRefString,
+                    CategoricalValue{String, UInt32}, T)
+            end
         end
     else
         throw(ArgumentError("$cols number of columns detected; `types` argument has $(length(types)) entries"))
@@ -230,6 +240,7 @@ Keyword Arguments:
 * `append::Bool=false`: if the `sink` argument provided is an existing table, `append=true` will append the source's data to the existing data instead of doing a full replace
 * `transforms::Dict{Union{String,Int},Function}`: a Dict of transforms to apply to values as they are parsed. Note that a column can be specified by either number or column name.
 * `transpose::Bool=false`: when reading the underlying csv data, rows should be treated as columns and columns as rows, thus the resulting dataset will be the "transpose" of the actual csv data.
+* `categorical::Bool=true`: read string column as a `CategoricalArray` ([ref](https://github.com/JuliaData/CategoricalArrays.jl)), as long as the % of unique values seen during type detection is less than 67%. This will dramatically reduce memory use in cases where the number of unique values is small.
 
 Note by default, "string" or text columns will be parsed as the [`WeakRefString`](https://github.com/quinnj/WeakRefStrings.jl) type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
 To convert a `String` to a standard Julia string type, just call `string(::WeakRefString)`, this also works on an entire column.
