@@ -311,6 +311,11 @@ end
     throw(ParsingException(Bool, b, row, col))
 end
 
+@inline function parsefield(io::IO, ::Type{<:CategoricalValue}, opt::CSV.Options, row, col, state, ifnull::Function)
+    v = parsefield(io, WeakRefString{UInt8}, opt, row, col, state, ifnull)
+    return v isa Null ? ifnull(row, col) : v
+end
+
 # Generic fallback
 @inline function parsefield(io::IO, T, opt::CSV.Options, row, col, state, ifnull::Function)
     v = parsefield(io, String, opt, row, col, state, ifnull)
