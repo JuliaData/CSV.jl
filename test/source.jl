@@ -78,14 +78,14 @@ f = CSV.Source(joinpath(dir, "test_simple_quoted.csv"))
 @test size(Data.schema(f), 2) == 2
 @test size(Data.schema(f), 1) == 1
 ds = CSV.read(f)
-@test string(ds[1][1]) == "quoted field 1"
-@test string(ds[2][1]) == "quoted field 2"
+@test String(ds[1][1]) == "quoted field 1"
+@test String(ds[2][1]) == "quoted field 2"
 f = CSV.Source(joinpath(dir, "test_quoted_delim_and_newline.csv"))
 @test size(Data.schema(f), 2) == 2
 @test size(Data.schema(f), 1) == 1
 
 @testset "quoted numbers detected as string column" begin
-    f = CSV.Source(joinpath(dir, "test_quoted_numbers.csv"))
+    f = CSV.Source(joinpath(dir, "test_quoted_numbers.csv"); categorical=false)
     @test size(Data.schema(f), 2) == 3
     @test size(Data.schema(f), 1) == 3
     ds = CSV.read(f)
@@ -151,7 +151,7 @@ f = CSV.Source(joinpath(dir, "test_float_in_int_column.csv"); types=[Int,Int,Int
 @test_throws CSV.ParsingException CSV.read(f)
 
 #test null/missing values
-f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"))
+f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"); categorical=false)
 @test size(Data.schema(f), 2) == 3
 @test size(Data.schema(f), 1) == 3
 @test Data.types(Data.schema(f)) == (Float64,WeakRefString{UInt8},Float64)
@@ -187,35 +187,35 @@ f = CSV.Source(joinpath(dir, "FL_insurance_sample.csv"); types=Dict(10=>Float64,
 @test size(Data.schema(f), 2) == 18
 @test size(Data.schema(f), 1) == 36634
 @test Data.header(Data.schema(f)) == ["policyID","statecode","county","eq_site_limit","hu_site_limit","fl_site_limit","fr_site_limit","tiv_2011","tiv_2012","eq_site_deductible","hu_site_deductible","fl_site_deductible","fr_site_deductible","point_latitude","point_longitude","line","construction","point_granularity"]
-@test Data.types(Data.schema(f)) == (Int,WeakRefString{UInt8},WeakRefString{UInt8},Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int,Float64,Float64,WeakRefString{UInt8},WeakRefString{UInt8},Int)
+@test Data.types(Data.schema(f)) == (Int,CategoricalValue{String,UInt32},CategoricalValue{String,UInt32},Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int,Float64,Float64,CategoricalValue{String,UInt32},CategoricalValue{String,UInt32},Int)
 ds = CSV.read(f)
 
 f = CSV.Source(joinpath(dir, "FL_insurance_sample.csv");types=Dict("eq_site_deductible"=>Float64,"fl_site_deductible"=>Float64))
 @test size(Data.schema(f), 2) == 18
 @test size(Data.schema(f), 1) == 36634
 @test Data.header(Data.schema(f)) == ["policyID","statecode","county","eq_site_limit","hu_site_limit","fl_site_limit","fr_site_limit","tiv_2011","tiv_2012","eq_site_deductible","hu_site_deductible","fl_site_deductible","fr_site_deductible","point_latitude","point_longitude","line","construction","point_granularity"]
-@test Data.types(Data.schema(f)) == (Int,WeakRefString{UInt8},WeakRefString{UInt8},Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int,Float64,Float64,WeakRefString{UInt8},WeakRefString{UInt8},Int)
+@test Data.types(Data.schema(f)) == (Int,CategoricalValue{String,UInt32},CategoricalValue{String,UInt32},Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int,Float64,Float64,CategoricalValue{String,UInt32},CategoricalValue{String,UInt32},Int)
 ds = CSV.read(f)
 
 f = CSV.Source(joinpath(dir, "SacramentocrimeJanuary2006.csv"))
 @test size(Data.schema(f), 2) == 9
 @test size(Data.schema(f), 1) == 7584
 @test Data.header(Data.schema(f)) == ["cdatetime","address","district","beat","grid","crimedescr","ucr_ncic_code","latitude","longitude"]
-@test Data.types(Data.schema(f)) == (WeakRefString{UInt8},WeakRefString{UInt8},Int,WeakRefString{UInt8},Int,WeakRefString{UInt8},Int,Float64,Float64)
+@test Data.types(Data.schema(f)) == (CategoricalValue{String,UInt32},WeakRefString{UInt8},Int,CategoricalValue{String,UInt32},Int,CategoricalValue{String,UInt32},Int,Float64,Float64)
 ds = CSV.read(f)
 
 f = CSV.Source(joinpath(dir, "Sacramentorealestatetransactions.csv"))
 @test size(Data.schema(f), 2) == 12
 @test size(Data.schema(f), 1) == 985
 @test Data.header(Data.schema(f)) == ["street","city","zip","state","beds","baths","sq__ft","type","sale_date","price","latitude","longitude"]
-@test Data.types(Data.schema(f)) == (WeakRefString{UInt8},WeakRefString{UInt8},Int,WeakRefString{UInt8},Int,Int,Int,WeakRefString{UInt8},WeakRefString{UInt8},Int,Float64,Float64)
+@test Data.types(Data.schema(f)) == (WeakRefString{UInt8},CategoricalValue{String,UInt32},Int,CategoricalValue{String,UInt32},Int,Int,Int,CategoricalValue{String,UInt32},CategoricalValue{String,UInt32},Int,Float64,Float64)
 ds = CSV.read(f)
 
 f = CSV.Source(joinpath(dir, "SalesJan2009.csv"); types=Dict(3=>WeakRefString{UInt8},7=>Union{WeakRefString{UInt8}, Null}))
 @test size(Data.schema(f), 2) == 12
 @test size(Data.schema(f), 1) == 998
 @test Data.header(Data.schema(f)) == ["Transaction_date","Product","Price","Payment_Type","Name","City","State","Country","Account_Created","Last_Login","Latitude","Longitude"]
-@test Data.types(Data.schema(f)) == (WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},Union{WeakRefString{UInt8}, Null},WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},Float64,Float64)
+@test Data.types(Data.schema(f)) == (WeakRefString{UInt8},CategoricalValue{String,UInt32},WeakRefString{UInt8},CategoricalValue{String,UInt32},WeakRefString{UInt8},WeakRefString{UInt8},Union{WeakRefString{UInt8}, Null},CategoricalValue{String,UInt32},WeakRefString{UInt8},WeakRefString{UInt8},Float64,Float64)
 ds = CSV.read(f)
 
 f = CSV.Source(joinpath(dir, "stocks.csv"))
@@ -229,21 +229,21 @@ f = CSV.Source(joinpath(dir, "TechCrunchcontinentalUSA.csv"); types=Dict(4=>Unio
 @test size(Data.schema(f), 2) == 10
 @test size(Data.schema(f), 1) == 1460
 @test Data.header(Data.schema(f)) == ["permalink","company","numEmps","category","city","state","fundedDate","raisedAmt","raisedCurrency","round"]
-@test Data.types(Data.schema(f)) == (WeakRefString{UInt8},WeakRefString{UInt8},Union{Int, Null},Union{WeakRefString{UInt8}, Null},Union{WeakRefString{UInt8}, Null},WeakRefString{UInt8},WeakRefString{UInt8},Int,WeakRefString{UInt8},WeakRefString{UInt8})
+@test Data.types(Data.schema(f)) == (CategoricalValue{String,UInt32},CategoricalValue{String,UInt32},Union{Int, Null},Union{WeakRefString{UInt8}, Null},Union{WeakRefString{UInt8}, Null},CategoricalValue{String,UInt32},WeakRefString{UInt8},Int,CategoricalValue{String,UInt32},CategoricalValue{String,UInt32})
 ds = CSV.read(f)
 
 f = CSV.Source(joinpath(dir, "Fielding.csv"); nullable=true, types=Dict("GS"=>Int,"InnOuts"=>Int,"WP"=>Int,"SB"=>Int,"CS"=>Int,"ZR"=>Int))
 @test size(Data.schema(f), 2) == 18
 @test size(Data.schema(f), 1) == 167938
 @test Data.header(Data.schema(f)) == ["playerID","yearID","stint","teamID","lgID","POS","G","GS","InnOuts","PO","A","E","DP","PB","WP","SB","CS","ZR"]
-@test Data.types(Data.schema(f)) == (Union{WeakRefString{UInt8}, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{WeakRefString{UInt8}, Null}, Union{WeakRefString{UInt8}, Null}, Union{WeakRefString{UInt8}, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null})
+@test Data.types(Data.schema(f)) == (Union{WeakRefString{UInt8}, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{CategoricalValue{String,UInt32}, Null}, Union{CategoricalValue{String,UInt32}, Null}, Union{CategoricalValue{String,UInt32}, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null}, Union{Int64, Null})
 ds = CSV.read(f)
 
 f = CSV.Source(joinpath(dir, "latest (1).csv"); header=0, null="\\N", types=Dict(13=>Union{Float64, Null},17=>Union{Int, Null},18=>Union{Float64, Null},20=>Union{Float64, Null}))
 @test size(Data.schema(f), 2) == 25
 @test size(Data.schema(f), 1) == 1000
 @test Data.header(Data.schema(f)) == ["Column$i" for i = 1:size(Data.schema(f), 2)]
-@test Data.types(Data.schema(f)) == (WeakRefString{UInt8}, WeakRefString{UInt8}, Int64, Int64, WeakRefString{UInt8}, Int64, WeakRefString{UInt8}, Int64, Date, Date, Int64, WeakRefString{UInt8}, Union{Float64, Null}, Union{Float64, Null}, Union{Float64, Null}, Union{Float64, Null}, Union{Int64, Null}, Union{Float64, Null}, Float64, Union{Float64, Null}, Union{Float64, Null}, Union{Int64, Null}, Float64, Union{Float64, Null}, Union{Float64, Null})
+@test Data.types(Data.schema(f)) == (CategoricalValue{String,UInt32}, CategoricalValue{String,UInt32}, Int64, Int64, CategoricalValue{String,UInt32}, Int64, CategoricalValue{String,UInt32}, Int64, Date, Date, Int64, WeakRefString{UInt8}, Union{Float64, Null}, Union{Float64, Null}, Union{Float64, Null}, Union{Float64, Null}, Union{Int64, Null}, Union{Float64, Null}, Float64, Union{Float64, Null}, Union{Float64, Null}, Union{Int64, Null}, Float64, Union{Float64, Null}, Union{Float64, Null})
 ds = CSV.read(f)
 
 f = CSV.Source(joinpath(dir, "pandas_zeros.csv"))

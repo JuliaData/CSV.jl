@@ -215,7 +215,7 @@ promote_type2(::Type{Null}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefString{
 promote_type2(::Type{Any}, ::Type{Null}) = Null
 promote_type2(::Type{Null}, ::Type{Null}) = Null
 
-function detecttype(io, opt::CSV.Options{D}, prevT, seen) where {D}
+function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
     pos = position(io)
     if Int <: prevT || prevT == Null
         try
@@ -267,7 +267,7 @@ function detecttype(io, opt::CSV.Options{D}, prevT, seen) where {D}
     try
         seek(io, pos)
         v7 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null}, opt)
-        push!(seen, v7)
+        push!(levels, v7)
         # print("...parsed = '$v1'...")
         return v7 isa Null ? Null : WeakRefString{UInt8}
     end

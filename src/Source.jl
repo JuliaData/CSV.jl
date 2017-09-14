@@ -133,7 +133,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         columntypes = types
     elseif isa(types, Dict) || isempty(types)
         columntypes = Vector{Type}(cols)
-        categoricals = Dict{Int, Set{String}}(i=>Set{String}() for i = 1:cols)
+        levels = Dict{Int, Set{WeakRefString{UInt8}}}(i=>Set{WeakRefString{UInt8}}() for i = 1:cols)
         fill!(columntypes, Any)
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
@@ -141,7 +141,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             # println("type detecting on row = $lineschecked...")
             for i = 1:cols
                 # print("\tdetecting col = $i...")
-                typ = CSV.detecttype(source, options, columntypes[i], categoricals[i])::Type
+                typ = CSV.detecttype(source, options, columntypes[i], levels[i])::Type
                 # print(typ)
                 columntypes[i] = CSV.promote_type2(columntypes[i], typ)
                 # println("...promoting to: ", columntypes[i])
@@ -156,8 +156,8 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         if categorical
             for i = 1:cols
                 T = columntypes[i]
-                columntypes[i] = ifelse(length(categoricals[i]) / rows_for_type_detect < .9 && T <: WeakRefString,
-                    CategoricalValue{String, UInt16}, T)
+                columntypes[i] = ifelse(length(levels[i]) / rows_for_type_detect < .67 && T <: WeakRefString,
+                    CategoricalValue{String, UInt32}, T)
             end
         end
     else
@@ -240,7 +240,7 @@ Keyword Arguments:
 * `append::Bool=false`: if the `sink` argument provided is an existing table, `append=true` will append the source's data to the existing data instead of doing a full replace
 * `transforms::Dict{Union{String,Int},Function}`: a Dict of transforms to apply to values as they are parsed. Note that a column can be specified by either number or column name.
 * `transpose::Bool=false`: when reading the underlying csv data, rows should be treated as columns and columns as rows, thus the resulting dataset will be the "transpose" of the actual csv data.
-* `categorical::Bool=true`: read string columns as CategoricalArrays, as long as the % of unique values seen during type detection isn't 100%
+* `categorical::Bool=true`: read string column as a `CategoricalArray` ([ref](https://github.com/JuliaData/CategoricalArrays.jl)), as long as the % of unique values seen during type detection is less than 67%. This will dramatically reduce memory use in cases where the number of unique values is small.
 
 Note by default, "string" or text columns will be parsed as the [`WeakRefString`](https://github.com/quinnj/WeakRefStrings.jl) type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
 To convert a `String` to a standard Julia string type, just call `string(::WeakRefString)`, this also works on an entire column.
