@@ -95,7 +95,7 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
         columnpositions = [position(source)]
         datapos = position(source)
         rows = 0
-        b = peekbyte(source)
+        b = eof(source) ? 0x00 : peekbyte(source)
         while !eof(source) && b != NEWLINE && b != RETURN
             b = readbyte(source)
             rows += ifelse(b == options.delim, 1, 0)
@@ -118,7 +118,7 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
             cols += 1
             push!(columnnames, strip(parsefield(source, String, options, cols, row)))
             push!(columnpositions, position(source))
-            b = peekbyte(source)
+            b = eof(source) ? 0x00 : peekbyte(source)
             while !eof(source) && b != NEWLINE && b != RETURN
                 b = readbyte(source)
             end
