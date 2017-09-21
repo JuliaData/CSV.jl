@@ -297,7 +297,7 @@ types = Data.types(Data.schema(f))
 @test CSV.parsefield(f, types[3]) == 3.0
 
 t = tempname()
-f = open(t, "w")
+f = open(t, "w+")
 Base.write(f, String(read(joinpath(dir, "test_missing_value_NULL.csv"))))
 seekstart(f)
 source = CSV.Source(f; header=[], datarow=2, nullable=false)
@@ -430,4 +430,4 @@ df = CSV.read(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=[
 
 # #64
 df = CSV.read(joinpath(dir, "attenu.csv"), null="NA", types=Dict(3=>Union{Null, String}))
-@test size(df) = (182, 5)
+@test size(df) == (182, 5)
