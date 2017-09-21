@@ -50,7 +50,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
 
-    isa(fullpath, IOStream) && (fullpath = chop(replace(fullpath.name, "<file ", "")))
+    # isa(fullpath, IOStream) && (fullpath = chop(replace(fullpath.name, "<file ", "")))
 
     # open the file for property detection
     if isa(fullpath, IOBuffer)
@@ -59,7 +59,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         fullpath = "<IOBuffer>"
     elseif isa(fullpath, IO)
         source = IOBuffer(Base.read(fullpath))
-        fs = nb_available(fullpath)
+        fs = nb_available(source)
         fullpath = isdefined(fullpath, :name) ? fullpath.name : "__IO__"
     else
         source = open(fullpath, "r") do f
