@@ -427,3 +427,7 @@ df = CSV.read(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=0
 df = CSV.read(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=["c1", "c2", "c3"])
 @test size(df) == (2, 3)
 @test Data.header(Data.schema(df)) == ["c1", "c2", "c3"]
+
+# #64
+df = CSV.read(joinpath(dir, "attenu.csv"), null="NA", types=Dict(3=>Union{Null, String}))
+@test size(df) = (182, 5)
