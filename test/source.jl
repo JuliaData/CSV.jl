@@ -431,3 +431,11 @@ df = CSV.read(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=[
 # #64
 df = CSV.read(joinpath(dir, "attenu.csv"), null="NA", types=Dict(3=>Union{Null, String}))
 @test size(df) == (182, 5)
+
+@testset "null-only columns are supported" begin
+    f = CSV.Source(joinpath(dir, "test_null_only_column.csv"), categorical=false, null="NA")
+    @test size(Data.schema(f)) == (3, 2)
+    ds = CSV.read(f)
+    @test Data.types(Data.schema(f)) == (WeakRefString{UInt8}, Null)
+    @test all(isnull, ds[2])
+end
