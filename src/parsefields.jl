@@ -124,10 +124,10 @@ function parsefield end
 const NULLTHROW = (row, col)->throw(Data.NullException("encountered a null value for a non-null column type on row = $row, col = $col"))
 const NULLRETURN = (row, col)->null
 
-parsefield(source::CSV.Source, ::Type{T}, row=0, col=0, state::P=P()) where {T} = CSV.parsefield(source.io, T, source.options, row, col, state, NULLTHROW)
+parsefield(source::CSV.Source, ::Type{T}, row=0, col=0, state::P=P()) where {T} = CSV.parsefield(source.io, T, source.options, row, col, state, T !== Null ? NULLTHROW : NULLRETURN)
 parsefield(source::CSV.Source, ::Type{Union{T, Null}}, row=0, col=0, state::P=P()) where {T} = CSV.parsefield(source.io, T, source.options, row, col, state, NULLRETURN)
 
-@inline parsefield(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) where {T} = parsefield(io, T, opt, row, col, state, NULLTHROW)
+@inline parsefield(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) where {T} = parsefield(io, T, opt, row, col, state, T !== Null ? NULLTHROW : NULLRETURN)
 @inline parsefield(io::IO, ::Type{Union{T, Null}}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) where {T} = parsefield(io, T, opt, row, col, state, NULLRETURN)
 
 @inline function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifnull::Function) where {T <: Integer}
@@ -319,5 +319,7 @@ end
 # Generic fallback
 @inline function parsefield(io::IO, T, opt::CSV.Options, row, col, state, ifnull::Function)
     v = parsefield(io, String, opt, row, col, state, ifnull)
-    return v isa Null ? ifnull(row, col) : parse(T, v)
+    isnull(v) && return ifnull(row, col)
+    T === Null && throw(ParsingException("encountered non-null value for a null-only column on row = $row, col = $col: '$v'"))
+    return parse(T, v)
 end
