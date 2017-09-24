@@ -48,6 +48,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 use_mmap::Bool=true) where {D}
     # argument checks
     isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
+    header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
 
     # isa(fullpath, IOStream) && (fullpath = chop(replace(fullpath.name, "<file ", "")))

@@ -432,6 +432,7 @@ df = CSV.read(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=[
 df = CSV.read(joinpath(dir, "attenu.csv"), null="NA", types=Dict(3=>Union{Null, String}))
 @test size(df) == (182, 5)
 
+<<<<<<< HEAD
 @testset "null-only columns are supported" begin
     f = CSV.Source(joinpath(dir, "test_null_only_column.csv"), categorical=false, null="NA")
     @test size(Data.schema(f)) == (3, 2)
@@ -439,3 +440,8 @@ df = CSV.read(joinpath(dir, "attenu.csv"), null="NA", types=Dict(3=>Union{Null, 
     @test Data.types(Data.schema(f)) == (WeakRefString{UInt8}, Null)
     @test all(isnull, ds[2])
 end
+=======
+# #107
+df = CSV.read(IOBuffer("1,a,i\n2,b,ii\n3,c,iii"); datarow=1)
+@test size(df) == (3, 3)
+>>>>>>> If user specifies datarow=1, but doesn't provide a header and doesn't set header=0, then assume header=0 and generate column names. Fixes #107
