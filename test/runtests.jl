@@ -1,5 +1,5 @@
 using CSV
-using Base.Test, DataStreams, Nulls, WeakRefStrings, CategoricalArrays
+using Base.Test, DataStreams, Nulls, WeakRefStrings, CategoricalArrays, DataFrames
 
 include("parsefields.jl")
 include("io.jl")
@@ -10,3 +10,4 @@ dir = joinpath(dirname(@__FILE__),"test_files/")
 include("source.jl")
 include("multistream.jl")
 include("validate.jl")
+
