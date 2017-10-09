@@ -67,28 +67,15 @@ function scale(exp, v::T, frac, row, col) where T
     if exp >= 0
         max_exp = maxexponent(T)
         exp > max_exp && throw(ParsingException(T, exp, row, col))
-        if frac > 14
-            fin2 = BigFloat(v) * BigFloat(pow10(exp))
-            fin = Float64(fin2)
-        else
-            fin = v * pow10(exp)
-        end
-        return fin
+        return Float64(Base.TwicePrecision{Float64}(v) * Base.TwicePrecision{Float64}(pow10(exp)))
     else
         min_exp = minexponent(T)
         # compensate roundoff?
         if exp < min_exp
             -exp + min_exp > -min_exp && throw(ParsingException(T, exp, row, col))
-            result = v / pow10(-min_exp)
-            return result / pow10(-exp + min_exp)
+            return Float64(Base.TwicePrecision{Float64}(v) / Base.TwicePrecision{Float64}(pow10(-exp + min_exp)))
         else
-            if -22 < exp < -15
-                fin2 = BigFloat(v) / BigFloat(pow10(-exp))
-                fin = Float64(fin2)
-            else
-                fin = v / pow10(-exp)
-            end
-            return fin
+            return Float64(Base.TwicePrecision{Float64}(v) / Base.TwicePrecision{Float64}(pow10(-exp)))
         end
     end
 end
