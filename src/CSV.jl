@@ -3,6 +3,12 @@ module CSV
 
 using DataStreams, WeakRefStrings, Nulls, CategoricalArrays, DataFrames
 
+if v"0.6" <= VERSION < v"0.7-DEV"
+    using Base.Mmap
+else
+    using Mmap
+end
+
 struct ParsingException <: Exception
     msg::String
 end
