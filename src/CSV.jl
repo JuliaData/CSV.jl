@@ -52,6 +52,7 @@ Keyword Arguments:
  * `escapechar::Union{Char,UInt8}`: the character that escapes a `quotechar` in a quoted field; default `'\\'`
  * `null::String`: indicates how NULL values are represented in the dataset; default `""`
  * `dateformat::Union{AbstractString,Dates.DateFormat}`: how dates/datetimes are represented in the dataset; default `Base.Dates.ISODateTimeFormat`
+ * `datecheck::Bool`: whether to check date strings for proper formatting
  * `decimal::Union{Char,UInt8}`: character to recognize as the decimal point in a float number, e.g. `3.14` or `3,14`; default `'.'`
  * `truestring`: string to represent `true::Bool` values in a csv file; default `"true"`. Note that `truestring` and `falsestring` cannot start with the same character.
  * `falsestring`: string to represent `false::Bool` values in a csv file; default `"false"`
@@ -63,6 +64,7 @@ struct Options{D}
     null::Vector{UInt8}
     nullcheck::Bool
     dateformat::D
+    datecheck::Bool
     decimal::UInt8
     truestring::Vector{UInt8}
     falsestring::Vector{UInt8}
@@ -73,9 +75,9 @@ struct Options{D}
     types
 end
 
-Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, null="", dateformat=null, decimal=PERIOD, truestring="true", falsestring="false", datarow=-1, rows=0, header=1, types=Type[]) =
+Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, null="", dateformat=null, datecheck=true, decimal=PERIOD, truestring="true", falsestring="false", datarow=-1, rows=0, header=1, types=Type[]) =
     Options(delim%UInt8, quotechar%UInt8, escapechar%UInt8,
-            map(UInt8, collect(ascii(String(null)))), null != "", isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat,
+            map(UInt8, collect(ascii(String(null)))), null != "", isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat, datecheck,
             decimal%UInt8, map(UInt8, collect(truestring)), map(UInt8, collect(falsestring)), datarow, rows, header, types)
 function Base.show(io::IO,op::Options)
     println(io, "    CSV.Options:")

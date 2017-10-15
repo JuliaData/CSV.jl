@@ -67,3 +67,18 @@ source = CSV.Source(IOBuffer(str); header=["col1","col2","col3","col4"])
         @test_throws CSV.ParsingException CSV.readsplitline(io)
     end
 end
+
+@testset "writing dataframes" begin
+    dir = joinpath(dirname(@__FILE__),"test_files/")
+    filename = joinpath(dir,"test_dataframes0.csv")
+    isfile(filename) && rm(filename)
+    df = DataFrame(Col1=[1,2,3,4], Col2=[1.0,2.0,3.0,4.0], Col3=["abc", "cde", "def", "efg"],
+                   Col4=[Date(1,1,1), Date(1,1,2), Date(1,1,3), Date(1,1,4)],
+                   Col5=[DateTime(1,1,1), DateTime(1,1,2), DateTime(1,1,3), DateTime(1,1,4)])
+    sink = CSV.Sink(filename, delim='|') 
+    CSV.write(filename, df, delim='|')
+    # this is a bad test, but at least now we check for exceptions
+    @test isfile(filename)
+    # cleanup
+    rm(filename)
+end
