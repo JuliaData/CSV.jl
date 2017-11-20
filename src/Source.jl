@@ -169,12 +169,12 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             columntypes[col] = typ
         end
     elseif isa(types, Dict{String, <:Any})
-        for (col,typ) in types
-            c = findfirst(columnnames, col)
+        for (col, typ) in types
+            c = findfirst(x->x == col, columnnames)
             columntypes[c] = typ
         end
     end
-    if !isnull(nullable)
+    if !ismissing(nullable)
         if nullable
             for i = 1:cols
                 T = columntypes[i]
@@ -183,7 +183,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         else
             for i = 1:cols
                 T = columntypes[i]
-                columntypes[i] = ifelse(T >: Missing, Nulls.T(T), T)
+                columntypes[i] = ifelse(T >: Missing, Missings.T(T), T)
             end
         end
     end
@@ -200,7 +200,7 @@ Source(s::CSV.Sink) = CSV.Source(fullpath=s.fullpath, options=s.options)
 Data.reset!(s::CSV.Source) = (seek(s.io, s.datapos); return nothing)
 Data.schema(source::CSV.Source) = source.schema
 Data.accesspattern(::Type{<:CSV.Source}) = Data.Sequential
-@inline Data.isdone(io::CSV.Source, row, col, rows, cols) = eof(io.io) || (!isnull(rows) && row > rows)
+@inline Data.isdone(io::CSV.Source, row, col, rows, cols) = eof(io.io) || (!ismissing(rows) && row > rows)
 @inline Data.isdone(io::Source, row, col) = Data.isdone(io, row, col, size(io.schema)...)
 Data.streamtype(::Type{<:CSV.Source}, ::Type{Data.Field}) = true
 @inline Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T} = CSV.parsefield(source.io, T, source.options, row, col)

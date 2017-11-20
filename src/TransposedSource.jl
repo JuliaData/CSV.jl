@@ -225,11 +225,11 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
         end
     elseif isa(types, Dict{String, <:Any})
         for (col,typ) in types
-            c = findfirst(columnnames, col)
+            c = findfirst(x->x == col, columnnames)
             columntypes[c] = typ
         end
     end
-    if !isnull(nullable)
+    if !ismissing(nullable)
         if nullable
             for i = 1:cols
                 T = columntypes[i]
@@ -238,7 +238,7 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
         else
             for i = 1:cols
                 T = columntypes[i]
-                columntypes[i] = ifelse(T >: Missing, Nulls.T(T), T)
+                columntypes[i] = ifelse(T >: Missing, Missings.T(T), T)
             end
         end
     end
@@ -255,7 +255,7 @@ TransposedSource(s::CSV.Sink) = CSV.TransposedSource(fullpath=s.fullpath, option
 Data.reset!(s::CSV.TransposedSource) = (seek(s.io, s.datapos); return nothing)
 Data.schema(source::CSV.TransposedSource) = source.schema
 Data.accesspattern(::Type{<:CSV.TransposedSource}) = Data.Sequential
-@inline Data.isdone(io::CSV.TransposedSource, row, col, rows, cols) = eof(io.io) || (!isnull(rows) && row > rows)
+@inline Data.isdone(io::CSV.TransposedSource, row, col, rows, cols) = eof(io.io) || (!ismissing(rows) && row > rows)
 @inline Data.isdone(io::TransposedSource, row, col) = Data.isdone(io, row, col, size(io.schema)...)
 Data.streamtype(::Type{<:CSV.TransposedSource}, ::Type{Data.Field}) = true
 @inline function Data.streamfrom(source::CSV.TransposedSource, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T}

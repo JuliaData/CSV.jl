@@ -30,8 +30,8 @@ io = IOBuffer(str * "\n" * str * "\r\n" * str)
            CSV.RawField("", true),
            CSV.RawField("field3", false),
            CSV.RawField("", false)]
-    io = IOBuffer(str2)
-    @test CSV.readsplitline(io) == spl2
+    ioo = IOBuffer(str2)
+    @test CSV.readsplitline(ioo) == spl2
 end
 
 # `CSV.readsplitline(source::CSV.Source)` => `Vector{String}`
@@ -49,21 +49,21 @@ source = CSV.Source(IOBuffer(str); header=["col1","col2","col3","col4"])
 @testset "misformatted CSV lines" begin
     @testset "missing quote" begin
         str1 = "field1,field2,\"quoted \\\"field with \n embedded newline,field3"
-        io = IOBuffer(str1)
-        @test_throws CSV.ParsingException CSV.readsplitline(io)
+        io2 = IOBuffer(str1)
+        @test_throws CSV.ParsingException CSV.readsplitline(io2)
     end
 
     @testset "misplaced quote" begin
         str1 = "fi\"eld1\",field2,\"quoted \\\"field with \n embedded newline\",field3"
-        io = IOBuffer(str1)
-        @test_throws CSV.ParsingException CSV.readsplitline(io)
+        io2 = IOBuffer(str1)
+        @test_throws CSV.ParsingException CSV.readsplitline(io2)
 
         str2 = "field1,field2,\"quoted \\\"field with \n\"\" embedded newline\",field3"
-        io = IOBuffer(str2)
-        @test_throws CSV.ParsingException CSV.readsplitline(io)
+        io2 = IOBuffer(str2)
+        @test_throws CSV.ParsingException CSV.readsplitline(io2)
 
         str3 = "\"field\"1,field2,\"quoted \\\"field with \n embedded newline\",field3"
-        io = IOBuffer(str3)
-        @test_throws CSV.ParsingException CSV.readsplitline(io)
+        io2 = IOBuffer(str3)
+        @test_throws CSV.ParsingException CSV.readsplitline(io2)
     end
 end

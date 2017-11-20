@@ -11,7 +11,7 @@ function Sink(fullpath::AbstractString;
     delim = delim % UInt8; quotechar = quotechar % UInt8; escapechar = escapechar % UInt8
     dateformat = isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat
     io = IOBuffer()
-    options = CSV.Options(delim=delim, quotechar=quotechar, escapechar=escapechar, null=missing, dateformat=dateformat)
+    options = CSV.Options(delim=delim, quotechar=quotechar, escapechar=escapechar, null=null, dateformat=dateformat)
     !append && header && !isempty(colnames) && writeheaders(io, colnames, options, Val{quotefields})
     return Sink(options, io, fullpath, position(io), !append && header && !isempty(colnames), colnames, length(colnames), append, Val{quotefields})
 end
