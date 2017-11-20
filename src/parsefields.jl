@@ -122,13 +122,13 @@ end
 function parsefield end
 
 const NULLTHROW = (row, col)->throw(Data.NullException("encountered a null value for a non-null column type on row = $row, col = $col"))
-const NULLRETURN = (row, col)->null
+const NULLRETURN = (row, col)->missing
 
-parsefield(source::CSV.Source, ::Type{T}, row=0, col=0, state::P=P()) where {T} = CSV.parsefield(source.io, T, source.options, row, col, state, T !== Null ? NULLTHROW : NULLRETURN)
-parsefield(source::CSV.Source, ::Type{Union{T, Null}}, row=0, col=0, state::P=P()) where {T} = CSV.parsefield(source.io, T, source.options, row, col, state, NULLRETURN)
+parsefield(source::CSV.Source, ::Type{T}, row=0, col=0, state::P=P()) where {T} = CSV.parsefield(source.io, T, source.options, row, col, state, T !== Missing ? NULLTHROW : NULLRETURN)
+parsefield(source::CSV.Source, ::Type{Union{T, Missing}}, row=0, col=0, state::P=P()) where {T} = CSV.parsefield(source.io, T, source.options, row, col, state, NULLRETURN)
 
-@inline parsefield(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) where {T} = parsefield(io, T, opt, row, col, state, T !== Null ? NULLTHROW : NULLRETURN)
-@inline parsefield(io::IO, ::Type{Union{T, Null}}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) where {T} = parsefield(io, T, opt, row, col, state, NULLRETURN)
+@inline parsefield(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) where {T} = parsefield(io, T, opt, row, col, state, T !== Missing ? NULLTHROW : NULLRETURN)
+@inline parsefield(io::IO, ::Type{Union{T, Missing}}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) where {T} = parsefield(io, T, opt, row, col, state, NULLRETURN)
 
 @inline function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifnull::Function) where {T <: Integer}
     @checknullstart()
@@ -235,11 +235,11 @@ end
 
 @inline function parsefield(io::IO, ::Type{Date}, opt::CSV.Options, row, col, state, ifnull::Function)
     v = parsefield(io, WeakRefString{UInt8}, opt, row, col, state, ifnull)
-    return v isa Null ? ifnull(row, col) : Date(v, opt.dateformat)
+    return v isa Missing ? ifnull(row, col) : Date(v, opt.dateformat)
 end
 @inline function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options, row, col, state, ifnull::Function)
     v = parsefield(io, WeakRefString{UInt8}, opt, row, col, state, ifnull)
-    return v isa Null ? ifnull(row, col) : DateTime(v, opt.dateformat)
+    return v isa Missing ? ifnull(row, col) : DateTime(v, opt.dateformat)
 end
 
 @inline function parsefield(io::IO, ::Type{Char}, opt::CSV.Options, row, col, state, ifnull::Function)
@@ -313,13 +313,13 @@ end
 
 @inline function parsefield(io::IO, ::Type{<:CategoricalValue}, opt::CSV.Options, row, col, state, ifnull::Function)
     v = parsefield(io, WeakRefString{UInt8}, opt, row, col, state, ifnull)
-    return v isa Null ? ifnull(row, col) : v
+    return v isa Missing ? ifnull(row, col) : v
 end
 
 # Generic fallback
 @inline function parsefield(io::IO, T, opt::CSV.Options, row, col, state, ifnull::Function)
     v = parsefield(io, String, opt, row, col, state, ifnull)
     isnull(v) && return ifnull(row, col)
-    T === Null && throw(ParsingException("encountered non-null value for a null-only column on row = $row, col = $col: '$v'"))
+    T === Missing && throw(ParsingException("encountered non-null value for a null-only column on row = $row, col = $col: '$v'"))
     return parse(T, v)
 end

@@ -9,8 +9,8 @@ function Source(fullpath::Union{AbstractString,IO};
               header::Union{Integer, UnitRange{Int}, Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types=Type[],
-              nullable::Union{Bool, Null}=Nulls.null,
-              dateformat=Nulls.null,
+              nullable::Union{Bool, Missing}=missing,
+              dateformat=missing,
               decimal=PERIOD,
               truestring="true",
               falsestring="false",
@@ -39,7 +39,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
                 types=Type[],
-                nullable::Union{Bool, Null}=null,
+                nullable::Union{Bool, Missing}=missing,
                 categorical::Bool=true,
 
                 footerskip::Int=0,
@@ -148,7 +148,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 # println("...promoting to: ", columntypes[i])
             end
         end
-        if options.dateformat === null && any(x->x <: Dates.TimeType, columntypes)
+        if options.dateformat === missing && any(x->x <: Dates.TimeType, columntypes)
             # auto-detected TimeType
             options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
                               null=options.null, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
@@ -178,17 +178,17 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         if nullable
             for i = 1:cols
                 T = columntypes[i]
-                columntypes[i] = ifelse(T >: Null, T, Union{T, Null})
+                columntypes[i] = ifelse(T >: Missing, T, Union{T, Missing})
             end
         else
             for i = 1:cols
                 T = columntypes[i]
-                columntypes[i] = ifelse(T >: Null, Nulls.T(T), T)
+                columntypes[i] = ifelse(T >: Missing, Nulls.T(T), T)
             end
         end
     end
     seek(source, datapos)
-    sch = Data.Schema(columntypes, columnnames, ifelse(rows < 0, null, rows))
+    sch = Data.Schema(columntypes, columnnames, ifelse(rows < 0, missing, rows))
     return Source(sch, options, source, String(fullpath), datapos)
 end
 

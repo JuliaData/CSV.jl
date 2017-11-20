@@ -11,7 +11,7 @@ function Sink(fullpath::AbstractString;
     delim = delim % UInt8; quotechar = quotechar % UInt8; escapechar = escapechar % UInt8
     dateformat = isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat
     io = IOBuffer()
-    options = CSV.Options(delim=delim, quotechar=quotechar, escapechar=escapechar, null=null, dateformat=dateformat)
+    options = CSV.Options(delim=delim, quotechar=quotechar, escapechar=escapechar, null=missing, dateformat=dateformat)
     !append && header && !isempty(colnames) && writeheaders(io, colnames, options, Val{quotefields})
     return Sink(options, io, fullpath, position(io), !append && header && !isempty(colnames), colnames, length(colnames), append, Val{quotefields})
 end
@@ -59,7 +59,7 @@ function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::Dates.TimeType, row
 end
 
 const EMPTY_UINT8_ARRAY = UInt8[]
-function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::Null, row, col::Int)
+function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::Missing, row, col::Int)
     Base.write(sink.io, sink.options.nullcheck ? sink.options.null : EMPTY_UINT8_ARRAY, ifelse(col == sink.cols, NEWLINE, sink.options.delim))
     return nothing
 end
