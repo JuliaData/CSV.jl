@@ -97,8 +97,6 @@ end
 
 `io` is an `IO` type that is positioned at the first byte/character of an delimited-file field (i.e. a single cell)
 leading whitespace is ignored for Integer and Float types.
-returns a `Nullable{T}` saying whether the field contains a null value or not (empty field, missing value)
-field is null if the next delimiter or newline is encountered before any other characters.
 Specialized methods exist for Integer, Float, String, Date, and DateTime.
 For other types `T`, a generic fallback requires `parse(T, str::String)` to be defined.
 the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quotechar` results in a null field
@@ -121,14 +119,16 @@ end
 """
 function parsefield end
 
-const NULLTHROW = (row, col)->throw(Data.NullException("encountered a null value for a non-null column type on row = $row, col = $col"))
+const NULLTHROW = (row, col)->throw(Missings.MissingException("encountered a missing value for a non-null column type on row = $row, col = $col"))
 const NULLRETURN = (row, col)->missing
 
 parsefield(source::CSV.Source, ::Type{T}, row=0, col=0, state::P=P()) where {T} = CSV.parsefield(source.io, T, source.options, row, col, state, T !== Missing ? NULLTHROW : NULLRETURN)
 parsefield(source::CSV.Source, ::Type{Union{T, Missing}}, row=0, col=0, state::P=P()) where {T} = CSV.parsefield(source.io, T, source.options, row, col, state, NULLRETURN)
+parsefield(source::CSV.Source, ::Type{Missing}, row=0, col=0, state::P=P()) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, state, NULLRETURN)
 
 @inline parsefield(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) where {T} = parsefield(io, T, opt, row, col, state, T !== Missing ? NULLTHROW : NULLRETURN)
 @inline parsefield(io::IO, ::Type{Union{T, Missing}}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) where {T} = parsefield(io, T, opt, row, col, state, NULLRETURN)
+@inline parsefield(io::IO, ::Type{Missing}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) = parsefield(io, WeakRefString{UInt8}, opt, row, col, state, NULLRETURN)
 
 @inline function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifnull::Function) where {T <: Integer}
     @checknullstart()
@@ -319,7 +319,7 @@ end
 # Generic fallback
 @inline function parsefield(io::IO, T, opt::CSV.Options, row, col, state, ifnull::Function)
     v = parsefield(io, String, opt, row, col, state, ifnull)
-    isnull(v) && return ifnull(row, col)
+    ismissing(v) && return ifnull(row, col)
     T === Missing && throw(ParsingException("encountered non-null value for a null-only column on row = $row, col = $col: '$v'"))
     return parse(T, v)
 end
