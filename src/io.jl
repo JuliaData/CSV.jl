@@ -187,15 +187,15 @@ promote_type2(T::Type{<:Any}, ::Type{Any}) = T
 promote_type2(::Type{Any}, T::Type{<:Any}) = T
 # same types
 promote_type2(::Type{T}, ::Type{T}) where {T} = T
-# if we come across a Null field, turn that column type into a Union{T, Null}
-promote_type2(T::Type{<:Any}, ::Type{Null}) = Union{T, Null}
-promote_type2(::Type{Null}, T::Type{<:Any}) = Union{T, Null}
-# these definitions allow Union{Int, Null} to promote to Union{Float64, Null}
-promote_type2(::Type{Union{T, Null}}, ::Type{S}) where {T, S} = Union{promote_type2(T, S), Null}
-promote_type2(::Type{S}, ::Type{Union{T, Null}}) where {T, S} = Union{promote_type2(T, S), Null}
-promote_type2(::Type{Union{T, Null}}, ::Type{Union{S, Null}}) where {T, S} = Union{promote_type2(T, S), Null}
-promote_type2(::Type{Union{WeakRefString{UInt8}, Null}}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefString{UInt8}, Null}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Union{WeakRefString{UInt8}, Null}}) = Union{WeakRefString{UInt8}, Null}
+# if we come across a Missing field, turn that column type into a Union{T, Missing}
+promote_type2(T::Type{<:Any}, ::Type{Missing}) = Union{T, Missing}
+promote_type2(::Type{Missing}, T::Type{<:Any}) = Union{T, Missing}
+# these definitions allow Union{Int, Missing} to promote to Union{Float64, Missing}
+promote_type2(::Type{Union{T, Missing}}, ::Type{S}) where {T, S} = Union{promote_type2(T, S), Missing}
+promote_type2(::Type{S}, ::Type{Union{T, Missing}}) where {T, S} = Union{promote_type2(T, S), Missing}
+promote_type2(::Type{Union{T, Missing}}, ::Type{Union{S, Missing}}) where {T, S} = Union{promote_type2(T, S), Missing}
+promote_type2(::Type{Union{WeakRefString{UInt8}, Missing}}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefString{UInt8}, Missing}
+promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Union{WeakRefString{UInt8}, Missing}}) = Union{WeakRefString{UInt8}, Missing}
 # basic promote type definitions from Base
 promote_type2(::Type{Int}, ::Type{Float64}) = Float64
 promote_type2(::Type{Float64}, ::Type{Int}) = Float64
@@ -210,66 +210,66 @@ promote_type2(::Type{WeakRefString{UInt8}}, ::Type{<:Any}) = WeakRefString{UInt8
 promote_type2(::Type{Any}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
 promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Any}) = WeakRefString{UInt8}
 promote_type2(::Type{WeakRefString{UInt8}}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Null}) = Union{WeakRefString{UInt8}, Null}
-promote_type2(::Type{Null}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefString{UInt8}, Null}
-promote_type2(::Type{Any}, ::Type{Null}) = Null
-promote_type2(::Type{Null}, ::Type{Null}) = Null
+promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Missing}) = Union{WeakRefString{UInt8}, Missing}
+promote_type2(::Type{Missing}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefString{UInt8}, Missing}
+promote_type2(::Type{Any}, ::Type{Missing}) = Missing
+promote_type2(::Type{Missing}, ::Type{Missing}) = Missing
 
 function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
     pos = position(io)
-    if Int <: prevT || prevT == Null
+    if Int <: prevT || prevT == Missing
         try
-            v1 = CSV.parsefield(io, Union{Int, Null}, opt)
+            v1 = CSV.parsefield(io, Union{Int, Missing}, opt)
             # print("...parsed = '$v1'...")
-            return v1 isa Null ? Null : Int
+            return v1 isa Missing ? Missing : Int
         end
     end
-    if Float64 <: prevT || Int <: prevT || prevT == Null
+    if Float64 <: prevT || Int <: prevT || prevT == Missing
         try
             seek(io, pos)
-            v2 = CSV.parsefield(io, Union{Float64, Null}, opt)
+            v2 = CSV.parsefield(io, Union{Float64, Missing}, opt)
             # print("...parsed = '$v2'...")
-            return v2 isa Null ? Null : Float64
+            return v2 isa Missing ? Missing : Float64
         end
     end
-    if Date <: prevT || DateTime <: prevT || prevT == Null
-        if D == Null
+    if Date <: prevT || DateTime <: prevT || prevT == Missing
+        if D == Missing
             # try to auto-detect TimeType
             try
                 seek(io, pos)
-                v3 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null}, opt)
+                v3 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
                 # print("...parsed = '$v3'...")
-                return v3 isa Null ? Null : (Date(v3, Dates.ISODateFormat); Date)
+                return v3 isa Missing ? Missing : (Date(v3, Dates.ISODateFormat); Date)
             end
             try
                 seek(io, pos)
-                v4 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null}, opt)
+                v4 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
                 # print("...parsed = '$v4'...")
-                return v4 isa Null ? Null : (DateTime(v4, Dates.ISODateTimeFormat); DateTime)
+                return v4 isa Missing ? Missing : (DateTime(v4, Dates.ISODateTimeFormat); DateTime)
             end
         else
             # use user-provided dateformat
             try
                 seek(io, pos)
                 T = timetype(opt.dateformat)
-                v5 = CSV.parsefield(io, Union{T, Null}, opt)
-                return v5 isa Null ? Null : T
+                v5 = CSV.parsefield(io, Union{T, Missing}, opt)
+                return v5 isa Missing ? Missing : T
             end
         end
     end
-    if Bool <: prevT || prevT == Null
+    if Bool <: prevT || prevT == Missing
         try
             seek(io, pos)
-            v6 = CSV.parsefield(io, Union{Bool, Null}, opt)
-            return v6 isa Null ? Null : Bool
+            v6 = CSV.parsefield(io, Union{Bool, Missing}, opt)
+            return v6 isa Missing ? Missing : Bool
         end
     end
     try
         seek(io, pos)
-        v7 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Null}, opt)
+        v7 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
         push!(levels, v7)
         # print("...parsed = '$v1'...")
-        return v7 isa Null ? Null : WeakRefString{UInt8}
+        return v7 isa Missing ? Missing : WeakRefString{UInt8}
     end
-    return Null
+    return Missing
 end
