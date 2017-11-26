@@ -157,8 +157,13 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         if categorical
             for i = 1:cols
                 T = columntypes[i]
-                columntypes[i] = ifelse(length(levels[i]) / rows_for_type_detect < .67 && T <: WeakRefString,
-                    CategoricalValue{String, UInt32}, T)
+                if length(levels[i]) / rows_for_type_detect < .67 &&
+                        T !== Missing && Missings.T(T) <: WeakRefString
+                    columntypes[i] = CategoricalArrays.catvaluetype(Missings.T(T), UInt32)
+                    if T >: Missing
+                        columntypes[i] = Union{columntypes[i], Missing}
+                    end
+                end
             end
         end
     else

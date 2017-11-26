@@ -311,7 +311,7 @@ end
     throw(ParsingException(Bool, b, row, col))
 end
 
-@inline function parsefield(io::IO, ::Type{<:CategoricalValue}, opt::CSV.Options, row, col, state, ifnull::Function)
+@inline function parsefield(io::IO, ::Type{<:Union{CategoricalValue, CategoricalString}}, opt::CSV.Options, row, col, state, ifnull::Function)
     v = parsefield(io, WeakRefString{UInt8}, opt, row, col, state, ifnull)
     return v isa Missing ? ifnull(row, col) : v
 end
