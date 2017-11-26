@@ -135,13 +135,13 @@ parsefield(source::CSV.Source, ::Type{Missing}, row=0, col=0, state::P=P()) = CS
     v = zero(T)
     negative = false
     if b == MINUS # check for leading '-' or '+'
-        c = peekbyte(io) 
+        c = peekbyte(io)
         if NEG_ONE < c < TEN
             negative = true
             b = readbyte(io)
         end
     elseif b == PLUS
-        c = peekbyte(io) 
+        c = peekbyte(io)
         if NEG_ONE < c < TEN
             b = readbyte(io)
         end
@@ -300,7 +300,7 @@ end
         @checkdone(done)
     end
     @checknullend()
-    
+
     @label done
     return v
 
