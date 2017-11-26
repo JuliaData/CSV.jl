@@ -230,15 +230,15 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
         end
     end
     if !ismissing(nullable)
-        if nullable
+        if nullable # allow missing values in all columns
             for i = 1:cols
                 T = columntypes[i]
-                columntypes[i] = ifelse(T >: Missing, T, Union{T, Missing})
+                columntypes[i] = Union{Missings.T(T), Missing}
             end
-        else
+        else # disallow missing values in all columns
             for i = 1:cols
                 T = columntypes[i]
-                columntypes[i] = ifelse(T >: Missing, Missings.T(T), T)
+                columntypes[i] = Missings.T(T)
             end
         end
     end
