@@ -217,8 +217,14 @@ promote_type2(::Type{Missing}, ::Type{Missing}) = Missing
 
 function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
     pos = position(io)
+    # update levels
+    try
+        lev = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
+        ismissing(lev) || (levels[lev] = get!(levels, lev, 0) + 1)
+    end
     if Int <: prevT || prevT == Missing
         try
+            seek(io, pos)
             v1 = CSV.parsefield(io, Union{Int, Missing}, opt)
             # print("...parsed = '$v1'...")
             return v1 isa Missing ? Missing : Int
@@ -267,8 +273,7 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
     try
         seek(io, pos)
         v7 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
-        push!(levels, v7)
-        # print("...parsed = '$v1'...")
+        # print("...parsed = '$v7'...")
         return v7 isa Missing ? Missing : WeakRefString{UInt8}
     end
     return Missing

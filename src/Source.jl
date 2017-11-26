@@ -133,9 +133,8 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     if isa(types, Vector) && length(types) == cols
         columntypes = types
     elseif isa(types, Dict) || isempty(types)
-        columntypes = Vector{Type}(cols)
-        levels = Dict{Int, Set{WeakRefString{UInt8}}}(i=>Set{WeakRefString{UInt8}}() for i = 1:cols)
-        fill!(columntypes, Any)
+        columntypes = fill!(Vector{Type}(cols), Any)
+        levels = [Dict{WeakRefString{UInt8}, Int}() for _ = 1:cols]
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
             lineschecked += 1
@@ -157,7 +156,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         if categorical
             for i = 1:cols
                 T = columntypes[i]
-                if length(levels[i]) / rows_for_type_detect < .67 &&
+                if length(levels[i]) / sum(values(levels[i])) < .67 &&
                         T !== Missing && Missings.T(T) <: WeakRefString
                     columntypes[i] = CategoricalArrays.catvaluetype(Missings.T(T), UInt32)
                     if T >: Missing
