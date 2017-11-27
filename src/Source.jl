@@ -239,7 +239,7 @@ Keyword Arguments:
 * `types`: column types can be provided manually as a complete Vector{Type}, or in a Dict to reference individual columns by name or number
 * `nullable::Bool`: indicates whether values can be nullable or not; `true` by default. If set to `false` and missing values are encountered, a `Data.NullException` will be thrown
 * `footerskip::Int`: indicates the number of rows to skip at the end of the file
-* `rows_for_type_detect::Int=100`: indicates how many rows should be read to infer the types of columns
+* `rows_for_type_detect::Int=20`: indicates how many rows should be read to infer the types of columns
 * `rows::Int`: indicates the total number of rows to read from the file; by default the file is pre-parsed to count the # of rows; `-1` can be passed to skip a full-file scan, but the `Data.Sink` must be setup account for a potentially unknown # of rows
 * `use_mmap::Bool=true`: whether the underlying file will be mmapped or not while parsing; note that on Windows machines, the underlying file will not be "deletable" until Julia GC has run (can be run manually via `gc()`) due to the use of a finalizer when reading the file.
 * `append::Bool=false`: if the `sink` argument provided is an existing table, `append=true` will append the source's data to the existing data instead of doing a full replace
