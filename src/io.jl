@@ -204,8 +204,10 @@ promote_type2(::Type{DateTime}, ::Type{Date}) = DateTime
 # for cases when our current type can't widen, just promote to WeakRefString
 promote_type2(::Type{<:Real}, ::Type{<:Dates.TimeType}) = WeakRefString{UInt8}
 promote_type2(::Type{<:Dates.TimeType}, ::Type{<:Real}) = WeakRefString{UInt8}
-promote_type2(::Type{<:Any}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{<:Any}) = WeakRefString{UInt8}
+promote_type2(::Type{T}, ::Type{WeakRefString{UInt8}}) where T = WeakRefString{UInt8}
+promote_type2(::Type{Union{T, Missing}}, ::Type{WeakRefString{UInt8}}) where T = Union{WeakRefString{UInt8}, Missing}
+promote_type2(::Type{WeakRefString{UInt8}}, ::Type{T}) where T = WeakRefString{UInt8}
+promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Union{T, Missing}}) where T = Union{WeakRefString{UInt8}, Missing}
 # avoid ambiguity
 promote_type2(::Type{Any}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
 promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Any}) = WeakRefString{UInt8}
