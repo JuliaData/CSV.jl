@@ -157,10 +157,10 @@ ds = CSV.read(f)
 @test ds[1][1] == 1.0
 @test string(ds[2][1]) == "2.0"
 @test string(ds[2][2]) == "NULL"
-f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"); null="NULL")
+f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"); missingstring="NULL")
 @test size(Data.schema(f), 2) == 3
 @test size(Data.schema(f), 1) == 3
-@test String(f.options.null) == "NULL"
+@test String(f.options.missingstring) == "NULL"
 @test Data.types(Data.schema(f)) == (Float64,Union{Float64, Missing},Float64)
 ds = CSV.read(f)
 @test ds[1][1] == 1.0
@@ -230,14 +230,14 @@ f = CSV.Source(joinpath(dir, "TechCrunchcontinentalUSA.csv"); types=Dict(4=>Unio
 @test Data.types(Data.schema(f)) == (CategoricalValue{String,UInt32},CategoricalValue{String,UInt32},Union{Int, Missing},Union{WeakRefString{UInt8}, Missing},Union{WeakRefString{UInt8}, Missing},CategoricalValue{String,UInt32},WeakRefString{UInt8},Int,CategoricalValue{String,UInt32},CategoricalValue{String,UInt32})
 ds = CSV.read(f)
 
-f = CSV.Source(joinpath(dir, "Fielding.csv"); nullable=true, types=Dict("GS"=>Int,"InnOuts"=>Int,"WP"=>Int,"SB"=>Int,"CS"=>Int,"ZR"=>Int))
+f = CSV.Source(joinpath(dir, "Fielding.csv"); allowmissing=true, types=Dict("GS"=>Int,"InnOuts"=>Int,"WP"=>Int,"SB"=>Int,"CS"=>Int,"ZR"=>Int))
 @test size(Data.schema(f), 2) == 18
 @test size(Data.schema(f), 1) == 167938
 @test Data.header(Data.schema(f)) == ["playerID","yearID","stint","teamID","lgID","POS","G","GS","InnOuts","PO","A","E","DP","PB","WP","SB","CS","ZR"]
 @test Data.types(Data.schema(f)) == (Union{CategoricalValue{String,UInt32}, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{CategoricalValue{String,UInt32}, Missing}, Union{CategoricalValue{String,UInt32}, Missing}, Union{CategoricalValue{String,UInt32}, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing})
 ds = CSV.read(f)
 
-f = CSV.Source(joinpath(dir, "latest (1).csv"); header=0, null="\\N", types=Dict(13=>Union{Float64, Missing},17=>Union{Int, Missing},18=>Union{Float64, Missing},20=>Union{Float64, Missing}))
+f = CSV.Source(joinpath(dir, "latest (1).csv"); header=0, missingstring="\\N", types=Dict(13=>Union{Float64, Missing},17=>Union{Int, Missing},18=>Union{Float64, Missing},20=>Union{Float64, Missing}))
 @test size(Data.schema(f), 2) == 25
 @test size(Data.schema(f), 1) == 1000
 @test Data.header(Data.schema(f)) == ["Column$i" for i = 1:size(Data.schema(f), 2)]
@@ -298,7 +298,7 @@ t = tempname()
 f = open(t, "w+")
 Base.write(f, String(read(joinpath(dir, "test_missing_value_NULL.csv"))))
 seekstart(f)
-source = CSV.Source(f; header=[], datarow=2, nullable=false)
+source = CSV.Source(f; header=[], datarow=2, allowmissing=false)
 df = CSV.read(source)
 @test Data.header(Data.schema(df)) == ["Column1", "Column2", "Column3"]
 
@@ -311,11 +311,11 @@ close(f)
 f = source = nothing; gc(); gc()
 rm(t)
 
-# test tab-delimited nulls
+# test tab-delimited missing values
 d = CSV.read(joinpath(dir, "test_tab_null_empty.txt"); delim='\t')
 @test ismissing(d[2][2])
 
-d = CSV.read(joinpath(dir, "test_tab_null_string.txt"); delim='\t', null="NULL")
+d = CSV.read(joinpath(dir, "test_tab_null_string.txt"); delim='\t', missingstring="NULL")
 @test ismissing(d[2][2])
 
 # read a write protected file
@@ -339,25 +339,25 @@ df2 = CSV.read(IOBuffer(""); header=["a", "b", "c"])
 # Adding transforms to CSV with header but no data returns empty frame as expected
 # (previously the lack of a ::String dispatch in the transform function caused an error)
 transforms = Dict{Int, Function}(2 => x::Integer -> "b$x")
-df1 = CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"); nullable=false, transforms=transforms)
-df2 = CSV.read(IOBuffer("a,b,c\n1,b2,3\n4,b5,6"); nullable=false)
+df1 = CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"); allowmissing=false, transforms=transforms)
+df2 = CSV.read(IOBuffer("a,b,c\n1,b2,3\n4,b5,6"); allowmissing=false)
 @test size(Data.schema(df1)) == (2, 3)
 @test size(Data.schema(df2)) == (2, 3)
 @test df1 == df2
-df3 = CSV.read(IOBuffer("a,b,c"); nullable=false, transforms=transforms)
-df4 = CSV.read(IOBuffer("a,b,c"); nullable=false)
+df3 = CSV.read(IOBuffer("a,b,c"); allowmissing=false, transforms=transforms)
+df4 = CSV.read(IOBuffer("a,b,c"); allowmissing=false)
 @test size(Data.schema(df3)) == (0, 3)
 @test size(Data.schema(df4)) == (0, 3)
 @test df3 == df4
 
 let fn = tempname()
-    df = CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"), CSV.Sink(fn); nullable=false, transforms=transforms)
+    df = CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"), CSV.Sink(fn); allowmissing=false, transforms=transforms)
     @test String(read(fn)) == "a,b,c\n1,b2,3\n4,b5,6\n"
     rm(fn)
 end
 
 let fn = tempname()
-    df = CSV.read(IOBuffer("a,b,c"), CSV.Sink(fn); nullable=false, transforms=transforms)
+    df = CSV.read(IOBuffer("a,b,c"), CSV.Sink(fn); allowmissing=false, transforms=transforms)
     @test String(read(fn)) == "a,b,c\n"
     rm(fn)
 end
@@ -370,11 +370,11 @@ df = CSV.read(source; transforms=Dict(2 => floor))
 # Integer overflow; #100
 @test_throws OverflowError CSV.read(joinpath(dir, "int8_overflow.csv"); types=[Int8])
 
-# dash as null; #92
-df = CSV.read(joinpath(dir, "dash_as_null.csv"); null="-")
+# dash as missingstring; #92
+df = CSV.read(joinpath(dir, "dash_as_null.csv"); missingstring="-")
 @test ismissing(df[1][2])
 
-df = CSV.read(joinpath(dir, "plus_as_null.csv"); null="+")
+df = CSV.read(joinpath(dir, "plus_as_null.csv"); missingstring="+")
 @test ismissing(df[1][2])
 
 # #83
@@ -427,10 +427,10 @@ df = CSV.read(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=[
 @test Data.header(Data.schema(df)) == ["c1", "c2", "c3"]
 
 # #64
-df = CSV.read(joinpath(dir, "attenu.csv"), null="NA", types=Dict(3=>Union{Missing, String}))
+df = CSV.read(joinpath(dir, "attenu.csv"), missingstring="NA", types=Dict(3=>Union{Missing, String}))
 @test size(df) == (182, 5)
 
-f = CSV.Source(joinpath(dir, "test_null_only_column.csv"), categorical=false, null="NA")
+f = CSV.Source(joinpath(dir, "test_null_only_column.csv"), categorical=false, missingstring="NA")
 @test size(Data.schema(f)) == (3, 2)
 ds = CSV.read(f)
 @test Data.types(Data.schema(f)) == (WeakRefString{UInt8}, Missing)

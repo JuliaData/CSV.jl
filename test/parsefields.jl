@@ -104,11 +104,11 @@ v = CSV.parsefield(io,Int)
 @test v === 1234567890
 
 io = IOBuffer("\\N")
-v = CSV.parsefield(io, Union{Int, Missing}, CSV.Options(null="\\N"))
+v = CSV.parsefield(io, Union{Int, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
 
 io = IOBuffer("\"\\N\"")
-@test_throws Missings.MissingException CSV.parsefield(io,Int,CSV.Options(null="\\N"))
+@test_throws Missings.MissingException CSV.parsefield(io,Int,CSV.Options(missingstring="\\N"))
 
 end # @testset "Int"
 
@@ -201,10 +201,10 @@ v = CSV.parsefield(io,Int)
 @test v === 1234567890
 
 io = Buffer(IOBuffer("\\N"))
-@test_throws Missings.MissingException CSV.parsefield(io,Int,CSV.Options(null="\\N"))
+@test_throws Missings.MissingException CSV.parsefield(io,Int,CSV.Options(missingstring="\\N"))
 
 io = Buffer(IOBuffer("\"\\N\""))
-v = CSV.parsefield(io, Union{Int, Missing}, CSV.Options(null="\\N"))
+v = CSV.parsefield(io, Union{Int, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
 end # @testset "Int Custom IO"
 
@@ -324,10 +324,10 @@ v = CSV.parsefield(io, Union{Float64, Missing})
 @test v === Inf
 
 io = Buffer(IOBuffer("\\N"))
-@test_throws Missings.MissingException CSV.parsefield(io,Float64,CSV.Options(null="\\N"))
+@test_throws Missings.MissingException CSV.parsefield(io,Float64,CSV.Options(missingstring="\\N"))
 
 io = Buffer(IOBuffer("\"\\N\""))
-v = CSV.parsefield(io, Union{Float64, Missing}, CSV.Options(null="\\N"))
+v = CSV.parsefield(io, Union{Float64, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
 
 end # @testset "Float64 Custom IO"
@@ -480,10 +480,10 @@ v = CSV.parsefield(io, Union{Float64, Missing})
 @test v === Inf
 
 io = IOBuffer("\\N")
-@test_throws Missings.MissingException CSV.parsefield(io,Float64,CSV.Options(null="\\N"))
+@test_throws Missings.MissingException CSV.parsefield(io,Float64,CSV.Options(missingstring="\\N"))
 
 io = IOBuffer("\"\\N\"")
-v = CSV.parsefield(io, Union{Float64, Missing}, CSV.Options(null="\\N"))
+v = CSV.parsefield(io, Union{Float64, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
 
 end # @testset "Float64"
@@ -602,11 +602,11 @@ v = CSV.parsefield(io,Dec64)
 @test v === Dec64(Inf)
 
 io = Buffer(IOBuffer("\\N"))
-v = CSV.parsefield(io, Union{Dec64, Missing}, CSV.Options(null="\\N"))
+v = CSV.parsefield(io, Union{Dec64, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
 
 io = Buffer(IOBuffer("\"\\N\""))
-@test_throws Missings.MissingException CSV.parsefield(io,Dec64,CSV.Options(null="\\N"))
+@test_throws Missings.MissingException CSV.parsefield(io,Dec64,CSV.Options(missingstring="\\N"))
 
 end # @testset "DecFP Custom IO"
 
@@ -724,10 +724,10 @@ v = CSV.parsefield(io, Union{Dec64, Missing})
 @test v === Dec64(Inf)
 
 io = IOBuffer("\\N")
-@test_throws Missings.MissingException CSV.parsefield(io,Dec64,CSV.Options(null="\\N"))
+@test_throws Missings.MissingException CSV.parsefield(io,Dec64,CSV.Options(missingstring="\\N"))
 
 io = IOBuffer("\"\\N\"")
-v = CSV.parsefield(io, Union{Dec64, Missing}, CSV.Options(null="\\N"))
+v = CSV.parsefield(io, Union{Dec64, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
 
 end # @testset "DecFP"
@@ -834,10 +834,10 @@ v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
 @test v == "hey there\\\"quoted field\\\""
 
 io = IOBuffer("\\N")
-@test_throws Missings.MissingException CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(null="\\N"))
+@test_throws Missings.MissingException CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(missingstring="\\N"))
 
 io = IOBuffer("\"\\N\"")
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, CSV.Options(null="\\N"))
+v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
 
 io = IOBuffer("\"NORTH DAKOTA STATE \"\"A\"\" #1\"")
@@ -952,10 +952,10 @@ v = CSV.parsefield(io,String)
 @test v == "hey there\\\"quoted field\\\""
 
 io = Buffer(IOBuffer("\\N"))
-@test_throws Missings.MissingException CSV.parsefield(io,String,CSV.Options(null="\\N"))
+@test_throws Missings.MissingException CSV.parsefield(io,String,CSV.Options(missingstring="\\N"))
 
 io = Buffer(IOBuffer("\"\\N\""))
-v = CSV.parsefield(io, Union{String, Missing}, CSV.Options(null="\\N"))
+v = CSV.parsefield(io, Union{String, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
 
 io = Buffer(IOBuffer("\"NORTH DAKOTA STATE \"\"A\"\" #1\""))
@@ -993,11 +993,11 @@ io = IOBuffer("\"\"")
 @test_throws Missings.MissingException CSV.parsefield(io,Date)
 
 io = IOBuffer("\\N")
-v = CSV.parsefield(io, Union{Date, Missing}, CSV.Options(null="\\N"))
+v = CSV.parsefield(io, Union{Date, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
 
 io = IOBuffer("\"\\N\"")
-@test_throws Missings.MissingException CSV.parsefield(io,Date,CSV.Options(null="\\N"))
+@test_throws Missings.MissingException CSV.parsefield(io,Date,CSV.Options(missingstring="\\N"))
 
 io = IOBuffer("2015-10-05")
 v = CSV.parsefield(io, Date, opt)
@@ -1069,11 +1069,11 @@ io = Buffer(IOBuffer("\"\""))
 @test_throws Missings.MissingException CSV.parsefield(io,Date)
 
 io = Buffer(IOBuffer("\\N"))
-v = CSV.parsefield(io, Union{Date, Missing}, CSV.Options(null="\\N"))
+v = CSV.parsefield(io, Union{Date, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
 
 io = Buffer(IOBuffer("\"\\N\""))
-@test_throws Missings.MissingException CSV.parsefield(io,Date,CSV.Options(null="\\N"))
+@test_throws Missings.MissingException CSV.parsefield(io,Date,CSV.Options(missingstring="\\N"))
 
 io = Buffer(IOBuffer("2015-10-05"))
 v = CSV.parsefield(io,Date,opt)
@@ -1107,7 +1107,7 @@ v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
 
 io = Buffer(IOBuffer("\"10/5/2015\"\n"))
-v = CSV.parsefield(io,Date,CSV.Options(null="",dateformat=Dates.DateFormat("mm/dd/yyyy")))
+v = CSV.parsefield(io,Date,CSV.Options(missingstring="",dateformat=Dates.DateFormat("mm/dd/yyyy")))
 @test v === Date(2015,10,5)
 
 end # @testset "Date Custom IO"
@@ -1136,11 +1136,11 @@ io = IOBuffer("\"\"")
 @test_throws Missings.MissingException CSV.parsefield(io,DateTime)
 
 io = IOBuffer("\\N")
-v = CSV.parsefield(io, Union{DateTime, Missing}, CSV.Options(null="\\N"))
+v = CSV.parsefield(io, Union{DateTime, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
 
 io = IOBuffer("\"\\N\"")
-@test_throws Missings.MissingException CSV.parsefield(io,DateTime,CSV.Options(null="\\N"))
+@test_throws Missings.MissingException CSV.parsefield(io,DateTime,CSV.Options(missingstring="\\N"))
 
 io = IOBuffer("2015-10-05T00:00:01")
 v = CSV.parsefield(io,DateTime,opt)
@@ -1212,11 +1212,11 @@ io = Buffer(IOBuffer("\"\""))
 @test_throws Missings.MissingException CSV.parsefield(io,DateTime)
 
 io = Buffer(IOBuffer("\\N"))
-v = CSV.parsefield(io, Union{DateTime, Missing}, CSV.Options(null="\\N"))
+v = CSV.parsefield(io, Union{DateTime, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
 
 io = Buffer(IOBuffer("\"\\N\""))
-@test_throws Missings.MissingException CSV.parsefield(io,DateTime,CSV.Options(null="\\N"))
+@test_throws Missings.MissingException CSV.parsefield(io,DateTime,CSV.Options(missingstring="\\N"))
 
 io = Buffer(IOBuffer("2015-10-05T00:00:01"))
 v = CSV.parsefield(io,DateTime,opt)
@@ -1344,11 +1344,11 @@ io = IOBuffer("\"\"")
 @test_throws Missings.MissingException CSV.parsefield(io,Char)
 
 io = IOBuffer("\\N")
-v = CSV.parsefield(io, Union{Char, Missing}, CSV.Options(null="\\N"))
+v = CSV.parsefield(io, Union{Char, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
 
 io = IOBuffer("\"\\N\"")
-@test_throws Missings.MissingException CSV.parsefield(io,Char,CSV.Options(null="\\N"))
+@test_throws Missings.MissingException CSV.parsefield(io,Char,CSV.Options(missingstring="\\N"))
 
 io = IOBuffer("\t")
 v = CSV.parsefield(io, Union{Char, Missing}, CSV.Options(delim='\t'))
@@ -1411,11 +1411,11 @@ io = IOBuffer("\"\"")
 @test_throws Missings.MissingException CSV.parsefield(io,Bool)
 
 io = IOBuffer("\\N")
-v = CSV.parsefield(io, Union{Bool, Missing}, CSV.Options(null="\\N"))
+v = CSV.parsefield(io, Union{Bool, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
 
 io = IOBuffer("\"\\N\"")
-@test_throws Missings.MissingException CSV.parsefield(io,Bool,CSV.Options(null="\\N"))
+@test_throws Missings.MissingException CSV.parsefield(io,Bool,CSV.Options(missingstring="\\N"))
 
 io = IOBuffer("\t")
 v = CSV.parsefield(io, Union{Bool, Missing}, CSV.Options(delim='\t'))

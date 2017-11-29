@@ -1,4 +1,4 @@
-reload("Nulls"); reload("WeakRefStrings"); reload("DataStreams"); reload("CSV"); reload("DataStreamsIntegrationTests")
+reload("Missings"); reload("WeakRefStrings"); reload("DataStreams"); reload("CSV"); reload("DataStreamsIntegrationTests")
 # NamedTuples
 FILE = joinpath(DataStreamsIntegrationTests.DSTESTDIR, "randoms_small.csv")
 DF = CSV.read(FILE)
