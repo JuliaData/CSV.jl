@@ -50,7 +50,7 @@ Keyword Arguments:
  * `delim::Union{Char,UInt8}`: how fields in the file are delimited; default `','`
  * `quotechar::Union{Char,UInt8}`: the character that indicates a quoted field that may contain the `delim` or newlines; default `'"'`
  * `escapechar::Union{Char,UInt8}`: the character that escapes a `quotechar` in a quoted field; default `'\\'`
- * `null::String`: indicates how NULL values are represented in the dataset; default `""`
+ * `missingstring::String`: indicates how missing values are represented in the dataset; default `""`
  * `dateformat::Union{AbstractString,Dates.DateFormat}`: how dates/datetimes are represented in the dataset; default `Base.Dates.ISODateTimeFormat`
  * `decimal::Union{Char,UInt8}`: character to recognize as the decimal point in a float number, e.g. `3.14` or `3,14`; default `'.'`
  * `truestring`: string to represent `true::Bool` values in a csv file; default `"true"`. Note that `truestring` and `falsestring` cannot start with the same character.
@@ -60,8 +60,8 @@ struct Options{D}
     delim::UInt8
     quotechar::UInt8
     escapechar::UInt8
-    null::Vector{UInt8}
-    nullcheck::Bool
+    missingstring::Vector{UInt8}
+    missingcheck::Bool
     dateformat::D
     decimal::UInt8
     truestring::Vector{UInt8}
@@ -73,16 +73,16 @@ struct Options{D}
     types
 end
 
-Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, null="", dateformat=missing, decimal=PERIOD, truestring="true", falsestring="false", datarow=-1, rows=0, header=1, types=Type[]) =
+Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, missingstring="", dateformat=missing, decimal=PERIOD, truestring="true", falsestring="false", datarow=-1, rows=0, header=1, types=Type[]) =
     Options(delim%UInt8, quotechar%UInt8, escapechar%UInt8,
-            map(UInt8, collect(ascii(String(null)))), null != "", isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat,
+            map(UInt8, collect(ascii(String(missingstring)))), missingstring != "", isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat,
             decimal%UInt8, map(UInt8, collect(truestring)), map(UInt8, collect(falsestring)), datarow, rows, header, types)
 function Base.show(io::IO,op::Options)
     println(io, "    CSV.Options:")
     println(io, "        delim: '", Char(op.delim), "'")
     println(io, "        quotechar: '", Char(op.quotechar), "'")
     print(io, "        escapechar: '"); escape_string(io, string(Char(op.escapechar)), "\\"); println(io, "'")
-    print(io, "        null: \""); escape_string(io, isempty(op.null) ? "" : String(collect(op.null)), "\\"); println(io, "\"")
+    print(io, "        missingstring: \""); escape_string(io, isempty(op.missingstring) ? "" : String(collect(op.missingstring)), "\\"); println(io, "\"")
     println(io, "        dateformat: ", op.dateformat)
     println(io, "        decimal: '", Char(op.decimal), "'")
     println(io, "        truestring: '$(String(op.truestring))'")

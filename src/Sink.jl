@@ -2,7 +2,7 @@ function Sink(fullpath::AbstractString;
               delim::Char=',',
               quotechar::Char='"',
               escapechar::Char='\\',
-              null::AbstractString="",
+              missingstring::AbstractString="",
               dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateFormat,
               header::Bool=true,
               colnames::Vector{String}=String[],
@@ -11,7 +11,7 @@ function Sink(fullpath::AbstractString;
     delim = delim % UInt8; quotechar = quotechar % UInt8; escapechar = escapechar % UInt8
     dateformat = isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat
     io = IOBuffer()
-    options = CSV.Options(delim=delim, quotechar=quotechar, escapechar=escapechar, null=null, dateformat=dateformat)
+    options = CSV.Options(delim=delim, quotechar=quotechar, escapechar=escapechar, missingstring=missingstring, dateformat=dateformat)
     !append && header && !isempty(colnames) && writeheaders(io, colnames, options, Val{quotefields})
     return Sink(options, io, fullpath, position(io), !append && header && !isempty(colnames), colnames, length(colnames), append, Val{quotefields})
 end
@@ -60,7 +60,7 @@ end
 
 const EMPTY_UINT8_ARRAY = UInt8[]
 function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::Missing, row, col::Int)
-    Base.write(sink.io, sink.options.nullcheck ? sink.options.null : EMPTY_UINT8_ARRAY, ifelse(col == sink.cols, NEWLINE, sink.options.delim))
+    Base.write(sink.io, sink.options.missingstringcheck ? sink.options.missingstring : EMPTY_UINT8_ARRAY, ifelse(col == sink.cols, NEWLINE, sink.options.delim))
     return nothing
 end
 
@@ -89,7 +89,7 @@ Keyword Arguments:
 * `delim::Union{Char,UInt8}`; how fields in the file will be delimited; default is `UInt8(',')`
 * `quotechar::Union{Char,UInt8}`; the character that indicates a quoted field that may contain the `delim` or newlines; default is `UInt8('"')`
 * `escapechar::Union{Char,UInt8}`; the character that escapes a `quotechar` in a quoted field; default is `UInt8('\\')`
-* `null::String`; the ascii string that indicates how NULL values will be represented in the dataset; default is the emtpy string `""`
+* `missingstring::String`; the ascii string that indicates how missing values will be represented in the dataset; default is the empty string `""`
 * `dateformat`; how dates/datetimes will be represented in the dataset; default is ISO-8601 `yyyy-mm-ddTHH:MM:SS.s`
 * `header::Bool`; whether to write out the column names from `source`
 * `colnames::Vector{String}`; a vector of string column names to be used when writing the header row
@@ -104,8 +104,8 @@ CSV.write("out.csv", df)
 # write out a DataFrame, this time as a tab-delimited file
 CSV.write("out.csv", df; delim='\t')
 
-# write out a DataFrame, with null values represented by the string "NA"
-CSV.write("out.csv", df; null="NA")
+# write out a DataFrame, with missing values represented by the string "NA"
+CSV.write("out.csv", df; missingstring="NA")
 
 # write out a "header-less" file, with actual data starting on row 1
 CSV.write("out.csv", df; header=false)

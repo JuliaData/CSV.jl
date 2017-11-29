@@ -77,14 +77,14 @@ using CSV, TextParse
 for T in (Int, Float64, WeakRefStrings.WeakRefString{UInt8}, Date, DateTime)
     println("comparing for T = $T...")
     # T == WeakRefStrings.WeakRefString{UInt8} && continue
-    @time CSV.read("/Users/jacobquinn/Downloads/randoms_$(T).csv"; nullable=true);
+    @time CSV.read("/Users/jacobquinn/Downloads/randoms_$(T).csv"; allowmissing=true);
     # @time TextParse.csvread("/Users/jacobquinn/Downloads/randoms_$T.csv");
 end
 
 for T in (Int, Float64, WeakRefStrings.WeakRefString{UInt8}, Date, DateTime)
     println("comparing for T = $T...")
     # T == WeakRefStrings.WeakRefString{UInt8} && continue
-    # @time CSV.read("/Users/jacobquinn/Downloads/randoms_$(T).csv"; nullable=true);
+    # @time CSV.read("/Users/jacobquinn/Downloads/randoms_$(T).csv"; allowmissing=true);
     @time TextParse.csvread("/Users/jacobquinn/Downloads/randoms_$T.csv");
 end
 
@@ -135,8 +135,8 @@ print(end - start)
 
 T = Int64
 @time source = CSV.Source("/Users/jacobquinn/Downloads/randoms_$(T).csv";)
-@time source = CSV.Source("/Users/jacobquinn/Downloads/randoms_small.csv"; nullable=true)
-@time source = CSV.Source("/Users/jacobquinn/Downloads/randoms_small.csv"; nullable=false)
+@time source = CSV.Source("/Users/jacobquinn/Downloads/randoms_small.csv"; allowmissing=true)
+@time source = CSV.Source("/Users/jacobquinn/Downloads/randoms_small.csv"; allowmissing=false)
 # source.schema = DataStreams.Data.Schema(DataStreams.Data.header(source.schema), (Int, String, String, Float64, Float64, Date, DateTime), 9)
 # @time df = CSV.read(source, NamedTuple);
 sink = Si = NamedTuple
@@ -171,7 +171,7 @@ end
 
 t = Vector{Int}(1000000)
 
-# having CSV.parsefield(io, T) where T !>: Null decreases allocations by 1.00M
+# having CSV.parsefield(io, T) where T !>: Missing decreases allocations by 1.00M
 # inlining CSV.parsefield also dropped allocations
 # making CSV.Options not have a type parameter also sped things up
 #

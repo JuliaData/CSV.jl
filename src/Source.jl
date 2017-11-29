@@ -4,12 +4,12 @@ function Source(fullpath::Union{AbstractString,IO};
               delim=COMMA,
               quotechar=QUOTE,
               escapechar=ESCAPE,
-              null::AbstractString="",
+              missingstring::AbstractString="",
 
               header::Union{Integer, UnitRange{Int}, Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types=Type[],
-              nullable::Union{Bool, Missing}=missing,
+              allowmissing::Union{Bool, Missing}=missing,
               dateformat=missing,
               decimal=PERIOD,
               truestring="true",
@@ -28,8 +28,8 @@ function Source(fullpath::Union{AbstractString,IO};
                         options=CSV.Options(delim=typeof(delim) <: String ? UInt8(first(delim)) : (delim % UInt8),
                                             quotechar=typeof(quotechar) <: String ? UInt8(first(quotechar)) : (quotechar % UInt8),
                                             escapechar=typeof(escapechar) <: String ? UInt8(first(escapechar)) : (escapechar % UInt8),
-                                            null=null, dateformat=dateformat, decimal=decimal, truestring=truestring, falsestring=falsestring),
-                        header=header, datarow=datarow, types=types, nullable=nullable, categorical=categorical, footerskip=footerskip,
+                                            missingstring=missingstring, dateformat=dateformat, decimal=decimal, truestring=truestring, falsestring=falsestring),
+                        header=header, datarow=datarow, types=types, allowmissing=allowmissing, categorical=categorical, footerskip=footerskip,
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
 
@@ -39,7 +39,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
                 types=Type[],
-                nullable::Union{Bool, Missing}=missing,
+                allowmissing::Union{Bool, Missing}=missing,
                 categorical::Bool=true,
 
                 footerskip::Int=0,
@@ -151,7 +151,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         if options.dateformat === missing && any(x->x <: Dates.TimeType, columntypes)
             # auto-detected TimeType
             options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
-                              null=options.null, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
+                              missingstring=options.missingstring, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
                               datarow=options.datarow, rows=options.rows, header=options.header, types=options.types)
         end
         if categorical
@@ -174,8 +174,8 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             columntypes[c] = typ
         end
     end
-    if !ismissing(nullable)
-        if nullable
+    if !ismissing(allowmissing)
+        if allowmissing # allow missing values in all columns
             for i = 1:cols
                 T = columntypes[i]
                 columntypes[i] = ifelse(T >: Missing, T, Union{T, Missing})
@@ -225,7 +225,7 @@ Keyword Arguments:
 * `delim::Union{Char,UInt8}`: how fields in the file are delimited; default `','`
 * `quotechar::Union{Char,UInt8}`: the character that indicates a quoted field that may contain the `delim` or newlines; default `'"'`
 * `escapechar::Union{Char,UInt8}`: the character that escapes a `quotechar` in a quoted field; default `'\\'`
-* `null::String`: indicates how NULL values are represented in the dataset; default `""`
+* `missingstring::String`: indicates how missing values are represented in the dataset; default `""`
 * `dateformat::Union{AbstractString,Dates.DateFormat}`: how dates/datetimes are represented in the dataset; default `Base.Dates.ISODateTimeFormat`
 * `decimal::Union{Char,UInt8}`: character to recognize as the decimal point in a float number, e.g. `3.14` or `3,14`; default `'.'`
 * `truestring`: string to represent `true::Bool` values in a csv file; default `"true"`. Note that `truestring` and `falsestring` cannot start with the same character.
@@ -233,7 +233,7 @@ Keyword Arguments:
 * `header`: column names can be provided manually as a complete Vector{String}, or as an Int/Range which indicates the row/rows that contain the column names
 * `datarow::Int`: specifies the row on which the actual data starts in the file; by default, the data is expected on the next row after the header row(s); for a file without column names (header), specify `datarow=1`
 * `types`: column types can be provided manually as a complete Vector{Type}, or in a Dict to reference individual columns by name or number
-* `nullable::Bool`: indicates whether values can be nullable or not; `true` by default. If set to `false` and missing values are encountered, a `Data.NullException` will be thrown
+* `allowmissing::Bool`: indicates whether values can be missing or not; `true` by default. If set to `false` and missing values are encountered, a `MissingException` will be thrown
 * `footerskip::Int`: indicates the number of rows to skip at the end of the file
 * `rows_for_type_detect::Int=100`: indicates how many rows should be read to infer the types of columns
 * `rows::Int`: indicates the total number of rows to read from the file; by default the file is pre-parsed to count the # of rows; `-1` can be passed to skip a full-file scan, but the `Data.Sink` must be setup account for a potentially unknown # of rows
@@ -264,8 +264,8 @@ Other example invocations may include:
 # read in a tab-delimited file
 CSV.read(file; delim='\t')
 
-# read in a comma-delimited file with null values represented as '\\N', such as a MySQL export
-CSV.read(file; null="\\N")
+# read in a comma-delimited file with missing values represented as '\\N', such as a MySQL export
+CSV.read(file; missingstring="\\N")
 
 # read a csv file that happens to have column names in the first column, and grouped data in rows instead of columns
 CSV.read(file; transpose=true)
