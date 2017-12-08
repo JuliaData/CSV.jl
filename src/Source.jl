@@ -244,7 +244,7 @@ Keyword Arguments:
 * `categorical::Bool=true`: read string column as a `CategoricalArray` ([ref](https://github.com/JuliaData/CategoricalArrays.jl)), as long as the % of unique values seen during type detection is less than 67%. This will dramatically reduce memory use in cases where the number of unique values is small.
 
 Note by default, "string" or text columns will be parsed as the [`WeakRefString`](https://github.com/quinnj/WeakRefStrings.jl) type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
-To convert a `String` to a standard Julia string type, use either `df[:col] = convert(Array{String}, df[:col])` or `df[:col] = convert(Array{Union{String, Missing}}, df[:col])`, depending on whether one wishes the column to support values of `missing`.
+To convert a string column `col` to a standard Julia `String` vector, use either `convert(Array{String}, col)` or `convert(Array{Union{String, Missing}}, col)`, depending on whether the column supports `missing` values.
 Oftentimes, however, it can be convenient to work with `WeakRefStrings` depending on the ultimate use, such as transfering the data directly to another system and avoiding all the intermediate copying.
 
 Example usage:
