@@ -53,7 +53,7 @@ function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::AbstractString, row
 end
 
 function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::Dates.TimeType, row, col::Int)
-    v = sink.options.datecheck ? string(val) : Dates.format(val, sink.options.dateformat)
+    v = Dates.format(val, sink.options.dateformat)
     Base.write(sink.io, v, ifelse(col == sink.cols, NEWLINE, sink.options.delim))
     return nothing
 end
