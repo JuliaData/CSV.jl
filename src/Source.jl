@@ -133,9 +133,8 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     if isa(types, Vector) && length(types) == cols
         columntypes = types
     elseif isa(types, Dict) || isempty(types)
-        columntypes = Vector{Type}(cols)
-        levels = Dict{Int, Set{WeakRefString{UInt8}}}(i=>Set{WeakRefString{UInt8}}() for i = 1:cols)
-        fill!(columntypes, Any)
+        columntypes = fill!(Vector{Type}(cols), Any)
+        levels = [Dict{WeakRefString{UInt8}, Int}() for _ = 1:cols]
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
             lineschecked += 1
@@ -157,8 +156,13 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         if categorical
             for i = 1:cols
                 T = columntypes[i]
-                columntypes[i] = ifelse(length(levels[i]) / rows_for_type_detect < .67 && T <: WeakRefString,
-                    CategoricalValue{String, UInt32}, T)
+                if length(levels[i]) / sum(values(levels[i])) < .67 &&
+                        T !== Missing && Missings.T(T) <: WeakRefString
+                    columntypes[i] = CategoricalArrays.catvaluetype(Missings.T(T), UInt32)
+                    if T >: Missing
+                        columntypes[i] = Union{columntypes[i], Missing}
+                    end
+                end
             end
         end
     else
@@ -175,15 +179,15 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         end
     end
     if !ismissing(nullable)
-        if nullable
+        if nullable # allow missing values in all columns
             for i = 1:cols
                 T = columntypes[i]
-                columntypes[i] = ifelse(T >: Missing, T, Union{T, Missing})
+                columntypes[i] = Union{Missings.T(T), Missing}
             end
-        else
+        else # disallow missing values in all columns
             for i = 1:cols
                 T = columntypes[i]
-                columntypes[i] = ifelse(T >: Missing, Missings.T(T), T)
+                columntypes[i] = Missings.T(T)
             end
         end
     end
@@ -235,7 +239,7 @@ Keyword Arguments:
 * `types`: column types can be provided manually as a complete Vector{Type}, or in a Dict to reference individual columns by name or number
 * `nullable::Bool`: indicates whether values can be nullable or not; `true` by default. If set to `false` and missing values are encountered, a `Data.NullException` will be thrown
 * `footerskip::Int`: indicates the number of rows to skip at the end of the file
-* `rows_for_type_detect::Int=100`: indicates how many rows should be read to infer the types of columns
+* `rows_for_type_detect::Int=20`: indicates how many rows should be read to infer the types of columns
 * `rows::Int`: indicates the total number of rows to read from the file; by default the file is pre-parsed to count the # of rows; `-1` can be passed to skip a full-file scan, but the `Data.Sink` must be setup account for a potentially unknown # of rows
 * `use_mmap::Bool=true`: whether the underlying file will be mmapped or not while parsing; note that on Windows machines, the underlying file will not be "deletable" until Julia GC has run (can be run manually via `gc()`) due to the use of a finalizer when reading the file.
 * `append::Bool=false`: if the `sink` argument provided is an existing table, `append=true` will append the source's data to the existing data instead of doing a full replace
