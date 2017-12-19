@@ -185,9 +185,8 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
     if isa(types, Vector) && length(types) == cols
         columntypes = types
     elseif isa(types, Dict) || isempty(types)
-        columntypes = Vector{Type}(cols)
-        levels = Dict{Int, Set{WeakRefString{UInt8}}}(i=>Set{WeakRefString{UInt8}}() for i = 1:cols)
-        fill!(columntypes, Any)
+        columntypes = fill!(Vector{Type}(cols), Any)
+        levels = [Dict{WeakRefString{UInt8}, Int}() for _ = 1:cols]
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
             lineschecked += 1
@@ -211,8 +210,13 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
         if categorical
             for i = 1:cols
                 T = columntypes[i]
-                columntypes[i] = ifelse(length(levels[i]) / rows_for_type_detect < .67 && T <: WeakRefString,
-                    CategoricalValue{String, UInt32}, T)
+                if length(levels[i]) / sum(values(levels[i])) < .67 &&
+                        T !== Missing && Missings.T(T) <: WeakRefString
+                    columntypes[i] = CategoricalArrays.catvaluetype(Missings.T(T), UInt32)
+                    if T >: Missing
+                        columntypes[i] = Union{columntypes[i], Missing}
+                    end
+                end
             end
         end
     else
@@ -230,15 +234,15 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
         end
     end
     if !ismissing(nullable)
-        if nullable
+        if nullable # allow missing values in all columns
             for i = 1:cols
                 T = columntypes[i]
-                columntypes[i] = ifelse(T >: Missing, T, Union{T, Missing})
+                columntypes[i] = Union{Missings.T(T), Missing}
             end
-        else
+        else # disallow missing values in all columns
             for i = 1:cols
                 T = columntypes[i]
-                columntypes[i] = ifelse(T >: Missing, Missings.T(T), T)
+                columntypes[i] = Missings.T(T)
             end
         end
     end
