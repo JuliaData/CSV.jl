@@ -204,8 +204,10 @@ promote_type2(::Type{DateTime}, ::Type{Date}) = DateTime
 # for cases when our current type can't widen, just promote to WeakRefString
 promote_type2(::Type{<:Real}, ::Type{<:Dates.TimeType}) = WeakRefString{UInt8}
 promote_type2(::Type{<:Dates.TimeType}, ::Type{<:Real}) = WeakRefString{UInt8}
-promote_type2(::Type{<:Any}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{<:Any}) = WeakRefString{UInt8}
+promote_type2(::Type{T}, ::Type{WeakRefString{UInt8}}) where T = WeakRefString{UInt8}
+promote_type2(::Type{Union{T, Missing}}, ::Type{WeakRefString{UInt8}}) where T = Union{WeakRefString{UInt8}, Missing}
+promote_type2(::Type{WeakRefString{UInt8}}, ::Type{T}) where T = WeakRefString{UInt8}
+promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Union{T, Missing}}) where T = Union{WeakRefString{UInt8}, Missing}
 # avoid ambiguity
 promote_type2(::Type{Any}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
 promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Any}) = WeakRefString{UInt8}
@@ -217,8 +219,14 @@ promote_type2(::Type{Missing}, ::Type{Missing}) = Missing
 
 function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
     pos = position(io)
+    # update levels
+    try
+        lev = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
+        ismissing(lev) || (levels[lev] = get!(levels, lev, 0) + 1)
+    end
     if Int <: prevT || prevT == Missing
         try
+            seek(io, pos)
             v1 = CSV.parsefield(io, Union{Int, Missing}, opt)
             # print("...parsed = '$v1'...")
             return v1 isa Missing ? Missing : Int
@@ -267,8 +275,7 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
     try
         seek(io, pos)
         v7 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
-        push!(levels, v7)
-        # print("...parsed = '$v1'...")
+        # print("...parsed = '$v7'...")
         return v7 isa Missing ? Missing : WeakRefString{UInt8}
     end
     return Missing
