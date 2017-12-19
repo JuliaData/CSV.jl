@@ -15,6 +15,7 @@ function Source(fullpath::Union{AbstractString,IO};
               truestring="true",
               falsestring="false",
               categorical::Bool=true,
+              weakrefstrings::Bool=false,
 
               footerskip::Int=0,
               rows_for_type_detect::Int=20,
@@ -29,7 +30,7 @@ function Source(fullpath::Union{AbstractString,IO};
                                             quotechar=typeof(quotechar) <: String ? UInt8(first(quotechar)) : (quotechar % UInt8),
                                             escapechar=typeof(escapechar) <: String ? UInt8(first(escapechar)) : (escapechar % UInt8),
                                             null=null, dateformat=dateformat, decimal=decimal, truestring=truestring, falsestring=falsestring),
-                        header=header, datarow=datarow, types=types, nullable=nullable, categorical=categorical, footerskip=footerskip,
+                        header=header, datarow=datarow, types=types, nullable=nullable, categorical=categorical, weakrefstrings=weakrefstrings, footerskip=footerskip,
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
 
@@ -41,6 +42,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 types=Type[],
                 nullable::Union{Bool, Missing}=missing,
                 categorical::Bool=true,
+                weakrefstrings::Bool=false,
 
                 footerskip::Int=0,
                 rows_for_type_detect::Int=20,
@@ -173,6 +175,9 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             c = findfirst(x->x == col, columnnames)
             columntypes[c] = typ
         end
+    end
+    if !weakrefstrings
+        columntypes = [T <: WeakRefString ? String : T for T in columntypes]
     end
     if !ismissing(nullable)
         if nullable
