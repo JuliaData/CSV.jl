@@ -346,8 +346,8 @@ function detect_dataschema(source::IOBuffer, columnnames::AbstractVector{String}
     end
     if !weakrefstrings # replace WeakRefString column types with String
         for (i, typ) in enumerate(columntypes)
-            if typ <: WeakRefString
-                columntypes[i] = String
+            if typ !== Missing && Missings.T(typ) <: WeakRefString
+                columntypes[i] = typ >: Missing ? Union{String, Missing} : String
             end
         end
     end
