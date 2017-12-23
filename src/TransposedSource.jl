@@ -17,7 +17,7 @@ function TransposedSource(fullpath::Union{AbstractString,IO};
               categorical::Bool=true,
 
               footerskip::Int=0,
-              rows_for_type_detect::Int=20,
+              rows_for_type_detect::Int=100,
               rows::Int=0,
               use_mmap::Bool=true)
     # make sure character args are UInt8
@@ -43,7 +43,7 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
                 categorical::Bool=true,
 
                 footerskip::Int=0,
-                rows_for_type_detect::Int=20,
+                rows_for_type_detect::Int=100,
                 rows::Int=0,
                 use_mmap::Bool=true) where {D}
     # argument checks
