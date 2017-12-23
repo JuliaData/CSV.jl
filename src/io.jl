@@ -328,7 +328,7 @@ function detect_dataschema(source::IOBuffer, columnnames::AbstractVector{<:Abstr
             for i = 1:cols
                 T = columntypes[i]
                 if length(levels[i]) / sum(values(levels[i])) < .67 &&
-                    T !== Missing && Missings.T(T) <: WeakRefString
+                    T !== Missing && Missings.T(T) <: AbstractString
                     columntypes[i] = substitute(T, CategoricalArrays.catvaluetype(Missings.T(T), UInt32))
                 end
             end
