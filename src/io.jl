@@ -217,7 +217,7 @@ promote_type2(::Type{Missing}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefStri
 promote_type2(::Type{Any}, ::Type{Missing}) = Missing
 promote_type2(::Type{Missing}, ::Type{Missing}) = Missing
 
-function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
+function detecttype(io, opt::CSV.Options, prevT, levels)
     pos = position(io)
     # update levels
     try
@@ -241,7 +241,7 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
         end
     end
     if Date <: prevT || DateTime <: prevT || prevT == Missing
-        if D == Missing
+        if opt.dateformat === nothing
             # try to auto-detect TimeType
             try
                 seek(io, pos)
@@ -316,12 +316,6 @@ function detect_dataschema(source::IOBuffer, columnnames::AbstractVector{String}
                 ##println("... promoted to: ", columntypes[i])
                 #coltyp != columntypes[i] && println("col #$i type old=$coltyp new=$(columntypes[i]) (row #$lineschecked type=$valtyp)")
             end
-        end
-        if options.dateformat === missing && any(x->x <: Dates.TimeType, columntypes)
-            # auto-detected TimeType
-            options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
-                              null=options.null, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
-                              datarow=options.datarow, rows=options.rows, header=options.header, types=options.types)
         end
         if categorical
             for i = 1:cols

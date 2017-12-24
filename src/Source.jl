@@ -10,7 +10,7 @@ function Source(fullpath::Union{AbstractString,IO};
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types=Type[],
               nullable::Union{Bool, Missing}=missing,
-              dateformat=missing,
+              dateformat=nothing,
               decimal=PERIOD,
               truestring="true",
               falsestring="false",
@@ -35,7 +35,7 @@ function Source(fullpath::Union{AbstractString,IO};
 end
 
 function Source(;fullpath::Union{AbstractString,IO}="",
-                options::CSV.Options{D}=CSV.Options(),
+                options::CSV.Options=CSV.Options(),
 
                 header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
@@ -47,7 +47,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 footerskip::Int=0,
                 rows_for_type_detect::Int=20,
                 rows::Int=0,
-                use_mmap::Bool=true) where {D}
+                use_mmap::Bool=true)
     # argument checks
     isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
     header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
