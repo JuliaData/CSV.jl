@@ -179,76 +179,13 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
         seek(source, datapos)
     end
     rows = rows - footerskip # rows now equals the actual number of rows in the dataset
-    startingcolumnpositions = deepcopy(columnpositions)
-    # Detect column types
-    cols = length(columnnames)
-    if isa(types, Vector) && length(types) == cols
-        columntypes = types
-    elseif isa(types, Dict) || isempty(types)
-        columntypes = fill!(Vector{Type}(cols), Any)
-        levels = [Dict{WeakRefString{UInt8}, Int}() for _ = 1:cols]
-        lineschecked = 0
-        while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
-            lineschecked += 1
-            # println("type detecting on row = $lineschecked...")
-            for i = 1:cols
-                # print("\tdetecting col = $i...")
-                seek(source, columnpositions[i])
-                typ = CSV.detecttype(source, options, columntypes[i], levels[i])::Type
-                columnpositions[i] = position(source)
-                # print(typ)
-                columntypes[i] = CSV.promote_type2(columntypes[i], typ)
-                # println("...promoting to: ", columntypes[i])
-            end
-        end
-        if options.dateformat === missing && any(x->x <: Dates.TimeType, columntypes)
-            # auto-detected TimeType
-            options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
-                              null=options.null, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
-                              datarow=options.datarow, rows=options.rows, header=options.header, types=options.types)
-        end
-        if categorical
-            for i = 1:cols
-                T = columntypes[i]
-                if length(levels[i]) / sum(values(levels[i])) < .67 &&
-                        T !== Missing && Missings.T(T) <: WeakRefString
-                    columntypes[i] = CategoricalArrays.catvaluetype(Missings.T(T), UInt32)
-                    if T >: Missing
-                        columntypes[i] = Union{columntypes[i], Missing}
-                    end
-                end
-            end
-        end
-    else
-        throw(ArgumentError("$cols number of columns detected; `types` argument has $(length(types)) entries"))
-    end
 
-    if isa(types, Dict{Int, <:Any})
-        for (col, typ) in types
-            columntypes[col] = typ
-        end
-    elseif isa(types, Dict{String, <:Any})
-        for (col,typ) in types
-            c = findfirst(x->x == col, columnnames)
-            columntypes[c] = typ
-        end
-    end
-    if !ismissing(nullable)
-        if nullable # allow missing values in all columns
-            for i = 1:cols
-                T = columntypes[i]
-                columntypes[i] = Union{Missings.T(T), Missing}
-            end
-        else # disallow missing values in all columns
-            for i = 1:cols
-                T = columntypes[i]
-                columntypes[i] = Missings.T(T)
-            end
-        end
-    end
+    sch = detect_dataschema(source, columnnames, types, options,
+                            nullable, categorical, weakrefstrings,
+                            rows, rows_for_type_detect,
+                            columnpositions)
     seek(source, datapos)
-    sch = Data.Schema(columntypes, columnnames, ifelse(rows < 0, missing, rows))
-    return TransposedSource(sch, options, source, String(fullpath), datapos, startingcolumnpositions)
+    return TransposedSource(sch, options, source, String(fullpath), datapos, columnpositions)
 end
 
 # construct a new TransposedSource from a Sink

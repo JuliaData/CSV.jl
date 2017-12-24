@@ -280,3 +280,95 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
     end
     return Missing
 end
+
+function detect_dataschema(source::IOBuffer, columnnames::AbstractVector{String}, types,
+                           options::Options, nullable::Union{Bool, Missing},
+                           categorical::Bool, weakrefstrings::Bool,
+                           rows::Integer, rows_for_type_detect::Integer,
+                           columnpositions::Union{AbstractVector{Int}, Void} = nothing)
+    cols = length(columnnames)
+    if isa(columnpositions, AbstractVector)
+        # vector of file positions for each column of the current row
+        columnpositions = deepcopy(columnpositions)
+    end
+    if isa(types, AbstractVector) && !isempty(types)
+        length(types) == cols || throw(ArgumentError("The length of types argument ($(length(types))) should match the number of columns ($cols)"))
+        columntypes = copy(types)
+    elseif isa(types, Dict) || isempty(types)
+        columntypes = fill!(Vector{Type}(cols), Any)
+        # FIXME copy options.types into columntypes and skip detection for user-specified columns
+        # FIXME skip detection completely if all columns have user-specified types
+        #println("starting column types detection...")
+        levels = [Dict{WeakRefString{UInt8}, Int}() for _ = 1:cols]
+        lineschecked = 0
+        rows_to_check = rows < 0 ? rows_for_type_detect : min(rows, rows_for_type_detect)
+        while !eof(source) && lineschecked < rows_to_check
+            lineschecked += 1
+            ##println("type detection on row $lineschecked...")
+            for i = 1:cols
+                coltyp = columntypes[i]
+                ##print("\tdetecting col #$i (current: $coltyp)...")
+                isa(columnpositions, AbstractVector) && seek(source, columnpositions[i])
+                valtyp = CSV.detecttype(source, options, coltyp, levels[i])::Type
+                isa(columnpositions, AbstractVector) && (columnpositions[i] = position(source))
+                ##print("detected ", valtyp)
+                columntypes[i] = CSV.promote_type2(coltyp, valtyp)
+                ##println("... promoted to: ", columntypes[i])
+                #coltyp != columntypes[i] && println("col #$i type old=$coltyp new=$(columntypes[i]) (row #$lineschecked type=$valtyp)")
+            end
+        end
+        if options.dateformat === missing && any(x->x <: Dates.TimeType, columntypes)
+            # auto-detected TimeType
+            options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
+                              null=options.null, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
+                              datarow=options.datarow, rows=options.rows, header=options.header, types=options.types)
+        end
+        if categorical
+            for i = 1:cols
+                T = columntypes[i]
+                if length(levels[i]) / sum(values(levels[i])) < .67 &&
+                        T !== Missing && Missings.T(T) <: WeakRefString
+                    columntypes[i] = CategoricalArrays.catvaluetype(Missings.T(T), UInt32)
+                    if T >: Missing
+                        columntypes[i] = Union{columntypes[i], Missing}
+                    end
+                end
+            end
+        end
+    else
+        throw(ArgumentError("$cols number of columns detected; `types` argument has $(length(types)) entries"))
+    end
+
+    # apply user-specified column types
+    if isa(types, Dict{<:Integer})
+        for (col, typ) in types
+            columntypes[col] = typ
+        end
+    elseif isa(types, Dict{<:AbstractString})
+        for (col, typ) in types
+            c = findfirst(x->x == col, columnnames)
+            columntypes[c] = typ
+        end
+    end
+    if !weakrefstrings # replace WeakRefString column types with String
+        for (i, typ) in enumerate(columntypes)
+            if typ <: WeakRefString
+                columntypes[i] = String
+            end
+        end
+    end
+    if !ismissing(nullable)
+        if nullable # allow missing values in all columns
+            for i = 1:cols
+                T = columntypes[i]
+                columntypes[i] = Union{Missings.T(T), Missing}
+            end
+        else # disallow missing values in all columns
+            for i = 1:cols
+                T = columntypes[i]
+                columntypes[i] = Missings.T(T)
+            end
+        end
+    end
+    return Data.Schema(columntypes, columnnames, rows < 0 ? missing : rows)
+end
