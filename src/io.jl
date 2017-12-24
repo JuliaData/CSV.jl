@@ -127,8 +127,12 @@ function readsplitline!(vals::Vector{RawField}, io::IO, d::UInt8, q::UInt8, e::U
     end
     return vals
 end
-readsplitline!(vals::Vector{RawField}, io::IO, d=',', q='"', e='\\', buf::IOBuffer=IOBuffer()) = readsplitline!(vals, io, UInt8(d), UInt8(q), UInt8(e), buf)
-readsplitline!(vals::Vector{RawField}, source::CSV.Source) = readsplitline!(vals, source.io, source.options.delim, source.options.quotechar, source.options.escapechar)
+readsplitline!(vals::Vector{RawField}, io::IO, d=',', q='"', e='\\', buf::IOBuffer=IOBuffer()) =
+    readsplitline!(vals, io, UInt8(d), UInt8(q), UInt8(e), buf)
+readsplitline!(vals::Vector{RawField}, io::IO, options::Options, buf::IOBuffer=IOBuffer()) =
+    readsplitline!(vals, io, options.delim, options.quotechar, options.escapechar, buf)
+readsplitline!(vals::Vector{RawField}, source::CSV.Source, buf::IOBuffer=IOBuffer()) =
+    readsplitline!(vals, source.io, source.options, buf)
 
 readsplitline(io::IO, d=',', q='"', e='\\', buf::IOBuffer=IOBuffer()) =
     readsplitline!(Vector{RawField}(), io, d, q, e, buf)
@@ -178,6 +182,8 @@ function skipto!(f::IO, cur, dest, q, e)
     end
     return
 end
+
+skipto!(f::IO, cur, dest, opt::Options) = skipto!(f, cur, dest, opt.quotechar, opt.escapechar)
 
 # try to infer the type of the value in `val`. The precedence of type checking is `Int` => `Float64` => `Date` => `DateTime` => `String`
 timetype(df::Dates.DateFormat) = any(typeof(T) in (Dates.DatePart{'H'}, Dates.DatePart{'M'}, Dates.DatePart{'S'}, Dates.DatePart{'s'}) for T in df.tokens) ? DateTime : Date

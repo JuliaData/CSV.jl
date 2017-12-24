@@ -90,38 +90,37 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     # also ensure that `f` is positioned at the start of data
     row_vals = Vector{RawField}()
     if isa(header, Integer)
-        # default header = 1
-        if header <= 0
-            CSV.skipto!(source,1,datarow,options.quotechar,options.escapechar)
+        if header <= 0 # no header
+            CSV.skipto!(source, 1, datarow, options)
             datapos = position(source)
-            CSV.readsplitline!(row_vals, source,options.delim,options.quotechar,options.escapechar)
+            CSV.readsplitline!(row_vals, source, options)
             seek(source, datapos)
             columnnames = ["Column$i" for i = eachindex(row_vals)]
-        else
-            CSV.skipto!(source,1,header,options.quotechar,options.escapechar)
-            columnnames = [strip(x.value) for x in CSV.readsplitline!(row_vals, source,options.delim,options.quotechar,options.escapechar)]
-            datarow != header+1 && CSV.skipto!(source,header+1,datarow,options.quotechar,options.escapechar)
+        else # read row[header]
+            CSV.skipto!(source, 1, header, options)
+            columnnames = [strip(x.value) for x in CSV.readsplitline!(row_vals, source, options)]
+            datarow != header+1 && CSV.skipto!(source, header+1, datarow, options)
             datapos = position(source)
         end
-    elseif isa(header,Range)
-        CSV.skipto!(source,1,first(header),options.quotechar,options.escapechar)
-        columnnames = [x.value for x in readsplitline!(row_vals,source,options.delim,options.quotechar,options.escapechar)]
+    elseif isa(header, Range)
+        CSV.skipto!(source, 1, first(header), options)
+        columnnames = [x.value for x in readsplitline!(row_vals, source, options)]
         for row = first(header):(last(header)-1)
-            for (i,c) in enumerate([x.value for x in readsplitline!(row_vals,source,options.delim,options.quotechar,options.escapechar)])
+            for (i,c) in enumerate([x.value for x in readsplitline!(row_vals, source, options)])
                 columnnames[i] *= "_" * c
             end
         end
-        datarow != last(header)+1 && CSV.skipto!(source,last(header)+1,datarow,options.quotechar,options.escapechar)
+        datarow != last(header)+1 && CSV.skipto!(source, last(header)+1, datarow, options)
         datapos = position(source)
     elseif fs == 0
         datapos = position(source)
         columnnames = header
         cols = length(columnnames)
     else
-        CSV.skipto!(source,1,datarow,options.quotechar,options.escapechar)
+        CSV.skipto!(source, 1, datarow, options)
         datapos = position(source)
-        readsplitline!(row_vals,source,options.delim,options.quotechar,options.escapechar)
-        seek(source,datapos)
+        readsplitline!(row_vals, source, options)
+        seek(source, datapos)
         if isempty(header)
             columnnames = ["Column$i" for i in eachindex(row_vals)]
         else
