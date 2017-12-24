@@ -50,34 +50,13 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
     isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
 
-    isa(fullpath, IOStream) && (fullpath = chop(replace(fullpath.name, "<file ", "")))
-
-    # open the file for property detection
-    if isa(fullpath, IOBuffer)
-        source = fullpath
-        fs = nb_available(fullpath)
-        fullpath = "<IOBuffer>"
-    elseif isa(fullpath, IO)
-        source = IOBuffer(Base.read(fullpath))
-        fs = nb_available(fullpath)
-        fullpath = isdefined(fullpath, :name) ? fullpath.name : "__IO__"
-    else
-        source = open(fullpath, "r") do f
-            IOBuffer(use_mmap ? Mmap.mmap(f) : Base.read(f))
-        end
-        fs = filesize(fullpath)
-    end
+    source, fullpath, fs = open_source(fullpath, use_mmap)
     options.datarow != -1 && (datarow = options.datarow)
     options.rows != 0 && (rows = options.rows)
     options.header != 1 && (header = options.header)
     !isempty(options.types) && (types = options.types)
     startpos = position(source)
-    # BOM character detection
-    if fs > 0 && peekbyte(source) == 0xef
-        readbyte(source)
-        readbyte(source) == 0xbb || seek(source, startpos)
-        readbyte(source) == 0xbf || seek(source, startpos)
-    end
+    skip_bom(source, fs)
     datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
 
     if isa(header, Integer) && header > 0

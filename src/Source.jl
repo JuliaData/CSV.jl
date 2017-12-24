@@ -1,3 +1,35 @@
+# open src and return a tuple of IO, its name and its size
+function open_source(src::Union{AbstractString,IO}, use_mmap::Bool)
+    if isa(src, IOBuffer)
+        source = src
+        fsize = nb_available(src)
+        fullpath = "<IOBuffer>"
+    elseif isa(src, IO)
+        source = IOBuffer(Base.read(src))
+        fsize = nb_available(source)
+        fullpath = isdefined(src, :name) ? src.name : "__IO__"
+        #fullpath = chop(replace(src.name, "<file ", ""))
+    else
+        isfile(src) || throw(ArgumentError("\"$src\" is not a valid file"))
+        source = open(src, "r") do f
+            IOBuffer(use_mmap ? Mmap.mmap(f) : Base.read(f))
+        end
+        fullpath = src
+        fsize = filesize(src)
+    end
+    return source, fullpath, fsize
+end
+
+# BOM character detection
+function skip_bom(source::IO, fsize::Integer)
+    if fsize > 0 && peekbyte(source) == 0xef
+        readbyte(source)
+        readbyte(source) == 0xbb || seek(source, startpos)
+        readbyte(source) == 0xbf || seek(source, startpos)
+    end
+    return nothing
+end
+
 # independent constructor
 function Source(fullpath::Union{AbstractString,IO};
 
@@ -53,23 +85,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
 
-    # isa(fullpath, IOStream) && (fullpath = chop(replace(fullpath.name, "<file ", "")))
-
-    # open the file for property detection
-    if isa(fullpath, IOBuffer)
-        source = fullpath
-        fs = nb_available(fullpath)
-        fullpath = "<IOBuffer>"
-    elseif isa(fullpath, IO)
-        source = IOBuffer(Base.read(fullpath))
-        fs = nb_available(source)
-        fullpath = isdefined(fullpath, :name) ? fullpath.name : "__IO__"
-    else
-        source = open(fullpath, "r") do f
-            IOBuffer(use_mmap ? Mmap.mmap(f) : Base.read(f))
-        end
-        fs = filesize(fullpath)
-    end
+    source, fullpath, fs = open_source(fullpath, use_mmap)
     options.datarow != -1 && (datarow = options.datarow)
     options.rows != 0 && (rows = options.rows)
     options.header != 1 && (header = options.header)
@@ -77,12 +93,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     startpos = position(source)
     rows = rows == 0 ? CSV.countlines(source, options.quotechar, options.escapechar) : rows
     seek(source, startpos)
-    # BOM character detection
-    if fs > 0 && peekbyte(source) == 0xef
-        readbyte(source)
-        readbyte(source) == 0xbb || seek(source, startpos)
-        readbyte(source) == 0xbf || seek(source, startpos)
-    end
+    skip_bom(source, fs)
     datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
     rows = fs == 0 ? -1 : max(-1, rows - datarow + 1 - footerskip) # rows now equals the actual number of rows in the dataset
 
