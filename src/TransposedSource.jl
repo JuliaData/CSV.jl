@@ -1,64 +1,13 @@
-# independent constructor
-function TransposedSource(fullpath::Union{AbstractString,IO};
+TransposedSource(src::Union{AbstractString,IO} = ""; kwargs...) =
+    TransposedSource(src, Options(;kwargs...))
 
-              delim=COMMA,
-              quotechar=QUOTE,
-              escapechar=ESCAPE,
-              null::AbstractString="",
-
-              header::Union{Integer, UnitRange{Int}, Vector}=1, # header can be a row number, range of rows, or actual string vector
-              datarow::Int=-1, # by default, data starts immediately after header or start of file
-              types=Type[],
-              nullable::Union{Bool, Missing}=missing,
-              dateformat=missing,
-              decimal=PERIOD,
-              truestring="true",
-              falsestring="false",
-              categorical::Bool=true,
-
-              footerskip::Int=0,
-              rows_for_type_detect::Int=20,
-              rows::Int=0,
-              use_mmap::Bool=true)
-    # make sure character args are UInt8
-    isascii(delim) || throw(ArgumentError("non-ASCII characters not supported for delim argument: $delim"))
-    isascii(quotechar) || throw(ArgumentError("non-ASCII characters not supported for quotechar argument: $quotechar"))
-    isascii(escapechar) || throw(ArgumentError("non-ASCII characters not supported for escapechar argument: $escapechar"))
-    return CSV.TransposedSource(fullpath=fullpath,
-                        options=CSV.Options(delim=typeof(delim) <: String ? UInt8(first(delim)) : (delim % UInt8),
-                                            quotechar=typeof(quotechar) <: String ? UInt8(first(quotechar)) : (quotechar % UInt8),
-                                            escapechar=typeof(escapechar) <: String ? UInt8(first(escapechar)) : (escapechar % UInt8),
-                                            null=null, dateformat=dateformat, decimal=decimal, truestring=truestring, falsestring=falsestring),
-                        header=header, datarow=datarow, types=types, nullable=nullable, categorical=categorical, footerskip=footerskip,
-                        rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
-end
-
-function TransposedSource(;fullpath::Union{AbstractString,IO}="",
-                options::CSV.Options=CSV.Options(),
-
-                header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
-                datarow::Int=-1, # by default, data starts immediately after header or start of file
-                types=Type[],
-                nullable::Union{Bool, Missing}=missing,
-                categorical::Bool=true,
-
-                footerskip::Int=0,
-                rows_for_type_detect::Int=20,
-                rows::Int=0,
-                use_mmap::Bool=true)
-    # argument checks
-    isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
-    isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
-
-    source, fullpath, fs = open_source(fullpath, use_mmap)
-    options.datarow != -1 && (datarow = options.datarow)
-    options.rows != 0 && (rows = options.rows)
-    options.header != 1 && (header = options.header)
-    !isempty(options.types) && (types = options.types)
+function TransposedSource(src::Union{AbstractString,IO}, options::Options)
+    source, fullpath, fsize = open_source(src, options.use_mmap)
     startpos = position(source)
-    skip_bom(source, fs)
-    datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
+    skip_bom(source, fsize)
 
+    const header = options.header
+    const datarow = options.datarow
     if isa(header, Integer) && header > 0
         # skip to header column to read column names
         row = 1
@@ -106,7 +55,7 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
     elseif isa(header, Range)
         # column names span several columns
         throw(ArgumentError("not implemented for transposed csv files"))
-    elseif fs == 0
+    elseif fsize == 0
         # emtpy file, use column names if provided
         datapos = position(source)
         columnnames = header
@@ -157,12 +106,9 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
         end
         seek(source, datapos)
     end
-    rows = rows - footerskip # rows now equals the actual number of rows in the dataset
+    rows = rows - options.footerskip # rows now equals the actual number of data rows in the dataset
 
-    sch = detect_dataschema(source, columnnames, types, options,
-                            nullable, categorical, weakrefstrings,
-                            rows, rows_for_type_detect,
-                            columnpositions)
+    sch = detect_dataschema(source, options, rows, columnnames, columnpositions)
     seek(source, datapos)
     return TransposedSource(sch, options, source, String(fullpath), datapos, columnpositions)
 end

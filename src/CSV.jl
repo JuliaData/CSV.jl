@@ -66,27 +66,19 @@ struct Options
     decimal::UInt8
     truestring::Vector{UInt8}
     falsestring::Vector{UInt8}
+
     # non-public for now
     datarow::Int
     rows::Int
-    header::Union{Integer,UnitRange{Int},Vector}
-    types
-end
+    rows_for_type_detect::Int
+    footerskip::Int
 
-Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, null="", dateformat=nothing, decimal=PERIOD, truestring="true", falsestring="false", datarow=-1, rows=0, header=1, types=Type[]) =
-    Options(delim%UInt8, quotechar%UInt8, escapechar%UInt8,
-            map(UInt8, collect(ascii(String(null)))), null != "", isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat,
-            decimal%UInt8, map(UInt8, collect(truestring)), map(UInt8, collect(falsestring)), datarow, rows, header, types)
-function Base.show(io::IO,op::Options)
-    println(io, "    CSV.Options:")
-    println(io, "        delim: '", Char(op.delim), "'")
-    println(io, "        quotechar: '", Char(op.quotechar), "'")
-    print(io, "        escapechar: '"); escape_string(io, string(Char(op.escapechar)), "\\"); println(io, "'")
-    print(io, "        null: \""); escape_string(io, isempty(op.null) ? "" : String(collect(op.null)), "\\"); println(io, "\"")
-    println(io, "        dateformat: ", op.dateformat)
-    println(io, "        decimal: '", Char(op.decimal), "'")
-    println(io, "        truestring: '$(String(op.truestring))'")
-    print(io, "        falsestring: '$(String(op.falsestring))'")
+    header::Union{Integer, UnitRange{Int}, AbstractVector}
+    types::Union{AbstractVector, Associative}
+    categorical::Bool
+    nullable::Union{Bool, Missing}
+    weakrefstrings::Bool
+    use_mmap::Bool
 end
 
 """
@@ -176,6 +168,7 @@ mutable struct Sink{B} <: Data.Sink
     quotefields::B
 end
 
+include("options.jl")
 include("parsefields.jl")
 include("float.jl")
 include("io.jl")

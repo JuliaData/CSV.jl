@@ -30,75 +30,22 @@ function skip_bom(source::IO, fsize::Integer)
     return nothing
 end
 
-# independent constructor
-function Source(fullpath::Union{AbstractString,IO};
+Source(src::Union{AbstractString,IO}=""; kwargs...) =
+    Source(src, Options(;kwargs...))
 
-              delim=COMMA,
-              quotechar=QUOTE,
-              escapechar=ESCAPE,
-              null::AbstractString="",
-
-              header::Union{Integer, UnitRange{Int}, Vector}=1, # header can be a row number, range of rows, or actual string vector
-              datarow::Int=-1, # by default, data starts immediately after header or start of file
-              types=Type[],
-              nullable::Union{Bool, Missing}=missing,
-              dateformat=nothing,
-              decimal=PERIOD,
-              truestring="true",
-              falsestring="false",
-              categorical::Bool=true,
-              weakrefstrings::Bool=false,
-
-              footerskip::Int=0,
-              rows_for_type_detect::Int=20,
-              rows::Int=0,
-              use_mmap::Bool=true)
-    # make sure character args are UInt8
-    isascii(delim) || throw(ArgumentError("non-ASCII characters not supported for delim argument: $delim"))
-    isascii(quotechar) || throw(ArgumentError("non-ASCII characters not supported for quotechar argument: $quotechar"))
-    isascii(escapechar) || throw(ArgumentError("non-ASCII characters not supported for escapechar argument: $escapechar"))
-    return CSV.Source(fullpath=fullpath,
-                        options=CSV.Options(delim=typeof(delim) <: String ? UInt8(first(delim)) : (delim % UInt8),
-                                            quotechar=typeof(quotechar) <: String ? UInt8(first(quotechar)) : (quotechar % UInt8),
-                                            escapechar=typeof(escapechar) <: String ? UInt8(first(escapechar)) : (escapechar % UInt8),
-                                            null=null, dateformat=dateformat, decimal=decimal, truestring=truestring, falsestring=falsestring),
-                        header=header, datarow=datarow, types=types, nullable=nullable, categorical=categorical, weakrefstrings=weakrefstrings, footerskip=footerskip,
-                        rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
-end
-
-function Source(;fullpath::Union{AbstractString,IO}="",
-                options::CSV.Options=CSV.Options(),
-
-                header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
-                datarow::Int=-1, # by default, data starts immediately after header or start of file
-                types=Type[],
-                nullable::Union{Bool, Missing}=missing,
-                categorical::Bool=true,
-                weakrefstrings::Bool=false,
-
-                footerskip::Int=0,
-                rows_for_type_detect::Int=20,
-                rows::Int=0,
-                use_mmap::Bool=true)
-    # argument checks
-    isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
-    header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
-    isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
-
-    source, fullpath, fs = open_source(fullpath, use_mmap)
-    options.datarow != -1 && (datarow = options.datarow)
-    options.rows != 0 && (rows = options.rows)
-    options.header != 1 && (header = options.header)
-    !isempty(options.types) && (types = options.types)
+function Source(src::Union{AbstractString,IO}, options::CSV.Options)
+    source, fullpath, fsize = open_source(src, options.use_mmap)
     startpos = position(source)
-    rows = rows == 0 ? CSV.countlines(source, options.quotechar, options.escapechar) : rows
+    rows = options.rows == 0 ? CSV.countlines(source, options.quotechar, options.escapechar) : options.rows
+    # set rows to the actual number of data rows in the dataset
+    rows = fsize == 0 ? -1 : max(-1, rows - options.datarow + 1 - options.footerskip)
     seek(source, startpos)
-    skip_bom(source, fs)
-    datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
-    rows = fs == 0 ? -1 : max(-1, rows - datarow + 1 - footerskip) # rows now equals the actual number of rows in the dataset
+    skip_bom(source, fsize)
 
     # figure out # of columns and header, either an Integer, Range, or Vector{String}
     # also ensure that `f` is positioned at the start of data
+    const header = options.header
+    const datarow = options.datarow
     row_vals = Vector{RawField}()
     if isa(header, Integer)
         if header <= 0 # no header
@@ -123,7 +70,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         end
         datarow != last(header)+1 && CSV.skipto!(source, last(header)+1, datarow, options)
         datapos = position(source)
-    elseif fs == 0
+    elseif fsize == 0
         datapos = position(source)
         columnnames = header
         cols = length(columnnames)
@@ -140,15 +87,13 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         end
     end
 
-    sch = detect_dataschema(source, columnnames, types, options,
-                            nullable, categorical, weakrefstrings,
-                            rows, rows_for_type_detect)
+    sch = detect_dataschema(source, options, rows, columnnames)
     seek(source, datapos)
     return Source(sch, options, source, String(fullpath), datapos)
 end
 
 # construct a new Source from a Sink
-Source(s::CSV.Sink) = CSV.Source(fullpath=s.fullpath, options=s.options)
+Source(s::CSV.Sink) = CSV.Source(s.fullpath, s.options)
 
 # Data.Source interface
 "reset a `CSV.Source` to its beginning to be ready to parse data from again"
@@ -262,14 +207,18 @@ sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 """
 function read end
 
-function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), transpose::Bool=false, kwargs...)
-    source = transpose ? TransposedSource(fullpath; kwargs...) : Source(fullpath; kwargs...)
+function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...;
+              append::Bool=false, transforms::Dict=Dict{Int,Function}(), transpose::Bool=false, kwargs...)
+    options = Options(;kwargs...)
+    source = transpose ? TransposedSource(fullpath, options) : Source(fullpath, options)
     sink = Data.stream!(source, sink, args...; append=append, transforms=transforms)
     return Data.close!(sink)
 end
 
-function read(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}(), transpose::Bool=false, kwargs...) where {T}
-    source = transpose ? TransposedSource(fullpath; kwargs...) : Source(fullpath; kwargs...)
+function read(fullpath::Union{AbstractString,IO}, sink::T;
+              append::Bool=false, transforms::Dict=Dict{Int,Function}(), transpose::Bool=false, kwargs...) where {T}
+    options = Options(;kwargs...)
+    source = transpose ? TransposedSource(fullpath, options) : Source(fullpath, options)
     sink = Data.stream!(source, sink; append=append, transforms=transforms)
     return Data.close!(sink)
 end
