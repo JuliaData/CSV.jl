@@ -235,11 +235,11 @@ end
 
 @inline function parsefield(io::IO, ::Type{Date}, opt::CSV.Options, row, col, state, ifnull::Function)
     v = parsefield(io, WeakRefString{UInt8}, opt, row, col, state, ifnull)
-    return v isa Missing ? ifnull(row, col) : Date(v, opt.dateformat)
+    return v isa Missing ? ifnull(row, col) : Date(v, opt.dateformat === nothing ? Dates.ISODateFormat : opt.dateformat)
 end
 @inline function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options, row, col, state, ifnull::Function)
     v = parsefield(io, WeakRefString{UInt8}, opt, row, col, state, ifnull)
-    return v isa Missing ? ifnull(row, col) : DateTime(v, opt.dateformat)
+    return v isa Missing ? ifnull(row, col) : DateTime(v, opt.dateformat === nothing ? Dates.ISODateTimeFormat : opt.dateformat)
 end
 
 @inline function parsefield(io::IO, ::Type{Char}, opt::CSV.Options, row, col, state, ifnull::Function)

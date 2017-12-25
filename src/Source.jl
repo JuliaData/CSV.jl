@@ -1,127 +1,84 @@
-# independent constructor
-function Source(fullpath::Union{AbstractString,IO};
-
-              delim=COMMA,
-              quotechar=QUOTE,
-              escapechar=ESCAPE,
-              null::AbstractString="",
-
-              header::Union{Integer, UnitRange{Int}, Vector}=1, # header can be a row number, range of rows, or actual string vector
-              datarow::Int=-1, # by default, data starts immediately after header or start of file
-              types=Type[],
-              nullable::Union{Bool, Missing}=missing,
-              dateformat=missing,
-              decimal=PERIOD,
-              truestring="true",
-              falsestring="false",
-              categorical::Bool=true,
-              weakrefstrings::Bool=false,
-
-              footerskip::Int=0,
-              rows_for_type_detect::Int=20,
-              rows::Int=0,
-              use_mmap::Bool=true)
-    # make sure character args are UInt8
-    isascii(delim) || throw(ArgumentError("non-ASCII characters not supported for delim argument: $delim"))
-    isascii(quotechar) || throw(ArgumentError("non-ASCII characters not supported for quotechar argument: $quotechar"))
-    isascii(escapechar) || throw(ArgumentError("non-ASCII characters not supported for escapechar argument: $escapechar"))
-    return CSV.Source(fullpath=fullpath,
-                        options=CSV.Options(delim=typeof(delim) <: String ? UInt8(first(delim)) : (delim % UInt8),
-                                            quotechar=typeof(quotechar) <: String ? UInt8(first(quotechar)) : (quotechar % UInt8),
-                                            escapechar=typeof(escapechar) <: String ? UInt8(first(escapechar)) : (escapechar % UInt8),
-                                            null=null, dateformat=dateformat, decimal=decimal, truestring=truestring, falsestring=falsestring),
-                        header=header, datarow=datarow, types=types, nullable=nullable, categorical=categorical, weakrefstrings=weakrefstrings, footerskip=footerskip,
-                        rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
-end
-
-function Source(;fullpath::Union{AbstractString,IO}="",
-                options::CSV.Options{D}=CSV.Options(),
-
-                header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
-                datarow::Int=-1, # by default, data starts immediately after header or start of file
-                types=Type[],
-                nullable::Union{Bool, Missing}=missing,
-                categorical::Bool=true,
-                weakrefstrings::Bool=false,
-
-                footerskip::Int=0,
-                rows_for_type_detect::Int=20,
-                rows::Int=0,
-                use_mmap::Bool=true) where {D}
-    # argument checks
-    isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
-    header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
-    isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
-
-    # isa(fullpath, IOStream) && (fullpath = chop(replace(fullpath.name, "<file ", "")))
-
-    # open the file for property detection
-    if isa(fullpath, IOBuffer)
-        source = fullpath
-        fs = nb_available(fullpath)
+# open src and return a tuple of IO, its name and its size
+function open_source(src::Union{AbstractString,IO}, use_mmap::Bool)
+    if isa(src, IOBuffer)
+        source = src
+        fsize = nb_available(src)
         fullpath = "<IOBuffer>"
-    elseif isa(fullpath, IO)
-        source = IOBuffer(Base.read(fullpath))
-        fs = nb_available(source)
-        fullpath = isdefined(fullpath, :name) ? fullpath.name : "__IO__"
+    elseif isa(src, IO)
+        source = IOBuffer(Base.read(src))
+        fsize = nb_available(source)
+        fullpath = isdefined(src, :name) ? src.name : "__IO__"
+        #fullpath = chop(replace(src.name, "<file ", ""))
     else
-        source = open(fullpath, "r") do f
+        isfile(src) || throw(ArgumentError("\"$src\" is not a valid file"))
+        source = open(src, "r") do f
             IOBuffer(use_mmap ? Mmap.mmap(f) : Base.read(f))
         end
-        fs = filesize(fullpath)
+        fullpath = src
+        fsize = filesize(src)
     end
-    options.datarow != -1 && (datarow = options.datarow)
-    options.rows != 0 && (rows = options.rows)
-    options.header != 1 && (header = options.header)
-    !isempty(options.types) && (types = options.types)
-    startpos = position(source)
-    rows = rows == 0 ? CSV.countlines(source, options.quotechar, options.escapechar) : rows
-    seek(source, startpos)
-    # BOM character detection
-    if fs > 0 && peekbyte(source) == 0xef
+    return source, fullpath, fsize
+end
+
+# BOM character detection
+function skip_bom(source::IO, fsize::Integer)
+    if fsize > 0 && peekbyte(source) == 0xef
         readbyte(source)
         readbyte(source) == 0xbb || seek(source, startpos)
         readbyte(source) == 0xbf || seek(source, startpos)
     end
-    datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
-    rows = fs == 0 ? -1 : max(-1, rows - datarow + 1 - footerskip) # rows now equals the actual number of rows in the dataset
+    return nothing
+end
+
+Source(src::Union{AbstractString,IO}=""; kwargs...) =
+    Source(src, Options(;kwargs...))
+
+function Source(src::Union{AbstractString,IO}, options::CSV.Options)
+    source, fullpath, fsize = open_source(src, options.use_mmap)
+    startpos = position(source)
+    rows = options.rows == 0 ? CSV.countlines(source, options.quotechar, options.escapechar) : options.rows
+    # set rows to the actual number of data rows in the dataset
+    rows = fsize == 0 ? -1 : max(-1, rows - options.datarow + 1 - options.footerskip)
+    seek(source, startpos)
+    skip_bom(source, fsize)
 
     # figure out # of columns and header, either an Integer, Range, or Vector{String}
     # also ensure that `f` is positioned at the start of data
+    const header = options.header
+    const datarow = options.datarow
     row_vals = Vector{RawField}()
     if isa(header, Integer)
-        # default header = 1
-        if header <= 0
-            CSV.skipto!(source,1,datarow,options.quotechar,options.escapechar)
+        if header <= 0 # no header
+            CSV.skipto!(source, 1, datarow, options)
             datapos = position(source)
-            CSV.readsplitline!(row_vals, source,options.delim,options.quotechar,options.escapechar)
+            CSV.readsplitline!(row_vals, source, options)
             seek(source, datapos)
             columnnames = ["Column$i" for i = eachindex(row_vals)]
-        else
-            CSV.skipto!(source,1,header,options.quotechar,options.escapechar)
-            columnnames = [strip(x.value) for x in CSV.readsplitline!(row_vals, source,options.delim,options.quotechar,options.escapechar)]
-            datarow != header+1 && CSV.skipto!(source,header+1,datarow,options.quotechar,options.escapechar)
+        else # read row[header]
+            CSV.skipto!(source, 1, header, options)
+            columnnames = [strip(x.value) for x in CSV.readsplitline!(row_vals, source, options)]
+            datarow != header+1 && CSV.skipto!(source, header+1, datarow, options)
             datapos = position(source)
         end
-    elseif isa(header,Range)
-        CSV.skipto!(source,1,first(header),options.quotechar,options.escapechar)
-        columnnames = [x.value for x in readsplitline!(row_vals,source,options.delim,options.quotechar,options.escapechar)]
+    elseif isa(header, Range)
+        CSV.skipto!(source, 1, first(header), options)
+        columnnames = [x.value for x in readsplitline!(row_vals, source, options)]
         for row = first(header):(last(header)-1)
-            for (i,c) in enumerate([x.value for x in readsplitline!(row_vals,source,options.delim,options.quotechar,options.escapechar)])
+            for (i,c) in enumerate([x.value for x in readsplitline!(row_vals, source, options)])
                 columnnames[i] *= "_" * c
             end
         end
-        datarow != last(header)+1 && CSV.skipto!(source,last(header)+1,datarow,options.quotechar,options.escapechar)
+        datarow != last(header)+1 && CSV.skipto!(source, last(header)+1, datarow, options)
         datapos = position(source)
-    elseif fs == 0
+    elseif fsize == 0
         datapos = position(source)
         columnnames = header
         cols = length(columnnames)
     else
-        CSV.skipto!(source,1,datarow,options.quotechar,options.escapechar)
+        CSV.skipto!(source, 1, datarow, options)
         datapos = position(source)
-        readsplitline!(row_vals,source,options.delim,options.quotechar,options.escapechar)
-        seek(source,datapos)
+        readsplitline!(row_vals, source, options)
+        seek(source, datapos)
         if isempty(header)
             columnnames = ["Column$i" for i in eachindex(row_vals)]
         else
@@ -130,79 +87,13 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         end
     end
 
-    # Detect column types
-    cols = length(columnnames)
-    if isa(types, Vector) && length(types) == cols
-        columntypes = types
-    elseif isa(types, Dict) || isempty(types)
-        columntypes = fill!(Vector{Type}(cols), Any)
-        levels = [Dict{WeakRefString{UInt8}, Int}() for _ = 1:cols]
-        lineschecked = 0
-        while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
-            lineschecked += 1
-            # println("type detecting on row = $lineschecked...")
-            for i = 1:cols
-                # print("\tdetecting col = $i...")
-                typ = CSV.detecttype(source, options, columntypes[i], levels[i])::Type
-                # print(typ)
-                columntypes[i] = CSV.promote_type2(columntypes[i], typ)
-                # println("...promoting to: ", columntypes[i])
-            end
-        end
-        if options.dateformat === missing && any(x->x <: Dates.TimeType, columntypes)
-            # auto-detected TimeType
-            options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
-                              null=options.null, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
-                              datarow=options.datarow, rows=options.rows, header=options.header, types=options.types)
-        end
-        if categorical
-            for i = 1:cols
-                T = columntypes[i]
-                if length(levels[i]) / sum(values(levels[i])) < .67 &&
-                        T !== Missing && Missings.T(T) <: WeakRefString
-                    columntypes[i] = CategoricalArrays.catvaluetype(Missings.T(T), UInt32)
-                    if T >: Missing
-                        columntypes[i] = Union{columntypes[i], Missing}
-                    end
-                end
-            end
-        end
-    else
-        throw(ArgumentError("$cols number of columns detected; `types` argument has $(length(types)) entries"))
-    end
-    if isa(types, Dict{Int, <:Any})
-        for (col, typ) in types
-            columntypes[col] = typ
-        end
-    elseif isa(types, Dict{String, <:Any})
-        for (col, typ) in types
-            c = findfirst(x->x == col, columnnames)
-            columntypes[c] = typ
-        end
-    end
-    if !weakrefstrings
-        columntypes = [T <: WeakRefString ? String : T for T in columntypes]
-    end
-    if !ismissing(nullable)
-        if nullable # allow missing values in all columns
-            for i = 1:cols
-                T = columntypes[i]
-                columntypes[i] = Union{Missings.T(T), Missing}
-            end
-        else # disallow missing values in all columns
-            for i = 1:cols
-                T = columntypes[i]
-                columntypes[i] = Missings.T(T)
-            end
-        end
-    end
+    sch = detect_dataschema(source, options, rows, columnnames)
     seek(source, datapos)
-    sch = Data.Schema(columntypes, columnnames, ifelse(rows < 0, missing, rows))
     return Source(sch, options, source, String(fullpath), datapos)
 end
 
 # construct a new Source from a Sink
-Source(s::CSV.Sink) = CSV.Source(fullpath=s.fullpath, options=s.options)
+Source(s::CSV.Sink) = CSV.Source(s.fullpath, s.options)
 
 # Data.Source interface
 "reset a `CSV.Source` to its beginning to be ready to parse data from again"
@@ -316,14 +207,18 @@ sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 """
 function read end
 
-function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), transpose::Bool=false, kwargs...)
-    source = transpose ? TransposedSource(fullpath; kwargs...) : Source(fullpath; kwargs...)
+function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...;
+              append::Bool=false, transforms::Dict=Dict{Int,Function}(), transpose::Bool=false, kwargs...)
+    options = Options(;kwargs...)
+    source = transpose ? TransposedSource(fullpath, options) : Source(fullpath, options)
     sink = Data.stream!(source, sink, args...; append=append, transforms=transforms)
     return Data.close!(sink)
 end
 
-function read(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}(), transpose::Bool=false, kwargs...) where {T}
-    source = transpose ? TransposedSource(fullpath; kwargs...) : Source(fullpath; kwargs...)
+function read(fullpath::Union{AbstractString,IO}, sink::T;
+              append::Bool=false, transforms::Dict=Dict{Int,Function}(), transpose::Bool=false, kwargs...) where {T}
+    options = Options(;kwargs...)
+    source = transpose ? TransposedSource(fullpath, options) : Source(fullpath, options)
     sink = Data.stream!(source, sink; append=append, transforms=transforms)
     return Data.close!(sink)
 end
