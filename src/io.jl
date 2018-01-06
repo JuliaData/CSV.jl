@@ -245,13 +245,13 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
             # try to auto-detect TimeType
             try
                 seek(io, pos)
-                v3 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
+                v3 = CSV.parsefield(io, Union{String, Missing}, opt)
                 # print("...parsed = '$v3'...")
                 return v3 isa Missing ? Missing : (Date(v3, Dates.ISODateFormat); Date)
             end
             try
                 seek(io, pos)
-                v4 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
+                v4 = CSV.parsefield(io, Union{String, Missing}, opt)
                 # print("...parsed = '$v4'...")
                 return v4 isa Missing ? Missing : (DateTime(v4, Dates.ISODateTimeFormat); DateTime)
             end

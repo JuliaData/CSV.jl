@@ -15,6 +15,7 @@ function TransposedSource(fullpath::Union{AbstractString,IO};
               truestring="true",
               falsestring="false",
               categorical::Bool=true,
+              weakrefstrings::Bool=true,
 
               footerskip::Int=0,
               rows_for_type_detect::Int=20,
@@ -41,6 +42,7 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
                 types=Type[],
                 nullable::Union{Bool, Missing}=missing,
                 categorical::Bool=true,
+                weakrefstrings::Bool=true,
 
                 footerskip::Int=0,
                 rows_for_type_detect::Int=20,
@@ -48,9 +50,8 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
                 use_mmap::Bool=true) where {D}
     # argument checks
     isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
+    header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
-
-    isa(fullpath, IOStream) && (fullpath = chop(replace(fullpath.name, "<file ", "")))
 
     # open the file for property detection
     if isa(fullpath, IOBuffer)
@@ -124,7 +125,7 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
             end
         end
         seek(source, datapos)
-    elseif isa(header, Range)
+    elseif isa(header, AbstractRange)
         # column names span several columns
         throw(ArgumentError("not implemented for transposed csv files"))
     elseif fs == 0
@@ -185,7 +186,7 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
     if isa(types, Vector) && length(types) == cols
         columntypes = types
     elseif isa(types, Dict) || isempty(types)
-        columntypes = fill!(Vector{Type}(cols), Any)
+        columntypes = fill!(Vector{Type}(uninitialized, cols), Any)
         levels = [Dict{WeakRefString{UInt8}, Int}() for _ = 1:cols]
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
@@ -232,6 +233,9 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
             c = findfirst(x->x == col, columnnames)
             columntypes[c] = typ
         end
+    end
+    if !weakrefstrings
+        columntypes = [T <: WeakRefString ? String : T for T in columntypes]
     end
     if !ismissing(nullable)
         if nullable # allow missing values in all columns

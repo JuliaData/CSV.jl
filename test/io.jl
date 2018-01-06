@@ -8,8 +8,8 @@ io = IOBuffer(str * "\n" * str * "\r\n" * str)
 @test CSV.readline(io) == str
 
 # `CSV.readline(source::CSV.Source)` => `String`
-source = CSV.Source(IOBuffer(str); header=["col1","col2","col3","col4"])
-@test CSV.readline(source) == str
+strsource = CSV.Source(IOBuffer(str); header=["col1","col2","col3","col4"])
+@test CSV.readline(strsource) == str
 
 # `CSV.readsplitline(io, d=',', q='"', e='\\', buf::IOBuffer=IOBuffer())` => `Vector{String}`
 spl = [CSV.RawField("field1", false),
@@ -35,16 +35,16 @@ io = IOBuffer(str * "\n" * str * "\r\n" * str)
 end
 
 # `CSV.readsplitline(source::CSV.Source)` => `Vector{String}`
-source = CSV.Source(IOBuffer(str); header=["col1","col2","col3","col4"])
-@test CSV.readsplitline(source) == spl
+strsource = CSV.Source(IOBuffer(str); header=["col1","col2","col3","col4"])
+@test CSV.readsplitline(strsource) == spl
 
 # `CSV.countlines(io::IO, quotechar, escapechar)` => `Int`
 @test CSV.countlines(IOBuffer(str)) == 1
 @test CSV.countlines(IOBuffer(str * "\n" * str)) == 2
 
 # `CSV.countlines(source::CSV.Source)` => `Int`
-source = CSV.Source(IOBuffer(str); header=["col1","col2","col3","col4"])
-@test CSV.countlines(source) == 1
+intsource = CSV.Source(IOBuffer(str); header=["col1","col2","col3","col4"])
+@test CSV.countlines(intsource) == 1
 
 @testset "misformatted CSV lines" begin
     @testset "missing quote" begin

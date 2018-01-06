@@ -15,7 +15,7 @@ function Source(fullpath::Union{AbstractString,IO};
               truestring="true",
               falsestring="false",
               categorical::Bool=true,
-              weakrefstrings::Bool=false,
+              weakrefstrings::Bool=true,
 
               footerskip::Int=0,
               rows_for_type_detect::Int=20,
@@ -42,7 +42,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 types=Type[],
                 nullable::Union{Bool, Missing}=missing,
                 categorical::Bool=true,
-                weakrefstrings::Bool=false,
+                weakrefstrings::Bool=true,
 
                 footerskip::Int=0,
                 rows_for_type_detect::Int=20,
@@ -52,8 +52,6 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
     header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
-
-    # isa(fullpath, IOStream) && (fullpath = chop(replace(fullpath.name, "<file ", "")))
 
     # open the file for property detection
     if isa(fullpath, IOBuffer)
@@ -86,7 +84,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
     rows = fs == 0 ? -1 : max(-1, rows - datarow + 1 - footerskip) # rows now equals the actual number of rows in the dataset
 
-    # figure out # of columns and header, either an Integer, Range, or Vector{String}
+    # figure out # of columns and header, either an Integer,  AbstractRange, or Vector{String}
     # also ensure that `f` is positioned at the start of data
     row_vals = Vector{RawField}()
     if isa(header, Integer)
@@ -103,7 +101,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             datarow != header+1 && CSV.skipto!(source,header+1,datarow,options.quotechar,options.escapechar)
             datapos = position(source)
         end
-    elseif isa(header,Range)
+    elseif isa(header, AbstractRange)
         CSV.skipto!(source,1,first(header),options.quotechar,options.escapechar)
         columnnames = [x.value for x in readsplitline!(row_vals,source,options.delim,options.quotechar,options.escapechar)]
         for row = first(header):(last(header)-1)
@@ -135,7 +133,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     if isa(types, Vector) && length(types) == cols
         columntypes = types
     elseif isa(types, Dict) || isempty(types)
-        columntypes = fill!(Vector{Type}(cols), Any)
+        columntypes = fill!(Vector{Type}(uninitialized, cols), Any)
         levels = [Dict{WeakRefString{UInt8}, Int}() for _ = 1:cols]
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
@@ -239,7 +237,7 @@ Keyword Arguments:
 * `decimal::Union{Char,UInt8}`: character to recognize as the decimal point in a float number, e.g. `3.14` or `3,14`; default `'.'`
 * `truestring`: string to represent `true::Bool` values in a csv file; default `"true"`. Note that `truestring` and `falsestring` cannot start with the same character.
 * `falsestring`: string to represent `false::Bool` values in a csv file; default `"false"`
-* `header`: column names can be provided manually as a complete Vector{String}, or as an Int/Range which indicates the row/rows that contain the column names
+* `header`: column names can be provided manually as a complete Vector{String}, or as an Int/ AbstractRange which indicates the row/rows that contain the column names
 * `datarow::Int`: specifies the row on which the actual data starts in the file; by default, the data is expected on the next row after the header row(s); for a file without column names (header), specify `datarow=1`
 * `types`: column types can be provided manually as a complete Vector{Type}, or in a Dict to reference individual columns by name or number
 * `nullable::Bool`: indicates whether values can be nullable or not; `true` by default. If set to `false` and missing values are encountered, a `Data.NullException` will be thrown
@@ -251,6 +249,7 @@ Keyword Arguments:
 * `transforms::Dict{Union{String,Int},Function}`: a Dict of transforms to apply to values as they are parsed. Note that a column can be specified by either number or column name.
 * `transpose::Bool=false`: when reading the underlying csv data, rows should be treated as columns and columns as rows, thus the resulting dataset will be the "transpose" of the actual csv data.
 * `categorical::Bool=true`: read string column as a `CategoricalArray` ([ref](https://github.com/JuliaData/CategoricalArrays.jl)), as long as the % of unique values seen during type detection is less than 67%. This will dramatically reduce memory use in cases where the number of unique values is small.
+* `weakrefstrings::Bool=true`: whether WeakRefStrings should be used internally to speed up file parsing; can only be `=true` for Sinks that support WeakRefStringArrays; note that regular Strings are returned from WeakRefStringArray; WeakRefStrings are only used internally.
 
 Note by default, "string" or text columns will be parsed as the [`WeakRefString`](https://github.com/quinnj/WeakRefStrings.jl) type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
 To convert a `String` to a standard Julia string type, just call `string(::WeakRefString)`, this also works on an entire column.
