@@ -84,7 +84,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
     rows = fs == 0 ? -1 : max(-1, rows - datarow + 1 - footerskip) # rows now equals the actual number of rows in the dataset
 
-    # figure out # of columns and header, either an Integer,  AbstractRange, or Vector{String}
+    # figure out # of columns and header, either an Integer, AbstractRange, or Vector{String}
     # also ensure that `f` is positioned at the start of data
     row_vals = Vector{RawField}()
     if isa(header, Integer)
@@ -239,7 +239,7 @@ Keyword Arguments:
 * `decimal::Union{Char,UInt8}`: character to recognize as the decimal point in a float number, e.g. `3.14` or `3,14`; default `'.'`
 * `truestring`: string to represent `true::Bool` values in a csv file; default `"true"`. Note that `truestring` and `falsestring` cannot start with the same character.
 * `falsestring`: string to represent `false::Bool` values in a csv file; default `"false"`
-* `header`: column names can be provided manually as a complete Vector{String}, or as an Int/ AbstractRange which indicates the row/rows that contain the column names
+* `header`: column names can be provided manually as a complete Vector{String}, or as an Int/AbstractRange which indicates the row/rows that contain the column names
 * `datarow::Int`: specifies the row on which the actual data starts in the file; by default, the data is expected on the next row after the header row(s); for a file without column names (header), specify `datarow=1`
 * `types`: column types can be provided manually as a complete Vector{Type}, or in a Dict to reference individual columns by name or number
 * `nullable::Bool`: indicates whether values can be nullable or not; `true` by default. If set to `false` and missing values are encountered, a `Data.NullException` will be thrown
