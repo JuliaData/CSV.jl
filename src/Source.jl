@@ -10,7 +10,7 @@ function Source(fullpath::Union{AbstractString,IO};
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types=Type[],
               nullable::Union{Bool, Missing}=missing,
-              dateformat=missing,
+              dateformat=nothing,
               decimal=PERIOD,
               truestring="true",
               falsestring="false",
@@ -147,7 +147,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 # println("...promoting to: ", columntypes[i])
             end
         end
-        if options.dateformat === missing && any(x->x <: Dates.TimeType, columntypes)
+        if options.dateformat === nothing && any(x->x <: Dates.TimeType, columntypes)
             # auto-detected TimeType
             options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
                               null=options.null, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,

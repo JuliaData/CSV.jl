@@ -69,7 +69,7 @@ struct Options{D}
     types
 end
 
-Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, null="", dateformat=missing, decimal=PERIOD, truestring="true", falsestring="false", datarow=-1, rows=0, header=1, types=Type[]) =
+Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, null="", dateformat=nothing, decimal=PERIOD, truestring="true", falsestring="false", datarow=-1, rows=0, header=1, types=Type[]) =
     Options(delim%UInt8, quotechar%UInt8, escapechar%UInt8,
             map(UInt8, collect(ascii(String(null)))), null != "", isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat,
             decimal%UInt8, map(UInt8, collect(truestring)), map(UInt8, collect(falsestring)), datarow, rows, header, types)

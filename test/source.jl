@@ -348,6 +348,15 @@ df = CSV.read(joinpath(dir, "attenu.csv"), null="NA", rows_for_type_detect=200)
 @test size(df) == (182, 5)
 @test Data.types(Data.schema(df)) == (Int, Float64, Union{Missings.Missing, String}, Float64, Float64)
 
+# #137
+tbl = DataFrame(a=[11,22], dt=[Date(2017,12,7), Date(2017,12,14)])
+tbl[:dttm] = DateTime.(tbl[:dt])
+CSV.write("test.tsv", tbl; delim='\t')
+df = CSV.read("test.tsv"; delim='\t')
+@test Data.types(Data.schema(df)) == (Int, Date, DateTime)
+df = nothing; gc(); gc()
+rm("test.tsv")
+
 end # testset
 
 @testset "CSV.Source various files" begin

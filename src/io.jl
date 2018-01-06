@@ -241,7 +241,7 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
         end
     end
     if Date <: prevT || DateTime <: prevT || prevT == Missing
-        if D == Missing
+        if D == Nothing
             # try to auto-detect TimeType
             try
                 seek(io, pos)

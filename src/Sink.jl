@@ -3,7 +3,7 @@ function Sink(fullpath::AbstractString;
               quotechar::Char='"',
               escapechar::Char='\\',
               null::AbstractString="",
-              dateformat::Union{AbstractString,Dates.DateFormat}=Dates.ISODateFormat,
+              dateformat=nothing,
               header::Bool=true,
               colnames::Vector{String}=String[],
               append::Bool=false,
@@ -52,8 +52,11 @@ function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::AbstractString, row
     return nothing
 end
 
+defaultformat(::Date) = Dates.ISODateFormat
+defaultformat(::DateTime) = Dates.ISODateTimeFormat
+
 function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::Dates.TimeType, row, col::Int)
-    v = Dates.format(val, sink.options.dateformat)
+    v = Dates.format(val, sink.options.dateformat === nothing ? defaultformat(val) : sink.options.dateformat)
     Base.write(sink.io, v, ifelse(col == sink.cols, NEWLINE, sink.options.delim))
     return nothing
 end
