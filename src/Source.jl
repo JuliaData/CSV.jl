@@ -221,6 +221,8 @@ Data.reference(source::CSV.Source) = source.io.data
 
 parses a delimited file into a Julia structure (a DataFrame by default, but any valid `Data.Sink` may be requested).
 
+Minimal error-reporting happens w/ `CSV.read` for performance reasons; for problematic csv files, try [`CSV.validate`](@ref) which takes exact same arguments as `CSV.read` and provides much more information for why reading the file failed.
+
 Positional arguments:
 
 * `fullpath`; can be a file name (string) or other `IO` instance
@@ -250,10 +252,6 @@ Keyword Arguments:
 * `transpose::Bool=false`: when reading the underlying csv data, rows should be treated as columns and columns as rows, thus the resulting dataset will be the "transpose" of the actual csv data.
 * `categorical::Bool=true`: read string column as a `CategoricalArray` ([ref](https://github.com/JuliaData/CategoricalArrays.jl)), as long as the % of unique values seen during type detection is less than 67%. This will dramatically reduce memory use in cases where the number of unique values is small.
 * `weakrefstrings::Bool=true`: whether WeakRefStrings should be used internally to speed up file parsing; can only be `=true` for Sinks that support WeakRefStringArrays; note that regular Strings are returned from WeakRefStringArray; WeakRefStrings are only used internally.
-
-Note by default, "string" or text columns will be parsed as the [`WeakRefString`](https://github.com/quinnj/WeakRefStrings.jl) type. This is a custom type that only stores a pointer to the actual byte data + the number of bytes.
-To convert a `String` to a standard Julia string type, just call `string(::WeakRefString)`, this also works on an entire column.
-Oftentimes, however, it can be convenient to work with `WeakRefStrings` depending on the ultimate use, such as transfering the data directly to another system and avoiding all the intermediate copying.
 
 Example usage:
 ```
