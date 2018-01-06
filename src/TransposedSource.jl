@@ -211,12 +211,8 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
         if categorical
             for i = 1:cols
                 T = columntypes[i]
-                if length(levels[i]) / sum(values(levels[i])) < .67 &&
-                        T !== Missing && Missings.T(T) <: WeakRefString
-                    columntypes[i] = CategoricalArrays.catvaluetype(Missings.T(T), UInt32)
-                    if T >: Missing
-                        columntypes[i] = Union{columntypes[i], Missing}
-                    end
+                if length(levels[i]) / sum(values(levels[i])) < .67 && Missings.T(T) <: WeakRefString
+                    columntypes[i] = substitute(T, CategoricalArrays.catvaluetype(Missings.T(T), UInt32))
                 end
             end
         end
@@ -235,7 +231,7 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
         end
     end
     if !weakrefstrings
-        columntypes = [T <: WeakRefString ? String : T for T in columntypes]
+        columntypes = [Missings.T(T) <: WeakRefString ? substitute(T, String) : T for T in columntypes]
     end
     if !ismissing(nullable)
         if nullable # allow missing values in all columns
