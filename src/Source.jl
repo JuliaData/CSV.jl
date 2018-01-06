@@ -251,7 +251,7 @@ Keyword Arguments:
 * `transforms::Dict{Union{String,Int},Function}`: a Dict of transforms to apply to values as they are parsed. Note that a column can be specified by either number or column name.
 * `transpose::Bool=false`: when reading the underlying csv data, rows should be treated as columns and columns as rows, thus the resulting dataset will be the "transpose" of the actual csv data.
 * `categorical::Bool=true`: read string column as a `CategoricalArray` ([ref](https://github.com/JuliaData/CategoricalArrays.jl)), as long as the % of unique values seen during type detection is less than 67%. This will dramatically reduce memory use in cases where the number of unique values is small.
-* `weakrefstrings::Bool=true`: whether WeakRefStrings should be used internally to speed up file parsing; can only be `=true` for Sinks that support WeakRefStringArrays; note that regular Strings are returned from WeakRefStringArray; WeakRefStrings are only used internally.
+* `weakrefstrings::Bool=true`: whether to use [`WeakRefStrings`](https://github.com/quinnj/WeakRefStrings.jl) package to speed up file parsing; can only be `=true` for the `Sink` objects that support `WeakRefStringArray` columns. Note that `WeakRefStringArray` still returns regular `String` elements.
 
 Example usage:
 ```
