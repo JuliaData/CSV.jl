@@ -40,6 +40,7 @@ end
 
 substitute(::Type{Union{T, Missing}}, ::Type{T1}) where {T, T1} = Union{T1, Missing}
 substitute(::Type{T}, ::Type{T1}) where {T, T1} = T1
+substitute(::Type{Missing}, ::Type{T1}) where {T1} = Missing
 
 """
 Represents the various configuration settings for delimited text file parsing.

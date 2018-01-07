@@ -434,14 +434,14 @@ f = CSV.Source(joinpath(dir, "Fielding.csv"); nullable=true, types=Dict("GS"=>In
 @test size(Data.schema(f), 2) == 18
 @test size(Data.schema(f), 1) == 167938
 @test Data.header(Data.schema(f)) == ["playerID","yearID","stint","teamID","lgID","POS","G","GS","InnOuts","PO","A","E","DP","PB","WP","SB","CS","ZR"]
-@test Data.types(Data.schema(f)) == (Union{CategoricalString{UInt32}, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{CategoricalString{UInt32}, Missing}, Union{CategoricalString{UInt32}, Missing}, Union{CategoricalString{UInt32}, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing})
+@test Data.types(Data.schema(f)) == (Union{CategoricalString{UInt32}, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{CategoricalString{UInt32}, Missing}, Union{CategoricalString{UInt32}, Missing}, Union{CategoricalString{UInt32}, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing})
 ds = CSV.read(f)
 
 f = CSV.Source(joinpath(dir, "latest (1).csv"); header=0, null="\\N", types=Dict(13=>Union{Float64, Missing},17=>Union{Int, Missing},18=>Union{Float64, Missing},20=>Union{Float64, Missing}))
 @test size(Data.schema(f), 2) == 25
 @test size(Data.schema(f), 1) == 1000
 @test Data.header(Data.schema(f)) == ["Column$i" for i = 1:size(Data.schema(f), 2)]
-@test Data.types(Data.schema(f)) == (CategoricalString{UInt32}, CategoricalString{UInt32}, Int64, Int64, CategoricalString{UInt32}, Int64, CategoricalString{UInt32}, Int64, Date, Date, Int64, CategoricalString{UInt32}, Union{Float64, Missing}, Union{Float64, Missing}, Union{Float64, Missing}, Union{Float64, Missing}, Union{Int64, Missing}, Union{Float64, Missing}, Float64, Union{Float64, Missing}, Union{Float64, Missing}, Union{Int64, Missing}, Float64, Union{Float64, Missing}, Union{Float64, Missing})
+@test Data.types(Data.schema(f)) == (CategoricalString{UInt32}, CategoricalString{UInt32}, Int, Int, CategoricalString{UInt32}, Int, CategoricalString{UInt32}, Int, Date, Date, Int, CategoricalString{UInt32}, Union{Float64, Missing}, Union{Float64, Missing}, Union{Float64, Missing}, Union{Float64, Missing}, Union{Int, Missing}, Union{Float64, Missing}, Float64, Union{Float64, Missing}, Union{Float64, Missing}, Union{Int, Missing}, Float64, Union{Float64, Missing}, Union{Float64, Missing})
 ds = CSV.read(f)
 
 f = CSV.Source(joinpath(dir, "pandas_zeros.csv"))
