@@ -41,7 +41,9 @@ ds = CSV.read(so)
 @test ds[2][1] == 2.0
 @test Data.types(Data.schema(f)) == Data.types(Data.schema(so)) == Data.types(Data.schema(ds))
 f = si = so = ds = nothing; gc(); gc()
+try
 rm(joinpath(dir, "new_test_utf8.csv"))
+end
 
 # f = CSV.Source(joinpath(dir, "test_utf16_be.csv"))
 # f = CSV.Source(joinpath(dir, "test_utf16_le.csv"))
@@ -237,7 +239,9 @@ df2 = CSV.read(source)
 @test_throws ArgumentError CSV.Source(f; types = [Int, Int, Int, Int])
 close(f)
 f = source = nothing; gc(); gc()
+try
 rm(t)
+end
 
 # test tab-delimited nulls
 d = CSV.read(joinpath(dir, "test_tab_null_empty.txt"); delim='\t')
@@ -254,7 +258,9 @@ let fn = tempname()
     chmod(fn, 0o444)
     CSV.read(fn)
     gc(); gc()
+    try
     rm(fn)
+    end
 end
 
 # CSV with header and no data is treated the same as an empty buffer with header supplied
@@ -281,13 +287,17 @@ df4 = CSV.read(IOBuffer("a,b,c"); nullable=false)
 let fn = tempname()
     df = CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"), CSV.Sink(fn); nullable=false, transforms=transforms)
     @test String(read(fn)) == "a,b,c\n1,b2,3\n4,b5,6\n"
+    try
     rm(fn)
+    end
 end
 
 let fn = tempname()
     df = CSV.read(IOBuffer("a,b,c"), CSV.Sink(fn); nullable=false, transforms=transforms)
     @test String(read(fn)) == "a,b,c\n"
+    try
     rm(fn)
+    end
 end
 
 source = IOBuffer("col1,col2,col3") # empty dataset
@@ -355,7 +365,9 @@ CSV.write("test.tsv", tbl; delim='\t')
 df = CSV.read("test.tsv"; delim='\t')
 @test Data.types(Data.schema(df)) == (Int, Date, DateTime)
 df = nothing; gc(); gc()
+try
 rm("test.tsv")
+end
 
 end # testset
 
