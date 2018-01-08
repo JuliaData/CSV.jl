@@ -1,4 +1,4 @@
-using Base.Test, CSV, DecFP, WeakRefStrings, Missings
+using DecFP
 
 # custom IO type to test non-IOBuffer code paths
 mutable struct Buffer <: IO

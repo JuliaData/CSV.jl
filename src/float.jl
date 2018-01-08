@@ -87,7 +87,7 @@ function scale(exp, v::T, frac, row, col) where T
     end
 end
 
-@inline function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifnull::Function) where {T <: Union{Float16, Float32, Float64}}
+function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifnull::Function) where {T <: Union{Float16, Float32, Float64}}
     mark(io)
     @checknullstart()
     negative = false

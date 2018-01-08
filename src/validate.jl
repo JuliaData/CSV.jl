@@ -11,6 +11,16 @@ struct TooManyColumnsError <: Exception
     msg::String
 end
 
+"""
+`CSV.validate(fullpath::Union{AbstractString,IO}, sink::Type{T}=DataFrame, args...; kwargs...)` => `typeof(sink)`
+
+`CSV.validate(fullpath::Union{AbstractString,IO}, sink::Data.Sink; kwargs...)` => `Data.Sink`
+
+Takes the same positional & keyword arguments as [`CSV.read`](@ref), but provides detailed information as to why reading a csv file failed. Useful for cases where reading fails and it's not clear whether it's due to a row havign too many columns, or wrong types, or what have you.
+
+"""
+function validate end
+
 function validate(s::CSV.Source)
     sch = Data.schema(s) # size, header, types
     rows, cols = size(sch)
