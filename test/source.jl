@@ -1,3 +1,5 @@
+@testset "Basic CSV.Source" begin
+
 #test on non-existent file
 @test_throws ArgumentError CSV.Source("");
 
@@ -39,7 +41,9 @@ ds = CSV.read(so)
 @test ds[2][1] == 2.0
 @test Data.types(Data.schema(f)) == Data.types(Data.schema(so)) == Data.types(Data.schema(ds))
 f = si = so = ds = nothing; gc(); gc()
+try
 rm(joinpath(dir, "new_test_utf8.csv"))
+end
 
 # f = CSV.Source(joinpath(dir, "test_utf16_be.csv"))
 # f = CSV.Source(joinpath(dir, "test_utf16_le.csv"))
@@ -105,6 +109,10 @@ f = CSV.Source(joinpath(dir, "test_mac_line_endings.csv"))
 @test Data.header(Data.schema(f)) == ["col1","col2","col3"]
 @test size(Data.schema(f), 2) == 3
 @test Data.types(Data.schema(f)) == (Int,Int,Int)
+
+end # testset
+
+@testset "CSV.Source keyword arguments" begin
 
 #test headerrow, datarow, footerskips
 f = CSV.Source(joinpath(dir, "test_no_header.csv"); header=0, datarow=1)
@@ -173,6 +181,198 @@ f = CSV.Source(joinpath(dir, "test_missing_value.csv"))
 @test size(Data.schema(f), 1) == 3
 @test Data.types(Data.schema(f)) == (Float64,Union{Float64, Missing},Float64)
 
+f = CSV.Source(joinpath(dir, "test_header_range.csv");header=1:3)
+@test size(Data.schema(f), 2) == 3
+@test size(Data.schema(f), 1) == 3
+@test Data.header(Data.schema(f)) == ["col1_sub1_part1","col2_sub2_part2","col3_sub3_part3"]
+ds = CSV.read(f)
+
+f = CSV.Source(joinpath(dir, "test_header_range.csv");header=["col1_sub1_part1","col2_sub2_part2","col3_sub3_part3"],datarow=4)
+@test size(Data.schema(f), 2) == 3
+@test size(Data.schema(f), 1) == 3
+@test Data.header(Data.schema(f)) == ["col1_sub1_part1","col2_sub2_part2","col3_sub3_part3"]
+ds = CSV.read(f)
+
+f = CSV.Source(joinpath(dir, "test_basic.csv");types=Dict(2=>Float64))
+@test size(Data.schema(f), 2) == 3
+@test size(Data.schema(f), 1) == 3
+@test Data.types(Data.schema(f)) == (Int,Float64,Int)
+ds = CSV.read(f)
+
+f = CSV.Source(joinpath(dir, "test_basic_pipe.csv");delim='|')
+@test size(Data.schema(f), 2) == 3
+@test size(Data.schema(f), 1) == 3
+@test Data.types(Data.schema(f)) == (Int,Int,Int)
+@test f.options.delim == UInt8('|')
+ds = CSV.read(f)
+
+f = CSV.Source(joinpath(dir, "test_basic_pipe.csv");delim='|',footerskip=1)
+@test size(Data.schema(f), 2) == 3
+@test size(Data.schema(f), 1) == 2
+@test Data.types(Data.schema(f)) == (Int,Int,Int)
+@test f.options.delim == UInt8('|')
+ds = CSV.read(f)
+@show f
+
+t = tempname()
+f = CSV.Sink(t)
+@show f
+
+f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"))
+types = Data.types(Data.schema(f))
+@test CSV.parsefield(f, types[1]) == 1.0
+@test CSV.parsefield(f, types[2]) == "2.0"
+@test CSV.parsefield(f, types[3]) == 3.0
+
+t = tempname()
+f = open(t, "w+")
+Base.write(f, String(read(joinpath(dir, "test_missing_value_NULL.csv"))))
+seekstart(f)
+source = CSV.Source(f; header=[], datarow=2, nullable=false)
+df = CSV.read(source)
+@test Data.header(Data.schema(df)) == ["Column1", "Column2", "Column3"]
+
+Data.reset!(source)
+df2 = CSV.read(source)
+@test df == df2
+
+@test_throws ArgumentError CSV.Source(f; types = [Int, Int, Int, Int])
+close(f)
+f = source = nothing; gc(); gc()
+try
+rm(t)
+end
+
+# test tab-delimited nulls
+d = CSV.read(joinpath(dir, "test_tab_null_empty.txt"); delim='\t')
+@test ismissing(d[2][2])
+
+d = CSV.read(joinpath(dir, "test_tab_null_string.txt"); delim='\t', null="NULL")
+@test ismissing(d[2][2])
+
+# read a write protected file
+let fn = tempname()
+    open(fn, "w") do f
+        write(f, "Julia")
+    end
+    chmod(fn, 0o444)
+    CSV.read(fn)
+    gc(); gc()
+    try
+    rm(fn)
+    end
+end
+
+# CSV with header and no data is treated the same as an empty buffer with header supplied
+df1 = CSV.read(IOBuffer("a,b,c"))
+df2 = CSV.read(IOBuffer(""); header=["a", "b", "c"])
+@test size(Data.schema(df1)) == (0, 3)
+@test size(Data.schema(df2)) == (0, 3)
+@test df1 == df2
+
+# Adding transforms to CSV with header but no data returns empty frame as expected
+# (previously the lack of a ::String dispatch in the transform function caused an error)
+transforms = Dict{Int, Function}(2 => x::Integer -> "b$x")
+df1 = CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"); nullable=false, transforms=transforms)
+df2 = CSV.read(IOBuffer("a,b,c\n1,b2,3\n4,b5,6"); nullable=false)
+@test size(Data.schema(df1)) == (2, 3)
+@test size(Data.schema(df2)) == (2, 3)
+@test df1 == df2
+df3 = CSV.read(IOBuffer("a,b,c"); nullable=false, transforms=transforms)
+df4 = CSV.read(IOBuffer("a,b,c"); nullable=false)
+@test size(Data.schema(df3)) == (0, 3)
+@test size(Data.schema(df4)) == (0, 3)
+@test df3 == df4
+
+let fn = tempname()
+    df = CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"), CSV.Sink(fn); nullable=false, transforms=transforms)
+    @test String(read(fn)) == "a,b,c\n1,b2,3\n4,b5,6\n"
+    try
+    rm(fn)
+    end
+end
+
+let fn = tempname()
+    df = CSV.read(IOBuffer("a,b,c"), CSV.Sink(fn); nullable=false, transforms=transforms)
+    @test String(read(fn)) == "a,b,c\n"
+    try
+    rm(fn)
+    end
+end
+
+source = IOBuffer("col1,col2,col3") # empty dataset
+df = CSV.read(source; transforms=Dict(2 => floor))
+@test size(Data.schema(df)) == (0, 3)
+@test Data.types(Data.schema(df)) == (Any, Any, Any)
+
+# Integer overflow; #100
+@test_throws OverflowError CSV.read(joinpath(dir, "int8_overflow.csv"); types=[Int8])
+
+# dash as null; #92
+df = CSV.read(joinpath(dir, "dash_as_null.csv"); null="-")
+@test ismissing(df[1][2])
+
+df = CSV.read(joinpath(dir, "plus_as_null.csv"); null="+")
+@test ismissing(df[1][2])
+
+# #83
+df = CSV.read(joinpath(dir, "comma_decimal.csv"); delim=';', decimal=',')
+@test df[1][1] === 3.14
+@test df[1][2] === 1.0
+@test df[2][1] === 1
+@test df[2][2] === 1
+
+# #86
+df = CSV.read(joinpath(dir, "double_quote_quotechar_and_escapechar.csv"); escapechar='"')
+@test size(df) == (24, 5)
+@test df[5][24] == "NORTH DAKOTA STATE \"\"A\"\" #1"
+
+# #84
+df = CSV.read(joinpath(dir, "census.txt"); delim='\t')
+@test eltype(df[9]) == Float64
+@test size(df) == (3, 9)
+
+# #79
+df = CSV.read(joinpath(dir, "bools.csv"))
+@test eltype(df[1]) == Bool
+@test df[1] == [true, false, true, false]
+@test df[2] == [false, true, true, false]
+@test df[3] == [1, 2, 3, 4]
+
+# #64
+df = CSV.read(joinpath(dir, "attenu.csv"), null="NA", types=Dict(3=>Union{Missing, String}))
+@test size(df) == (182, 5)
+
+f = CSV.Source(joinpath(dir, "test_null_only_column.csv"), categorical=false, null="NA")
+@test size(Data.schema(f)) == (3, 2)
+ds = CSV.read(f)
+@test Data.types(Data.schema(f)) == (WeakRefString{UInt8}, Missing)
+@test all(ismissing, ds[2])
+
+# #107
+df = CSV.read(IOBuffer("1,a,i\n2,b,ii\n3,c,iii"); datarow=1)
+@test size(df) == (3, 3)
+
+# #115 (Int -> Union{Int, Missing} -> Union{WeakRefString, Missing} promotion)
+df = CSV.read(joinpath(dir, "attenu.csv"), null="NA", rows_for_type_detect=200)
+@test size(df) == (182, 5)
+@test Data.types(Data.schema(df)) == (Int, Float64, Union{Missings.Missing, String}, Float64, Float64)
+
+# #137
+tbl = DataFrame(a=[11,22], dt=[Date(2017,12,7), Date(2017,12,14)])
+tbl[:dttm] = DateTime.(tbl[:dt])
+CSV.write("test.tsv", tbl; delim='\t')
+df = CSV.read("test.tsv"; delim='\t')
+@test Data.types(Data.schema(df)) == (Int, Date, DateTime)
+df = nothing; gc(); gc()
+try
+rm("test.tsv")
+end
+
+end # testset
+
+@testset "CSV.Source various files" begin
+
 #other various files found around the internet
 f = CSV.Source(joinpath(dir, "baseball.csv"); rows_for_type_detect=35)
 @test size(Data.schema(f), 2) == 15
@@ -234,172 +434,26 @@ f = CSV.Source(joinpath(dir, "Fielding.csv"); nullable=true, types=Dict("GS"=>In
 @test size(Data.schema(f), 2) == 18
 @test size(Data.schema(f), 1) == 167938
 @test Data.header(Data.schema(f)) == ["playerID","yearID","stint","teamID","lgID","POS","G","GS","InnOuts","PO","A","E","DP","PB","WP","SB","CS","ZR"]
-@test Data.types(Data.schema(f)) == (Union{CategoricalString{UInt32}, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{CategoricalString{UInt32}, Missing}, Union{CategoricalString{UInt32}, Missing}, Union{CategoricalString{UInt32}, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing})
+@test Data.types(Data.schema(f)) == (Union{CategoricalString{UInt32}, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{CategoricalString{UInt32}, Missing}, Union{CategoricalString{UInt32}, Missing}, Union{CategoricalString{UInt32}, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing})
 ds = CSV.read(f)
 
 f = CSV.Source(joinpath(dir, "latest (1).csv"); header=0, null="\\N", types=Dict(13=>Union{Float64, Missing},17=>Union{Int, Missing},18=>Union{Float64, Missing},20=>Union{Float64, Missing}))
 @test size(Data.schema(f), 2) == 25
 @test size(Data.schema(f), 1) == 1000
 @test Data.header(Data.schema(f)) == ["Column$i" for i = 1:size(Data.schema(f), 2)]
-@test Data.types(Data.schema(f)) == (CategoricalString{UInt32}, CategoricalString{UInt32}, Int64, Int64, CategoricalString{UInt32}, Int64, CategoricalString{UInt32}, Int64, Date, Date, Int64, CategoricalString{UInt32}, Union{Float64, Missing}, Union{Float64, Missing}, Union{Float64, Missing}, Union{Float64, Missing}, Union{Int64, Missing}, Union{Float64, Missing}, Float64, Union{Float64, Missing}, Union{Float64, Missing}, Union{Int64, Missing}, Float64, Union{Float64, Missing}, Union{Float64, Missing})
+@test Data.types(Data.schema(f)) == (CategoricalString{UInt32}, CategoricalString{UInt32}, Int, Int, CategoricalString{UInt32}, Int, CategoricalString{UInt32}, Int, Date, Date, Int, CategoricalString{UInt32}, Union{Float64, Missing}, Union{Float64, Missing}, Union{Float64, Missing}, Union{Float64, Missing}, Union{Int, Missing}, Union{Float64, Missing}, Float64, Union{Float64, Missing}, Union{Float64, Missing}, Union{Int, Missing}, Float64, Union{Float64, Missing}, Union{Float64, Missing})
 ds = CSV.read(f)
 
 f = CSV.Source(joinpath(dir, "pandas_zeros.csv"))
 @test size(Data.schema(f), 2) == 50
 @test size(Data.schema(f), 1) == 100000
 @test Data.header(Data.schema(f)) == [string(i) for i = 0:49]
-@test Data.types(Data.schema(f)) == (repmat([Int],50)...)
+@test Data.types(Data.schema(f)) == (repmat([Int],50)...,)
 @time ds = CSV.read(f)
 
-f = CSV.Source(joinpath(dir, "test_header_range.csv");header=1:3)
-@test size(Data.schema(f), 2) == 3
-@test size(Data.schema(f), 1) == 3
-@test Data.header(Data.schema(f)) == ["col1_sub1_part1","col2_sub2_part2","col3_sub3_part3"]
-ds = CSV.read(f)
+end # testset
 
-f = CSV.Source(joinpath(dir, "test_header_range.csv");header=["col1_sub1_part1","col2_sub2_part2","col3_sub3_part3"],datarow=4)
-@test size(Data.schema(f), 2) == 3
-@test size(Data.schema(f), 1) == 3
-@test Data.header(Data.schema(f)) == ["col1_sub1_part1","col2_sub2_part2","col3_sub3_part3"]
-ds = CSV.read(f)
-
-f = CSV.Source(joinpath(dir, "test_basic.csv");types=Dict(2=>Float64))
-@test size(Data.schema(f), 2) == 3
-@test size(Data.schema(f), 1) == 3
-@test Data.types(Data.schema(f)) == (Int,Float64,Int)
-ds = CSV.read(f)
-
-f = CSV.Source(joinpath(dir, "test_basic_pipe.csv");delim='|')
-@test size(Data.schema(f), 2) == 3
-@test size(Data.schema(f), 1) == 3
-@test Data.types(Data.schema(f)) == (Int,Int,Int)
-@test f.options.delim == UInt8('|')
-ds = CSV.read(f)
-
-f = CSV.Source(joinpath(dir, "test_basic_pipe.csv");delim='|',footerskip=1)
-@test size(Data.schema(f), 2) == 3
-@test size(Data.schema(f), 1) == 2
-@test Data.types(Data.schema(f)) == (Int,Int,Int)
-@test f.options.delim == UInt8('|')
-ds = CSV.read(f)
-@show f
-
-t = tempname()
-f = CSV.Sink(t)
-@show f
-
-f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"))
-types = Data.types(Data.schema(f))
-@test CSV.parsefield(f, types[1]) == 1.0
-@test CSV.parsefield(f, types[2]) == "2.0"
-@test CSV.parsefield(f, types[3]) == 3.0
-
-t = tempname()
-f = open(t, "w+")
-Base.write(f, String(read(joinpath(dir, "test_missing_value_NULL.csv"))))
-seekstart(f)
-source = CSV.Source(f; header=[], datarow=2, nullable=false)
-df = CSV.read(source)
-@test Data.header(Data.schema(df)) == ["Column1", "Column2", "Column3"]
-
-Data.reset!(source)
-df2 = CSV.read(source)
-@test df == df2
-
-@test_throws ArgumentError CSV.Source(f; types = [Int, Int, Int, Int])
-close(f)
-f = source = nothing; gc(); gc()
-rm(t)
-
-# test tab-delimited nulls
-d = CSV.read(joinpath(dir, "test_tab_null_empty.txt"); delim='\t')
-@test ismissing(d[2][2])
-
-d = CSV.read(joinpath(dir, "test_tab_null_string.txt"); delim='\t', null="NULL")
-@test ismissing(d[2][2])
-
-# read a write protected file
-let fn = tempname()
-    open(fn, "w") do f
-        write(f, "Julia")
-    end
-    chmod(fn, 0o444)
-    CSV.read(fn)
-    gc(); gc()
-    rm(fn)
-end
-
-# CSV with header and no data is treated the same as an empty buffer with header supplied
-df1 = CSV.read(IOBuffer("a,b,c"))
-df2 = CSV.read(IOBuffer(""); header=["a", "b", "c"])
-@test size(Data.schema(df1)) == (0, 3)
-@test size(Data.schema(df2)) == (0, 3)
-@test df1 == df2
-
-# Adding transforms to CSV with header but no data returns empty frame as expected
-# (previously the lack of a ::String dispatch in the transform function caused an error)
-transforms = Dict{Int, Function}(2 => x::Integer -> "b$x")
-df1 = CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"); nullable=false, transforms=transforms)
-df2 = CSV.read(IOBuffer("a,b,c\n1,b2,3\n4,b5,6"); nullable=false)
-@test size(Data.schema(df1)) == (2, 3)
-@test size(Data.schema(df2)) == (2, 3)
-@test df1 == df2
-df3 = CSV.read(IOBuffer("a,b,c"); nullable=false, transforms=transforms)
-df4 = CSV.read(IOBuffer("a,b,c"); nullable=false)
-@test size(Data.schema(df3)) == (0, 3)
-@test size(Data.schema(df4)) == (0, 3)
-@test df3 == df4
-
-let fn = tempname()
-    df = CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"), CSV.Sink(fn); nullable=false, transforms=transforms)
-    @test String(read(fn)) == "a,b,c\n1,b2,3\n4,b5,6\n"
-    rm(fn)
-end
-
-let fn = tempname()
-    df = CSV.read(IOBuffer("a,b,c"), CSV.Sink(fn); nullable=false, transforms=transforms)
-    @test String(read(fn)) == "a,b,c\n"
-    rm(fn)
-end
-
-source = IOBuffer("col1,col2,col3") # empty dataset
-df = CSV.read(source; transforms=Dict(2 => floor))
-@test size(Data.schema(df)) == (0, 3)
-@test Data.types(Data.schema(df)) == (Any, Any, Any)
-
-# Integer overflow; #100
-@test_throws OverflowError CSV.read(joinpath(dir, "int8_overflow.csv"); types=[Int8])
-
-# dash as null; #92
-df = CSV.read(joinpath(dir, "dash_as_null.csv"); null="-")
-@test ismissing(df[1][2])
-
-df = CSV.read(joinpath(dir, "plus_as_null.csv"); null="+")
-@test ismissing(df[1][2])
-
-# #83
-df = CSV.read(joinpath(dir, "comma_decimal.csv"); delim=';', decimal=',')
-@test df[1][1] === 3.14
-@test df[1][2] === 1.0
-@test df[2][1] === 1
-@test df[2][2] === 1
-
-# #86
-df = CSV.read(joinpath(dir, "double_quote_quotechar_and_escapechar.csv"); escapechar='"')
-@test size(df) == (24, 5)
-@test df[5][24] == "NORTH DAKOTA STATE \"\"A\"\" #1"
-
-# #84
-df = CSV.read(joinpath(dir, "census.txt"); delim='\t')
-@test eltype(df[9]) == Float64
-@test size(df) == (3, 9)
-
-# #79
-df = CSV.read(joinpath(dir, "bools.csv"))
-@test eltype(df[1]) == Bool
-@test df[1] == [true, false, true, false]
-@test df[2] == [false, true, true, false]
-@test df[3] == [1, 2, 3, 4]
+@testset "CSV.TransposedSource" begin
 
 # CSV.TransposedSource
 df = CSV.read(joinpath(dir, "transposed.csv"); transpose=true)
@@ -426,21 +480,4 @@ df = CSV.read(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=[
 @test size(df) == (2, 3)
 @test Data.header(Data.schema(df)) == ["c1", "c2", "c3"]
 
-# #64
-df = CSV.read(joinpath(dir, "attenu.csv"), null="NA", types=Dict(3=>Union{Missing, String}))
-@test size(df) == (182, 5)
-
-f = CSV.Source(joinpath(dir, "test_null_only_column.csv"), categorical=false, null="NA")
-@test size(Data.schema(f)) == (3, 2)
-ds = CSV.read(f)
-@test Data.types(Data.schema(f)) == (WeakRefString{UInt8}, Missing)
-@test all(ismissing, ds[2])
-
-# #107
-df = CSV.read(IOBuffer("1,a,i\n2,b,ii\n3,c,iii"); datarow=1)
-@test size(df) == (3, 3)
-
-# #115 (Int -> Union{Int, Missing} -> Union{WeakRefString, Missing} promotion)
-df = CSV.read(joinpath(dir, "attenu.csv"), null="NA", rows_for_type_detect=200)
-@test size(df) == (182, 5)
-@test Data.types(Data.schema(df)) == (Int, Float64, Union{Missings.Missing, WeakRefString{UInt8}}, Float64, Float64)
+end # testset
