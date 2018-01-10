@@ -147,7 +147,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 # println("...promoting to: ", columntypes[i])
             end
         end
-        if options.dateformat === nothing && any(x->x <: Dates.TimeType, columntypes)
+        if options.dateformat === nothing && any(x->Missings.T(x) <: Dates.TimeType, columntypes)
             # auto-detected TimeType
             options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
                               null=options.null, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
