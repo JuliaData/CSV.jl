@@ -131,7 +131,8 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     # Detect column types
     cols = length(columnnames)
     if isa(types, Vector) && length(types) == cols
-        columntypes = types
+        # types might be a Vector{DataType}, which will be a problem if Unions are needed
+        columntypes = convert(Vector{Type}, types)
     elseif isa(types, Dict) || isempty(types)
         columntypes = fill!(Vector{Type}(uninitialized, cols), Any)
         levels = [Dict{WeakRefString{UInt8}, Int}() for _ = 1:cols]
