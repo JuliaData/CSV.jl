@@ -235,11 +235,11 @@ end
 
 function parsefield(io::IO, ::Type{Date}, opt::CSV.Options, row, col, state, ifmissing::Function)
     v = parsefield(io, String, opt, row, col, state, ifmissing)
-    return v isa Missing ? ifmissing(row, col) : Date(v, opt.dateformat)
+    return v isa Missing ? ifmissing(row, col) : Date(v, opt.dateformat === nothing ? Dates.ISODateFormat : opt.dateformat)
 end
 function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options, row, col, state, ifmissing::Function)
     v = parsefield(io, String, opt, row, col, state, ifmissing)
-    return v isa Missing ? ifmissing(row, col) : DateTime(v, opt.dateformat)
+    return v isa Missing ? ifmissing(row, col) : DateTime(v, opt.dateformat === nothing ? Dates.ISODateTimeFormat : opt.dateformat)
 end
 
 function parsefield(io::IO, ::Type{Char}, opt::CSV.Options, row, col, state, ifmissing::Function)

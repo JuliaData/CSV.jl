@@ -217,7 +217,7 @@ promote_type2(::Type{Missing}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefStri
 promote_type2(::Type{Any}, ::Type{Missing}) = Missing
 promote_type2(::Type{Missing}, ::Type{Missing}) = Missing
 
-function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
+function detecttype(io, opt::CSV.Options, prevT, levels)
     pos = position(io)
     # update levels
     try
@@ -241,7 +241,7 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
         end
     end
     if Date <: prevT || DateTime <: prevT || prevT == Missing
-        if D == Nothing
+        if opt.dateformat === nothing
             # try to auto-detect TimeType
             try
                 seek(io, pos)
