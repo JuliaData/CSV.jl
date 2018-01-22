@@ -1,4 +1,4 @@
-function Sink(fullpath::AbstractString;
+function Sink(fullpath::Union{AbstractString, IO};
               delim::Char=',',
               quotechar::Char='"',
               escapechar::Char='\\',
@@ -33,7 +33,7 @@ Data.streamtypes(::Type{CSV.Sink}) = [Data.Field]
 Data.weakrefstrings(::Type{CSV.Sink}) = true
 
 # Constructors
-function Sink(sch::Data.Schema, T, append, file::AbstractString; reference::Vector{UInt8}=UInt8[], kwargs...)
+function Sink(sch::Data.Schema, T, append, file::Union{AbstractString, IO}; reference::Vector{UInt8}=UInt8[], kwargs...)
     sink = Sink(file; append=append, colnames=Data.header(sch), kwargs...)
     return sink
 end
@@ -70,7 +70,7 @@ end
 function Data.close!(sink::CSV.Sink)
     io = isa(sink.fullpath, AbstractString) ? open(sink.fullpath, sink.append ? "a" : "w") : sink.fullpath
     Base.write(io, take!(sink.io))
-    applicable(close, io) && close(io)
+    isa(sink.fullpath, AbstractString) && close(io)
     return sink
 end
 
@@ -130,11 +130,11 @@ CSV.write("sqlite_table.csv", sqlite_source)
 """
 function write end
 
-function write(file::AbstractString, ::Type{T}, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...) where {T}
+function write(file::Union{AbstractString, IO}, ::Type{T}, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...) where {T}
     sink = Data.stream!(T(args...), CSV.Sink, file; append=append, transforms=transforms, kwargs...)
     return Data.close!(sink)
 end
-function write(file::AbstractString, source; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
+function write(file::Union{AbstractString, IO}, source; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
     sink = Data.stream!(source, CSV.Sink, file; append=append, transforms=transforms, kwargs...)
     return Data.close!(sink)
 end

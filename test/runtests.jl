@@ -22,6 +22,7 @@ include("parsefields.jl")
 include("io.jl")
 
 include("source.jl")
+include("sink.jl")
 include("multistream.jl")
 include("validate.jl")
 
