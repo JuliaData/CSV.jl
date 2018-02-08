@@ -12,12 +12,18 @@ if VERSION < v"0.7.0-DEV.2575"
 else
     using Dates
 end
+
+const dir = joinpath(dirname(@__FILE__),"test_files/")
+# dir = joinpath(Pkg.dir("CSV"), "test/test_files")
+
+@testset "CSV" begin
+
 include("parsefields.jl")
 include("io.jl")
 
-dir = joinpath(dirname(@__FILE__),"test_files/")
-# dir = joinpath(Pkg.dir("CSV"), "test/test_files")
-
 include("source.jl")
+include("sink.jl")
 include("multistream.jl")
 include("validate.jl")
+
+end
