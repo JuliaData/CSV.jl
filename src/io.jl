@@ -179,7 +179,7 @@ function skipto!(f::IO, cur, dest, q, e)
     return
 end
 
-# try to infer the type of the value in `val`. The precedence of type checking is `Int` => `Float64` => `Date` => `DateTime` => `String`
+# try to infer the type of the value in `val`. The precedence of type checking is `Int64` => `Float64` => `Date` => `DateTime` => `String`
 timetype(df::Dates.DateFormat) = any(typeof(T) in (Dates.DatePart{'H'}, Dates.DatePart{'M'}, Dates.DatePart{'S'}, Dates.DatePart{'s'}) for T in df.tokens) ? DateTime : Date
 
 # column types start out as Any, but we get rid of them as soon as possible
@@ -190,15 +190,15 @@ promote_type2(::Type{T}, ::Type{T}) where {T} = T
 # if we come across a Missing field, turn that column type into a Union{T, Missing}
 promote_type2(T::Type{<:Any}, ::Type{Missing}) = Union{T, Missing}
 promote_type2(::Type{Missing}, T::Type{<:Any}) = Union{T, Missing}
-# these definitions allow Union{Int, Missing} to promote to Union{Float64, Missing}
+# these definitions allow Union{Int64, Missing} to promote to Union{Float64, Missing}
 promote_type2(::Type{Union{T, Missing}}, ::Type{S}) where {T, S} = Union{promote_type2(T, S), Missing}
 promote_type2(::Type{S}, ::Type{Union{T, Missing}}) where {T, S} = Union{promote_type2(T, S), Missing}
 promote_type2(::Type{Union{T, Missing}}, ::Type{Union{S, Missing}}) where {T, S} = Union{promote_type2(T, S), Missing}
 promote_type2(::Type{Union{WeakRefString{UInt8}, Missing}}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefString{UInt8}, Missing}
 promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Union{WeakRefString{UInt8}, Missing}}) = Union{WeakRefString{UInt8}, Missing}
 # basic promote type definitions from Base
-promote_type2(::Type{Int}, ::Type{Float64}) = Float64
-promote_type2(::Type{Float64}, ::Type{Int}) = Float64
+promote_type2(::Type{Int64}, ::Type{Float64}) = Float64
+promote_type2(::Type{Float64}, ::Type{Int64}) = Float64
 promote_type2(::Type{Date}, ::Type{DateTime}) = DateTime
 promote_type2(::Type{DateTime}, ::Type{Date}) = DateTime
 # for cases when our current type can't widen, just promote to WeakRefString
@@ -224,15 +224,15 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
         lev = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
         ismissing(lev) || (levels[lev] = get!(levels, lev, 0) + 1)
     end
-    if Int <: prevT || prevT == Missing
+    if Int64 <: prevT || prevT == Missing
         try
             seek(io, pos)
-            v1 = CSV.parsefield(io, Union{Int, Missing}, opt)
+            v1 = CSV.parsefield(io, Union{Int64, Missing}, opt)
             # print("...parsed = '$v1'...")
-            return v1 isa Missing ? Missing : Int
+            return v1 isa Missing ? Missing : Int64
         end
     end
-    if Float64 <: prevT || Int <: prevT || prevT == Missing
+    if Float64 <: prevT || Int64 <: prevT || prevT == Missing
         try
             seek(io, pos)
             v2 = CSV.parsefield(io, Union{Float64, Missing}, opt)
