@@ -311,17 +311,41 @@ io = Buffer(IOBuffer("nan"))
 v = CSV.parsefield(io,Float64)
 @test v === NaN
 
+io = Buffer(IOBuffer("-nan"))
+v = CSV.parsefield(io,Float64)
+@test v === -NaN
+
 io = Buffer(IOBuffer("NaN"))
 v = CSV.parsefield(io, Union{Float64, Missing})
 @test v === NaN
+
+io = Buffer(IOBuffer("-NaN"))
+v = CSV.parsefield(io, Union{Float64, Missing})
+@test v === -NaN
 
 io = Buffer(IOBuffer("inf"))
 v = CSV.parsefield(io,Float64)
 @test v === Inf
 
+io = Buffer(IOBuffer("-inf"))
+v = CSV.parsefield(io,Float64)
+@test v === -Inf
+
+io = Buffer(IOBuffer("Inf"))
+v = CSV.parsefield(io,Float64)
+@test v === Inf
+
+io = Buffer(IOBuffer("-Inf"))
+v = CSV.parsefield(io,Float64)
+@test v === -Inf
+
 io = Buffer(IOBuffer("infinity"))
 v = CSV.parsefield(io, Union{Float64, Missing})
 @test v === Inf
+
+io = Buffer(IOBuffer("-infinity"))
+v = CSV.parsefield(io, Union{Float64, Missing})
+@test v === -Inf
 
 io = Buffer(IOBuffer("\\N"))
 @test_throws Missings.MissingException CSV.parsefield(io,Float64,CSV.Options(null="\\N"))
@@ -431,6 +455,14 @@ io = IOBuffer("\"0.1234567890\"")
 v = CSV.parsefield(io, Union{Float64, Missing})
 @test v === .1234567890
 
+io = IOBuffer("nan")
+v = CSV.parsefield(io,Float64)
+@test v === NaN
+
+io = IOBuffer("-nan")
+v = CSV.parsefield(io,Float64)
+@test v === -NaN
+
 io = IOBuffer("-.1")
 v = CSV.parsefield(io, Union{Float64, Missing})
 @test v === -0.1
@@ -455,29 +487,57 @@ io = IOBuffer("nan")
 v = CSV.parsefield(io,Float64)
 @test v === NaN
 
+io = IOBuffer("-nan")
+v = CSV.parsefield(io,Float64)
+@test v === -NaN
+
 io = IOBuffer("NaN")
 v = CSV.parsefield(io, Union{Float64, Missing})
 @test v === NaN
+
+io = IOBuffer("-NaN")
+v = CSV.parsefield(io, Union{Float64, Missing})
+@test v === -NaN
 
 io = IOBuffer("NaN,")
 v = CSV.parsefield(io, Union{Float64, Missing})
 @test v === NaN
 
+io = IOBuffer("-NaN,")
+v = CSV.parsefield(io, Union{Float64, Missing})
+@test v === -NaN
+
 io = IOBuffer("inf")
 v = CSV.parsefield(io,Float64)
 @test v === Inf
+
+io = IOBuffer("-inf")
+v = CSV.parsefield(io,Float64)
+@test v === -Inf
 
 io = IOBuffer("inf,")
 v = CSV.parsefield(io,Float64)
 @test v === Inf
 
+io = IOBuffer("-inf,")
+v = CSV.parsefield(io,Float64)
+@test v === -Inf
+
 io = IOBuffer("infinity")
 v = CSV.parsefield(io, Union{Float64, Missing})
 @test v === Inf
 
+io = IOBuffer("-infinity")
+v = CSV.parsefield(io, Union{Float64, Missing})
+@test v === -Inf
+
 io = IOBuffer("infinity,")
 v = CSV.parsefield(io, Union{Float64, Missing})
 @test v === Inf
+
+io = IOBuffer("-infinity,")
+v = CSV.parsefield(io, Union{Float64, Missing})
+@test v === -Inf
 
 io = IOBuffer("\\N")
 @test_throws Missings.MissingException CSV.parsefield(io,Float64,CSV.Options(null="\\N"))
@@ -589,17 +649,41 @@ io = Buffer(IOBuffer("nan"))
 v = CSV.parsefield(io, Union{Dec64, Missing})
 @test v === Dec64(NaN)
 
+io = Buffer(IOBuffer("-nan"))
+v = CSV.parsefield(io, Union{Dec64, Missing})
+@test v === Dec64(-NaN)
+
 io = Buffer(IOBuffer("NaN"))
 v = CSV.parsefield(io,Dec64)
 @test v === Dec64(NaN)
+
+io = Buffer(IOBuffer("-NaN"))
+v = CSV.parsefield(io,Dec64)
+@test v === Dec64(-NaN)
 
 io = Buffer(IOBuffer("inf"))
 v = CSV.parsefield(io, Union{Dec64, Missing})
 @test v === Dec64(Inf)
 
+io = Buffer(IOBuffer("-inf"))
+v = CSV.parsefield(io, Union{Dec64, Missing})
+@test v === Dec64(-Inf)
+
+io = Buffer(IOBuffer("Inf"))
+v = CSV.parsefield(io, Union{Dec64, Missing})
+@test v === Dec64(Inf)
+
+io = Buffer(IOBuffer("-Inf"))
+v = CSV.parsefield(io, Union{Dec64, Missing})
+@test v === Dec64(-Inf)
+
 io = Buffer(IOBuffer("infinity"))
 v = CSV.parsefield(io,Dec64)
 @test v === Dec64(Inf)
+
+io = Buffer(IOBuffer("-infinity"))
+v = CSV.parsefield(io,Dec64)
+@test v === Dec64(-Inf)
 
 io = Buffer(IOBuffer("\\N"))
 v = CSV.parsefield(io, Union{Dec64, Missing}, CSV.Options(null="\\N"))
@@ -711,17 +795,33 @@ io = IOBuffer("nan")
 v = CSV.parsefield(io,Dec64)
 @test v === Dec64(NaN)
 
+io = IOBuffer("-nan")
+v = CSV.parsefield(io,Dec64)
+@test v === Dec64(-NaN)
+
 io = IOBuffer("NaN")
 v = CSV.parsefield(io, Union{Dec64, Missing})
 @test v === Dec64(NaN)
+
+io = IOBuffer("-NaN")
+v = CSV.parsefield(io, Union{Dec64, Missing})
+@test v === Dec64(-NaN)
 
 io = IOBuffer("inf")
 v = CSV.parsefield(io,Dec64)
 @test v === Dec64(Inf)
 
+io = IOBuffer("-inf")
+v = CSV.parsefield(io,Dec64)
+@test v === Dec64(-Inf)
+
 io = IOBuffer("infinity")
 v = CSV.parsefield(io, Union{Dec64, Missing})
 @test v === Dec64(Inf)
+
+io = IOBuffer("-infinity")
+v = CSV.parsefield(io, Union{Dec64, Missing})
+@test v === Dec64(-Inf)
 
 io = IOBuffer("\\N")
 @test_throws Missings.MissingException CSV.parsefield(io,Dec64,CSV.Options(null="\\N"))
