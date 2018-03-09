@@ -21,7 +21,7 @@ quoted(::Type{Val{false}}, val, q, e, d) = (q in val || d in val) ? string(q, re
 
 function writeheaders(io::IOBuffer, h::Vector{String}, options, quotefields)
     cols = length(h)
-    q = options.quotechar; e = options.escapechar; d = options.delim
+    q = Char(options.quotechar); e = Char(options.escapechar); d = Char(options.delim)
     for col = 1:cols
         Base.write(io, quoted(quotefields, h[col], q, e, d), ifelse(col == cols, NEWLINE, options.delim))
     end
@@ -45,9 +45,8 @@ function Sink(sink, sch::Data.Schema, T, append; reference::Vector{UInt8}=UInt8[
     return sink
 end
 
-Data.streamto!(sink::Sink, ::Type{Data.Field}, val, row, col::Int) = Base.write(sink.io, string(val), ifelse(col == sink.cols, NEWLINE, sink.options.delim))
-function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::AbstractString, row, col::Int)
-    q = Char(sink.options.quotechar); e = Char(sink.options.escapechar); d = sink.options.delim
+function Data.streamto!(sink::Sink, ::Type{Data.Field}, val, row, col::Int)
+    q = Char(sink.options.quotechar); e = Char(sink.options.escapechar); d = Char(sink.options.delim)
     Base.write(sink.io, quoted(sink.quotefields, string(val), q, e, d), ifelse(col == sink.cols, NEWLINE, d))
     return nothing
 end
