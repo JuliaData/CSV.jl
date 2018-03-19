@@ -11,6 +11,7 @@ Base.mark(b::Buffer) = Base.mark(b.io)
 Base.reset(b::Buffer) = Base.reset(b.io)
 Base.position(b::Buffer) = Base.position(b.io)
 
+println("testing Int")
 @testset "Int" begin
 # Int
 io = IOBuffer("0")
@@ -112,6 +113,7 @@ io = IOBuffer("\"\\N\"")
 
 end # @testset "Int"
 
+println("testing Int Custom IO")
 @testset "Int Custom IO" begin
 # Int64 Libz
 io = Buffer(IOBuffer("0"))
@@ -208,6 +210,7 @@ v = CSV.parsefield(io, Union{Int, Missing}, CSV.Options(null="\\N"))
 @test ismissing(v)
 end # @testset "Int Custom IO"
 
+println("testing Float64 Custom IO")
 @testset "Float64 Custom IO" begin
 
 # Float64 Libz
@@ -376,6 +379,7 @@ v = CSV.parsefield(io, Union{Float64, Missing}, CSV.Options(null="\\N"))
 
 end # @testset "Float64 Custom IO"
 
+println("testing Float64")
 @testset "Float64" begin
 
 # Float64
@@ -600,6 +604,7 @@ v = CSV.parsefield(io, Union{Float64, Missing}, CSV.Options(null="\\N"))
 
 end # @testset "Float64"
 
+println("testing DecFP custom IO")
 @testset "DecFP Custom IO" begin
 
 # DecFP Libz
@@ -766,6 +771,7 @@ io = Buffer(IOBuffer("\"\\N\""))
 
 end # @testset "DecFP Custom IO"
 
+println("testing DecFP")
 @testset "DecFP" begin
 
 # DecFP
@@ -920,6 +926,7 @@ v = CSV.parsefield(io, Union{Dec64, Missing}, CSV.Options(null="\\N"))
 
 end # @testset "DecFP"
 
+println("testing WeakRefString")
 @testset "WeakRefString" begin
 
 # WeakRefString
@@ -1038,6 +1045,7 @@ v = CSV.parsefield(io, WeakRefString{UInt8}, CSV.Options(escapechar='"'))
 
 end # @testset "WeakRefString"
 
+println("testing String Custom IO")
 @testset "String Custom IO" begin
 
 # Libz
@@ -1156,6 +1164,7 @@ v = CSV.parsefield(io, String, CSV.Options(escapechar='"'))
 
 end # @testset "String Custom IO"
 
+println("testing Date")
 @testset "Date" begin
 opt = CSV.Options(dateformat=Dates.ISODateFormat)
 # Date
@@ -1232,6 +1241,7 @@ v = CSV.parsefield(io,Date,CSV.Options(dateformat=dateformat"mm/dd/yyyy"))
 
 end # @testset "Date"
 
+println("testing Date Custom IO")
 @testset "Date Custom IO" begin
 opt = CSV.Options(dateformat=Dates.ISODateFormat)
 # Date Libz
@@ -1300,6 +1310,7 @@ v = CSV.parsefield(io,Date,CSV.Options(null="",dateformat=Dates.DateFormat("mm/d
 
 end # @testset "Date Custom IO"
 
+println("testing DateTime")
 @testset "DateTime" begin
 opt = CSV.Options(dateformat=Dates.ISODateTimeFormat)
 # DateTime
@@ -1375,6 +1386,7 @@ v = CSV.parsefield(io,DateTime,CSV.Options(dateformat=dateformat"mm/dd/yyyy HH:M
 
 end # @testset "DateTime"
 
+println("testing DateTime Custom IO")
 @testset "DateTime Custom IO" begin
 opt = CSV.Options(dateformat=Dates.ISODateTimeFormat)
 # DateTime Libz
@@ -1444,6 +1456,7 @@ v = CSV.parsefield(io,DateTime,CSV.Options(dateformat=dateformat"mm/dd/yyyy HH:M
 
 end # @testset "DateTime Custom IO"
 
+println("testing Char")
 @testset "Char" begin
 
 io = IOBuffer("0")
@@ -1544,6 +1557,7 @@ v = CSV.parsefield(io, Union{Char, Missing}, CSV.Options(delim='\t'))
 
 end # @testset "Char"
 
+println("testing Bool")
 @testset "Bool" begin
 
 io = IOBuffer("")
@@ -1635,6 +1649,7 @@ v = CSV.parsefield(io, Bool, CSV.Options(falsestring="F"))
 
 end # @testset "Bool"
 
+println("testing All types")
 @testset "All types" begin
 opt = CSV.Options(dateformat=Dates.ISODateFormat)
 # All types
