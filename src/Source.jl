@@ -99,7 +99,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
 
     # figure out # of columns and header, either an Integer, AbstractRange, or Vector{String}
     # also ensure that `f` is positioned at the start of data
-    row_vals = Vector{RawField}()
+    row_vals = RawField[]
     if isa(header, Integer)
         # default header = 1
         if header <= 0
@@ -147,7 +147,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         # types might be a Vector{DataType}, which will be a problem if Unions are needed
         columntypes = convert(Vector{Type}, types)
     elseif isa(types, Dict) || isempty(types)
-        columntypes = fill!(Vector{Type}(uninitialized, cols), Any)
+        columntypes = fill!(Vector{Type}(undef, cols), Any)
         levels = [Dict{WeakRefString{UInt8}, Int}() for _ = 1:cols]
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)

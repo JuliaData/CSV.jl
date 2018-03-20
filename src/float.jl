@@ -119,7 +119,7 @@ function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifmiss
     # if we didn't get any digits and character isn't leading dot, check for NaN/Inf
     if !parseddigits && b != opt.decimal
         if minussign || plussign # skip sign character, if any
-            eof(io) && @goto checknullend
+            eof(io) && @goto checkmissingend
             b = readbyte(io)
         end
         if b == LITTLEN || b == BIGN

@@ -131,8 +131,8 @@ readsplitline!(vals::Vector{RawField}, io::IO, d=',', q='"', e='\\', buf::IOBuff
 readsplitline!(vals::Vector{RawField}, source::CSV.Source) = readsplitline!(vals, source.io, source.options.delim, source.options.quotechar, source.options.escapechar)
 
 readsplitline(io::IO, d=',', q='"', e='\\', buf::IOBuffer=IOBuffer()) =
-    readsplitline!(Vector{RawField}(), io, d, q, e, buf)
-readsplitline(args...) = readsplitline!(Vector{RawField}(), args...)
+readsplitline!(RawField[], io, d, q, e, buf)
+readsplitline(args...) = readsplitline!(RawField[], args...)
 
 """
     CSV.countlines(io::IO, quotechar, escapechar) => Int
