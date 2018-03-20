@@ -90,15 +90,16 @@ end
 function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifmissing::Function) where {T <: Union{Float16, Float32, Float64}}
     mark(io)
     @checkmissingstart()
-    negative = false
+    minussign = plussign = false
     if b == MINUS # check for leading '-' or '+'
-        c = peekbyte(io) 
+        minussign = true
+        c = peekbyte(io)
         if (NEG_ONE < c < TEN) || c == opt.decimal
-            negative = true
             b = readbyte(io)
         end
     elseif b == PLUS
-        c = peekbyte(io) 
+        plussign = true
+        c = peekbyte(io)
         if (NEG_ONE < c < TEN) || c == opt.decimal
             b = readbyte(io)
         end
@@ -115,8 +116,12 @@ function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifmiss
         eof(io) && (state[] = EOF; result = T(v); @goto done)
         b = readbyte(io)
     end
-    # if we didn't get any digits, check for NaN/Inf or leading dot
-    if !parseddigits
+    # if we didn't get any digits and character isn't leading dot, check for NaN/Inf
+    if !parseddigits && b != opt.decimal
+        if minussign || plussign # skip sign character, if any
+            eof(io) && @goto checknullend
+            b = readbyte(io)
+        end
         if b == LITTLEN || b == BIGN
             eof(io) && @goto checkmissingend
             b = readbyte(io)
@@ -154,8 +159,6 @@ function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifmiss
                 b = readbyte(io)
             end
             @goto checkdone
-        elseif b == opt.decimal
-            # keep parsing fractional part below
         else
             @goto checkmissingend
         end
@@ -216,7 +219,7 @@ function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifmiss
     @goto error
 
     @label done
-    return T(ifelse(negative, -result, result))
+    return T(ifelse(minussign, -result, result))
 
     @label missing
     return ifmissing(row, col)

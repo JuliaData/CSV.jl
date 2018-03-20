@@ -4,3 +4,4 @@ DataFrames 0.11.0
 WeakRefStrings 0.4.0
 CategoricalArrays 0.3.0
 Compat 0.41.0
+Missings
