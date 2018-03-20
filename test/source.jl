@@ -212,11 +212,9 @@ f = CSV.Source(joinpath(dir, "test_basic_pipe.csv");delim='|',footerskip=1)
 @test Data.types(Data.schema(f)) == (Int,Int,Int)
 @test f.options.delim == UInt8('|')
 ds = CSV.read(f)
-@show f
 
 t = tempname()
 f = CSV.Sink(t)
-@show f
 
 f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"))
 types = Data.types(Data.schema(f))
