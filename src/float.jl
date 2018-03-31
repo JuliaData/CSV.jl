@@ -87,9 +87,9 @@ function scale(exp, v::T, frac, row, col) where T
     end
 end
 
-function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifnull::Function) where {T <: Union{Float16, Float32, Float64}}
+function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifmissing::Function) where {T <: Union{Float16, Float32, Float64}}
     mark(io)
-    @checknullstart()
+    @checkmissingstart()
     minussign = plussign = false
     if b == MINUS # check for leading '-' or '+'
         minussign = true
@@ -119,25 +119,25 @@ function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifnull
     # if we didn't get any digits and character isn't leading dot, check for NaN/Inf
     if !parseddigits && b != opt.decimal
         if minussign || plussign # skip sign character, if any
-            eof(io) && @goto checknullend
+            eof(io) && @goto checkmissingend
             b = readbyte(io)
         end
         if b == LITTLEN || b == BIGN
-            eof(io) && @goto checknullend
+            eof(io) && @goto checkmissingend
             b = readbyte(io)
-            (!(b == LITTLEA || b == BIGA) || eof(io)) && (reset(io); b = readbyte(io); @goto checknullend)
+            (!(b == LITTLEA || b == BIGA) || eof(io)) && (reset(io); b = readbyte(io); @goto checkmissingend)
             b = readbyte(io)
-            !(b == LITTLEN || b == BIGN) && (reset(io); b = readbyte(io); @goto checknullend)
+            !(b == LITTLEN || b == BIGN) && (reset(io); b = readbyte(io); @goto checkmissingend)
             result = T(NaN)
             eof(io) && (state[] = EOF; @goto done)
             b = readbyte(io)
             @goto checkdone
         elseif b == LITTLEI || b == BIGI
-            eof(io) && @goto checknullend
+            eof(io) && @goto checkmissingend
             b = readbyte(io)
-            (!(b == LITTLEN || b == BIGN) || eof(io)) && (reset(io); b = readbyte(io); @goto checknullend)
+            (!(b == LITTLEN || b == BIGN) || eof(io)) && (reset(io); b = readbyte(io); @goto checkmissingend)
             b = readbyte(io)
-            !(b == LITTLEF || b == BIGF) && (reset(io); b = readbyte(io); @goto checknullend)
+            !(b == LITTLEF || b == BIGF) && (reset(io); b = readbyte(io); @goto checkmissingend)
             result = T(Inf)
             eof(io) && (state[] = EOF; @goto done)
             b = readbyte(io)
@@ -160,7 +160,7 @@ function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifnull
             end
             @goto checkdone
         else
-            @goto checknullend
+            @goto checkmissingend
         end
     end
     # parse fractional part
@@ -212,17 +212,17 @@ function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifnull
 
     @label checkdone
     @checkdone(done)
-    @goto checknullend
+    @goto checkmissingend
 
-    @label checknullend
-    @checknullend()
+    @label checkmissingend
+    @checkmissingend()
     @goto error
 
     @label done
     return T(ifelse(minussign, -result, result))
 
-    @label null
-    return ifnull(row, col)
+    @label missing
+    return ifmissing(row, col)
 
     @label error
     throw(ParsingException(T, b, row, col))

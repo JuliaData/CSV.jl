@@ -2,27 +2,27 @@
 const P = Ref{ParsingState}
 
 # at start of field: check if eof, remove leading whitespace, check if empty field
-# returns `true` if result of initial parsing is a null field
+# returns `true` if result of initial parsing is a missing field
 # also return `b` which is last byte read
-macro checknullstart()
+macro checkmissingstart()
     return esc(quote
         state[] = None
-        eof(io) && (state[] = EOF; @goto null)
+        eof(io) && (state[] = EOF; @goto missing)
         b = readbyte(io)
         while b != opt.delim && (b == CSV.SPACE || b == CSV.TAB || b == opt.quotechar)
-            eof(io) && (state[] = EOF; @goto null)
+            eof(io) && (state[] = EOF; @goto missing)
             b = readbyte(io)
         end
         if b == opt.delim
             state[] = Delimiter
-            @goto null
+            @goto missing
         elseif b == NEWLINE
             state[] = Newline
-            @goto null
+            @goto missing
         elseif b == RETURN
             state[] = Newline
             !eof(io) && peekbyte(io) == NEWLINE && readbyte(io)
-            @goto null
+            @goto missing
         end
     end)
 end
@@ -71,37 +71,37 @@ end
 ParsingException(::Type{T}, b, row, col) where {T} = CSV.ParsingException("error parsing a `$T` value on column $col, row $row; encountered '$(Char(b))'")
 
 # as a last ditch effort, after we've trying parsing the correct type,
-# we check if the field is equal to a custom null type
+# we check if the field is equal to a custom missing type
 # otherwise we give up and throw an error
-macro checknullend()
+macro checkmissingend()
     return esc(quote
-        !opt.nullcheck && @goto error
+        !opt.missingcheck && @goto error
         i = 1
         while true
-            b == opt.null[i] || @goto error
-            (i == length(opt.null) || eof(io)) && break
+            b == opt.missingstring[i] || @goto error
+            (i == length(opt.missingstring) || eof(io)) && break
             b = readbyte(io)
             i += 1
         end
         if !eof(io)
             b = readbyte(io)
-            @checkdone(null)
+            @checkdone(missing)
         end
         state[] = EOF
-        @goto null
+        @goto missing
     end)
 end
 """
-`CSV.parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)` => `Nullable{T}`
-`CSV.parsefield{T}(s::CSV.Source, ::Type{T}, row=0, col=0)` => `Nullable{T}``
+`CSV.parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0)` => `Union{T, Missing}`
+`CSV.parsefield{T}(s::CSV.Source, ::Type{T}, row=0, col=0)` => `Union{T, Missing}``
 
 `io` is an `IO` type that is positioned at the first byte/character of an delimited-file field (i.e. a single cell)
 leading whitespace is ignored for Integer and Float types.
 Specialized methods exist for Integer, Float, String, Date, and DateTime.
 For other types `T`, a generic fallback requires `parse(T, str::String)` to be defined.
-the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quotechar` results in a null field
-`opt.null` is also checked if there is a custom value provided (i.e. "NA", "\\N", etc.)
-For numeric fields, if field is non-null and non-digit characters are encountered at any point before a delimiter or newline, an error is thrown
+the field value may also be wrapped in `opt.quotechar`; two consecutive `opt.quotechar` results in a missing field
+`opt.missingstring` is also checked if there is a custom value provided (i.e. "NA", "\\N", etc.)
+For numeric fields, if field is non-missing and non-digit characters are encountered at any point before a delimiter or newline, an error is thrown
 
 The second method of `CSV.parsefield` operates on a `CSV.Source` directly allowing for easy usage when writing custom parsing routines.
 Do note, however, that the `row` and `col` arguments are for error-reporting purposes only. A `CSV.Source` maintains internal state with
@@ -119,19 +119,19 @@ end
 """
 function parsefield end
 
-const NULLTHROW = (row, col)->throw(Missings.MissingException("encountered a missing value for a non-null column type on row = $row, col = $col"))
-const NULLRETURN = (row, col)->missing
+const MISSINGTHROW = (row, col)->throw(Missings.MissingException("encountered a missing value for a column type which does not support them on row = $row, col = $col"))
+const MISSINGRETURN = (row, col)->missing
 
-parsefield(source::CSV.Source, ::Type{T}, row=0, col=0, state::P=P()) where {T} = CSV.parsefield(source.io, T, source.options, row, col, state, T !== Missing ? NULLTHROW : NULLRETURN)
-parsefield(source::CSV.Source, ::Type{Union{T, Missing}}, row=0, col=0, state::P=P()) where {T} = CSV.parsefield(source.io, T, source.options, row, col, state, NULLRETURN)
-parsefield(source::CSV.Source, ::Type{Missing}, row=0, col=0, state::P=P()) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, state, NULLRETURN)
+parsefield(source::CSV.Source, ::Type{T}, row=0, col=0, state::P=P()) where {T} = CSV.parsefield(source.io, T, source.options, row, col, state, T !== Missing ? MISSINGTHROW : MISSINGRETURN)
+parsefield(source::CSV.Source, ::Type{Union{T, Missing}}, row=0, col=0, state::P=P()) where {T} = CSV.parsefield(source.io, T, source.options, row, col, state, MISSINGRETURN)
+parsefield(source::CSV.Source, ::Type{Missing}, row=0, col=0, state::P=P()) = CSV.parsefield(source.io, WeakRefString{UInt8}, source.options, row, col, state, MISSINGRETURN)
 
-@inline parsefield(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) where {T} = parsefield(io, T, opt, row, col, state, T !== Missing ? NULLTHROW : NULLRETURN)
-@inline parsefield(io::IO, ::Type{Union{T, Missing}}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) where {T} = parsefield(io, T, opt, row, col, state, NULLRETURN)
-@inline parsefield(io::IO, ::Type{Missing}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) = parsefield(io, WeakRefString{UInt8}, opt, row, col, state, NULLRETURN)
+@inline parsefield(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) where {T} = parsefield(io, T, opt, row, col, state, T !== Missing ? MISSINGTHROW : MISSINGRETURN)
+@inline parsefield(io::IO, ::Type{Union{T, Missing}}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) where {T} = parsefield(io, T, opt, row, col, state, MISSINGRETURN)
+@inline parsefield(io::IO, ::Type{Missing}, opt::CSV.Options=CSV.Options(), row=0, col=0, state::P=P()) = parsefield(io, WeakRefString{UInt8}, opt, row, col, state, MISSINGRETURN)
 
-function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifnull::Function) where {T <: Integer}
-    @checknullstart()
+function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifmissing::Function) where {T <: Integer}
+    @checkmissingstart()
     v = zero(T)
     negative = false
     if b == MINUS # check for leading '-' or '+'
@@ -155,13 +155,13 @@ function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifnull
         b = readbyte(io)
     end
     @checkdone(done)
-    @checknullend()
+    @checkmissingend()
 
     @label done
     return ifelse(negative, -v, v)
 
-    @label null
-    return ifnull(row, col)
+    @label missing
+    return ifmissing(row, col)
 
     @label error
     throw(ParsingException(T, b, row, col))
@@ -179,16 +179,16 @@ make(io::IOBuffer, ::Type{String}, ptr, len) = unsafe_string(ptr, len)
 make(io::IO, ::Type{WeakRefString{UInt8}}, ptr, len) = String(take!(BUF))
 make(io::IO, ::Type{String}, ptr, len) = String(take!(BUF))
 
-function parsefield(io::IO, T::Type{<:AbstractString}, opt::CSV.Options, row, col, state, ifnull::Function)
-    eof(io) && (state[] = EOF; @goto null)
+function parsefield(io::IO, T::Type{<:AbstractString}, opt::CSV.Options, row, col, state, ifmissing::Function)
+    eof(io) && (state[] = EOF; @goto missing)
     ptr = getptr(io)
     len = 0
-    nullcheck = opt.nullcheck # if null is "", then we don't need to byte match it
-    n = opt.null
+    missingcheck = opt.missingcheck # if missingstring is "", then we don't need to byte match it
+    n = opt.missingstring
     q = opt.quotechar
     e = opt.escapechar
     d = opt.delim
-    nulllen = length(n)
+    missinglen = length(n)
     @inbounds while !eof(io)
         b = readbyte(io)
         if b == q
@@ -206,7 +206,7 @@ function parsefield(io::IO, T::Type{<:AbstractString}, opt::CSV.Options, row, co
                 elseif b == q
                     break
                 end
-                (nullcheck && len+1 <= nulllen && b == n[len+1]) || (nullcheck = false)
+                (missingcheck && len+1 <= missinglen && b == n[len+1]) || (missingcheck = false)
                 len += incr(io, b)
             end
         elseif b == d
@@ -220,49 +220,49 @@ function parsefield(io::IO, T::Type{<:AbstractString}, opt::CSV.Options, row, co
             !eof(io) && peekbyte(io) == NEWLINE && readbyte(io)
             break
         else
-            (nullcheck && len+1 <= nulllen && b == n[len+1]) || (nullcheck = false)
+            (missingcheck && len+1 <= missinglen && b == n[len+1]) || (missingcheck = false)
             len += incr(io, b)
         end
     end
     eof(io) && (state[] = EOF)
-    (len == 0 || nullcheck) && @goto null
+    (len == 0 || missingcheck) && @goto missing
     return make(io, T, ptr, len)
 
-    @label null
+    @label missing
     take!(BUF)
-    return ifnull(row, col)
+    return ifmissing(row, col)
 end
 
-function parsefield(io::IO, ::Type{Date}, opt::CSV.Options, row, col, state, ifnull::Function)
-    v = parsefield(io, String, opt, row, col, state, ifnull)
-    return v isa Missing ? ifnull(row, col) : Date(v, opt.dateformat)
+function parsefield(io::IO, ::Type{Date}, opt::CSV.Options, row, col, state, ifmissing::Function)
+    v = parsefield(io, String, opt, row, col, state, ifmissing)
+    return v isa Missing ? ifmissing(row, col) : Date(v, opt.dateformat)
 end
-function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options, row, col, state, ifnull::Function)
-    v = parsefield(io, String, opt, row, col, state, ifnull)
-    return v isa Missing ? ifnull(row, col) : DateTime(v, opt.dateformat)
+function parsefield(io::IO, ::Type{DateTime}, opt::CSV.Options, row, col, state, ifmissing::Function)
+    v = parsefield(io, String, opt, row, col, state, ifmissing)
+    return v isa Missing ? ifmissing(row, col) : DateTime(v, opt.dateformat)
 end
 
-function parsefield(io::IO, ::Type{Char}, opt::CSV.Options, row, col, state, ifnull::Function)
-    @checknullstart()
+function parsefield(io::IO, ::Type{Char}, opt::CSV.Options, row, col, state, ifmissing::Function)
+    @checkmissingstart()
     c = b
     eof(io) && (state[] = EOF; @goto done)
-    opt.nullcheck && b == opt.null[1] && @goto null
+    opt.missingcheck && b == opt.missingstring[1] && @goto missing
     b = readbyte(io)
     @checkdone(done)
-    @checknullend()
+    @checkmissingend()
 
     @label done
     return Char(c)
 
-    @label null
-    return ifnull(row, col)
+    @label missing
+    return ifmissing(row, col)
 
     @label error
     throw(ParsingException(Char, b, row, col))
 end
 
-function parsefield(io::IO, ::Type{Bool}, opt::CSV.Options, row, col, state, ifnull::Function)
-    @checknullstart()
+function parsefield(io::IO, ::Type{Bool}, opt::CSV.Options, row, col, state, ifmissing::Function)
+    @checkmissingstart()
     truestring = opt.truestring
     falsestring = opt.falsestring
     i = 1
@@ -299,27 +299,27 @@ function parsefield(io::IO, ::Type{Bool}, opt::CSV.Options, row, col, state, ifn
         end
         @checkdone(done)
     end
-    @checknullend()
+    @checkmissingend()
 
     @label done
     return v
 
-    @label null
-    return ifnull(row, col)
+    @label missing
+    return ifmissing(row, col)
 
     @label error
     throw(ParsingException(Bool, b, row, col))
 end
 
-function parsefield(io::IO, ::Type{<:Union{CategoricalValue, CategoricalString}}, opt::CSV.Options, row, col, state, ifnull::Function)
-    v = parsefield(io, WeakRefString{UInt8}, opt, row, col, state, ifnull)
-    return v isa Missing ? ifnull(row, col) : v
+function parsefield(io::IO, ::Type{<:Union{CategoricalValue, CategoricalString}}, opt::CSV.Options, row, col, state, ifmissing::Function)
+    v = parsefield(io, WeakRefString{UInt8}, opt, row, col, state, ifmissing)
+    return v isa Missing ? ifmissing(row, col) : v
 end
 
 # Generic fallback
-function parsefield(io::IO, T, opt::CSV.Options, row, col, state, ifnull::Function)
-    v = parsefield(io, String, opt, row, col, state, ifnull)
-    ismissing(v) && return ifnull(row, col)
-    T === Missing && throw(ParsingException("encountered non-null value for a null-only column on row = $row, col = $col: '$v'"))
+function parsefield(io::IO, T, opt::CSV.Options, row, col, state, ifmissing::Function)
+    v = parsefield(io, String, opt, row, col, state, ifmissing)
+    ismissing(v) && return ifmissing(row, col)
+    T === Missing && throw(ParsingException("encountered non-missing value for a missing-only column on row = $row, col = $col: '$v'"))
     return parse(T, v)
 end

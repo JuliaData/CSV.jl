@@ -4,12 +4,14 @@ function Source(fullpath::Union{AbstractString,IO};
               delim=COMMA,
               quotechar=QUOTE,
               escapechar=ESCAPE,
-              null::AbstractString="",
+              missingstring::AbstractString="",
+              null::Union{AbstractString,Nothing}=nothing,
 
               header::Union{Integer, UnitRange{Int}, Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types=Type[],
-              nullable::Union{Bool, Missing}=missing,
+              allowmissing::Symbol=:all,
+              nullable::Union{Bool,Missing,Nothing}=nothing,
               dateformat=nothing,
               decimal=PERIOD,
               truestring="true",
@@ -29,8 +31,8 @@ function Source(fullpath::Union{AbstractString,IO};
                         options=CSV.Options(delim=typeof(delim) <: String ? UInt8(first(delim)) : (delim % UInt8),
                                             quotechar=typeof(quotechar) <: String ? UInt8(first(quotechar)) : (quotechar % UInt8),
                                             escapechar=typeof(escapechar) <: String ? UInt8(first(escapechar)) : (escapechar % UInt8),
-                                            null=null, dateformat=dateformat, decimal=decimal, truestring=truestring, falsestring=falsestring),
-                        header=header, datarow=datarow, types=types, nullable=nullable, categorical=categorical, weakrefstrings=weakrefstrings, footerskip=footerskip,
+                                            missingstring=missingstring, null=null, dateformat=dateformat, decimal=decimal, truestring=truestring, falsestring=falsestring),
+                        header=header, datarow=datarow, types=types, allowmissing=allowmissing, nullable=nullable, categorical=categorical, weakrefstrings=weakrefstrings, footerskip=footerskip,
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
 
@@ -40,7 +42,8 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
                 types=Type[],
-                nullable::Union{Bool, Missing}=missing,
+                allowmissing::Symbol=:all,
+                nullable::Union{Bool,Missing,Nothing}=nothing,
                 categorical::Bool=true,
                 weakrefstrings::Bool=true,
 
@@ -52,6 +55,16 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
     header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
+    if options.null !== nothing
+        resize!(options.missingstring, length(options.null))
+        copyto!(options.missingstring, options.null)
+        Base.depwarn("null option is deprecated, use missingstring instead", :Source)
+    end
+    if nullable !== nothing
+        allowmissing = ismissing(nullable) ? :auto :
+                       nullable            ? :all  : :none
+        Base.depwarn("nullable=$nullable argument is deprecated, use allowmissing=$(repr(allowmissing)) instead", :Source)
+    end
 
     # open the file for property detection
     if isa(fullpath, IOBuffer)
@@ -86,7 +99,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
 
     # figure out # of columns and header, either an Integer, AbstractRange, or Vector{String}
     # also ensure that `f` is positioned at the start of data
-    row_vals = Vector{RawField}()
+    row_vals = RawField[]
     if isa(header, Integer)
         # default header = 1
         if header <= 0
@@ -134,7 +147,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         # types might be a Vector{DataType}, which will be a problem if Unions are needed
         columntypes = convert(Vector{Type}, types)
     elseif isa(types, Dict) || isempty(types)
-        columntypes = fill!(Vector{Type}(uninitialized, cols), Any)
+        columntypes = fill!(Vector{Type}(undef, cols), Any)
         levels = [Dict{WeakRefString{UInt8}, Int}() for _ = 1:cols]
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
@@ -151,7 +164,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         if options.dateformat === nothing && any(x->Missings.T(x) <: Dates.TimeType, columntypes)
             # auto-detected TimeType
             options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
-                              null=options.null, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
+                              missingstring=options.missingstring, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
                               datarow=options.datarow, rows=options.rows, header=options.header, types=options.types)
         end
         if categorical
@@ -165,30 +178,41 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     else
         throw(ArgumentError("$cols number of columns detected; `types` argument has $(length(types)) entries"))
     end
-    if isa(types, Dict{Int, <:Any})
-        for (col, typ) in types
+    if isa(types, Dict)
+        if isa(types, Dict{String})
+            @static if VERSION >= v"0.7.0-DEV.3627"
+                colinds = indexin(keys(types), columnnames)
+            else
+                colinds = indexin(collect(keys(types)), columnnames)
+            end
+        else
+            colinds = keys(types)
+        end
+        for (col, typ) in zip(colinds, values(types))
             columntypes[col] = typ
         end
-    elseif isa(types, Dict{String, <:Any})
-        for (col, typ) in types
-            c = findfirst(x->x == col, columnnames)
-            columntypes[c] = typ
-        end
+        autocols = setdiff(1:cols, colinds)
+    elseif isempty(types)
+        autocols = collect(1:cols)
+    else
+        autocols = Int[]
     end
     if !weakrefstrings
         columntypes = [(T !== Missing && Missings.T(T) <: WeakRefString) ? substitute(T, String) : T for T in columntypes]
     end
-    if !ismissing(nullable)
-        if nullable # allow missing values in all columns
-            for i = 1:cols
+    if allowmissing != :auto
+        if allowmissing == :all # allow missing values in all automatically detected columns
+            for i = autocols
                 T = columntypes[i]
                 columntypes[i] = Union{Missings.T(T), Missing}
             end
-        else # disallow missing values in all columns
-            for i = 1:cols
+        elseif allowmissing == :none # disallow missing values in all automatically detected columns
+            for i = autocols
                 T = columntypes[i]
                 columntypes[i] = Missings.T(T)
             end
+        else
+            throw(ArgumentError("allowmissing must be either :all, :none or :auto"))
         end
     end
     seek(source, datapos)
@@ -231,7 +255,7 @@ Keyword Arguments:
 * `delim::Union{Char,UInt8}`: how fields in the file are delimited; default `','`
 * `quotechar::Union{Char,UInt8}`: the character that indicates a quoted field that may contain the `delim` or newlines; default `'"'`
 * `escapechar::Union{Char,UInt8}`: the character that escapes a `quotechar` in a quoted field; default `'\\'`
-* `null::String`: indicates how NULL values are represented in the dataset; default `""`
+* `missingstring::String`: indicates how missing values are represented in the dataset; default `""`
 * `dateformat::Union{AbstractString,Dates.DateFormat}`: how dates/datetimes are represented in the dataset; default `Base.Dates.ISODateTimeFormat`
 * `decimal::Union{Char,UInt8}`: character to recognize as the decimal point in a float number, e.g. `3.14` or `3,14`; default `'.'`
 * `truestring`: string to represent `true::Bool` values in a csv file; default `"true"`. Note that `truestring` and `falsestring` cannot start with the same character.
@@ -239,7 +263,7 @@ Keyword Arguments:
 * `header`: column names can be provided manually as a complete Vector{String}, or as an Int/AbstractRange which indicates the row/rows that contain the column names
 * `datarow::Int`: specifies the row on which the actual data starts in the file; by default, the data is expected on the next row after the header row(s); for a file without column names (header), specify `datarow=1`
 * `types`: column types can be provided manually as a complete Vector{Type}, or in a Dict to reference individual columns by name or number
-* `nullable::Bool`: indicates whether values can be nullable or not; `true` by default. If set to `false` and missing values are encountered, a `Data.NullException` will be thrown
+* `allowmissing::Symbol=:all`: indicates whether columns should allow for missing values or not, that is whether their element type should be `Union{T,Missing}`; by default, all columns are allowed to contain missing values. If set to `:none`, no column can contain missing values, and if set to `:auto`, only colums which contain missing values in the first `rows_for_type_detect` rows are allowed to contain missing values. Column types specified via `types` are not affected by this argument.
 * `footerskip::Int`: indicates the number of rows to skip at the end of the file
 * `rows_for_type_detect::Int=100`: indicates how many rows should be read to infer the types of columns
 * `rows::Int`: indicates the total number of rows to read from the file; by default the file is pre-parsed to count the # of rows; `-1` can be passed to skip a full-file scan, but the `Data.Sink` must be set up to account for a potentially unknown # of rows
@@ -267,8 +291,8 @@ Other example invocations may include:
 # read in a tab-delimited file
 CSV.read(file; delim='\t')
 
-# read in a comma-delimited file with null values represented as '\\N', such as a MySQL export
-CSV.read(file; null="\\N")
+# read in a comma-delimited file with missing values represented as '\\N', such as a MySQL export
+CSV.read(file; missingstring="\\N")
 
 # read a csv file that happens to have column names in the first column, and grouped data in rows instead of columns
 CSV.read(file; transpose=true)
