@@ -1,3 +1,5 @@
+using Compat.Dates: default_format
+
 function Sink(fullpath::Union{AbstractString, IO};
               delim::Char=',',
               quotechar::Char='"',
@@ -51,11 +53,8 @@ function Data.streamto!(sink::Sink, ::Type{Data.Field}, val, row, col::Int)
     return nothing
 end
 
-defaultformat(::Date) = Dates.ISODateFormat
-defaultformat(::DateTime) = Dates.ISODateTimeFormat
-
 function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::Dates.TimeType, row, col::Int)
-    v = Dates.format(val, sink.options.dateformat === nothing ? defaultformat(val) : sink.options.dateformat)
+    v = Dates.format(val, sink.options.dateformat === nothing ? default_format(typeof(val)) : sink.options.dateformat)
     Base.write(sink.io, v, ifelse(col == sink.cols, NEWLINE, sink.options.delim))
     return nothing
 end
