@@ -61,7 +61,7 @@ end
 
 const EMPTY_UINT8_ARRAY = UInt8[]
 function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::Missing, row, col::Int)
-    Base.write(sink.io, sink.options.missingstringcheck ? sink.options.missingstring : EMPTY_UINT8_ARRAY, ifelse(col == sink.cols, NEWLINE, sink.options.delim))
+    Base.write(sink.io, sink.options.missingcheck ? sink.options.missingstring : EMPTY_UINT8_ARRAY, ifelse(col == sink.cols, NEWLINE, sink.options.delim))
     return nothing
 end
 
