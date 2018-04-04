@@ -334,13 +334,13 @@ sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 """
 function read end
 
-function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), transpose::Bool=false, kwargs...)
+function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), transpose::Bool=false, kwargs...)
     source = transpose ? TransposedSource(fullpath; kwargs...) : Source(fullpath; kwargs...)
     sink = Data.stream!(source, sink, args...; append=append, transforms=transforms)
     return Data.close!(sink)
 end
 
-function read(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}(), transpose::Bool=false, kwargs...) where {T}
+function read(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), transpose::Bool=false, kwargs...) where {T}
     source = transpose ? TransposedSource(fullpath; kwargs...) : Source(fullpath; kwargs...)
     sink = Data.stream!(source, sink; append=append, transforms=transforms)
     return Data.close!(sink)
