@@ -198,7 +198,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         autocols = Int[]
     end
     if !weakrefstrings
-        columntypes = [(T !== Missing && Missings.T(T) <: WeakRefString) ? substitute(T, String) : T for T in columntypes]
+        columntypes = Type[(T !== Missing && Missings.T(T) <: WeakRefString) ? substitute(T, String) : T for T in columntypes]
     end
     if allowmissing != :auto
         if allowmissing == :all # allow missing values in all automatically detected columns
