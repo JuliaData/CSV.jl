@@ -12,7 +12,7 @@ function TransposedSource(fullpath::Union{AbstractString,IO};
               types=Type[],
               allowmissing::Symbol=:all,
               nullable::Union{Bool,Missing,Nothing}=nothing,
-              dateformat=missing,
+              dateformat=nothing,
               decimal=PERIOD,
               truestring="true",
               falsestring="false",
@@ -193,86 +193,13 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
         seek(source, datapos)
     end
     rows = rows - footerskip # rows now equals the actual number of rows in the dataset
-    startingcolumnpositions = deepcopy(columnpositions)
-    # Detect column types
-    cols = length(columnnames)
-    if isa(types, Vector) && length(types) == cols
-        columntypes = types
-    elseif isa(types, Dict) || isempty(types)
-        columntypes = fill!(Vector{Type}(uninitialized, cols), Any)
-        levels = [Dict{WeakRefString{UInt8}, Int}() for _ = 1:cols]
-        lineschecked = 0
-        while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
-            lineschecked += 1
-            # println("type detecting on row = $lineschecked...")
-            for i = 1:cols
-                # print("\tdetecting col = $i...")
-                seek(source, columnpositions[i])
-                typ = CSV.detecttype(source, options, columntypes[i], levels[i])::Type
-                columnpositions[i] = position(source)
-                # print(typ)
-                columntypes[i] = CSV.promote_type2(columntypes[i], typ)
-                # println("...promoting to: ", columntypes[i])
-            end
-        end
-        if options.dateformat === missing && any(x->x <: Dates.TimeType, columntypes)
-            # auto-detected TimeType
-            options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
-                              missingstring=options.missingstring, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
-                              datarow=options.datarow, rows=options.rows, header=options.header, types=options.types)
-        end
-        if categorical
-            for i = 1:cols
-                T = columntypes[i]
-                if length(levels[i]) / sum(values(levels[i])) < .67 && T !== Missing && Missings.T(T) <: WeakRefString
-                    columntypes[i] = substitute(T, CategoricalArrays.catvaluetype(Missings.T(T), UInt32))
-                end
-            end
-        end
-    else
-        throw(ArgumentError("$cols number of columns detected; `types` argument has $(length(types)) entries"))
-    end
 
-    if isa(types, Dict)
-        if isa(types, Dict{String})
-            @static if VERSION >= v"0.7.0-DEV.3627"
-                colinds = indexin(keys(types), columnnames)
-            else
-                colinds = indexin(collect(keys(types)), columnnames)
-            end
-        else
-            colinds = keys(types)
-        end
-        for (col, typ) in zip(colinds, values(types))
-            columntypes[col] = typ
-        end
-        autocols = setdiff(1:cols, colinds)
-    elseif isempty(types)
-        autocols = collect(1:cols)
-    else
-        autocols = Int[]
-    end
-    if !weakrefstrings
-        columntypes = [(T !== Missing && Missings.T(T) <: WeakRefString) ? substitute(T, String) : T for T in columntypes]
-    end
-    if allowmissing != :auto
-        if allowmissing == :all # allow missing values in all automatically detected columns
-            for i = autocols
-                T = columntypes[i]
-                columntypes[i] = Union{Missings.T(T), Missing}
-            end
-        elseif allowmissing == :none # disallow missing values in all automatically detected columns
-            for i = autocols
-                T = columntypes[i]
-                columntypes[i] = Missings.T(T)
-            end
-        else
-            throw(ArgumentError("allowmissing must be either :all, :none or :auto"))
-        end
-    end
+    sch, fixed_options = detect_dataschema(source, columnnames, types, options,
+                            allowmissing, categorical, weakrefstrings,
+                            rows, rows_for_type_detect,
+                            columnpositions)
     seek(source, datapos)
-    sch = Data.Schema(columntypes, columnnames, ifelse(rows < 0, missing, rows))
-    return TransposedSource(sch, options, source, String(fullpath), datapos, startingcolumnpositions)
+    return TransposedSource(sch, fixed_options, source, String(fullpath), datapos, columnpositions)
 end
 
 # construct a new TransposedSource from a Sink
