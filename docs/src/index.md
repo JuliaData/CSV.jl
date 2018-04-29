@@ -21,6 +21,6 @@ CSV.Sink
 CSV.Options
 CSV.parsefield
 CSV.readline
-CSV.readsplitline
+CSV.readsplitline!
 CSV.countlines
 ```
