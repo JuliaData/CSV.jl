@@ -49,11 +49,67 @@ var documenterSearchIndex = {"docs": [
 },
 
 {
+    "location": "index.html#CSV.Source",
+    "page": "Home",
+    "title": "CSV.Source",
+    "category": "type",
+    "text": "A type that satisfies the Data.Source interface in the DataStreams.jl package.\n\nA CSV.Source can be manually constructed in order to be re-used multiple times.\n\nCSV.Source(file_or_io; kwargs...) => CSV.Source\n\nNote that a filename string can be provided or any IO type. For the full list of supported keyword arguments, see the docs for CSV.read or type ?CSV.read at the repl\n\nAn example of re-using a CSV.Source is:\n\n# manually construct a `CSV.Source` once, then stream its data to both a DataFrame\n# and SQLite table `sqlite_table` in the SQLite database `db`\n# note the use of `CSV.reset!` to ensure the `source` can be streamed from again\nsource = CSV.Source(file)\ndf1 = CSV.read(source, DataFrame)\nCSV.reset!(source)\nsq1 = CSV.read(source, SQLite.Sink, db, \"sqlite_table\")\n\n\n\n"
+},
+
+{
+    "location": "index.html#CSV.Sink",
+    "page": "Home",
+    "title": "CSV.Sink",
+    "category": "type",
+    "text": "A type that satisfies the Data.Sink interface in the DataStreams.jl package.\n\nA CSV.Sink can be manually constructed in order to be re-used multiple times.\n\nCSV.Sink(file_or_io; kwargs...) => CSV.Sink\n\nNote that a filename string can be provided or any IO type. For the full list of supported keyword arguments, see the docs for CSV.write or type ?CSV.write at the repl\n\nAn example of re-using a CSV.Sink is:\n\n# manually construct a `CSV.Source` once, then stream its data to both a DataFrame\n# and SQLite table `sqlite_table` in the SQLite database `db`\n# note the use of `CSV.reset!` to ensure the `source` can be streamed from again\nsource = CSV.Source(file)\ndf1 = CSV.read(source, DataFrame)\nCSV.reset!(source)\nsq1 = CSV.read(source, SQLite.Sink, db, \"sqlite_table\")\n\n\n\n"
+},
+
+{
+    "location": "index.html#CSV.Options",
+    "page": "Home",
+    "title": "CSV.Options",
+    "category": "type",
+    "text": "Represents the various configuration settings for delimited text file parsing.\n\nKeyword Arguments:\n\ndelim::Union{Char,UInt8}: how fields in the file are delimited; default \',\'\nquotechar::Union{Char,UInt8}: the character that indicates a quoted field that may contain the delim or newlines; default \'\"\'\nescapechar::Union{Char,UInt8}: the character that escapes a quotechar in a quoted field; default \'\\\'\nmissingstring::String: indicates how missing values are represented in the dataset; default \"\"\ndateformat::Union{AbstractString,Dates.DateFormat}: how dates/datetimes are represented in the dataset; default Base.Dates.ISODateTimeFormat\ndecimal::Union{Char,UInt8}: character to recognize as the decimal point in a float number, e.g. 3.14 or 3,14; default \'.\'\ntruestring: string to represent true::Bool values in a csv file; default \"true\". Note that truestring and falsestring cannot start with the same character.\nfalsestring: string to represent false::Bool values in a csv file; default \"false\"\n\n\n\n"
+},
+
+{
+    "location": "index.html#CSV.parsefield",
+    "page": "Home",
+    "title": "CSV.parsefield",
+    "category": "function",
+    "text": "CSV.parsefield{T}(io::IO, ::Type{T}, opt::CSV.Options=CSV.Options(), row=0, col=0) => Union{T, Missing} CSV.parsefield{T}(s::CSV.Source, ::Type{T}, row=0, col=0) => Union{T, Missing}`\n\nio is an IO type that is positioned at the first byte/character of an delimited-file field (i.e. a single cell) leading whitespace is ignored for Integer and Float types. Specialized methods exist for Integer, Float, String, Date, and DateTime. For other types T, a generic fallback requires parse(T, str::String) to be defined. the field value may also be wrapped in opt.quotechar; two consecutive opt.quotechar results in a missing field opt.missingstring is also checked if there is a custom value provided (i.e. \"NA\", \"\\N\", etc.) For numeric fields, if field is non-missing and non-digit characters are encountered at any point before a delimiter or newline, an error is thrown\n\nThe second method of CSV.parsefield operates on a CSV.Source directly allowing for easy usage when writing custom parsing routines. Do note, however, that the row and col arguments are for error-reporting purposes only. A CSV.Source maintains internal state with regards to the underlying data buffer and can only parse fields sequentially. This means that CSV.parsefield needs to be called somewhat like:\n\nsource = CSV.Source(file)\n\ntypes = Data.types(source)\n\nfor col = 1:length(types)\n    println(get(CSV.parsefield(source, types[col]), \"\"\"\"))\nend\n\n\n\n"
+},
+
+{
+    "location": "index.html#CSV.readline",
+    "page": "Home",
+    "title": "CSV.readline",
+    "category": "function",
+    "text": "CSV.readline(io::IO, q=\'\"\', e=\'\\\', buf::IOBuffer=IOBuffer()) => String\nCSV.readline(source::CSV.Source) => String\n\nRead a single line from io (any IO type) or a CSV.Source as a String object. This function mirrors Base.readline except that the newlines within quoted fields are ignored (e.g. value1, value2, \"value3 with   embedded newlines\"). Uses buf::IOBuffer for intermediate IO operations, if specified.\n\n\n\n"
+},
+
+{
+    "location": "index.html#CSV.readsplitline!",
+    "page": "Home",
+    "title": "CSV.readsplitline!",
+    "category": "function",
+    "text": "CSV.readsplitline!(vals::Vector{RawField}, io, d=\',\', q=\'\"\', e=\'\\\', buf::IOBuffer=IOBuffer())\nCSV.readsplitline!(vals::Vector{RawField}, source::CSV.Source)\n\nRead a single, delimited line from io (any IO type) or a CSV.Source as a Vector{String} and store the values in vals. Delimited fields are separated by d, quoted by q and escaped by e ASCII characters. The contents of vals are replaced. Uses buf::IOBuffer for intermediate IO operations, if specified.\n\n\n\n"
+},
+
+{
+    "location": "index.html#CSV.countlines",
+    "page": "Home",
+    "title": "CSV.countlines",
+    "category": "function",
+    "text": "CSV.countlines(io::IO, quotechar, escapechar) => Int\nCSV.countlines(source::CSV.Source) => Int\n\nCount the number of lines in a file, accounting for potentially embedded newlines in quoted fields.\n\n\n\n"
+},
+
+{
     "location": "index.html#Lower-level-utilities-1",
     "page": "Home",
     "title": "Lower-level utilities",
     "category": "section",
-    "text": "CSV.Source\nCSV.Sink\nCSV.Options\nCSV.parsefield\nCSV.readline\nCSV.readsplitline\nCSV.countlines"
+    "text": "CSV.Source\nCSV.Sink\nCSV.Options\nCSV.parsefield\nCSV.readline\nCSV.readsplitline!\nCSV.countlines"
 },
 
 ]}
