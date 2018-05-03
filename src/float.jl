@@ -120,6 +120,8 @@ function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifmiss
     if !parseddigits && b != opt.decimal
         if minussign || plussign # skip sign character, if any
             eof(io) && @goto checkmissingend
+            c = peekbyte(io)
+            c == LITTLEN || c == BIGN || c == LITTLEI || c == BIGI || @goto checkmissingend
             b = readbyte(io)
         end
         if b == LITTLEN || b == BIGN
