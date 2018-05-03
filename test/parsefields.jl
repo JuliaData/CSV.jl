@@ -111,6 +111,10 @@ v = CSV.parsefield(io, Union{Int, Missing}, CSV.Options(missingstring="\\N"))
 io = IOBuffer("\"\\N\"")
 @test_throws Missings.MissingException CSV.parsefield(io,Int,CSV.Options(missingstring="\\N"))
 
+io = IOBuffer("-")
+v = CSV.parsefield(io, Union{Int, Missing}, CSV.Options(missingstring="-"))
+@test ismissing(v)
+
 end # @testset "Int"
 
 println("testing Int Custom IO")
@@ -208,6 +212,11 @@ io = Buffer(IOBuffer("\\N"))
 io = Buffer(IOBuffer("\"\\N\""))
 v = CSV.parsefield(io, Union{Int, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
+
+io = Buffer(IOBuffer("-"))
+v = CSV.parsefield(io, Union{Int, Missing}, CSV.Options(missingstring="+"))
+@test ismissing(v)
+
 end # @testset "Int Custom IO"
 
 println("testing Float64 Custom IO")
@@ -375,6 +384,10 @@ io = Buffer(IOBuffer("\\N"))
 
 io = Buffer(IOBuffer("\"\\N\""))
 v = CSV.parsefield(io, Union{Float64, Missing}, CSV.Options(missingstring="\\N"))
+@test ismissing(v)
+
+io = Buffer(IOBuffer("-"))
+v = CSV.parsefield(io, Union{Float64, Missing}, CSV.Options(missingstring="-"))
 @test ismissing(v)
 
 end # @testset "Float64 Custom IO"
@@ -600,6 +613,10 @@ io = IOBuffer("\\N")
 
 io = IOBuffer("\"\\N\"")
 v = CSV.parsefield(io, Union{Float64, Missing}, CSV.Options(missingstring="\\N"))
+@test ismissing(v)
+
+io = IOBuffer("-")
+v = CSV.parsefield(io, Union{Float64, Missing}, CSV.Options(missingstring="-"))
 @test ismissing(v)
 
 end # @testset "Float64"
