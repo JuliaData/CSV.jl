@@ -93,15 +93,19 @@ function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifmiss
     minussign = plussign = false
     if b == MINUS # check for leading '-' or '+'
         minussign = true
-        c = peekbyte(io)
-        if (NEG_ONE < c < TEN) || c == opt.decimal
-            b = readbyte(io)
+	if !eof(io)
+            c = peekbyte(io)
+            if (NEG_ONE < c < TEN) || c == opt.decimal
+                b = readbyte(io)
+	    end
         end
     elseif b == PLUS
         plussign = true
-        c = peekbyte(io)
-        if (NEG_ONE < c < TEN) || c == opt.decimal
-            b = readbyte(io)
+	if !eof(io)
+            c = peekbyte(io)
+            if (NEG_ONE < c < TEN) || c == opt.decimal
+	        b = readbyte(io)
+	    end
         end
     end
     # float digit parsing
@@ -120,6 +124,8 @@ function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifmiss
     if !parseddigits && b != opt.decimal
         if minussign || plussign # skip sign character, if any
             eof(io) && @goto checkmissingend
+	    c = peekbyte(io)
+	    ((c == LITTLEN) | (c == BIGN) | (c == LITTLEI) | (c == BIGI)) || @goto checkmissingend
             b = readbyte(io)
         end
         if b == LITTLEN || b == BIGN

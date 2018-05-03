@@ -12,7 +12,7 @@ macro checkmissingstart()
         while b != opt.delim && (b == CSV.SPACE || b == CSV.TAB || b == opt.quotechar)
             eof(io) && (state[] = EOF; @goto missing)
             b = readbyte(io)
-        end
+       end
         if b == opt.delim
             state[] = Delimiter
             @goto missing
@@ -135,15 +135,19 @@ function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifmiss
     v = zero(T)
     negative = false
     if b == MINUS # check for leading '-' or '+'
-        c = peekbyte(io)
-        if NEG_ONE < c < TEN
-            negative = true
-            b = readbyte(io)
+        if !eof(io)
+            c = peekbyte(io)
+            if NEG_ONE < c < TEN
+                negative = true
+                b = readbyte(io)
+	    end
         end
     elseif b == PLUS
-        c = peekbyte(io)
-        if NEG_ONE < c < TEN
-            b = readbyte(io)
+        if !eof(io)
+            c = peekbyte(io)
+            if NEG_ONE < c < TEN
+                b = readbyte(io)
+	    end
         end
     end
     while NEG_ONE < b < TEN

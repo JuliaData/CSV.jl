@@ -69,11 +69,11 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     # open the file for property detection
     if isa(fullpath, IOBuffer)
         source = fullpath
-        fs = nb_available(fullpath)
+        fs = bytesavailable(fullpath)
         fullpath = "<IOBuffer>"
     elseif isa(fullpath, IO)
         source = IOBuffer(Base.read(fullpath))
-        fs = nb_available(source)
+        fs = bytesavailable(source)
         fullpath = isdefined(fullpath, :name) ? fullpath.name : "__IO__"
     else
         source = open(fullpath, "r") do f
