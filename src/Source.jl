@@ -37,7 +37,7 @@ function Source(fullpath::Union{AbstractString,IO};
 end
 
 function Source(;fullpath::Union{AbstractString,IO}="",
-                options::CSV.Options{D}=CSV.Options(),
+                options::CSV.Options=CSV.Options(),
 
                 header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
                 datarow::Int=-1, # by default, data starts immediately after header or start of file
@@ -50,7 +50,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 footerskip::Int=0,
                 rows_for_type_detect::Int=100,
                 rows::Int=0,
-                use_mmap::Bool=true) where {D}
+                use_mmap::Bool=true)
     # argument checks
     isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
     header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
@@ -141,83 +141,11 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         end
     end
 
-    # Detect column types
-    cols = length(columnnames)
-    if isa(types, Vector) && length(types) == cols
-        # types might be a Vector{DataType}, which will be a problem if Unions are needed
-        columntypes = convert(Vector{Type}, types)
-    elseif isa(types, Dict) || isempty(types)
-        columntypes = fill!(Vector{Type}(undef, cols), Any)
-        levels = [Dict{WeakRefString{UInt8}, Int}() for _ = 1:cols]
-        lineschecked = 0
-        while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
-            lineschecked += 1
-            # println("type detecting on row = $lineschecked...")
-            for i = 1:cols
-                # print("\tdetecting col = $i...")
-                typ = CSV.detecttype(source, options, columntypes[i], levels[i])::Type
-                # print(typ)
-                columntypes[i] = CSV.promote_type2(columntypes[i], typ)
-                # println("...promoting to: ", columntypes[i])
-            end
-        end
-        if options.dateformat === nothing && any(x->Missings.T(x) <: Dates.TimeType, columntypes)
-            # auto-detected TimeType
-            options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
-                              missingstring=options.missingstring, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
-                              datarow=options.datarow, rows=options.rows, header=options.header, types=options.types)
-        end
-        if categorical
-            for i = 1:cols
-                T = columntypes[i]
-                if length(levels[i]) / sum(values(levels[i])) < .67 && T !== Missing && Missings.T(T) <: WeakRefString
-                    columntypes[i] = substitute(T, CategoricalArrays.catvaluetype(Missings.T(T), UInt32))
-                end
-            end
-        end
-    else
-        throw(ArgumentError("$cols number of columns detected; `types` argument has $(length(types)) entries"))
-    end
-    if isa(types, Dict)
-        if isa(types, Dict{String})
-            @static if VERSION >= v"0.7.0-DEV.3627"
-                colinds = indexin(keys(types), columnnames)
-            else
-                colinds = indexin(collect(keys(types)), columnnames)
-            end
-        else
-            colinds = keys(types)
-        end
-        for (col, typ) in zip(colinds, values(types))
-            columntypes[col] = typ
-        end
-        autocols = setdiff(1:cols, colinds)
-    elseif isempty(types)
-        autocols = collect(1:cols)
-    else
-        autocols = Int[]
-    end
-    if !weakrefstrings
-        columntypes = Type[(T !== Missing && Missings.T(T) <: WeakRefString) ? substitute(T, String) : T for T in columntypes]
-    end
-    if allowmissing != :auto
-        if allowmissing == :all # allow missing values in all automatically detected columns
-            for i = autocols
-                T = columntypes[i]
-                columntypes[i] = Union{Missings.T(T), Missing}
-            end
-        elseif allowmissing == :none # disallow missing values in all automatically detected columns
-            for i = autocols
-                T = columntypes[i]
-                columntypes[i] = Missings.T(T)
-            end
-        else
-            throw(ArgumentError("allowmissing must be either :all, :none or :auto"))
-        end
-    end
+    sch, fixed_options = detect_dataschema(source, columnnames, types, options,
+                            allowmissing, categorical, weakrefstrings,
+                            rows, rows_for_type_detect)
     seek(source, datapos)
-    sch = Data.Schema(columntypes, columnnames, ifelse(rows < 0, missing, rows))
-    return Source(sch, options, source, String(fullpath), datapos)
+    return Source(sch, fixed_options, source, String(fullpath), datapos)
 end
 
 # construct a new Source from a Sink

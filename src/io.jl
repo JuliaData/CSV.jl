@@ -217,7 +217,7 @@ promote_type2(::Type{Missing}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefStri
 promote_type2(::Type{Any}, ::Type{Missing}) = Missing
 promote_type2(::Type{Missing}, ::Type{Missing}) = Missing
 
-function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
+function detecttype(io, opt::CSV.Options, prevT, levels)
     pos = position(io)
     # update levels
     try
@@ -241,7 +241,7 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
         end
     end
     if Date <: prevT || DateTime <: prevT || prevT == Missing
-        if D == Nothing
+        if opt.dateformat === nothing
             # try to auto-detect TimeType
             try
                 seek(io, pos)
@@ -279,4 +279,99 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
         return v7 isa Missing ? Missing : WeakRefString{UInt8}
     end
     return Missing
+end
+
+function detect_dataschema(source::IOBuffer, columnnames::AbstractVector{<:AbstractString}, types,
+                           options::Options, allowmissing::Symbol,
+                           categorical::Bool, weakrefstrings::Bool,
+                           rows::Integer, rows_for_type_detect::Integer,
+                           columnpositions::Union{AbstractVector{Int}, Nothing} = nothing)
+    cols = length(columnnames)
+    if isa(columnpositions, AbstractVector)
+        # vector of file positions for each column of the current row
+        columnpositions = deepcopy(columnpositions)
+    end
+    if isa(types, AbstractVector) && !isempty(types)
+        length(types) == cols || throw(ArgumentError("The length of types argument ($(length(types))) should match the number of columns ($cols)"))
+        # types might be a Vector{DataType}, which will be a problem if Unions are needed
+        columntypes = copy!(similar(types, Type), types)
+    elseif isa(types, Dict) || isempty(types)
+        columntypes = fill!(Vector{Type}(undef, cols), Any)
+        # FIXME copy options.types into columntypes and skip detection for user-specified columns
+        # FIXME skip detection completely if all columns have user-specified types
+        #println("starting column types detection...")
+        levels = [Dict{WeakRefString{UInt8}, Int}() for _ = 1:cols]
+        lineschecked = 0
+        rows_to_check = rows < 0 ? rows_for_type_detect : min(rows, rows_for_type_detect)
+        while !eof(source) && lineschecked < rows_to_check
+            lineschecked += 1
+            #println("type detection on row $lineschecked...")
+            for i = 1:cols
+                coltyp = columntypes[i]
+                #print("\tdetecting col #$i (current: $coltyp)...")
+                isa(columnpositions, AbstractVector) && seek(source, columnpositions[i]) # for TransposedSource
+                valtyp = CSV.detecttype(source, options, coltyp, levels[i])::Type
+                isa(columnpositions, AbstractVector) && (columnpositions[i] = position(source)) # for TransposedSource
+                #print("detected ", valtyp)
+                columntypes[i] = CSV.promote_type2(coltyp, valtyp)
+                #println("... promoted to: ", columntypes[i])
+                #coltyp != columntypes[i] && println("col #$i type old=$coltyp new=$(columntypes[i]) (row #$lineschecked type=$valtyp)")
+            end
+        end
+        if options.dateformat === nothing && any(x-> (x !== Missing) && (Missings.T(x) <: Dates.TimeType), columntypes)
+            # use the auto-detected format of the first TimeType column as the default for the whole table
+            options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
+                              missingstring=options.missingstring, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
+                              datarow=options.datarow, rows=options.rows, header=options.header, types=options.types)
+        end
+        if categorical
+            for i = 1:cols
+                T = columntypes[i]
+                if length(levels[i]) / sum(values(levels[i])) < .67 &&
+                    T !== Missing && Missings.T(T) <: AbstractString
+                    columntypes[i] = substitute(T, CategoricalArrays.catvaluetype(Missings.T(T), UInt32))
+                end
+            end
+        end
+    else
+        throw(ArgumentError("$cols number of columns detected; `types` argument has $(length(types)) entries"))
+    end
+
+    # apply user-specified column types
+    if isempty(types)
+        autocols = collect(1:cols)
+    elseif isa(types, Dict)
+        autocols = collect(1:cols)
+        for (col, typ) in types
+            cix = col isa Integer ? col : findfirst(equalto(col), columnnames)
+            columntypes[cix] = typ
+            pos = searchsorted(autocols, cix)
+            isempty(pos) || deleteat!(autocols, first(pos))
+        end
+    else
+        @assert isa(types, Vector) && length(types) == cols
+        autocols = Int[]
+    end
+    if !weakrefstrings # replace WeakRefString column types with String
+        for (i, typ) in enumerate(columntypes)
+            if typ !== Missing && Missings.T(typ) <: WeakRefString
+                columntypes[i] = substitute(typ, String)
+            end
+        end
+    end
+    # handle missing values in automatically detected column types
+    if allowmissing == :all # allow missing values in all autodetected columns
+        for i in autocols
+            T = columntypes[i]
+            columntypes[i] = Union{Missings.T(T), Missing}
+        end
+    elseif allowmissing == :none # disallow missing values in all autodetected columns
+        for i in autocols
+            T = columntypes[i]
+            columntypes[i] = Missings.T(T)
+        end
+    elseif allowmissing != :auto
+        throw(ArgumentError("allowmissing must be either :all, :none or :auto"))
+    end
+    return Data.Schema(columntypes, columnnames, rows < 0 ? missing : rows), options
 end

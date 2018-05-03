@@ -3,7 +3,7 @@ module CSV
 
 using DataStreams, WeakRefStrings, Missings, CategoricalArrays, DataFrames
 
-using Compat, Compat.Mmap, Compat.Dates
+using Compat, Compat.Mmap, Compat.Dates, Compat.equalto
 
 struct ParsingException <: Exception
     msg::String
@@ -51,12 +51,12 @@ Keyword Arguments:
  * `quotechar::Union{Char,UInt8}`: the character that indicates a quoted field that may contain the `delim` or newlines; default `'"'`
  * `escapechar::Union{Char,UInt8}`: the character that escapes a `quotechar` in a quoted field; default `'\\'`
  * `missingstring::String`: indicates how missing values are represented in the dataset; default `""`
- * `dateformat::Union{AbstractString,Dates.DateFormat}`: how dates/datetimes are represented in the dataset; default `Base.Dates.ISODateTimeFormat`
+ * `dateformat::Union{Dates.DateFormat, Nothing}`: how dates/datetimes are represented in the dataset; default `Base.Dates.ISODateTimeFormat`
  * `decimal::Union{Char,UInt8}`: character to recognize as the decimal point in a float number, e.g. `3.14` or `3,14`; default `'.'`
  * `truestring`: string to represent `true::Bool` values in a csv file; default `"true"`. Note that `truestring` and `falsestring` cannot start with the same character.
  * `falsestring`: string to represent `false::Bool` values in a csv file; default `"false"`
 """
-struct Options{D}
+struct Options{D <: Union{DateFormat, Nothing}}
     delim::UInt8
     quotechar::UInt8
     escapechar::UInt8
@@ -112,9 +112,9 @@ CSV.reset!(source)
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 ```
 """
-mutable struct Source{I, D} <: Data.Source
+mutable struct Source{I} <: Data.Source
     schema::Data.Schema
-    options::Options{D}
+    options::Options
     io::I
     fullpath::String
     datapos::Int # the position in the IOBuffer where the rows of data begins
@@ -136,9 +136,9 @@ performance gains as the resulting data set can be more consistently typed.
 
 Typical usage involves calling `CSV.read(file; transpose=true)`.
 """
-mutable struct TransposedSource{I, D} <: Data.Source
+mutable struct TransposedSource{I} <: Data.Source
     schema::Data.Schema
-    options::Options{D}
+    options::Options
     io::I
     fullpath::String
     datapos::Int # the position in the IOBuffer where the rows of data begins
@@ -166,8 +166,8 @@ CSV.reset!(source)
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 ```
 """
-mutable struct Sink{D, B} <: Data.Sink
-    options::Options{D}
+mutable struct Sink{B} <: Data.Sink
+    options::Options
     io::IOBuffer
     fullpath::Union{String, IO}
     datapos::Int # the position in the IOBuffer where the rows of data begins
