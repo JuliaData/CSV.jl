@@ -175,6 +175,22 @@ ds = CSV.read(f)
 @test ds[2][1] == 2.0
 @test ismissing(ds[2][2])
 
+f = CSV.Source(joinpath(dir, "test_missing_minus.csv"); missingstring="-", delim=';', decimal=',')
+@test size(Data.schema(f), 2) == 2
+@test size(Data.schema(f), 1) == 3
+@test String(f.options.missingstring) == "-"
+ds = CSV.read(f)
+@test ds[1] == ["16/04/2018", "15/04/2018", "13/04/2018"]
+@test isequal(ds[2], [-0.367, missing, -0.364])
+
+f = CSV.Source(joinpath(dir, "test_missing_plus.csv"); missingstring="+", delim=';', decimal=',')
+@test size(Data.schema(f), 2) == 2
+@test size(Data.schema(f), 1) == 3
+@test String(f.options.missingstring) == "+"
+ds = CSV.read(f)
+@test ds[1] == ["16/04/2018", "15/04/2018", "13/04/2018"]
+@test isequal(ds[2], [-0.367, missing, -0.364])
+
 # uses default missing value ""
 f = CSV.Source(joinpath(dir, "test_missing_value.csv"), allowmissing=:auto)
 @test size(Data.schema(f), 2) == 3
