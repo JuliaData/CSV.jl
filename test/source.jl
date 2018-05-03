@@ -40,7 +40,7 @@ ds = CSV.read(so)
 @test ds[1][3] == 7.0
 @test ds[2][1] == 2.0
 @test Data.types(Data.schema(f)) == Data.types(Data.schema(so)) == Data.types(Data.schema(ds))
-f = si = so = ds = nothing; gc(); gc()
+f = si = so = ds = nothing; GC.gc(); GC.gc()
 try
 rm(joinpath(dir, "new_test_utf8.csv"))
 end
@@ -168,7 +168,7 @@ ds = CSV.read(f)
 f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"); missingstring="NULL", allowmissing=:auto)
 @test size(Data.schema(f), 2) == 3
 @test size(Data.schema(f), 1) == 3
-@test String(f.options.missingstring) == "NULL"
+@test f.options.missingstring == b"NULL"
 @test Data.types(Data.schema(f)) == (Float64,Union{Float64, Missing},Float64)
 ds = CSV.read(f)
 @test ds[1][1] == 1.0
@@ -236,7 +236,7 @@ df2 = CSV.read(source)
 
 @test_throws ArgumentError CSV.Source(f; types = [Int, Int, Int, Int])
 close(f)
-f = source = nothing; gc(); gc()
+f = source = nothing; GC.gc(); GC.gc()
 try
 rm(t)
 end
@@ -255,7 +255,7 @@ let fn = tempname()
     end
     chmod(fn, 0o444)
     CSV.read(fn)
-    gc(); gc()
+    GC.gc(); GC.gc()
     try
     rm(fn)
     end
@@ -362,7 +362,7 @@ tbl[:dttm] = DateTime.(tbl[:dt])
 CSV.write("test.tsv", tbl; delim='\t')
 df = CSV.read("test.tsv"; delim='\t', allowmissing=:auto)
 @test Data.types(Data.schema(df)) == (Int64, Date, DateTime)
-df = nothing; gc(); gc()
+df = nothing; GC.gc(); GC.gc()
 try
 rm("test.tsv")
 end

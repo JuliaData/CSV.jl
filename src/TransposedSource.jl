@@ -69,11 +69,11 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
     # open the file for property detection
     if isa(fullpath, IOBuffer)
         source = fullpath
-        fs = nb_available(fullpath)
+        fs = bytesavailable(fullpath)
         fullpath = "<IOBuffer>"
     elseif isa(fullpath, IO)
         source = IOBuffer(Base.read(fullpath))
-        fs = nb_available(fullpath)
+        fs = bytesavailable(fullpath)
         fullpath = isdefined(fullpath, :name) ? fullpath.name : "__IO__"
     else
         source = open(fullpath, "r") do f
@@ -199,7 +199,7 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
     if isa(types, Vector) && length(types) == cols
         columntypes = types
     elseif isa(types, Dict) || isempty(types)
-        columntypes = fill!(Vector{Type}(uninitialized, cols), Any)
+        columntypes = fill!(Vector{Type}(undef, cols), Any)
         levels = [Dict{WeakRefString{UInt8}, Int}() for _ = 1:cols]
         lineschecked = 0
         while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
