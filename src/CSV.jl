@@ -9,6 +9,25 @@ struct ParsingException <: Exception
     msg::String
 end
 
+struct ValueException <: Exception
+    T::Type
+    v::Any
+    row::Int
+    col::Int
+end
+
+function Base.showerror(io::IO, e::ValueException)
+    if e.T === Missing
+        print(io, "encountered non-missing value for a missing-only column on row = $row, col = $col: '$v'")
+    elseif e.T <: AbstractFloat && e.v isa Integer
+        print(io, "error parsing a `$(e.T)` value on column $(e.col), row $(e.row): ",
+                  "exponent out of range: $(e.exp)")
+    else
+        print(io, "error parsing a `$(e.T)` value on column $(e.col), row $(e.row): ",
+                  "encountered '$(e.v)'")
+    end
+end
+
 const RETURN  = UInt8('\r')
 const NEWLINE = UInt8('\n')
 const COMMA   = UInt8(',')

@@ -154,7 +154,7 @@ ds = CSV.read(f)
 
 #test bad types
 f = CSV.Source(joinpath(dir, "test_float_in_int_column.csv"); types=[Int,Int,Int])
-@test_throws CSV.ParsingException CSV.read(f)
+@test_throws CSV.ValueException CSV.read(f)
 
 #test missing values
 f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"); categorical=false, allowmissing=:auto)

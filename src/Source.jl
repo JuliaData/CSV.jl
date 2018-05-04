@@ -336,8 +336,22 @@ function read end
 
 function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), transpose::Bool=false, kwargs...)
     source = transpose ? TransposedSource(fullpath; kwargs...) : Source(fullpath; kwargs...)
-    sink = Data.stream!(source, sink, args...; append=append, transforms=transforms)
-    return Data.close!(sink)
+    @label start
+    try
+        sink = Data.stream!(source, sink, args...; append=append, transforms=transforms)
+        return Data.close!(sink)
+    catch err
+        err isa ValueException || rethrow(err)
+        if err.T === Missing
+            types = Dict(err.col=>Union{typeof(err.v),Missing})
+        else
+            types = Dict(err.col=>String)
+        end
+        fullpath isa IO && seekstart(fullpath)
+        source = transpose ? TransposedSource(fullpath; types=types, kwargs...) : Source(fullpath; types=types, kwargs...)
+        println("Invalid value found, restarting with wider type.")
+        @goto start
+    end
 end
 
 function read(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), transpose::Bool=false, kwargs...) where {T}

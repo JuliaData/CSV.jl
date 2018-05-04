@@ -61,12 +61,10 @@ const LITTLEY = UInt8('y')
 const BIGE = UInt8('E')
 const LITTLEE = UInt8('e')
 
-ParsingException(::Type{<:AbstractFloat}, exp::Signed, row, col) = ParsingException("error parsing a `$T` value on column $col, row $row; exponent out of range: $exp")
-
 function scale(exp, v::T, frac, row, col) where T
     if exp >= 0
         max_exp = maxexponent(T)
-        exp > max_exp && throw(ParsingException(T, exp, row, col))
+        exp > max_exp && throw(ValueException(T, exp, row, col))
         if exp > 15
             return Float64(Base.TwicePrecision{Float64}(v) * Base.TwicePrecision{Float64}(pow10(exp)))
         else
@@ -75,7 +73,7 @@ function scale(exp, v::T, frac, row, col) where T
     else
         min_exp = minexponent(T)
         if exp < min_exp
-            -exp + min_exp > -min_exp && throw(ParsingException(T, exp, row, col))
+            -exp + min_exp > -min_exp && throw(ValueException(T, exp, row, col))
             return Float64(Base.TwicePrecision{Float64}(v) / Base.TwicePrecision{Float64}(pow10(-exp + min_exp)))
         else
             if exp > 15
@@ -225,7 +223,7 @@ function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifmiss
     return ifmissing(row, col)
 
     @label error
-    throw(ParsingException(T, b, row, col))
+    throw(ValueException(T, b, row, col))
 end
 
 

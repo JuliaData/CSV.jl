@@ -35,9 +35,9 @@ v = CSV.parsefield(io,Int)
 @test v === 2000
 
 io = IOBuffer("0.0")
-@test_throws CSV.ParsingException CSV.parsefield(io,Int)
+@test_throws CSV.ValueException CSV.parsefield(io,Int)
 io = IOBuffer("0a")
-@test_throws CSV.ParsingException CSV.parsefield(io,Int)
+@test_throws CSV.ValueException CSV.parsefield(io,Int)
 io = IOBuffer("")
 @test_throws Missings.MissingException v = CSV.parsefield(io,Int)
 @test ismissing(CSV.parsefield(IOBuffer(""), Union{Int, Missing}))
@@ -54,7 +54,7 @@ v = CSV.parsefield(io,Int)
 @test v === 10
 
 io = IOBuffer("\"1_00a0\"")
-@test_throws CSV.ParsingException CSV.parsefield(io,Int)
+@test_throws CSV.ValueException CSV.parsefield(io,Int)
 io = IOBuffer("\"0\"")
 v = CSV.parsefield(io,Int)
 @test v === 0
@@ -72,7 +72,7 @@ v = CSV.parsefield(io, Union{Int, Missing})
 @test v === 0
 
 io = IOBuffer("0a\n")
-@test_throws CSV.ParsingException CSV.parsefield(io,Int)
+@test_throws CSV.ValueException CSV.parsefield(io,Int)
 
 io = IOBuffer("\t0\t\n")
 v = CSV.parsefield(io, Union{Int, Missing})
@@ -133,9 +133,9 @@ v = CSV.parsefield(io,Int)
 @test v === 2000
 
 io = Buffer(IOBuffer("0.0"))
-@test_throws CSV.ParsingException CSV.parsefield(io, Union{Int, Missing})
+@test_throws CSV.ValueException CSV.parsefield(io, Union{Int, Missing})
 io = Buffer(IOBuffer("0a"))
-@test_throws CSV.ParsingException CSV.parsefield(io,Int)
+@test_throws CSV.ValueException CSV.parsefield(io,Int)
 io = Buffer(IOBuffer(""))
 v = CSV.parsefield(io, Union{Int, Missing})
 @test ismissing(v)
@@ -152,7 +152,7 @@ v = CSV.parsefield(io,Int)
 @test v === 10
 
 io = Buffer(IOBuffer("\"1_00a0\""))
-@test_throws CSV.ParsingException CSV.parsefield(io, Union{Int, Missing})
+@test_throws CSV.ValueException CSV.parsefield(io, Union{Int, Missing})
 io = Buffer(IOBuffer("\"0\""))
 v = CSV.parsefield(io,Int)
 @test v === 0
@@ -170,7 +170,7 @@ v = CSV.parsefield(io, Union{Int, Missing})
 @test v === 0
 
 io = Buffer(IOBuffer("0a\n"))
-@test_throws CSV.ParsingException CSV.parsefield(io,Int)
+@test_throws CSV.ValueException CSV.parsefield(io,Int)
 
 io = Buffer(IOBuffer("\t0\t\n"))
 v = CSV.parsefield(io, Union{Int, Missing})
@@ -231,7 +231,7 @@ v = CSV.parsefield(io, Union{Float64, Missing})
 @test v === 2000.0
 
 io = Buffer(IOBuffer("0a"))
-@test_throws CSV.ParsingException CSV.parsefield(io,Float64)
+@test_throws CSV.ValueException CSV.parsefield(io,Float64)
 io = Buffer(IOBuffer(""))
 v = CSV.parsefield(io, Union{Float64, Missing})
 @test ismissing(v)
@@ -248,7 +248,7 @@ v = CSV.parsefield(io,Float64)
 @test v === 10.0
 
 io = Buffer(IOBuffer("\"1_00a0\""))
-@test_throws CSV.ParsingException CSV.parsefield(io, Union{Float64, Missing})
+@test_throws CSV.ValueException CSV.parsefield(io, Union{Float64, Missing})
 io = Buffer(IOBuffer("\"0\""))
 v = CSV.parsefield(io,Float64)
 @test v === 0.0
@@ -266,7 +266,7 @@ v = CSV.parsefield(io, Union{Float64, Missing})
 @test v === 0.0
 
 io = Buffer(IOBuffer("0a\n"))
-@test_throws CSV.ParsingException CSV.parsefield(io,Float64)
+@test_throws CSV.ValueException CSV.parsefield(io,Float64)
 
 io = Buffer(IOBuffer("\t0\t\n"))
 v = CSV.parsefield(io, Union{Float64, Missing})
@@ -400,7 +400,7 @@ v = CSV.parsefield(io, Union{Float64, Missing})
 @test v === 2000.0
 
 io = IOBuffer("0a")
-@test_throws CSV.ParsingException CSV.parsefield(io,Float64)
+@test_throws CSV.ValueException CSV.parsefield(io,Float64)
 io = IOBuffer("")
 v = CSV.parsefield(io, Union{Float64, Missing})
 @test ismissing(v)
@@ -417,7 +417,7 @@ v = CSV.parsefield(io,Float64)
 @test v === 10.0
 
 io = IOBuffer("\"1_00a0\"")
-@test_throws CSV.ParsingException CSV.parsefield(io, Union{Float64, Missing})
+@test_throws CSV.ValueException CSV.parsefield(io, Union{Float64, Missing})
 io = IOBuffer("\"0\"")
 v = CSV.parsefield(io,Float64)
 @test v === 0.0
@@ -435,7 +435,7 @@ v = CSV.parsefield(io, Union{Float64, Missing})
 @test v === 0.0
 
 io = IOBuffer("0a\n")
-@test_throws CSV.ParsingException CSV.parsefield(io,Float64)
+@test_throws CSV.ValueException CSV.parsefield(io,Float64)
 
 io = IOBuffer("\t0\t\n")
 v = CSV.parsefield(io, Union{Float64, Missing})
@@ -1476,12 +1476,12 @@ v = CSV.parsefield(io,Char)
 @test v === '1'
 
 io = IOBuffer("2000")
-@test_throws CSV.ParsingException CSV.parsefield(io,Char)
+@test_throws CSV.ValueException CSV.parsefield(io,Char)
 
 io = IOBuffer("0.0")
-@test_throws CSV.ParsingException CSV.parsefield(io,Char)
+@test_throws CSV.ValueException CSV.parsefield(io,Char)
 io = IOBuffer("0a")
-@test_throws CSV.ParsingException CSV.parsefield(io,Char)
+@test_throws CSV.ValueException CSV.parsefield(io,Char)
 io = IOBuffer("")
 v = CSV.parsefield(io, Union{Char, Missing})
 @test ismissing(v)
@@ -1498,7 +1498,7 @@ v = CSV.parsefield(io,Char)
 @test v === '0'
 
 io = IOBuffer("\"1_00a0\"")
-@test_throws CSV.ParsingException CSV.parsefield(io,Char)
+@test_throws CSV.ValueException CSV.parsefield(io,Char)
 io = IOBuffer("\"0\"")
 v = CSV.parsefield(io,Char)
 @test v === '0'
@@ -1516,7 +1516,7 @@ v = CSV.parsefield(io,Char)
 @test v === '0'
 
 io = IOBuffer("0a\n")
-@test_throws CSV.ParsingException CSV.parsefield(io,Char)
+@test_throws CSV.ValueException CSV.parsefield(io,Char)
 
 io = IOBuffer("\t0\t\n")
 v = CSV.parsefield(io,Char)
@@ -1584,7 +1584,7 @@ v = CSV.parsefield(io,Bool)
 @test v
 
 io = IOBuffer("truea\n")
-@test_throws CSV.ParsingException CSV.parsefield(io,Bool)
+@test_throws CSV.ValueException CSV.parsefield(io,Bool)
 
 io = IOBuffer("\ttrue\t\n")
 v = CSV.parsefield(io,Bool)

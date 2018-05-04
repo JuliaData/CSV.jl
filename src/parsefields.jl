@@ -68,8 +68,6 @@ macro checkdone(label)
     end)
 end
 
-ParsingException(::Type{T}, b, row, col) where {T} = CSV.ParsingException("error parsing a `$T` value on column $col, row $row; encountered '$(Char(b))'")
-
 # as a last ditch effort, after we've trying parsing the correct type,
 # we check if the field is equal to a custom missing type
 # otherwise we give up and throw an error
@@ -164,7 +162,7 @@ function parsefield(io::IO, ::Type{T}, opt::CSV.Options, row, col, state, ifmiss
     return ifmissing(row, col)
 
     @label error
-    throw(ParsingException(T, b, row, col))
+    throw(ValueException(T, Char(b), row, col))
 end
 
 const BUF = IOBuffer()
@@ -258,7 +256,7 @@ function parsefield(io::IO, ::Type{Char}, opt::CSV.Options, row, col, state, ifm
     return ifmissing(row, col)
 
     @label error
-    throw(ParsingException(Char, b, row, col))
+    throw(ValueException(Char, Char(b), row, col))
 end
 
 function parsefield(io::IO, ::Type{Bool}, opt::CSV.Options, row, col, state, ifmissing::Function)
@@ -308,7 +306,7 @@ function parsefield(io::IO, ::Type{Bool}, opt::CSV.Options, row, col, state, ifm
     return ifmissing(row, col)
 
     @label error
-    throw(ParsingException(Bool, b, row, col))
+    throw(ValueException(Bool, Char(b), row, col))
 end
 
 function parsefield(io::IO, ::Type{<:Union{CategoricalValue, CategoricalString}}, opt::CSV.Options, row, col, state, ifmissing::Function)
@@ -320,6 +318,6 @@ end
 function parsefield(io::IO, T, opt::CSV.Options, row, col, state, ifmissing::Function)
     v = parsefield(io, String, opt, row, col, state, ifmissing)
     ismissing(v) && return ifmissing(row, col)
-    T === Missing && throw(ParsingException("encountered non-missing value for a missing-only column on row = $row, col = $col: '$v'"))
+    T === Missing && throw(ValueException(Missing, v, row, col))
     return parse(T, v)
 end
