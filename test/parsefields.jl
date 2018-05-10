@@ -926,121 +926,256 @@ v = CSV.parsefield(io, Union{Dec64, Missing}, CSV.Options(missingstring="\\N"))
 
 end # @testset "DecFP"
 
+println("testing String")
+@testset "String" begin
+
+# String
+io = IOBuffer("0")
+v = CSV.parsefield(io, Union{String, Missing})
+@test v == "0"
+
+io = IOBuffer("-1")
+v = CSV.parsefield(io,String)
+@test v == "-1"
+
+io = IOBuffer("1")
+v = CSV.parsefield(io, Union{String, Missing})
+@test v == "1"
+
+io = IOBuffer("2000")
+v = CSV.parsefield(io,String)
+@test v == "2000"
+
+io = IOBuffer("0.0")
+v = CSV.parsefield(io, Union{String, Missing})
+@test v == "0.0"
+
+io = IOBuffer("0a")
+v = CSV.parsefield(io,String)
+@test v == "0a"
+
+io = IOBuffer("")
+v = CSV.parsefield(io, Union{String, Missing})
+@test ismissing(v)
+
+io = IOBuffer(" ")
+v = CSV.parsefield(io,String)
+@test v == " "
+
+io = IOBuffer("\t")
+v = CSV.parsefield(io, Union{String, Missing})
+@test v == "\t"
+
+io = IOBuffer(" \t 010")
+v = CSV.parsefield(io,String)
+@test v == " \t 010"
+
+io = IOBuffer("\"1_00a0\"")
+v = CSV.parsefield(io, Union{String, Missing})
+@test v == "1_00a0"
+
+io = IOBuffer("\"0\"")
+v = CSV.parsefield(io,String)
+@test v == "0"
+
+io = IOBuffer("0\n")
+v = CSV.parsefield(io, Union{String, Missing})
+@test v == "0"
+
+io = IOBuffer("0\r")
+v = CSV.parsefield(io,String)
+@test v == "0"
+
+io = IOBuffer("0\r\n")
+v = CSV.parsefield(io, Union{String, Missing})
+@test v == "0"
+
+io = IOBuffer("0a\n")
+v = CSV.parsefield(io,String)
+@test v == "0a"
+
+io = IOBuffer("\t0\t\n")
+v = CSV.parsefield(io, Union{String, Missing})
+@test v == "\t0\t"
+
+io = IOBuffer("0,")
+v = CSV.parsefield(io,String)
+@test v == "0"
+
+io = IOBuffer("0,\n")
+v = CSV.parsefield(io, Union{String, Missing})
+@test v == "0"
+
+io = IOBuffer("\n")
+@test_throws Missings.MissingException CSV.parsefield(io,String)
+
+io = IOBuffer("\r")
+v = CSV.parsefield(io, Union{String, Missing})
+@test ismissing(v)
+
+io = IOBuffer("\r\n")
+@test_throws Missings.MissingException CSV.parsefield(io,String)
+
+io = IOBuffer("\"\"")
+v = CSV.parsefield(io, Union{String, Missing})
+@test ismissing(v)
+
+io = IOBuffer("1234567890")
+v = CSV.parsefield(io,String)
+@test v == "1234567890"
+
+io = IOBuffer("\"hey there\\\"quoted field\\\"\"")
+v = CSV.parsefield(io, Union{String, Missing})
+@test v == "hey there\\\"quoted field\\\""
+
+io = IOBuffer("\\N")
+@test_throws Missings.MissingException CSV.parsefield(io,String,CSV.Options(missingstring="\\N"))
+
+io = IOBuffer("\"\\N\"")
+v = CSV.parsefield(io, Union{String, Missing}, CSV.Options(missingstring="\\N"))
+@test ismissing(v)
+
+io = IOBuffer("\"NORTH DAKOTA STATE \"\"A\"\" #1\"")
+v = CSV.parsefield(io, String, CSV.Options(escapechar='"'))
+@test v == "NORTH DAKOTA STATE \"\"A\"\" #1"
+
+io = IOBuffer("\"NORTH DAKOTA STATE \"\"A\"\" #1\",")
+v = CSV.parsefield(io, String, CSV.Options(escapechar='"'))
+@test v == "NORTH DAKOTA STATE \"\"A\"\" #1"
+
+io = IOBuffer("a")
+v1 = CSV.parsefield(io, String)
+io = IOBuffer("a")
+v2 = CSV.parsefield(io, String)
+@test v1 isa String
+@test v1 == v2 == "a"
+@test v1 === v2
+
+io = IOBuffer("a")
+v1 = CSV.parsefield(io, String, CSV.Options(internstrings=false))
+io = IOBuffer("a")
+v2 = CSV.parsefield(io, String, CSV.Options(internstrings=false))
+@test v1 isa String
+@test v1 == v2 == "a"
+@test v1 !== v2
+
+end # @testset "String"
+
 println("testing WeakRefString")
 @testset "WeakRefString" begin
 
 # WeakRefString
 io = IOBuffer("0")
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
+v = CSV.parsefield(io, Union{String, Missing})
 @test v == "0"
 
 io = IOBuffer("-1")
-v = CSV.parsefield(io,WeakRefString{UInt8})
+v = CSV.parsefield(io,String)
 @test v == "-1"
 
 io = IOBuffer("1")
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
+v = CSV.parsefield(io, Union{String, Missing})
 @test v == "1"
 
 io = IOBuffer("2000")
-v = CSV.parsefield(io,WeakRefString{UInt8})
+v = CSV.parsefield(io,String)
 @test v == "2000"
 
 io = IOBuffer("0.0")
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
+v = CSV.parsefield(io, Union{String, Missing})
 @test v == "0.0"
 
 io = IOBuffer("0a")
-v = CSV.parsefield(io,WeakRefString{UInt8})
+v = CSV.parsefield(io,String)
 @test v == "0a"
 
 io = IOBuffer("")
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
+v = CSV.parsefield(io, Union{String, Missing})
 @test ismissing(v)
 
 io = IOBuffer(" ")
-v = CSV.parsefield(io,WeakRefString{UInt8})
+v = CSV.parsefield(io,String)
 @test v == " "
 
 io = IOBuffer("\t")
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
+v = CSV.parsefield(io, Union{String, Missing})
 @test v == "\t"
 
 io = IOBuffer(" \t 010")
-v = CSV.parsefield(io,WeakRefString{UInt8})
+v = CSV.parsefield(io,String)
 @test v == " \t 010"
 
 io = IOBuffer("\"1_00a0\"")
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
+v = CSV.parsefield(io, Union{String, Missing})
 @test v == "1_00a0"
 
 io = IOBuffer("\"0\"")
-v = CSV.parsefield(io,WeakRefString{UInt8})
+v = CSV.parsefield(io,String)
 @test v == "0"
 
 io = IOBuffer("0\n")
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
+v = CSV.parsefield(io, Union{String, Missing})
 @test v == "0"
 
 io = IOBuffer("0\r")
-v = CSV.parsefield(io,WeakRefString{UInt8})
+v = CSV.parsefield(io,String)
 @test v == "0"
 
 io = IOBuffer("0\r\n")
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
+v = CSV.parsefield(io, Union{String, Missing})
 @test v == "0"
 
 io = IOBuffer("0a\n")
-v = CSV.parsefield(io,WeakRefString{UInt8})
+v = CSV.parsefield(io,String)
 @test v == "0a"
 
 io = IOBuffer("\t0\t\n")
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
+v = CSV.parsefield(io, Union{String, Missing})
 @test v == "\t0\t"
 
 io = IOBuffer("0,")
-v = CSV.parsefield(io,WeakRefString{UInt8})
+v = CSV.parsefield(io,String)
 @test v == "0"
 
 io = IOBuffer("0,\n")
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
+v = CSV.parsefield(io, Union{String, Missing})
 @test v == "0"
 
 io = IOBuffer("\n")
-@test_throws Missings.MissingException CSV.parsefield(io,WeakRefString{UInt8})
+@test_throws Missings.MissingException CSV.parsefield(io,String)
 
 io = IOBuffer("\r")
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
+v = CSV.parsefield(io, Union{String, Missing})
 @test ismissing(v)
 
 io = IOBuffer("\r\n")
-@test_throws Missings.MissingException CSV.parsefield(io,WeakRefString{UInt8})
+@test_throws Missings.MissingException CSV.parsefield(io,String)
 
 io = IOBuffer("\"\"")
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
+v = CSV.parsefield(io, Union{String, Missing})
 @test ismissing(v)
 
 io = IOBuffer("1234567890")
-v = CSV.parsefield(io,WeakRefString{UInt8})
+v = CSV.parsefield(io,String)
 @test v == "1234567890"
 
 io = IOBuffer("\"hey there\\\"quoted field\\\"\"")
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
+v = CSV.parsefield(io, Union{String, Missing})
 @test v == "hey there\\\"quoted field\\\""
 
 io = IOBuffer("\\N")
-@test_throws Missings.MissingException CSV.parsefield(io,WeakRefString{UInt8},CSV.Options(missingstring="\\N"))
+@test_throws Missings.MissingException CSV.parsefield(io,String,CSV.Options(missingstring="\\N"))
 
 io = IOBuffer("\"\\N\"")
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, CSV.Options(missingstring="\\N"))
+v = CSV.parsefield(io, Union{String, Missing}, CSV.Options(missingstring="\\N"))
 @test ismissing(v)
 
 io = IOBuffer("\"NORTH DAKOTA STATE \"\"A\"\" #1\"")
-v = CSV.parsefield(io, WeakRefString{UInt8}, CSV.Options(escapechar='"'))
+v = CSV.parsefield(io, String, CSV.Options(escapechar='"'))
 @test v == "NORTH DAKOTA STATE \"\"A\"\" #1"
 
 io = IOBuffer("\"NORTH DAKOTA STATE \"\"A\"\" #1\",")
-v = CSV.parsefield(io, WeakRefString{UInt8}, CSV.Options(escapechar='"'))
+v = CSV.parsefield(io, String, CSV.Options(escapechar='"'))
 @test v == "NORTH DAKOTA STATE \"\"A\"\" #1"
 
 end # @testset "WeakRefString"
@@ -1161,6 +1296,24 @@ v = CSV.parsefield(io, String, CSV.Options(escapechar='"'))
 io = Buffer(IOBuffer("\"NORTH DAKOTA STATE \"\"A\"\" #1\","))
 v = CSV.parsefield(io, String, CSV.Options(escapechar='"'))
 @test v == "NORTH DAKOTA STATE \"\"A\"\" #1"
+
+io = Buffer(IOBuffer("a"))
+v1 = CSV.parsefield(io, String)
+io = Buffer(IOBuffer("a"))
+v2 = CSV.parsefield(io, String)
+@test v1 isa String
+@test v2 isa String
+@test v1 == v2 == "a"
+@test v1 === v2
+
+io = Buffer(IOBuffer("a"))
+v1 = CSV.parsefield(io, String, CSV.Options(internstrings=false))
+io = Buffer(IOBuffer("a"))
+v2 = CSV.parsefield(io, String, CSV.Options(internstrings=false))
+@test v1 isa String
+@test v2 isa String
+@test v1 == v2 == "a"
+@test v1 !== v2
 
 end # @testset "String Custom IO"
 
@@ -1659,7 +1812,7 @@ v = CSV.parsefield(io,Int)
 @test v === 1
 v = CSV.parsefield(io,Float64)
 @test v === 1.0
-v = CSV.parsefield(io,WeakRefString{UInt8})
+v = CSV.parsefield(io,String)
 @test v == "hey there sailor"
 v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
@@ -1668,7 +1821,7 @@ v = CSV.parsefield(io, Union{Int, Missing})
 @test ismissing(v)
 v = CSV.parsefield(io,Float64)
 @test v === 1.0
-v = CSV.parsefield(io,WeakRefString{UInt8})
+v = CSV.parsefield(io,String)
 @test v == "hey there sailor"
 v = CSV.parsefield(io, Union{Date, Missing},opt)
 @test ismissing(v)
@@ -1677,7 +1830,7 @@ v = CSV.parsefield(io,Int)
 @test v === 1
 v = CSV.parsefield(io, Union{Float64, Missing})
 @test ismissing(v)
-v = CSV.parsefield(io,WeakRefString{UInt8})
+v = CSV.parsefield(io,String)
 @test v == "hey there sailor"
 v = CSV.parsefield(io,Date,opt)
 @test v === Date(2015,10,5)
@@ -1686,14 +1839,14 @@ v = CSV.parsefield(io,Int)
 @test v === 1
 v = CSV.parsefield(io,Float64)
 @test v === 1.0
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
+v = CSV.parsefield(io, Union{String, Missing})
 @test ismissing(v)
 @test_throws Missings.MissingException CSV.parsefield(io,Date,opt)
 
 v = CSV.parsefield(io, Union{Int, Missing})
 @test ismissing(v)
 @test_throws Missings.MissingException CSV.parsefield(io,Float64)
-v = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing})
+v = CSV.parsefield(io, Union{String, Missing})
 @test ismissing(v)
 
 end # @testset "All types"

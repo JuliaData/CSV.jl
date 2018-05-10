@@ -17,7 +17,8 @@ function Source(fullpath::Union{AbstractString,IO};
               truestring="true",
               falsestring="false",
               categorical::Bool=true,
-              weakrefstrings::Bool=true,
+              weakrefstrings::Union{Bool,Nothing}=nothing,
+              strings::Symbol=:intern,
 
               footerskip::Int=0,
               rows_for_type_detect::Int=100,
@@ -31,8 +32,10 @@ function Source(fullpath::Union{AbstractString,IO};
                         options=CSV.Options(delim=typeof(delim) <: String ? UInt8(first(delim)) : (delim % UInt8),
                                             quotechar=typeof(quotechar) <: String ? UInt8(first(quotechar)) : (quotechar % UInt8),
                                             escapechar=typeof(escapechar) <: String ? UInt8(first(escapechar)) : (escapechar % UInt8),
-                                            missingstring=missingstring, null=null, dateformat=dateformat, decimal=decimal, truestring=truestring, falsestring=falsestring),
-                        header=header, datarow=datarow, types=types, allowmissing=allowmissing, nullable=nullable, categorical=categorical, weakrefstrings=weakrefstrings, footerskip=footerskip,
+                                            missingstring=missingstring, null=null, dateformat=dateformat, decimal=decimal,
+                                            truestring=truestring, falsestring=falsestring, internstrings=(strings === :intern)),
+                        header=header, datarow=datarow, types=types, allowmissing=allowmissing, nullable=nullable, categorical=categorical,
+                        weakrefstrings=weakrefstrings, strings=strings, footerskip=footerskip,
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
 
@@ -45,7 +48,8 @@ function Source(;fullpath::Union{AbstractString,IO}="",
                 allowmissing::Symbol=:all,
                 nullable::Union{Bool,Missing,Nothing}=nothing,
                 categorical::Bool=true,
-                weakrefstrings::Bool=true,
+                weakrefstrings::Union{Bool,Nothing}=nothing,
+                strings::Symbol=:intern,
 
                 footerskip::Int=0,
                 rows_for_type_detect::Int=100,
@@ -64,6 +68,10 @@ function Source(;fullpath::Union{AbstractString,IO}="",
         allowmissing = ismissing(nullable) ? :auto :
                        nullable            ? :all  : :none
         Base.depwarn("nullable=$nullable argument is deprecated, use allowmissing=$(repr(allowmissing)) instead", :Source)
+    end
+    if weakrefstrings !== nothing
+        strings = weakrefstrings ? :weakref : :raw
+        Base.depwarn("weakrefstrings argument is deprecated, use strings=$(repr(strings)) instead", :Source)
     end
 
     # open the file for property detection
@@ -162,6 +170,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
             end
         end
         if options.dateformat === nothing && any(x->Missings.T(x) <: Dates.TimeType, columntypes)
+            # FIXME: doesn't this override any custom options?!
             # auto-detected TimeType
             options = Options(delim=options.delim, quotechar=options.quotechar, escapechar=options.escapechar,
                               missingstring=options.missingstring, dateformat=Dates.ISODateTimeFormat, decimal=options.decimal,
@@ -197,7 +206,7 @@ function Source(;fullpath::Union{AbstractString,IO}="",
     else
         autocols = Int[]
     end
-    if !weakrefstrings
+    if strings !== :weakref
         columntypes = Type[(T !== Missing && Missings.T(T) <: WeakRefString) ? substitute(T, String) : T for T in columntypes]
     end
     if allowmissing != :auto
@@ -272,7 +281,7 @@ Keyword Arguments:
 * `transforms::Dict{Union{String,Int},Function}`: a Dict of transforms to apply to values as they are parsed. Note that a column can be specified by either number or column name.
 * `transpose::Bool=false`: when reading the underlying csv data, rows should be treated as columns and columns as rows, thus the resulting dataset will be the "transpose" of the actual csv data.
 * `categorical::Bool=true`: read string column as a `CategoricalArray` ([ref](https://github.com/JuliaData/CategoricalArrays.jl)), as long as the % of unique values seen during type detection is less than 67%. This will dramatically reduce memory use in cases where the number of unique values is small.
-* `weakrefstrings::Bool=true`: whether to use [`WeakRefStrings`](https://github.com/quinnj/WeakRefStrings.jl) package to speed up file parsing; can only be `=true` for the `Sink` objects that support `WeakRefStringArray` columns. Note that `WeakRefStringArray` still returns regular `String` elements.
+* `strings::Symbol`=:intern: indicates how to treat strings. By default strings are interned, i.e. a global pool of already encountered strings is used to avoid allocating a new `String` object for each field. If `strings=:raw`, string interning is disabled, which can be faster when most strings are unique. If `strings=:weakref`, [`WeakRefStrings`](https://github.com/quinnj/WeakRefStrings.jl) package is used used to speed up file parsing by avoiding copies; can only be used for the `Sink` objects that support `WeakRefStringArray` columns (note that `WeakRefStringArray` still returns regular `String` elements).
 
 Example usage:
 ```
