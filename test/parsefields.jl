@@ -1049,15 +1049,16 @@ io = IOBuffer("a")
 v2 = CSV.parsefield(io, String)
 @test v1 isa String
 @test v1 == v2 == "a"
-@test v1 === v2
+@test pointer(v1) == pointer(v2)
 
 io = IOBuffer("a")
 v1 = CSV.parsefield(io, String, CSV.Options(internstrings=false))
 io = IOBuffer("a")
 v2 = CSV.parsefield(io, String, CSV.Options(internstrings=false))
 @test v1 isa String
+@test v2 isa String
 @test v1 == v2 == "a"
-@test v1 !== v2
+@test pointer(v1) != pointer(v2)
 
 end # @testset "String"
 
@@ -1304,7 +1305,7 @@ v2 = CSV.parsefield(io, String)
 @test v1 isa String
 @test v2 isa String
 @test v1 == v2 == "a"
-@test v1 === v2
+@test pointer(v1) == pointer(v2)
 
 io = Buffer(IOBuffer("a"))
 v1 = CSV.parsefield(io, String, CSV.Options(internstrings=false))
@@ -1313,7 +1314,7 @@ v2 = CSV.parsefield(io, String, CSV.Options(internstrings=false))
 @test v1 isa String
 @test v2 isa String
 @test v1 == v2 == "a"
-@test v1 !== v2
+@test pointer(v1) != pointer(v2)
 
 end # @testset "String Custom IO"
 
