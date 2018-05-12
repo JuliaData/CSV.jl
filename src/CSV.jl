@@ -1,7 +1,7 @@
 __precompile__(true)
 module CSV
 
-using DataStreams, WeakRefStrings, Missings, CategoricalArrays, DataFrames
+using DataStreams, WeakRefStrings, InternedStrings, Missings, CategoricalArrays, DataFrames
 
 using Compat, Compat.Mmap, Compat.Dates
 
@@ -55,6 +55,7 @@ Keyword Arguments:
  * `decimal::Union{Char,UInt8}`: character to recognize as the decimal point in a float number, e.g. `3.14` or `3,14`; default `'.'`
  * `truestring`: string to represent `true::Bool` values in a csv file; default `"true"`. Note that `truestring` and `falsestring` cannot start with the same character.
  * `falsestring`: string to represent `false::Bool` values in a csv file; default `"false"`
+ * `internstrings`: whether strings should be interned, rather than creating a new object for each string field; default `true`
 """
 struct Options{D}
     delim::UInt8
@@ -67,6 +68,7 @@ struct Options{D}
     decimal::UInt8
     truestring::Vector{UInt8}
     falsestring::Vector{UInt8}
+    internstrings::Bool
     # non-public for now
     datarow::Int
     rows::Int
@@ -74,11 +76,11 @@ struct Options{D}
     types
 end
 
-Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, missingstring="", null=nothing, dateformat=nothing, decimal=PERIOD, truestring="true", falsestring="false", datarow=-1, rows=0, header=1, types=Type[]) =
+Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, missingstring="", null=nothing, dateformat=nothing, decimal=PERIOD, truestring="true", falsestring="false", internstrings=true, datarow=-1, rows=0, header=1, types=Type[]) =
     Options(delim%UInt8, quotechar%UInt8, escapechar%UInt8,
             map(UInt8, collect(ascii(String(missingstring)))), null === nothing ? nothing : map(UInt8, collect(ascii(String(null)))), missingstring != "" || (null != "" && null != nothing),
             isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat,
-            decimal%UInt8, map(UInt8, collect(truestring)), map(UInt8, collect(falsestring)), datarow, rows, header, types)
+            decimal%UInt8, map(UInt8, collect(truestring)), map(UInt8, collect(falsestring)), internstrings, datarow, rows, header, types)
 function Base.show(io::IO,op::Options)
     println(io, "    CSV.Options:")
     println(io, "        delim: '", Char(op.delim), "'")
@@ -88,7 +90,8 @@ function Base.show(io::IO,op::Options)
     println(io, "        dateformat: ", op.dateformat)
     println(io, "        decimal: '", Char(op.decimal), "'")
     println(io, "        truestring: '$(String(op.truestring))'")
-    print(io, "        falsestring: '$(String(op.falsestring))'")
+    println(io, "        falsestring: '$(String(op.falsestring))'")
+    print(io, "        internstrings: $(op.internstrings)")
 end
 
 """

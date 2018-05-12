@@ -174,10 +174,11 @@ getptr(io::IOBuffer) = pointer(io.data, io.ptr)
 incr(io::IO, b) = Base.write(BUF, b)
 incr(io::IOBuffer, b) = 1
 
-make(io::IOBuffer, ::Type{WeakRefString{UInt8}}, ptr, len) = WeakRefString(Ptr{UInt8}(ptr), len)
-make(io::IOBuffer, ::Type{String}, ptr, len) = unsafe_string(ptr, len)
-make(io::IO, ::Type{WeakRefString{UInt8}}, ptr, len) = String(take!(BUF))
-make(io::IO, ::Type{String}, ptr, len) = String(take!(BUF))
+make(io::IOBuffer, ::Type{WeakRefString{UInt8}}, internstrings::Bool, ptr, len) = WeakRefString(Ptr{UInt8}(ptr), len)
+make(io::IOBuffer, ::Type{String}, internstrings::Bool, ptr, len) =
+    internstrings ? intern(String, WeakRefString(Ptr{UInt8}(ptr), len)) : unsafe_string(ptr, len)
+make(io::IO, ::Type{<:Union{String, WeakRefString{UInt8}}}, internstrings::Bool, ptr, len) =
+    internstrings ? intern(String(take!(BUF))) : String(take!(BUF))
 
 function parsefield(io::IO, T::Type{<:AbstractString}, opt::CSV.Options, row, col, state, ifmissing::Function)
     eof(io) && (state[] = EOF; @goto missing)
@@ -188,6 +189,7 @@ function parsefield(io::IO, T::Type{<:AbstractString}, opt::CSV.Options, row, co
     q = opt.quotechar
     e = opt.escapechar
     d = opt.delim
+    s = opt.internstrings
     missinglen = length(n)
     @inbounds while !eof(io)
         b = readbyte(io)
@@ -226,7 +228,7 @@ function parsefield(io::IO, T::Type{<:AbstractString}, opt::CSV.Options, row, co
     end
     eof(io) && (state[] = EOF)
     (len == 0 || missingcheck) && @goto missing
-    return make(io, T, ptr, len)
+    return make(io, T, s, ptr, len)
 
     @label missing
     take!(BUF)
