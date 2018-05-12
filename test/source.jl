@@ -168,7 +168,7 @@ ds = CSV.read(f)
 f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"); missingstring="NULL", allowmissing=:auto)
 @test size(Data.schema(f), 2) == 3
 @test size(Data.schema(f), 1) == 3
-@test String(f.options.missingstring) == "NULL"
+@test f.options.missingstring == codeunits("NULL")
 @test Data.types(Data.schema(f)) == (Float64,Union{Float64, Missing},Float64)
 ds = CSV.read(f)
 @test ds[1][1] == 1.0
