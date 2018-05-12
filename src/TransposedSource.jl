@@ -17,7 +17,8 @@ function TransposedSource(fullpath::Union{AbstractString,IO};
               truestring="true",
               falsestring="false",
               categorical::Bool=true,
-              weakrefstrings::Bool=true,
+              weakrefstrings::Union{Bool,Nothing}=nothing,
+              strings::Symbol=:intern,
 
               footerskip::Int=0,
               rows_for_type_detect::Int=100,
@@ -31,7 +32,8 @@ function TransposedSource(fullpath::Union{AbstractString,IO};
                         options=CSV.Options(delim=typeof(delim) <: String ? UInt8(first(delim)) : (delim % UInt8),
                                             quotechar=typeof(quotechar) <: String ? UInt8(first(quotechar)) : (quotechar % UInt8),
                                             escapechar=typeof(escapechar) <: String ? UInt8(first(escapechar)) : (escapechar % UInt8),
-                                            missingstring=missingstring, null=null, dateformat=dateformat, decimal=decimal, truestring=truestring, falsestring=falsestring),
+                                            missingstring=missingstring, null=null, dateformat=dateformat, decimal=decimal,
+                                            truestring=truestring, falsestring=falsestring, internstrings=(strings === :intern)),
                         header=header, datarow=datarow, types=types, allowmissing=allowmissing, nullable=nullable, categorical=categorical, footerskip=footerskip,
                         rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
 end
@@ -45,7 +47,8 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
                 allowmissing::Symbol=:all,
                 nullable::Union{Bool,Missing,Nothing}=nothing,
                 categorical::Bool=true,
-                weakrefstrings::Bool=true,
+                weakrefstrings::Union{Bool,Nothing}=nothing,
+                strings::Symbol=:intern,
 
                 footerskip::Int=0,
                 rows_for_type_detect::Int=100,
@@ -64,6 +67,10 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
         allowmissing = ismissing(nullable) ? :auto :
                        nullable            ? :all  : :none
         Base.depwarn("nullable=$nullable argument is deprecated, use allowmissing=$(repr(allowmissing)) instead", :TransposedSource)
+    end
+    if weakrefstrings !== nothing
+        strings = weakrefstrings ? :weakref : :raw
+        Base.depwarn("weakrefstrings argument is deprecated, use strings=$(repr(strings)) instead", :Source)
     end
 
     # open the file for property detection
@@ -252,8 +259,8 @@ function TransposedSource(;fullpath::Union{AbstractString,IO}="",
     else
         autocols = Int[]
     end
-    if !weakrefstrings
-        columntypes = [(T !== Missing && Missings.T(T) <: WeakRefString) ? substitute(T, String) : T for T in columntypes]
+    if strings !== :weakref
+        columntypes = Type[(T !== Missing && Missings.T(T) <: WeakRefString) ? substitute(T, String) : T for T in columntypes]
     end
     if allowmissing != :auto
         if allowmissing == :all # allow missing values in all automatically detected columns
