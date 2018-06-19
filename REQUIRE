@@ -1,4 +1,4 @@
-julia 0.6
+julia 0.7-alpha
 DataStreams 0.3.0
 DataFrames 0.11.0
 WeakRefStrings 0.4.1
