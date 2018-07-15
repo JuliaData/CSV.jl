@@ -1,26 +1,19 @@
-using Missings
-using CSV
-using DataStreams, WeakRefStrings, CategoricalArrays
-using DataFrames
-@static if VERSION < v"0.7.0-DEV.2005"
-    using Base.Test
-else
-    using Test
-end
-if VERSION < v"0.7.0-DEV.2575"
-    using Base.Dates
-else
-    using Dates
-end
+using CSV, DataStreams, DataFrames, Test, Dates, WeakRefStrings, CategoricalArrays
 
-const dir = joinpath(dirname(@__FILE__),"test_files/")
-# dir = joinpath(Pkg.dir("CSV"), "test/test_files")
+# const dir = joinpath(dirname(@__FILE__),"test_files/")
+dir = "/Users/jacobquinn/.julia/dev/CSV/test/test_files"
+
+@eval macro $(:try)(ex)
+    quote
+        try $(esc(ex))
+        catch
+        end
+    end
+end
 
 @testset "CSV" begin
 
-include("parsefields.jl")
 include("io.jl")
-
 include("source.jl")
 include("sink.jl")
 include("multistream.jl")

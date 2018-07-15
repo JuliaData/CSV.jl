@@ -1,13 +1,7 @@
-__precompile__(true)
 module CSV
 
-using DataStreams, WeakRefStrings, InternedStrings, Missings, CategoricalArrays, DataFrames
-
+using DataStreams, Parsers, Missings, CategoricalArrays, DataFrames, WeakRefStrings
 using Mmap, Dates
-
-struct ParsingException <: Exception
-    msg::String
-end
 
 const RETURN  = UInt8('\r')
 const NEWLINE = UInt8('\n')
@@ -23,20 +17,6 @@ const NEG_ONE = UInt8('0')-UInt8(1)
 const ZERO    = UInt8('0')
 const TEN     = UInt8('9')+UInt8(1)
 Base.isascii(c::UInt8) = c < 0x80
-
-readbyte(from::IO) = Base.read(from, UInt8)
-peekbyte(from::IO) = Base.peek(from)
-
-@inline function readbyte(from::IOBuffer)
-    @inbounds byte = from.data[from.ptr]
-    from.ptr = from.ptr + 1
-    return byte
-end
-
-@inline function peekbyte(from::IOBuffer)
-    @inbounds byte = from.data[from.ptr]
-    return byte
-end
 
 substitute(::Type{Union{T, Missing}}, ::Type{T1}) where {T, T1} = Union{T1, Missing}
 substitute(::Type{T}, ::Type{T1}) where {T, T1} = T1
@@ -115,17 +95,18 @@ CSV.reset!(source)
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 ```
 """
-mutable struct Source{I, D} <: Data.Source
+mutable struct Source{I, KW} <: Data.Source
     schema::Data.Schema
-    options::Options{D}
     io::I
+    kwargs::KW
     fullpath::String
     datapos::Int # the position in the IOBuffer where the rows of data begins
 end
 
 function Base.show(io::IO, f::Source)
     println(io, "CSV.Source: ", f.fullpath)
-    println(io, f.options)
+    println(io, f.io)
+    println(io, f.kwargs)
     show(io, f.schema)
 end
 
@@ -181,10 +162,10 @@ mutable struct Sink{D, B} <: Data.Sink
     quotefields::B
 end
 
-include("parsefields.jl")
-include("float.jl")
+# include("parsefields.jl")
+# include("float.jl")
 include("io.jl")
-include("TransposedSource.jl")
+# include("TransposedSource.jl")
 include("Source.jl")
 include("Sink.jl")
 include("validate.jl")

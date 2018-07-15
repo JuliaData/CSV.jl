@@ -1,3 +1,5 @@
+import Parsers: readbyte, peekbyte
+
 """
     CSV.readline(io::IO, q='"', e='\\', buf::IOBuffer=IOBuffer()) => String
     CSV.readline(source::CSV.Source) => String
@@ -180,7 +182,6 @@ function skipto!(f::IO, cur, dest, q, e)
 end
 
 # try to infer the type of the value in `val`. The precedence of type checking is `Int64` => `Float64` => `Date` => `DateTime` => `String`
-timetype(df::Dates.DateFormat) = any(typeof(T) in (Dates.DatePart{'H'}, Dates.DatePart{'M'}, Dates.DatePart{'S'}, Dates.DatePart{'s'}) for T in df.tokens) ? DateTime : Date
 
 # column types start out as Any, but we get rid of them as soon as possible
 promote_type2(T::Type{<:Any}, ::Type{Any}) = T
@@ -194,97 +195,92 @@ promote_type2(::Type{Missing}, T::Type{<:Any}) = Union{T, Missing}
 promote_type2(::Type{Union{T, Missing}}, ::Type{S}) where {T, S} = Union{promote_type2(T, S), Missing}
 promote_type2(::Type{S}, ::Type{Union{T, Missing}}) where {T, S} = Union{promote_type2(T, S), Missing}
 promote_type2(::Type{Union{T, Missing}}, ::Type{Union{S, Missing}}) where {T, S} = Union{promote_type2(T, S), Missing}
-promote_type2(::Type{Union{WeakRefString{UInt8}, Missing}}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefString{UInt8}, Missing}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Union{WeakRefString{UInt8}, Missing}}) = Union{WeakRefString{UInt8}, Missing}
+promote_type2(::Type{Union{String, Missing}}, ::Type{String}) = Union{String, Missing}
+promote_type2(::Type{String}, ::Type{Union{String, Missing}}) = Union{String, Missing}
 # basic promote type definitions from Base
 promote_type2(::Type{Int64}, ::Type{Float64}) = Float64
 promote_type2(::Type{Float64}, ::Type{Int64}) = Float64
 promote_type2(::Type{Date}, ::Type{DateTime}) = DateTime
 promote_type2(::Type{DateTime}, ::Type{Date}) = DateTime
 # for cases when our current type can't widen, just promote to WeakRefString
-promote_type2(::Type{<:Real}, ::Type{<:Dates.TimeType}) = WeakRefString{UInt8}
-promote_type2(::Type{<:Dates.TimeType}, ::Type{<:Real}) = WeakRefString{UInt8}
-promote_type2(::Type{T}, ::Type{WeakRefString{UInt8}}) where T = WeakRefString{UInt8}
-promote_type2(::Type{Union{T, Missing}}, ::Type{WeakRefString{UInt8}}) where T = Union{WeakRefString{UInt8}, Missing}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{T}) where T = WeakRefString{UInt8}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Union{T, Missing}}) where T = Union{WeakRefString{UInt8}, Missing}
+promote_type2(::Type{<:Real}, ::Type{<:Dates.TimeType}) = String
+promote_type2(::Type{<:Dates.TimeType}, ::Type{<:Real}) = String
+promote_type2(::Type{T}, ::Type{String}) where T = String
+promote_type2(::Type{Union{T, Missing}}, ::Type{String}) where T = Union{String, Missing}
+promote_type2(::Type{String}, ::Type{T}) where T = String
+promote_type2(::Type{String}, ::Type{Union{T, Missing}}) where T = Union{String, Missing}
 # avoid ambiguity
-promote_type2(::Type{Any}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Any}) = WeakRefString{UInt8}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Missing}) = Union{WeakRefString{UInt8}, Missing}
-promote_type2(::Type{Missing}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefString{UInt8}, Missing}
+promote_type2(::Type{Any}, ::Type{String}) = String
+promote_type2(::Type{String}, ::Type{Any}) = String
+promote_type2(::Type{String}, ::Type{String}) = String
+promote_type2(::Type{String}, ::Type{Missing}) = Union{String, Missing}
+promote_type2(::Type{Missing}, ::Type{String}) = Union{String, Missing}
 promote_type2(::Type{Any}, ::Type{Missing}) = Missing
 promote_type2(::Type{Missing}, ::Type{Missing}) = Missing
 
-function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
-    pos = position(io)
-    # update levels
-    try
-        lev = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
-        ismissing(lev) || (levels[lev] = get!(levels, lev, 0) + 1)
-    catch e
-    end
-    if Int64 <: prevT || prevT == Missing
-        try
-            seek(io, pos)
-            v1 = CSV.parsefield(io, Union{Int64, Missing}, opt)
-            # print("...parsed = '$v1'...")
-            return v1 isa Missing ? Missing : Int64
-        catch e
+function timetype(df::Dates.DateFormat)
+    date = false
+    time = false
+    for token in df.tokens
+        T = typeof(token)
+        if T == Dates.DatePart{'H'}
+            time = true
+        elseif T == Dates.DatePart{'y'} || T == Dates.DatePart{'Y'}
+            date = true
         end
+    end
+    return ifelse(date & time, DateTime, ifelse(time, Time, Date))
+end
+
+function detecttype(io, prevT, levels, row, col; dateformat::Union{Dates.DateFormat, Nothing}=nothing, kwargs...) where {D}
+    io2 = Parsers.getio(io)
+    pos = position(io2)
+
+    res = Parsers.xparse(io, String; kwargs...)
+    res.code === Parsers.OK || throw(Error(res, row, col))
+    @debug "res = $res"
+    res.result === missing && return Missing
+    # update levels
+    levels[res.result] = get!(levels, res.result, 0) + 1
+
+    if Int64 <: prevT || prevT == Missing
+        seek(io2, pos)
+        res_int = Parsers.xparse(io, Int; kwargs...)
+        @debug "res_int = $res_int"
+        res_int.code === Parsers.OK && return Int64
     end
     if Float64 <: prevT || Int64 <: prevT || prevT == Missing
-        try
-            seek(io, pos)
-            v2 = CSV.parsefield(io, Union{Float64, Missing}, opt)
-            # print("...parsed = '$v2'...")
-            return v2 isa Missing ? Missing : Float64
-        catch e
-        end
+        seek(io2, pos)
+        res_float = Parsers.xparse(io, Float64; kwargs...)
+        @debug "res_float = $res_float"
+        res_float.code === Parsers.OK && return Float64
     end
     if Date <: prevT || DateTime <: prevT || prevT == Missing
-        if D == Nothing
+        if dateformat === nothing
             # try to auto-detect TimeType
-            try
-                seek(io, pos)
-                v3 = CSV.parsefield(io, Union{String, Missing}, opt)
-                # print("...parsed = '$v3'...")
-                return v3 isa Missing ? Missing : (Date(v3, Dates.ISODateFormat); Date)
-            catch e
-            end
-            try
-                seek(io, pos)
-                v4 = CSV.parsefield(io, Union{String, Missing}, opt)
-                # print("...parsed = '$v4'...")
-                return v4 isa Missing ? Missing : (DateTime(v4, Dates.ISODateTimeFormat); DateTime)
-            catch e
-            end
+            seek(io2, pos)
+            res_date = Parsers.xparse(io, Date; kwargs...)
+            @debug "res_date = $res_date"
+            res_date.code === Parsers.OK && return Date
+            seek(io2, pos)
+            res_datetime = Parsers.xparse(io, DateTime; kwargs...)
+            @debug "res_datetime = $res_datetime"
+            res_datetime.code === Parsers.OK && return Date
         else
             # use user-provided dateformat
-            try
-                seek(io, pos)
-                T = timetype(opt.dateformat)
-                v5 = CSV.parsefield(io, Union{T, Missing}, opt)
-                return v5 isa Missing ? Missing : T
-            catch e
-            end
+            T = timetype(dateformat)
+            @debug "T = $T"
+            seek(io2, pos)
+            res_dt = Parsers.xparse(io, T; dateformat=dateformat, kwargs...)
+            @debug "res_dt = $res_dt"
+            res_dt.code === Parsers.OK && return T
         end
     end
     if Bool <: prevT || prevT == Missing
-        try
-            seek(io, pos)
-            v6 = CSV.parsefield(io, Union{Bool, Missing}, opt)
-            return v6 isa Missing ? Missing : Bool
-        catch e
-        end
+        seek(io2, pos)
+        res_bool = Parsers.xparse(io, Bool; kwargs...)
+        @debug "res_bool = $res_bool"
+        res_bool.code === Parsers.OK && return Bool
     end
-    try
-        seek(io, pos)
-        v7 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
-        # print("...parsed = '$v7'...")
-        return v7 isa Missing ? Missing : WeakRefString{UInt8}
-    catch e
-    end
-    return Missing
+    return String
 end

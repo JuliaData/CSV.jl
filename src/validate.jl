@@ -1,7 +1,7 @@
 # ensure each cell is valid type of column detected type
 # ensure each row has exactly as many values as expected from detection
 
-text(state::P) = state[] == Delimiter ? "delimiter" : state[] == Newline ? "newline" : "end-of-file (EOF)"
+# text(state::P) = state[] == Delimiter ? "delimiter" : state[] == Newline ? "newline" : "end-of-file (EOF)"
 
 struct ExpectedMoreColumnsError <: Exception
     msg::String
