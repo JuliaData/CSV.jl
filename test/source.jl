@@ -92,20 +92,20 @@ ds = CSV.read(f)
 @test Data.types(Data.schema(f)) == (String, Int64, Int64)
 
 #test various newlines
-# f = CSV.Source(joinpath(dir, "test_crlf_line_endings.csv"), allowmissing=:auto)
-# @test Data.header(Data.schema(f)) == ["col1","col2","col3"]
-# @test size(Data.schema(f), 2) == 3
-# @test Data.types(Data.schema(f)) == (Int64,Int64,Int64)
-# ds = CSV.read(f)
-# @test ds[1][1] == 1
+f = CSV.Source(joinpath(dir, "test_crlf_line_endings.csv"), allowmissing=:auto)
+@test Data.header(Data.schema(f)) == ["col1","col2","col3"]
+@test size(Data.schema(f), 2) == 3
+@test Data.types(Data.schema(f)) == (Int64,Int64,Int64)
+ds = CSV.read(f)
+@test ds[1][1] == 1
 f = CSV.Source(joinpath(dir, "test_newline_line_endings.csv"), allowmissing=:auto)
 @test Data.header(Data.schema(f)) == ["col1","col2","col3"]
 @test size(Data.schema(f), 2) == 3
 @test Data.types(Data.schema(f)) == (Int64,Int64,Int64)
-# f = CSV.Source(joinpath(dir, "test_mac_line_endings.csv"), allowmissing=:auto)
-# @test Data.header(Data.schema(f)) == ["col1","col2","col3"]
-# @test size(Data.schema(f), 2) == 3
-# @test Data.types(Data.schema(f)) == (Int64,Int64,Int64)
+f = CSV.Source(joinpath(dir, "test_mac_line_endings.csv"), allowmissing=:auto)
+@test Data.header(Data.schema(f)) == ["col1","col2","col3"]
+@test size(Data.schema(f), 2) == 3
+@test Data.types(Data.schema(f)) == (Int64,Int64,Int64)
 
 end # testset
 
@@ -151,7 +151,7 @@ ds = CSV.read(f)
 
 #test bad types
 f = CSV.Source(joinpath(dir, "test_float_in_int_column.csv"); types=[Int, Int, Int])
-@test_throws CSV.ParsingException CSV.read(f)
+@test_throws CSV.Error CSV.read(f)
 
 #test missing values
 f = CSV.Source(joinpath(dir, "test_missing_value_NULL.csv"); categorical=false, allowmissing=:auto)
@@ -290,7 +290,7 @@ df = CSV.read(source; transforms=Dict(2 => floor))
 @test Data.types(Data.schema(df)) == (Any, Any, Any)
 
 # Integer overflow; #100
-@test_throws OverflowError CSV.read(joinpath(dir, "int8_overflow.csv"); types=[Int8])
+@test_throws CSV.Error CSV.read(joinpath(dir, "int8_overflow.csv"); types=[Int8])
 
 # dash as missingstring; #92
 df = CSV.read(joinpath(dir, "dash_as_null.csv"); missingstring="-")

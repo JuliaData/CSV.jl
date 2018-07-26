@@ -1,5 +1,8 @@
 makedf(df::DateFormat) = df
 makedf(df::String) = DateFormat(df)
+makestr(d::UInt8) = string(Char(d))
+makestr(d::Char) = string(d)
+makestr(d::String) = d
 # independent constructor
 # function Source(;fullpath::Union{AbstractString,IO}="",
 #                 options::CSV.Options{D}=CSV.Options(),
@@ -20,7 +23,7 @@ makedf(df::String) = DateFormat(df)
 
 function Source(fullpath::Union{AbstractString,IO};
 
-              delim=COMMA,
+              delim=",",
               quotechar=QUOTE,
               escapechar=ESCAPE,
               missingstring::AbstractString="",
@@ -89,43 +92,51 @@ function Source(fullpath::Union{AbstractString,IO};
     datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
     rows = fs == 0 ? -1 : max(-1, rows - datarow + 1 - footerskip) # rows now equals the actual number of rows in the dataset
 
+    # build Parsers parser io & kwargs
+    d = makestr(delim)
+    parser = Parsers.Delimited(Parsers.Quoted(Parsers.Strip(Parsers.Sentinel(source, missingstring), d == " " ? 0x00 : ' ', d == "\t" ? 0x00 : '\t'), quotechar, escapechar), d, "\n", "\r", "\r\n")
+    kwargs = NamedTuple()
+    decimal != PERIOD && (kwargs = (decimal=decimal,))
+    dateformat !== nothing && (kwargs = merge(kwargs, (dateformat=makedf(dateformat),)))
+    truestring != "true" && (kwargs = merge(kwarges, (trues=Parsers.Tries.Trie(truestring))))
+    falsestring != "false" && (kwargs = merge(kwarges, (falses=Parsers.Tries.Trie(falsestring))))
+
     # figure out # of columns and header, either an Integer, AbstractRange, or Vector{String}
     # also ensure that `f` is positioned at the start of data
-    row_vals = RawField[]
     if isa(header, Integer)
         # default header = 1
         if header <= 0
             # no header row in dataset; skip to data to figure out # of columns
             CSV.skipto!(source, 1, datarow, quotechar, escapechar)
             datapos = position(source)
-            CSV.readsplitline!(row_vals, source, delim, quotechar, escapechar)
+            row_vals = readsplitline!(parser)
             seek(source, datapos)
             columnnames = ["Column$i" for i = eachindex(row_vals)]
         else
-            CSV.skipto!(source,1,header, quotechar, escapechar)
-            columnnames = [strip(x.value) for x in CSV.readsplitline!(row_vals, source, delim, quotechar, escapechar)]
-            datarow != header+1 && CSV.skipto!(source,header+1,datarow, quotechar, escapechar)
+            CSV.skipto!(source, 1, header, quotechar, escapechar)
+            columnnames = [ismissing(x) ? "" : strip(x) for x in readsplitline!(parser)]
+            datarow != header+1 && CSV.skipto!(source, header+1, datarow, quotechar, escapechar)
             datapos = position(source)
         end
     elseif isa(header, AbstractRange)
-        CSV.skipto!(source,1,first(header), quotechar, escapechar)
-        columnnames = [x.value for x in readsplitline!(row_vals,source, delim, quotechar, escapechar)]
+        CSV.skipto!(source, 1, first(header), quotechar, escapechar)
+        columnnames = [x for x in readsplitline!(parser)]
         for row = first(header):(last(header)-1)
-            for (i,c) in enumerate([x.value for x in readsplitline!(row_vals,source, delim, quotechar, escapechar)])
+            for (i,c) in enumerate([x for x in readsplitline!(parser)])
                 columnnames[i] *= "_" * c
             end
         end
-        datarow != last(header)+1 && CSV.skipto!(source,last(header)+1,datarow, quotechar, escapechar)
+        datarow != last(header)+1 && CSV.skipto!(source, last(header)+1, datarow, quotechar, escapechar)
         datapos = position(source)
     elseif fs == 0
         datapos = position(source)
         columnnames = header
         cols = length(columnnames)
     else
-        CSV.skipto!(source,1,datarow, quotechar, escapechar)
+        CSV.skipto!(source, 1, datarow, quotechar, escapechar)
         datapos = position(source)
-        readsplitline!(row_vals,source, delim, quotechar, escapechar)
-        seek(source,datapos)
+        row_vals = readsplitline!(parser)
+        seek(source, datapos)
         if isempty(header)
             columnnames = ["Column$i" for i in eachindex(row_vals)]
         else
@@ -135,14 +146,6 @@ function Source(fullpath::Union{AbstractString,IO};
     end
     cols = length(columnnames)
     @debug "columnnames=$columnnames, cols=$cols, rows=$rows, datapos=$datapos"
-
-    # build Parsers parser io & kwargs
-    parser = Parsers.Delimited(Parsers.Quoted(Parsers.Sentinel(source, missingstring), quotechar, escapechar), delim, '\n', '\r', "\r\n")
-    kwargs = NamedTuple()
-    decimal != PERIOD && (kwargs = (decimal=decimal,))
-    dateformat !== nothing && (kwargs = merge(kwargs, (dateformat=makedf(dateformat),)))
-    truestring != "true" && (kwargs = merge(kwarges, (trues=Parsers.Tries.Trie(truestring))))
-    falsestring != "false" && (kwargs = merge(kwarges, (falses=Parsers.Tries.Trie(falsestring))))
 
     # Detect column types
     if isa(types, Vector) && length(types) == cols
@@ -241,6 +244,8 @@ function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row,
         throw(Error(res, row, col))
     end
 end
+
+Parsers.xparse(::typeof(Parsers.defaultparser), io::IO, ::Type{<:Union{CategoricalValue, CategoricalString}}; kwargs...) = Parsers.xparse(Parsers.defaultparser, io, String; kwargs...)
 
 """
 `CSV.read(fullpath::Union{AbstractString,IO}, sink::Type{T}=DataFrame, args...; kwargs...)` => `typeof(sink)`
