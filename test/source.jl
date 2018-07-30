@@ -43,6 +43,7 @@ ds = CSV.read(so)
 f = si = so = ds = nothing; gc(); gc()
 try
 rm(joinpath(dir, "new_test_utf8.csv"))
+catch
 end
 
 # f = CSV.Source(joinpath(dir, "test_utf16_be.csv"))
@@ -239,6 +240,7 @@ close(f)
 f = source = nothing; gc(); gc()
 try
 rm(t)
+catch
 end
 
 # test tab-delimited missing values
@@ -258,6 +260,7 @@ let fn = tempname()
     gc(); gc()
     try
     rm(fn)
+    catch
     end
 end
 
@@ -287,6 +290,7 @@ let fn = tempname()
     @test String(read(fn)) == "a,b,c\n1,b2,3\n4,b5,6\n"
     try
     rm(fn)
+    catch
     end
 end
 
@@ -295,6 +299,7 @@ let fn = tempname()
     @test String(read(fn)) == "a,b,c\n"
     try
     rm(fn)
+    catch
     end
 end
 
@@ -365,6 +370,7 @@ df = CSV.read("test.tsv"; delim='\t', allowmissing=:auto)
 df = nothing; gc(); gc()
 try
 rm("test.tsv")
+catch
 end
 
 end # testset
