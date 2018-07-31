@@ -95,10 +95,13 @@ CSV.reset!(source)
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 ```
 """
-mutable struct Source{I, KW} <: Data.Source
+mutable struct Source{P, I, DF} <: Data.Source
     schema::Data.Schema
+    parsinglayers::P
     io::I
-    kwargs::KW
+    bools::Parsers.Trie
+    dateformat::DF
+    decimal::UInt8
     fullpath::String
     datapos::Int # the position in the IOBuffer where the rows of data begins
 end
@@ -106,7 +109,6 @@ end
 function Base.show(io::IO, f::Source)
     println(io, "CSV.Source: ", f.fullpath)
     println(io, f.io)
-    println(io, f.kwargs)
     show(io, f.schema)
 end
 

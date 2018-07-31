@@ -1,5 +1,6 @@
 makedf(df::DateFormat) = df
 makedf(df::String) = DateFormat(df)
+makedf(df::Nothing) = df
 makestr(d::UInt8) = string(Char(d))
 makestr(d::Char) = string(d)
 makestr(d::String) = d
@@ -32,7 +33,7 @@ function Source(fullpath::Union{AbstractString,IO};
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types=Type[],
               allowmissing::Symbol=:all,
-              dateformat=nothing,
+              dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
               decimal=PERIOD,
               truestring="true",
               falsestring="false",
@@ -93,13 +94,11 @@ function Source(fullpath::Union{AbstractString,IO};
     rows = fs == 0 ? -1 : max(-1, rows - datarow + 1 - footerskip) # rows now equals the actual number of rows in the dataset
 
     # build Parsers parser io & kwargs
+    bools = (truestring != "true" || falsestring != "false") ? Parsers.Trie([truestring=>true, falsestring=>false]) : Parsers.BOOLS
+    df = makedf(dateformat)
+    dec = decimal % UInt8
     d = makestr(delim)
-    parser = Parsers.Delimited(Parsers.Quoted(Parsers.Strip(Parsers.Sentinel(source, missingstring), d == " " ? 0x00 : ' ', d == "\t" ? 0x00 : '\t'), quotechar, escapechar), d, "\n", "\r", "\r\n")
-    kwargs = NamedTuple()
-    decimal != PERIOD && (kwargs = (decimal=decimal,))
-    dateformat !== nothing && (kwargs = merge(kwargs, (dateformat=makedf(dateformat),)))
-    truestring != "true" && (kwargs = merge(kwarges, (trues=Parsers.Tries.Trie(truestring))))
-    falsestring != "false" && (kwargs = merge(kwarges, (falses=Parsers.Tries.Trie(falsestring))))
+    parsinglayers = Parsers.Delimited(Parsers.Quoted(Parsers.Strip(Parsers.Sentinel(missingstring), d == " " ? 0x00 : ' ', d == "\t" ? 0x00 : '\t'), quotechar, escapechar), d, "\n", "\r", "\r\n")
 
     # figure out # of columns and header, either an Integer, AbstractRange, or Vector{String}
     # also ensure that `f` is positioned at the start of data
@@ -107,35 +106,35 @@ function Source(fullpath::Union{AbstractString,IO};
         # default header = 1
         if header <= 0
             # no header row in dataset; skip to data to figure out # of columns
-            CSV.skipto!(source, 1, datarow, quotechar, escapechar)
+            CSV.skipto!(parsinglayers, source, 1, datarow)
             datapos = position(source)
-            row_vals = readsplitline!(parser)
+            row_vals = readsplitline(parsinglayers, source, delim)
             seek(source, datapos)
             columnnames = ["Column$i" for i = eachindex(row_vals)]
         else
-            CSV.skipto!(source, 1, header, quotechar, escapechar)
-            columnnames = [ismissing(x) ? "" : strip(x) for x in readsplitline!(parser)]
-            datarow != header+1 && CSV.skipto!(source, header+1, datarow, quotechar, escapechar)
+            CSV.skipto!(parsinglayers, source, 1, header)
+            columnnames = [ismissing(x) ? "" : strip(x) for x in readsplitline(parsinglayers, source, delim)]
+            datarow != header+1 && CSV.skipto!(parsinglayers, source, header+1, datarow)
             datapos = position(source)
         end
     elseif isa(header, AbstractRange)
-        CSV.skipto!(source, 1, first(header), quotechar, escapechar)
-        columnnames = [x for x in readsplitline!(parser)]
+        CSV.skipto!(parsinglayers, source, 1, first(header))
+        columnnames = [x for x in readsplitline(parsinglayers, source, delim)]
         for row = first(header):(last(header)-1)
-            for (i,c) in enumerate([x for x in readsplitline!(parser)])
+            for (i,c) in enumerate([x for x in readsplitline(parsinglayers, source, delim)])
                 columnnames[i] *= "_" * c
             end
         end
-        datarow != last(header)+1 && CSV.skipto!(source, last(header)+1, datarow, quotechar, escapechar)
+        datarow != last(header)+1 && CSV.skipto!(parsinglayers, source, last(header)+1, datarow)
         datapos = position(source)
     elseif fs == 0
         datapos = position(source)
         columnnames = header
         cols = length(columnnames)
     else
-        CSV.skipto!(source, 1, datarow, quotechar, escapechar)
+        CSV.skipto!(parsinglayers, source, 1, datarow)
         datapos = position(source)
-        row_vals = readsplitline!(parser)
+        row_vals = readsplitline(parsinglayers, source, delim)
         seek(source, datapos)
         if isempty(header)
             columnnames = ["Column$i" for i in eachindex(row_vals)]
@@ -156,16 +155,19 @@ function Source(fullpath::Union{AbstractString,IO};
         columntypes = Type[Any for x = 1:cols]
         levels = [Dict{String, Int}() for _ = 1:cols]
         lineschecked = 0
-        while !eof(parser) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
+        while !eof(source) && lineschecked < min(rows < 0 ? rows_for_type_detect : rows, rows_for_type_detect)
             lineschecked += 1
             @debug "type detecting on row = $lineschecked..."
             for i = 1:cols
                 @debug "\tdetecting col = $i..."
-                typ = CSV.detecttype(parser, columntypes[i], levels[i], lineschecked, i; kwargs...)::Type
+                typ = CSV.detecttype(parsinglayers, source, columntypes[i], levels[i], lineschecked, i, bools, df, dec)::Type
                 @debug "$typ"
                 columntypes[i] = CSV.promote_type2(columntypes[i], typ)
                 @debug "...promoting to: $(columntypes[i])"
             end
+        end
+        if df === nothing && any(x->Base.nonmissingtype(x) <: Dates.TimeType, columntypes)
+            df = any(x->Base.nonmissingtype(x) <: DateTime, columntypes) ? Dates.default_format(DateTime) : Dates.default_format(Date)
         end
         if categorical
             for i = 1:cols
@@ -213,7 +215,7 @@ function Source(fullpath::Union{AbstractString,IO};
     end
     seek(source, datapos)
     sch = Data.Schema(columntypes, columnnames, ifelse(rows < 0, missing, rows))
-    return Source(sch, parser, kwargs, String(fullpath), datapos)
+    return Source(sch, parsinglayers, source, bools, df, dec, String(fullpath), datapos)
 end
 
 # construct a new Source from a Sink
@@ -221,14 +223,14 @@ Source(s::CSV.Sink) = CSV.Source(fullpath=s.fullpath, options=s.options)
 
 # Data.Source interface
 "reset a `CSV.Source` to its beginning to be ready to parse data from again"
-Data.reset!(s::CSV.Source) = (seek(Parsers.getio(s.io), s.datapos); return nothing)
+Data.reset!(s::CSV.Source) = (seek(s.io, s.datapos); return nothing)
 Data.schema(source::CSV.Source) = source.schema
 Data.accesspattern(::Type{<:CSV.Source}) = Data.Sequential
 @inline Data.isdone(io::CSV.Source, row, col, rows, cols) = eof(io.io) || (!ismissing(rows) && row > rows)
 @inline Data.isdone(io::Source, row, col) = Data.isdone(io, row, col, size(io.schema)...)
 Data.streamtype(::Type{<:CSV.Source}, ::Type{Data.Field}) = true
 # @inline Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T} = CSV.parsefield(source.io, T, source.options, row, col)
-Data.reference(source::CSV.Source) = Parsers.getio(source.io).data
+Data.reference(source::CSV.Source) = source.io.data
 
 struct Error <: Exception
     result::Parsers.Result
@@ -237,15 +239,51 @@ struct Error <: Exception
 end
 
 function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T}
-    res = Parsers.xparse(source.io, Base.nonmissingtype(T); source.kwargs...)
-    if res.code === Parsers.OK
-        return res.result
+    r = Parsers.parse(source.parsinglayers, source.io, Base.nonmissingtype(T))
+    if r.code === Parsers.OK
+        return r.result
     else
-        throw(Error(res, row, col))
+        throw(Error(r, row, col))
     end
 end
 
-Parsers.xparse(::typeof(Parsers.defaultparser), io::IO, ::Type{<:Union{CategoricalValue, CategoricalString}}; kwargs...) = Parsers.xparse(Parsers.defaultparser, io, String; kwargs...)
+function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Union{Type{Bool}, Union{Bool, Missing}}, row, col::Int) where {T}
+    r = Parsers.parse(source.parsinglayers, source.io, Bool; bools=source.bools)
+    if r.code === Parsers.OK
+        return r.result
+    else
+        throw(Error(r, row, col))
+    end
+end
+
+function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T <: Union{AbstractFloat, Missing}}
+    r = Parsers.parse(source.parsinglayers, source.io, Base.nonmissingtype(T); decimal=source.decimal)
+    if r.code === Parsers.OK
+        return r.result
+    else
+        throw(Error(r, row, col))
+    end
+end
+
+function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T <: Union{Dates.TimeType, Missing}}
+    r = Parsers.parse(source.parsinglayers, source.io, Base.nonmissingtype(T); dateformat=source.dateformat)
+    if r.code === Parsers.OK
+        return r.result
+    else
+        throw(Error(r, row, col))
+    end
+end
+
+function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{Missing}, row, col::Int)
+    r = Parsers.parse(source.parsinglayers, source.io, Missing)
+    if r.code === Parsers.OK
+        return r.result
+    else
+        throw(Error(r, row, col))
+    end
+end
+
+# Parsers.xparse(::typeof(Parsers.defaultparser), io::IO, ::Type{<:Union{CategoricalValue, CategoricalString}}; kwargs...) = Parsers.xparse(Parsers.defaultparser, io, String; kwargs...)
 
 """
 `CSV.read(fullpath::Union{AbstractString,IO}, sink::Type{T}=DataFrame, args...; kwargs...)` => `typeof(sink)`

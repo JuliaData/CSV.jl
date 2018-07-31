@@ -20,3 +20,9 @@ include("multistream.jl")
 include("validate.jl")
 
 end
+
+#TODO
+ # CategoricalString
+ # TransposedSource
+ # sink/multistream/validate
+ # go thru issues
