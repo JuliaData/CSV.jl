@@ -223,6 +223,7 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
     try
         lev = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
         ismissing(lev) || (levels[lev] = get!(levels, lev, 0) + 1)
+    catch
     end
     if Int64 <: prevT || prevT == Missing
         try
@@ -230,6 +231,7 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
             v1 = CSV.parsefield(io, Union{Int64, Missing}, opt)
             # print("...parsed = '$v1'...")
             return v1 isa Missing ? Missing : Int64
+        catch
         end
     end
     if Float64 <: prevT || Int64 <: prevT || prevT == Missing
@@ -238,6 +240,7 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
             v2 = CSV.parsefield(io, Union{Float64, Missing}, opt)
             # print("...parsed = '$v2'...")
             return v2 isa Missing ? Missing : Float64
+        catch
         end
     end
     if Date <: prevT || DateTime <: prevT || prevT == Missing
@@ -248,12 +251,14 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
                 v3 = CSV.parsefield(io, Union{String, Missing}, opt)
                 # print("...parsed = '$v3'...")
                 return v3 isa Missing ? Missing : (Date(v3, Dates.ISODateFormat); Date)
+            catch
             end
             try
                 seek(io, pos)
                 v4 = CSV.parsefield(io, Union{String, Missing}, opt)
                 # print("...parsed = '$v4'...")
                 return v4 isa Missing ? Missing : (DateTime(v4, Dates.ISODateTimeFormat); DateTime)
+            catch
             end
         else
             # use user-provided dateformat
@@ -262,6 +267,7 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
                 T = timetype(opt.dateformat)
                 v5 = CSV.parsefield(io, Union{T, Missing}, opt)
                 return v5 isa Missing ? Missing : T
+            catch
             end
         end
     end
@@ -270,6 +276,7 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
             seek(io, pos)
             v6 = CSV.parsefield(io, Union{Bool, Missing}, opt)
             return v6 isa Missing ? Missing : Bool
+        catch
         end
     end
     try
@@ -277,6 +284,7 @@ function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
         v7 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
         # print("...parsed = '$v7'...")
         return v7 isa Missing ? Missing : WeakRefString{UInt8}
+    catch
     end
     return Missing
 end
