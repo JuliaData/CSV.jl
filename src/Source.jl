@@ -308,7 +308,6 @@ Data.accesspattern(::Type{<:CSV.Source}) = Data.Sequential
 @inline Data.isdone(io::CSV.Source, row, col, rows, cols) = eof(io.io) || (!ismissing(rows) && row > rows)
 @inline Data.isdone(io::Source, row, col) = Data.isdone(io, row, col, size(io.schema)...)
 Data.streamtype(::Type{<:CSV.Source}, ::Type{Data.Field}) = true
-# @inline Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T} = CSV.parsefield(source.io, T, source.options, row, col)
 Data.reference(source::CSV.Source) = source.io.data
 
 struct Error <: Exception
