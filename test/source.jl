@@ -264,13 +264,13 @@ df4 = CSV.read(IOBuffer("a,b,c"); allowmissing=:none)
 @test df3 == df4
 
 let fn = tempname()
-    df = CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"), CSV.Sink(fn); allowmissing=:none, transforms=transforms)
+    CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"), CSV.Sink(fn); allowmissing=:none, transforms=transforms)
     @test String(read(fn)) == "a,b,c\n1,b2,3\n4,b5,6\n"
     @try rm(fn)
 end
 
 let fn = tempname()
-    df = CSV.read(IOBuffer("a,b,c"), CSV.Sink(fn); allowmissing=:none, transforms=transforms)
+    CSV.read(IOBuffer("a,b,c"), CSV.Sink(fn); allowmissing=:none, transforms=transforms)
     @test String(read(fn)) == "a,b,c\n"
     @try rm(fn)
 end
@@ -461,5 +461,3 @@ df = CSV.read(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=[
 @test Data.header(Data.schema(df)) == ["c1", "c2", "c3"]
 
 end # testset
-
-

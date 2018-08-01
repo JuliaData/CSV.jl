@@ -21,23 +21,26 @@ Takes the same positional & keyword arguments as [`CSV.read`](@ref), but provide
 """
 function validate end
 
-function validate(s::CSV.Source)
+function validate(s::CSV.Source{P, I, DF, D}) where {P, I, DF, D}
     sch = Data.schema(s) # size, header, types
     rows, cols = size(sch)
     types = Data.types(sch)
-    state = P()
     for row = 1:rows
         rowstr = ""
         for col = 1:cols
-            v = CSV.parsefield(s.io, types[col], s.options, row, col, state)
-            rowstr *= "$(col == 1 ? "" : Char(s.options.delim))$v"
+            D === Vector{Int} && Parsers.fastseek!(s.io, s.datapos[col])
+            r = Parsers.parse(s.parsinglayers, s.io, Base.nonmissingtype(types[col]))
+            D === Vector{Int} && setindex!(s.datapos, position(s.io), col)
+            rowstr *= "$(col == 1 ? "" : " ")$(r.result)"
             if col < cols
-                if state[] != Delimiter
-                    throw(ExpectedMoreColumnsError("row=$row, col=$col: expected $cols columns, parsed $col, but parsing encountered unexpected $(text(state)); parsed row: '$rowstr'"))
+                if eof(s.io)
+                    throw(ExpectedMoreColumnsError("row=$row, col=$col: expected $cols columns, parsed $col, but parsing encountered unexpected end-of-file; parsed row: '$rowstr'"))
+                elseif r.b === NEWLINE || r.b === RETURN
+                    throw(ExpectedMoreColumnsError("row=$row, col=$col: expected $cols columns, parsed $col, but parsing encountered unexpected newline character; parsed row: '$rowstr'"))
                 end
             else
-                if state[] != Newline && state[] != EOF
-                    throw(TooManyColumnsError("row=$row, col=$col: expected $cols columns then a newline or EOF, but parsing encountered another $(text(state)): '$(Char(s.options.delim))'; parsed row: '$rowstr'"))
+                if !eof(s.io) && !(r.b === NEWLINE || r.b === RETURN)
+                    throw(TooManyColumnsError("row=$row, col=$col: expected $cols columns then a newline or EOF; parsed row: '$rowstr'"))
                 end
             end
         end

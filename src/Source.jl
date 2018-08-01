@@ -4,104 +4,14 @@ makedf(df::Nothing) = df
 makestr(d::UInt8) = string(Char(d))
 makestr(d::Char) = string(d)
 makestr(d::String) = d
-# independent constructor
-# function Source(;fullpath::Union{AbstractString,IO}="",
-#                 options::CSV.Options{D}=CSV.Options(),
 
-#                 header::Union{Integer,UnitRange{Int},Vector}=1, # header can be a row number, range of rows, or actual string vector
-#                 datarow::Int=-1, # by default, data starts immediately after header or start of file
-#                 types=Type[],
-#                 allowmissing::Symbol=:all,
-#                 nullable::Union{Bool,Missing,Nothing}=nothing,
-#                 categorical::Bool=true,
-#                 weakrefstrings::Union{Bool,Nothing}=nothing,
-#                 strings::Symbol=:intern,
-
-#                 footerskip::Int=0,
-#                 rows_for_type_detect::Int=100,
-#                 rows::Int=0,
-#                 use_mmap::Bool=true) where {D}
-
-function Source(fullpath::Union{AbstractString,IO};
-
-              delim=",",
-              quotechar=QUOTE,
-              escapechar=ESCAPE,
-              missingstring::AbstractString="",
-
-              header::Union{Integer, UnitRange{Int}, Vector}=1, # header can be a row number, range of rows, or actual string vector
-              datarow::Int=-1, # by default, data starts immediately after header or start of file
-              types=Type[],
-              allowmissing::Symbol=:all,
-              dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
-              decimal=PERIOD,
-              truestring="true",
-              falsestring="false",
-              categorical::Bool=true,
-              strings::Symbol=:intern,
-
-              footerskip::Int=0,
-              rows_for_type_detect::Int=100,
-              rows::Int=0,
-              use_mmap::Bool=true)
-    # make sure character args are UInt8
-    isascii(delim) || throw(ArgumentError("non-ASCII characters not supported for delim argument: $delim"))
-    isascii(quotechar) || throw(ArgumentError("non-ASCII characters not supported for quotechar argument: $quotechar"))
-    isascii(escapechar) || throw(ArgumentError("non-ASCII characters not supported for escapechar argument: $escapechar"))
-    # return CSV.Source(fullpath=fullpath,
-    #                     options=CSV.Options(delim=typeof(delim) <: String ? UInt8(first(delim)) : (delim % UInt8),
-    #                                         quotechar=typeof(quotechar) <: String ? UInt8(first(quotechar)) : (quotechar % UInt8),
-    #                                         escapechar=typeof(escapechar) <: String ? UInt8(first(escapechar)) : (escapechar % UInt8),
-    #                                         missingstring=missingstring, null=null, dateformat=dateformat, decimal=decimal,
-    #                                         truestring=truestring, falsestring=falsestring, internstrings=(strings === :intern)),
-    #                     header=header, datarow=datarow, types=types, allowmissing=allowmissing, nullable=nullable, categorical=categorical,
-    #                     weakrefstrings=weakrefstrings, strings=strings, footerskip=footerskip,
-    #                     rows_for_type_detect=rows_for_type_detect, rows=rows, use_mmap=use_mmap)
-
-    # argument checks
-    isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
-    header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
-    isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
-
-    # open the file for property detection
-    if isa(fullpath, IOBuffer)
-        source = fullpath
-        fs = bytesavailable(fullpath)
-        fullpath = "<IOBuffer>"
-    elseif isa(fullpath, IO)
-        source = IOBuffer(Base.read(fullpath))
-        fs = bytesavailable(source)
-        fullpath = isdefined(fullpath, :name) ? fullpath.name : "__IO__"
-    else
-        source = open(fullpath, "r") do f
-            IOBuffer(use_mmap ? Mmap.mmap(f) : Base.read(f))
-        end
-        fs = filesize(fullpath)
-    end
-    
-    startpos = position(source)
-    
+function datalayout(header, source, parsinglayers, delim, quotechar, escapechar, datarow, footerskip, rows, startpos, fs)
     rows = rows == 0 ? CSV.countlines(source, quotechar, escapechar) : rows
     seek(source, startpos)
-
-    # BOM character detection
-    if fs > 0 && Parsers.peekbyte(source) == 0xef
-        Parsers.readbyte(source)
-        Parsers.readbyte(source) == 0xbb || seek(source, startpos)
-        Parsers.readbyte(source) == 0xbf || seek(source, startpos)
-    end
-    datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
     rows = fs == 0 ? -1 : max(-1, rows - datarow + 1 - footerskip) # rows now equals the actual number of rows in the dataset
 
-    # build Parsers parser io & kwargs
-    bools = (truestring != "true" || falsestring != "false") ? Parsers.Trie([truestring=>true, falsestring=>false]) : Parsers.BOOLS
-    df = makedf(dateformat)
-    dec = decimal % UInt8
-    d = makestr(delim)
-    parsinglayers = Parsers.Delimited(Parsers.Quoted(Parsers.Strip(Parsers.Sentinel(missingstring), d == " " ? 0x00 : ' ', d == "\t" ? 0x00 : '\t'), quotechar, escapechar), d, "\n", "\r", "\r\n")
-
     # figure out # of columns and header, either an Integer, AbstractRange, or Vector{String}
-    # also ensure that `f` is positioned at the start of data
+    # also ensure that `source` is positioned at the start of data
     if isa(header, Integer)
         # default header = 1
         if header <= 0
@@ -143,10 +53,170 @@ function Source(fullpath::Union{AbstractString,IO};
             columnnames = header
         end
     end
+    return rows, columnnames, datapos
+end
+
+function skiptoheader!(source, row, header, delim)
+    while row < header
+        while !eof(source)
+            b = readbyte(source)
+            b == delim && break
+        end
+        row += 1
+    end
+    return row
+end
+
+function datalayout_transpose(header, source, parsinglayers, delim, quotechar, escapechar, datarow, footerskip, fs)
+    if isa(header, Integer) && header > 0
+        # skip to header column to read column names
+        row = skiptoheader!(source, 1, header, delim)
+        # source now at start of 1st header cell
+        columnnames = [strip(Parsers.parse(parsinglayers, source, String).result::String)]
+        columnpositions = [position(source)]
+        datapos = position(source)
+        rows = 0
+        result = Parsers.Result(Tuple{Ptr{UInt8}, Int})
+        while !eof(source)
+            Parsers.parse!(parsinglayers, source, result)
+            result.code === Parsers.OK || throw(Error(result, rows+1, 1))
+            rows += 1
+            result.b === delim && continue
+            (result.b === NEWLINE || result.b === RETURN || eof(source)) && break
+        end
+        
+        # we're now done w/ column 1, if EOF we're done, otherwise, parse column 2's column name
+        cols = 1
+        while !eof(source)
+            # skip to header column to read column names
+            row = skiptoheader!(source, 1, header, delim)
+            cols += 1
+            push!(columnnames, strip(Parsers.parse(parsinglayers, source, String).result::String))
+            push!(columnpositions, position(source))
+            readline!(parsinglayers, source)
+        end
+        seek(source, datapos)
+    elseif isa(header, AbstractRange)
+        # column names span several columns
+        throw(ArgumentError("not implemented for transposed csv files"))
+    elseif fs == 0
+        # emtpy file, use column names if provided
+        datapos = position(source)
+        columnpositions = Int[]
+        columnnames = header
+    else
+        # column names provided explicitly or should be generated, they don't exist in data
+        # skip to datarow
+        row = skiptoheader!(source, 1, datarow, delim)
+        # source now at start of 1st data cell
+        columnnames = [isa(header, Integer) || isempty(header) ? "Column1" : header[1]]
+        columnpositions = [position(source)]
+        datapos = position(source)
+        rows = 0
+        result = Parsers.Result(Tuple{Ptr{UInt8}, Int})
+        while !eof(source)
+            Parsers.parse!(parsinglayers, source, result)
+            result.code === Parsers.OK || throw(Error(result, rows+1, 1))
+            rows += 1
+            result.b === delim && continue
+            (result.b === NEWLINE || result.b === RETURN || eof(source)) && break
+        end
+        # we're now done w/ column 1, if EOF we're done, otherwise, parse column 2's column name
+        cols = 1
+        while !eof(source)
+            # skip to datarow column
+            row = skiptoheader!(source, 1, datarow, delim)
+            cols += 1
+            push!(columnnames, isa(header, Integer) || isempty(header) ? "Column$cols" : header[cols])
+            push!(columnpositions, position(source))
+            readline!(parsinglayers, source)
+        end
+        seek(source, datapos)
+    end
+    rows = rows - footerskip # rows now equals the actual number of rows in the dataset
+    return rows, columnnames, columnpositions
+end
+
+function Source(fullpath::Union{AbstractString,IO};
+
+              delim=",",
+              quotechar=QUOTE,
+              escapechar=ESCAPE,
+              missingstring::AbstractString="",
+
+              header::Union{Integer, UnitRange{Int}, Vector}=1, # header can be a row number, range of rows, or actual string vector
+              datarow::Int=-1, # by default, data starts immediately after header or start of file
+              types=Type[],
+              allowmissing::Symbol=:all,
+              dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
+              decimal=PERIOD,
+              truestring="true",
+              falsestring="false",
+              categorical::Bool=true,
+              strings::Symbol=:intern,
+
+              footerskip::Int=0,
+              rows_for_type_detect::Int=100,
+              rows::Int=0,
+              use_mmap::Bool=true,
+              transpose::Bool=false)
+    # make sure character args are UInt8
+    isascii(delim) || throw(ArgumentError("non-ASCII characters not supported for delim argument: $delim"))
+    isascii(quotechar) || throw(ArgumentError("non-ASCII characters not supported for quotechar argument: $quotechar"))
+    isascii(escapechar) || throw(ArgumentError("non-ASCII characters not supported for escapechar argument: $escapechar"))
+
+    # argument checks
+    isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
+    header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
+    isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
+
+    # open the file for property detection
+    if isa(fullpath, IOBuffer)
+        source = fullpath
+        fs = bytesavailable(fullpath)
+        fullpath = "<IOBuffer>"
+    elseif isa(fullpath, IO)
+        source = IOBuffer(Base.read(fullpath))
+        fs = bytesavailable(source)
+        fullpath = isdefined(fullpath, :name) ? fullpath.name : "__IO__"
+    else
+        source = open(fullpath, "r") do f
+            IOBuffer(use_mmap ? Mmap.mmap(f) : Base.read(f))
+        end
+        fs = filesize(fullpath)
+    end
+    
+    startpos = position(source)
+    
+    # BOM character detection
+    if fs > 0 && Parsers.peekbyte(source) == 0xef
+        Parsers.readbyte(source)
+        Parsers.readbyte(source) == 0xbb || seek(source, startpos)
+        Parsers.readbyte(source) == 0xbf || seek(source, startpos)
+        startpos = position(source)
+    end
+
+    datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
+
+    # build Parsers parsinglayers
+    bools = (truestring != "true" || falsestring != "false") ? Parsers.Trie([truestring=>true, falsestring=>false]) : Parsers.BOOLS
+    df = makedf(dateformat)
+    dec = decimal % UInt8
+    d = makestr(delim)
+    parsinglayers = Parsers.Delimited(Parsers.Quoted(Parsers.Strip(Parsers.Sentinel(missingstring), d == " " ? 0x00 : ' ', d == "\t" ? 0x00 : '\t'), quotechar, escapechar), d, "\n", "\r", "\r\n")
+
+    # data layout detection: figure out rows, columnnames, and datapos
+    if transpose
+        rows, columnnames, datapos = datalayout_transpose(header, source, parsinglayers, delim, quotechar, escapechar, datarow, footerskip, fs)
+        originalcolumnpositions = [x for x in datapos]
+    else
+        rows, columnnames, datapos = datalayout(header, source, parsinglayers, delim, quotechar, escapechar, datarow, footerskip, rows, startpos, fs)
+    end
     cols = length(columnnames)
     @debug "columnnames=$columnnames, cols=$cols, rows=$rows, datapos=$datapos"
 
     # Detect column types
+    pools = CategoricalPool{String, UInt32, CategoricalString{UInt32}}[]
     if isa(types, Vector) && length(types) == cols
         # types might be a Vector{DataType}, which will be a problem if Unions are needed
         columntypes = convert(Vector{Type}, types)
@@ -159,8 +229,10 @@ function Source(fullpath::Union{AbstractString,IO};
             lineschecked += 1
             @debug "type detecting on row = $lineschecked..."
             for i = 1:cols
+                transpose && seek(source, datapos[i])
                 @debug "\tdetecting col = $i..."
                 typ = CSV.detecttype(parsinglayers, source, columntypes[i], levels[i], lineschecked, i, bools, df, dec)::Type
+                transpose && setindex!(datapos, position(source), i)
                 @debug "$typ"
                 columntypes[i] = CSV.promote_type2(columntypes[i], typ)
                 @debug "...promoting to: $(columntypes[i])"
@@ -170,10 +242,12 @@ function Source(fullpath::Union{AbstractString,IO};
             df = any(x->Base.nonmissingtype(x) <: DateTime, columntypes) ? Dates.default_format(DateTime) : Dates.default_format(Date)
         end
         if categorical
+            pools = Vector{CategoricalPool{String, UInt32, CategoricalString{UInt32}}}(undef, cols)
             for i = 1:cols
                 T = columntypes[i]
                 if length(levels[i]) / sum(values(levels[i])) < .67 && T !== Missing && Base.nonmissingtype(T) <: String
                     columntypes[i] = substitute(T, CategoricalArrays.catvaluetype(Base.nonmissingtype(T), UInt32))
+                    pools[i] = CategoricalPool{String, UInt32}(collect(keys(levels[i])))
                 end
             end
         end
@@ -213,9 +287,14 @@ function Source(fullpath::Union{AbstractString,IO};
             throw(ArgumentError("allowmissing must be either :all, :none or :auto"))
         end
     end
-    seek(source, datapos)
     sch = Data.Schema(columntypes, columnnames, ifelse(rows < 0, missing, rows))
-    return Source(sch, parsinglayers, source, bools, df, dec, String(fullpath), datapos)
+    if transpose
+        datapos = originalcolumnpositions
+        seek(source, startpos)
+    else
+        seek(source, datapos)
+    end
+    return Source(sch, parsinglayers, source, bools, df, dec, String(fullpath), datapos, pools)
 end
 
 # construct a new Source from a Sink
@@ -238,8 +317,10 @@ struct Error <: Exception
     col::Int
 end
 
-function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T}
+function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T, P, I, DF, D}
+    D === Vector{Int} && Parsers.fastseek!(source.io, source.datapos[col])
     r = Parsers.parse(source.parsinglayers, source.io, Base.nonmissingtype(T))
+    D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
     if r.code === Parsers.OK
         return r.result
     else
@@ -247,8 +328,10 @@ function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row,
     end
 end
 
-function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Union{Type{Bool}, Union{Bool, Missing}}, row, col::Int) where {T}
+function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::Union{Type{Bool}, Union{Bool, Missing}}, row, col::Int) where {T, P, I, DF, D}
+    D === Vector{Int} && seek(source.io, source.datapos[col])
     r = Parsers.parse(source.parsinglayers, source.io, Bool; bools=source.bools)
+    D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
     if r.code === Parsers.OK
         return r.result
     else
@@ -256,8 +339,10 @@ function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Union{Type{Bo
     end
 end
 
-function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T <: Union{AbstractFloat, Missing}}
+function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T <: Union{AbstractFloat, Missing}, P, I, DF, D}
+    D === Vector{Int} && seek(source.io, source.datapos[col])
     r = Parsers.parse(source.parsinglayers, source.io, Base.nonmissingtype(T); decimal=source.decimal)
+    D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
     if r.code === Parsers.OK
         return r.result
     else
@@ -265,8 +350,10 @@ function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row,
     end
 end
 
-function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T <: Union{Dates.TimeType, Missing}}
+function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T <: Union{Dates.TimeType, Missing}, P, I, DF, D}
+    D === Vector{Int} && seek(source.io, source.datapos[col])
     r = Parsers.parse(source.parsinglayers, source.io, Base.nonmissingtype(T); dateformat=source.dateformat)
+    D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
     if r.code === Parsers.OK
         return r.result
     else
@@ -274,8 +361,10 @@ function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{T}, row,
     end
 end
 
-function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{Missing}, row, col::Int)
+function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::Type{Missing}, row, col::Int) where {P, I, DF, D}
+    D === Vector{Int} && seek(source.io, source.datapos[col])
     r = Parsers.parse(source.parsinglayers, source.io, Missing)
+    D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
     if r.code === Parsers.OK
         return r.result
     else
@@ -283,7 +372,32 @@ function Data.streamfrom(source::CSV.Source, ::Type{Data.Field}, ::Type{Missing}
     end
 end
 
-# Parsers.xparse(::typeof(Parsers.defaultparser), io::IO, ::Type{<:Union{CategoricalValue, CategoricalString}}; kwargs...) = Parsers.xparse(Parsers.defaultparser, io, String; kwargs...)
+function get🐱(pool::CategoricalPool, val::Tuple{Ptr{UInt8}, Int})
+    index = Base.ht_keyindex2!(pool.invindex, val)
+    if index > 0
+        @inbounds v = pool.invindex.vals[index]
+        return CategoricalString{UInt32}(v, pool)
+    else
+        v = CategoricalArrays.push_level!(pool, val)
+        return CategoricalString{UInt32}(v, pool)
+    end
+end
+
+function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::Union{Type{Union{CategoricalString{UInt32}, Missing}}, Type{CategoricalString{UInt32}}}, row, col::Int) where {T, P, I, DF, D}
+    D === Vector{Int} && Parsers.fastseek!(source.io, source.datapos[col])
+    r = Parsers.parse(source.parsinglayers, source.io, Tuple{Ptr{UInt8}, Int})
+    D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
+    if r.code === Parsers.OK
+        if r.result isa Missing
+            return missing
+        else
+            @inbounds pool = source.pools[col]
+            return get🐱(pool, r.result::Tuple{Ptr{UInt8}, Int})
+        end
+    else
+        throw(Error(r, row, col))
+    end
+end
 
 """
 `CSV.read(fullpath::Union{AbstractString,IO}, sink::Type{T}=DataFrame, args...; kwargs...)` => `typeof(sink)`
@@ -385,19 +499,17 @@ sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 """
 function read end
 
-function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), transpose::Bool=false, kwargs...)
-    source = transpose ? TransposedSource(fullpath; kwargs...) : Source(fullpath; kwargs...)
+function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), kwargs...)
+    source = Source(fullpath; kwargs...)
     sink = Data.stream!(source, sink, args...; append=append, transforms=transforms)
     return Data.close!(sink)
 end
 
-function read(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), transpose::Bool=false, kwargs...) where {T}
-    source = transpose ? TransposedSource(fullpath; kwargs...) : Source(fullpath; kwargs...)
+function read(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), kwargs...) where {T}
+    source = Source(fullpath; kwargs...)
     sink = Data.stream!(source, sink; append=append, transforms=transforms)
     return Data.close!(sink)
 end
 
 read(source::CSV.Source, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, args...; append=append, transforms=transforms); return Data.close!(sink))
 read(source::CSV.Source, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) where {T} = (sink = Data.stream!(source, sink; append=append, transforms=transforms); return Data.close!(sink))
-read(source::CSV.TransposedSource, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, args...; append=append, transforms=transforms); return Data.close!(sink))
-read(source::CSV.TransposedSource, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) where {T} = (sink = Data.stream!(source, sink; append=append, transforms=transforms); return Data.close!(sink))

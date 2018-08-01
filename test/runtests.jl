@@ -22,7 +22,5 @@ include("validate.jl")
 end
 
 #TODO
- # CategoricalString
- # TransposedSource
- # sink/multistream/validate
  # go thru issues
+ # replace readsplitline/countlines w/ Parsers solutions

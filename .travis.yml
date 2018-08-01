@@ -10,8 +10,18 @@ julia:
   - 0.7
   - nightly
 
+env:
+  - JULIA_PROJECT=@.
+
 notifications:
   email: false
+
+before_script:
+  - export PATH=$HOME/.local/bin:$PATH
+
+script:
+  - if [[ -a .git/shallow ]]; then git fetch --unshallow; fi
+  - julia -e 'using Pkg; Pkg.test(coverage=true)'
 
 after_success:
   - julia -e 'cd(Pkg.dir("CSV")); Pkg.add("Coverage"); using Coverage; Codecov.submit(process_folder())'

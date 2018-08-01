@@ -134,14 +134,26 @@ function timetype(df::Dates.DateFormat)
     return ifelse(date & time, DateTime, ifelse(time, Time, Date))
 end
 
+function incr!(dict::Dict{String, Int}, key::Tuple{Ptr{UInt8}, Int})
+    index = Base.ht_keyindex2!(dict, key)
+    if index > 0
+        @inbounds dict.vals[index] += 1
+        return
+    else
+        kk::String = convert(String, key)
+        @inbounds Base._setindex!(dict, 1, kk, -index)
+        return
+    end
+end
+
 function detecttype(layers, io, prevT, levels, row, col, bools, dateformat, dec)
     pos = position(io)
-    result = Parsers.parse(layers, io, String)
+    result = Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
     result.code === Parsers.OK || throw(Error(result, row, col))
     @debug "res = $result"
     result.result === missing && return Missing
     # update levels
-    levels[result.result] = get!(levels, result.result, 0) + 1
+    incr!(levels, result.result::Tuple{Ptr{UInt8}, Int})
 
     if Int64 <: prevT || prevT == Missing
         seek(io, pos)
