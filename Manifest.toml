@@ -99,7 +99,7 @@ uuid = "a63ad114-7e13-5084-954f-fe012c677804"
 
 [[Parsers]]
 deps = ["Dates"]
-git-tree-sha1 = "07c2baff53334dd3a27214c36c9d7ebd310d76b9"
+git-tree-sha1 = "8aafe32b28648346854330e0ab31f1b4356497f5"
 repo-rev = "master"
 repo-url = "https://github.com/JuliaData/Parsers.jl.git"
 uuid = "ea579014-6bf0-11e8-2caa-090d489607df"

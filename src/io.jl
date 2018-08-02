@@ -1,6 +1,6 @@
 import Parsers: readbyte, peekbyte
 
-const COMMA_NEWLINES = Parsers.Trie([",", "\n", "\r", "\r\n"], nothing)
+const COMMA_NEWLINES = Parsers.Trie([",", "\n", "\r", "\r\n"], Parsers.DELIMITED)
 const READLINE_RESULT = Parsers.Result(Tuple{Ptr{UInt8}, Int})
 
 # readline! is used for implementation of skipto!
@@ -9,9 +9,10 @@ readline!(s::Source) = readline!(s.parsinglayers, s.io)
 function readline!(layers, io::IO)
     eof(io) && return
     while true
+        READLINE_RESULT.code = Parsers.SUCCESS
         res = Parsers.parse!(layers, io, READLINE_RESULT)
-        res.code !== Parsers.OK && throw(Parsers.Error(res))
-        (res.b == NEWLINE || res.b == RETURN || eof(io)) && break
+        Parsers.ok(res.code) || throw(Parsers.Error(res))
+        ((res.code & Parsers.NEWLINE) > 0 || eof(io)) && break
     end
     return
 end
@@ -25,23 +26,24 @@ function skipto!(layers, io::IO, cur, dest)
 end
 
 const READSPLITLINE_RESULT = Parsers.Result(String)
+const DELIM_NEWLINE = Parsers.DELIMITED | Parsers.NEWLINE
 
-readsplitline(io::IO) = readsplitline(Parsers.Delimited(Parsers.Quoted(), COMMA_NEWLINES), io, UInt8(','))
-function readsplitline(layers::Parsers.Delimited, io::IO, delim=UInt8(','))
+readsplitline(io::IO) = readsplitline(Parsers.Delimited(Parsers.Quoted(), COMMA_NEWLINES), io)
+function readsplitline(layers::Parsers.Delimited, io::IO)
     vals = Union{String, Missing}[]
     eof(io) && return vals
     col = 1
     result = READSPLITLINE_RESULT
     while true
+        result.code = Parsers.SUCCESS
         Parsers.parse!(layers, io, result)
-        # @debug "readsplitline!: result=$result"
-        result.code === Parsers.OK || throw(Error(result, 1, col))
+        @debug "readsplitline!: result=$result"
+        Parsers.ok(result.code) || throw(Error(result, 1, col))
         # @show result
-        # @show String(io.data[io.ptr:end])
         push!(vals, result.result)
         col += 1
-        result.b === delim && continue
-        (result.b === NEWLINE || result.b === RETURN || eof(io)) && break
+        xor(result.code & DELIM_NEWLINE, Parsers.DELIMITED) == 0 && continue
+        ((result.code & Parsers.NEWLINE) > 0 || eof(io)) && break
     end
     return vals
 end
@@ -149,7 +151,7 @@ end
 function detecttype(layers, io, prevT, levels, row, col, bools, dateformat, dec)
     pos = position(io)
     result = Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
-    result.code === Parsers.OK || throw(Error(result, row, col))
+    Parsers.ok(result.code) || throw(Error(result, row, col))
     @debug "res = $result"
     result.result === missing && return Missing
     # update levels
@@ -159,13 +161,13 @@ function detecttype(layers, io, prevT, levels, row, col, bools, dateformat, dec)
         seek(io, pos)
         res_int = Parsers.parse(layers, io, Int64)
         @debug "res_int = $res_int"
-        res_int.code === Parsers.OK && return Int64
+        Parsers.ok(res_int.code) && return Int64
     end
     if Float64 <: prevT || Int64 <: prevT || prevT == Missing
         seek(io, pos)
         res_float = Parsers.parse(layers, io, Float64; decimal=dec)
         @debug "res_float = $res_float"
-        res_float.code === Parsers.OK && return Float64
+        Parsers.ok(res_float.code) && return Float64
     end
     if Date <: prevT || DateTime <: prevT || prevT == Missing
         if dateformat === nothing
@@ -173,11 +175,11 @@ function detecttype(layers, io, prevT, levels, row, col, bools, dateformat, dec)
             seek(io, pos)
             res_date = Parsers.parse(layers, io, Date)
             @debug "res_date = $res_date"
-            res_date.code === Parsers.OK && return Date
+            Parsers.ok(res_date.code) && return Date
             seek(io, pos)
             res_datetime = Parsers.parse(layers, io, DateTime)
             @debug "res_datetime = $res_datetime"
-            res_datetime.code === Parsers.OK && return DateTime
+            Parsers.ok(res_datetime.code) && return DateTime
         else
             # use user-provided dateformat
             T = timetype(dateformat)
@@ -185,14 +187,14 @@ function detecttype(layers, io, prevT, levels, row, col, bools, dateformat, dec)
             seek(io, pos)
             res_dt = Parsers.parse(layers, io, T; dateformat=dateformat)
             @debug "res_dt = $res_dt"
-            res_dt.code === Parsers.OK && return T
+            Parsers.ok(res_dt.code) && return T
         end
     end
     if Bool <: prevT || prevT == Missing
         seek(io, pos)
         res_bool = Parsers.parse(layers, io, Bool; bools=bools)
         @debug "res_bool = $res_bool"
-        res_bool.code === Parsers.OK && return Bool
+        Parsers.ok(res_bool.code) && return Bool
     end
     return String
 end

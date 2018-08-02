@@ -18,20 +18,20 @@ function datalayout(header, source, parsinglayers, delim, quotechar, escapechar,
             # no header row in dataset; skip to data to figure out # of columns
             CSV.skipto!(parsinglayers, source, 1, datarow)
             datapos = position(source)
-            row_vals = readsplitline(parsinglayers, source, delim)
+            row_vals = readsplitline(parsinglayers, source)
             seek(source, datapos)
             columnnames = ["Column$i" for i = eachindex(row_vals)]
         else
             CSV.skipto!(parsinglayers, source, 1, header)
-            columnnames = [ismissing(x) ? "" : strip(x) for x in readsplitline(parsinglayers, source, delim)]
+            columnnames = [ismissing(x) ? "" : strip(x) for x in readsplitline(parsinglayers, source)]
             datarow != header+1 && CSV.skipto!(parsinglayers, source, header+1, datarow)
             datapos = position(source)
         end
     elseif isa(header, AbstractRange)
         CSV.skipto!(parsinglayers, source, 1, first(header))
-        columnnames = [x for x in readsplitline(parsinglayers, source, delim)]
+        columnnames = [x for x in readsplitline(parsinglayers, source)]
         for row = first(header):(last(header)-1)
-            for (i,c) in enumerate([x for x in readsplitline(parsinglayers, source, delim)])
+            for (i,c) in enumerate([x for x in readsplitline(parsinglayers, source)])
                 columnnames[i] *= "_" * c
             end
         end
@@ -44,7 +44,7 @@ function datalayout(header, source, parsinglayers, delim, quotechar, escapechar,
     else
         CSV.skipto!(parsinglayers, source, 1, datarow)
         datapos = position(source)
-        row_vals = readsplitline(parsinglayers, source, delim)
+        row_vals = readsplitline(parsinglayers, source)
         seek(source, datapos)
         if isempty(header)
             columnnames = ["Column$i" for i in eachindex(row_vals)]
@@ -56,11 +56,11 @@ function datalayout(header, source, parsinglayers, delim, quotechar, escapechar,
     return rows, columnnames, datapos
 end
 
-function skiptoheader!(source, row, header, delim)
+function skiptoheader!(parsinglayers, source, row, header)
     while row < header
         while !eof(source)
-            b = readbyte(source)
-            b == delim && break
+            r = Parsers.parse(parsinglayers, source, Tuple{Ptr{UInt8}, Int})
+            (r.code & Parsers.DELIMITED) > 0 && break
         end
         row += 1
     end
@@ -70,7 +70,7 @@ end
 function datalayout_transpose(header, source, parsinglayers, delim, quotechar, escapechar, datarow, footerskip, fs)
     if isa(header, Integer) && header > 0
         # skip to header column to read column names
-        row = skiptoheader!(source, 1, header, delim)
+        row = skiptoheader!(parsinglayers, source, 1, header)
         # source now at start of 1st header cell
         columnnames = [strip(Parsers.parse(parsinglayers, source, String).result::String)]
         columnpositions = [position(source)]
@@ -79,17 +79,17 @@ function datalayout_transpose(header, source, parsinglayers, delim, quotechar, e
         result = Parsers.Result(Tuple{Ptr{UInt8}, Int})
         while !eof(source)
             Parsers.parse!(parsinglayers, source, result)
-            result.code === Parsers.OK || throw(Error(result, rows+1, 1))
+            Parsers.ok(result.code) || throw(Error(result, rows+1, 1))
             rows += 1
-            result.b === delim && continue
-            (result.b === NEWLINE || result.b === RETURN || eof(source)) && break
+            xor(result.code & DELIM_NEWLINE, Parsers.DELIMITED) == 0 && continue
+            ((result.code & Parsers.NEWLINE) > 0 || eof(source)) && break
         end
         
         # we're now done w/ column 1, if EOF we're done, otherwise, parse column 2's column name
         cols = 1
         while !eof(source)
             # skip to header column to read column names
-            row = skiptoheader!(source, 1, header, delim)
+            row = skiptoheader!(parsinglayers, source, 1, header)
             cols += 1
             push!(columnnames, strip(Parsers.parse(parsinglayers, source, String).result::String))
             push!(columnpositions, position(source))
@@ -107,7 +107,7 @@ function datalayout_transpose(header, source, parsinglayers, delim, quotechar, e
     else
         # column names provided explicitly or should be generated, they don't exist in data
         # skip to datarow
-        row = skiptoheader!(source, 1, datarow, delim)
+        row = skiptoheader!(parsinglayers, source, 1, datarow)
         # source now at start of 1st data cell
         columnnames = [isa(header, Integer) || isempty(header) ? "Column1" : header[1]]
         columnpositions = [position(source)]
@@ -116,16 +116,16 @@ function datalayout_transpose(header, source, parsinglayers, delim, quotechar, e
         result = Parsers.Result(Tuple{Ptr{UInt8}, Int})
         while !eof(source)
             Parsers.parse!(parsinglayers, source, result)
-            result.code === Parsers.OK || throw(Error(result, rows+1, 1))
+            Parsers.ok(result.code) || throw(Error(result, rows+1, 1))
             rows += 1
-            result.b === delim && continue
-            (result.b === NEWLINE || result.b === RETURN || eof(source)) && break
+            xor(result.code & DELIM_NEWLINE, Parsers.DELIMITED) == 0 && continue
+            ((result.code & Parsers.NEWLINE) > 0 || eof(source)) && break
         end
         # we're now done w/ column 1, if EOF we're done, otherwise, parse column 2's column name
         cols = 1
         while !eof(source)
             # skip to datarow column
-            row = skiptoheader!(source, 1, datarow, delim)
+            row = skiptoheader!(parsinglayers, source, 1, datarow)
             cols += 1
             push!(columnnames, isa(header, Integer) || isempty(header) ? "Column$cols" : header[cols])
             push!(columnpositions, position(source))
@@ -320,7 +320,7 @@ function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::
     D === Vector{Int} && Parsers.fastseek!(source.io, source.datapos[col])
     r = Parsers.parse(source.parsinglayers, source.io, Base.nonmissingtype(T))
     D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
-    if r.code === Parsers.OK
+    if Parsers.ok(r.code)
         return r.result
     else
         throw(Error(r, row, col))
@@ -331,7 +331,7 @@ function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::
     D === Vector{Int} && seek(source.io, source.datapos[col])
     r = Parsers.parse(source.parsinglayers, source.io, Bool; bools=source.bools)
     D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
-    if r.code === Parsers.OK
+    if Parsers.ok(r.code)
         return r.result
     else
         throw(Error(r, row, col))
@@ -342,7 +342,7 @@ function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::
     D === Vector{Int} && seek(source.io, source.datapos[col])
     r = Parsers.parse(source.parsinglayers, source.io, Base.nonmissingtype(T); decimal=source.decimal)
     D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
-    if r.code === Parsers.OK
+    if Parsers.ok(r.code)
         return r.result
     else
         throw(Error(r, row, col))
@@ -353,7 +353,7 @@ function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::
     D === Vector{Int} && seek(source.io, source.datapos[col])
     r = Parsers.parse(source.parsinglayers, source.io, Base.nonmissingtype(T); dateformat=source.dateformat)
     D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
-    if r.code === Parsers.OK
+    if Parsers.ok(r.code)
         return r.result
     else
         throw(Error(r, row, col))
@@ -364,7 +364,7 @@ function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::
     D === Vector{Int} && seek(source.io, source.datapos[col])
     r = Parsers.parse(source.parsinglayers, source.io, Missing)
     D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
-    if r.code === Parsers.OK
+    if Parsers.ok(r.code)
         return r.result
     else
         throw(Error(r, row, col))
@@ -386,7 +386,7 @@ function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::
     D === Vector{Int} && Parsers.fastseek!(source.io, source.datapos[col])
     r = Parsers.parse(source.parsinglayers, source.io, Tuple{Ptr{UInt8}, Int})
     D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
-    if r.code === Parsers.OK
+    if Parsers.ok(r.code)
         if r.result isa Missing
             return missing
         else

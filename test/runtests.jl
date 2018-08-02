@@ -1,7 +1,7 @@
 using CSV, DataStreams, DataFrames, Test, Dates, WeakRefStrings, CategoricalArrays
 
-const dir = joinpath(dirname(@__FILE__),"test_files/")
-# dir = "/Users/jacobquinn/.julia/dev/CSV/test/test_files"
+# const dir = joinpath(dirname(@__FILE__),"test_files/")
+dir = "/Users/jacobquinn/.julia/dev/CSV/test/test_files"
 
 @eval macro $(:try)(ex)
     quote
@@ -23,4 +23,3 @@ end
 
 #TODO
  # go thru issues
- # replace readsplitline/countlines w/ Parsers solutions
