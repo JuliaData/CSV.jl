@@ -23,7 +23,7 @@ function writeheaders(io::IOBuffer, h::Vector{String}, options, quotefields)
     cols = length(h)
     q = Char(options.quotechar); e = Char(options.escapechar); d = Char(options.delim)
     for col = 1:cols
-        Base.write(io, quoted(quotefields, h[col], q, e, d), ifelse(col == cols, NEWLINE, options.delim))
+        Base.write(io, quoted(quotefields, h[col], q, e, d), ifelse(col == cols, UInt8('\n'), options.delim))
     end
     return nothing
 end
@@ -47,19 +47,19 @@ end
 
 function Data.streamto!(sink::Sink, ::Type{Data.Field}, val, row, col::Int)
     q = Char(sink.options.quotechar); e = Char(sink.options.escapechar); d = Char(sink.options.delim)
-    Base.write(sink.io, quoted(sink.quotefields, string(val), q, e, d), ifelse(col == sink.cols, NEWLINE, d))
+    Base.write(sink.io, quoted(sink.quotefields, string(val), q, e, d), ifelse(col == sink.cols, UInt8('\n'), d))
     return nothing
 end
 
 function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::Dates.TimeType, row, col::Int)
     v = Dates.format(val, sink.options.dateformat === nothing ? Dates.default_format(typeof(val)) : sink.options.dateformat)
-    Base.write(sink.io, v, ifelse(col == sink.cols, NEWLINE, sink.options.delim))
+    Base.write(sink.io, v, ifelse(col == sink.cols, UInt8('\n'), sink.options.delim))
     return nothing
 end
 
 const EMPTY_UINT8_ARRAY = UInt8[]
 function Data.streamto!(sink::Sink, ::Type{Data.Field}, val::Missing, row, col::Int)
-    Base.write(sink.io, sink.options.missingcheck ? sink.options.missingstring : EMPTY_UINT8_ARRAY, ifelse(col == sink.cols, NEWLINE, sink.options.delim))
+    Base.write(sink.io, sink.options.missingcheck ? sink.options.missingstring : EMPTY_UINT8_ARRAY, ifelse(col == sink.cols, UInt8('\n'), sink.options.delim))
     return nothing
 end
 

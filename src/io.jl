@@ -37,7 +37,7 @@ function readsplitline(layers::Parsers.Delimited, io::IO)
     while true
         result.code = Parsers.SUCCESS
         Parsers.parse!(layers, io, result)
-        @debug "readsplitline!: result=$result"
+        # @debug "readsplitline!: result=$result"
         Parsers.ok(result.code) || throw(Error(result, 1, col))
         # @show result
         push!(vals, result.result)
@@ -73,17 +73,16 @@ function countlines(io::IO, q::UInt8, e::UInt8)
                     break
                 end
             end
-        elseif b === CSV.NEWLINE
+        elseif b === UInt8('\n')
             nl += 1
-        elseif b === CSV.RETURN
+        elseif b === UInt8('\r')
             nl += 1
-            !eof(io) && peekbyte(io) === CSV.NEWLINE && readbyte(io)
+            !eof(io) && peekbyte(io) === UInt8('\n') && readbyte(io)
         end
     end
-    return nl - (b === CSV.NEWLINE || b === CSV.RETURN)
+    return nl - (b === UInt8('\n') || b === UInt8('\r'))
 end
 countlines(io::IO, q='"', e='\\') = countlines(io, UInt8(q), UInt8(e))
-# countlines(source::CSV.Source) = countlines(source.io, source.options.quotechar, source.options.escapechar)
 
 # try to infer the type of the value in `val`. The precedence of type checking is `Int64` => `Float64` => `Date` => `DateTime` => `String`
 
@@ -152,7 +151,7 @@ function detecttype(layers, io, prevT, levels, row, col, bools, dateformat, dec)
     pos = position(io)
     result = Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
     Parsers.ok(result.code) || throw(Error(result, row, col))
-    @debug "res = $result"
+    # @debug "res = $result"
     result.result === missing && return Missing
     # update levels
     incr!(levels, result.result::Tuple{Ptr{UInt8}, Int})
@@ -160,13 +159,13 @@ function detecttype(layers, io, prevT, levels, row, col, bools, dateformat, dec)
     if Int64 <: prevT || prevT == Missing
         seek(io, pos)
         res_int = Parsers.parse(layers, io, Int64)
-        @debug "res_int = $res_int"
+        # @debug "res_int = $res_int"
         Parsers.ok(res_int.code) && return Int64
     end
     if Float64 <: prevT || Int64 <: prevT || prevT == Missing
         seek(io, pos)
         res_float = Parsers.parse(layers, io, Float64; decimal=dec)
-        @debug "res_float = $res_float"
+        # @debug "res_float = $res_float"
         Parsers.ok(res_float.code) && return Float64
     end
     if Date <: prevT || DateTime <: prevT || prevT == Missing
@@ -174,26 +173,26 @@ function detecttype(layers, io, prevT, levels, row, col, bools, dateformat, dec)
             # try to auto-detect TimeType
             seek(io, pos)
             res_date = Parsers.parse(layers, io, Date)
-            @debug "res_date = $res_date"
+            # @debug "res_date = $res_date"
             Parsers.ok(res_date.code) && return Date
             seek(io, pos)
             res_datetime = Parsers.parse(layers, io, DateTime)
-            @debug "res_datetime = $res_datetime"
+            # @debug "res_datetime = $res_datetime"
             Parsers.ok(res_datetime.code) && return DateTime
         else
             # use user-provided dateformat
             T = timetype(dateformat)
-            @debug "T = $T"
+            # @debug "T = $T"
             seek(io, pos)
             res_dt = Parsers.parse(layers, io, T; dateformat=dateformat)
-            @debug "res_dt = $res_dt"
+            # @debug "res_dt = $res_dt"
             Parsers.ok(res_dt.code) && return T
         end
     end
     if Bool <: prevT || prevT == Missing
         seek(io, pos)
         res_bool = Parsers.parse(layers, io, Bool; bools=bools)
-        @debug "res_bool = $res_bool"
+        # @debug "res_bool = $res_bool"
         Parsers.ok(res_bool.code) && return Bool
     end
     return String

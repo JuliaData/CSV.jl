@@ -1,8 +1,3 @@
-# ensure each cell is valid type of column detected type
-# ensure each row has exactly as many values as expected from detection
-
-# text(state::P) = state[] == Delimiter ? "delimiter" : state[] == Newline ? "newline" : "end-of-file (EOF)"
-
 struct ExpectedMoreColumnsError <: Exception
     msg::String
 end
@@ -16,7 +11,7 @@ end
 
 `CSV.validate(fullpath::Union{AbstractString,IO}, sink::Data.Sink; kwargs...)` => `Data.Sink`
 
-Takes the same positional & keyword arguments as [`CSV.read`](@ref), but provides detailed information as to why reading a csv file failed. Useful for cases where reading fails and it's not clear whether it's due to a row havign too many columns, or wrong types, or what have you.
+Takes the same positional & keyword arguments as [`CSV.read`](@ref), but provides detailed information as to why reading a csv file failed. Useful for cases where reading fails and it's not clear whether it's due to a row having too many columns, or wrong types, or what have you.
 
 """
 function validate end
@@ -35,11 +30,11 @@ function validate(s::CSV.Source{P, I, DF, D}) where {P, I, DF, D}
             if col < cols
                 if eof(s.io)
                     throw(ExpectedMoreColumnsError("row=$row, col=$col: expected $cols columns, parsed $col, but parsing encountered unexpected end-of-file; parsed row: '$rowstr'"))
-                elseif r.b === NEWLINE || r.b === RETURN
+                elseif (r.code & Parsers.NEWLINE) > 0
                     throw(ExpectedMoreColumnsError("row=$row, col=$col: expected $cols columns, parsed $col, but parsing encountered unexpected newline character; parsed row: '$rowstr'"))
                 end
             else
-                if !eof(s.io) && !(r.b === NEWLINE || r.b === RETURN)
+                if !eof(s.io) && !(r.code & Parsers.NEWLINE > 0)
                     throw(TooManyColumnsError("row=$row, col=$col: expected $cols columns then a newline or EOF; parsed row: '$rowstr'"))
                 end
             end

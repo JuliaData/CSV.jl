@@ -3,21 +3,6 @@ module CSV
 using DataStreams, Parsers, Missings, CategoricalArrays, DataFrames, WeakRefStrings
 using Mmap, Dates
 
-const RETURN  = UInt8('\r')
-const NEWLINE = UInt8('\n')
-const COMMA   = UInt8(',')
-const QUOTE   = UInt8('"')
-const ESCAPE  = UInt8('\\')
-const PERIOD  = UInt8('.')
-const SPACE   = UInt8(' ')
-const TAB     = UInt8('\t')
-const MINUS   = UInt8('-')
-const PLUS    = UInt8('+')
-const NEG_ONE = UInt8('0')-UInt8(1)
-const ZERO    = UInt8('0')
-const TEN     = UInt8('9')+UInt8(1)
-Base.isascii(c::UInt8) = c < 0x80
-
 substitute(::Type{Union{T, Missing}}, ::Type{T1}) where {T, T1} = Union{T1, Missing}
 substitute(::Type{T}, ::Type{T1}) where {T, T1} = T1
 substitute(::Type{Missing}, ::Type{T1}) where {T1} = Missing
@@ -56,7 +41,7 @@ struct Options{D}
     types
 end
 
-Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, missingstring="", null=nothing, dateformat=nothing, decimal=PERIOD, truestring="true", falsestring="false", internstrings=true, datarow=-1, rows=0, header=1, types=Type[]) =
+Options(;delim=UInt8(','), quotechar=UInt8('"'), escapechar=UInt8('\\'), missingstring="", null=nothing, dateformat=nothing, decimal=UInt8('.'), truestring="true", falsestring="false", internstrings=true, datarow=-1, rows=0, header=1, types=Type[]) =
     Options(delim%UInt8, quotechar%UInt8, escapechar%UInt8,
             map(UInt8, collect(ascii(String(missingstring)))), null === nothing ? nothing : map(UInt8, collect(ascii(String(null)))), missingstring != "" || (null != "" && null != nothing),
             isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat,

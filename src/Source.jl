@@ -1,3 +1,5 @@
+const CatStr = CategoricalString{UInt32}
+
 makedf(df::DateFormat) = df
 makedf(df::String) = DateFormat(df)
 makedf(df::Nothing) = df
@@ -67,6 +69,19 @@ function skiptoheader!(parsinglayers, source, row, header)
     return row
 end
 
+function countfields(source, parsinglayers)
+    rows = 0
+    result = Parsers.Result(Tuple{Ptr{UInt8}, Int})
+    while !eof(source)
+        Parsers.parse!(parsinglayers, source, result)
+        Parsers.ok(result.code) || throw(Error(result, rows+1, 1))
+        rows += 1
+        xor(result.code & DELIM_NEWLINE, Parsers.DELIMITED) == 0 && continue
+        ((result.code & Parsers.NEWLINE) > 0 || eof(source)) && break
+    end
+    return rows
+end
+
 function datalayout_transpose(header, source, parsinglayers, delim, quotechar, escapechar, datarow, footerskip, fs)
     if isa(header, Integer) && header > 0
         # skip to header column to read column names
@@ -75,15 +90,7 @@ function datalayout_transpose(header, source, parsinglayers, delim, quotechar, e
         columnnames = [strip(Parsers.parse(parsinglayers, source, String).result::String)]
         columnpositions = [position(source)]
         datapos = position(source)
-        rows = 0
-        result = Parsers.Result(Tuple{Ptr{UInt8}, Int})
-        while !eof(source)
-            Parsers.parse!(parsinglayers, source, result)
-            Parsers.ok(result.code) || throw(Error(result, rows+1, 1))
-            rows += 1
-            xor(result.code & DELIM_NEWLINE, Parsers.DELIMITED) == 0 && continue
-            ((result.code & Parsers.NEWLINE) > 0 || eof(source)) && break
-        end
+        rows = countfields(source, parsinglayers)
         
         # we're now done w/ column 1, if EOF we're done, otherwise, parse column 2's column name
         cols = 1
@@ -112,15 +119,7 @@ function datalayout_transpose(header, source, parsinglayers, delim, quotechar, e
         columnnames = [isa(header, Integer) || isempty(header) ? "Column1" : header[1]]
         columnpositions = [position(source)]
         datapos = position(source)
-        rows = 0
-        result = Parsers.Result(Tuple{Ptr{UInt8}, Int})
-        while !eof(source)
-            Parsers.parse!(parsinglayers, source, result)
-            Parsers.ok(result.code) || throw(Error(result, rows+1, 1))
-            rows += 1
-            xor(result.code & DELIM_NEWLINE, Parsers.DELIMITED) == 0 && continue
-            ((result.code & Parsers.NEWLINE) > 0 || eof(source)) && break
-        end
+        rows = countfields(source, parsinglayers)
         # we're now done w/ column 1, if EOF we're done, otherwise, parse column 2's column name
         cols = 1
         while !eof(source)
@@ -137,11 +136,12 @@ function datalayout_transpose(header, source, parsinglayers, delim, quotechar, e
     return rows, columnnames, columnpositions
 end
 
-function Source(fullpath::Union{AbstractString,IO};
+Base.isascii(c::UInt8) = c < 0x80
 
+function Source(fullpath::Union{AbstractString,IO};
               delim=",",
-              quotechar=QUOTE,
-              escapechar=ESCAPE,
+              quotechar='"',
+              escapechar='\\',
               missingstring::AbstractString="",
 
               header::Union{Integer, UnitRange{Int}, Vector}=1, # header can be a row number, range of rows, or actual string vector
@@ -149,7 +149,7 @@ function Source(fullpath::Union{AbstractString,IO};
               types=Type[],
               allowmissing::Symbol=:all,
               dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
-              decimal=PERIOD,
+              decimal='.',
               truestring="true",
               falsestring="false",
               categorical::Bool=true,
@@ -216,7 +216,7 @@ function Source(fullpath::Union{AbstractString,IO};
     @debug "columnnames=$columnnames, cols=$cols, rows=$rows, datapos=$datapos"
 
     # Detect column types
-    pools = CategoricalPool{String, UInt32, CategoricalString{UInt32}}[]
+    pools = CategoricalPool{String, UInt32, CatStr}[]
     if isa(types, Vector) && length(types) == cols
         # types might be a Vector{DataType}, which will be a problem if Unions are needed
         columntypes = convert(Vector{Type}, types)
@@ -242,7 +242,7 @@ function Source(fullpath::Union{AbstractString,IO};
             df = any(x->Base.nonmissingtype(x) <: DateTime, columntypes) ? Dates.default_format(DateTime) : Dates.default_format(Date)
         end
         if categorical
-            pools = Vector{CategoricalPool{String, UInt32, CategoricalString{UInt32}}}(undef, cols)
+            pools = Vector{CategoricalPool{String, UInt32, CatStr}}(undef, cols)
             for i = 1:cols
                 T = columntypes[i]
                 if length(levels[i]) / sum(values(levels[i])) < .67 && T !== Missing && Base.nonmissingtype(T) <: String
@@ -297,9 +297,6 @@ function Source(fullpath::Union{AbstractString,IO};
     return Source(sch, parsinglayers, source, bools, df, dec, String(fullpath), datapos, pools)
 end
 
-# construct a new Source from a Sink
-Source(s::CSV.Sink) = CSV.Source(fullpath=s.fullpath, options=s.options)
-
 # Data.Source interface
 "reset a `CSV.Source` to its beginning to be ready to parse data from again"
 Data.reset!(s::CSV.Source) = (seek(s.io, s.datapos); return nothing)
@@ -316,9 +313,9 @@ struct Error <: Exception
     col::Int
 end
 
-function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T, P, I, DF, D}
+@inline function parsefield(source::CSV.Source{P, I, DF, D}, ::Type{T}, row, col; kwargs...) where {P, I, DF, D, T}
     D === Vector{Int} && Parsers.fastseek!(source.io, source.datapos[col])
-    r = Parsers.parse(source.parsinglayers, source.io, Base.nonmissingtype(T))
+    r = Parsers.parse(source.parsinglayers, source.io, T; kwargs...)
     D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
     if Parsers.ok(r.code)
         return r.result
@@ -327,74 +324,30 @@ function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::
     end
 end
 
-function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::Union{Type{Bool}, Union{Bool, Missing}}, row, col::Int) where {T, P, I, DF, D}
-    D === Vector{Int} && seek(source.io, source.datapos[col])
-    r = Parsers.parse(source.parsinglayers, source.io, Bool; bools=source.bools)
-    D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
-    if Parsers.ok(r.code)
-        return r.result
-    else
-        throw(Error(r, row, col))
-    end
-end
+@inline Data.streamfrom(source::Source, ::Type{Data.Field}, T, row, col::Int) = parsefield(source, Base.nonmissingtype(T), row, col)
+@inline Data.streamfrom(source::Source, ::Type{Data.Field}, ::Union{Type{Bool}, Union{Bool, Missing}}, row, col::Int) = parsefield(source, Bool, row, col; bools=source.bools)
+@inline Data.streamfrom(source::Source, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T <: Union{AbstractFloat, Missing}} = parsefield(source, Base.nonmissingtype(T), row, col; decimal=source.decimal)
+@inline Data.streamfrom(source::Source, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T <: Union{Dates.TimeType, Missing}} = parsefield(source, Base.nonmissingtype(T), row, col; dateformat=source.dateformat)
+@inline Data.streamfrom(source::Source, ::Type{Data.Field}, ::Type{Missing}, row, col::Int) = parsefield(source, Missing, row, col)
 
-function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T <: Union{AbstractFloat, Missing}, P, I, DF, D}
-    D === Vector{Int} && seek(source.io, source.datapos[col])
-    r = Parsers.parse(source.parsinglayers, source.io, Base.nonmissingtype(T); decimal=source.decimal)
-    D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
-    if Parsers.ok(r.code)
-        return r.result
-    else
-        throw(Error(r, row, col))
-    end
-end
-
-function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T <: Union{Dates.TimeType, Missing}, P, I, DF, D}
-    D === Vector{Int} && seek(source.io, source.datapos[col])
-    r = Parsers.parse(source.parsinglayers, source.io, Base.nonmissingtype(T); dateformat=source.dateformat)
-    D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
-    if Parsers.ok(r.code)
-        return r.result
-    else
-        throw(Error(r, row, col))
-    end
-end
-
-function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::Type{Missing}, row, col::Int) where {P, I, DF, D}
-    D === Vector{Int} && seek(source.io, source.datapos[col])
-    r = Parsers.parse(source.parsinglayers, source.io, Missing)
-    D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
-    if Parsers.ok(r.code)
-        return r.result
-    else
-        throw(Error(r, row, col))
-    end
-end
-
-function get🐱(pool::CategoricalPool, val::Tuple{Ptr{UInt8}, Int})
+@inline function get🐱(pool::CategoricalPool, val::Tuple{Ptr{UInt8}, Int})
     index = Base.ht_keyindex2!(pool.invindex, val)
     if index > 0
         @inbounds v = pool.invindex.vals[index]
-        return CategoricalString{UInt32}(v, pool)
+        return CatStr(v, pool)
     else
         v = CategoricalArrays.push_level!(pool, val)
-        return CategoricalString{UInt32}(v, pool)
+        return CatStr(v, pool)
     end
 end
 
-function Data.streamfrom(source::CSV.Source{P, I, DF, D}, ::Type{Data.Field}, ::Union{Type{Union{CategoricalString{UInt32}, Missing}}, Type{CategoricalString{UInt32}}}, row, col::Int) where {T, P, I, DF, D}
-    D === Vector{Int} && Parsers.fastseek!(source.io, source.datapos[col])
-    r = Parsers.parse(source.parsinglayers, source.io, Tuple{Ptr{UInt8}, Int})
-    D === Vector{Int} && setindex!(source.datapos, position(source.io), col)
-    if Parsers.ok(r.code)
-        if r.result isa Missing
-            return missing
-        else
-            @inbounds pool = source.pools[col]
-            return get🐱(pool, r.result::Tuple{Ptr{UInt8}, Int})
-        end
+@inline function Data.streamfrom(source::Source, ::Type{Data.Field}, ::Union{Type{Union{CatStr, Missing}}, Type{CatStr}}, row, col::Int)
+    str = parsefield(source, Tuple{Ptr{UInt8}, Int}, row, col)
+    if str isa Missing
+        return missing
     else
-        throw(Error(r, row, col))
+        @inbounds pool = source.pools[col]
+        return get🐱(pool, str::Tuple{Ptr{UInt8}, Int})
     end
 end
 
