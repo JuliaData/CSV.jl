@@ -1,4 +1,3 @@
-using Compat
 using Missings
 using CSV
 using DataStreams, WeakRefStrings, CategoricalArrays

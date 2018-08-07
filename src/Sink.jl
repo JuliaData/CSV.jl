@@ -1,4 +1,4 @@
-using Compat.Dates: default_format
+using Dates: default_format
 
 function Sink(fullpath::Union{AbstractString, IO};
               delim::Char=',',
