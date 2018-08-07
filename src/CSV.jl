@@ -3,7 +3,7 @@ module CSV
 
 using DataStreams, WeakRefStrings, InternedStrings, Missings, CategoricalArrays, DataFrames
 
-using Compat, Compat.Mmap, Compat.Dates
+using Mmap, Dates
 
 struct ParsingException <: Exception
     msg::String
