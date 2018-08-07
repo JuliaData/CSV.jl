@@ -40,9 +40,10 @@ ds = CSV.read(so)
 @test ds[1][3] == 7.0
 @test ds[2][1] == 2.0
 @test Data.types(Data.schema(f)) == Data.types(Data.schema(so)) == Data.types(Data.schema(ds))
-f = si = so = ds = nothing; gc(); gc()
+f = si = so = ds = nothing; GC.gc(); GC.gc()
 try
 rm(joinpath(dir, "new_test_utf8.csv"))
+catch e
 end
 
 # f = CSV.Source(joinpath(dir, "test_utf16_be.csv"))
@@ -236,9 +237,10 @@ df2 = CSV.read(source)
 
 @test_throws ArgumentError CSV.Source(f; types = [Int, Int, Int, Int])
 close(f)
-f = source = nothing; gc(); gc()
+f = source = nothing; GC.gc(); GC.gc()
 try
 rm(t)
+catch e
 end
 
 # test tab-delimited missing values
@@ -255,9 +257,10 @@ let fn = tempname()
     end
     chmod(fn, 0o444)
     CSV.read(fn)
-    gc(); gc()
+    GC.gc(); GC.gc()
     try
     rm(fn)
+    catch e
     end
 end
 
@@ -287,6 +290,7 @@ let fn = tempname()
     @test String(read(fn)) == "a,b,c\n1,b2,3\n4,b5,6\n"
     try
     rm(fn)
+    catch e
     end
 end
 
@@ -295,6 +299,7 @@ let fn = tempname()
     @test String(read(fn)) == "a,b,c\n"
     try
     rm(fn)
+    catch e
     end
 end
 
@@ -362,9 +367,10 @@ tbl[:dttm] = DateTime.(tbl[:dt])
 CSV.write("test.tsv", tbl; delim='\t')
 df = CSV.read("test.tsv"; delim='\t', allowmissing=:auto)
 @test Data.types(Data.schema(df)) == (Int64, Date, DateTime)
-df = nothing; gc(); gc()
+df = nothing; GC.gc(); GC.gc()
 try
 rm("test.tsv")
+catch e
 end
 
 end # testset

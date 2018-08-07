@@ -1,6 +1,6 @@
-# Previous versions assumed that nb_available could accurately check for an empty CSV, but
-# this doesn't work reliably for streams because nb_available only checks buffered bytes
-# (see issue #77). This test verifies that even when nb_available would return 0 on a stream
+# Previous versions assumed that bytesavailable could accurately check for an empty CSV, but
+# this doesn't work reliably for streams because bytesavailable only checks buffered bytes
+# (see issue #77). This test verifies that even when bytesavailable would return 0 on a stream
 # the full stream is still read.
 
 mutable struct MultiStream{S<:IO} <: IO
@@ -36,13 +36,13 @@ function Base.read(s::MultiStream, ::Type{UInt8})
     read(s.streams[s.index], UInt8)::UInt8
 end
 
-function Base.nb_available(s::MultiStream)
-    nb_available(s.streams[s.index])
+function Base.bytesavailable(s::MultiStream)
+    bytesavailable(s.streams[s.index])
 end
 
 stream = MultiStream(
     [IOBuffer(""), IOBuffer("a,b,c\n1,2,3\n"), IOBuffer(""), IOBuffer("4,5,6")]
 )
 
-@test nb_available(stream) == 0
+@test bytesavailable(stream) == 0
 @test CSV.read(stream) == CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"))
