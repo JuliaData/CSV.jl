@@ -18,8 +18,8 @@ function Sink(fullpath::Union{AbstractString, IO};
     return Sink(options, io, fullpath, position(io), !append && header && !isempty(colnames), colnames, length(colnames), append, Val{quotefields})
 end
 
-quoted(::Type{Val{true}},  val, q, e, d) =  string(q, replace(val, q, string(e, q)), q)
-quoted(::Type{Val{false}}, val, q, e, d) = (q in val || d in val) ? string(q, replace(val, q, string(e, q)), q) : val
+quoted(::Type{Val{true}},  val, q, e, d) =  string(q, replace(val, q => string(e, q)), q)
+quoted(::Type{Val{false}}, val, q, e, d) = (q in val || d in val) ? string(q, replace(val, q => string(e, q)), q) : val
 
 function writeheaders(io::IOBuffer, h::Vector{String}, options, quotefields)
     cols = length(h)
