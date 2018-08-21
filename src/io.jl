@@ -1,138 +1,53 @@
-"""
-    CSV.readline(io::IO, q='"', e='\\', buf::IOBuffer=IOBuffer()) => String
-    CSV.readline(source::CSV.Source) => String
+import Parsers: readbyte, peekbyte
 
-Read a single line from `io` (any `IO` type) or a `CSV.Source` as a `String` object.
-This function mirrors `Base.readline` except that the newlines within quoted
-fields are ignored (e.g. value1, value2, \"value3 with \n embedded newlines\").
-Uses `buf::IOBuffer` for intermediate IO operations, if specified.
-"""
-function readline end
+const COMMA_NEWLINES = Parsers.Trie([",", "\n", "\r", "\r\n"], Parsers.DELIMITED)
+const READLINE_RESULT = Parsers.Result(Tuple{Ptr{UInt8}, Int})
 
-function readline(io::IO, q::UInt8, e::UInt8, buf::IOBuffer=IOBuffer())
-    while !eof(io)
-        b = readbyte(io)
-        Base.write(buf, b)
-        if b == q
-            while !eof(io)
-                b = readbyte(io)
-                Base.write(buf, b)
-                if b == e
-                    if eof(io)
-                        break
-                    elseif e == q && peekbyte(io) != q
-                        break
-                    end
-                    b = readbyte(io)
-                    Base.write(buf, b)
-                elseif b == q
-                    break
-                end
-            end
-        elseif b == NEWLINE
-            break
-        elseif b == RETURN
-            !eof(io) && peekbyte(io) == NEWLINE && Base.write(buf, readbyte(io))
-            break
-        end
+# readline! is used for implementation of skipto!
+readline!(io::IO) = readline!(Parsers.Delimited(Parsers.Quoted(), COMMA_NEWLINES), io)
+readline!(s::Source) = readline!(s.parsinglayers, s.io)
+function readline!(layers, io::IO)
+    eof(io) && return
+    while true
+        READLINE_RESULT.code = Parsers.SUCCESS
+        res = Parsers.parse!(layers, io, READLINE_RESULT)
+        Parsers.ok(res.code) || throw(Parsers.Error(io, res))
+        ((res.code & Parsers.NEWLINE) > 0 || eof(io)) && break
     end
-    return String(take!(buf))
-end
-readline(io::IO, q='"', e='\\', buf::IOBuffer=IOBuffer()) = readline(io, UInt8(q), UInt8(e), buf)
-readline(source::CSV.Source) = readline(source.io, source.options.quotechar, source.options.escapechar)
-
-# contents of a single CSV table field as returned by readsplitline!()
-struct RawField
-    value::String   # uparsed contents
-    isquoted::Bool  # whether the field value was quoted or not
+    return
 end
 
-Base.:(==)(a::RawField, b::RawField) = (a.isquoted == b.isquoted) && (a.value == b.value)
-
-"""
-    CSV.readsplitline!(vals::Vector{RawField}, io, d=',', q='"', e='\\', buf::IOBuffer=IOBuffer())
-    CSV.readsplitline!(vals::Vector{RawField}, source::CSV.Source)
-
-Read a single, delimited line from `io` (any `IO` type) or a `CSV.Source` as a `Vector{String}` and
-store the values in `vals`.
-Delimited fields are separated by `d`, quoted by `q` and escaped by `e` ASCII characters.
-The contents of `vals` are replaced.
-Uses `buf::IOBuffer` for intermediate IO operations, if specified.
-"""
-function readsplitline! end
-
-@enum ReadSplitLineState RSL_IN_FIELD RSL_IN_QUOTE RSL_AFTER_QUOTE RSL_AFTER_DELIM RSL_AFTER_NEWLINE
-
-function readsplitline!(vals::Vector{RawField}, io::IO, d::UInt8, q::UInt8, e::UInt8, buf::IOBuffer=IOBuffer())
-    empty!(vals)
-    state = RSL_AFTER_DELIM
-    push_buf_to_vals!() = push!(vals, RawField(String(take!(buf)), state==RSL_AFTER_QUOTE))
-    while !eof(io)
-        b = readbyte(io)
-        if state == RSL_IN_QUOTE # in the quoted string
-            if b == e # the escape character, read the next after it
-                Base.write(buf, b)
-                @assert !eof(io)
-                if e == q && peekbyte(io) != q
-                    state = RSL_AFTER_QUOTE
-                    break
-                end
-                b = readbyte(io)
-                Base.write(buf, b)
-            elseif b == q # end the quoted string
-                state = RSL_AFTER_QUOTE
-            else
-                Base.write(buf, b)
-            end
-        elseif b == d # delimiter
-            if state == RSL_AFTER_DELIM # empty field
-                push!(vals, RawField("", false))
-            else
-                push_buf_to_vals!()
-            end
-            state = RSL_AFTER_DELIM
-        elseif b == q # start of quote
-            if state == RSL_AFTER_DELIM
-                state = RSL_IN_QUOTE
-            else
-                throw(ParsingException("Unexpected start of quote ($q), use \"$e$q\" to type \"$q\""))
-            end
-        elseif b == NEWLINE
-            push_buf_to_vals!() # add the last field
-            state = RSL_AFTER_NEWLINE
-            break
-        elseif b == RETURN
-            !eof(io) && peekbyte(io) == NEWLINE && readbyte(io)
-            push_buf_to_vals!() # add the last field
-            state = RSL_AFTER_NEWLINE
-            break
-        else
-            if state == RSL_AFTER_QUOTE
-                throw(ParsingException("Unexpected character ($b) after the end of quote ($q)"))
-            elseif b == e # the escape character, read the next after it
-                Base.write(buf, b)
-                @assert !eof(io)
-                b = readbyte(io)
-            end
-            Base.write(buf, b)
-            state = RSL_IN_FIELD
-        end
+function skipto!(layers, io::IO, cur, dest)
+    cur >= dest && return
+    for _ = 1:(dest-cur)
+        readline!(layers, io)
     end
-    if state == RSL_IN_QUOTE
-        @assert eof(io)
-        throw(ParsingException("EOF while trying to read the closing quote"))
-    elseif state == RSL_IN_FIELD || state == RSL_AFTER_DELIM # file ended without the newline, store the current buf
-        eof(io)
-        push_buf_to_vals!()
-    end
+    return
+end
+
+const READSPLITLINE_RESULT = Parsers.Result(String)
+const DELIM_NEWLINE = Parsers.DELIMITED | Parsers.NEWLINE
+
+readsplitline(io::IO) = readsplitline(Parsers.Delimited(Parsers.Quoted(), COMMA_NEWLINES), io)
+function readsplitline(layers::Parsers.Delimited, io::IO)
+    vals = Union{String, Missing}[]
+    eof(io) && return vals
+    col = 1
+    result = READSPLITLINE_RESULT
+    while true
+        result.code = Parsers.SUCCESS
+        Parsers.parse!(layers, io, result)
+        # @debug "readsplitline!: result=$result"
+        Parsers.ok(result.code) || throw(Error(Parsers.Error(io, result), 1, col))
+        # @show result
+        push!(vals, result.result)
+        col += 1
+        # if we match a delimiter, we need to parse another column, even if the next char is a newline
+        xor(result.code & DELIM_NEWLINE, Parsers.DELIMITED) == 0 && continue
+        ((result.code & Parsers.NEWLINE) > 0 || eof(io)) && break
+    end 
     return vals
 end
-readsplitline!(vals::Vector{RawField}, io::IO, d=',', q='"', e='\\', buf::IOBuffer=IOBuffer()) = readsplitline!(vals, io, UInt8(d), UInt8(q), UInt8(e), buf)
-readsplitline!(vals::Vector{RawField}, source::CSV.Source) = readsplitline!(vals, source.io, source.options.delim, source.options.quotechar, source.options.escapechar)
-
-readsplitline(io::IO, d=',', q='"', e='\\', buf::IOBuffer=IOBuffer()) =
-readsplitline!(RawField[], io, d, q, e, buf)
-readsplitline(args...) = readsplitline!(RawField[], args...)
 
 """
     CSV.countlines(io::IO, quotechar, escapechar) => Int
@@ -145,42 +60,32 @@ function countlines(io::IO, q::UInt8, e::UInt8)
     b = 0x00
     while !eof(io)
         b = readbyte(io)
-        if b == q
+        if b === q
             while !eof(io)
                 b = readbyte(io)
-                if b == e
+                if b === e
                     if eof(io)
                         break
-                    elseif e == q && peekbyte(io) != q
+                    elseif e === q && peekbyte(io) != q
                         break
                     end
                     b = readbyte(io)
-                elseif b == q
+                elseif b === q
                     break
                 end
             end
-        elseif b == CSV.NEWLINE
+        elseif b === UInt8('\n')
             nl += 1
-        elseif b == CSV.RETURN
+        elseif b === UInt8('\r')
             nl += 1
-            !eof(io) && peekbyte(io) == CSV.NEWLINE && readbyte(io)
+            !eof(io) && peekbyte(io) === UInt8('\n') && readbyte(io)
         end
     end
-    return nl - (b == CSV.NEWLINE || b == CSV.RETURN)
+    return nl - (b === UInt8('\n') || b === UInt8('\r'))
 end
 countlines(io::IO, q='"', e='\\') = countlines(io, UInt8(q), UInt8(e))
-countlines(source::CSV.Source) = countlines(source.io, source.options.quotechar, source.options.escapechar)
-
-function skipto!(f::IO, cur, dest, q, e)
-    cur >= dest && return
-    for _ = 1:(dest-cur)
-        CSV.readline(f,q,e)
-    end
-    return
-end
 
 # try to infer the type of the value in `val`. The precedence of type checking is `Int64` => `Float64` => `Date` => `DateTime` => `String`
-timetype(df::Dates.DateFormat) = any(typeof(T) in (Dates.DatePart{'H'}, Dates.DatePart{'M'}, Dates.DatePart{'S'}, Dates.DatePart{'s'}) for T in df.tokens) ? DateTime : Date
 
 # column types start out as Any, but we get rid of them as soon as possible
 promote_type2(T::Type{<:Any}, ::Type{Any}) = T
@@ -194,97 +99,102 @@ promote_type2(::Type{Missing}, T::Type{<:Any}) = Union{T, Missing}
 promote_type2(::Type{Union{T, Missing}}, ::Type{S}) where {T, S} = Union{promote_type2(T, S), Missing}
 promote_type2(::Type{S}, ::Type{Union{T, Missing}}) where {T, S} = Union{promote_type2(T, S), Missing}
 promote_type2(::Type{Union{T, Missing}}, ::Type{Union{S, Missing}}) where {T, S} = Union{promote_type2(T, S), Missing}
-promote_type2(::Type{Union{WeakRefString{UInt8}, Missing}}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefString{UInt8}, Missing}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Union{WeakRefString{UInt8}, Missing}}) = Union{WeakRefString{UInt8}, Missing}
+promote_type2(::Type{Union{String, Missing}}, ::Type{String}) = Union{String, Missing}
+promote_type2(::Type{String}, ::Type{Union{String, Missing}}) = Union{String, Missing}
 # basic promote type definitions from Base
 promote_type2(::Type{Int64}, ::Type{Float64}) = Float64
 promote_type2(::Type{Float64}, ::Type{Int64}) = Float64
 promote_type2(::Type{Date}, ::Type{DateTime}) = DateTime
 promote_type2(::Type{DateTime}, ::Type{Date}) = DateTime
 # for cases when our current type can't widen, just promote to WeakRefString
-promote_type2(::Type{<:Real}, ::Type{<:Dates.TimeType}) = WeakRefString{UInt8}
-promote_type2(::Type{<:Dates.TimeType}, ::Type{<:Real}) = WeakRefString{UInt8}
-promote_type2(::Type{T}, ::Type{WeakRefString{UInt8}}) where T = WeakRefString{UInt8}
-promote_type2(::Type{Union{T, Missing}}, ::Type{WeakRefString{UInt8}}) where T = Union{WeakRefString{UInt8}, Missing}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{T}) where T = WeakRefString{UInt8}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Union{T, Missing}}) where T = Union{WeakRefString{UInt8}, Missing}
+promote_type2(::Type{<:Real}, ::Type{<:Dates.TimeType}) = String
+promote_type2(::Type{<:Dates.TimeType}, ::Type{<:Real}) = String
+promote_type2(::Type{T}, ::Type{String}) where T = String
+promote_type2(::Type{Union{T, Missing}}, ::Type{String}) where T = Union{String, Missing}
+promote_type2(::Type{String}, ::Type{T}) where T = String
+promote_type2(::Type{String}, ::Type{Union{T, Missing}}) where T = Union{String, Missing}
 # avoid ambiguity
-promote_type2(::Type{Any}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Any}) = WeakRefString{UInt8}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{WeakRefString{UInt8}}) = WeakRefString{UInt8}
-promote_type2(::Type{WeakRefString{UInt8}}, ::Type{Missing}) = Union{WeakRefString{UInt8}, Missing}
-promote_type2(::Type{Missing}, ::Type{WeakRefString{UInt8}}) = Union{WeakRefString{UInt8}, Missing}
+promote_type2(::Type{Any}, ::Type{String}) = String
+promote_type2(::Type{String}, ::Type{Any}) = String
+promote_type2(::Type{String}, ::Type{String}) = String
+promote_type2(::Type{String}, ::Type{Missing}) = Union{String, Missing}
+promote_type2(::Type{Missing}, ::Type{String}) = Union{String, Missing}
 promote_type2(::Type{Any}, ::Type{Missing}) = Missing
 promote_type2(::Type{Missing}, ::Type{Missing}) = Missing
 
-function detecttype(io, opt::CSV.Options{D}, prevT, levels) where {D}
-    pos = position(io)
-    # update levels
-    try
-        lev = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
-        ismissing(lev) || (levels[lev] = get!(levels, lev, 0) + 1)
-    catch e
-    end
-    if Int64 <: prevT || prevT == Missing
-        try
-            seek(io, pos)
-            v1 = CSV.parsefield(io, Union{Int64, Missing}, opt)
-            # print("...parsed = '$v1'...")
-            return v1 isa Missing ? Missing : Int64
-        catch e
+function timetype(df::Dates.DateFormat)
+    date = false
+    time = false
+    for token in df.tokens
+        T = typeof(token)
+        if T == Dates.DatePart{'H'}
+            time = true
+        elseif T == Dates.DatePart{'y'} || T == Dates.DatePart{'Y'}
+            date = true
         end
+    end
+    return ifelse(date & time, DateTime, ifelse(time, Time, Date))
+end
+
+function incr!(dict::Dict{String, Int}, key::Tuple{Ptr{UInt8}, Int})
+    index = Base.ht_keyindex2!(dict, key)
+    if index > 0
+        @inbounds dict.vals[index] += 1
+        return
+    else
+        kk::String = convert(String, key)
+        @inbounds Base._setindex!(dict, 1, kk, -index)
+        return
+    end
+end
+
+function detecttype(layers, io, prevT, levels, row, col, bools, dateformat, dec)
+    pos = position(io)
+    result = Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
+    Parsers.ok(result.code) || throw(Error(Parsers.Error(io, result), row, col))
+    # @debug "res = $result"
+    result.result === missing && return Missing
+    # update levels
+    incr!(levels, result.result::Tuple{Ptr{UInt8}, Int})
+
+    if Int64 <: prevT || prevT == Missing
+        seek(io, pos)
+        res_int = Parsers.parse(layers, io, Int64)
+        # @debug "res_int = $res_int"
+        Parsers.ok(res_int.code) && return Int64
     end
     if Float64 <: prevT || Int64 <: prevT || prevT == Missing
-        try
-            seek(io, pos)
-            v2 = CSV.parsefield(io, Union{Float64, Missing}, opt)
-            # print("...parsed = '$v2'...")
-            return v2 isa Missing ? Missing : Float64
-        catch e
-        end
+        seek(io, pos)
+        res_float = Parsers.parse(layers, io, Float64; decimal=dec)
+        # @debug "res_float = $res_float"
+        Parsers.ok(res_float.code) && return Float64
     end
     if Date <: prevT || DateTime <: prevT || prevT == Missing
-        if D == Nothing
+        if dateformat === nothing
             # try to auto-detect TimeType
-            try
-                seek(io, pos)
-                v3 = CSV.parsefield(io, Union{String, Missing}, opt)
-                # print("...parsed = '$v3'...")
-                return v3 isa Missing ? Missing : (Date(v3, Dates.ISODateFormat); Date)
-            catch e
-            end
-            try
-                seek(io, pos)
-                v4 = CSV.parsefield(io, Union{String, Missing}, opt)
-                # print("...parsed = '$v4'...")
-                return v4 isa Missing ? Missing : (DateTime(v4, Dates.ISODateTimeFormat); DateTime)
-            catch e
-            end
+            seek(io, pos)
+            res_date = Parsers.parse(layers, io, Date)
+            # @debug "res_date = $res_date"
+            Parsers.ok(res_date.code) && return Date
+            seek(io, pos)
+            res_datetime = Parsers.parse(layers, io, DateTime)
+            # @debug "res_datetime = $res_datetime"
+            Parsers.ok(res_datetime.code) && return DateTime
         else
             # use user-provided dateformat
-            try
-                seek(io, pos)
-                T = timetype(opt.dateformat)
-                v5 = CSV.parsefield(io, Union{T, Missing}, opt)
-                return v5 isa Missing ? Missing : T
-            catch e
-            end
+            T = timetype(dateformat)
+            # @debug "T = $T"
+            seek(io, pos)
+            res_dt = Parsers.parse(layers, io, T; dateformat=dateformat)
+            # @debug "res_dt = $res_dt"
+            Parsers.ok(res_dt.code) && return T
         end
     end
     if Bool <: prevT || prevT == Missing
-        try
-            seek(io, pos)
-            v6 = CSV.parsefield(io, Union{Bool, Missing}, opt)
-            return v6 isa Missing ? Missing : Bool
-        catch e
-        end
-    end
-    try
         seek(io, pos)
-        v7 = CSV.parsefield(io, Union{WeakRefString{UInt8}, Missing}, opt)
-        # print("...parsed = '$v7'...")
-        return v7 isa Missing ? Missing : WeakRefString{UInt8}
-    catch e
+        res_bool = Parsers.parse(layers, io, Bool; bools=bools)
+        # @debug "res_bool = $res_bool"
+        Parsers.ok(res_bool.code) && return Bool
     end
-    return Missing
+    return String
 end

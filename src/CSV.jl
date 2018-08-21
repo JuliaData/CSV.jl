@@ -1,42 +1,7 @@
-__precompile__(true)
 module CSV
 
-using DataStreams, WeakRefStrings, InternedStrings, Missings, CategoricalArrays, DataFrames
-
+using DataStreams, Parsers, CategoricalArrays, DataFrames, WeakRefStrings
 using Mmap, Dates
-
-struct ParsingException <: Exception
-    msg::String
-end
-
-const RETURN  = UInt8('\r')
-const NEWLINE = UInt8('\n')
-const COMMA   = UInt8(',')
-const QUOTE   = UInt8('"')
-const ESCAPE  = UInt8('\\')
-const PERIOD  = UInt8('.')
-const SPACE   = UInt8(' ')
-const TAB     = UInt8('\t')
-const MINUS   = UInt8('-')
-const PLUS    = UInt8('+')
-const NEG_ONE = UInt8('0')-UInt8(1)
-const ZERO    = UInt8('0')
-const TEN     = UInt8('9')+UInt8(1)
-Base.isascii(c::UInt8) = c < 0x80
-
-readbyte(from::IO) = Base.read(from, UInt8)
-peekbyte(from::IO) = Base.peek(from)
-
-@inline function readbyte(from::IOBuffer)
-    @inbounds byte = from.data[from.ptr]
-    from.ptr = from.ptr + 1
-    return byte
-end
-
-@inline function peekbyte(from::IOBuffer)
-    @inbounds byte = from.data[from.ptr]
-    return byte
-end
 
 substitute(::Type{Union{T, Missing}}, ::Type{T1}) where {T, T1} = Union{T1, Missing}
 substitute(::Type{T}, ::Type{T1}) where {T, T1} = T1
@@ -76,7 +41,7 @@ struct Options{D}
     types
 end
 
-Options(;delim=COMMA, quotechar=QUOTE, escapechar=ESCAPE, missingstring="", null=nothing, dateformat=nothing, decimal=PERIOD, truestring="true", falsestring="false", internstrings=true, datarow=-1, rows=0, header=1, types=Type[]) =
+Options(;delim=UInt8(','), quotechar=UInt8('"'), escapechar=UInt8('\\'), missingstring="", null=nothing, dateformat=nothing, decimal=UInt8('.'), truestring="true", falsestring="false", internstrings=true, datarow=-1, rows=0, header=1, types=Type[]) =
     Options(delim%UInt8, quotechar%UInt8, escapechar%UInt8,
             map(UInt8, collect(ascii(String(missingstring)))), null === nothing ? nothing : map(UInt8, collect(ascii(String(null)))), missingstring != "" || (null != "" && null != nothing),
             isa(dateformat, AbstractString) ? Dates.DateFormat(dateformat) : dateformat,
@@ -115,37 +80,22 @@ CSV.reset!(source)
 sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 ```
 """
-mutable struct Source{I, D} <: Data.Source
+mutable struct Source{P, I, DF, D} <: Data.Source
     schema::Data.Schema
-    options::Options{D}
+    parsinglayers::P
     io::I
+    bools::Parsers.Trie
+    dateformat::DF
+    decimal::UInt8
     fullpath::String
-    datapos::Int # the position in the IOBuffer where the rows of data begins
+    datapos::D # the position in the IOBuffer where the rows of data begins or columnpositions for transposed files
+    pools::Vector{CategoricalPool{String, UInt32, CategoricalString{UInt32}}}
 end
 
 function Base.show(io::IO, f::Source)
     println(io, "CSV.Source: ", f.fullpath)
-    println(io, f.options)
+    println(io, f.io)
     show(io, f.schema)
-end
-
-"""
-`CSV.TransposedSource(file_or_io; kwargs...) => CSV.TransposedSource`
-
-Type that in all respects is identical to a `CSV.Source`, except when reading a csv file,
-the data will be parsed "transposed", i.e. rows will become columns / columns will become rows.
-This can be a huge convenience if the csv data happens to be transposed, as well as lead to huge
-performance gains as the resulting data set can be more consistently typed.
-
-Typical usage involves calling `CSV.read(file; transpose=true)`.
-"""
-mutable struct TransposedSource{I, D} <: Data.Source
-    schema::Data.Schema
-    options::Options{D}
-    io::I
-    fullpath::String
-    datapos::Int # the position in the IOBuffer where the rows of data begins
-    columnpositions::Vector{Int}
 end
 
 """
@@ -181,10 +131,7 @@ mutable struct Sink{D, B} <: Data.Sink
     quotefields::B
 end
 
-include("parsefields.jl")
-include("float.jl")
 include("io.jl")
-include("TransposedSource.jl")
 include("Source.jl")
 include("Sink.jl")
 include("validate.jl")
