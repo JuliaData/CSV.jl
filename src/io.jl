@@ -11,7 +11,7 @@ function readline!(layers, io::IO)
     while true
         READLINE_RESULT.code = Parsers.SUCCESS
         res = Parsers.parse!(layers, io, READLINE_RESULT)
-        Parsers.ok(res.code) || throw(Parsers.Error(res))
+        Parsers.ok(res.code) || throw(Parsers.Error(io, res))
         ((res.code & Parsers.NEWLINE) > 0 || eof(io)) && break
     end
     return
@@ -38,7 +38,7 @@ function readsplitline(layers::Parsers.Delimited, io::IO)
         result.code = Parsers.SUCCESS
         Parsers.parse!(layers, io, result)
         # @debug "readsplitline!: result=$result"
-        Parsers.ok(result.code) || throw(Error(result, 1, col))
+        Parsers.ok(result.code) || throw(Error(Parsers.Error(io, result), 1, col))
         # @show result
         push!(vals, result.result)
         col += 1
@@ -151,7 +151,7 @@ end
 function detecttype(layers, io, prevT, levels, row, col, bools, dateformat, dec)
     pos = position(io)
     result = Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
-    Parsers.ok(result.code) || throw(Error(result, row, col))
+    Parsers.ok(result.code) || throw(Error(Parsers.Error(io, result), row, col))
     # @debug "res = $result"
     result.result === missing && return Missing
     # update levels

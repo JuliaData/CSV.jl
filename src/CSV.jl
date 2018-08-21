@@ -1,6 +1,6 @@
 module CSV
 
-using DataStreams, Parsers, Missings, CategoricalArrays, DataFrames, WeakRefStrings
+using DataStreams, Parsers, CategoricalArrays, DataFrames, WeakRefStrings
 using Mmap, Dates
 
 substitute(::Type{Union{T, Missing}}, ::Type{T1}) where {T, T1} = Union{T1, Missing}
