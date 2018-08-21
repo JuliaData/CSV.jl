@@ -74,7 +74,7 @@ f = CSV.Source(joinpath(dir, "test_quoted_numbers.csv"); categorical=false, stri
 @test size(Data.schema(f), 2) == 3
 @test size(Data.schema(f), 1) == 3
 ds = CSV.read(f)
-@test Data.types(Data.schema(f)) == (String, Int64, Int64)
+@test Data.types(Data.schema(f)) == (WeakRefString{UInt8}, Int64, Int64)
 
 #test various newlines
 f = CSV.Source(joinpath(dir, "test_crlf_line_endings.csv"), allowmissing=:auto)
@@ -336,7 +336,7 @@ f = CSV.Source(joinpath(dir, "baseball.csv"); rows_for_type_detect=35, strings=:
 @test size(Data.schema(f), 2) == 15
 @test size(Data.schema(f), 1) == 35
 @test Data.header(Data.schema(f)) == ["Rk","Year","Age","Tm","Lg","","W","L","W-L%","G","Finish","Wpost","Lpost","W-L%post",""]
-@test Data.types(Data.schema(f)) == (Union{Int64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{CategoricalString{UInt32}, Missing},Union{CategoricalString{UInt32}, Missing},Union{String, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{CategoricalString{UInt32}, Missing})
+@test Data.types(Data.schema(f)) == (Union{Int64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{CategoricalString{UInt32}, Missing},Union{CategoricalString{UInt32}, Missing},Union{WeakRefString{UInt8}, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{CategoricalString{UInt32}, Missing})
 ds = CSV.read(f)
 
 f = CSV.Source(joinpath(dir, "FL_insurance_sample.csv"); types=Dict(10=>Float64,12=>Float64), allowmissing=:auto)
@@ -367,7 +367,7 @@ f = CSV.Source(joinpath(dir, "Sacramentorealestatetransactions.csv"), allowmissi
 @test Data.types(Data.schema(f)) == (String,CategoricalString{UInt32},Int64,CategoricalString{UInt32},Int64,Int64,Int64,CategoricalString{UInt32},CategoricalString{UInt32},Int64,Float64,Float64)
 ds = CSV.read(f)
 
-f = CSV.Source(joinpath(dir, "SalesJan2009.csv"); types=Dict(3=>String,7=>Union{String, Missing}), strings=:weakref, allowmissing=:auto)
+f = CSV.Source(joinpath(dir, "SalesJan2009.csv"); types=Dict(3=>String,7=>Union{String, Missing}), allowmissing=:auto)
 @test size(Data.schema(f), 2) == 12
 @test size(Data.schema(f), 1) == 998
 @test Data.header(Data.schema(f)) == ["Transaction_date","Product","Price","Payment_Type","Name","City","State","Country","Account_Created","Last_Login","Latitude","Longitude"]

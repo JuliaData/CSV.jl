@@ -32,17 +32,9 @@ io = IOBuffer(str * "\n" * str * "\r\n" * str)
     @test CSV.readsplitline(ioo) == spl2
 end
 
-# # `CSV.readsplitline(source::CSV.Source)` => `Vector{String}`
-# strsource = CSV.Source(IOBuffer(str); header=["col1","col2","col3","col4"])
-# @test CSV.readsplitline(strsource) == spl
-
 # `CSV.countlines(io::IO, quotechar, escapechar)` => `Int`
 @test CSV.countlines(IOBuffer(str)) == 1
 @test CSV.countlines(IOBuffer(str * "\n" * str)) == 2
-
-# `CSV.countlines(source::CSV.Source)` => `Int`
-# intsource = CSV.Source(IOBuffer(str); header=["col1","col2","col3","col4"])
-# @test CSV.countlines(intsource) == 1
 
 @testset "misformatted CSV lines" begin
     @testset "missing quote" begin

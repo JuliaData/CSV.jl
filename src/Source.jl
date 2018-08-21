@@ -1,5 +1,7 @@
 const CatStr = CategoricalString{UInt32}
 
+@inline Parsers.intern(::Type{WeakRefString{UInt8}}, x::Tuple{Ptr{UInt8}, Int}) = WeakRefString(x)
+
 makedf(df::DateFormat) = df
 makedf(df::String) = DateFormat(df)
 makedf(df::Nothing) = df
@@ -270,8 +272,8 @@ function Source(fullpath::Union{AbstractString,IO};
     else
         autocols = Int[]
     end
-    if strings !== :weakref
-        # columntypes = Type[(T !== Missing && Base.nonmissingtype(T) <: WeakRefString) ? substitute(T, String) : T for T in columntypes]
+    if strings === :weakref
+        columntypes = Type[(T !== Missing && Base.nonmissingtype(T) <: String) ? substitute(T, WeakRefString{UInt8}) : T for T in columntypes]
     end
     if allowmissing != :auto
         if allowmissing == :all # allow missing values in all automatically detected columns
@@ -309,7 +311,7 @@ Data.streamtype(::Type{<:CSV.Source}, ::Type{Data.Field}) = true
 Data.reference(source::CSV.Source) = source.io.data
 
 struct Error <: Exception
-    result::Parsers.Result
+    result::Parsers.Error
     row::Int
     col::Int
 end
@@ -321,7 +323,7 @@ end
     if Parsers.ok(r.code)
         return r.result
     else
-        throw(Error(r, row, col))
+        throw(Error(Parsers.Error(source.io, r), row, col))
     end
 end
 

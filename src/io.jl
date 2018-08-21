@@ -42,9 +42,10 @@ function readsplitline(layers::Parsers.Delimited, io::IO)
         # @show result
         push!(vals, result.result)
         col += 1
+        # if we match a delimiter, we need to parse another column, even if the next char is a newline
         xor(result.code & DELIM_NEWLINE, Parsers.DELIMITED) == 0 && continue
         ((result.code & Parsers.NEWLINE) > 0 || eof(io)) && break
-    end
+    end 
     return vals
 end
 

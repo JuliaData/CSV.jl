@@ -26,7 +26,8 @@ function validate(s::CSV.Source{P, I, DF, D}) where {P, I, DF, D}
             D === Vector{Int} && Parsers.fastseek!(s.io, s.datapos[col])
             r = Parsers.parse(s.parsinglayers, s.io, Base.nonmissingtype(types[col]))
             D === Vector{Int} && setindex!(s.datapos, position(s.io), col)
-            rowstr *= "$(col == 1 ? "" : " ")$(r.result)"
+            rowstr *= "$(col == 1 ? "" : ", ")$(r.result)"
+            Parsers.ok(r.code) || throw(Error(Parsers.Error(s.io, r), row, col))
             if col < cols
                 if eof(s.io)
                     throw(ExpectedMoreColumnsError("row=$row, col=$col: expected $cols columns, parsed $col, but parsing encountered unexpected end-of-file; parsed row: '$rowstr'"))

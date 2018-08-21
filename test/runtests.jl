@@ -20,6 +20,3 @@ include("multistream.jl")
 include("validate.jl")
 
 end
-
-#TODO
- # go thru issues
