@@ -46,6 +46,7 @@ end
     end
     r = Parsers.parse(f.parsinglayers, f.io, Base.nonmissingtype(T))
     f.lastparsedcol[] = col
+    @show r
     if Parsers.ok(r.code)
         return r.result
     else
@@ -111,6 +112,8 @@ function File(source::Union{String, IO};
     missingstring="",
     delim::Union{Char, String}=",",
     quotechar::Union{UInt8, Char}='"',
+    openquotechar::Union{UInt8, Char, Nothing}=nothing,
+    closequotechar::Union{UInt8, Char, Nothing}=nothing,
     escapechar::Union{UInt8, Char}='\\',
     )
 
@@ -130,7 +133,7 @@ function File(source::Union{String, IO};
     d = string(delim)
     parsinglayers = Parsers.Sentinel(missingstrings) |>
                     x->Parsers.Strip(x, d == " " ? 0x00 : ' ', d == "\t" ? 0x00 : '\t') |>
-                    x->Parsers.Quoted(x, quotechar, escapechar) |>
+                    (openquotechar !== nothing ? x->Parsers.Quoted(x, openquotechar, closequotechar, escapechar) : x->Parsers.Quoted(x, quotechar, escapechar)) |>
                     x->Parsers.Delimited(x, d, "\n", "\r", "\r\n")
     names, datapos = datalayout(header, parsinglayers, io, datarow)
     types = Tuple{(Union{Missing, Int} for nm in names)...}
