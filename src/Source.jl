@@ -136,7 +136,8 @@ function datalayout_transpose(header, source, parsinglayers, delim, quotechar, e
     return rows, columnnames, columnpositions
 end
 
-Base.isascii(c::UInt8) = c < 0x80
+isascii(c) = Base.isascii(c)
+isascii(c::UInt8) = c < 0x80
 
 function Source(fullpath::Union{AbstractString,IO};
               delim=",",

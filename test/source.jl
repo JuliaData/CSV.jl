@@ -27,23 +27,8 @@ sch2 = Data.schema(ds)
 
 f = CSV.Source(joinpath(dir, "test_utf8.csv"))
 si = CSV.write(joinpath(dir, "new_test_utf8.csv"), f)
-so = CSV.Source(si)
-@test so.options.delim == UInt8(',')
-@test size(Data.schema(so), 2) == 3
-@test size(Data.schema(so), 1) == 3
-@test Data.header(Data.schema(so)) == ["col1","col2","col3"]
-@test Data.types(Data.schema(so)) == (Union{Float64,Missing},Union{Float64,Missing},Union{Float64,Missing})
-ds = CSV.read(so)
-@test ds[1][1] == 1.0
-@test ds[1][2] == 4.0
-@test ds[1][3] == 7.0
-@test ds[2][1] == 2.0
-@test Data.types(Data.schema(f)) == Data.types(Data.schema(so)) == Data.types(Data.schema(ds))
-f = si = so = ds = nothing; GC.gc(); GC.gc()
-try
-rm(joinpath(dir, "new_test_utf8.csv"))
-catch e
-end
+f = si = ds = nothing; GC.gc(); GC.gc()
+@try rm(joinpath(dir, "new_test_utf8.csv"))
 
 # f = CSV.Source(joinpath(dir, "test_utf16_be.csv"))
 # f = CSV.Source(joinpath(dir, "test_utf16_le.csv"))
