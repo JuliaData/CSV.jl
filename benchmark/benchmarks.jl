@@ -57,7 +57,51 @@ TYPES = !is_windows() ? (Int, Float64, WeakRefString{UInt8}, String, Date, DateT
 
 end
 
+struct Select{T, NT, names}
+    x::T
+end
 
+function Select(x, names...)
+    NT = Tables.schema(x)
+    return Select{typeof(x), NT, names}(x)
+end
+
+Base.length(s::Select) = length(s.x)
+Base.eltype(s::Select{T, NT, names}) where {T, NT, names} = select(NT, names)
+function select(::Type{NamedTuple{names, types}}, nms) where {names, types}
+    typs = []
+    for nm in nms
+        for (i, n) in enumerate(names)
+            nm === n && push!(typs, types.parameters[i])
+        end
+    end
+    return NamedTuple{nms, Tuple{typs...}}
+end
+
+struct SelectRow{T}
+    x::T
+end
+
+@inline function Base.iterate(s::Select, st=())
+    state = iterate(s.x, st...)
+    state === nothing && return nothing
+    row, st = state
+    return SelectRow(row), (st,)
+end
+
+@inline Base.getproperty(row::SelectRow, name::Symbol) = getproperty(getfield(row, 1), name)
+
+function profile(N)
+    dir = "/Users/jacobquinn/.julia/dev/CSV/test/test_files"
+    file = joinpath(dir, "pandas_zeros.csv")
+    f = CSV.File(file)
+    Profile.clear()
+    for i = 1:N
+        seek(f.io, f.rowpositions[1])
+        @profile f |> columntable
+    end
+    return
+end
 
 
 # generate single column files w/ 1M rows for each type
