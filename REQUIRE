@@ -3,3 +3,4 @@ DataStreams 0.3.0
 DataFrames 0.11.0
 WeakRefStrings 0.4.1
 CategoricalArrays 0.3.0
+Parsers 0.2.2

@@ -1,6 +1,7 @@
 const CatStr = CategoricalString{UInt32}
 
 @inline Parsers.intern(::Type{WeakRefString{UInt8}}, x::Tuple{Ptr{UInt8}, Int}) = WeakRefString(x)
+Parsers.unescape(T, s::WeakRefString, e, q) = Parsers.unescape(String, s, e, q)
 
 makedf(df::DateFormat) = df
 makedf(df::String) = DateFormat(df)

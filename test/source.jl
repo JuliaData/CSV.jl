@@ -285,7 +285,7 @@ df = CSV.read(joinpath(dir, "comma_decimal.csv"); delim=';', decimal=',')
 # #86
 df = CSV.read(joinpath(dir, "double_quote_quotechar_and_escapechar.csv"); escapechar='"')
 @test size(df) == (24, 5)
-@test df[5][24] == "NORTH DAKOTA STATE \"\"A\"\" #1"
+@test df[5][24] == "NORTH DAKOTA STATE \"A\" #1"
 
 # #84
 df = CSV.read(joinpath(dir, "census.txt"); delim='\t', allowmissing=:auto)
