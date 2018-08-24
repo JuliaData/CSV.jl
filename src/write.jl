@@ -58,7 +58,7 @@ function write(itr, file::Union{String, IO};
             end
         end
         for row in Tables.rows(itr)
-            Tables.unroll(sch, row) do col, val
+            Tables.unroll(sch, row) do val, col, nm
                 printcsv(io, val, delim, oq, cq, escapechar, missingstring, dateformat)
                 Base.write(io, ifelse(col == cols, UInt8('\n'), delim))
             end
