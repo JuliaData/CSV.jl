@@ -26,10 +26,12 @@ uuid = "34da2185-b29b-5c13-b0c7-acf172513d20"
 version = "1.0.1"
 
 [[DataFrames]]
-deps = ["CategoricalArrays", "CodecZlib", "Compat", "DataStreams", "Dates", "InteractiveUtils", "LinearAlgebra", "Missings", "Pkg", "Printf", "Random", "Reexport", "SortingAlgorithms", "Statistics", "StatsBase", "Test", "TranscodingStreams", "Unicode", "WeakRefStrings"]
-git-tree-sha1 = "31cca86a48add8d5cdd9457c4f75ee5577ef3488"
+deps = ["CategoricalArrays", "CodecZlib", "Compat", "DataStreams", "Missings", "Printf", "Reexport", "SortingAlgorithms", "Statistics", "StatsBase", "Tables", "TranscodingStreams", "Unicode", "WeakRefStrings"]
+git-tree-sha1 = "bfb848ff57e1acdaf03282fba62b3772e086680d"
+repo-rev = "tables_integration"
+repo-url = "https://github.com/mdavezac/DataFrames.jl"
 uuid = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
-version = "0.13.1"
+version = "0.13.1+"
 
 [[DataStreams]]
 deps = ["Dates", "Missings", "Test", "WeakRefStrings"]
