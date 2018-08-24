@@ -239,7 +239,7 @@ version = "0.2.1"
 
 [[Tables]]
 deps = ["IterableTables", "IteratorInterfaceExtensions", "Query", "QueryOperators", "Requires"]
-git-tree-sha1 = "e51cc42b2724e8c3f61d6649ace1b669d2bfe458"
+git-tree-sha1 = "e0387888cc2d482d076d1dddd474c11f59bd02e7"
 repo-rev = "master"
 repo-url = "https://github.com/JuliaData/Tables.jl"
 uuid = "f31cc48a-97c4-11e8-115d-f1beebab189a"
