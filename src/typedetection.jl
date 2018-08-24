@@ -39,7 +39,7 @@ initialtypes(T, t::Dict{Int, V}, names) where {V} = Any[get(t, i, T) for i = 1:l
 initialtypes(T, t::Vector, names) = length(t) == length(names) ? collect(Any, t) : throw(ArgumentError("length of user provided types ($(length(t))) does not match length of header (?$(length(names)))"))
 
 Z(cv, p, moe) = (cv^2 * p * (1 - p)) / moe^2
-# 99% CI, 50% proportion, 3.5% margin of error
+# 99% CI, 50% proportion, 2.5% margin of error
 const X = Z(2.58, 0.5, 0.025)
 samplesize(N) = ceil(Int, (N * X) / (X + N - 1))
 
