@@ -1,4 +1,4 @@
-using CSV, Test, Dates, Tables, CategoricalArrays
+using CSV, Test, Dates, Tables, CategoricalArrays, WeakRefStrings
 
 # const dir = joinpath(dirname(@__FILE__),"test_files/")
 dir = "/Users/jacobquinn/.julia/dev/CSV/test/test_files"
@@ -245,7 +245,7 @@ testfiles = [
     # #83
     ("comma_decimal.csv", (delim=';', decimal=','),
         (2, 2),
-        NamedTuple{(:x, :y), Tuple{Float64, Int64}},
+        NamedTuple{(:x, :y),Tuple{Union{Missing, Float64},Union{Missing, Int64}}},
         (x = Union{Missing, Float64}[3.14, 1.0], y = Union{Missing, Int64}[1, 1])
     ),
     # #86
@@ -293,126 +293,125 @@ testfiles = [
     ("baseball.csv", (categorical=true,),
         (35, 15),
         NamedTuple{(:Rk, :Year, :Age, :Tm, :Lg, :Column6, :W, :L, Symbol("W-L%"), :G, :Finish, :Wpost, :Lpost, Symbol("W-L%post"), :Column15), Tuple{Union{Int64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{CategoricalString{UInt32}, Missing},Union{CategoricalString{UInt32}, Missing},Union{String, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{CategoricalString{UInt32}, Missing}}},
-        
+        nothing
+    ),
+    ("FL_insurance_sample.csv", (types=Dict(10=>Float64,12=>Float64), allowmissing=:auto, categorical=true),
+        (36634, 18),
+        NamedTuple{(:policyID, :statecode, :county, :eq_site_limit, :hu_site_limit, :fl_site_limit, :fr_site_limit, :tiv_2011, :tiv_2012, :eq_site_deductible, :hu_site_deductible, :fl_site_deductible, :fr_site_deductible, :point_latitude, :point_longitude, :line, :construction, :point_granularity),Tuple{Int64,CategoricalString{UInt32},CategoricalString{UInt32},Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,CategoricalString{UInt32},CategoricalString{UInt32},Int64}},
+        nothing
+    ),
+    ("FL_insurance_sample.csv", (types=Dict("eq_site_deductible"=>Float64,"fl_site_deductible"=>Float64), allowmissing=:auto, categorical=true),
+        (36634, 18),
+        NamedTuple{(:policyID, :statecode, :county, :eq_site_limit, :hu_site_limit, :fl_site_limit, :fr_site_limit, :tiv_2011, :tiv_2012, :eq_site_deductible, :hu_site_deductible, :fl_site_deductible, :fr_site_deductible, :point_latitude, :point_longitude, :line, :construction, :point_granularity),Tuple{Int64,CategoricalString{UInt32},CategoricalString{UInt32},Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,CategoricalString{UInt32},CategoricalString{UInt32},Int64}},
+        nothing
+    ),
+    ("SacramentocrimeJanuary2006.csv", (allowmissing=:auto, categorical=true),
+        (7584, 9),
+        NamedTuple{(:cdatetime, :address, :district, :beat, :grid, :crimedescr, :ucr_ncic_code, :latitude, :longitude),Tuple{String,String,Int64,CategoricalString{UInt32},Int64,CategoricalString{UInt32},Int64,Float64,Float64}},
+        nothing
+    ),
+    ("Sacramentorealestatetransactions.csv", (allowmissing=:auto, categorical=true),
+        (985, 12),
+        NamedTuple{(:street, :city, :zip, :state, :beds, :baths, :sq__ft, :type, :sale_date, :price, :latitude, :longitude),Tuple{String,CategoricalString{UInt32},Int64,CategoricalString{UInt32},Int64,Int64,Int64,CategoricalString{UInt32},CategoricalString{UInt32},Int64,Float64,Float64}},
+        nothing
+    ),
+    ("SalesJan2009.csv", (allowmissing=:auto, categorical=true),
+        (998, 12),
+        NamedTuple{(:Transaction_date, :Product, :Price, :Payment_Type, :Name, :City, :State, :Country, :Account_Created, :Last_Login, :Latitude, :Longitude),Tuple{String,CategoricalString{UInt32},CategoricalString{UInt32},CategoricalString{UInt32},String,String,Union{Missing, CategoricalString{UInt32}},CategoricalString{UInt32},String,String,Float64,Float64}},
+        nothing
+    ),
+    ("stocks.csv", (allowmissing=:auto,),
+        (30, 2),
+        NamedTuple{(Symbol("Stock Name"), Symbol("Company Name")), Tuple{String, String}},
+        nothing
+    ),
+    ("TechCrunchcontinentalUSA.csv", (allowmissing=:auto, categorical=true),
+        (1460, 10),
+        NamedTuple{(:permalink, :company, :numEmps, :category, :city, :state, :fundedDate, :raisedAmt, :raisedCurrency, :round),Tuple{CategoricalString{UInt32},CategoricalString{UInt32},Union{Missing, Int64},Union{Missing, CategoricalString{UInt32}},Union{Missing, CategoricalString{UInt32}},CategoricalString{UInt32},CategoricalString{UInt32},Int64,CategoricalString{UInt32},CategoricalString{UInt32}}},
+        nothing
+    ),
+    ("Fielding.csv", (allowmissing=:none,),
+        (167938, 18),
+        NamedTuple{(:playerID, :yearID, :stint, :teamID, :lgID, :POS, :G, :GS, :InnOuts, :PO, :A, :E, :DP, :PB, :WP, :SB, :CS, :ZR),Tuple{WeakRefString{UInt8},Int64,Int64,WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},Int64,Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64}}},
+        nothing
+    ),
+    ("latest (1).csv", (header=0, missingstring="\\N", allowmissing=:auto, categorical=true),
+        (1000, 25),
+        NamedTuple{(:Column1, :Column2, :Column3, :Column4, :Column5, :Column6, :Column7, :Column8, :Column9, :Column10, :Column11, :Column12, :Column13, :Column14, :Column15, :Column16, :Column17, :Column18, :Column19, :Column20, :Column21, :Column22, :Column23, :Column24, :Column25),Tuple{CategoricalString{UInt32},CategoricalString{UInt32},Int64,Int64,CategoricalString{UInt32},Int64,CategoricalString{UInt32},Int64,Date,Date,Int64,CategoricalString{UInt32},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Int64},Union{Missing, Float64},Float64,Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Int64},Float64,Union{Missing, Float64},Union{Missing, Float64}}},
+        nothing
+    ),
+    # #217
+    (IOBuffer("aa,bb\n1,\"1,b,c\"\n"), (allowmissing=:auto,),
+        (1, 2),
+        NamedTuple{(:aa, :bb), Tuple{Int, String}},
+        (aa = [1], bb = ["1,b,c"])
+    ),
+    # #198
+    ("issue_198.csv", (decimal=',', delim=';', missingstring="-", datarow = 2, header = ["Date", "EONIA", "1m", "12m", "3m", "6m", "9m"]),
+        (6, 7),
+        NamedTuple{(:Date, :EONIA, Symbol("1m"), Symbol("12m"), Symbol("3m"), Symbol("6m"), Symbol("9m")),Tuple{Union{Missing, String},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64}}},
+        NamedTuple{(:Date, :EONIA, Symbol("1m"), Symbol("12m"), Symbol("3m"), Symbol("6m"), Symbol("9m"))}((Union{Missing, String}["18/04/2018", "17/04/2018", "16/04/2018", "15/04/2018", "14/04/2018", "13/04/2018"], Union{Missing, Float64}[-0.368, -0.368, -0.367, missing, missing, -0.364], Union{Missing, Float64}[-0.371, -0.371, -0.371, missing, missing, -0.371], Union{Missing, Float64}[-0.189, -0.189, -0.189, missing, missing, -0.19], Union{Missing, Float64}[-0.328, -0.328, -0.329, missing, missing, -0.329], Union{Missing, Float64}[-0.271, -0.27, -0.27, missing, missing, -0.271], Union{Missing, Float64}[-0.219, -0.219, -0.219, missing, missing, -0.219]))
+    ),
+    # #198 part 2
+    ("issue_198_part2.csv", (missingstring="++", delim=';', decimal=','),
+        (4, 3),
+        NamedTuple{(:A, :B, :C),Tuple{Union{Missing, String},Union{Missing, Float64},Union{Missing, Float64}}},
+        (A = Union{Missing, String}["a", "b", "c", "d"], B = Union{Missing, Float64}[-0.367, missing, missing, -0.364], C = Union{Missing, Float64}[-0.371, missing, missing, -0.371])
+    ),
+    # #207
+    ("issue_207.csv", (allowmissing=:auto,),
+        (2, 6),
+        NamedTuple{(:a, :b, :c, :d, :e, :f),Tuple{Int64,Int64,Int64,Float64,String,Union{Missing, Float64}}},
+        (a = [1863001, 1863209], b = [134, 137], c = [10000, 0], d = [1.0009, 1.0], e = ["1.0000", "2,773.9000"], f = Union{Missing, Float64}[-0.002033899, missing])
+    ),
+    # #120
+    ("issue_120.csv", (allowmissing=:auto, header=0),
+        (5, 20),
+        NamedTuple{(:Column1, :Column2, :Column3, :Column4, :Column5, :Column6, :Column7, :Column8, :Column9, :Column10, :Column11, :Column12, :Column13, :Column14, :Column15, :Column16, :Column17, :Column18, :Column19, :Column20),Tuple{Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int64,Int64,Int64,Int64,Missing,Float64,Float64,Float64,Float64,Float64,Float64}},
+        (Column1 = [3.52848962348857e9, 3.52848962448866e9, 3.52848962548857e9, 3.52848962648866e9, 3.52848962748875e9], Column2 = [312.73, 312.49, 312.74, 312.49, 312.62], Column3 = [0.0, 0.0, 0.0, 0.0, 0.0], Column4 = [41.87425, 41.87623, 41.87155, 41.86422, 41.87615], Column5 = [297.6302, 297.6342, 297.6327, 297.632, 297.6324], Column6 = [0.0, 0.0, 0.0, 0.0, 0.0], Column7 = [286.3423, 286.3563, 286.3723, 286.3837, 286.397], Column8 = [-99.99, -99.99, -99.99, -99.99, -99.99], Column9 = [-99.99, -99.99, -99.99, -99.99, -99.99], Column10 = [12716, 12716, 12716, 12716, 12716], Column11 = [0, 0, 0, 0, 0], Column12 = [0, 0, 0, 0, 0], Column13 = [0, 0, 0, 0, 0], Column14 = Missing[missing, missing, missing, missing, missing], Column15 = [-24.81942, -24.8206, -24.82111, -24.82091, -24.82035], Column16 = [853.8073, 852.1921, 853.4257, 854.1342, 851.171], Column17 = [0.0, 0.0, 0.0, 0.0, 0.0], Column18 = [0.0, 0.0, 0.0, 0.0, 0.0], Column19 = [60.07, 38.27, 61.38, 49.23, 42.49], Column20 = [132.356, 132.356, 132.356, 132.356, 132.356])
+    ),
+    ("pandas_zeros.csv", (allowmissing=:auto,),
+        (100000, 50),
+        NamedTuple{Tuple(Symbol("$i") for i = 0:49), NTuple{50, Int64}},
+        nothing
     ),
 
 ]
 
-\epsilon    
-
-#other various files found around the internet
-f = CSV.File(joinpath(dir, "baseball.csv"); categorical=true)
-@test size(Data.schema(f), 2) == 15
-@test size(Data.schema(f), 1) == 35
-@test Data.header(Data.schema(f)) == 
-@test Data.types(Data.schema(f)) == ()
-ds = CSV.File(f)
-
-f = CSV.File(joinpath(dir, "FL_insurance_sample.csv"); types=Dict(10=>Float64,12=>Float64), allowmissing=:auto)
-@test size(Data.schema(f), 2) == 18
-@test size(Data.schema(f), 1) == 36634
-@test Data.header(Data.schema(f)) == ["policyID","statecode","county","eq_site_limit","hu_site_limit","fl_site_limit","fr_site_limit","tiv_2011","tiv_2012","eq_site_deductible","hu_site_deductible","fl_site_deductible","fr_site_deductible","point_latitude","point_longitude","line","construction","point_granularity"]
-@test Data.types(Data.schema(f)) == (Int64,CategoricalString{UInt32},CategoricalString{UInt32},Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,CategoricalString{UInt32},CategoricalString{UInt32},Int64)
-ds = CSV.File(f)
-
-f = CSV.File(joinpath(dir, "FL_insurance_sample.csv");types=Dict("eq_site_deductible"=>Float64,"fl_site_deductible"=>Float64),allowmissing=:auto)
-@test size(Data.schema(f), 2) == 18
-@test size(Data.schema(f), 1) == 36634
-@test Data.header(Data.schema(f)) == ["policyID","statecode","county","eq_site_limit","hu_site_limit","fl_site_limit","fr_site_limit","tiv_2011","tiv_2012","eq_site_deductible","hu_site_deductible","fl_site_deductible","fr_site_deductible","point_latitude","point_longitude","line","construction","point_granularity"]
-@test Data.types(Data.schema(f)) == (Int64,CategoricalString{UInt32},CategoricalString{UInt32},Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,CategoricalString{UInt32},CategoricalString{UInt32},Int64)
-ds = CSV.File(f)
-
-f = CSV.File(joinpath(dir, "SacramentocrimeJanuary2006.csv"), allowmissing=:auto)
-@test size(Data.schema(f), 2) == 9
-@test size(Data.schema(f), 1) == 7584
-@test Data.header(Data.schema(f)) == ["cdatetime","address","district","beat","grid","crimedescr","ucr_ncic_code","latitude","longitude"]
-@test Data.types(Data.schema(f)) == (CategoricalString{UInt32},String,Int64,CategoricalString{UInt32},Int64,CategoricalString{UInt32},Int64,Float64,Float64)
-ds = CSV.File(f)
-
-f = CSV.File(joinpath(dir, "Sacramentorealestatetransactions.csv"), allowmissing=:auto)
-@test size(Data.schema(f), 2) == 12
-@test size(Data.schema(f), 1) == 985
-@test Data.header(Data.schema(f)) == ["street","city","zip","state","beds","baths","sq__ft","type","sale_date","price","latitude","longitude"]
-@test Data.types(Data.schema(f)) == (String,CategoricalString{UInt32},Int64,CategoricalString{UInt32},Int64,Int64,Int64,CategoricalString{UInt32},CategoricalString{UInt32},Int64,Float64,Float64)
-ds = CSV.File(f)
-
-f = CSV.File(joinpath(dir, "SalesJan2009.csv"); types=Dict(3=>String,7=>Union{String, Missing}), allowmissing=:auto)
-@test size(Data.schema(f), 2) == 12
-@test size(Data.schema(f), 1) == 998
-@test Data.header(Data.schema(f)) == ["Transaction_date","Product","Price","Payment_Type","Name","City","State","Country","Account_Created","Last_Login","Latitude","Longitude"]
-@test Data.types(Data.schema(f)) == (String,CategoricalString{UInt32},String,CategoricalString{UInt32},String,String,Union{String, Missing},CategoricalString{UInt32},String,String,Float64,Float64)
-ds = CSV.File(f)
-
-f = CSV.File(joinpath(dir, "stocks.csv"), allowmissing=:auto)
-@test size(Data.schema(f), 2) == 2
-@test size(Data.schema(f), 1) == 30
-@test Data.header(Data.schema(f)) == ["Stock Name","Company Name"]
-@test Data.types(Data.schema(f)) == (String,String)
-ds = CSV.File(f)
-
-f = CSV.File(joinpath(dir, "TechCrunchcontinentalUSA.csv"); types=Dict(4=>Union{String, Missing},5=>Union{String, Missing}), allowmissing=:auto)
-@test size(Data.schema(f), 2) == 10
-@test size(Data.schema(f), 1) == 1460
-@test Data.header(Data.schema(f)) == ["permalink","company","numEmps","category","city","state","fundedDate","raisedAmt","raisedCurrency","round"]
-@test Data.types(Data.schema(f)) == (CategoricalString{UInt32},CategoricalString{UInt32},Union{Int64, Missing},Union{String, Missing},Union{String, Missing},CategoricalString{UInt32},CategoricalString{UInt32},Int64,CategoricalString{UInt32},CategoricalString{UInt32})
-ds = CSV.File(f)
-
-f = CSV.File(joinpath(dir, "Fielding.csv"); allowmissing=:none, types=Dict("GS"=>Union{Int, Missing},"PO"=>Union{Int, Missing},"A"=>Union{Int, Missing},"E"=>Union{Int, Missing},"DP"=>Union{Int, Missing},"PB"=>Union{Int, Missing},"InnOuts"=>Union{Int, Missing},"WP"=>Union{Int, Missing},"SB"=>Union{Int, Missing},"CS"=>Union{Int, Missing},"ZR"=>Union{Int, Missing}))
-@test size(Data.schema(f), 2) == 18
-@test size(Data.schema(f), 1) == 167938
-@test Data.header(Data.schema(f)) == ["playerID","yearID","stint","teamID","lgID","POS","G","GS","InnOuts","PO","A","E","DP","PB","WP","SB","CS","ZR"]
-@test Data.types(Data.schema(f)) == (CategoricalArrays.CategoricalString{UInt32}, Int64, Int64, CategoricalArrays.CategoricalString{UInt32}, CategoricalArrays.CategoricalString{UInt32}, CategoricalArrays.CategoricalString{UInt32}, Int64, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing})
-ds = CSV.File(f)
-
-f = CSV.File(joinpath(dir, "latest (1).csv"); header=0, missingstring="\\N", types=Dict(13=>Union{Float64, Missing},17=>Union{Int, Missing},18=>Union{Float64, Missing},20=>Union{Float64, Missing}), allowmissing=:auto)
-@test size(Data.schema(f), 2) == 25
-@test size(Data.schema(f), 1) == 1000
-@test Data.header(Data.schema(f)) == ["Column$i" for i = 1:size(Data.schema(f), 2)]
-@test Data.types(Data.schema(f)) == (CategoricalArrays.CategoricalString{UInt32}, CategoricalArrays.CategoricalString{UInt32}, Int64, Int64, CategoricalArrays.CategoricalString{UInt32}, Int64, CategoricalArrays.CategoricalString{UInt32}, Int64, Date, Date, Int64, CategoricalArrays.CategoricalString{UInt32}, Union{Float64, Missing}, Union{Float64, Missing}, Union{Float64, Missing}, Union{Float64, Missing}, Union{Int, Missing}, Union{Float64, Missing}, Float64, Union{Float64, Missing}, Union{Float64, Missing}, Union{Int64, Missing}, Float64, Union{Float64, Missing}, Union{Float64, Missing})
-ds = CSV.File(f)
-
-f = CSV.File(joinpath(dir, "pandas_zeros.csv"), allowmissing=:none)
-@test size(Data.schema(f), 2) == 50
-@test size(Data.schema(f), 1) == 100000
-@test Data.header(Data.schema(f)) == [string(i) for i = 0:49]
-@test Data.types(Data.schema(f)) == (fill(Int64,50)...,)
-@time ds = CSV.File(f)
 # f = CSV.File(joinpath(dir, "pandas_zeros.csv"), allowmissing=:none)
-# @time ds = CSV.File(f)
-# f = CSV.File(joinpath(dir, "pandas_zeros.csv"), allowmissing=:none)
+# @time f |> columntable;
 # using Profile
 # Profile.clear()
-# @profile CSV.File(f)
+# @profile f |> columntable;
 # Profile.print(C=true)
+# Profile.print()
 
-end # testset
+# @testset "CSV.TransposedSource" begin
 
-@testset "CSV.TransposedSource" begin
+# # CSV.TransposedSource
+# f = CSV.File(joinpath(dir, "transposed.csv"); transpose=true)
+# @test size(df) == (3, 3)
+# @test Data.header(Data.schema(df)) == ["col1", "col2", "col3"]
+# @test df[1][1] == 1
+# @test df[1][2] == 2
+# @test df[1][3] == 3
 
-# CSV.TransposedSource
-f = CSV.File(joinpath(dir, "transposed.csv"); transpose=true)
-@test size(df) == (3, 3)
-@test Data.header(Data.schema(df)) == ["col1", "col2", "col3"]
-@test df[1][1] == 1
-@test df[1][2] == 2
-@test df[1][3] == 3
+# f = CSV.File(joinpath(dir, "transposed_1row.csv"); transpose=true)
+# @test size(df) == (1, 1)
 
-f = CSV.File(joinpath(dir, "transposed_1row.csv"); transpose=true)
-@test size(df) == (1, 1)
+# f = CSV.File(joinpath(dir, "transposed_emtpy.csv"); transpose=true)
+# @test size(df) == (0, 1)
 
-f = CSV.File(joinpath(dir, "transposed_emtpy.csv"); transpose=true)
-@test size(df) == (0, 1)
+# f = CSV.File(joinpath(dir, "transposed_extra_newline.csv"); transpose=true)
+# @test size(df) == (2, 2)
 
-f = CSV.File(joinpath(dir, "transposed_extra_newline.csv"); transpose=true)
-@test size(df) == (2, 2)
+# f = CSV.File(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=0)
+# @test size(df) == (2, 3)
+# @test Data.header(Data.schema(df)) == ["Column1", "Column2", "Column3"]
 
-f = CSV.File(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=0)
-@test size(df) == (2, 3)
-@test Data.header(Data.schema(df)) == ["Column1", "Column2", "Column3"]
-
-f = CSV.File(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=["c1", "c2", "c3"])
-@test size(df) == (2, 3)
-@test Data.header(Data.schema(df)) == ["c1", "c2", "c3"]
+# f = CSV.File(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=["c1", "c2", "c3"])
+# @test size(df) == (2, 3)
+# @test Data.header(Data.schema(df)) == ["c1", "c2", "c3"]
 
 for test in testfiles
     testfile(test...)

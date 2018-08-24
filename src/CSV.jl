@@ -28,7 +28,6 @@ end
 
 # could just store NT internally and have Row take it as type parameter
 # could separate kwargs out into individual fields and remove type parameter
-# same w/ functions; could be internal field and only row takes type parameter for it
 struct File{NT, I, P, KW}
     io::I
     parsinglayers::P
@@ -75,9 +74,9 @@ end
 end
 
 @inline function parsefield(f, T, row, col)
-    r = Parsers.parse(f.parsinglayers, f.io, T)
+    r = Parsers.parse(f.parsinglayers, f.io, T; f.kwargs...)
     if !Parsers.ok(r.code)
-        println("warning: failed parsing $T on row=$row, col=$col")
+        println("warning: failed parsing $T on row=$row, col=$col, error=$(Parsers.codes(r.code))")
     end
     return r.result
 end
