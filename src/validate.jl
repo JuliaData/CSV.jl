@@ -16,16 +16,14 @@ Takes the same positional & keyword arguments as [`CSV.read`](@ref), but provide
 """
 function validate end
 
-function validate(s::CSV.Source{P, I, DF, D}) where {P, I, DF, D}
-    sch = Data.schema(s) # size, header, types
-    rows, cols = size(sch)
-    types = Data.types(sch)
+function validate(s::File)
+    sch = Tables.schema(s) # size, header, types
+    rows, cols = size(s)
+    types = Tables.types(sch)
     for row = 1:rows
         rowstr = ""
         for col = 1:cols
-            D === Vector{Int} && Parsers.fastseek!(s.io, s.datapos[col])
             r = Parsers.parse(s.parsinglayers, s.io, Base.nonmissingtype(types[col]))
-            D === Vector{Int} && setindex!(s.datapos, position(s.io), col)
             rowstr *= "$(col == 1 ? "" : ", ")$(r.result)"
             Parsers.ok(r.code) || throw(Error(Parsers.Error(s.io, r), row, col))
             if col < cols
@@ -43,12 +41,7 @@ function validate(s::CSV.Source{P, I, DF, D}) where {P, I, DF, D}
     end
 end
 
-function validate(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
-    validate(Source(fullpath; kwargs...))
-    return
-end
-
-function validate(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...) where {T}
-    validate(Source(fullpath; kwargs...))
+function validate(fullpath::Union{AbstractString,IO}; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
+    validate(File(fullpath; kwargs...))
     return
 end
