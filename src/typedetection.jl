@@ -44,7 +44,6 @@ const X = Z(2.58, 0.5, 0.025)
 samplesize(N) = ceil(Int, (N * X) / (X + N - 1))
 
 function detect(types, io, rows, parsinglayers, kwargs, typemap, categorical, debug)
-    # calculate statistical sample size for # of rows to use for type detection
     len = length(rows)
     cols = length(types)
 
@@ -52,6 +51,7 @@ function detect(types, io, rows, parsinglayers, kwargs, typemap, categorical, de
         # just type detect the whole file
         r = 1:len
     else
+        # calculate statistical sample size for # of rows to use for type detection
         S = samplesize(len)
         # here we divide the file rows up into even STEPS chunks
         # then also include an extra subsample-long chunk
@@ -61,9 +61,10 @@ function detect(types, io, rows, parsinglayers, kwargs, typemap, categorical, de
         debug && @show S, r
     end
 
+    defaultstringtype = len > 100_000 ? WeakRefString{UInt8} : String
     # prep if categorical
     levels = categorical ? Any[Dict{String, Int}() for _ = 1:cols] : []
-    
+
     for row in r
         seek(io, rows[row])
         for col = 1:cols
@@ -74,7 +75,7 @@ function detect(types, io, rows, parsinglayers, kwargs, typemap, categorical, de
                 seek(io, pos)
                 debug && @show "col: $col, detecting type for: $(result.result)"
             end
-            T = detecttype(types[col], io, parsinglayers, kwargs, levels, row, col, categorical)
+            T = detecttype(types[col], io, parsinglayers, kwargs, levels, row, col, categorical, defaultstringtype)
             debug && @show "col: $col, detected type: $T"
             types[col] = promote_type2(types[col], T)
             debug && @show "col: $col, promoted to: $(types[col])"
@@ -105,8 +106,10 @@ end
 empty(::Type{Union{}}) = true
 empty(::Type{Missing}) = true
 empty(x) = false
+strtype(::Type{T}, str) where {T} = str
+strtype(::Type{T}) where {T <: AbstractString} = T
 
-function detecttype(prevT, io, layers, kwargs, levels, row, col, categorical)
+function detecttype(prevT, io, layers, kwargs, levels, row, col, categorical, defaultstringtype)
     pos = position(io)
     if categorical
         result = Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
@@ -158,7 +161,7 @@ function detecttype(prevT, io, layers, kwargs, levels, row, col, categorical)
     end
     seek(io, pos)
     Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
-    return String
+    return strtype(prevT, defaultstringtype)
 end
 
 function timetype(df::Dates.DateFormat)
