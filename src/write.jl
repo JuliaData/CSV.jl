@@ -1,6 +1,6 @@
-with(f::Function, file::IO) = f(file)
-function with(f::Function, file::String)
-    open(file, "w") do io
+with(f::Function, file::IO, append) = f(file)
+function with(f::Function, file::String, append)
+    open(file, append ? "a" : "w") do io
         f(io)
     end
 end
@@ -46,11 +46,12 @@ function write(itr, file::Union{String, IO};
     dateformat=nothing,
     writeheader::Bool=true,
     header::Vector{String}=String[],
+    append::Bool=true,
     )
     oq, cq = openquotechar !== nothing ? (openquotechar, closequotechar) : (quotechar, quotechar)
     sch = Tables.schema(itr)
     cols = length(Tables.names(sch))
-    with(file) do io
+    with(file, append) do io
         if writeheader
             for (col, nm) in enumerate(Tables.names(sch))
                 printcsv(io, string(nm), delim, oq, cq, escapechar, missingstring, false)
