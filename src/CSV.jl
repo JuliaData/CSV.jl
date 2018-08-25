@@ -35,6 +35,7 @@ struct File{NT, I, P, KW}
     lastparsedcol::Base.RefValue{Int}
     kwargs::KW
     pools::Vector{CategoricalPool{String, UInt32, CategoricalString{UInt32}}}
+    strict::Bool
 end
 
 Base.eltype(f::F) where {F <: File} = Row{F}
@@ -63,7 +64,7 @@ parsingtype(::Type{T}) where {T} = T
     end
 end
 
-@inline function parsefield(f, ::Type{CatStr}, row, col)
+@inline function parsefield(f, ::Type{CatStr}, row, col, strict)
     r = Parsers.parse(f.parsinglayers, f.io, Tuple{Ptr{UInt8}, Int})
     if r.result isa Missing
         return missing
@@ -73,10 +74,11 @@ end
     end
 end
 
-@inline function parsefield(f, T, row, col)
+@inline function parsefield(f, T, row, col, strict)
     r = Parsers.parse(f.parsinglayers, f.io, T; f.kwargs...)
     if !Parsers.ok(r.code)
-        println("warning: failed parsing $T on row=$row, col=$col, error=$(Parsers.codes(r.code))")
+        strict ? throw(Error(Parsers.Error(f.io, r), row, col)) :
+            println("warning: failed parsing $T on row=$row, col=$col, error=$(Parsers.codes(r.code))")
     end
     return r.result
 end
@@ -101,7 +103,7 @@ function Base.getproperty(csvrow::Row{F}, ::Type{T}, col::Int, name::Symbol) whe
         @inbounds Parsers.fastseek!(f.io, f.rowpositions[row])
         skipcells(f, col - 1)
     end
-    r = parsefield(f, parsingtype(T), row, col)
+    r = parsefield(f, parsingtype(T), row, col, f.strict)
     f.lastparsedcol[] = col
     return r
 end
@@ -132,8 +134,9 @@ File(source::Union{String, IO};
     typemap::Dict=Dict{Type, Type}(),
     allowmissing::Symbol=:all,
     categorical::Bool=false,
+    strict::Bool=false,
     debug::Bool=false) =
-    File(source, use_mmap, header, datarow, footerskip, transpose, missingstrings, missingstring, delim, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, debug)
+    File(source, use_mmap, header, datarow, footerskip, transpose, missingstrings, missingstring, delim, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
 
 # File(file, true, 1, -1, 0, false, String[], "", ",", '"', nothing, nothing, '\\', nothing, nothing, nothing, nothing, nothing, Dict{Type, Type}(), :all, false)
 function File(source::Union{String, IO},
@@ -160,8 +163,9 @@ function File(source::Union{String, IO},
     typemap::Dict,
     allowmissing::Symbol,
     categorical::Bool,
+    strict::Bool,
     debug::Bool)
-
+    isa(source, AbstractString) && (isfile(source) || throw(ArgumentError("\"$source\" is not a valid file")))
     io = getio(source, use_mmap)
     
     consumeBOM!(io)
@@ -175,13 +179,14 @@ function File(source::Union{String, IO},
                     x->Parsers.Delimited(x, d, "\n", "\r", "\r\n")
     
     header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
+    isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
     datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
 
     if transpose
         
     else
         names, datapos = datalayout(header, parsinglayers, io, datarow)
-        eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, typeof(io), typeof(parsinglayers), typeof(kwargs)}(io, parsinglayers, Int64[], Ref{Int}(0), kwargs, CategoricalPool{String, UInt32, CatStr}[])
+        eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, typeof(io), typeof(parsinglayers), typeof(kwargs)}(io, parsinglayers, Int64[], Ref{Int}(0), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
         rows = rowpositions(io, quotechar % UInt8, escapechar % UInt8)
         footerskip > 0 && resize!(rows, length(rows) - footerskip)
         debug && @show rows
@@ -194,7 +199,7 @@ function File(source::Union{String, IO},
     end
 
     seek(io, rows[1])
-    return File{NamedTuple{names, Tuple{types...}}, typeof(io), typeof(parsinglayers), typeof(kwargs)}(io, parsinglayers, rows, Ref{Int}(0), kwargs, pools)
+    return File{NamedTuple{names, Tuple{types...}}, typeof(io), typeof(parsinglayers), typeof(kwargs)}(io, parsinglayers, rows, Ref{Int}(0), kwargs, pools, strict)
 end
 
 include("filedetection.jl")
@@ -236,5 +241,7 @@ getkwargs(df::String, dec::Union{UInt8, Char}, bools::Parsers.Trie) = (dateforma
 getkwargs(df::Dates.DateFormat, dec::Union{UInt8, Char}, bools::Parsers.Trie) = (dateformat=df, decimal=dec % UInt8, bools=bools)
 
 include("write.jl")
+include("deprecated.jl")
+include("validate.jl")
 
 end # module
