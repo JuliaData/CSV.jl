@@ -83,7 +83,7 @@ function readsplitline(layers::Parsers.Delimited, io::IO)
         result.code = Parsers.SUCCESS
         Parsers.parse!(layers, io, result)
         # @debug "readsplitline!: result=$result"
-        Parsers.ok(result.code) || throw(Error(result, 1, col))
+        Parsers.ok(result.code) || throw(Error(Parsers.Error(io, result), 1, col))
         # @show result
         push!(vals, result.result)
         col += 1

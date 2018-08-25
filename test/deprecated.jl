@@ -1,3 +1,65 @@
+using DataStreams, DataFrames
+
+# `CSV.readline(io::IO, q='"', e='\\', buf::IOBuffer=IOBuffer())` => `String`
+str = "field1,field2,\"quoted \\\"field with \n embedded newline\",field3"
+io = IOBuffer(str)
+CSV.readline!(io)
+@test eof(io)
+io = IOBuffer(str * "\n" * str * "\r\n" * str)
+CSV.readline!(io)
+@test position(io) == 62
+CSV.readline!(io)
+@test position(io) == 125
+CSV.readline!(io)
+@test eof(io)
+
+# `CSV.readline(source::CSV.Source)` => `String`
+strsource = CSV.Source(IOBuffer(str); header=["col1","col2","col3","col4"])
+CSV.readline!(strsource)
+@test eof(strsource.io)
+
+# `CSV.readsplitline(io, d=',', q='"', e='\\', buf::IOBuffer=IOBuffer())` => `Vector{String}`
+spl = ["field1", "field2", "quoted \"field with \n embedded newline", "field3"]
+io = IOBuffer(str)
+@test CSV.readsplitline(io) == spl
+io = IOBuffer(str * "\n" * str * "\r\n" * str)
+@test CSV.readsplitline(io) == spl
+@test CSV.readsplitline(io) == spl
+@test CSV.readsplitline(io) == spl
+
+@testset "empty fields" begin
+    str2 = "field1,,\"\",field3,"
+    spl2 = ["field1", "", "", "field3", ""]
+    ioo = IOBuffer(str2)
+    @test CSV.readsplitline(ioo) == spl2
+end
+
+# `CSV.countlines(io::IO, quotechar, escapechar)` => `Int`
+@test CSV.countlines(IOBuffer(str)) == 1
+@test CSV.countlines(IOBuffer(str * "\n" * str)) == 2
+
+@testset "misformatted CSV lines" begin
+    @testset "missing quote" begin
+        str1 = "field1,field2,\"quoted \\\"field with \n embedded newline,field3"
+        io2 = IOBuffer(str1)
+        @test_throws CSV.Error CSV.readsplitline(io2)
+    end
+
+    @testset "misplaced quote" begin
+        str1 = "fi\"eld1\",field2,\"quoted \\\"field with \n embedded newline\",field3"
+        io2 = IOBuffer(str1)
+        # @test_throws CSV.ParsingException CSV.readsplitline(io2)
+
+        str2 = "field1,field2,\"quoted \\\"field with \n\"\" embedded newline\",field3"
+        io2 = IOBuffer(str2)
+        @test_throws CSV.Error CSV.readsplitline(io2)
+
+        str3 = "\"field\"1,field2,\"quoted \\\"field with \n embedded newline\",field3"
+        io2 = IOBuffer(str3)
+        @test_throws CSV.Error CSV.readsplitline(io2)
+    end
+end
+
 @testset "Basic CSV.Source" begin
 
 #test on non-existent file
@@ -285,7 +347,7 @@ df = CSV.read(joinpath(dir, "comma_decimal.csv"); delim=';', decimal=',')
 # #86
 df = CSV.read(joinpath(dir, "double_quote_quotechar_and_escapechar.csv"); escapechar='"')
 @test size(df) == (24, 5)
-@test df[5][24] == "NORTH DAKOTA STATE \"\"A\"\" #1"
+@test df[5][24] == "NORTH DAKOTA STATE \"A\" #1"
 
 # #84
 df = CSV.read(joinpath(dir, "census.txt"); delim='\t', allowmissing=:auto)
@@ -446,3 +508,61 @@ df = CSV.read(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=[
 @test Data.header(Data.schema(df)) == ["c1", "c2", "c3"]
 
 end # testset
+
+@testset "Write to IOBuffer" begin
+    csv_string = chomp(read(joinpath(dir, "test_basic.csv"), String))
+    df = CSV.read(IOBuffer(csv_string))
+    io = IOBuffer()
+    CSV.write(io, df)
+    written = chomp(String(take!(io)))
+    @test written == csv_string
+end
+
+# Previous versions assumed that bytesavailable could accurately check for an empty CSV, but
+# this doesn't work reliably for streams because bytesavailable only checks buffered bytes
+# (see issue #77). This test verifies that even when bytesavailable would return 0 on a stream
+# the full stream is still read.
+
+mutable struct MultiStream{S<:IO} <: IO
+    streams::Array{S}
+    index::Int
+end
+
+function MultiStream(streams::AbstractArray{S}) where {S <: IO}
+    MultiStream(streams, 1)
+end
+
+function refill(s::MultiStream)
+    while eof(s.streams[s.index]) && s.index < length(s.streams)
+        close(s.streams[s.index])
+        s.index += 1
+    end
+end
+
+function Base.close(s::MultiStream)
+    for i in s.index:length(s.streams)
+        close(s.streams[i])
+    end
+    s.index = length(s.streams)
+    nothing
+end
+
+function Base.eof(s::MultiStream)
+    eof(s.streams[s.index]) && s.index == length(s.streams)
+end
+
+function Base.read(s::MultiStream, ::Type{UInt8})
+    refill(s)
+    read(s.streams[s.index], UInt8)::UInt8
+end
+
+function Base.bytesavailable(s::MultiStream)
+    bytesavailable(s.streams[s.index])
+end
+
+stream = MultiStream(
+    [IOBuffer(""), IOBuffer("a,b,c\n1,2,3\n"), IOBuffer(""), IOBuffer("4,5,6")]
+)
+
+@test bytesavailable(stream) == 0
+@test CSV.read(stream) == CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"))

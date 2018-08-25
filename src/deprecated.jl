@@ -1,5 +1,7 @@
 using DataStreams, DataFrames
 
+import Parsers: readbyte, peekbyte
+
 """
 Represents the various configuration settings for delimited text file parsing.
 
@@ -133,6 +135,8 @@ makestr(d::UInt8) = string(Char(d))
 makestr(d::Char) = string(d)
 makestr(d::String) = d
 
+readline!(io::IO) = readline!(Parsers.Delimited(Parsers.Quoted(), COMMA_NEWLINES), io)
+readline!(s::Source) = readline!(s.parsinglayers, s.io)
 function countlines(io::IO, q::UInt8, e::UInt8)
     nl = 1
     b = 0x00
@@ -163,7 +167,41 @@ function countlines(io::IO, q::UInt8, e::UInt8)
 end
 countlines(io::IO, q='"', e='\\') = countlines(io, UInt8(q), UInt8(e))
 
-function detecttype(layers, io, prevT, levels, row, col, bools, dateformat, dec)
+promote_type1(T::Type{<:Any}, ::Type{Any}) = T
+promote_type1(::Type{Any}, T::Type{<:Any}) = T
+# same types
+promote_type1(::Type{T}, ::Type{T}) where {T} = T
+# if we come across a Missing field, turn that column type into a Union{T, Missing}
+promote_type1(T::Type{<:Any}, ::Type{Missing}) = Union{T, Missing}
+promote_type1(::Type{Missing}, T::Type{<:Any}) = Union{T, Missing}
+# these definitions allow Union{Int64, Missing} to promote to Union{Float64, Missing}
+promote_type1(::Type{Union{T, Missing}}, ::Type{S}) where {T, S} = Union{promote_type1(T, S), Missing}
+promote_type1(::Type{S}, ::Type{Union{T, Missing}}) where {T, S} = Union{promote_type1(T, S), Missing}
+promote_type1(::Type{Union{T, Missing}}, ::Type{Union{S, Missing}}) where {T, S} = Union{promote_type1(T, S), Missing}
+promote_type1(::Type{Union{String, Missing}}, ::Type{String}) = Union{String, Missing}
+promote_type1(::Type{String}, ::Type{Union{String, Missing}}) = Union{String, Missing}
+# basic promote type definitions from Base
+promote_type1(::Type{Int64}, ::Type{Float64}) = Float64
+promote_type1(::Type{Float64}, ::Type{Int64}) = Float64
+promote_type1(::Type{Date}, ::Type{DateTime}) = DateTime
+promote_type1(::Type{DateTime}, ::Type{Date}) = DateTime
+# for cases when our current type can't widen, just promote to WeakRefString
+promote_type1(::Type{<:Real}, ::Type{<:Dates.TimeType}) = String
+promote_type1(::Type{<:Dates.TimeType}, ::Type{<:Real}) = String
+promote_type1(::Type{T}, ::Type{String}) where T = String
+promote_type1(::Type{Union{T, Missing}}, ::Type{String}) where T = Union{String, Missing}
+promote_type1(::Type{String}, ::Type{T}) where T = String
+promote_type1(::Type{String}, ::Type{Union{T, Missing}}) where T = Union{String, Missing}
+# avoid ambiguity
+promote_type1(::Type{Any}, ::Type{String}) = String
+promote_type1(::Type{String}, ::Type{Any}) = String
+promote_type1(::Type{String}, ::Type{String}) = String
+promote_type1(::Type{String}, ::Type{Missing}) = Union{String, Missing}
+promote_type1(::Type{Missing}, ::Type{String}) = Union{String, Missing}
+promote_type1(::Type{Any}, ::Type{Missing}) = Missing
+promote_type1(::Type{Missing}, ::Type{Missing}) = Missing
+
+function detecttype(layers, io, prevT, levels, row, col, bools, dateformat, dec, old)
     pos = position(io)
     result = Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
     Parsers.ok(result.code) || throw(Error(Parsers.Error(io, result), row, col))
@@ -369,7 +407,7 @@ function Source(fullpath::Union{AbstractString,IO};
               use_mmap::Bool=true,
               transpose::Bool=false)
     # make sure character args are UInt8
-    Base.depwarn("CSV.Source is deprecated and will be removed in a future release; please use CSV.File instead (supports same options), nothing)
+    Base.depwarn("CSV.Source is deprecated and will be removed in a future release; please use CSV.File instead (supports most of the same options)", nothing)
     isascii(delim) || throw(ArgumentError("non-ASCII characters not supported for delim argument: $delim"))
     isascii(quotechar) || throw(ArgumentError("non-ASCII characters not supported for quotechar argument: $quotechar"))
     isascii(escapechar) || throw(ArgumentError("non-ASCII characters not supported for escapechar argument: $escapechar"))
@@ -440,10 +478,10 @@ function Source(fullpath::Union{AbstractString,IO};
             for i = 1:cols
                 transpose && seek(source, datapos[i])
                 @debug "\tdetecting col = $i..."
-                typ = CSV.detecttype(parsinglayers, source, columntypes[i], levels[i], lineschecked, i, bools, df, dec)::Type
+                typ = CSV.detecttype(parsinglayers, source, columntypes[i], levels[i], lineschecked, i, bools, df, dec, true)::Type
                 transpose && setindex!(datapos, position(source), i)
                 @debug "$typ"
-                columntypes[i] = CSV.promote_type2(columntypes[i], typ)
+                columntypes[i] = CSV.promote_type1(columntypes[i], typ)
                 @debug "...promoting to: $(columntypes[i])"
             end
         end
@@ -644,19 +682,53 @@ sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 function read end
 
 function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), kwargs...)
+    Base.depwarn("CSV.read is deprecated in favor of CSV.File, which supports mostly the same options. CSV.File() returns a row-iterator that can be piped to any number of sinks, like `CSV.File(filename) |> DataFrame`", nothing)
+    if append
+        Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> append!(existing_df)` to append the rows of a csv file to an existing DataFrame", nothing)
+    end
+    if !isempty(transforms)
+        Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
+    end
     source = Source(fullpath; kwargs...)
     sink = Data.stream!(source, sink, args...; append=append, transforms=transforms)
     return Data.close!(sink)
 end
 
 function read(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), kwargs...) where {T}
+    Base.depwarn("CSV.read is deprecated in favor of CSV.File, which supports mostly the same options. CSV.File() returns a row-iterator that can be piped to any number of sinks, like `CSV.File(filename) |> DataFrame`", nothing)
+    if append
+        Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> append!(existing_df)` to append the rows of a csv file to an existing DataFrame", nothing)
+    end
+    if !isempty(transforms)
+        Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
+    end
     source = Source(fullpath; kwargs...)
     sink = Data.stream!(source, sink; append=append, transforms=transforms)
     return Data.close!(sink)
 end
 
-read(source::CSV.Source, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink, args...; append=append, transforms=transforms); return Data.close!(sink))
-read(source::CSV.Source, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) where {T} = (sink = Data.stream!(source, sink; append=append, transforms=transforms); return Data.close!(sink))
+function read(source::CSV.Source, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}())
+    Base.depwarn("CSV.read is deprecated in favor of CSV.File, which supports mostly the same options. CSV.File() returns a row-iterator that can be piped to any number of sinks, like `CSV.File(filename) |> DataFrame`", nothing)
+    if append
+        Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> append!(existing_df)` to append the rows of a csv file to an existing DataFrame", nothing)
+    end
+    if !isempty(transforms)
+        Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
+    end
+    sink = Data.stream!(source, sink, args...; append=append, transforms=transforms)
+    return Data.close!(sink)
+end
+function read(source::CSV.Source, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) where {T}
+    Base.depwarn("CSV.read is deprecated in favor of CSV.File, which supports mostly the same options. CSV.File() returns a row-iterator that can be piped to any number of sinks, like `CSV.File(filename) |> DataFrame`", nothing)
+    if append
+        Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> append!(existing_df)` to append the rows of a csv file to an existing DataFrame", nothing)
+    end
+    if !isempty(transforms)
+        Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
+    end
+    sink = Data.stream!(source, sink; append=append, transforms=transforms)
+    return Data.close!(sink)
+end
 
 function Sink(fullpath::Union{AbstractString, IO};
               delim::Char=',',
@@ -788,18 +860,30 @@ CSV.write("sqlite_table.csv", sqlite_source)
 function write end
 
 function write(file::Union{AbstractString, IO}, ::Type{T}, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...) where {T}
+    Base.depwarn("CSV.write(file, source) is deprecated in favor of CSV.write(source, file); it will also now support piping like: `dataframe |> CSV.write(filename)`", nothing)
     sink = Data.stream!(T(args...), CSV.Sink, file; append=append, transforms=transforms, kwargs...)
     return Data.close!(sink)
 end
 function write(file::Union{AbstractString, IO}, source; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
+    Base.depwarn("CSV.write(file, source) is deprecated in favor of CSV.write(source, file); it will also now support piping like: `dataframe |> CSV.write(filename)`", nothing)
     sink = Data.stream!(source, CSV.Sink, file; append=append, transforms=transforms, kwargs...)
     return Data.close!(sink)
 end
 
-write(sink::Sink, ::Type{T}, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) where {T} = (sink = Data.stream!(T(args...), sink; append=append, transforms=transforms); return Data.close!(sink))
-write(sink::Sink, source; append::Bool=false, transforms::Dict=Dict{Int,Function}()) = (sink = Data.stream!(source, sink; append=append, transforms=transforms); return Data.close!(sink))
+function write(sink::Sink, ::Type{T}, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) where {T}
+    Base.depwarn("CSV.write(file, source) is deprecated in favor of CSV.write(source, file); it will also now support piping like: `dataframe |> CSV.write(filename)`", nothing)
+    sink = Data.stream!(T(args...), sink; append=append, transforms=transforms)
+    return Data.close!(sink)
+end
+
+function write(sink::Sink, source; append::Bool=false, transforms::Dict=Dict{Int,Function}())
+    Base.depwarn("CSV.write(file, source) is deprecated in favor of CSV.write(source, file); it will also now support piping like: `dataframe |> CSV.write(filename)`", nothing)
+    sink = Data.stream!(source, sink; append=append, transforms=transforms)
+    return Data.close!(sink)
+end
 
 function validate(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...) where {T}
+    Base.depwarn("CSV.validate(filename, $T; kwargs...) is deprecated in favor of CSV.validate(filename; kwargs...)", nothing)
     validate(Source(fullpath; kwargs...))
     return
 end
