@@ -28,7 +28,7 @@ end
 
 # could just store NT internally and have Row take it as type parameter
 # could separate kwargs out into individual fields and remove type parameter
-struct File{NT, I, P, KW}
+struct File{NT, transpose, I, P, KW}
     io::I
     parsinglayers::P
     rowpositions::Vector{Int}
@@ -40,7 +40,7 @@ end
 
 Base.eltype(f::F) where {F <: File} = Row{F}
 Tables.schema(f::File{NT}) where {NT} = NT
-Base.length(f::File) = length(f.rowpositions)
+Base.length(f::File{NT, transpose}) where {NT, transpose} = transpose ? f.lastparsedcol[] : length(f.rowpositions)
 Base.size(f::File{NamedTuple{names, types}}) where {names, types} = (length(f), length(names))
 Base.size(f::File{NamedTuple{}}) = (0, 0)
 
@@ -88,23 +88,31 @@ end
 Base.getproperty(csvrow::Row{F}, name::Symbol) where {F <: File{NT}} where {NT} =
     getproperty(csvrow, Tables.columntype(NT, name), Tables.columnindex(NT, name), name)
 
-function Base.getproperty(csvrow::Row{F}, ::Type{T}, col::Int, name::Symbol) where {T, F <: File{NT}} where {NT}
+function Base.getproperty(csvrow::Row{F, transpose}, ::Type{T}, col::Int, name::Symbol) where {T, transpose, F <: File{NT}} where {NT}
     f = getfield(csvrow, 1)
     row = getfield(csvrow, 2)
-    lastparsed = f.lastparsedcol[]
-    if col === lastparsed + 1
-    elseif col === 1
-        @inbounds Parsers.fastseek!(f.io, f.rowpositions[row])
-    elseif col > lastparsed + 1
-        # skipping cells
-        skipcells(f, col - lastparsed+1)
-    elseif col !== lastparsed + 1
-        # randomly seeking within row
-        @inbounds Parsers.fastseek!(f.io, f.rowpositions[row])
-        skipcells(f, col - 1)
+    if transpose
+        @inbounds Parsers.fastseek!(f.io, f.rowpositions[col])
+    else
+        lastparsed = f.lastparsedcol[]
+        if col === lastparsed + 1
+        elseif col === 1
+            @inbounds Parsers.fastseek!(f.io, f.rowpositions[row])
+        elseif col > lastparsed + 1
+            # skipping cells
+            skipcells(f, col - lastparsed+1)
+        elseif col !== lastparsed + 1
+            # randomly seeking within row
+            @inbounds Parsers.fastseek!(f.io, f.rowpositions[row])
+            skipcells(f, col - 1)
+        end
     end
     r = parsefield(f, parsingtype(T), row, col, f.strict)
-    f.lastparsedcol[] = col
+    if transpose
+        @inbounds f.rowpositions[col] = position(f.io)
+    else
+        f.lastparsedcol[] = col
+    end
     return r
 end
 
@@ -183,12 +191,14 @@ function File(source::Union{String, IO},
     datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
 
     if transpose
+        # need to determine names, columnpositions (rows), and ref
         
     else
         names, datapos = datalayout(header, parsinglayers, io, datarow)
-        eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, typeof(io), typeof(parsinglayers), typeof(kwargs)}(io, parsinglayers, Int64[], Ref{Int}(0), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
+        eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, false, typeof(io), typeof(parsinglayers), typeof(kwargs)}(io, parsinglayers, Int64[], Ref{Int}(0), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
         rows = rowpositions(io, quotechar % UInt8, escapechar % UInt8)
         footerskip > 0 && resize!(rows, length(rows) - footerskip)
+        ref = Ref{Int}(0)
         debug && @show rows
     end
 
@@ -199,7 +209,7 @@ function File(source::Union{String, IO},
     end
 
     seek(io, rows[1])
-    return File{NamedTuple{names, Tuple{types...}}, typeof(io), typeof(parsinglayers), typeof(kwargs)}(io, parsinglayers, rows, Ref{Int}(0), kwargs, pools, strict)
+    return File{NamedTuple{names, Tuple{types...}}, transpose, typeof(io), typeof(parsinglayers), typeof(kwargs)}(io, parsinglayers, rows, ref, kwargs, pools, strict)
 end
 
 include("filedetection.jl")
