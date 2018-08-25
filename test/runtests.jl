@@ -14,7 +14,7 @@ end
 
 # include("unittests.jl")
 include("files.jl")
-# include("deprecated.jl")
+include("deprecated.jl")
 
 @testset "CSV.validate" begin
     io = IOBuffer("""A,B,C
