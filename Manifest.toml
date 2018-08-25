@@ -221,6 +221,11 @@ git-tree-sha1 = "723193a13e8078cec6dcd0b8fe245c8bfd81690e"
 uuid = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
 version = "0.25.0"
 
+[[TableOperations]]
+path = "/Users/jacobquinn/.julia/dev/TableOperations"
+uuid = "ab02a1b2-a7df-11e8-156e-fb1833f50b87"
+version = "0.1.0"
+
 [[TableShowUtils]]
 deps = ["Markdown", "Test"]
 git-tree-sha1 = "9646878d3e4a5e3be884d05b19ce15dbecd72b0a"
@@ -241,9 +246,7 @@ version = "0.2.1"
 
 [[Tables]]
 deps = ["IterableTables", "IteratorInterfaceExtensions", "Query", "QueryOperators", "Requires"]
-git-tree-sha1 = "e0387888cc2d482d076d1dddd474c11f59bd02e7"
-repo-rev = "master"
-repo-url = "https://github.com/JuliaData/Tables.jl"
+path = "/Users/jacobquinn/.julia/dev/Tables"
 uuid = "f31cc48a-97c4-11e8-115d-f1beebab189a"
 version = "0.1.0"
 

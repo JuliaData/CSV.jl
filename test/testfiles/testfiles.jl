@@ -1,84 +1,3 @@
-using CSV, Test, Dates, Tables, CategoricalArrays, WeakRefStrings
-
-# const dir = joinpath(dirname(@__FILE__),"test_files/")
-dir = "/Users/jacobquinn/.julia/dev/CSV/test/test_files"
-
-@eval macro $(:try)(ex)
-    quote
-        try $(esc(ex))
-        catch
-        end
-    end
-end
-
-# @testset "CSV.File" begin
-
-#test on non-existent file
-@test_throws SystemError CSV.File("");
-#test where datarow > headerrow
-# @test_throws ArgumentError CSV.File(joinpath(dir, "test_no_header.csv"); datarow=1, header=2);
-
-#test bad types
-f = CSV.File(joinpath(dir, "test_float_in_int_column.csv"); types=[Int, Int, Int])
-@test_throws CSV.Error CSV.File(f)
-
-# read a write protected file
-let fn = tempname()
-    open(fn, "w") do f
-        write(f, "Julia")
-    end
-    chmod(fn, 0o444)
-    CSV.File(fn)
-    GC.gc(); GC.gc()
-    @try rm(fn)
-end
-
-# Adding transforms to CSV with header but no data returns empty frame as expected
-# (previously the lack of a ::String dispatch in the transform function caused an error)
-transforms = Dict{Int, Function}(2 => x::Integer -> "b$x")
-df1 = CSV.File(IOBuffer("a,b,c\n1,2,3\n4,5,6"); allowmissing=:none, transforms=transforms)
-df2 = CSV.File(IOBuffer("a,b,c\n1,b2,3\n4,b5,6"); allowmissing=:none)
-@test size(Data.schema(df1)) == (2, 3)
-@test size(Data.schema(df2)) == (2, 3)
-@test df1 == df2
-df3 = CSV.File(IOBuffer("a,b,c"); allowmissing=:none, transforms=transforms)
-df4 = CSV.File(IOBuffer("a,b,c"); allowmissing=:none)
-@test size(Data.schema(df3)) == (0, 3)
-@test size(Data.schema(df4)) == (0, 3)
-@test df3 == df4
-
-let fn = tempname()
-    CSV.File(IOBuffer("a,b,c\n1,2,3\n4,5,6"), CSV.Sink(fn); allowmissing=:none, transforms=transforms)
-    @test String(read(fn)) == "a,b,c\n1,b2,3\n4,b5,6\n"
-    @try rm(fn)
-end
-
-let fn = tempname()
-    CSV.File(IOBuffer("a,b,c"), CSV.Sink(fn); allowmissing=:none, transforms=transforms)
-    @test String(read(fn)) == "a,b,c\n"
-    @try rm(fn)
-end
-
-source = IOBuffer("col1,col2,col3") # empty dataset
-f = CSV.File(source; transforms=Dict(2 => floor))
-@test size(Data.schema(df)) == (0, 3)
-@test Data.types(Data.schema(df)) == (Any, Any, Any)
-
-# Integer overflow; #100
-@test_throws CSV.Error CSV.File(joinpath(dir, "int8_overflow.csv"); types=[Int8])
-
-# #137
-tbl = (a=[11,22], dt=[Date(2017,12,7), Date(2017,12,14)], dttm=[DateTime(2017,12,7), DateTime(2017,12,14)])
-io = IOBuffer()
-CSV.write(tbl, io; delim='\t')
-seekstart(io)
-f = CSV.File(io; delim='\t', allowmissing=:auto)
-@test (f |> columntable) == tbl
-
-
-catfile(file) = run(`cat $(joinpath(dir, file))`)
-readfile(file; kwargs...) = CSV.File(joinpath(dir, file); kwargs...)
-schema(file; kwargs...) = Tables.schema(CSV.File(joinpath(dir, file); kwargs...))
 function testfile(file, kwargs, sz, sch, testfunc)
     f = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...)
     @test Tables.schema(f) == sch
@@ -375,46 +294,10 @@ testfiles = [
         NamedTuple{Tuple(Symbol("$i") for i = 0:49), NTuple{50, Int64}},
         nothing
     ),
+    ("table_test.txt", (allowmissing=:auto,),
+        (49, 770),
+        NamedTuple{(:ind_50km, :nse_gsurf_cfg1, :r_gsurf_cfg1, :bias_gsurf_cfg1, :ngrids, :nse_hatmo_cfg1, :r_hatmo_cfg1, :bias_hatmo_cfg1, :nse_latmo_cfg1, :r_latmo_cfg1, :bias_latmo_cfg1, :nse_melt_cfg1, :r_melt_cfg1, :bias_melt_cfg1, :nse_rnet_cfg1, :r_rnet_cfg1, :bias_rnet_cfg1, :nse_rof_cfg1, :r_rof_cfg1, :bias_rof_cfg1, :nse_snowdepth_cfg1, :r_snowdepth_cfg1, :bias_snowdepth_cfg1, :nse_swe_cfg1, :r_swe_cfg1, :bias_swe_cfg1, :nse_gsurf_cfg2, :r_gsurf_cfg2, :bias_gsurf_cfg2, :nse_hatmo_cfg2, :r_hatmo_cfg2, :bias_hatmo_cfg2, :nse_latmo_cfg2, :r_latmo_cfg2, :bias_latmo_cfg2, :nse_melt_cfg2, :r_melt_cfg2, :bias_melt_cfg2, :nse_rnet_cfg2, :r_rnet_cfg2, :bias_rnet_cfg2, :nse_rof_cfg2, :r_rof_cfg2, :bias_rof_cfg2, :nse_snowdepth_cfg2, :r_snowdepth_cfg2, :bias_snowdepth_cfg2, :nse_swe_cfg2, :r_swe_cfg2, :bias_swe_cfg2, :nse_gsurf_cfg3, :r_gsurf_cfg3, :bias_gsurf_cfg3, :nse_hatmo_cfg3, :r_hatmo_cfg3, :bias_hatmo_cfg3, :nse_latmo_cfg3, :r_latmo_cfg3, :bias_latmo_cfg3, :nse_melt_cfg3, :r_melt_cfg3, :bias_melt_cfg3, :nse_rnet_cfg3, :r_rnet_cfg3, :bias_rnet_cfg3, :nse_rof_cfg3, :r_rof_cfg3, :bias_rof_cfg3, :nse_snowdepth_cfg3, :r_snowdepth_cfg3, :bias_snowdepth_cfg3, :nse_swe_cfg3, :r_swe_cfg3, :bias_swe_cfg3, :nse_gsurf_cfg4, :r_gsurf_cfg4, :bias_gsurf_cfg4, :nse_hatmo_cfg4, :r_hatmo_cfg4, :bias_hatmo_cfg4, :nse_latmo_cfg4, :r_latmo_cfg4, :bias_latmo_cfg4, :nse_melt_cfg4, :r_melt_cfg4, :bias_melt_cfg4, :nse_rnet_cfg4, :r_rnet_cfg4, :bias_rnet_cfg4, :nse_rof_cfg4, :r_rof_cfg4, :bias_rof_cfg4, :nse_snowdepth_cfg4, :r_snowdepth_cfg4, :bias_snowdepth_cfg4, :nse_swe_cfg4, :r_swe_cfg4, :bias_swe_cfg4, :nse_gsurf_cfg5, :r_gsurf_cfg5, :bias_gsurf_cfg5, :nse_hatmo_cfg5, :r_hatmo_cfg5, :bias_hatmo_cfg5, :nse_latmo_cfg5, :r_latmo_cfg5, :bias_latmo_cfg5, :nse_melt_cfg5, :r_melt_cfg5, :bias_melt_cfg5, :nse_rnet_cfg5, :r_rnet_cfg5, :bias_rnet_cfg5, :nse_rof_cfg5, :r_rof_cfg5, :bias_rof_cfg5, :nse_snowdepth_cfg5, :r_snowdepth_cfg5, :bias_snowdepth_cfg5, :nse_swe_cfg5, :r_swe_cfg5, :bias_swe_cfg5, :nse_gsurf_cfg6, :r_gsurf_cfg6, :bias_gsurf_cfg6, :nse_hatmo_cfg6, :r_hatmo_cfg6, :bias_hatmo_cfg6, :nse_latmo_cfg6, :r_latmo_cfg6, :bias_latmo_cfg6, :nse_melt_cfg6, :r_melt_cfg6, :bias_melt_cfg6, :nse_rnet_cfg6, :r_rnet_cfg6, :bias_rnet_cfg6, :nse_rof_cfg6, :r_rof_cfg6, :bias_rof_cfg6, :nse_snowdepth_cfg6, :r_snowdepth_cfg6, :bias_snowdepth_cfg6, :nse_swe_cfg6, :r_swe_cfg6, :bias_swe_cfg6, :nse_gsurf_cfg7, :r_gsurf_cfg7, :bias_gsurf_cfg7, :nse_hatmo_cfg7, :r_hatmo_cfg7, :bias_hatmo_cfg7, :nse_latmo_cfg7, :r_latmo_cfg7, :bias_latmo_cfg7, :nse_melt_cfg7, :r_melt_cfg7, :bias_melt_cfg7, :nse_rnet_cfg7, :r_rnet_cfg7, :bias_rnet_cfg7, :nse_rof_cfg7, :r_rof_cfg7, :bias_rof_cfg7, :nse_snowdepth_cfg7, :r_snowdepth_cfg7, :bias_snowdepth_cfg7, :nse_swe_cfg7, :r_swe_cfg7, :bias_swe_cfg7, :nse_gsurf_cfg8, :r_gsurf_cfg8, :bias_gsurf_cfg8, :nse_hatmo_cfg8, :r_hatmo_cfg8, :bias_hatmo_cfg8, :nse_latmo_cfg8, :r_latmo_cfg8, :bias_latmo_cfg8, :nse_melt_cfg8, :r_melt_cfg8, :bias_melt_cfg8, :nse_rnet_cfg8, :r_rnet_cfg8, :bias_rnet_cfg8, :nse_rof_cfg8, :r_rof_cfg8, :bias_rof_cfg8, :nse_snowdepth_cfg8, :r_snowdepth_cfg8, :bias_snowdepth_cfg8, :nse_swe_cfg8, :r_swe_cfg8, :bias_swe_cfg8, :nse_gsurf_cfg9, :r_gsurf_cfg9, :bias_gsurf_cfg9, :nse_hatmo_cfg9, :r_hatmo_cfg9, :bias_hatmo_cfg9, :nse_latmo_cfg9, :r_latmo_cfg9, :bias_latmo_cfg9, :nse_melt_cfg9, :r_melt_cfg9, :bias_melt_cfg9, :nse_rnet_cfg9, :r_rnet_cfg9, :bias_rnet_cfg9, :nse_rof_cfg9, :r_rof_cfg9, :bias_rof_cfg9, :nse_snowdepth_cfg9, :r_snowdepth_cfg9, :bias_snowdepth_cfg9, :nse_swe_cfg9, :r_swe_cfg9, :bias_swe_cfg9, :nse_gsurf_cfg10, :r_gsurf_cfg10, :bias_gsurf_cfg10, :nse_hatmo_cfg10, :r_hatmo_cfg10, :bias_hatmo_cfg10, :nse_latmo_cfg10, :r_latmo_cfg10, :bias_latmo_cfg10, :nse_melt_cfg10, :r_melt_cfg10, :bias_melt_cfg10, :nse_rnet_cfg10, :r_rnet_cfg10, :bias_rnet_cfg10, :nse_rof_cfg10, :r_rof_cfg10, :bias_rof_cfg10, :nse_snowdepth_cfg10, :r_snowdepth_cfg10, :bias_snowdepth_cfg10, :nse_swe_cfg10, :r_swe_cfg10, :bias_swe_cfg10, :nse_gsurf_cfg11, :r_gsurf_cfg11, :bias_gsurf_cfg11, :nse_hatmo_cfg11, :r_hatmo_cfg11, :bias_hatmo_cfg11, :nse_latmo_cfg11, :r_latmo_cfg11, :bias_latmo_cfg11, :nse_melt_cfg11, :r_melt_cfg11, :bias_melt_cfg11, :nse_rnet_cfg11, :r_rnet_cfg11, :bias_rnet_cfg11, :nse_rof_cfg11, :r_rof_cfg11, :bias_rof_cfg11, :nse_snowdepth_cfg11, :r_snowdepth_cfg11, :bias_snowdepth_cfg11, :nse_swe_cfg11, :r_swe_cfg11, :bias_swe_cfg11, :nse_gsurf_cfg12, :r_gsurf_cfg12, :bias_gsurf_cfg12, :nse_hatmo_cfg12, :r_hatmo_cfg12, :bias_hatmo_cfg12, :nse_latmo_cfg12, :r_latmo_cfg12, :bias_latmo_cfg12, :nse_melt_cfg12, :r_melt_cfg12, :bias_melt_cfg12, :nse_rnet_cfg12, :r_rnet_cfg12, :bias_rnet_cfg12, :nse_rof_cfg12, :r_rof_cfg12, :bias_rof_cfg12, :nse_snowdepth_cfg12, :r_snowdepth_cfg12, :bias_snowdepth_cfg12, :nse_swe_cfg12, :r_swe_cfg12, :bias_swe_cfg12, :nse_gsurf_cfg13, :r_gsurf_cfg13, :bias_gsurf_cfg13, :nse_hatmo_cfg13, :r_hatmo_cfg13, :bias_hatmo_cfg13, :nse_latmo_cfg13, :r_latmo_cfg13, :bias_latmo_cfg13, :nse_melt_cfg13, :r_melt_cfg13, :bias_melt_cfg13, :nse_rnet_cfg13, :r_rnet_cfg13, :bias_rnet_cfg13, :nse_rof_cfg13, :r_rof_cfg13, :bias_rof_cfg13, :nse_snowdepth_cfg13, :r_snowdepth_cfg13, :bias_snowdepth_cfg13, :nse_swe_cfg13, :r_swe_cfg13, :bias_swe_cfg13, :nse_gsurf_cfg14, :r_gsurf_cfg14, :bias_gsurf_cfg14, :nse_hatmo_cfg14, :r_hatmo_cfg14, :bias_hatmo_cfg14, :nse_latmo_cfg14, :r_latmo_cfg14, :bias_latmo_cfg14, :nse_melt_cfg14, :r_melt_cfg14, :bias_melt_cfg14, :nse_rnet_cfg14, :r_rnet_cfg14, :bias_rnet_cfg14, :nse_rof_cfg14, :r_rof_cfg14, :bias_rof_cfg14, :nse_snowdepth_cfg14, :r_snowdepth_cfg14, :bias_snowdepth_cfg14, :nse_swe_cfg14, :r_swe_cfg14, :bias_swe_cfg14, :nse_gsurf_cfg15, :r_gsurf_cfg15, :bias_gsurf_cfg15, :nse_hatmo_cfg15, :r_hatmo_cfg15, :bias_hatmo_cfg15, :nse_latmo_cfg15, :r_latmo_cfg15, :bias_latmo_cfg15, :nse_melt_cfg15, :r_melt_cfg15, :bias_melt_cfg15, :nse_rnet_cfg15, :r_rnet_cfg15, :bias_rnet_cfg15, :nse_rof_cfg15, :r_rof_cfg15, :bias_rof_cfg15, :nse_snowdepth_cfg15, :r_snowdepth_cfg15, :bias_snowdepth_cfg15, :nse_swe_cfg15, :r_swe_cfg15, :bias_swe_cfg15, :nse_gsurf_cfg16, :r_gsurf_cfg16, :bias_gsurf_cfg16, :nse_hatmo_cfg16, :r_hatmo_cfg16, :bias_hatmo_cfg16, :nse_latmo_cfg16, :r_latmo_cfg16, :bias_latmo_cfg16, :nse_melt_cfg16, :r_melt_cfg16, :bias_melt_cfg16, :nse_rnet_cfg16, :r_rnet_cfg16, :bias_rnet_cfg16, :nse_rof_cfg16, :r_rof_cfg16, :bias_rof_cfg16, :nse_snowdepth_cfg16, :r_snowdepth_cfg16, :bias_snowdepth_cfg16, :nse_swe_cfg16, :r_swe_cfg16, :bias_swe_cfg16, :nse_gsurf_cfg17, :r_gsurf_cfg17, :bias_gsurf_cfg17, :nse_hatmo_cfg17, :r_hatmo_cfg17, :bias_hatmo_cfg17, :nse_latmo_cfg17, :r_latmo_cfg17, :bias_latmo_cfg17, :nse_melt_cfg17, :r_melt_cfg17, :bias_melt_cfg17, :nse_rnet_cfg17, :r_rnet_cfg17, :bias_rnet_cfg17, :nse_rof_cfg17, :r_rof_cfg17, :bias_rof_cfg17, :nse_snowdepth_cfg17, :r_snowdepth_cfg17, :bias_snowdepth_cfg17, :nse_swe_cfg17, :r_swe_cfg17, :bias_swe_cfg17, :nse_gsurf_cfg18, :r_gsurf_cfg18, :bias_gsurf_cfg18, :nse_hatmo_cfg18, :r_hatmo_cfg18, :bias_hatmo_cfg18, :nse_latmo_cfg18, :r_latmo_cfg18, :bias_latmo_cfg18, :nse_melt_cfg18, :r_melt_cfg18, :bias_melt_cfg18, :nse_rnet_cfg18, :r_rnet_cfg18, :bias_rnet_cfg18, :nse_rof_cfg18, :r_rof_cfg18, :bias_rof_cfg18, :nse_snowdepth_cfg18, :r_snowdepth_cfg18, :bias_snowdepth_cfg18, :nse_swe_cfg18, :r_swe_cfg18, :bias_swe_cfg18, :nse_gsurf_cfg19, :r_gsurf_cfg19, :bias_gsurf_cfg19, :nse_hatmo_cfg19, :r_hatmo_cfg19, :bias_hatmo_cfg19, :nse_latmo_cfg19, :r_latmo_cfg19, :bias_latmo_cfg19, :nse_melt_cfg19, :r_melt_cfg19, :bias_melt_cfg19, :nse_rnet_cfg19, :r_rnet_cfg19, :bias_rnet_cfg19, :nse_rof_cfg19, :r_rof_cfg19, :bias_rof_cfg19, :nse_snowdepth_cfg19, :r_snowdepth_cfg19, :bias_snowdepth_cfg19, :nse_swe_cfg19, :r_swe_cfg19, :bias_swe_cfg19, :nse_gsurf_cfg20, :r_gsurf_cfg20, :bias_gsurf_cfg20, :nse_hatmo_cfg20, :r_hatmo_cfg20, :bias_hatmo_cfg20, :nse_latmo_cfg20, :r_latmo_cfg20, :bias_latmo_cfg20, :nse_melt_cfg20, :r_melt_cfg20, :bias_melt_cfg20, :nse_rnet_cfg20, :r_rnet_cfg20, :bias_rnet_cfg20, :nse_rof_cfg20, :r_rof_cfg20, :bias_rof_cfg20, :nse_snowdepth_cfg20, :r_snowdepth_cfg20, :bias_snowdepth_cfg20, :nse_swe_cfg20, :r_swe_cfg20, :bias_swe_cfg20, :nse_gsurf_cfg21, :r_gsurf_cfg21, :bias_gsurf_cfg21, :nse_hatmo_cfg21, :r_hatmo_cfg21, :bias_hatmo_cfg21, :nse_latmo_cfg21, :r_latmo_cfg21, :bias_latmo_cfg21, :nse_melt_cfg21, :r_melt_cfg21, :bias_melt_cfg21, :nse_rnet_cfg21, :r_rnet_cfg21, :bias_rnet_cfg21, :nse_rof_cfg21, :r_rof_cfg21, :bias_rof_cfg21, :nse_snowdepth_cfg21, :r_snowdepth_cfg21, :bias_snowdepth_cfg21, :nse_swe_cfg21, :r_swe_cfg21, :bias_swe_cfg21, :nse_gsurf_cfg22, :r_gsurf_cfg22, :bias_gsurf_cfg22, :nse_hatmo_cfg22, :r_hatmo_cfg22, :bias_hatmo_cfg22, :nse_latmo_cfg22, :r_latmo_cfg22, :bias_latmo_cfg22, :nse_melt_cfg22, :r_melt_cfg22, :bias_melt_cfg22, :nse_rnet_cfg22, :r_rnet_cfg22, :bias_rnet_cfg22, :nse_rof_cfg22, :r_rof_cfg22, :bias_rof_cfg22, :nse_snowdepth_cfg22, :r_snowdepth_cfg22, :bias_snowdepth_cfg22, :nse_swe_cfg22, :r_swe_cfg22, :bias_swe_cfg22, :nse_gsurf_cfg23, :r_gsurf_cfg23, :bias_gsurf_cfg23, :nse_hatmo_cfg23, :r_hatmo_cfg23, :bias_hatmo_cfg23, :nse_latmo_cfg23, :r_latmo_cfg23, :bias_latmo_cfg23, :nse_melt_cfg23, :r_melt_cfg23, :bias_melt_cfg23, :nse_rnet_cfg23, :r_rnet_cfg23, :bias_rnet_cfg23, :nse_rof_cfg23, :r_rof_cfg23, :bias_rof_cfg23, :nse_snowdepth_cfg23, :r_snowdepth_cfg23, :bias_snowdepth_cfg23, :nse_swe_cfg23, :r_swe_cfg23, :bias_swe_cfg23, :nse_gsurf_cfg24, :r_gsurf_cfg24, :bias_gsurf_cfg24, :nse_hatmo_cfg24, :r_hatmo_cfg24, :bias_hatmo_cfg24, :nse_latmo_cfg24, :r_latmo_cfg24, :bias_latmo_cfg24, :nse_melt_cfg24, :r_melt_cfg24, :bias_melt_cfg24, :nse_rnet_cfg24, :r_rnet_cfg24, :bias_rnet_cfg24, :nse_rof_cfg24, :r_rof_cfg24, :bias_rof_cfg24, :nse_snowdepth_cfg24, :r_snowdepth_cfg24, :bias_snowdepth_cfg24, :nse_swe_cfg24, :r_swe_cfg24, :bias_swe_cfg24, :nse_gsurf_cfg25, :r_gsurf_cfg25, :bias_gsurf_cfg25, :nse_hatmo_cfg25, :r_hatmo_cfg25, :bias_hatmo_cfg25, :nse_latmo_cfg25, :r_latmo_cfg25, :bias_latmo_cfg25, :nse_melt_cfg25, :r_melt_cfg25, :bias_melt_cfg25, :nse_rnet_cfg25, :r_rnet_cfg25, :bias_rnet_cfg25, :nse_rof_cfg25, :r_rof_cfg25, :bias_rof_cfg25, :nse_snowdepth_cfg25, :r_snowdepth_cfg25, :bias_snowdepth_cfg25, :nse_swe_cfg25, :r_swe_cfg25, :bias_swe_cfg25, :nse_gsurf_cfg26, :r_gsurf_cfg26, :bias_gsurf_cfg26, :nse_hatmo_cfg26, :r_hatmo_cfg26, :bias_hatmo_cfg26, :nse_latmo_cfg26, :r_latmo_cfg26, :bias_latmo_cfg26, :nse_melt_cfg26, :r_melt_cfg26, :bias_melt_cfg26, :nse_rnet_cfg26, :r_rnet_cfg26, :bias_rnet_cfg26, :nse_rof_cfg26, :r_rof_cfg26, :bias_rof_cfg26, :nse_snowdepth_cfg26, :r_snowdepth_cfg26, :bias_snowdepth_cfg26, :nse_swe_cfg26, :r_swe_cfg26, :bias_swe_cfg26, :nse_gsurf_cfg27, :r_gsurf_cfg27, :bias_gsurf_cfg27, :nse_hatmo_cfg27, :r_hatmo_cfg27, :bias_hatmo_cfg27, :nse_latmo_cfg27, :r_latmo_cfg27, :bias_latmo_cfg27, :nse_melt_cfg27, :r_melt_cfg27, :bias_melt_cfg27, :nse_rnet_cfg27, :r_rnet_cfg27, :bias_rnet_cfg27, :nse_rof_cfg27, :r_rof_cfg27, :bias_rof_cfg27, :nse_snowdepth_cfg27, :r_snowdepth_cfg27, :bias_snowdepth_cfg27, :nse_swe_cfg27, :r_swe_cfg27, :bias_swe_cfg27, :nse_gsurf_cfg28, :r_gsurf_cfg28, :bias_gsurf_cfg28, :nse_hatmo_cfg28, :r_hatmo_cfg28, :bias_hatmo_cfg28, :nse_latmo_cfg28, :r_latmo_cfg28, :bias_latmo_cfg28, :nse_melt_cfg28, :r_melt_cfg28, :bias_melt_cfg28, :nse_rnet_cfg28, :r_rnet_cfg28, :bias_rnet_cfg28, :nse_rof_cfg28, :r_rof_cfg28, :bias_rof_cfg28, :nse_snowdepth_cfg28, :r_snowdepth_cfg28, :bias_snowdepth_cfg28, :nse_swe_cfg28, :r_swe_cfg28, :bias_swe_cfg28, :nse_gsurf_cfg29, :r_gsurf_cfg29, :bias_gsurf_cfg29, :nse_hatmo_cfg29, :r_hatmo_cfg29, :bias_hatmo_cfg29, :nse_latmo_cfg29, :r_latmo_cfg29, :bias_latmo_cfg29, :nse_melt_cfg29, :r_melt_cfg29, :bias_melt_cfg29, :nse_rnet_cfg29, :r_rnet_cfg29, :bias_rnet_cfg29, :nse_rof_cfg29, :r_rof_cfg29, :bias_rof_cfg29, :nse_snowdepth_cfg29, :r_snowdepth_cfg29, :bias_snowdepth_cfg29, :nse_swe_cfg29, :r_swe_cfg29, :bias_swe_cfg29, :nse_gsurf_cfg30, :r_gsurf_cfg30, :bias_gsurf_cfg30, :nse_hatmo_cfg30, :r_hatmo_cfg30, :bias_hatmo_cfg30, :nse_latmo_cfg30, :r_latmo_cfg30, :bias_latmo_cfg30, :nse_melt_cfg30, :r_melt_cfg30, :bias_melt_cfg30, :nse_rnet_cfg30, :r_rnet_cfg30, :bias_rnet_cfg30, :nse_rof_cfg30, :r_rof_cfg30, :bias_rof_cfg30, :nse_snowdepth_cfg30, :r_snowdepth_cfg30, :bias_snowdepth_cfg30, :nse_swe_cfg30, :r_swe_cfg30, :bias_swe_cfg30, :nse_gsurf_cfg31, :r_gsurf_cfg31, :bias_gsurf_cfg31, :nse_hatmo_cfg31, :r_hatmo_cfg31, :bias_hatmo_cfg31, :nse_latmo_cfg31, :r_latmo_cfg31, :bias_latmo_cfg31, :nse_melt_cfg31, :r_melt_cfg31, :bias_melt_cfg31, :nse_rnet_cfg31, :r_rnet_cfg31, :bias_rnet_cfg31, :nse_rof_cfg31, :r_rof_cfg31, :bias_rof_cfg31, :nse_snowdepth_cfg31, :r_snowdepth_cfg31, :bias_snowdepth_cfg31, :nse_swe_cfg31, :r_swe_cfg31, :bias_swe_cfg31, :nse_gsurf_cfg32, :r_gsurf_cfg32, :bias_gsurf_cfg32, :nse_hatmo_cfg32, :r_hatmo_cfg32, :bias_hatmo_cfg32, :nse_latmo_cfg32, :r_latmo_cfg32, :bias_latmo_cfg32, :nse_melt_cfg32, :r_melt_cfg32, :bias_melt_cfg32, :nse_rnet_cfg32, :r_rnet_cfg32, :bias_rnet_cfg32, :nse_rof_cfg32, :r_rof_cfg32, :bias_rof_cfg32, :nse_snowdepth_cfg32, :r_snowdepth_cfg32, :bias_snowdepth_cfg32, :nse_swe_cfg32, :r_swe_cfg32, :bias_swe_cfg32),Tuple{Int64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64}},
+        nothing
+    ),
 
 ]
-
-# f = CSV.File(joinpath(dir, "pandas_zeros.csv"), allowmissing=:none)
-# @time f |> columntable;
-# using Profile
-# Profile.clear()
-# @profile f |> columntable;
-# Profile.print(C=true)
-# Profile.print()
-
-# @testset "CSV.TransposedSource" begin
-
-# # CSV.TransposedSource
-# f = CSV.File(joinpath(dir, "transposed.csv"); transpose=true)
-# @test size(df) == (3, 3)
-# @test Data.header(Data.schema(df)) == ["col1", "col2", "col3"]
-# @test df[1][1] == 1
-# @test df[1][2] == 2
-# @test df[1][3] == 3
-
-# f = CSV.File(joinpath(dir, "transposed_1row.csv"); transpose=true)
-# @test size(df) == (1, 1)
-
-# f = CSV.File(joinpath(dir, "transposed_emtpy.csv"); transpose=true)
-# @test size(df) == (0, 1)
-
-# f = CSV.File(joinpath(dir, "transposed_extra_newline.csv"); transpose=true)
-# @test size(df) == (2, 2)
-
-# f = CSV.File(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=0)
-# @test size(df) == (2, 3)
-# @test Data.header(Data.schema(df)) == ["Column1", "Column2", "Column3"]
-
-# f = CSV.File(joinpath(dir, "transposed_noheader.csv"); transpose=true, header=["c1", "c2", "c3"])
-# @test size(df) == (2, 3)
-# @test Data.header(Data.schema(df)) == ["c1", "c2", "c3"]
-
-for test in testfiles
-    testfile(test...)
-end
-
-end # testset
