@@ -222,7 +222,9 @@ uuid = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
 version = "0.25.0"
 
 [[TableOperations]]
-path = "/Users/jacobquinn/.julia/dev/TableOperations"
+git-tree-sha1 = "8886e854f2ae86ceb39c9a72fa56b9208c2968e1"
+repo-rev = "master"
+repo-url = "https://github.com/JuliaData/TableOperations.jl"
 uuid = "ab02a1b2-a7df-11e8-156e-fb1833f50b87"
 version = "0.1.0"
 
@@ -245,8 +247,10 @@ uuid = "382cd787-c1b6-5bf2-a167-d5b971a19bda"
 version = "0.2.1"
 
 [[Tables]]
-deps = ["IterableTables", "IteratorInterfaceExtensions", "Query", "QueryOperators", "Requires"]
-path = "/Users/jacobquinn/.julia/dev/Tables"
+deps = ["IterableTables", "IteratorInterfaceExtensions", "Query", "QueryOperators", "Requires", "Test"]
+git-tree-sha1 = "61d96383219b2724e4320b75a87ae12bd0616be6"
+repo-rev = "master"
+repo-url = "https://github.com/JuliaData/Tables.jl"
 uuid = "f31cc48a-97c4-11e8-115d-f1beebab189a"
 version = "0.1.0"
 
