@@ -43,8 +43,8 @@ Z(cv, p, moe) = (cv^2 * p * (1 - p)) / moe^2
 const X = Z(2.58, 0.5, 0.025)
 samplesize(N) = ceil(Int, (N * X) / (X + N - 1))
 
-function detect(types, io, rows, parsinglayers, kwargs, typemap, categorical, debug)
-    len = length(rows)
+function detect(types, io, positions, parsinglayers, kwargs, typemap, categorical, transpose, ref, debug)
+    len = transpose ? ref[] : length(positions)
     cols = length(types)
 
     if len < 1000
@@ -53,11 +53,10 @@ function detect(types, io, rows, parsinglayers, kwargs, typemap, categorical, de
     else
         # calculate statistical sample size for # of rows to use for type detection
         S = samplesize(len)
-        # here we divide the file rows up into even STEPS chunks
-        # then also include an extra subsample-long chunk
-        # at the very end of the file
+        # here we build up a set of (semi)-random rows to sample from to infer column types
         Random.seed!(0)
-        r = Iterators.flatten((1:50, sort!(rand(51:len-51, S)), (len-50):len))
+        r = transpose ? (1:1000) :
+            Iterators.flatten((1:50, sort!(rand(51:len-51, S)), (len-50):len))
         debug && @show S, r
     end
 
@@ -66,8 +65,9 @@ function detect(types, io, rows, parsinglayers, kwargs, typemap, categorical, de
     levels = categorical ? Any[Dict{String, Int}() for _ = 1:cols] : []
 
     for row in r
-        seek(io, rows[row])
+        !transpose && seek(io, positions[row])
         for col = 1:cols
+            transpose && seek(io, positions[col])
             if debug
                 pos = position(io)
                 debug && @show pos
@@ -79,6 +79,7 @@ function detect(types, io, rows, parsinglayers, kwargs, typemap, categorical, de
             debug && @show "col: $col, detected type: $T"
             types[col] = promote_type2(types[col], T)
             debug && @show "col: $col, promoted to: $(types[col])"
+            transpose && setindex!(positions, position(io), col)
         end
     end
     debug && @show types

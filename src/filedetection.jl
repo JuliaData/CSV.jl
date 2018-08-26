@@ -1,3 +1,81 @@
+function skiptoheader!(parsinglayers, io, row, header)
+    while row < header
+        while !eof(io)
+            r = Parsers.parse(parsinglayers, io, Tuple{Ptr{UInt8}, Int})
+            (r.code & Parsers.DELIMITED) > 0 && break
+        end
+        row += 1
+    end
+    return row
+end
+
+function countfields(io, parsinglayers)
+    rows = 0
+    result = Parsers.Result(Tuple{Ptr{UInt8}, Int})
+    while !eof(io)
+        Parsers.parse!(parsinglayers, io, result)
+        Parsers.ok(result.code) || throw(Error(result, rows+1, 1))
+        rows += 1
+        xor(result.code & DELIM_NEWLINE, Parsers.DELIMITED) == 0 && continue
+        ((result.code & Parsers.NEWLINE) > 0 || eof(io)) && break
+    end
+    return rows
+end
+
+function datalayout_transpose(header, parsinglayers, io, datarow, footerskip)
+    if isa(header, Integer) && header > 0
+        # skip to header column to read column names
+        row = skiptoheader!(parsinglayers, io, 1, header)
+        # io now at start of 1st header cell
+        columnnames = [Symbol(strip(Parsers.parse(parsinglayers, io, String).result::String))]
+        columnpositions = [position(io)]
+        datapos = position(io)
+        rows = countfields(io, parsinglayers)
+        
+        # we're now done w/ column 1, if EOF we're done, otherwise, parse column 2's column name
+        cols = 1
+        while !eof(io)
+            # skip to header column to read column names
+            row = skiptoheader!(parsinglayers, io, 1, header)
+            cols += 1
+            push!(columnnames, Symbol(strip(Parsers.parse(parsinglayers, io, String).result::String)))
+            push!(columnpositions, position(io))
+            readline!(parsinglayers, io)
+        end
+        seek(io, datapos)
+    elseif isa(header, AbstractRange)
+        # column names span several columns
+        throw(ArgumentError("not implemented for transposed csv files"))
+    elseif eof(io)
+        # emtpy file, use column names if provided
+        datapos = position(io)
+        columnpositions = Int[]
+        columnnames = [Symbol(x) for x in header]
+    else
+        # column names provided explicitly or should be generated, they don't exist in data
+        # skip to datarow
+        row = skiptoheader!(parsinglayers, io, 1, datarow)
+        # io now at start of 1st data cell
+        columnnames = [isa(header, Integer) || isempty(header) ? :Column1 : Symbol(header[1])]
+        columnpositions = [position(io)]
+        datapos = position(io)
+        rows = countfields(io, parsinglayers)
+        # we're now done w/ column 1, if EOF we're done, otherwise, parse column 2's column name
+        cols = 1
+        while !eof(io)
+            # skip to datarow column
+            row = skiptoheader!(parsinglayers, io, 1, datarow)
+            cols += 1
+            push!(columnnames, isa(header, Integer) || isempty(header) ? Symbol("Column$cols") : Symbol(header[cols]))
+            push!(columnpositions, position(io))
+            readline!(parsinglayers, io)
+        end
+        seek(io, datapos)
+    end
+    rows = rows - footerskip # rows now equals the actual number of rows in the dataset
+    return rows, Tuple(columnnames), columnpositions
+end
+
 function datalayout(header::Integer, parsinglayers, io, datarow)
     # default header = 1
     if header <= 0
