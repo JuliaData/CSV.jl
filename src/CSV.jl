@@ -31,7 +31,8 @@ end
 struct File{NT, transpose, I, P, KW}
     io::I
     parsinglayers::P
-    rowpositions::Vector{Int}
+    positions::Vector{Int}
+    originalpositions::Vector{Int}
     lastparsedcol::Base.RefValue{Int}
     kwargs::KW
     pools::Vector{CategoricalPool{String, UInt32, CategoricalString{UInt32}}}
@@ -40,12 +41,17 @@ end
 
 Base.eltype(f::F) where {F <: File} = Row{F}
 Tables.schema(f::File{NT}) where {NT} = NT
-Base.length(f::File{NT, transpose}) where {NT, transpose} = transpose ? f.lastparsedcol[] : length(f.rowpositions)
+Base.length(f::File{NT, transpose}) where {NT, transpose} = transpose ? f.lastparsedcol[] : length(f.positions)
 Base.size(f::File{NamedTuple{names, types}}) where {names, types} = (length(f), length(names))
 Base.size(f::File{NamedTuple{}}) = (0, 0)
 
-@inline function Base.iterate(f::File, st=1)
+@inline function Base.iterate(f::File{NT, transpose}, st=1) where {NT, transpose}
     st > length(f) && return nothing
+    if transpose
+        if st == 1
+            f.positions .= f.originalpositions
+        end
+    end
     return Row(f, st), st + 1
 end
 
@@ -88,28 +94,28 @@ end
 Base.getproperty(csvrow::Row{F}, name::Symbol) where {F <: File{NT}} where {NT} =
     getproperty(csvrow, Tables.columntype(NT, name), Tables.columnindex(NT, name), name)
 
-function Base.getproperty(csvrow::Row{F, transpose}, ::Type{T}, col::Int, name::Symbol) where {T, transpose, F <: File{NT}} where {NT}
+function Base.getproperty(csvrow::Row{F}, ::Type{T}, col::Int, name::Symbol) where {T, F <: File{NT, transpose}} where {NT, transpose}
     f = getfield(csvrow, 1)
     row = getfield(csvrow, 2)
     if transpose
-        @inbounds Parsers.fastseek!(f.io, f.rowpositions[col])
+        @inbounds Parsers.fastseek!(f.io, f.positions[col])
     else
         lastparsed = f.lastparsedcol[]
         if col === lastparsed + 1
         elseif col === 1
-            @inbounds Parsers.fastseek!(f.io, f.rowpositions[row])
+            @inbounds Parsers.fastseek!(f.io, f.positions[row])
         elseif col > lastparsed + 1
             # skipping cells
             skipcells(f, col - lastparsed+1)
         elseif col !== lastparsed + 1
             # randomly seeking within row
-            @inbounds Parsers.fastseek!(f.io, f.rowpositions[row])
+            @inbounds Parsers.fastseek!(f.io, f.positions[row])
             skipcells(f, col - 1)
         end
     end
     r = parsefield(f, parsingtype(T), row, col, f.strict)
     if transpose
-        @inbounds f.rowpositions[col] = position(f.io)
+        @inbounds f.positions[col] = position(f.io)
     else
         f.lastparsedcol[] = col
     end
@@ -192,24 +198,27 @@ function File(source::Union{String, IO},
 
     if transpose
         # need to determine names, columnpositions (rows), and ref
-        
+        rows, names, positions = datalayout_transpose(header, parsinglayers, io, datarow, footerskip)
+        originalpositions = copy(positions)
+        ref = Ref{Int}(rows)
     else
         names, datapos = datalayout(header, parsinglayers, io, datarow)
-        eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, false, typeof(io), typeof(parsinglayers), typeof(kwargs)}(io, parsinglayers, Int64[], Ref{Int}(0), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
-        rows = rowpositions(io, quotechar % UInt8, escapechar % UInt8)
-        footerskip > 0 && resize!(rows, length(rows) - footerskip)
+        eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, false, typeof(io), typeof(parsinglayers), typeof(kwargs)}(io, parsinglayers, Int64[], Int64[], Ref{Int}(0), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
+        positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8)
+        originalpositions = Int64[]
+        footerskip > 0 && resize!(positions, length(positions) - footerskip)
         ref = Ref{Int}(0)
-        debug && @show rows
+        debug && @show positions
     end
 
     if types isa Vector
         pools = CategoricalPool{String, UInt32, CatStr}[]
     else
-        types, pools = detect(initialtypes(initialtype(allowmissing), types, names), io, rows, parsinglayers, kwargs, typemap, categorical, debug)
+        types, pools = detect(initialtypes(initialtype(allowmissing), types, names), io, positions, parsinglayers, kwargs, typemap, categorical, transpose, ref, debug)
     end
 
-    seek(io, rows[1])
-    return File{NamedTuple{names, Tuple{types...}}, transpose, typeof(io), typeof(parsinglayers), typeof(kwargs)}(io, parsinglayers, rows, ref, kwargs, pools, strict)
+    !transpose && seek(io, positions[1])
+    return File{NamedTuple{names, Tuple{types...}}, transpose, typeof(io), typeof(parsinglayers), typeof(kwargs)}(io, parsinglayers, positions, originalpositions, ref, kwargs, pools, strict)
 end
 
 include("filedetection.jl")
