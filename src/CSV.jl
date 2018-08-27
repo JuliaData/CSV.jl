@@ -264,7 +264,7 @@ include("write.jl")
 include("deprecated.jl")
 include("validate.jl")
 
-function __init()
+function __init__()
     CSV.File(joinpath(@__DIR__, "../test/testfiles/test_utf8.csv"), allowmissing=:auto) |> columntable
 end
 
