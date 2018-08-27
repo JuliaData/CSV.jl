@@ -121,6 +121,7 @@ function Base.getproperty(csvrow::Row{F}, ::Type{T}, col::Int, name::Symbol) whe
     end
     return r
 end
+Base.propertynames(row::Row{F}) where {F <: File{NamedTuple{names, T}}} where {names, T} = names
 
 File(source::Union{String, IO};
     # file options
