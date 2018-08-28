@@ -329,5 +329,40 @@ testfiles = [
         NamedTuple{(:c1, :c2, :c3),Tuple{Int64,Int64,Int64}},
         (c1 = [1, 2], c2 = [3, 4], c3 = [5, 6])
     ),
+    ("test_utf8.csv", (allowmissing=:auto, limit=2),
+        (2, 3),
+        NamedTuple{(:col1, :col2, :col3),Tuple{Float64,Float64,Float64}},
+        (col1 = Union{Missing, Float64}[1.0, 4.0], col2 = Union{Missing, Float64}[2.0, 5.0], col3 = Union{Missing, Float64}[3.0, 6.0])
+    ),
+    ("test_utf8.csv", (allowmissing=:auto, limit=4),
+        (3, 3),
+        NamedTuple{(:col1, :col2, :col3),Tuple{Float64,Float64,Float64}},
+        (col1 = Union{Missing, Float64}[1.0, 4.0, 7.0], col2 = Union{Missing, Float64}[2.0, 5.0, 8.0], col3 = Union{Missing, Float64}[3.0, 6.0, 9.0])
+    ),
+    ("test_utf8.csv", (allowmissing=:auto, limit=2, footerskip=1),
+        (1, 3),
+        NamedTuple{(:col1, :col2, :col3),Tuple{Float64,Float64,Float64}},
+        (col1 = Union{Missing, Float64}[1.0], col2 = Union{Missing, Float64}[2.0], col3 = Union{Missing, Float64}[3.0])
+    ),
+    ("test_multiple_missing.csv", (allowmissing=:auto, missingstrings=["NA", "NULL", "\\N"]),
+        (4, 3),
+        NamedTuple{(:col1, :col2, :col3), Tuple{Float64, Union{Missing, Float64}, Float64}},
+        (col1 = [1.0, 4.0, 7.0, 7.0], col2 = Union{Missing, Float64}[2.0, missing, missing, missing], col3 = [3.0, 6.0, 9.0, 9.0])
+    ),
+    ("test_openclosequotes.csv", (allowmissing=:auto, missingstrings=["NA", "NULL"], openquotechar='{', closequotechar='}'),
+        (3, 3),
+        NamedTuple{(:col1, :col2, :col3), Tuple{Float64, Union{Missing, Float64}, Float64}},
+        (col1 = [1.0, 4.0, 7.0], col2 = Union{Missing, Float64}[2.0, missing, missing], col3 = [3.0, 6.0, 9.0])
+    ),
+    ("test_truestrings.csv", (allowmissing=:auto, truestrings=["T", "TRUE", "true"], falsestrings=["F", "FALSE", "false"]),
+        (6, 2),
+        NamedTuple{(:int, :bools), Tuple{Int64, Bool}},
+        (int = [1, 2, 3, 4, 5, 6], bools = Bool[true, true, true, false, false, false])
+    ),
+    ("test_truestrings.csv", (allowmissing=:auto, truestrings=["T", "TRUE", "true"], falsestrings=["F", "FALSE", "false"], typemap=Dict(Bool=>String)),
+        (6, 2),
+        NamedTuple{(:int, :bools), Tuple{Int64, String}},
+        (int = [1, 2, 3, 4, 5, 6], bools = ["T", "TRUE", "true", "F", "FALSE", "false"])
+    ),
 
 ]
