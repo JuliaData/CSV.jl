@@ -196,6 +196,7 @@ function File(source::Union{String, IO},
     strict::Bool,
     debug::Bool)
     isa(source, AbstractString) && (isfile(source) || throw(ArgumentError("\"$source\" is not a valid file")))
+    (types !== nothing && any(!isconcretetype, types isa Dict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
     io = getio(source, use_mmap)
     
     consumeBOM!(io)
