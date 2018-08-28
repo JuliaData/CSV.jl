@@ -15,7 +15,7 @@ function printcsv(io, val::String, delim::Char, oq, cq, e, df)
     needtoescape = false
     bytes = codeunits(val)
     oq8, cq8 = UInt8(oq), UInt8(cq)
-    @inbounds needtoquote = bytes[1] === oq8
+    @inbounds needtoquote = isempty(bytes) ? false : bytes[1] === oq8
     d = delim % UInt8
     @simd for i = 1:sizeof(val)
         @inbounds b = bytes[i]
