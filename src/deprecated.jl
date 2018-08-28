@@ -364,22 +364,24 @@ function Source(fullpath::Union{AbstractString,IO};
               delim=",",
               quotechar='"',
               escapechar='\\',
-              missingstring::AbstractString="",
+              missingstring=nothing,
 
               header::Union{Integer, UnitRange{Int}, Vector}=1, # header can be a row number, range of rows, or actual string vector
               datarow::Int=-1, # by default, data starts immediately after header or start of file
               types=Type[],
+              typemap::Dict{Type, Type}=Dict{Type, Type}(),
               allowmissing::Symbol=:all,
               dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
               decimal='.',
-              truestring="true",
-              falsestring="false",
+              truestring=nothing,
+              falsestring=nothing,
               categorical::Bool=true,
               strings::Union{Nothing, Symbol}=nothing,
 
               footerskip::Int=0,
               rows_for_type_detect::Int=100,
               rows::Int=0,
+              limit::Union{Union, Int}=nothing,
               use_mmap::Bool=true,
               transpose::Bool=false,
               warn::Bool=true)
@@ -396,12 +398,32 @@ function Source(fullpath::Union{AbstractString,IO};
         Base.depwarn("strings=:intern is deprecated, String values are interned by default now", nothing)
     elseif strings === :weakref
         Base.depwarn("strings=:weakref is deprecated, use typemap=Dict(String=>WeakRefString{UInt8}) instead", nothing)
+        merge!(typemap, Dict(String=>WeakRefString{UInt8}))
     end
     if rows_for_type_detect != 100
         Base.depwarn("rows_for_type_detect is deprecated; CSV.File will randomly sample throughout an entire file to better infer column types", nothing)
     end
     if rows != 0
         Base.depwarn("the rows keyword argument is deprecated; to limit the number of rows read from a csv file, pass `limit=X` instead", nothing)
+        limit = rows
+    end
+    if limit === nothing
+        limit = 0
+    end
+    if truestring !== nothing
+        Base.depwarn("truestring is deprecated in CSV.File in favor of allowing the passing of multiple strings via `truestrings=[...]`", nothing)
+    else
+        truestring = "true"
+    end
+    if falsestring !== nothing
+        Base.depwarn("falsestring is deprecated in CSV.File in favor of allowing the passing of multiple strings via `falsestrings=[...]`", nothing)
+    else
+        falsestring = "false"
+    end
+    if missingstring !== nothing
+        Base.depwarn("missingstring is deprecated in CSV.File in favor of allowing the passing of multiple strings via `missingstrings=[...]`", nothing)
+    else
+        missingstring = ""
     end
 
     # argument checks
@@ -449,7 +471,7 @@ function Source(fullpath::Union{AbstractString,IO};
         rows, columnnames, datapos = datalayout_transpose(header, source, parsinglayers, delim, quotechar, escapechar, datarow, footerskip, fs)
         originalcolumnpositions = [x for x in datapos]
     else
-        rows, columnnames, datapos = datalayout(header, source, parsinglayers, delim, quotechar, escapechar, datarow, footerskip, rows, startpos, fs)
+        rows, columnnames, datapos = datalayout(header, source, parsinglayers, delim, quotechar, escapechar, datarow, footerskip, limit, startpos, fs)
     end
     cols = length(columnnames)
     @debug "columnnames=$columnnames, cols=$cols, rows=$rows, datapos=$datapos"
@@ -508,8 +530,15 @@ function Source(fullpath::Union{AbstractString,IO};
     else
         autocols = Int[]
     end
-    if strings === :weakref
-        columntypes = Type[(T !== Missing && Base.nonmissingtype(T) <: String) ? substitute(T, WeakRefString{UInt8}) : T for T in columntypes]
+    if !isempty(typemap)
+        for (k, v) in typemap
+            for i = 1:length(columntypes)
+                T = columntypes[i]
+                if T == k
+                    columntypes[i] = v
+                end
+            end
+        end
     end
     if allowmissing != :auto
         if allowmissing == :all # allow missing values in all automatically detected columns
