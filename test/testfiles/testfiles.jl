@@ -262,7 +262,7 @@ testfiles = [
     # #217
     (IOBuffer("aa,bb\n1,\"1,b,c\"\n"), (allowmissing=:auto,),
         (1, 2),
-        NamedTuple{(:aa, :bb), Tuple{Int, String}},
+        NamedTuple{(:aa, :bb), Tuple{Int64, String}},
         (aa = [1], bb = ["1,b,c"])
     ),
     # #198
