@@ -131,6 +131,7 @@ File(source::Union{String, IO};
     # by default, data starts immediately after header or start of file
     datarow::Int=-1,
     footerskip::Int=0,
+    limit::Union{Nothing, Int}=nothing,
     transpose::Bool=false,
     # parsing options
     missingstrings=String[],
@@ -151,7 +152,7 @@ File(source::Union{String, IO};
     categorical::Bool=false,
     strict::Bool=false,
     debug::Bool=false) =
-    File(source, use_mmap, header, datarow, footerskip, transpose, missingstrings, missingstring, delim, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
+    File(source, use_mmap, header, datarow, footerskip, limit, transpose, missingstrings, missingstring, delim, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
 
 # File(file, true, 1, -1, 0, false, String[], "", ",", '"', nothing, nothing, '\\', nothing, nothing, nothing, nothing, nothing, Dict{Type, Type}(), :all, false)
 function File(source::Union{String, IO},
@@ -160,6 +161,7 @@ function File(source::Union{String, IO},
     header::Union{Integer, UnitRange{Int}, Vector},
     datarow::Int,
     footerskip::Int,
+    limit::Union{Nothing, Int},
     transpose::Bool,
     # parsing options
     missingstrings,
@@ -201,11 +203,11 @@ function File(source::Union{String, IO},
         # need to determine names, columnpositions (rows), and ref
         rows, names, positions = datalayout_transpose(header, parsinglayers, io, datarow, footerskip)
         originalpositions = copy(positions)
-        ref = Ref{Int}(rows)
+        ref = Ref{Int}(min(something(limit, typemax(Int)), rows))
     else
         names, datapos = datalayout(header, parsinglayers, io, datarow)
         eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, false, typeof(io), typeof(parsinglayers), typeof(kwargs)}(io, parsinglayers, Int64[], Int64[], Ref{Int}(0), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
-        positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8)
+        positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8, limit)
         originalpositions = Int64[]
         footerskip > 0 && resize!(positions, length(positions) - footerskip)
         ref = Ref{Int}(0)
@@ -266,6 +268,7 @@ include("validate.jl")
 
 function __init__()
     CSV.File(joinpath(@__DIR__, "../test/testfiles/test_utf8.csv"), allowmissing=:auto) |> columntable
+    return
 end
 
 end # module
