@@ -202,6 +202,7 @@ end
 
 function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Int)
     nl = Vector{Int64}(undef, limit)
+    limit == 0 && return nl
     nl[1] = position(io) # we always start at the beginning of the first data row
     b = 0x00
     i = 2
@@ -230,6 +231,6 @@ function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Int)
             i += 1
         end
     end
-    i < limit && resize!(nl, i)
+    (i-1) < limit && resize!(nl, i-1)
     return nl
 end

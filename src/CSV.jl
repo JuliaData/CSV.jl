@@ -26,9 +26,15 @@ struct Row{F}
     row::Int
 end
 
+function Base.show(io::IO, r::Row)
+    println(io, "CSV.Row($(getfield(r, 2))) of:")
+    show(io, getfield(r, 1))
+end
+
 # could just store NT internally and have Row take it as type parameter
 # could separate kwargs out into individual fields and remove type parameter
 struct File{NT, transpose, I, P, KW}
+    name::String
     io::I
     parsinglayers::P
     positions::Vector{Int}
@@ -37,6 +43,13 @@ struct File{NT, transpose, I, P, KW}
     kwargs::KW
     pools::Vector{CategoricalPool{String, UInt32, CategoricalString{UInt32}}}
     strict::Bool
+end
+
+function Base.show(io::IO, f::File{NT, transpose}) where {NT, transpose}
+    println(io, "CSV.File($(f.name), rows=$(transpose ? missing : length(f.positions))):")
+    println(io, "Columns:")
+    Base.print_matrix(io, hcat(collect(Tables.names(NT)), collect(Tables.types(NT))))
+    return
 end
 
 Base.eltype(f::F) where {F <: File} = Row{F}
@@ -135,6 +148,7 @@ File(source::Union{String, IO};
     transpose::Bool=false,
     # parsing options
     missingstrings=String[],
+    missingstring="",
     delim::Union{Char, String}=",",
     quotechar::Union{UInt8, Char}='"',
     openquotechar::Union{UInt8, Char, Nothing}=nothing,
@@ -151,7 +165,7 @@ File(source::Union{String, IO};
     categorical::Bool=false,
     strict::Bool=false,
     debug::Bool=false) =
-    File(source, use_mmap, header, datarow, footerskip, limit, transpose, missingstrings, delim, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
+    File(source, use_mmap, header, datarow, footerskip, limit, transpose, missingstrings, missingstring, delim, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
 
 # File(file, true, 1, -1, 0, false, String[], "", ",", '"', nothing, nothing, '\\', nothing, nothing, nothing, nothing, nothing, Dict{Type, Type}(), :all, false)
 function File(source::Union{String, IO},
@@ -164,6 +178,7 @@ function File(source::Union{String, IO},
     transpose::Bool,
     # parsing options
     missingstrings,
+    missingstring,
     delim::Union{Char, String},
     quotechar::Union{UInt8, Char},
     openquotechar::Union{UInt8, Char, Nothing},
@@ -187,6 +202,7 @@ function File(source::Union{String, IO},
 
     kwargs = getkwargs(dateformat, decimal, getbools(truestrings, falsestrings))
     d = string(delim)
+    missingstrings = isempty(missingstrings) ? [missingstring] : missingstrings
     parsinglayers = Parsers.Sentinel(missingstrings) |>
                     x->Parsers.Strip(x, d == " " ? 0x00 : ' ', d == "\t" ? 0x00 : '\t') |>
                     (openquotechar !== nothing ? x->Parsers.Quoted(x, openquotechar, closequotechar, escapechar) : x->Parsers.Quoted(x, quotechar, escapechar)) |>
@@ -203,7 +219,7 @@ function File(source::Union{String, IO},
         ref = Ref{Int}(min(something(limit, typemax(Int)), rows))
     else
         names, datapos = datalayout(header, parsinglayers, io, datarow)
-        eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, false, typeof(io), typeof(parsinglayers), typeof(kwargs)}(io, parsinglayers, Int64[], Int64[], Ref{Int}(0), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
+        eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, false, typeof(io), typeof(parsinglayers), typeof(kwargs)}(getname(source), io, parsinglayers, Int64[], Int64[], Ref{Int}(0), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
         positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8, limit)
         originalpositions = Int64[]
         footerskip > 0 && resize!(positions, length(positions) - footerskip)
@@ -218,7 +234,7 @@ function File(source::Union{String, IO},
     end
 
     !transpose && seek(io, positions[1])
-    return File{NamedTuple{names, Tuple{types...}}, transpose, typeof(io), typeof(parsinglayers), typeof(kwargs)}(io, parsinglayers, positions, originalpositions, ref, kwargs, pools, strict)
+    return File{NamedTuple{names, Tuple{types...}}, transpose, typeof(io), typeof(parsinglayers), typeof(kwargs)}(getname(source), io, parsinglayers, positions, originalpositions, ref, kwargs, pools, strict)
 end
 
 include("filedetection.jl")
@@ -226,6 +242,8 @@ include("typedetection.jl")
 
 getio(str::String, use_mmap) = IOBuffer(use_mmap ? Mmap.mmap(str) : Base.read(str))
 getio(io::IO, use_mmap) = io
+getname(str::String) = str
+getname(io::I) where {I <: IO} = string("<", I, ">")
 
 function consumeBOM!(io)
     # BOM character detection
