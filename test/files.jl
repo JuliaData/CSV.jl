@@ -29,6 +29,9 @@ seekstart(io)
 f = CSV.File(io; delim='\t', allowmissing=:auto)
 @test (f |> columntable) == tbl
 
+# #172
+@test_throws ArgumentError CSV.File(joinpath(dir, "test_newline_line_endings.csv"), types=Dict(1=>Integer))
+
 # f = CSV.File(joinpath(dir, "pandas_zeros.csv"), allowmissing=:none)
 # @time f |> columntable;
 # using Profile
