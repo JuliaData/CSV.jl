@@ -1,4 +1,4 @@
-using Test, CSV, Dates, WeakRefStrings, CategoricalArrays
+using Test, CSV, Dates, Tables, WeakRefStrings, CategoricalArrays
 
 const dir = joinpath(dirname(pathof(CSV)), "../test/testfiles")
 
@@ -12,8 +12,8 @@ end
 
 @testset "CSV" begin
 
-# include("unittests.jl")
 include("files.jl")
+include("write.jl")
 include("deprecated.jl")
 
 @testset "CSV.validate" begin
