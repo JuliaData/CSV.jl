@@ -138,7 +138,7 @@ Base.propertynames(row::Row{F}) where {F <: File{NamedTuple{names, T}}} where {n
 
 File(source::Union{String, IO};
     # file options
-    use_mmap::Bool=true,
+    use_mmap::Bool=!Sys.iswindows(),
     # header can be a row number, range of rows, or actual string vector
     header::Union{Integer, UnitRange{Int}, Vector}=1,
     # by default, data starts immediately after header or start of file
