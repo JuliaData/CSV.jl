@@ -97,7 +97,7 @@ function detect(types, io, positions, parsinglayers, kwargs, typemap, categorica
         pools = CategoricalPool{String, UInt32, CatStr}[]
     end
     if !isempty(typemap)
-        for icol = 1:cols
+        for col = 1:cols
             types[col] = get(typemap, types[col], types[col])
         end
     end

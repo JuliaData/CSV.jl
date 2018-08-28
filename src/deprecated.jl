@@ -381,7 +381,7 @@ function Source(fullpath::Union{AbstractString,IO};
               footerskip::Int=0,
               rows_for_type_detect::Int=100,
               rows::Int=0,
-              limit::Union{Union, Int}=nothing,
+              limit::Union{Nothing, Int}=nothing,
               use_mmap::Bool=true,
               transpose::Bool=false,
               warn::Bool=true)
@@ -531,11 +531,12 @@ function Source(fullpath::Union{AbstractString,IO};
         autocols = Int[]
     end
     if !isempty(typemap)
-        for (k, v) in typemap
-            for i = 1:length(columntypes)
-                T = columntypes[i]
-                if T == k
-                    columntypes[i] = v
+        for col = 1:cols
+            columntypes[col] = get(typemap, columntypes[col]) do
+                if haskey(typemap, Base.nonmissingtype(columntypes[col]))
+                    Union{Missing, typemap[Base.nonmissingtype(columntypes[col])]}
+                else
+                    columntypes[col]
                 end
             end
         end

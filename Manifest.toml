@@ -21,9 +21,9 @@ version = "0.5.0"
 
 [[Compat]]
 deps = ["Base64", "Dates", "DelimitedFiles", "Distributed", "InteractiveUtils", "LibGit2", "Libdl", "LinearAlgebra", "Markdown", "Mmap", "Pkg", "Printf", "REPL", "Random", "Serialization", "SharedArrays", "Sockets", "SparseArrays", "Statistics", "Test", "UUIDs", "Unicode"]
-git-tree-sha1 = "277d3807440d9793421354b6680911fc95d91a84"
+git-tree-sha1 = "ae262fa91da6a74e8937add6b613f58cd56cdad4"
 uuid = "34da2185-b29b-5c13-b0c7-acf172513d20"
-version = "1.0.1"
+version = "1.1.0"
 
 [[DataFrames]]
 deps = ["CategoricalArrays", "CodecZlib", "Compat", "DataStreams", "Missings", "Printf", "Reexport", "SortingAlgorithms", "Statistics", "StatsBase", "Tables", "TranscodingStreams", "Unicode", "WeakRefStrings"]
@@ -41,9 +41,9 @@ version = "0.4.0"
 
 [[DataStructures]]
 deps = ["InteractiveUtils", "REPL", "Random", "Serialization", "Test"]
-git-tree-sha1 = "6e72a9098f5774601c8c8d6a4511a68270594910"
+git-tree-sha1 = "2afbbd0294306b0b74a753c196be50b35edb625c"
 uuid = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
-version = "0.11.0"
+version = "0.11.1"
 
 [[DataValues]]
 deps = ["Dates", "InteractiveUtils", "LinearAlgebra", "Random", "Test"]
@@ -240,8 +240,8 @@ uuid = "382cd787-c1b6-5bf2-a167-d5b971a19bda"
 version = "0.2.1"
 
 [[Tables]]
-deps = ["IterableTables", "IteratorInterfaceExtensions", "Query", "QueryOperators", "Requires", "Test"]
-git-tree-sha1 = "61d96383219b2724e4320b75a87ae12bd0616be6"
+deps = ["DataValues", "IterableTables", "IteratorInterfaceExtensions", "Query", "QueryOperators", "Requires", "Test"]
+git-tree-sha1 = "80f6a7e6fd4a1353dc9b8540496266e6baefe5f2"
 repo-rev = "master"
 repo-url = "https://github.com/JuliaData/Tables.jl"
 uuid = "f31cc48a-97c4-11e8-115d-f1beebab189a"
@@ -253,9 +253,9 @@ uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [[TranscodingStreams]]
 deps = ["DelimitedFiles", "Pkg", "Random", "Test"]
-git-tree-sha1 = "a27b3a1b9c1120ef67b4647b80c61a16c09b9218"
+git-tree-sha1 = "a34a2d588e2d2825602bf14a24216d5c8b0921ec"
 uuid = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
-version = "0.8.0"
+version = "0.8.1"
 
 [[UUIDs]]
 deps = ["Random"]
