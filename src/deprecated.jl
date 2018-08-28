@@ -303,30 +303,6 @@ function datalayout(header, source, parsinglayers, delim, quotechar, escapechar,
     return rows, columnnames, datapos
 end
 
-function skiptoheader!(parsinglayers, source, row, header)
-    while row < header
-        while !eof(source)
-            r = Parsers.parse(parsinglayers, source, Tuple{Ptr{UInt8}, Int})
-            (r.code & Parsers.DELIMITED) > 0 && break
-        end
-        row += 1
-    end
-    return row
-end
-
-function countfields(source, parsinglayers)
-    rows = 0
-    result = Parsers.Result(Tuple{Ptr{UInt8}, Int})
-    while !eof(source)
-        Parsers.parse!(parsinglayers, source, result)
-        Parsers.ok(result.code) || throw(Error(result, rows+1, 1))
-        rows += 1
-        xor(result.code & DELIM_NEWLINE, Parsers.DELIMITED) == 0 && continue
-        ((result.code & Parsers.NEWLINE) > 0 || eof(source)) && break
-    end
-    return rows
-end
-
 function datalayout_transpose(header, source, parsinglayers, delim, quotechar, escapechar, datarow, footerskip, fs)
     if isa(header, Integer) && header > 0
         # skip to header column to read column names
@@ -399,18 +375,34 @@ function Source(fullpath::Union{AbstractString,IO};
               truestring="true",
               falsestring="false",
               categorical::Bool=true,
-              strings::Symbol=:intern,
+              strings::Union{Nothing, Symbol}=nothing,
 
               footerskip::Int=0,
               rows_for_type_detect::Int=100,
               rows::Int=0,
               use_mmap::Bool=true,
-              transpose::Bool=false)
+              transpose::Bool=false,
+              warn::Bool=true)
     # make sure character args are UInt8
-    Base.depwarn("CSV.Source is deprecated and will be removed in a future release; please use CSV.File instead (supports most of the same options)", nothing)
+    warn && Base.depwarn("CSV.Source is deprecated and will be removed in a future release; please use CSV.File instead (supports most of the same options)", nothing)
     isascii(delim) || throw(ArgumentError("non-ASCII characters not supported for delim argument: $delim"))
     isascii(quotechar) || throw(ArgumentError("non-ASCII characters not supported for quotechar argument: $quotechar"))
     isascii(escapechar) || throw(ArgumentError("non-ASCII characters not supported for escapechar argument: $escapechar"))
+
+    # deprecations for CSV.File
+    if strings === nothing
+        strings = :intern # no need to depwarn
+    elseif strings === :intern
+        Base.depwarn("strings=:intern is deprecated, String values are interned by default now", nothing)
+    elseif strings === :weakref
+        Base.depwarn("strings=:weakref is deprecated, use typemap=Dict(String=>WeakRefString{UInt8}) instead", nothing)
+    end
+    if rows_for_type_detect != 100
+        Base.depwarn("rows_for_type_detect is deprecated; CSV.File will randomly sample throughout an entire file to better infer column types", nothing)
+    end
+    if rows != 0
+        Base.depwarn("the rows keyword argument is deprecated; to limit the number of rows read from a csv file, pass `limit=X` instead", nothing)
+    end
 
     # argument checks
     isa(fullpath, AbstractString) && (isfile(fullpath) || throw(ArgumentError("\"$fullpath\" is not a valid file")))
@@ -681,51 +673,57 @@ sq1 = CSV.read(source, SQLite.Sink, db, "sqlite_table")
 """
 function read end
 
-function read(fullpath::Union{AbstractString,IO}, sink::Type=DataFrame, args...; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), kwargs...)
-    Base.depwarn("CSV.read is deprecated in favor of CSV.File, which supports mostly the same options. CSV.File() returns a row-iterator that can be piped to any number of sinks, like `CSV.File(filename) |> DataFrame`", nothing)
+function read(fullpath::Union{AbstractString,IO}, sink::Union{Type, Nothing}=nothing, args...; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), kwargs...)
+    if sink === nothing
+        Base.depwarn("CSV.read(file) will return a CSV.File object in the future; to return a DataFrame, use `CSV.read(file, DataFrame)`", nothing)
+        sink = DataFrame
+    end
     if append
         Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> append!(existing_df)` to append the rows of a csv file to an existing DataFrame", nothing)
     end
-    if !isempty(transforms)
-        Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
-    end
-    source = Source(fullpath; kwargs...)
+    # if !isempty(transforms)
+    #     Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
+    # end
+    source = Source(fullpath; warn=false, kwargs...)
     sink = Data.stream!(source, sink, args...; append=append, transforms=transforms)
     return Data.close!(sink)
 end
 
 function read(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), kwargs...) where {T}
-    Base.depwarn("CSV.read is deprecated in favor of CSV.File, which supports mostly the same options. CSV.File() returns a row-iterator that can be piped to any number of sinks, like `CSV.File(filename) |> DataFrame`", nothing)
+    
     if append
         Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> append!(existing_df)` to append the rows of a csv file to an existing DataFrame", nothing)
     end
-    if !isempty(transforms)
-        Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
-    end
-    source = Source(fullpath; kwargs...)
+    # if !isempty(transforms)
+    #     Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
+    # end
+    source = Source(fullpath; warn=false, kwargs...)
     sink = Data.stream!(source, sink; append=append, transforms=transforms)
     return Data.close!(sink)
 end
 
-function read(source::CSV.Source, sink=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}())
-    Base.depwarn("CSV.read is deprecated in favor of CSV.File, which supports mostly the same options. CSV.File() returns a row-iterator that can be piped to any number of sinks, like `CSV.File(filename) |> DataFrame`", nothing)
+function read(source::CSV.Source, sink::Union{Type, Nothing}=nothing, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}())
+    if sink === nothing
+        Base.depwarn("CSV.read(file) will return a CSV.File object in the future; to return a DataFrame, use `CSV.read(file, DataFrame)`", nothing)
+        sink = DataFrame
+    end
     if append
         Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> append!(existing_df)` to append the rows of a csv file to an existing DataFrame", nothing)
     end
-    if !isempty(transforms)
-        Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
-    end
+    # if !isempty(transforms)
+    #     Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
+    # end
     sink = Data.stream!(source, sink, args...; append=append, transforms=transforms)
     return Data.close!(sink)
 end
 function read(source::CSV.Source, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) where {T}
-    Base.depwarn("CSV.read is deprecated in favor of CSV.File, which supports mostly the same options. CSV.File() returns a row-iterator that can be piped to any number of sinks, like `CSV.File(filename) |> DataFrame`", nothing)
+    
     if append
         Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> append!(existing_df)` to append the rows of a csv file to an existing DataFrame", nothing)
     end
-    if !isempty(transforms)
-        Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
-    end
+    # if !isempty(transforms)
+    #     Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
+    # end
     sink = Data.stream!(source, sink; append=append, transforms=transforms)
     return Data.close!(sink)
 end
