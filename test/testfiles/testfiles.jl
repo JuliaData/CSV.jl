@@ -369,5 +369,9 @@ testfiles = [
         NamedTuple{(:num1, :num2, :num3, :num4), Tuple{Int64, Int64, Int64, Int64}},
         (num1 = [1, 1], num2 = [1193, 661], num3 = [5, 3], num4 = [978300760, 978302109])
     ),
-
+    (IOBuffer("1,a,i\n2,b,ii\n3,c,iii"), (skipto=1,),
+        (3, 3),
+        NamedTuple{(:Column1, :Column2, :Column3),Tuple{Union{Missing, Int64},Union{Missing, String},Union{Missing, String}}},
+        (Column1 = Union{Missing, Int64}[1, 2, 3], Column2 = Union{Missing, String}["a", "b", "c"], Column3 = Union{Missing, String}["i", "ii", "iii"])
+    ),
 ]
