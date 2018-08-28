@@ -364,5 +364,10 @@ testfiles = [
         NamedTuple{(:int, :bools), Tuple{Int64, String}},
         (int = [1, 2, 3, 4, 5, 6], bools = ["T", "TRUE", "true", "F", "FALSE", "false"])
     ),
+    ("test_string_delimiters.csv", (allowmissing=:auto, delim="::"),
+        (2, 4),
+        NamedTuple{(:num1, :num2, :num3, :num4), Tuple{Int64, Int64, Int64, Int64}},
+        (num1 = [1, 1], num2 = [1193, 661], num3 = [5, 3], num4 = [978300760, 978302109])
+    ),
 
 ]
