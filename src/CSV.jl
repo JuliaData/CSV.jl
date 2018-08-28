@@ -143,6 +143,7 @@ File(source::Union{String, IO};
     header::Union{Integer, UnitRange{Int}, Vector}=1,
     # by default, data starts immediately after header or start of file
     datarow::Int=-1,
+    skipto::Union{Nothing, Int}=nothing,
     footerskip::Int=0,
     limit::Union{Nothing, Int}=nothing,
     transpose::Bool=false,
@@ -165,7 +166,7 @@ File(source::Union{String, IO};
     categorical::Bool=false,
     strict::Bool=false,
     debug::Bool=false) =
-    File(source, use_mmap, header, datarow, footerskip, limit, transpose, missingstrings, missingstring, delim, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
+    File(source, use_mmap, header, datarow, skipto, footerskip, limit, transpose, missingstrings, missingstring, delim, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
 
 # File(file, true, 1, -1, 0, false, String[], "", ",", '"', nothing, nothing, '\\', nothing, nothing, nothing, nothing, nothing, Dict{Type, Type}(), :all, false)
 function File(source::Union{String, IO},
@@ -173,6 +174,7 @@ function File(source::Union{String, IO},
     use_mmap::Bool,
     header::Union{Integer, UnitRange{Int}, Vector},
     datarow::Int,
+    skipto::Int,
     footerskip::Int,
     limit::Union{Nothing, Int},
     transpose::Bool,
@@ -212,6 +214,7 @@ function File(source::Union{String, IO},
     header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
     datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
+    datarow = skipto !== nothing ? skipto : datarow
 
     if transpose
         # need to determine names, columnpositions (rows), and ref
