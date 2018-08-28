@@ -135,7 +135,6 @@ File(source::Union{String, IO};
     transpose::Bool=false,
     # parsing options
     missingstrings=String[],
-    missingstring="",
     delim::Union{Char, String}=",",
     quotechar::Union{UInt8, Char}='"',
     openquotechar::Union{UInt8, Char, Nothing}=nothing,
@@ -152,7 +151,7 @@ File(source::Union{String, IO};
     categorical::Bool=false,
     strict::Bool=false,
     debug::Bool=false) =
-    File(source, use_mmap, header, datarow, footerskip, limit, transpose, missingstrings, missingstring, delim, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
+    File(source, use_mmap, header, datarow, footerskip, limit, transpose, missingstrings, delim, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
 
 # File(file, true, 1, -1, 0, false, String[], "", ",", '"', nothing, nothing, '\\', nothing, nothing, nothing, nothing, nothing, Dict{Type, Type}(), :all, false)
 function File(source::Union{String, IO},
@@ -165,7 +164,6 @@ function File(source::Union{String, IO},
     transpose::Bool,
     # parsing options
     missingstrings,
-    missingstring,
     delim::Union{Char, String},
     quotechar::Union{UInt8, Char},
     openquotechar::Union{UInt8, Char, Nothing},
@@ -188,7 +186,6 @@ function File(source::Union{String, IO},
     consumeBOM!(io)
 
     kwargs = getkwargs(dateformat, decimal, getbools(truestrings, falsestrings))
-    missingstrings = isempty(missingstrings) ? [missingstring] : missingstrings
     d = string(delim)
     parsinglayers = Parsers.Sentinel(missingstrings) |>
                     x->Parsers.Strip(x, d == " " ? 0x00 : ' ', d == "\t" ? 0x00 : '\t') |>
