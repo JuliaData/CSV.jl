@@ -147,7 +147,7 @@ For example, one could iterate over a csv file with column names `a`, `b`, and `
 
 ```julia
 for row in CSV.File(file)
-    println("a=$(row.a), b=$(row.b), c=$(row.c)")
+    println("a=\$(row.a), b=\$(row.b), c=\$(row.c)")
 end
 ```
 
@@ -259,7 +259,7 @@ function File(source::Union{String, IO},
                     (openquotechar !== nothing ? x->Parsers.Quoted(x, openquotechar, closequotechar, escapechar) : x->Parsers.Quoted(x, quotechar, escapechar)) |>
                     x->Parsers.Delimited(x, d, "\n", "\r", "\r\n")
 
-    header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
+    header = (isa(header, Integer) && header == 1 && (datarow == 1 || skipto == 1)) ? -1 : header
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
     datarow = datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
     datarow = skipto !== nothing ? skipto : datarow
