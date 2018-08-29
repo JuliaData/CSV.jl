@@ -1,3 +1,22 @@
+"""
+    CSV.write(table, file::Union{String, IO}; kwargs...) => file
+    table |> CSV.write(file::Union{String, IO}; kwargs...) => file
+
+Write a [table](https://github.com/JuliaData/Tables.jl) to a csv file, given as an `IO` argument or String representing the file name to write to.
+
+Keyword arguments include:
+* `delim::Union{Char, String}=','`: a character or string to print out as the file's delimiter
+* `quotechar::Char='"'`: character to use for quoting text fields that may contain delimiters or newlines
+* `openquotechar::Char`: instead of `quotechar`, use `openquotechar` and `closequotechar` to support different starting and ending quote characters
+* `escapechar::Char='\\'`: character used to escape quote characters in a text field
+* `missingstring::String=""`: string to print 
+* `dateformat=Dates.default_format(T)`: the date format string to use for printing out Date & DateTime columns
+* `append=false`: whether to append writing to an existing file/IO, if `true`, it will not write column names by default
+* `writeheader=!append`: whether to write an initial row of delimited column names, not written by default if appending
+* `header`: pass a list of column names (Symbols or Strings) to use instead of the column names of the input table
+"""
+function write end
+
 function with(f::Function, io::IO, append)
     !append && seekstart(io)
     f(io)
