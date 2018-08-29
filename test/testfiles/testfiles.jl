@@ -374,10 +374,21 @@ testfiles = [
         NamedTuple{(:Column1, :Column2, :Column3),Tuple{Union{Missing, Int64},Union{Missing, String},Union{Missing, String}}},
         (Column1 = Union{Missing, Int64}[1, 2, 3], Column2 = Union{Missing, String}["a", "b", "c"], Column3 = Union{Missing, String}["i", "ii", "iii"])
     ),
-    # 249
+    # #249
     ("test_basic.csv", (types=Dict(:col2=>Float64), allowmissing=:auto),
         (3, 3),
         NamedTuple{(:col1, :col2, :col3),Tuple{Int64,Float64,Int64}},
         (col1 = [1, 4, 7], col2 = [2.0, 5.0, 8.0], col3 = [3, 6, 9])
+    ),
+    # #251
+    ("test_basic.csv", (types=Dict(:col2=>Union{Float64, Missing}), allowmissing=:auto),
+        (3, 3),
+        NamedTuple{(:col1, :col2, :col3),Tuple{Int64,Union{Missing,Float64},Int64}},
+        (col1 = [1, 4, 7], col2 = Union{Missing,Float64}[2.0, 5.0, 8.0], col3 = [3, 6, 9])
+    ),
+    ("test_truestrings.csv", (truestrings=["T", "TRUE", "true"], falsestrings=["F", "FALSE", "false"]),
+        (6, 2),
+        NamedTuple{(:int, :bools), Tuple{Union{Missing, Int64}, Union{Missing, Bool}}},
+        (int = Union{Missing, Int}[1, 2, 3, 4, 5, 6], bools = Union{Missing,Bool}[true, true, true, false, false, false])
     ),
 ]
