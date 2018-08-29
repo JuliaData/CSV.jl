@@ -76,5 +76,12 @@ using Dates, WeakRefStrings, CategoricalArrays
     end
     @test String(read(file)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
     rm(file)
-    
+
+    # #247
+    open(file, "w") do io
+        write(io, "or5a2ztZo\n")
+        (A=1:3, B=rand(10:20, 3), C=["Wg5", "SJ4", "w48"]) |> CSV.write(io; append=true, writeheader=true)
+    end
+    @test String(read(file)) == "or5a2ztZo\nA,B,C\n1,17,Wg5\n2,17,SJ4\n3,19,w48\n"
+    rm(file)
 end
