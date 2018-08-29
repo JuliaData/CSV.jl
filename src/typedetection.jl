@@ -35,6 +35,7 @@ promote_type2(::Type{String}, ::Type{String}) = String
 initialtype(allowmissing) = (allowmissing === :auto || allowmissing === :none) ? Union{} : Missing
 initialtypes(T, ::Nothing, names) = Any[T for _ = 1:length(names)]
 initialtypes(T, t::Dict{String, V}, names) where {V} = Any[get(t, string(nm), T) for nm in names]
+initialtypes(T, t::Dict{Symbol, V}, names) where {V} = Any[get(t, nm, T) for nm in names]
 initialtypes(T, t::Dict{Int, V}, names) where {V} = Any[get(t, i, T) for i = 1:length(names)]
 initialtypes(T, t::Vector, names) = length(t) == length(names) ? collect(Any, t) : throw(ArgumentError("length of user provided types ($(length(t))) does not match length of header (?$(length(names)))"))
 
