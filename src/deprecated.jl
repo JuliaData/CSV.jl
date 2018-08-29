@@ -831,62 +831,6 @@ function Data.close!(sink::CSV.Sink)
     return sink
 end
 
-"""
-`CSV.write(file_or_io::Union{AbstractString,IO}, source::Type{T}, args...; kwargs...)` => `CSV.Sink`
-
-`CSV.write(file_or_io::Union{AbstractString,IO}, source::Data.Source; kwargs...)` => `CSV.Sink`
-
-
-write a `Data.Source` out to a `file_or_io`.
-
-Positional Arguments:
-
-* `file_or_io`; can be a file name (string) or other `IO` instance
-* `source` can be the *type* of `Data.Source`, plus any required `args...`, or an already constructed `Data.Source` can be passsed in directly (2nd method)
-
-Keyword Arguments:
-
-* `delim::Union{Char,UInt8}`; how fields in the file will be delimited; default is `UInt8(',')`
-* `quotechar::Union{Char,UInt8}`; the character that indicates a quoted field that may contain the `delim` or newlines; default is `UInt8('"')`
-* `escapechar::Union{Char,UInt8}`; the character that escapes a `quotechar` in a quoted field; default is `UInt8('\\')`
-* `missingstring::String`; the ascii string that indicates how missing values will be represented in the dataset; default is the empty string `""`
-* `dateformat`; how dates/datetimes will be represented in the dataset; default is ISO-8601 `yyyy-mm-ddTHH:MM:SS.s`
-* `header::Bool`; whether to write out the column names from `source`
-* `colnames::Vector{String}`; a vector of string column names to be used when writing the header row
-* `append::Bool`; start writing data at the end of `io`; by default, `io` will be reset to the beginning or overwritten before writing
-* `transforms::Dict{Union{String,Int},Function}`; a Dict of transforms to apply to values as they are parsed. Note that a column can be specified by either number or column name.
-
-A few example invocations include:
-```julia
-# write out a DataFrame `df` to a file name "out.csv" with all defaults, including comma as delimiter
-CSV.write("out.csv", df)
-
-# write out a DataFrame, this time as a tab-delimited file
-CSV.write("out.csv", df; delim='\t')
-
-# write out a DataFrame, with missing values represented by the string "NA"
-CSV.write("out.csv", df; missingstring="NA")
-
-# write out a "header-less" file, with actual data starting on row 1
-CSV.write("out.csv", df; header=false)
-
-# write out a DataFrame `df` twice to a file, the resulting file with have twice the # of rows as the DataFrame
-# note the usage of the keyword argument `append=true` in the 2nd call
-CSV.write("out.csv", df)
-CSV.write("out.csv", df; append=true)
-
-# write a DataFrame out to an IOBuffer instead of a file
-io = IOBuffer
-CSV.write(io, df)
-
-# write the result of an SQLite query out to a comma-delimited file
-db = SQLite.DB()
-sqlite_source = SQLite.Source(db, "select * from sqlite_table")
-CSV.write("sqlite_table.csv", sqlite_source)
-```
-"""
-function write end
-
 function write(file::Union{AbstractString, IO}, ::Type{T}, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...) where {T}
     Base.depwarn("CSV.write(file, source) is deprecated in favor of CSV.write(source, file); it will also now support piping like: `dataframe |> CSV.write(filename)`", nothing)
     sink = Data.stream!(T(args...), CSV.Sink, file; append=append, transforms=transforms, kwargs...)
