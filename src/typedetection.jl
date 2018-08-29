@@ -5,6 +5,7 @@ promote_type2(::Type{Missing}, ::Type{T}) where {T} = Union{T, Missing}
 promote_type2(::Type{Missing}, ::Type{String}) = Union{String, Missing}
 promote_type2(::Type{Int64}, ::Type{Missing}) = Union{Int64, Missing}
 promote_type2(::Type{Float64}, ::Type{Missing}) = Union{Float64, Missing}
+promote_type2(::Type{Bool}, ::Type{Missing}) = Union{Bool, Missing}
 promote_type2(::Type{Date}, ::Type{Missing}) = Union{Date, Missing}
 promote_type2(::Type{DateTime}, ::Type{Missing}) = Union{DateTime, Missing}
 promote_type2(::Type{String}, ::Type{Missing}) = Union{String, Missing}
