@@ -8,19 +8,7 @@ CSV.jl is built to be a fast and flexible pure-Julia library for handling delimi
 ## High-level interface
 
 ```@docs
-CSV.read
+CSV.File
 CSV.validate
 CSV.write
-```
-
-## Lower-level utilities
-
-```@docs
-CSV.Source
-CSV.Sink
-CSV.Options
-CSV.parsefield
-CSV.readline
-CSV.readsplitline!
-CSV.countlines
 ```
