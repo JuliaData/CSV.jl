@@ -391,4 +391,19 @@ testfiles = [
         NamedTuple{(:int, :bools), Tuple{Union{Missing, Int64}, Union{Missing, Bool}}},
         (int = Union{Missing, Int}[1, 2, 3, 4, 5, 6], bools = Union{Missing,Bool}[true, true, true, false, false, false])
     ),
+    ("test_comments1.csv", (allowmissing=:auto, comment="#"),
+        (2, 3),
+        NamedTuple{(:a, :b, :c), Tuple{Int64, Int64, Int64}},
+        (a=[1,7], b=[2,8], c=[3,9])
+    ),
+    ("test_comments_multiple.csv", (allowmissing=:auto, comment="#"),
+        (4, 3),
+        NamedTuple{(:a, :b, :c), Tuple{Int64, Int64, Int64}},
+        (a = [1, 7, 10, 13], b = [2, 8, 11, 14], c = [3, 9, 12, 15])
+    ),
+    ("test_comments_multichar.csv", (allowmissing=:auto, comment="//"),
+        (2, 3),
+        NamedTuple{(:a, :b, :c), Tuple{Int64, Int64, Int64}},
+        (a=[1,7], b=[2,8], c=[3,9])
+    ),
 ]
