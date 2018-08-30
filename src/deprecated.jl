@@ -135,7 +135,7 @@ makestr(d::UInt8) = string(Char(d))
 makestr(d::Char) = string(d)
 makestr(d::String) = d
 
-readline!(io::IO) = readline!(Parsers.Delimited(Parsers.Quoted(), COMMA_NEWLINES), io)
+readline!(io::IO) = readline!(Parsers.Delimited(false, Parsers.Quoted(), COMMA_NEWLINES), io)
 readline!(s::Source) = readline!(s.parsinglayers, s.io)
 function countlines(io::IO, q::UInt8, e::UInt8)
     nl = 1
