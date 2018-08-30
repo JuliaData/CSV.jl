@@ -396,5 +396,19 @@ testfiles = [
         NamedTuple{(:a, :b, :c, :d, :e), Tuple{Int64, Int64, Int64, Int64, Int64}},
         (a = [1, 1, 1], b = [2, 2, 2], c = [3, 3, 3], d = [4, 4, 4], e = [5, 5, 5])
     ),
-
+    ("test_comments1.csv", (allowmissing=:auto, comment="#"),
+        (2, 3),
+        NamedTuple{(:a, :b, :c), Tuple{Int64, Int64, Int64}},
+        (a=[1,7], b=[2,8], c=[3,9])
+    ),
+    ("test_comments_multiple.csv", (allowmissing=:auto, comment="#"),
+        (4, 3),
+        NamedTuple{(:a, :b, :c), Tuple{Int64, Int64, Int64}},
+        (a = [1, 7, 10, 13], b = [2, 8, 11, 14], c = [3, 9, 12, 15])
+    ),
+    ("test_comments_multichar.csv", (allowmissing=:auto, comment="//"),
+        (2, 3),
+        NamedTuple{(:a, :b, :c), Tuple{Int64, Int64, Int64}},
+        (a=[1,7], b=[2,8], c=[3,9])
+    ),
 ]

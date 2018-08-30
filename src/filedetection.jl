@@ -171,7 +171,14 @@ function readsplitline(layers::Parsers.Delimited, io::IO)
     return vals
 end
 
-function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Nothing)
+consumecommentedline!(layers, io, ::Nothing) = nothing
+function consumecommentedline!(layers, io, comment::Parsers.Trie)
+    while Parsers.match!(comment, io, READLINE_RESULT, false)
+        readline!(layers, io)
+    end
+end
+
+function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Nothing, layers, comment)
     nl = Int64[position(io)] # we always start at the beginning of the first data row
     b = 0x00
     while !eof(io)
@@ -191,16 +198,18 @@ function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Nothing)
                 end
             end
         elseif b === UInt8('\n')
+            consumecommentedline!(layers, io, comment)
             !eof(io) && push!(nl, position(io))
         elseif b === UInt8('\r')
             !eof(io) && Parsers.peekbyte(io) === UInt8('\n') && Parsers.readbyte(io)
+            consumecommentedline!(layers, io, comment)
             !eof(io) && push!(nl, position(io))
         end
     end
     return nl
 end
 
-function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Int)
+function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Int, layers, comment)
     nl = Vector{Int64}(undef, limit)
     limit == 0 && return nl
     nl[1] = position(io) # we always start at the beginning of the first data row
@@ -223,10 +232,12 @@ function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Int)
                 end
             end
         elseif b === UInt8('\n')
+            consumecommentedline!(layers, io, comment)
             !eof(io) && setindex!(nl, position(io), i)
             i += 1
         elseif b === UInt8('\r')
             !eof(io) && Parsers.peekbyte(io) === UInt8('\n') && Parsers.readbyte(io)
+            consumecommentedline!(layers, io, comment)
             !eof(io) && setindex!(nl, position(io), i)
             i += 1
         end
