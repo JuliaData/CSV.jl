@@ -53,7 +53,10 @@ function Base.show(io::IO, f::File{NT, transpose}) where {NT, transpose}
 end
 
 Base.eltype(f::F) where {F <: File} = Row{F}
+Tables.AccessStyle(::Type{F}) where {F <: File} = Tables.RowAccess()
+Tables.istable(::Type{<:File}) = true
 Tables.schema(f::File{NT}) where {NT} = NT
+Tables.rows(f::File) = f
 Base.length(f::File{NT, transpose}) where {NT, transpose} = transpose ? f.lastparsedcol[] : length(f.positions)
 Base.size(f::File{NamedTuple{names, types}}) where {names, types} = (length(f), length(names))
 Base.size(f::File{NamedTuple{}}) = (0, 0)
