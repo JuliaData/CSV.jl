@@ -176,6 +176,7 @@ Supported keyword arguments include:
 * Parsing options:
   * `missingstrings`, `missingstring`: either a single, or Vector of Strings to use as sentinel values that will be parsed as `missing`, by default, only an empty field (two consecutive delimiters) is considered `missing`
   * `delim=','`: a character or string that indicates how columns are delimited in a file
+  * `ignore_repeated_delimiters=false`: whether repeated (consecutive) delimiters should be ignored while parsing; useful for fixed-width files with delimiter padding between cells
   * `quotechar='"'`, `openquotechar`, `closequotechar`: character (or different start and end characters) that indicate a quoted field which may contain textual delimiters or newline characters
   * `escapechar='\\'`: character used to escape quote characters in a text field
   * `dateformat`: a date format string to indicate how Date/DateTime columns are formatted in a delimited file
