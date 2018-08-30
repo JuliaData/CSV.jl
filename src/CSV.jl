@@ -172,6 +172,7 @@ Supported keyword arguments include:
   * `footerskip::Int`: number of rows at the end of a file to skip parsing
   * `limit::Int`: an `Int` to indicate a limited number of rows to parse in a csv file
   * `transpose::Bool`: read a csv file "transposed", i.e. each column is parsed as a row
+  * `comment::String`: string that occurs at the beginning of a line to signal parsing that row should be skipped
 * Parsing options:
   * `missingstrings`, `missingstring`: either a single, or Vector of Strings to use as sentinel values that will be parsed as `missing`, by default, only an empty field (two consecutive delimiters) is considered `missing`
   * `delim=','`: a character or string that indicates how columns are delimited in a file
@@ -198,6 +199,7 @@ File(source::Union{String, IO};
     footerskip::Int=0,
     limit::Union{Nothing, Int}=nothing,
     transpose::Bool=false,
+    comment::Union{String, Nothing}=nothing,
     # parsing options
     missingstrings=String[],
     missingstring="",
@@ -217,7 +219,7 @@ File(source::Union{String, IO};
     categorical::Bool=false,
     strict::Bool=false,
     debug::Bool=false) =
-    File(source, use_mmap, header, datarow, skipto, footerskip, limit, transpose, missingstrings, missingstring, delim, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
+    File(source, use_mmap, header, datarow, skipto, footerskip, limit, transpose, comment, missingstrings, missingstring, delim, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
 
 # File(file, true, 1, -1, 0, false, String[], "", ",", '"', nothing, nothing, '\\', nothing, nothing, nothing, nothing, nothing, Dict{Type, Type}(), :all, false)
 function File(source::Union{String, IO},
@@ -229,6 +231,7 @@ function File(source::Union{String, IO},
     footerskip::Int,
     limit::Union{Nothing, Int},
     transpose::Bool,
+    comment::Union{String, Nothing},
     # parsing options
     missingstrings,
     missingstring,
@@ -275,7 +278,7 @@ function File(source::Union{String, IO},
     else
         names, datapos = datalayout(header, parsinglayers, io, datarow)
         eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, false, typeof(io), typeof(parsinglayers), typeof(kwargs)}(getname(source), io, parsinglayers, Int64[], Int64[], Ref{Int}(0), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
-        positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8, limit)
+        positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8, limit, parsinglayers, comment === nothing ? nothing : Parsers.Trie(comment))
         originalpositions = Int64[]
         footerskip > 0 && resize!(positions, length(positions) - footerskip)
         ref = Ref{Int}(0)
