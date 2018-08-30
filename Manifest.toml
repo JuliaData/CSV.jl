@@ -170,9 +170,9 @@ version = "0.25.0"
 
 [[Tables]]
 deps = ["Requires", "Test"]
-git-tree-sha1 = "0e04ee94e19cc4a28e29795eb9152253c0f24b29"
+git-tree-sha1 = "045290cb5456c51101c788ee3deae12921bf5d2f"
 repo-rev = "master"
-repo-url = "https://github.com/JuliaData/Tables.jl"
+repo-url = "https://github.com/JuliaData/Tables.jl.git"
 uuid = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
 version = "0.1.0"
 
