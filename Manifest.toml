@@ -105,9 +105,9 @@ uuid = "a63ad114-7e13-5084-954f-fe012c677804"
 
 [[Parsers]]
 deps = ["Dates", "Mmap", "Pkg", "Test"]
-git-tree-sha1 = "d0f2efed9ce187bb296f074e18766e2444d1c4f0"
+git-tree-sha1 = "33f8364183b6a73fd5e816b5f2efe5c50f09921b"
 uuid = "69de0a69-1ddd-5017-9359-2bf0b02dc9f0"
-version = "0.2.3"
+version = "0.2.4"
 
 [[Pkg]]
 deps = ["Dates", "LibGit2", "Markdown", "Printf", "REPL", "Random", "SHA", "UUIDs"]
