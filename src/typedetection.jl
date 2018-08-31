@@ -92,7 +92,7 @@ function detect(types, io, positions, parsinglayers, kwargs, typemap, categorica
             transpose && setindex!(positions, position(io), col)
         end
     end
-    println("scanned $rows / $len = $((rows / len) * 100)% of file to infer types")
+    debug && println("scanned $rows / $len = $((rows / len) * 100)% of file to infer types")
     debug && @show types
 
     if categorical

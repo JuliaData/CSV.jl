@@ -41,6 +41,7 @@ struct File{NT, transpose, I, P, KW}
     parsinglayers::P
     positions::Vector{Int}
     originalpositions::Vector{Int}
+    currentrow::Base.RefValue{Int}
     lastparsedcol::Base.RefValue{Int}
     lastparsedcode::Base.RefValue{Parsers.ReturnCode}
     kwargs::KW
@@ -71,6 +72,7 @@ Base.size(f::File{NamedTuple{}}) = (0, 0)
         st === 1 && (f.positions .= f.originalpositions)
     else
         @inbounds Parsers.fastseek!(f.io, f.positions[st])
+        f.currentrow[] = st
         f.lastparsedcol[] = 0
         f.lastparsedcode[] = Parsers.SUCCESS
     end
@@ -137,6 +139,10 @@ function Base.getproperty(csvrow::Row{F}, ::Type{T}, col::Int, name::Symbol) whe
     if transpose
         @inbounds Parsers.fastseek!(f.io, f.positions[col])
     else
+        if f.currentrow[] != row
+            @inbounds Parsers.fastseek!(f.io, f.positions[row])
+            f.lastparsedcol[] = 0
+        end
         lastparsed = f.lastparsedcol[]
         if col === lastparsed + 1
             if newline(f.lastparsedcode[])
@@ -279,7 +285,7 @@ function File(source::Union{String, IO};
         ref = Ref{Int}(min(something(limit, typemax(Int)), rows))
     else
         names, datapos = datalayout(header, parsinglayers, io, datarow, normalizenames)
-        eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, false, typeof(io), typeof(parsinglayers), typeof(kwargs)}(getname(source), io, parsinglayers, Int64[], Int64[], Ref{Int}(0), Ref(Parsers.SUCCESS), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
+        eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, false, typeof(io), typeof(parsinglayers), typeof(kwargs)}(getname(source), io, parsinglayers, Int64[], Int64[], Ref{Int}(0), Ref{Int}(0), Ref(Parsers.SUCCESS), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
         positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8, limit, parsinglayers, comment === nothing ? nothing : Parsers.Trie(comment))
         originalpositions = Int64[]
         footerskip > 0 && resize!(positions, length(positions) - footerskip)
@@ -294,7 +300,7 @@ function File(source::Union{String, IO};
     end
 
     !transpose && seek(io, positions[1])
-    return File{NamedTuple{names, Tuple{types...}}, transpose, typeof(io), typeof(parsinglayers), typeof(kwargs)}(getname(source), io, parsinglayers, positions, originalpositions, ref, Ref(Parsers.SUCCESS), kwargs, pools, strict)
+    return File{NamedTuple{names, Tuple{types...}}, transpose, typeof(io), typeof(parsinglayers), typeof(kwargs)}(getname(source), io, parsinglayers, positions, originalpositions, Ref(1), ref, Ref(Parsers.SUCCESS), kwargs, pools, strict)
 end
 
 include("filedetection.jl")
