@@ -2,6 +2,13 @@
     for file in ("test_not_enough_columns.csv", "test_correct_trailing_missings.csv")
         f = CSV.File(joinpath(dir, file), allowmissing=:auto)
     
+        rows = collect(f)
+        @test isequal(map(row->row.A, rows), [1, 4])
+        @test isequal(map(row->row.B, rows), [2, 5])
+        @test isequal(map(row->row.C, rows), [3, 6])
+        @test isequal(map(row->row.D, rows), [missing, missing])
+        @test isequal(map(row->row.E, rows), [missing, missing])
+
         @test isequal(map(row->row.A, f), [1, 4])
         @test isequal(map(row->row.B, f), [2, 5])
         @test isequal(map(row->row.C, f), [3, 6])
