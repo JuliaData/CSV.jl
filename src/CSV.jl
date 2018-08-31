@@ -1,6 +1,6 @@
 module CSV
 
-using Mmap, Dates, Random, Parsers, Tables, CategoricalArrays, WeakRefStrings
+using Mmap, Dates, Random, Unicode, Parsers, Tables, CategoricalArrays, WeakRefStrings
 
 @inline Parsers.intern(::Type{WeakRefString{UInt8}}, x::Tuple{Ptr{UInt8}, Int}) = WeakRefString(x)
 
@@ -167,6 +167,7 @@ Supported keyword arguments include:
 * File layout options:
   * `use_mmap::Bool=!Sys.iswindows()`: whether the file should be mmapped for reading, can be faster in some cases
   * `header=1`: the `header` argument can be an `Int`, indicating the row to parse for column names; or a Range, indicating a span of rows to be combined together as column names; or an entire Vector of Symbols or Strings to use as column names
+  * `normalizenames=true`: whether column names should be "normalized" into valid Julia identifier symbols
   * `datarow::Int`: an `Int` argument to specify the row where the data starts in the csv file; by default, the next row after the `header` row is used
   * `skipto::Int`: similar to `datarow`, specifies the number of rows to skip before starting to read data
   * `footerskip::Int`: number of rows at the end of a file to skip parsing
@@ -194,6 +195,7 @@ File(source::Union{String, IO};
     use_mmap::Bool=!Sys.iswindows(),
     # header can be a row number, range of rows, or actual string vector
     header::Union{Integer, UnitRange{Int}, Vector}=1,
+    normalizenames::Bool=true,
     # by default, data starts immediately after header or start of file
     datarow::Int=-1,
     skipto::Union{Nothing, Int}=nothing,
@@ -221,13 +223,14 @@ File(source::Union{String, IO};
     categorical::Bool=false,
     strict::Bool=false,
     debug::Bool=false) =
-    File(source, use_mmap, header, datarow, skipto, footerskip, limit, transpose, comment, missingstrings, missingstring, delim, ignore_repeated_delimiters, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
+    File(source, use_mmap, header, normalizenames, datarow, skipto, footerskip, limit, transpose, comment, missingstrings, missingstring, delim, ignore_repeated_delimiters, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
 
 # File(file, true, 1, -1, 0, false, String[], "", ",", '"', nothing, nothing, '\\', nothing, nothing, nothing, nothing, nothing, Dict{Type, Type}(), :all, false)
 function File(source::Union{String, IO},
     # file options
     use_mmap::Bool,
     header::Union{Integer, UnitRange{Int}, Vector},
+    normalizenames::Bool,
     datarow::Int,
     skipto::Union{Nothing, Int},
     footerskip::Int,
@@ -275,11 +278,11 @@ function File(source::Union{String, IO},
 
     if transpose
         # need to determine names, columnpositions (rows), and ref
-        rows, names, positions = datalayout_transpose(header, parsinglayers, io, datarow, footerskip)
+        rows, names, positions = datalayout_transpose(header, parsinglayers, io, datarow, footerskip, normalizenames)
         originalpositions = copy(positions)
         ref = Ref{Int}(min(something(limit, typemax(Int)), rows))
     else
-        names, datapos = datalayout(header, parsinglayers, io, datarow)
+        names, datapos = datalayout(header, parsinglayers, io, datarow, normalizenames)
         eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, false, typeof(io), typeof(parsinglayers), typeof(kwargs)}(getname(source), io, parsinglayers, Int64[], Int64[], Ref{Int}(0), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
         positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8, limit, parsinglayers, comment === nothing ? nothing : Parsers.Trie(comment))
         originalpositions = Int64[]

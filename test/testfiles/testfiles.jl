@@ -211,7 +211,7 @@ testfiles = [
     # other various files from around the interwebs
     ("baseball.csv", (categorical=true,),
         (35, 15),
-        NamedTuple{(:Rk, :Year, :Age, :Tm, :Lg, :Column6, :W, :L, Symbol("W-L%"), :G, :Finish, :Wpost, :Lpost, Symbol("W-L%post"), :Column15), Tuple{Union{Int64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{CategoricalString{UInt32}, Missing},Union{CategoricalString{UInt32}, Missing},Union{String, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{CategoricalString{UInt32}, Missing}}},
+        NamedTuple{(:Rk, :Year, :Age, :Tm, :Lg, :Column6, :W, :L, :W_L_, :G, :Finish, :Wpost, :Lpost, :W_L_post, :Column15), Tuple{Union{Int64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{CategoricalString{UInt32}, Missing},Union{CategoricalString{UInt32}, Missing},Union{String, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{CategoricalString{UInt32}, Missing}}},
         nothing
     ),
     ("FL_insurance_sample.csv", (types=Dict(10=>Float64,12=>Float64), allowmissing=:auto, categorical=true),
@@ -229,7 +229,7 @@ testfiles = [
         NamedTuple{(:cdatetime, :address, :district, :beat, :grid, :crimedescr, :ucr_ncic_code, :latitude, :longitude),Tuple{String,String,Int64,CategoricalString{UInt32},Int64,CategoricalString{UInt32},Int64,Float64,Float64}},
         nothing
     ),
-    ("Sacramentorealestatetransactions.csv", (allowmissing=:auto, categorical=true),
+    ("Sacramentorealestatetransactions.csv", (allowmissing=:auto, categorical=true, normalizenames=false),
         (985, 12),
         NamedTuple{(:street, :city, :zip, :state, :beds, :baths, :sq__ft, :type, :sale_date, :price, :latitude, :longitude),Tuple{String,CategoricalString{UInt32},Int64,CategoricalString{UInt32},Int64,Int64,Int64,CategoricalString{UInt32},CategoricalString{UInt32},Int64,Float64,Float64}},
         nothing
@@ -241,7 +241,7 @@ testfiles = [
     ),
     ("stocks.csv", (allowmissing=:auto,),
         (30, 2),
-        NamedTuple{(Symbol("Stock Name"), Symbol("Company Name")), Tuple{String, String}},
+        NamedTuple{(:Stock_Name, :Company_Name), Tuple{String, String}},
         nothing
     ),
     ("TechCrunchcontinentalUSA.csv", (allowmissing=:auto, categorical=true),
@@ -266,7 +266,7 @@ testfiles = [
         (aa = [1], bb = ["1,b,c"])
     ),
     # #198
-    ("issue_198.csv", (decimal=',', delim=';', missingstring="-", datarow = 2, header = ["Date", "EONIA", "1m", "12m", "3m", "6m", "9m"]),
+    ("issue_198.csv", (decimal=',', delim=';', missingstring="-", datarow = 2, header = ["Date", "EONIA", "1m", "12m", "3m", "6m", "9m"], normalizenames=false),
         (6, 7),
         NamedTuple{(:Date, :EONIA, Symbol("1m"), Symbol("12m"), Symbol("3m"), Symbol("6m"), Symbol("9m")),Tuple{Union{Missing, String},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64}}},
         NamedTuple{(:Date, :EONIA, Symbol("1m"), Symbol("12m"), Symbol("3m"), Symbol("6m"), Symbol("9m"))}((Union{Missing, String}["18/04/2018", "17/04/2018", "16/04/2018", "15/04/2018", "14/04/2018", "13/04/2018"], Union{Missing, Float64}[-0.368, -0.368, -0.367, missing, missing, -0.364], Union{Missing, Float64}[-0.371, -0.371, -0.371, missing, missing, -0.371], Union{Missing, Float64}[-0.189, -0.189, -0.189, missing, missing, -0.19], Union{Missing, Float64}[-0.328, -0.328, -0.329, missing, missing, -0.329], Union{Missing, Float64}[-0.271, -0.27, -0.27, missing, missing, -0.271], Union{Missing, Float64}[-0.219, -0.219, -0.219, missing, missing, -0.219]))
@@ -291,7 +291,7 @@ testfiles = [
     ),
     ("pandas_zeros.csv", (allowmissing=:auto,),
         (100000, 50),
-        NamedTuple{Tuple(Symbol("$i") for i = 0:49), NTuple{50, Int64}},
+        NamedTuple{Tuple(Symbol("_$i") for i = 0:49), NTuple{50, Int64}},
         nothing
     ),
     ("table_test.txt", (allowmissing=:auto,),
@@ -411,4 +411,4 @@ testfiles = [
         NamedTuple{(:a, :b, :c), Tuple{Int64, Int64, Int64}},
         (a=[1,7], b=[2,8], c=[3,9])
     ),
-]
+];
