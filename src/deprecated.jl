@@ -201,7 +201,7 @@ promote_type1(::Type{Missing}, ::Type{String}) = Union{String, Missing}
 promote_type1(::Type{Any}, ::Type{Missing}) = Missing
 promote_type1(::Type{Missing}, ::Type{Missing}) = Missing
 
-function detecttype(layers, io, prevT, levels, row, col, bools, dateformat, dec, old)
+function detecttype(layers::Parsers.Delimited, io::IO, prevT, levels, row, col, bools, dateformat, dec, old)
     pos = position(io)
     result = Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
     Parsers.ok(result.code) || throw(Error(Parsers.Error(io, result), row, col))

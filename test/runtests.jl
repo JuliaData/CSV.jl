@@ -13,8 +13,8 @@ end
 @testset "CSV" begin
 
 include("files.jl")
+include("iteration.jl")
 include("write.jl")
-include("deprecated.jl")
 
 @testset "CSV.validate" begin
     io = IOBuffer("""A,B,C
@@ -39,5 +39,7 @@ include("deprecated.jl")
     1  2 3  4 5""")
     @test_throws CSV.TooManyColumnsError CSV.validate(io; delim=' ')
 end
+
+include("deprecated.jl")
 
 end
