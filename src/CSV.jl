@@ -8,6 +8,8 @@ substitute(::Type{Union{T, Missing}}, ::Type{T1}) where {T, T1} = Union{T1, Miss
 substitute(::Type{T}, ::Type{T1}) where {T, T1} = T1
 substitute(::Type{Missing}, ::Type{T1}) where {T1} = Missing
 
+newline(code::Parsers.ReturnCode) = (code & Parsers.NEWLINE) > 0
+
 const CatStr = CategoricalString{UInt32}
 
 struct Error <: Exception
@@ -40,6 +42,7 @@ struct File{NT, transpose, I, P, KW}
     positions::Vector{Int}
     originalpositions::Vector{Int}
     lastparsedcol::Base.RefValue{Int}
+    lastparsedcode::Base.RefValue{Parsers.ReturnCode}
     kwargs::KW
     pools::Vector{CategoricalPool{String, UInt32, CategoricalString{UInt32}}}
     strict::Bool
@@ -63,10 +66,13 @@ Base.size(f::File{NamedTuple{}}) = (0, 0)
 
 @inline function Base.iterate(f::File{NT, transpose}, st=1) where {NT, transpose}
     st > length(f) && return nothing
+    # println("row=$st")
     if transpose
-        if st == 1
-            f.positions .= f.originalpositions
-        end
+        st === 1 && (f.positions .= f.originalpositions)
+    else
+        @inbounds Parsers.fastseek!(f.io, f.positions[st])
+        f.lastparsedcol[] = 0
+        f.lastparsedcode[] = Parsers.SUCCESS
     end
     return Row(f, st), st + 1
 end
@@ -88,6 +94,7 @@ end
 
 @inline function parsefield(f, ::Type{CatStr}, row, col, strict)
     r = Parsers.parse(f.parsinglayers, f.io, Tuple{Ptr{UInt8}, Int})
+    f.lastparsedcode[] = r.code
     if r.result isa Missing
         return missing
     else
@@ -98,6 +105,7 @@ end
 
 @inline function parsefield(f, T, row, col, strict)
     r = Parsers.parse(f.parsinglayers, f.io, T; f.kwargs...)
+    f.lastparsedcode[] = r.code
     if !Parsers.ok(r.code)
         strict ? throw(Error(Parsers.Error(f.io, r), row, col)) :
             println("warning: failed parsing $T on row=$row, col=$col, error=$(Parsers.codes(r.code))")
@@ -105,7 +113,19 @@ end
     return r.result
 end
 
-@noinline skipcells(f, n) = foreach(x->Parsers.parse(f.parsinglayers, f.io, Tuple{Ptr{UInt8}, Int}), 1:n)
+@noinline function skipcells(f, n)
+    r = Parsers.Result(Tuple{Ptr{UInt8}, Int})
+    for _ = 1:n
+        r.code = Parsers.SUCCESS
+        Parsers.parse!(f.parsinglayers, f.io, r)
+        if newline(r.code)
+            f.lastparsedcode[] = r.code
+            return false
+        end
+    end
+    f.lastparsedcode[] = r.code
+    return true
+end
 
 Base.getproperty(csvrow::Row{F}, name::Symbol) where {F <: File{NT}} where {NT} =
     getproperty(csvrow, Tables.columntype(NT, name), Tables.columnindex(NT, name), name)
@@ -117,19 +137,43 @@ function Base.getproperty(csvrow::Row{F}, ::Type{T}, col::Int, name::Symbol) whe
         @inbounds Parsers.fastseek!(f.io, f.positions[col])
     else
         lastparsed = f.lastparsedcol[]
+        # print("$name: lastparsed=$lastparsed, col=$col, ")
         if col === lastparsed + 1
-        elseif col === 1
-            @inbounds Parsers.fastseek!(f.io, f.positions[row])
+            # print("reading the next sequential column; lastnewline=$(newline(f.lastparsedcode[])), ")
+            if newline(f.lastparsedcode[])
+                # println("result=missing")
+                f.lastparsedcol[] = col
+                return missing
+            end
         elseif col > lastparsed + 1
+            # print("lastnewline=$(newline(f.lastparsedcode[])), ")
+            if newline(f.lastparsedcode[])
+                f.lastparsedcol[] = col
+                return missing
+            end
+            sk = skipcells(f, col - (lastparsed + 1))
+            # print("skipping cells forward, skipped $(col - (lastparsed + 1)) cells=$sk, ")
             # skipping cells
-            skipcells(f, col - lastparsed+1)
-        elseif col !== lastparsed + 1
-            # randomly seeking within row
+            if !sk
+                # println("result=missing")
+                f.lastparsedcol[] = col
+                return missing
+            end
+        else
             @inbounds Parsers.fastseek!(f.io, f.positions[row])
-            skipcells(f, col - 1)
+            sk = skipcells(f, col - 1)
+            # print("reverse skipping cells, skipped $(col - 1) cells=$sk, ")
+            # randomly seeking within row
+            if !sk
+                # println("result=missing")
+                f.lastparsedcol[] = col
+                return missing
+            end
         end
     end
+    # @show position(f.io)
     r = parsefield(f, parsingtype(T), row, col, f.strict)
+    # println("result=$r")
     if transpose
         @inbounds f.positions[col] = position(f.io)
     else
@@ -283,7 +327,7 @@ function File(source::Union{String, IO},
         ref = Ref{Int}(min(something(limit, typemax(Int)), rows))
     else
         names, datapos = datalayout(header, parsinglayers, io, datarow, normalizenames)
-        eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, false, typeof(io), typeof(parsinglayers), typeof(kwargs)}(getname(source), io, parsinglayers, Int64[], Int64[], Ref{Int}(0), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
+        eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, false, typeof(io), typeof(parsinglayers), typeof(kwargs)}(getname(source), io, parsinglayers, Int64[], Int64[], Ref{Int}(0), Ref(Parsers.SUCCESS), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
         positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8, limit, parsinglayers, comment === nothing ? nothing : Parsers.Trie(comment))
         originalpositions = Int64[]
         footerskip > 0 && resize!(positions, length(positions) - footerskip)
@@ -298,7 +342,7 @@ function File(source::Union{String, IO},
     end
 
     !transpose && seek(io, positions[1])
-    return File{NamedTuple{names, Tuple{types...}}, transpose, typeof(io), typeof(parsinglayers), typeof(kwargs)}(getname(source), io, parsinglayers, positions, originalpositions, ref, kwargs, pools, strict)
+    return File{NamedTuple{names, Tuple{types...}}, transpose, typeof(io), typeof(parsinglayers), typeof(kwargs)}(getname(source), io, parsinglayers, positions, originalpositions, ref, Ref(Parsers.SUCCESS), kwargs, pools, strict)
 end
 
 include("filedetection.jl")
