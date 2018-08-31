@@ -66,21 +66,27 @@ function detect(types, io, positions, parsinglayers, kwargs, typemap, categorica
     # prep if categorical
     levels = categorical ? Any[Dict{String, Int}() for _ = 1:cols] : []
 
+    lastcode = Base.RefValue(Parsers.SUCCESS)
     for row in r
         !transpose && seek(io, positions[row])
+        lastcode[] = Parsers.SUCCESS
         for col = 1:cols
+            if !transpose && newline(lastcode[])
+                types[col] = promote_type2(types[col], Missing)
+                continue
+            end
             transpose && seek(io, positions[col])
             if debug
                 pos = position(io)
-                debug && @show pos
+                debug && println("pos=$pos")
                 result = Parsers.parse(parsinglayers, io, String)
                 seek(io, pos)
-                debug && @show "col: $col, detecting type for: $(result.result)"
+                debug && println("col: $col, detecting type for: $(result.result)")
             end
-            T = detecttype(types[col], io, parsinglayers, kwargs, levels, row, col, categorical, defaultstringtype)
-            debug && @show "col: $col, detected type: $T"
+            T = detecttype(types[col], io, parsinglayers, kwargs, levels, row, col, categorical, defaultstringtype, lastcode)
+            debug && println("col: $col, detected type: $T")
             types[col] = promote_type2(types[col], T)
-            debug && @show "col: $col, promoted to: $(types[col])"
+            debug && println("col: $col, promoted to: $(types[col])")
             transpose && setindex!(positions, position(io), col)
         end
     end
@@ -112,11 +118,12 @@ empty(x) = false
 strtype(::Type{T}, str) where {T} = str
 strtype(::Type{T}) where {T <: AbstractString} = T
 
-function detecttype(prevT, io, layers, kwargs, levels, row, col, categorical, defaultstringtype)
+function detecttype(prevT, io, layers, kwargs, levels, row, col, categorical, defaultstringtype, lastcode)
     pos = position(io)
     if categorical
         result = Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
         Parsers.ok(result.code) || throw(Error(Parsers.Error(io, result), row, col))
+        lastcode[] = result.code
         # @debug "res = $result"
         result.result === missing && return Missing
         # update levels
@@ -126,12 +133,14 @@ function detecttype(prevT, io, layers, kwargs, levels, row, col, categorical, de
     if Int64 <: prevT || empty(prevT)
         seek(io, pos)
         res_int = Parsers.parse(layers, io, Int64)
+        lastcode[] = res_int.code
         # @debug "res_int = $res_int"
         Parsers.ok(res_int.code) && return typeof(res_int.result)
     end
     if Float64 <: prevT || Int64 <: prevT || empty(prevT)
         seek(io, pos)
         res_float = Parsers.parse(layers, io, Float64; kwargs...)
+        lastcode[] = res_float.code
         # @debug "res_float = $res_float"
         Parsers.ok(res_float.code) && return typeof(res_float.result)
     end
@@ -140,10 +149,12 @@ function detecttype(prevT, io, layers, kwargs, levels, row, col, categorical, de
             # try to auto-detect TimeType
             seek(io, pos)
             res_date = Parsers.parse(layers, io, Date)
+            lastcode[] = res_date.code
             # @debug "res_date = $res_date"
             Parsers.ok(res_date.code) && return typeof(res_date.result)
             seek(io, pos)
             res_datetime = Parsers.parse(layers, io, DateTime)
+            lastcode[] = res_datetime.code
             # @debug "res_datetime = $res_datetime"
             Parsers.ok(res_datetime.code) && return typeof(res_datetime.result)
         else
@@ -152,6 +163,7 @@ function detecttype(prevT, io, layers, kwargs, levels, row, col, categorical, de
             # @debug "T = $T"
             seek(io, pos)
             res_dt = Parsers.parse(layers, io, T; dateformat=kwargs.dateformat)
+            lastcode[] = res_dt.code
             # @debug "res_dt = $res_dt"
             Parsers.ok(res_dt.code) && return typeof(res_dt.result)
         end
@@ -159,11 +171,13 @@ function detecttype(prevT, io, layers, kwargs, levels, row, col, categorical, de
     if Bool <: prevT || empty(prevT)
         seek(io, pos)
         res_bool = Parsers.parse(layers, io, Bool; kwargs...)
+        lastcode[] = res_bool.code
         # @debug "res_bool = $res_bool"
         Parsers.ok(res_bool.code) && return typeof(res_bool.result)
     end
     seek(io, pos)
-    Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
+    res_str = Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
+    lastcode[] = res_str.code
     return strtype(prevT, defaultstringtype)
 end
 

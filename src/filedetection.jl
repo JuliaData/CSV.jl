@@ -147,7 +147,7 @@ function readline!(layers, io::IO)
         READLINE_RESULT.code = Parsers.SUCCESS
         res = Parsers.parse!(layers, io, READLINE_RESULT)
         Parsers.ok(res.code) || throw(Parsers.Error(res))
-        ((res.code & Parsers.NEWLINE) > 0 || eof(io)) && break
+        (newline(res.code) || eof(io)) && break
     end
     return
 end
@@ -180,7 +180,7 @@ function readsplitline(layers::Parsers.Delimited, io::IO)
         push!(vals, result.result)
         col += 1
         xor(result.code & DELIM_NEWLINE, Parsers.DELIMITED) == 0 && continue
-        ((result.code & Parsers.NEWLINE) > 0 || eof(io)) && break
+        (newline(result.code) || eof(io)) && break
     end
     return vals
 end
