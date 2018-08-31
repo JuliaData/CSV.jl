@@ -44,17 +44,17 @@ testfiles = [
         NamedTuple{(:Column1,), Tuple{Missing}},
         (Column1 = Missing[missing, missing, missing, missing, missing, missing, missing, missing, missing],)
     ),
-    ("test_simple_quoted.csv", NamedTuple(),
+    ("test_simple_quoted.csv", (escapechar='\\',),
         (1, 2),
         NamedTuple{(:col1, :col2), Tuple{Union{Missing, String}, Union{Missing, String}}},
         (col1 = Union{Missing, String}["quoted field 1"], col2 = Union{Missing, String}["quoted field 2"])
     ),
-    ("test_quoted_delim_and_newline.csv", NamedTuple(),
+    ("test_quoted_delim_and_newline.csv", (escapechar='\\',),
         (1, 2),
         NamedTuple{(:col1, :col2), Tuple{Union{Missing, String}, Union{Missing, String}}},
         (col1 = Union{Missing, String}["quoted ,field 1"], col2 = Union{Missing, String}["quoted\n field 2"])
     ),
-    ("test_quoted_numbers.csv", (allowmissing=:none,),
+    ("test_quoted_numbers.csv", (allowmissing=:none, escapechar='\\'),
         (3, 3),
         NamedTuple{(:col1, :col2, :col3),Tuple{String,Int64,Int64}},
         (col1 = ["123", "abc", "123abc"], col2 = [1, 42, 12], col3 = [1, 42, 12])
