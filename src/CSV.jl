@@ -211,7 +211,7 @@ File(source::Union{String, IO};
     quotechar::Union{UInt8, Char}='"',
     openquotechar::Union{UInt8, Char, Nothing}=nothing,
     closequotechar::Union{UInt8, Char, Nothing}=nothing,
-    escapechar::Union{UInt8, Char}='\\',
+    escapechar::Union{UInt8, Char}='"',
     dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
     decimal::Union{UInt8, Char, Nothing}=nothing,
     truestrings::Union{Vector{String}, Nothing}=nothing,
