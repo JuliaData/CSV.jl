@@ -1,3 +1,17 @@
+const RESERVED = Set(["local", "global", "export", "let",
+    "for", "struct", "while", "const", "continue", "import",
+    "function", "if", "else", "try", "begin", "break", "catch",
+    "return", "using", "baremodule", "macro", "finally",
+    "module", "elseif", "end", "quote", "do"])
+
+normalizename(name::Symbol) = name
+function normalizename(name::String)
+    uname = strip(Unicode.normalize(name))
+    id = Base.isidentifier(uname) ? uname : map(c->Base.is_id_char(c) ? c : '_', uname)
+    cleansed = string((!Base.is_id_start_char(id[1]) || id in RESERVED) ? "_" : "", id)
+    return Symbol(replace(cleansed, r"(_)\1+"=>"_"))
+end
+
 function skiptoheader!(parsinglayers, io, row, header)
     while row < header
         while !eof(io)
@@ -22,12 +36,12 @@ function countfields(io, parsinglayers)
     return rows
 end
 
-function datalayout_transpose(header, parsinglayers, io, datarow, footerskip)
+function datalayout_transpose(header, parsinglayers, io, datarow, footerskip, normalizenames)
     if isa(header, Integer) && header > 0
         # skip to header column to read column names
         row = skiptoheader!(parsinglayers, io, 1, header)
         # io now at start of 1st header cell
-        columnnames = [Symbol(strip(Parsers.parse(parsinglayers, io, String).result::String))]
+        columnnames = [Parsers.parse(parsinglayers, io, String).result::String]
         columnpositions = [position(io)]
         datapos = position(io)
         rows = countfields(io, parsinglayers)
@@ -38,7 +52,7 @@ function datalayout_transpose(header, parsinglayers, io, datarow, footerskip)
             # skip to header column to read column names
             row = skiptoheader!(parsinglayers, io, 1, header)
             cols += 1
-            push!(columnnames, Symbol(strip(Parsers.parse(parsinglayers, io, String).result::String)))
+            push!(columnnames, Parsers.parse(parsinglayers, io, String).result::String)
             push!(columnpositions, position(io))
             readline!(parsinglayers, io)
         end
@@ -50,13 +64,13 @@ function datalayout_transpose(header, parsinglayers, io, datarow, footerskip)
         # emtpy file, use column names if provided
         datapos = position(io)
         columnpositions = Int[]
-        columnnames = [Symbol(x) for x in header]
+        columnnames = header
     else
         # column names provided explicitly or should be generated, they don't exist in data
         # skip to datarow
         row = skiptoheader!(parsinglayers, io, 1, datarow)
         # io now at start of 1st data cell
-        columnnames = [isa(header, Integer) || isempty(header) ? :Column1 : Symbol(header[1])]
+        columnnames = [isa(header, Integer) || isempty(header) ? "Column1" : header[1]]
         columnpositions = [position(io)]
         datapos = position(io)
         rows = countfields(io, parsinglayers)
@@ -66,17 +80,17 @@ function datalayout_transpose(header, parsinglayers, io, datarow, footerskip)
             # skip to datarow column
             row = skiptoheader!(parsinglayers, io, 1, datarow)
             cols += 1
-            push!(columnnames, isa(header, Integer) || isempty(header) ? Symbol("Column$cols") : Symbol(header[cols]))
+            push!(columnnames, isa(header, Integer) || isempty(header) ? "Column$cols" : header[cols])
             push!(columnpositions, position(io))
             readline!(parsinglayers, io)
         end
         seek(io, datapos)
     end
     rows = rows - footerskip # rows now equals the actual number of rows in the dataset
-    return rows, Tuple(columnnames), columnpositions
+    return rows, Tuple(normalizenames ? normalizename(x) : Symbol(x) for x in columnnames), columnpositions
 end
 
-function datalayout(header::Integer, parsinglayers, io, datarow)
+function datalayout(header::Integer, parsinglayers, io, datarow, normalizenames)
     # default header = 1
     if header <= 0
         # no header row in dataset; skip to data to figure out # of columns
@@ -87,14 +101,14 @@ function datalayout(header::Integer, parsinglayers, io, datarow)
         columnnames = Tuple(Symbol("Column$i") for i = eachindex(row_vals))
     else
         skipto!(parsinglayers, io, 1, header)
-        columnnames = Tuple(ismissing(x) ? Symbol("Column$i") : Symbol(strip(x)) for (i, x) in enumerate(readsplitline(parsinglayers, io)))
+        columnnames = Tuple(ismissing(x) ? Symbol("Column$i") : (normalizenames ? normalizename(x) : Symbol(x)) for (i, x) in enumerate(readsplitline(parsinglayers, io)))
         datarow != header+1 && skipto!(parsinglayers, io, header+1, datarow)
         datapos = position(io)
     end
     return columnnames, datapos
 end
 
-function datalayout(header::AbstractRange, parsinglayers, io, datarow)
+function datalayout(header::AbstractRange, parsinglayers, io, datarow, normalizenames)
     skipto!(parsinglayers, io, 1, first(header))
     columnnames = [x for x in readsplitline(parsinglayers, io)]
     for row = first(header):(last(header)-1)
@@ -104,14 +118,14 @@ function datalayout(header::AbstractRange, parsinglayers, io, datarow)
     end
     datarow != last(header)+1 && skipto!(parsinglayers, io, last(header)+1, datarow)
     datapos = position(io)
-    return Tuple(Symbol(nm) for nm in columnnames), datapos
+    return Tuple(normalizenames ? normalizename(nm) : Symbol(nm) for nm in columnnames), datapos
 end
 
-function datalayout(header::Vector, parsinglayers, io, datarow)
+function datalayout(header::Vector, parsinglayers, io, datarow, normalizenames)
     skipto!(parsinglayers, io, 1, datarow)
     datapos = position(io)
     if eof(io)
-        columnnames = Tuple(Symbol(nm) for nm in header)
+        columnnames = Tuple(normalizenames ? normalizename(nm) : Symbol(nm) for nm in header)
     else
         row_vals = readsplitline(parsinglayers, io)
         seek(io, datapos)
@@ -119,7 +133,7 @@ function datalayout(header::Vector, parsinglayers, io, datarow)
             columnnames = Tuple(Symbol("Column$i") for i in eachindex(row_vals))
         else
             length(header) == length(row_vals) || throw(ArgumentError("The length of provided header ($(length(header))) doesn't match the number of columns at row $datarow ($(length(row_vals)))"))
-            columnnames = Tuple(Symbol(nm) for nm in header)
+            columnnames = Tuple(normalizenames ? normalizename(nm) : Symbol(nm) for nm in header)
         end
     end
     return columnnames, datapos
