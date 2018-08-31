@@ -176,6 +176,7 @@ Supported keyword arguments include:
 * Parsing options:
   * `missingstrings`, `missingstring`: either a single, or Vector of Strings to use as sentinel values that will be parsed as `missing`, by default, only an empty field (two consecutive delimiters) is considered `missing`
   * `delim=','`: a character or string that indicates how columns are delimited in a file
+  * `ignore_repeated_delimiters=false`: whether repeated (consecutive) delimiters should be ignored while parsing; useful for fixed-width files with delimiter padding between cells
   * `quotechar='"'`, `openquotechar`, `closequotechar`: character (or different start and end characters) that indicate a quoted field which may contain textual delimiters or newline characters
   * `escapechar='\\'`: character used to escape quote characters in a text field
   * `dateformat`: a date format string to indicate how Date/DateTime columns are formatted in a delimited file
@@ -204,6 +205,7 @@ File(source::Union{String, IO};
     missingstrings=String[],
     missingstring="",
     delim::Union{Char, String}=",",
+    ignore_repeated_delimiters::Bool=false,
     quotechar::Union{UInt8, Char}='"',
     openquotechar::Union{UInt8, Char, Nothing}=nothing,
     closequotechar::Union{UInt8, Char, Nothing}=nothing,
@@ -219,7 +221,7 @@ File(source::Union{String, IO};
     categorical::Bool=false,
     strict::Bool=false,
     debug::Bool=false) =
-    File(source, use_mmap, header, datarow, skipto, footerskip, limit, transpose, comment, missingstrings, missingstring, delim, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
+    File(source, use_mmap, header, datarow, skipto, footerskip, limit, transpose, comment, missingstrings, missingstring, delim, ignore_repeated_delimiters, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
 
 # File(file, true, 1, -1, 0, false, String[], "", ",", '"', nothing, nothing, '\\', nothing, nothing, nothing, nothing, nothing, Dict{Type, Type}(), :all, false)
 function File(source::Union{String, IO},
@@ -236,6 +238,7 @@ function File(source::Union{String, IO},
     missingstrings,
     missingstring,
     delim::Union{Char, String},
+    ignore_repeated_delimiters::Bool,
     quotechar::Union{UInt8, Char},
     openquotechar::Union{UInt8, Char, Nothing},
     closequotechar::Union{UInt8, Char, Nothing},
@@ -263,7 +266,7 @@ function File(source::Union{String, IO},
     parsinglayers = Parsers.Sentinel(missingstrings) |>
                     x->Parsers.Strip(x, d == " " ? 0x00 : ' ', d == "\t" ? 0x00 : '\t') |>
                     (openquotechar !== nothing ? x->Parsers.Quoted(x, openquotechar, closequotechar, escapechar) : x->Parsers.Quoted(x, quotechar, escapechar)) |>
-                    x->Parsers.Delimited(x, d, "\n", "\r", "\r\n")
+                    x->Parsers.Delimited(x, d, "\n", "\r", "\r\n"; ignore_repeated=ignore_repeated_delimiters)
 
     header = (isa(header, Integer) && header == 1 && (datarow == 1 || skipto == 1)) ? -1 : header
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))

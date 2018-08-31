@@ -391,6 +391,11 @@ testfiles = [
         NamedTuple{(:int, :bools), Tuple{Union{Missing, Int64}, Union{Missing, Bool}}},
         (int = Union{Missing, Int}[1, 2, 3, 4, 5, 6], bools = Union{Missing,Bool}[true, true, true, false, false, false])
     ),
+    ("test_repeated_delimiters.csv", (allowmissing=:auto, delim=" ", ignore_repeated_delimiters=true),
+        (3, 5),
+        NamedTuple{(:a, :b, :c, :d, :e), Tuple{Int64, Int64, Int64, Int64, Int64}},
+        (a = [1, 1, 1], b = [2, 2, 2], c = [3, 3, 3], d = [4, 4, 4], e = [5, 5, 5])
+    ),
     ("test_comments1.csv", (allowmissing=:auto, comment="#"),
         (2, 3),
         NamedTuple{(:a, :b, :c), Tuple{Int64, Int64, Int64}},
