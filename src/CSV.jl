@@ -131,49 +131,34 @@ Base.getproperty(csvrow::Row{F}, name::Symbol) where {F <: File{NT}} where {NT} 
     getproperty(csvrow, Tables.columntype(NT, name), Tables.columnindex(NT, name), name)
 
 function Base.getproperty(csvrow::Row{F}, ::Type{T}, col::Int, name::Symbol) where {T, F <: File{NT, transpose}} where {NT, transpose}
+    col === 0 && return missing
     f = getfield(csvrow, 1)
     row = getfield(csvrow, 2)
     if transpose
         @inbounds Parsers.fastseek!(f.io, f.positions[col])
     else
         lastparsed = f.lastparsedcol[]
-        # print("$name: lastparsed=$lastparsed, col=$col, ")
         if col === lastparsed + 1
-            # print("reading the next sequential column; lastnewline=$(newline(f.lastparsedcode[])), ")
             if newline(f.lastparsedcode[])
-                # println("result=missing")
                 f.lastparsedcol[] = col
                 return missing
             end
         elseif col > lastparsed + 1
-            # print("lastnewline=$(newline(f.lastparsedcode[])), ")
-            if newline(f.lastparsedcode[])
-                f.lastparsedcol[] = col
-                return missing
-            end
-            sk = skipcells(f, col - (lastparsed + 1))
-            # print("skipping cells forward, skipped $(col - (lastparsed + 1)) cells=$sk, ")
             # skipping cells
-            if !sk
-                # println("result=missing")
+            if newline(f.lastparsedcode[]) || !skipcells(f, col - (lastparsed + 1))
                 f.lastparsedcol[] = col
                 return missing
             end
         else
             @inbounds Parsers.fastseek!(f.io, f.positions[row])
-            sk = skipcells(f, col - 1)
-            # print("reverse skipping cells, skipped $(col - 1) cells=$sk, ")
             # randomly seeking within row
-            if !sk
-                # println("result=missing")
+            if !skipcells(f, col - 1)
                 f.lastparsedcol[] = col
                 return missing
             end
         end
     end
-    # @show position(f.io)
     r = parsefield(f, parsingtype(T), row, col, f.strict)
-    # println("result=$r")
     if transpose
         @inbounds f.positions[col] = position(f.io)
     else
@@ -234,7 +219,7 @@ Supported keyword arguments include:
   * `categorical=false`: whether columns with low cardinality (small number of unique values) should be read directly as a CategoricalArray
   * `strict=false`: whether invalid values should throw a parsing error or be replaced with missing values
 """
-File(source::Union{String, IO};
+function File(source::Union{String, IO};
     # file options
     use_mmap::Bool=!Sys.iswindows(),
     # header can be a row number, range of rows, or actual string vector
@@ -266,41 +251,8 @@ File(source::Union{String, IO};
     allowmissing::Symbol=:all,
     categorical::Bool=false,
     strict::Bool=false,
-    debug::Bool=false) =
-    File(source, use_mmap, header, normalizenames, datarow, skipto, footerskip, limit, transpose, comment, missingstrings, missingstring, delim, ignore_repeated_delimiters, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, types, typemap, allowmissing, categorical, strict, debug)
+    debug::Bool=false)
 
-# File(file, true, 1, -1, 0, false, String[], "", ",", '"', nothing, nothing, '\\', nothing, nothing, nothing, nothing, nothing, Dict{Type, Type}(), :all, false)
-function File(source::Union{String, IO},
-    # file options
-    use_mmap::Bool,
-    header::Union{Integer, UnitRange{Int}, Vector},
-    normalizenames::Bool,
-    datarow::Int,
-    skipto::Union{Nothing, Int},
-    footerskip::Int,
-    limit::Union{Nothing, Int},
-    transpose::Bool,
-    comment::Union{String, Nothing},
-    # parsing options
-    missingstrings,
-    missingstring,
-    delim::Union{Char, String},
-    ignore_repeated_delimiters::Bool,
-    quotechar::Union{UInt8, Char},
-    openquotechar::Union{UInt8, Char, Nothing},
-    closequotechar::Union{UInt8, Char, Nothing},
-    escapechar::Union{UInt8, Char},
-    dateformat::Union{String, Dates.DateFormat, Nothing},
-    decimal::Union{UInt8, Char, Nothing},
-    truestrings::Union{Vector{String}, Nothing},
-    falsestrings::Union{Vector{String}, Nothing},
-    # type options
-    types,
-    typemap::Dict,
-    allowmissing::Symbol,
-    categorical::Bool,
-    strict::Bool,
-    debug::Bool)
     isa(source, AbstractString) && (isfile(source) || throw(ArgumentError("\"$source\" is not a valid file")))
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa Dict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
     io = getio(source, use_mmap)
@@ -390,6 +342,8 @@ include("deprecated.jl")
 include("validate.jl")
 
 function __init__()
+    # read a dummy file to "precompile" a bunch of methods; until the `precompile` function
+    # can propertly store machine code, this is our best option
     CSV.File(joinpath(@__DIR__, "../test/testfiles/test_utf8.csv"), allowmissing=:auto) |> columntable
     return
 end
