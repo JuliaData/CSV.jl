@@ -40,34 +40,36 @@ initialtypes(T, t::Dict{Symbol, V}, names) where {V} = Any[get(t, nm, T) for nm 
 initialtypes(T, t::Dict{Int, V}, names) where {V} = Any[get(t, i, T) for i = 1:length(names)]
 initialtypes(T, t::Vector, names) = length(t) == length(names) ? collect(Any, t) : throw(ArgumentError("length of user provided types ($(length(t))) does not match length of header (?$(length(names)))"))
 
-Z(cv, p, moe) = (cv^2 * p * (1 - p)) / moe^2
-# 99% CI, 50% proportion, 2.5% margin of error
-const X = Z(2.58, 0.5, 0.025)
-samplesize(N) = ceil(Int, (N * X) / (X + N - 1))
+struct Fib{N}
+    len::Int
+end
+Fib(len) = Fib{1024}(len)
+
+@inline function Base.iterate(f::Fib)
+    f.len == 0 && return nothing
+    return 1, (1, 1, 1, 1)
+end
+
+@inline function Base.iterate(f::Fib{N}, (off, len, prevfib, fib)) where {N}
+    (off + fib) > f.len && return nothing
+    if rem(len, N) == 0
+        prevfib, fib = fib, prevfib + fib
+    end
+    return off + fib, (off + fib, len + 1, prevfib, fib)
+end
 
 function detect(types, io, positions, parsinglayers, kwargs, typemap, categorical, transpose, ref, debug)
     len = transpose ? ref[] : length(positions)
     cols = length(types)
-
-    if len < 1000
-        # just type detect the whole file
-        r = 1:len
-    else
-        # calculate statistical sample size for # of rows to use for type detection
-        S = samplesize(len)
-        # here we build up a set of (semi)-random rows to sample from to infer column types
-        Random.seed!(0)
-        r = transpose ? (1:1000) :
-            Iterators.flatten((1:50, sort!(rand(51:len-51, S)), (len-50):len))
-        debug && @show S, r
-    end
 
     defaultstringtype = len > 100_000 ? WeakRefString{UInt8} : String
     # prep if categorical
     levels = categorical ? Any[Dict{String, Int}() for _ = 1:cols] : []
 
     lastcode = Base.RefValue(Parsers.SUCCESS)
-    for row in r
+    rows = 0
+    for row in Fib(len)
+        rows += 1
         !transpose && seek(io, positions[row])
         lastcode[] = Parsers.SUCCESS
         for col = 1:cols
@@ -81,7 +83,7 @@ function detect(types, io, positions, parsinglayers, kwargs, typemap, categorica
                 debug && println("pos=$pos")
                 result = Parsers.parse(parsinglayers, io, String)
                 seek(io, pos)
-                debug && println("col: $col, detecting type for: $(result.result)")
+                debug && println("col: $col, detecting type for: '$(result.result)'")
             end
             T = detecttype(types[col], io, parsinglayers, kwargs, levels, row, col, categorical, defaultstringtype, lastcode)
             debug && println("col: $col, detected type: $T")
@@ -90,6 +92,7 @@ function detect(types, io, positions, parsinglayers, kwargs, typemap, categorica
             transpose && setindex!(positions, position(io), col)
         end
     end
+    println("scanned $rows / $len = $((rows / len) * 100)% of file to infer types")
     debug && @show types
 
     if categorical
@@ -115,8 +118,8 @@ end
 empty(::Type{Union{}}) = true
 empty(::Type{Missing}) = true
 empty(x) = false
-strtype(::Type{T}, str) where {T} = str
-strtype(::Type{T}) where {T <: AbstractString} = T
+strtype(::Type{Missing}, T) = Missing
+strtype(x, T) = T
 
 function detecttype(prevT, io, layers, kwargs, levels, row, col, categorical, defaultstringtype, lastcode)
     pos = position(io)
@@ -178,7 +181,7 @@ function detecttype(prevT, io, layers, kwargs, levels, row, col, categorical, de
     seek(io, pos)
     res_str = Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
     lastcode[] = res_str.code
-    return strtype(prevT, defaultstringtype)
+    return strtype(typeof(res_str.result), defaultstringtype)
 end
 
 function timetype(df::Dates.DateFormat)
