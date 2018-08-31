@@ -319,3 +319,55 @@ function getstatic{T}(t::T)
 end
 
 
+function Base.getproperty(csvrow::Row{F}, ::Type{T}, col::Int, name::Symbol) where {T, F <: File{NT, transpose}} where {NT, transpose}
+    col === 0 && return missing
+    f = getfield(csvrow, 1)
+    row = getfield(csvrow, 2)
+    if transpose
+        @inbounds Parsers.fastseek!(f.io, f.positions[col])
+    else
+        lastparsed = f.lastparsedcol[]
+        # print("$name: lastparsed=$lastparsed, col=$col, ")
+        if col === lastparsed + 1
+            # print("reading the next sequential column; lastnewline=$(newline(f.lastparsedcode[])), ")
+            if newline(f.lastparsedcode[])
+                # println("result=missing")
+                f.lastparsedcol[] = col
+                return missing
+            end
+        elseif col > lastparsed + 1
+            # print("lastnewline=$(newline(f.lastparsedcode[])), ")
+            if newline(f.lastparsedcode[])
+                f.lastparsedcol[] = col
+                return missing
+            end
+            sk = skipcells(f, col - (lastparsed + 1))
+            # print("skipping cells forward, skipped $(col - (lastparsed + 1)) cells=$sk, ")
+            # skipping cells
+            if !sk
+                # println("result=missing")
+                f.lastparsedcol[] = col
+                return missing
+            end
+        else
+            @inbounds Parsers.fastseek!(f.io, f.positions[row])
+            sk = skipcells(f, col - 1)
+            # print("reverse skipping cells, skipped $(col - 1) cells=$sk, ")
+            # randomly seeking within row
+            if !sk
+                # println("result=missing")
+                f.lastparsedcol[] = col
+                return missing
+            end
+        end
+    end
+    # @show position(f.io)
+    r = parsefield(f, parsingtype(T), row, col, f.strict)
+    # println("result=$r")
+    if transpose
+        @inbounds f.positions[col] = position(f.io)
+    else
+        f.lastparsedcol[] = col
+    end
+    return r
+end
