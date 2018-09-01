@@ -57,10 +57,10 @@ function Base.show(io::IO, f::File{NT, transpose}) where {NT, transpose}
 end
 
 Base.eltype(f::F) where {F <: File} = Row{F}
-Tables.AccessStyle(::Type{F}) where {F <: File} = Tables.RowAccess()
 Tables.istable(::Type{<:File}) = true
-Tables.schema(f::File{NT}) where {NT} = NT
+Tables.rowaccess(::Type{F}) where {F <: File} = true
 Tables.rows(f::File) = f
+Tables.schema(f::File{NamedTuple{names, types}}) where {names, types} = Tables.Schema(names, types)
 Base.length(f::File{NT, transpose}) where {NT, transpose} = transpose ? f.lastparsedcol[] : length(f.positions)
 Base.size(f::File{NamedTuple{names, types}}) where {names, types} = (length(f), length(names))
 Base.size(f::File{NamedTuple{}}) = (0, 0)
@@ -129,8 +129,8 @@ end
     return true
 end
 
-Base.getproperty(csvrow::Row{F}, name::Symbol) where {F <: File{NT}} where {NT} =
-    getproperty(csvrow, Tables.columntype(NT, name), Tables.columnindex(NT, name), name)
+@inline Base.getproperty(csvrow::Row{F}, name::Symbol) where {F <: File{NamedTuple{names, types}}} where {names, types} =
+    getproperty(csvrow, Tables.columntype(names, types, name), Tables.columnindex(names, name), name)
 
 function Base.getproperty(csvrow::Row{F}, ::Type{T}, col::Int, name::Symbol) where {T, F <: File{NT, transpose}} where {NT, transpose}
     col === 0 && return missing

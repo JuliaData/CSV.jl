@@ -87,17 +87,19 @@ function write(itr, file::Union{String, IO};
     header::Vector=String[],
     )
     oq, cq = openquotechar !== nothing ? (openquotechar, closequotechar) : (quotechar, quotechar)
-    sch = Tables.schema(itr)
-    cols = length(Tables.names(sch))
+    rows = Tables.rows(itr)
+    sch = Tables.schema(rows)
+    names = isempty(header) ? sch.names : header
+    cols = length(names)
     with(file, append) do io
         if writeheader
-            for (col, nm) in enumerate(isempty(header) ? Tables.names(sch) : header)
+            for (col, nm) in enumerate(names)
                 printcsv(io, string(nm), delim, oq, cq, escapechar, dateformat)
                 Base.write(io, ifelse(col == cols, UInt8('\n'), delim))
             end
         end
-        for row in Tables.rows(itr)
-            Tables.unroll(sch, row) do val, col, nm
+        for row in rows
+            Tables.eachcolumn(sch, row) do val, col, nm
                 printcsv(io, coalesce(val, missingstring), delim, oq, cq, escapechar, dateformat)
                 Base.write(io, ifelse(col == cols, UInt8('\n'), delim))
             end
