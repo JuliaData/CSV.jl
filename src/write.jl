@@ -2,7 +2,7 @@
     CSV.write(table, file::Union{String, IO}; kwargs...) => file
     table |> CSV.write(file::Union{String, IO}; kwargs...) => file
 
-Write a [table](https://github.com/JuliaData/Tables.jl) to a csv file, given as an `IO` argument or String representing the file name to write to.
+Write a [Tables.jl interface input](https://github.com/JuliaData/Tables.jl) to a csv file, given as an `IO` argument or String representing the file name to write to.
 
 Keyword arguments include:
 * `delim::Union{Char, String}=','`: a character or string to print out as the file's delimiter
@@ -83,7 +83,7 @@ end
 function printheader(io, header, delim, oq, cq, e, df)
     cols = length(header)
     for (col, nm) in enumerate(header)
-        printcsv(io, string(nm), delim, oq, cq, d, df)
+        printcsv(io, string(nm), delim, oq, cq, e, df)
         Base.write(io, ifelse(col == cols, UInt8('\n'), delim))
     end
     return
@@ -141,11 +141,12 @@ function write(::Nothing, rows, file::Union{String, IO};
     end
     row, st = state
     names = isempty(header) ? propertynames(row) : header
+    sch = Tables.Schema(names, nothing)
     cols = length(names)
     with(file, append) do io
         writeheader && printheader(io, names, delim, oq, cq, escapechar, dateformat)
         while true
-            Tables.eachcolumn(names, row) do val, col, nm
+            Tables.eachcolumn(sch, row) do val, col, nm
                 printcsv(io, coalesce(val, missingstring), delim, oq, cq, escapechar, dateformat)
                 Base.write(io, ifelse(col == cols, UInt8('\n'), delim))
             end
