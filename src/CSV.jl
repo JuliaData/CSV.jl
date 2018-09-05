@@ -51,16 +51,14 @@ end
 
 function Base.show(io::IO, f::File{NT, transpose}) where {NT, transpose}
     println(io, "CSV.File($(f.name), rows=$(transpose ? missing : length(f.positions))):")
-    println(io, "Columns:")
-    Base.print_matrix(io, hcat(collect(Tables.names(NT)), collect(Tables.types(NT))))
-    return
+    show(io, Tables.schema(f))
 end
 
-Base.eltype(f::F) where {F <: File} = Row{F}
 Tables.istable(::Type{<:File}) = true
-Tables.rowaccess(::Type{F}) where {F <: File} = true
+Tables.rowaccess(::Type{<:File}) = true
 Tables.rows(f::File) = f
 Tables.schema(f::File{NamedTuple{names, types}}) where {names, types} = Tables.Schema(names, types)
+Base.eltype(f::F) where {F <: File} = Row{F}
 Base.length(f::File{NT, transpose}) where {NT, transpose} = transpose ? f.lastparsedcol[] : length(f.positions)
 Base.size(f::File{NamedTuple{names, types}}) where {names, types} = (length(f), length(names))
 Base.size(f::File{NamedTuple{}}) = (0, 0)
@@ -189,11 +187,13 @@ for row in CSV.File(file)
 end
 ```
 
-By supporting the tables interface, a `CSV.File` can also be a table input to any other table sink function. Like:
+By supporting the Tables.jl interface, a `CSV.File` can also be a table input to any other table sink function. Like:
 
 ```julia
-df = CSV.File(file) |> DataFrame # materialize a csv file as a DataFrame
+# materialize a csv file as a DataFrame
+df = CSV.File(file) |> DataFrame
 
+# load a csv file directly into an sqlite database table
 db = SQLite.DB()
 tbl = CSV.File(file) |> SQLite.load!(db, "sqlite_table")
 ```
