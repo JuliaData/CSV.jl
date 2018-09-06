@@ -51,16 +51,14 @@ end
 
 function Base.show(io::IO, f::File{NT, transpose}) where {NT, transpose}
     println(io, "CSV.File($(f.name), rows=$(transpose ? missing : length(f.positions))):")
-    println(io, "Columns:")
-    Base.print_matrix(io, hcat(collect(Tables.names(NT)), collect(Tables.types(NT))))
-    return
+    show(io, Tables.schema(f))
 end
 
-Base.eltype(f::F) where {F <: File} = Row{F}
-Tables.AccessStyle(::Type{F}) where {F <: File} = Tables.RowAccess()
 Tables.istable(::Type{<:File}) = true
-Tables.schema(f::File{NT}) where {NT} = NT
+Tables.rowaccess(::Type{<:File}) = true
 Tables.rows(f::File) = f
+Tables.schema(f::File{NamedTuple{names, types}}) where {names, types} = Tables.Schema(names, types)
+Base.eltype(f::F) where {F <: File} = Row{F}
 Base.length(f::File{NT, transpose}) where {NT, transpose} = transpose ? f.lastparsedcol[] : length(f.positions)
 Base.size(f::File{NamedTuple{names, types}}) where {names, types} = (length(f), length(names))
 Base.size(f::File{NamedTuple{}}) = (0, 0)
@@ -129,8 +127,8 @@ end
     return true
 end
 
-Base.getproperty(csvrow::Row{F}, name::Symbol) where {F <: File{NT}} where {NT} =
-    getproperty(csvrow, Tables.columntype(NT, name), Tables.columnindex(NT, name), name)
+@inline Base.getproperty(csvrow::Row{F}, name::Symbol) where {F <: File{NamedTuple{names, types}}} where {names, types} =
+    getproperty(csvrow, Tables.columntype(names, types, name), Tables.columnindex(names, name), name)
 
 function Base.getproperty(csvrow::Row{F}, ::Type{T}, col::Int, name::Symbol) where {T, F <: File{NT, transpose}} where {NT, transpose}
     col === 0 && return missing
@@ -189,11 +187,13 @@ for row in CSV.File(file)
 end
 ```
 
-By supporting the tables interface, a `CSV.File` can also be a table input to any other table sink function. Like:
+By supporting the Tables.jl interface, a `CSV.File` can also be a table input to any other table sink function. Like:
 
 ```julia
-df = CSV.File(file) |> DataFrame # materialize a csv file as a DataFrame
+# materialize a csv file as a DataFrame
+df = CSV.File(file) |> DataFrame
 
+# load a csv file directly into an sqlite database table
 db = SQLite.DB()
 tbl = CSV.File(file) |> SQLite.load!(db, "sqlite_table")
 ```
