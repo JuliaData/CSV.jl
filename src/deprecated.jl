@@ -722,7 +722,7 @@ function read(fullpath::Union{AbstractString,IO}, sink::Union{Type, Nothing}=not
 end
 
 function read(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), kwargs...) where {T}
-    Base.depwarn("`CSV.read(file, sink::$T)` is deprecated; use `CSV.read(source) |> sink` instead")
+    Base.depwarn("`CSV.read(file, sink::$T)` is deprecated; use `CSV.read(source) |> sink` instead", nothing)
     if append
         Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> x->append!(existing_df, x)` to append the rows of a csv file to an existing DataFrame", nothing)
     end
@@ -751,7 +751,7 @@ function read(source::CSV.Source, sink::Union{Type, Nothing}=nothing, args...; a
     return Data.close!(sink)
 end
 function read(source::CSV.Source, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) where {T}
-    Base.depwarn("`CSV.read(source::CSV.Source, sink::$T)` is deprecated; use `CSV.read(source) |> sink` instead")
+    Base.depwarn("`CSV.read(source::CSV.Source, sink::$T)` is deprecated; use `CSV.read(source) |> sink` instead", nothing)
     if append
         Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> x->append!(existing_df, x)` to append the rows of a csv file to an existing DataFrame", nothing)
     end

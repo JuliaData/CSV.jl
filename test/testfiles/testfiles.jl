@@ -1,6 +1,8 @@
+getschema(f::CSV.File{NT}) where NT = NT
+
 function testfile(file, kwargs, sz, sch, testfunc)
     f = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...)
-    @test Tables.schema(f) == sch
+    @test getschema(f) == sch
     @test size(f) == sz
     if testfunc === nothing
         f |> columntable # just test that we read the file correctly

@@ -27,7 +27,7 @@ version = "1.1.0"
 
 [[DataFrames]]
 deps = ["CategoricalArrays", "CodecZlib", "Compat", "DataStreams", "Dates", "InteractiveUtils", "IteratorInterfaceExtensions", "LinearAlgebra", "Missings", "Printf", "Random", "Reexport", "SortingAlgorithms", "Statistics", "StatsBase", "Tables", "Test", "TranscodingStreams", "Unicode", "WeakRefStrings"]
-git-tree-sha1 = "60cc12175ad53dd81c6504e4b9b545af4e24be9b"
+git-tree-sha1 = "ade4c8b7ac5f10d1e342783adaa77916868d6e03"
 repo-rev = "mdavezac-tables_integration"
 repo-url = "https://github.com/JuliaData/DataFrames.jl"
 uuid = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
