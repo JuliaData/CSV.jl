@@ -1,4 +1,4 @@
-using Dates, WeakRefStrings, CategoricalArrays
+using Dates, WeakRefStrings, CategoricalArrays, Tables
 
 @testset "CSV.write" begin
 
@@ -84,4 +84,19 @@ using Dates, WeakRefStrings, CategoricalArrays
     end
     @test String(read(file)) == "or5a2ztZo\nA,B,C\n1,17,Wg5\n2,17,SJ4\n3,19,w48\n"
     rm(file)
+
+    # unknown schema case
+    io = IOBuffer()
+    CSV.write(nothing, Tables.rows((col1=[1,2,3], col2=[4,5,6], col3=[7,8,9])), io)
+    @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
+
+    rt = [(a=1, b=4.0, c=7), (a=2.0, b=missing, c="8"), (a=3, b=6.0, c="9")]
+    CSV.write(nothing, rt, io)
+    @test String(take!(io)) == "a,b,c\n1,4.0,7\n2.0,,8\n3,6.0,9\n"
+
+    CSV.write(nothing, Tables.rows((col1=Int[], col2=Float64[])), io)
+    @test String(take!(io)) == ""
+
+    CSV.write(nothing, Tables.rows((col1=Int[], col2=Float64[])), io; header=["col1", "col2"])
+    @test String(take!(io)) == "col1,col2\n"
 end

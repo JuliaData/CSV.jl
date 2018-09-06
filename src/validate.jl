@@ -19,7 +19,7 @@ function validate end
 function validate(s::File)
     sch = Tables.schema(s) # size, header, types
     rows, cols = size(s)
-    types = Tables.types(sch)
+    types = sch.types
     for row = 1:rows
         rowstr = ""
         for col = 1:cols

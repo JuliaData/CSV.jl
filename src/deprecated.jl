@@ -705,11 +705,13 @@ function read end
 
 function read(fullpath::Union{AbstractString,IO}, sink::Union{Type, Nothing}=nothing, args...; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), kwargs...)
     if sink === nothing
-        Base.depwarn("CSV.read(file) will return a CSV.File object in the future; to return a DataFrame, use `CSV.read(file, DataFrame)`", nothing)
+        Base.depwarn("CSV.read(file) will return a CSV.File object in the future; to return a DataFrame, use `df = CSV.read(file) |> DataFrame`", nothing)
         sink = DataFrame
+    else
+        Base.depwarn("CSV.read(file, $sink, args...; kwargs...) is deprecated; use `CSV.read(file) |> $sink(args...; kwargs...)` instead", nothing)
     end
     if append
-        Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> append!(existing_df)` to append the rows of a csv file to an existing DataFrame", nothing)
+        Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> x->append!(existing_df, x)` to append the rows of a csv file to an existing DataFrame", nothing)
     end
     # if !isempty(transforms)
     #     Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
@@ -720,9 +722,9 @@ function read(fullpath::Union{AbstractString,IO}, sink::Union{Type, Nothing}=not
 end
 
 function read(fullpath::Union{AbstractString,IO}, sink::T; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), kwargs...) where {T}
-    
+    Base.depwarn("`CSV.read(file, sink::$T)` is deprecated; use `CSV.read(source) |> sink` instead", nothing)
     if append
-        Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> append!(existing_df)` to append the rows of a csv file to an existing DataFrame", nothing)
+        Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> x->append!(existing_df, x)` to append the rows of a csv file to an existing DataFrame", nothing)
     end
     # if !isempty(transforms)
     #     Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
@@ -734,11 +736,13 @@ end
 
 function read(source::CSV.Source, sink::Union{Type, Nothing}=nothing, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}())
     if sink === nothing
-        Base.depwarn("CSV.read(file) will return a CSV.File object in the future; to return a DataFrame, use `CSV.read(file, DataFrame)`", nothing)
+        Base.depwarn("CSV.read(file) will return a CSV.File object in the future; to return a DataFrame, use `df = CSV.read(file) |> DataFrame`", nothing)
         sink = DataFrame
+    else
+        Base.depwarn("CSV.read(file, $sink, args...; kwargs...) is deprecated; use `CSV.read(file) |> $sink(args...; kwargs...)` instead", nothing)
     end
     if append
-        Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> append!(existing_df)` to append the rows of a csv file to an existing DataFrame", nothing)
+        Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> x->append!(existing_df, x)` to append the rows of a csv file to an existing DataFrame", nothing)
     end
     # if !isempty(transforms)
     #     Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
@@ -747,9 +751,9 @@ function read(source::CSV.Source, sink::Union{Type, Nothing}=nothing, args...; a
     return Data.close!(sink)
 end
 function read(source::CSV.Source, sink::T; append::Bool=false, transforms::Dict=Dict{Int,Function}()) where {T}
-    
+    Base.depwarn("`CSV.read(source::CSV.Source, sink::$T)` is deprecated; use `CSV.read(source) |> sink` instead", nothing)
     if append
-        Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> append!(existing_df)` to append the rows of a csv file to an existing DataFrame", nothing)
+        Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> x->append!(existing_df, x)` to append the rows of a csv file to an existing DataFrame", nothing)
     end
     # if !isempty(transforms)
     #     Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of TableOperations.transform; it can be used like `CSV.File(filename) |> transform((a=x->x+1, b=x->string(\"custom_prefix\", x))) |> DataFrame`", nothing)
