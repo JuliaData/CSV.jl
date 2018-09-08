@@ -175,9 +175,9 @@ Base.propertynames(row::Row{F}) where {F <: File{NamedTuple{names, T}}} where {n
 """
     CSV.File(source::Union{String, IO}; kwargs...) => CSV.File
 
-Read a csv input (a filename given as a String, or any other IO source), returning a `CSV.File` object.
-Opens the file and uses passed arguments to detect the # of columns and column types.
-The returned object, `CSV.File`, supports the [Tables.jl](https://github.com/JuliaData/Tables.jl) interface
+Reads a csv input (a filename given as a String, or any other IO source) and returs a `CSV.File` object.
+Opens the file and uses passed arguments to detect the number of columns and column types.
+The returned `CSV.File` object supports the [Tables.jl](https://github.com/JuliaData/Tables.jl) interface
 and can iterate `CSV.Row`s. `CSV.Row` supports `propertynames` and `getproperty` to access individual row values.
 For example, one could iterate over a csv file with column names `a`, `b`, and `c` by doing:
 
@@ -200,34 +200,33 @@ tbl = CSV.File(file) |> SQLite.load!(db, "sqlite_table")
 
 Supported keyword arguments include:
 * File layout options:
-  * `use_mmap::Bool=!Sys.iswindows()`: whether the file should be mmapped for reading, can be faster in some cases
-  * `header=1`: the `header` argument can be an `Int`, indicating the row to parse for column names; or a Range, indicating a span of rows to be combined together as column names; or an entire Vector of Symbols or Strings to use as column names
+  * `header=1`: the `header` argument can be an `Int`, indicating the row to parse for column names; or a `Range`, indicating a span of rows to be combined together as column names; or an entire `Vector of Symbols` or `Strings` to use as column names
   * `normalizenames=true`: whether column names should be "normalized" into valid Julia identifier symbols
-  * `datarow::Int`: an `Int` argument to specify the row where the data starts in the csv file; by default, the next row after the `header` row is used
+  * `datarow`: an `Int` argument to specify the row where the data starts in the csv file; by default, the next row after the `header` row is used
   * `skipto::Int`: similar to `datarow`, specifies the number of rows to skip before starting to read data
   * `footerskip::Int`: number of rows at the end of a file to skip parsing
-  * `limit::Int`: an `Int` to indicate a limited number of rows to parse in a csv file
+  * `limit`: an `Int` to indicate a limited number of rows to parse in a csv file
   * `transpose::Bool`: read a csv file "transposed", i.e. each column is parsed as a row
-  * `comment::String`: string that occurs at the beginning of a line to signal parsing that row should be skipped
+  * `comment`: a `String` that occurs at the beginning of a line to signal parsing that row should be skipped
+  * `use_mmap::Bool=!Sys.iswindows()`: whether the file should be mmapped for reading, which in some cases can be faster
 * Parsing options:
-  * `missingstrings`, `missingstring`: either a single, or Vector of Strings to use as sentinel values that will be parsed as `missing`, by default, only an empty field (two consecutive delimiters) is considered `missing`
-  * `delim=','`: a character or string that indicates how columns are delimited in a file
-  * `ignorerepeated=false`: whether repeated (consecutive) delimiters should be ignored while parsing; useful for fixed-width files with delimiter padding between cells
-  * `quotechar='"'`, `openquotechar`, `closequotechar`: character (or different start and end characters) that indicate a quoted field which may contain textual delimiters or newline characters
-  * `escapechar='\\'`: character used to escape quote characters in a text field
-  * `dateformat`: a date format string to indicate how Date/DateTime columns are formatted in a delimited file
-  * `decimal`: how decimals are separated in floats, i.e. `3.14` used '.', or `3,14` uses a comma ','
-  * `truestrings`, `falsestrings`: Vectors of Strings that indicate how `true` or `false` values are represented
+  * `missingstrings`, `missingstring`: either a `String`, or `Vector of Strings` to use as sentinel values that will be parsed as `missing`; by default, only an empty field (two consecutive delimiters) is considered `missing`
+  * `delim=','`: a `Character` or `String` that indicates how columns are delimited in a file
+  * `ignorerepeated::Bool=false`: whether repeated (consecutive) delimiters should be ignored while parsing; useful for fixed-width files with delimiter padding between cells
+  * `quotechar='"'`, `openquotechar`, `closequotechar`: a `Character` (or different start and end characters) that indicate a quoted field which may contain textual delimiters or newline characters
+  * `escapechar='\\'`: the `Character` used to escape quote characters in a text field
+  * `dateformat::Union{String, Dates.DateFormat, Nothing}`: a date format string to indicate how Date/DateTime columns are formatted in a delimited file
+  * `decimal`: a `Character` indicating how decimals are separated in floats, i.e. `3.14` used '.', or `3,14` uses a comma ','
+  * `truestrings`, `falsestrings`: `Vectors of Strings` that indicate how `true` or `false` values are represented
 * Column Type Options:
-  * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column
-  * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected Float64 column to be parsed as Strings
-  * `allowmissing=:all`: possible values are `:none`, `:auto`, and `:all`, to indicate how missing values are allow in columns; no columns contain missings, auto-detect columns that contain missings, or all columns may contain missings
-  * `categorical=false`: whether columns with low cardinality (small number of unique values) should be read directly as a CategoricalArray
-  * `strict=false`: whether invalid values should throw a parsing error or be replaced with missing values
+  * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64
+  * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `Strings`
+  * `allowmissing=:all`: indicate how missing values are allowed in columns; possible values are `:all` - all columns may contain missings, `:auto` - auto-detect columns that contain missings or, `:none` - no columns may contain missings
+  * `categorical::Bool=false`: whether columns with low cardinality (small number of unique values) should be read directly as a `CategoricalArray`
+  * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with missing values
 """
 function File(source::Union{String, IO};
     # file options
-    use_mmap::Bool=!Sys.iswindows(),
     # header can be a row number, range of rows, or actual string vector
     header::Union{Integer, UnitRange{Int}, Vector}=1,
     normalizenames::Bool=true,
@@ -238,6 +237,7 @@ function File(source::Union{String, IO};
     limit::Union{Nothing, Int}=nothing,
     transpose::Bool=false,
     comment::Union{String, Nothing}=nothing,
+    use_mmap::Bool=!Sys.iswindows(),
     # parsing options
     missingstrings=String[],
     missingstring="",
