@@ -175,7 +175,7 @@ Base.propertynames(row::Row{F}) where {F <: File{NamedTuple{names, T}}} where {n
 """
     CSV.File(source::Union{String, IO}; kwargs...) => CSV.File
 
-Reads a csv input (a filename given as a String, or any other IO source) and returs a `CSV.File` object.
+Read a csv input (a filename given as a String, or any other IO source), returning a `CSV.File` object.
 Opens the file and uses passed arguments to detect the number of columns and column types.
 The returned `CSV.File` object supports the [Tables.jl](https://github.com/JuliaData/Tables.jl) interface
 and can iterate `CSV.Row`s. `CSV.Row` supports `propertynames` and `getproperty` to access individual row values.
@@ -210,13 +210,13 @@ Supported keyword arguments include:
   * `comment`: a `String` that occurs at the beginning of a line to signal parsing that row should be skipped
   * `use_mmap::Bool=!Sys.iswindows()`: whether the file should be mmapped for reading, which in some cases can be faster
 * Parsing options:
-  * `missingstrings`, `missingstring`: either a `String`, or `Vector of Strings` to use as sentinel values that will be parsed as `missing`; by default, only an empty field (two consecutive delimiters) is considered `missing`
-  * `delim=','`: a `Character` or `String` that indicates how columns are delimited in a file
+* `missingstrings`, `missingstring`: either a `String`, or `Vector{String}` to use as sentinel values that will be parsed as `missing`; by default, only an empty field (two consecutive delimiters) is considered `missing`
+  * `delim=','`: a `Char` or `String` that indicates how columns are delimited in a file
   * `ignorerepeated::Bool=false`: whether repeated (consecutive) delimiters should be ignored while parsing; useful for fixed-width files with delimiter padding between cells
-  * `quotechar='"'`, `openquotechar`, `closequotechar`: a `Character` (or different start and end characters) that indicate a quoted field which may contain textual delimiters or newline characters
-  * `escapechar='\\'`: the `Character` used to escape quote characters in a text field
+  * `quotechar='"'`, `openquotechar`, `closequotechar`: a `Char` (or different start and end characters) that indicate a quoted field which may contain textual delimiters or newline characters
+  * `escapechar='\\'`: the `Char` used to escape quote characters in a text field
   * `dateformat::Union{String, Dates.DateFormat, Nothing}`: a date format string to indicate how Date/DateTime columns are formatted in a delimited file
-  * `decimal`: a `Character` indicating how decimals are separated in floats, i.e. `3.14` used '.', or `3,14` uses a comma ','
+  * `decimal`: a `Char` indicating how decimals are separated in floats, i.e. `3.14` used '.', or `3,14` uses a comma ','
   * `truestrings`, `falsestrings`: `Vectors of Strings` that indicate how `true` or `false` values are represented
 * Column Type Options:
   * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64
