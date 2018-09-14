@@ -50,7 +50,7 @@ struct File{NT, transpose, I, P, KW}
 end
 
 function Base.show(io::IO, f::File{NT, transpose}) where {NT, transpose}
-    println(io, "CSV.File($(f.name), rows=$(transpose ? missing : length(f.positions))):")
+    println(io, "CSV.File(\"$(f.name)\", rows=$(transpose ? missing : length(f.positions))):")
     show(io, Tables.schema(f))
 end
 
@@ -297,6 +297,12 @@ function File(source::Union{String, IO};
         pools = CategoricalPool{String, UInt32, CatStr}[]
     else
         types, pools = detect(initialtypes(initialtype(allowmissing), types, names), io, positions, parsinglayers, kwargs, typemap, categorical, transpose, ref, debug)
+        if allowmissing === :none
+            # make sure we didn't detect any missing values in any columns
+            if any(T->T >: Missing, types)
+                throw(ArgumentError("`allowmissing=:none`, but missing values were detected in csv file: $types"))
+            end
+        end
     end
 
     !transpose && seek(io, positions[1])
