@@ -432,7 +432,7 @@ testfiles = [
     # #276
     ("test_duplicate_columnnames.csv", (allowmissing=:auto,),
         (2, 8),
-        NamedTuple{(:a, :b, :c, :a1, :a2, :a3, :a4, :b2), Tuple{Int64, Int64, Int64, Int64, Int64, Int64, Int64, Int64}},
-        (a = [1, 9], b = [2, 10], c = [3, 11], a1 = [4, 12], a2 = [5, 13], a3 = [6, 14], a4 = [7, 15], b1 = [8, 16])
+        NamedTuple{(:a, :b, :c, :a_1, :a_2, :a_3, :a_4, :b_2), Tuple{Int64, Int64, Int64, Int64, Int64, Int64, Int64, Int64}},
+        (a = [1, 9], b = [2, 10], c = [3, 11], a_1 = [4, 12], a_2 = [5, 13], a_3 = [6, 14], a_4 = [7, 15], b_1 = [8, 16])
     )
 ];

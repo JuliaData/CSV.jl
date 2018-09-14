@@ -19,10 +19,10 @@ function makeunique(names)
     for nm in names
         if nm in nms
             k = 1
-            newnm = Symbol("$(nm)$k")
+            newnm = Symbol("$(nm)_$k")
             while newnm in set || newnm in nms
                 k += 1
-                newnm = Symbol("$(nm)$k")
+                newnm = Symbol("$(nm)_$k")
             end
             nm = newnm
         end
