@@ -12,6 +12,25 @@ function normalizename(name::String)
     return Symbol(replace(cleansed, r"(_)\1+"=>"_"))
 end
 
+function makeunique(names)
+    set = Set(names)
+    length(set) == length(names) && return names
+    nms = Symbol[]
+    for nm in names
+        if nm in nms
+            k = 1
+            newnm = Symbol("$(nm)$k")
+            while newnm in set || newnm in nms
+                k += 1
+                newnm = Symbol("$(nm)$k")
+            end
+            nm = newnm
+        end
+        push!(nms, nm)
+    end
+    return Tuple(nms)
+end
+
 function skiptoheader!(parsinglayers, io, row, header)
     while row < header
         while !eof(io)
@@ -87,7 +106,7 @@ function datalayout_transpose(header, parsinglayers, io, datarow, footerskip, no
         seek(io, datapos)
     end
     rows = rows - footerskip # rows now equals the actual number of rows in the dataset
-    return rows, Tuple(normalizenames ? normalizename(x) : Symbol(x) for x in columnnames), columnpositions
+    return rows, makeunique(Tuple(normalizenames ? normalizename(x) : Symbol(x) for x in columnnames)), columnpositions
 end
 
 function datalayout(header::Integer, parsinglayers, io, datarow, normalizenames)
@@ -101,7 +120,7 @@ function datalayout(header::Integer, parsinglayers, io, datarow, normalizenames)
         columnnames = Tuple(Symbol("Column$i") for i = eachindex(row_vals))
     else
         skipto!(parsinglayers, io, 1, header)
-        columnnames = Tuple(ismissing(x) ? Symbol("Column$i") : (normalizenames ? normalizename(x) : Symbol(x)) for (i, x) in enumerate(readsplitline(parsinglayers, io)))
+        columnnames = makeunique(Tuple(ismissing(x) ? Symbol("Column$i") : (normalizenames ? normalizename(x) : Symbol(x)) for (i, x) in enumerate(readsplitline(parsinglayers, io))))
         datarow != header+1 && skipto!(parsinglayers, io, header+1, datarow)
         datapos = position(io)
     end
@@ -118,14 +137,14 @@ function datalayout(header::AbstractRange, parsinglayers, io, datarow, normalize
     end
     datarow != last(header)+1 && skipto!(parsinglayers, io, last(header)+1, datarow)
     datapos = position(io)
-    return Tuple(normalizenames ? normalizename(nm) : Symbol(nm) for nm in columnnames), datapos
+    return makeunique(Tuple(normalizenames ? normalizename(nm) : Symbol(nm) for nm in columnnames)), datapos
 end
 
 function datalayout(header::Vector, parsinglayers, io, datarow, normalizenames)
     skipto!(parsinglayers, io, 1, datarow)
     datapos = position(io)
     if eof(io)
-        columnnames = Tuple(normalizenames ? normalizename(nm) : Symbol(nm) for nm in header)
+        columnnames = makeunique(Tuple(normalizenames ? normalizename(nm) : Symbol(nm) for nm in header))
     else
         row_vals = readsplitline(parsinglayers, io)
         seek(io, datapos)
@@ -133,7 +152,7 @@ function datalayout(header::Vector, parsinglayers, io, datarow, normalizenames)
             columnnames = Tuple(Symbol("Column$i") for i in eachindex(row_vals))
         else
             length(header) == length(row_vals) || throw(ArgumentError("The length of provided header ($(length(header))) doesn't match the number of columns at row $datarow ($(length(row_vals)))"))
-            columnnames = Tuple(normalizenames ? normalizename(nm) : Symbol(nm) for nm in header)
+            columnnames = makeunique(Tuple(normalizenames ? normalizename(nm) : Symbol(nm) for nm in header))
         end
     end
     return columnnames, datapos
