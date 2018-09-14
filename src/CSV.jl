@@ -179,6 +179,7 @@ Read a csv input (a filename given as a String, or any other IO source), returni
 Opens the file and uses passed arguments to detect the number of columns and column types.
 The returned `CSV.File` object supports the [Tables.jl](https://github.com/JuliaData/Tables.jl) interface
 and can iterate `CSV.Row`s. `CSV.Row` supports `propertynames` and `getproperty` to access individual row values.
+Note that duplicate column names will be detected and adjusted to ensure uniqueness (duplicate column name `a` will become `a_1`).
 For example, one could iterate over a csv file with column names `a`, `b`, and `c` by doing:
 
 ```julia
