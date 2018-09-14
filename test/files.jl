@@ -24,7 +24,7 @@ f = CSV.File(joinpath(dir, "test_float_in_int_column.csv"); types=[Int, Int, Int
 # #137
 tbl = (a=[11,22], dt=[Date(2017,12,7), Date(2017,12,14)], dttm=[DateTime(2017,12,7), DateTime(2017,12,14)])
 io = IOBuffer()
-CSV.write(tbl, io; delim='\t')
+tbl |> CSV.write(io; delim='\t')
 seekstart(io)
 f = CSV.File(io; delim='\t', allowmissing=:auto)
 @test (f |> columntable) == tbl
@@ -32,11 +32,9 @@ f = CSV.File(io; delim='\t', allowmissing=:auto)
 # #172
 @test_throws ArgumentError CSV.File(joinpath(dir, "test_newline_line_endings.csv"), types=Dict(1=>Integer))
 
-# #272
-@test_throws ArgumentError CSV.File(joinpath(dir, "test_missing_value_NULL.csv"), allowmissing=:none, missingstring="NULL")
-
 # @time f = CSV.File(joinpath(dir, "pandas_zeros.csv"), allowmissing=:none);
-# @time f |> columntable;
+# @time t = f |> columntable;
+# @time t = Tables.buildcolumns(nothing, f);
 # using Profile
 # Profile.clear()
 # @profile f |> columntable;

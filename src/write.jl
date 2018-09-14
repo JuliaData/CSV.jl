@@ -1,5 +1,5 @@
 """
-    CSV.write(table, file::Union{String, IO}; kwargs...) => file
+    CSV.write(file::Union{String, IO}, file; kwargs...) => file
     table |> CSV.write(file::Union{String, IO}; kwargs...) => file
 
 Write a [Tables.jl interface input](https://github.com/JuliaData/Tables.jl) to a csv file, given as an `IO` argument or String representing the file name to write to.
@@ -73,8 +73,8 @@ function printcsv(io, val::T, delim, oq, cq, e, df) where {T <: Dates.TimeType}
     printcsv(io, v, delim, oq, cq, e, df)
 end
 
-write(file::Union{String, IO}; kwargs...) = x->write(x, file; kwargs...)
-function write(itr, file::Union{String, IO}; kwargs...)
+write(file::Union{String, IO}; kwargs...) = x->write(file, x; kwargs...)
+function write(file::Union{String, IO}, itr; kwargs...)
     rows = Tables.rows(itr)
     sch = Tables.schema(rows)
     return write(sch, rows, file; kwargs...)
@@ -100,7 +100,7 @@ function write(sch::Tables.Schema{schema_names}, rows, file::Union{String, IO};
     append::Bool=false,
     writeheader::Bool=!append,
     header::Vector=String[],
-    ) where {schema_names}
+    kwargs...) where {schema_names}
     oq, cq = openquotechar !== nothing ? (openquotechar, closequotechar) : (quotechar, quotechar)
     names = isempty(header) ? schema_names : header
     cols = length(names)
@@ -128,7 +128,7 @@ function write(::Nothing, rows, file::Union{String, IO};
     append::Bool=false,
     writeheader::Bool=!append,
     header::Vector=String[],
-    )
+    kwargs...)
     oq, cq = openquotechar !== nothing ? (openquotechar, closequotechar) : (quotechar, quotechar)
     state = iterate(rows)
     if state === nothing

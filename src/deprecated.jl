@@ -835,17 +835,6 @@ function Data.close!(sink::CSV.Sink)
     return sink
 end
 
-function write(file::Union{AbstractString, IO}, ::Type{T}, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...) where {T}
-    Base.depwarn("CSV.write(file, source) is deprecated in favor of CSV.write(source, file); it will also now support piping like: `dataframe |> CSV.write(filename)`", nothing)
-    sink = Data.stream!(T(args...), CSV.Sink, file; append=append, transforms=transforms, kwargs...)
-    return Data.close!(sink)
-end
-function write(file::Union{AbstractString, IO}, source; append::Bool=false, transforms::Dict=Dict{Int,Function}(), kwargs...)
-    Base.depwarn("CSV.write(file, source) is deprecated in favor of CSV.write(source, file); it will also now support piping like: `dataframe |> CSV.write(filename)`", nothing)
-    sink = Data.stream!(source, CSV.Sink, file; append=append, transforms=transforms, kwargs...)
-    return Data.close!(sink)
-end
-
 function write(sink::Sink, ::Type{T}, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}()) where {T}
     Base.depwarn("CSV.write(file, source) is deprecated in favor of CSV.write(source, file); it will also now support piping like: `dataframe |> CSV.write(filename)`", nothing)
     sink = Data.stream!(T(args...), sink; append=append, transforms=transforms)
