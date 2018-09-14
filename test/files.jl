@@ -32,6 +32,9 @@ f = CSV.File(io; delim='\t', allowmissing=:auto)
 # #172
 @test_throws ArgumentError CSV.File(joinpath(dir, "test_newline_line_endings.csv"), types=Dict(1=>Integer))
 
+# #272
+@test_throws ArgumentError CSV.File(joinpath(dir, "test_missing_value_NULL.csv"), allowmissing=:none, missingstring="NULL")
+
 # @time f = CSV.File(joinpath(dir, "pandas_zeros.csv"), allowmissing=:none);
 # @time f |> columntable;
 # using Profile
