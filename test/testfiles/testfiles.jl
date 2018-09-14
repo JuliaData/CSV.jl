@@ -251,7 +251,7 @@ testfiles = [
         NamedTuple{(:permalink, :company, :numEmps, :category, :city, :state, :fundedDate, :raisedAmt, :raisedCurrency, :round),Tuple{CategoricalString{UInt32},CategoricalString{UInt32},Union{Missing, Int64},Union{Missing, CategoricalString{UInt32}},Union{Missing, CategoricalString{UInt32}},CategoricalString{UInt32},CategoricalString{UInt32},Int64,CategoricalString{UInt32},CategoricalString{UInt32}}},
         nothing
     ),
-    ("Fielding.csv", (allowmissing=:none,),
+    ("Fielding.csv", (allowmissing=:auto,),
         (167938, 18),
         NamedTuple{(:playerID, :yearID, :stint, :teamID, :lgID, :POS, :G, :GS, :InnOuts, :PO, :A, :E, :DP, :PB, :WP, :SB, :CS, :ZR),Tuple{WeakRefString{UInt8},Int64,Int64,WeakRefString{UInt8},WeakRefString{UInt8},WeakRefString{UInt8},Int64,Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64}}},
         nothing
