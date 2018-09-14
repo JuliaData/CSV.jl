@@ -87,11 +87,6 @@ sch2 = Data.schema(ds)
 @test Data.header(sch2) == Data.header(sch)
 @test Data.types(sch) == (Float64,Float64,Float64)
 
-f = CSV.Source(joinpath(dir, "test_utf8.csv"))
-si = CSV.write(joinpath(dir, "new_test_utf8.csv"), f)
-f = si = ds = nothing; GC.gc(); GC.gc()
-@try rm(joinpath(dir, "new_test_utf8.csv"))
-
 # f = CSV.Source(joinpath(dir, "test_utf16_be.csv"))
 # f = CSV.Source(joinpath(dir, "test_utf16_le.csv"))
 # f = CSV.Source(joinpath(dir, "test_utf16.csv"))
