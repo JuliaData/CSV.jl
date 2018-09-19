@@ -25,7 +25,9 @@ end
 
 # could just store NT internally and have Row take it as type parameter
 # could separate kwargs out into individual fields and remove type parameter
-struct File{NT, transpose, I, P, KW}
+struct File{transpose, columnaccess, I, P, KW}
+    names::Vector{Symbol}
+    types::Vector{Type}
     name::String
     io::I
     parsinglayers::P
@@ -39,10 +41,12 @@ struct File{NT, transpose, I, P, KW}
     strict::Bool
 end
 
-function Base.show(io::IO, f::File{NT, transpose}) where {NT, transpose}
+function Base.show(io::IO, f::File{transpose}) where {transpose}
     println(io, "CSV.File(\"$(f.name)\", rows=$(transpose ? missing : length(f.positions))):")
     show(io, Tables.schema(f))
 end
+
+const EMPTY_TYPEMAP = Dict{Type, Type}()
 
 """
     CSV.File(source::Union{String, IO}; kwargs...) => CSV.File
@@ -126,7 +130,7 @@ function File(source::Union{String, IO};
     falsestrings::Union{Vector{String}, Nothing}=nothing,
     # type options
     types=nothing,
-    typemap::Dict=Dict{Type, Type}(),
+    typemap::Dict=EMPTY_TYPEMAP,
     allowmissing::Symbol=:all,
     categorical::Bool=false,
     strict::Bool=false,
@@ -156,13 +160,15 @@ function File(source::Union{String, IO};
         rows, names, positions = datalayout_transpose(header, parsinglayers, io, datarow, footerskip, normalizenames)
         originalpositions = copy(positions)
         ref = Ref{Int}(min(something(limit, typemax(Int)), rows))
+        columnaccess = false
     else
         names, datapos = datalayout(header, parsinglayers, io, datarow, normalizenames)
-        eof(io) && return File{NamedTuple{names, Tuple{(Missing for _ in names)...}}, false, typeof(io), typeof(parsinglayers), typeof(kwargs)}(getname(source), io, parsinglayers, Int64[], Int64[], Ref{Int}(0), Ref{Int}(0), Ref(Parsers.SUCCESS), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
+        eof(io) && return File{false, true, typeof(io), typeof(parsinglayers), typeof(kwargs)}(names, Type[Missing for _ in names], getname(source), io, parsinglayers, Int64[], Int64[], Ref{Int}(0), Ref{Int}(0), Ref(Parsers.SUCCESS), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
         positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8, limit, parsinglayers, comment === nothing ? nothing : Parsers.Trie(comment))
         originalpositions = Int64[]
         footerskip > 0 && resize!(positions, length(positions) - footerskip)
         ref = Ref{Int}(0)
+        columnaccess = length(positions) <= 1024
         debug && @show positions
     end
 
@@ -179,7 +185,7 @@ function File(source::Union{String, IO};
     end
 
     !transpose && seek(io, positions[1])
-    return File{NamedTuple{names, Tuple{types...}}, transpose, typeof(io), typeof(parsinglayers), typeof(kwargs)}(getname(source), io, parsinglayers, positions, originalpositions, Ref(1), ref, Ref(Parsers.SUCCESS), kwargs, pools, strict)
+    return File{transpose, columnaccess, typeof(io), typeof(parsinglayers), typeof(kwargs)}(names, types, getname(source), io, parsinglayers, positions, originalpositions, Ref(1), ref, Ref(Parsers.SUCCESS), kwargs, pools, strict)
 end
 
 include("filedetection.jl")
@@ -230,7 +236,7 @@ include("validate.jl")
 function __init__()
     # read a dummy file to "precompile" a bunch of methods; until the `precompile` function
     # can propertly store machine code, this is our best option
-    CSV.File(joinpath(@__DIR__, "../test/testfiles/test_utf8.csv"), allowmissing=:auto) |> columntable
+    CSV.File(joinpath(@__DIR__, "../test/testfiles/test_utf8.csv"), allowmissing=:auto) |> DataFrame
     return
 end
 

@@ -1,4 +1,4 @@
-getschema(f::CSV.File{NT}) where NT = NT
+getschema(f::CSV.File) = NamedTuple{Tuple(f.names), Tuple{f.types...}}
 
 function testfile(file, kwargs, sz, sch, testfunc)
     f = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...)
