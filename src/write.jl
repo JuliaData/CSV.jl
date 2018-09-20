@@ -28,49 +28,84 @@ function with(f::Function, file::String, append)
     end
 end
 
-printcsv(io, val, delim, oq, cq, e, df) = print(io, val)
+const FILE_BUFFER = IOBuffer()
+const VALUE_BUFFER = IOBuffer()
 
-function printcsv(io, val::String, delim::Char, oq, cq, e, df)
-    needtoescape = false
-    bytes = codeunits(val)
-    oq8, cq8 = UInt8(oq), UInt8(cq)
-    @inbounds needtoquote = isempty(bytes) ? false : bytes[1] === oq8
-    d = delim % UInt8
-    @simd for i = 1:sizeof(val)
-        @inbounds b = bytes[i]
-        needtoquote |= (b === d) | (b === UInt8('\n')) | (b === UInt8('\r'))
-        needtoescape |= b === cq8
-    end
-    printcsv(io, val, delim, oq, cq, e, df, needtoquote, needtoescape)
+function _reset(io::IOBuffer)
+    io.ptr = 1
+    io.size = 0
 end
 
-function printcsv(io, val::String, delim::String, oq, cq, e, df)
-    needtoescape = false
-    bytes = codeunits(val)
-    oq8, cq8 = UInt8(oq), UInt8(cq)
-    @inbounds needtoquote = bytes[1] === oq8
-    @simd for i = 1:sizeof(val)
-        @inbounds b = bytes[i]
-        needtoquote |= (b === UInt8('\n')) | (b === UInt8('\r'))
-        needtoescape |= b === cq8
-    end
-    needtoquote |= occursin(delim, val)
-    printcsv(io, val, delim, oq, cq, e, df, needtoquote, needtoescape)
+function bufferedwrite(io, val::Number, df)
+    print(io, val)
+    return false
 end
 
-function printcsv(io, val::String, delim, oq, cq, e, df, needtoquote, needtoescape)
+getvalue(x, df) = x
+getvalue(x::T, df) where {T <: Dates.TimeType} = Dates.format(x, df === nothing ? Dates.default_format(T) : df)
+
+function bufferedwrite(io, val, df)
+    _reset(VALUE_BUFFER)
+    print(VALUE_BUFFER, getvalue(val, df))
+    return true
+end
+
+function bufferedescape(io, delim, oq, cq, e)
+    n = position(VALUE_BUFFER)
+    n == 0 && return
+    needtoescape, needtoquote = check(n, delim, oq, cq)
+    seekstart(VALUE_BUFFER)
     if needtoquote
-        v = needtoescape ? (oq === cq ? replace(val, cq=>string(e, cq)) : replace(replace(val, oq=>string(e, oq)), cq=>string(e, cq))) : val
-        print(io, oq, v, cq)
+        if needtoescape
+            Base.write(io, oq)
+            buf = VALUE_BUFFER.data
+            for i = 1:n
+                @inbounds b = buf[i]
+                if b === cq
+                    Base.write(io, e, b)
+                else
+                    Base.write(io, b)
+                end
+            end
+            Base.write(io, cq)
+        else
+            Base.write(io, oq)
+            Base.write(io, VALUE_BUFFER)
+            Base.write(io, cq)
+        end
     else
-        print(io, val)
+        Base.write(io, VALUE_BUFFER)
+        # Base.ensureroom(FILE_BUFFER, n + 1)
+        # unsafe_copyto!(FILE_BUFFER.data, FILE_BUFFER.ptr, VALUE_BUFFER.data, 1, n)
+        # FILE_BUFFER.ptr += n
     end
     return
 end
 
-function printcsv(io, val::T, delim, oq, cq, e, df) where {T <: Dates.TimeType}
-    v = Dates.format(val, df === nothing ? Dates.default_format(T) : df)
-    printcsv(io, v, delim, oq, cq, e, df)
+function check(n, delim::Char, oq, cq)
+    needtoescape = false
+    buf = VALUE_BUFFER.data
+    @inbounds needtoquote = buf[1] === oq
+    d = delim % UInt8
+    @simd for i = 1:n
+        @inbounds b = buf[i]
+        needtoquote |= (b === d) | (b === UInt8('\n')) | (b === UInt8('\r'))
+        needtoescape |= b === cq
+    end
+    return needtoescape, needtoquote
+end
+
+function check(n, delim::String, oq, cq)
+    needtoescape = false
+    buf = VALUE_BUFFER.data
+    @inbounds needtoquote = buf[1] === oq
+    @simd for i = 1:n
+        @inbounds b = buf[i]
+        needtoquote |= (b === UInt8('\n')) | (b === UInt8('\r'))
+        needtoescape |= b === cq
+    end
+    needtoquote |= occursin(delim, String(buf[1:n]))
+    return needtoescape, needtoquote
 end
 
 write(file::Union{String, IO}; kwargs...) = x->write(file, x; kwargs...)
@@ -83,7 +118,7 @@ end
 function printheader(io, header, delim, oq, cq, e, df)
     cols = length(header)
     for (col, nm) in enumerate(header)
-        printcsv(io, string(nm), delim, oq, cq, e, df)
+        bufferedwrite(io, string(nm), nothing) && bufferedescape(io, delim, oq, cq, e)
         Base.write(io, ifelse(col == cols, UInt8('\n'), delim))
     end
     return
@@ -101,14 +136,15 @@ function write(sch::Tables.Schema{schema_names}, rows, file::Union{String, IO};
     writeheader::Bool=!append,
     header::Vector=String[],
     kwargs...) where {schema_names}
-    oq, cq = openquotechar !== nothing ? (openquotechar, closequotechar) : (quotechar, quotechar)
+    oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
+    e = escapechar % UInt8
     names = isempty(header) ? schema_names : header
     cols = length(names)
     with(file, append) do io
         writeheader && printheader(io, names, delim, oq, cq, escapechar, dateformat)
         for row in rows
             Tables.eachcolumn(sch, row) do val, col, nm
-                printcsv(io, coalesce(val, missingstring), delim, oq, cq, escapechar, dateformat)
+                bufferedwrite(io, coalesce(val, missingstring), dateformat) && bufferedescape(io, delim, oq, cq, e)
                 Base.write(io, ifelse(col == cols, UInt8('\n'), delim))
             end
         end
@@ -129,7 +165,8 @@ function write(::Nothing, rows, file::Union{String, IO};
     writeheader::Bool=!append,
     header::Vector=String[],
     kwargs...)
-    oq, cq = openquotechar !== nothing ? (openquotechar, closequotechar) : (quotechar, quotechar)
+    oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
+    e = escapechar % UInt8
     state = iterate(rows)
     if state === nothing
         if writeheader && !isempty(header)
@@ -147,7 +184,7 @@ function write(::Nothing, rows, file::Union{String, IO};
         writeheader && printheader(io, names, delim, oq, cq, escapechar, dateformat)
         while true
             Tables.eachcolumn(sch, row) do val, col, nm
-                printcsv(io, coalesce(val, missingstring), delim, oq, cq, escapechar, dateformat)
+                bufferedwrite(io, coalesce(val, missingstring), dateformat) && bufferedescape(io, delim, oq, cq, e)
                 Base.write(io, ifelse(col == cols, UInt8('\n'), delim))
             end
             state = iterate(rows, st)

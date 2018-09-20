@@ -99,4 +99,16 @@ using Dates, WeakRefStrings, CategoricalArrays, Tables
 
     CSV.write(nothing, Tables.rows((col1=Int[], col2=Float64[])), io; header=["col1", "col2"])
     @test String(take!(io)) == "col1,col2\n"
+
+    # 280
+    io = IOBuffer()
+    CSV.write(io, (x=[',','\n', ','],))
+    @test String(take!(io)) == "x\n\",\"\n\"\n\"\n\",\"\n"
+
+    CSV.write(io, (x=['-'],y=['-']), delim='-')
+    @test String(take!(io)) == "x-y\n\"-\"-\"-\"\n"
+
+    CSV.write(io, (x= [[1 2; 3 4]],y=[[5 6; 7 8]]), delim=';')
+    @test String(take!(io)) == "x;y\n\"[1 2; 3 4]\";\"[5 6; 7 8]\"\n"
+
 end
