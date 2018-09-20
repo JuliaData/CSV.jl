@@ -28,8 +28,7 @@ function with(f::Function, file::String, append)
     end
 end
 
-const FILE_BUFFER = IOBuffer()
-const VALUE_BUFFER = IOBuffer()
+const VALUE_BUFFERS = [IOBuffer()]
 
 function _reset(io::IOBuffer)
     io.ptr = 1
@@ -45,12 +44,14 @@ getvalue(x, df) = x
 getvalue(x::T, df) where {T <: Dates.TimeType} = Dates.format(x, df === nothing ? Dates.default_format(T) : df)
 
 function bufferedwrite(io, val, df)
+    VALUE_BUFFER = VALUE_BUFFERS[Threads.threadid()]
     _reset(VALUE_BUFFER)
     print(VALUE_BUFFER, getvalue(val, df))
     return true
 end
 
 function bufferedescape(io, delim, oq, cq, e)
+    VALUE_BUFFER = VALUE_BUFFERS[Threads.threadid()]
     n = position(VALUE_BUFFER)
     n == 0 && return
     needtoescape, needtoquote = check(n, delim, oq, cq)
@@ -61,7 +62,7 @@ function bufferedescape(io, delim, oq, cq, e)
             buf = VALUE_BUFFER.data
             for i = 1:n
                 @inbounds b = buf[i]
-                if b === cq
+                if b === cq || b === oq
                     Base.write(io, e, b)
                 else
                     Base.write(io, b)
@@ -75,16 +76,13 @@ function bufferedescape(io, delim, oq, cq, e)
         end
     else
         Base.write(io, VALUE_BUFFER)
-        # Base.ensureroom(FILE_BUFFER, n + 1)
-        # unsafe_copyto!(FILE_BUFFER.data, FILE_BUFFER.ptr, VALUE_BUFFER.data, 1, n)
-        # FILE_BUFFER.ptr += n
     end
     return
 end
 
 function check(n, delim::Char, oq, cq)
     needtoescape = false
-    buf = VALUE_BUFFER.data
+    buf = VALUE_BUFFERS[Threads.threadid()].data
     @inbounds needtoquote = buf[1] === oq
     d = delim % UInt8
     @simd for i = 1:n
@@ -97,7 +95,7 @@ end
 
 function check(n, delim::String, oq, cq)
     needtoescape = false
-    buf = VALUE_BUFFER.data
+    buf = VALUE_BUFFERS[Threads.threadid()].data
     @inbounds needtoquote = buf[1] === oq
     @simd for i = 1:n
         @inbounds b = buf[i]
