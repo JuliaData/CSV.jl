@@ -23,8 +23,6 @@ function Base.showerror(io::IO, e::Error)
     showerror(io, e.error)
 end
 
-# could just store NT internally and have Row take it as type parameter
-# could separate kwargs out into individual fields and remove type parameter
 struct File{transpose, columnaccess, I, P, KW}
     names::Vector{Symbol}
     types::Vector{Type}

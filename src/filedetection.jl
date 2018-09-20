@@ -120,7 +120,6 @@ function datalayout(header::Integer, parsinglayers, io, datarow, normalizenames)
         columnnames = [Symbol("Column$i") for i = eachindex(row_vals)]
     else
         skipto!(parsinglayers, io, 1, header)
-        # avoid recompilation here for every file w/ different # of columns?
         columnnames = makeunique([ismissing(x) ? Symbol("Column$i") : (normalizenames ? normalizename(x) : Symbol(x)) for (i, x) in enumerate(readsplitline(parsinglayers, io))])
         datarow != header+1 && skipto!(parsinglayers, io, header+1, datarow)
         datapos = position(io)
