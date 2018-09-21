@@ -70,9 +70,7 @@ function bufferedescape(io, delim, oq, cq, e)
             end
             Base.write(io, cq)
         else
-            Base.write(io, oq)
-            Base.write(io, VALUE_BUFFER)
-            Base.write(io, cq)
+            Base.write(io, oq, VALUE_BUFFER, cq)
         end
     else
         Base.write(io, VALUE_BUFFER)
