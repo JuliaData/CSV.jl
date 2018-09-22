@@ -603,7 +603,7 @@ end
     end
 end
 
-function read(source::CSV.Source, sink::Union{Type, Nothing}, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}())
+function read(source::CSV.Source, sink::Union{Type, Nothing}=DataFrame, args...; append::Bool=false, transforms::Dict=Dict{Int,Function}())
     if sink === nothing
         Base.depwarn("CSV.read(file) will return a CSV.File object in the future; to return a DataFrame, use `df = CSV.read(file) |> DataFrame`", nothing)
         sink = DataFrame
