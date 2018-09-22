@@ -34,7 +34,7 @@ f = CSV.File(io; delim='\t', allowmissing=:auto)
 
 # @time f = CSV.File(joinpath(dir, "pandas_zeros.csv"), allowmissing=:none);
 # @time t = f |> columntable;
-# @time t = Tables.buildcolumns(nothing, f);
+# @time t = Tables.buildcolumns(nothing, Tables.rows(f));
 # using Profile
 # Profile.clear()
 # @profile f |> columntable;
