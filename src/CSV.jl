@@ -35,7 +35,7 @@ struct File{transpose, columnaccess, I, P, KW}
     lastparsedcol::Base.RefValue{Int}
     lastparsedcode::Base.RefValue{Parsers.ReturnCode}
     kwargs::KW
-    pools::Vector{CategoricalPool{String, UInt32, CategoricalString{UInt32}}}
+    pools::Vector{CategoricalPool{String, UInt32, CatStr}}
     strict::Bool
 end
 
@@ -172,7 +172,13 @@ function File(source::Union{String, IO};
     end
 
     if types isa Vector
-        pools = CategoricalPool{String, UInt32, CatStr}[]
+        pools = Vector{CategoricalPool{String, UInt32, CatStr}}(undef, length(types))
+        for col = 1:length(types)
+            T = types[col]
+            if T !== Missing && Base.nonmissingtype(T) <: CatStr
+                pools[col] = CategoricalPool{String, UInt32}()
+            end
+        end
     else
         types, pools = detect(initialtypes(initialtype(allowmissing), types, names), io, positions, parsinglayers, kwargs, typemap, categorical, transpose, ref, debug)
         if allowmissing === :none
