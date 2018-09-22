@@ -97,7 +97,7 @@ Supported keyword arguments include:
   * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64
   * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `Strings`
   * `allowmissing=:all`: indicate how missing values are allowed in columns; possible values are `:all` - all columns may contain missings, `:auto` - auto-detect columns that contain missings or, `:none` - no columns may contain missings
-  * `categorical::Bool=false`: whether columns with low cardinality (small number of unique values) should be read directly as a `CategoricalArray`
+  * `categorical::Bool=false`: whether columns detected as type `String` should be returned as a `CategoricalArray`
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with missing values
 """
 function File(source::Union{String, IO};
@@ -283,7 +283,7 @@ Supported keyword arguments include:
   * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64
   * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `Strings`
   * `allowmissing=:all`: indicate how missing values are allowed in columns; possible values are `:all` - all columns may contain missings, `:auto` - auto-detect columns that contain missings or, `:none` - no columns may contain missings
-  * `categorical::Bool=false`: whether columns with low cardinality (small number of unique values) should be read directly as a `CategoricalArray`
+  * `categorical::Bool=false`: whether columns detected as `String` should be returned as a `CategoricalArray`
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with missing values
 """
 function read end
