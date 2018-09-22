@@ -1,4 +1,4 @@
-using Test, CSV, Dates, Tables, WeakRefStrings, CategoricalArrays
+using Test, CSV, Dates, Tables, WeakRefStrings, CategoricalArrays, DataFrames
 
 const dir = joinpath(dirname(pathof(CSV)), "../test/testfiles")
 
