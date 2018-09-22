@@ -305,25 +305,11 @@ df4 = CSV.read(IOBuffer("a,b,c"); allowmissing=:none)
 @test size(Data.schema(df4)) == (0, 3)
 @test df3 == df4
 
-let fn = tempname()
-    CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"), CSV.Sink(fn); allowmissing=:none, transforms=transforms)
-    @test String(read(fn)) == "a,b,c\n1,b2,3\n4,b5,6\n"
-    @try rm(fn)
-end
-
-let fn = tempname()
-    CSV.read(IOBuffer("a,b,c"), CSV.Sink(fn); allowmissing=:none, transforms=transforms)
-    @test String(read(fn)) == "a,b,c\n"
-    @try rm(fn)
-end
-
 source = IOBuffer("col1,col2,col3") # empty dataset
 df = CSV.read(source; transforms=Dict(2 => floor))
 @test size(Data.schema(df)) == (0, 3)
-@test Data.types(Data.schema(df)) == (Any, Any, Any)
+@test Data.types(Data.schema(df)) == (Missing, Missing, Missing)
 
-# Integer overflow; #100
-@test_throws CSV.Error CSV.read(joinpath(dir, "int8_overflow.csv"); types=[Int8])
 
 # dash as missingstring; #92
 df = CSV.read(joinpath(dir, "dash_as_null.csv"); missingstring="-")
@@ -560,4 +546,4 @@ stream = MultiStream(
 )
 
 @test bytesavailable(stream) == 0
-@test CSV.read(stream) == CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"))
+@test CSV.read(CSV.Source(stream)) == CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"))
