@@ -305,18 +305,6 @@ df4 = CSV.read(IOBuffer("a,b,c"); allowmissing=:none)
 @test size(Data.schema(df4)) == (0, 3)
 @test df3 == df4
 
-let fn = tempname()
-    CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"), CSV.Sink(fn); allowmissing=:none, transforms=transforms)
-    @test String(read(fn)) == "a,b,c\n1,b2,3\n4,b5,6\n"
-    @try rm(fn)
-end
-
-let fn = tempname()
-    CSV.read(IOBuffer("a,b,c"), CSV.Sink(fn); allowmissing=:none, transforms=transforms)
-    @test String(read(fn)) == "a,b,c\n"
-    @try rm(fn)
-end
-
 source = IOBuffer("col1,col2,col3") # empty dataset
 df = CSV.read(source; transforms=Dict(2 => floor))
 @test size(Data.schema(df)) == (0, 3)
@@ -554,6 +542,7 @@ end
 function Base.bytesavailable(s::MultiStream)
     bytesavailable(s.streams[s.index])
 end
+Base.position(s::MultiStream) = position(s.streams[s.index])
 
 stream = MultiStream(
     [IOBuffer(""), IOBuffer("a,b,c\n1,2,3\n"), IOBuffer(""), IOBuffer("4,5,6")]
