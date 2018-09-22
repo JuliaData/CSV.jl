@@ -132,7 +132,8 @@ function File(source::Union{String, IO};
     allowmissing::Symbol=:all,
     categorical::Bool=false,
     strict::Bool=false,
-    debug::Bool=false)
+    debug::Bool=false,
+    kw...)
 
     isa(source, AbstractString) && (isfile(source) || throw(ArgumentError("\"$source\" is not a valid file")))
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa Dict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))

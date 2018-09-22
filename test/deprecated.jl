@@ -308,10 +308,8 @@ df4 = CSV.read(IOBuffer("a,b,c"); allowmissing=:none)
 source = IOBuffer("col1,col2,col3") # empty dataset
 df = CSV.read(source; transforms=Dict(2 => floor))
 @test size(Data.schema(df)) == (0, 3)
-@test Data.types(Data.schema(df)) == (Any, Any, Any)
+@test Data.types(Data.schema(df)) == (Missing, Missing, Missing)
 
-# Integer overflow; #100
-@test_throws CSV.Error CSV.read(joinpath(dir, "int8_overflow.csv"); types=[Int8])
 
 # dash as missingstring; #92
 df = CSV.read(joinpath(dir, "dash_as_null.csv"); missingstring="-")
@@ -542,11 +540,10 @@ end
 function Base.bytesavailable(s::MultiStream)
     bytesavailable(s.streams[s.index])
 end
-Base.position(s::MultiStream) = position(s.streams[s.index])
 
 stream = MultiStream(
     [IOBuffer(""), IOBuffer("a,b,c\n1,2,3\n"), IOBuffer(""), IOBuffer("4,5,6")]
 )
 
 @test bytesavailable(stream) == 0
-@test CSV.read(stream) == CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"))
+@test CSV.read(CSV.Source(stream)) == CSV.read(IOBuffer("a,b,c\n1,2,3\n4,5,6"))
