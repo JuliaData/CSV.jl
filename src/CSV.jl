@@ -132,7 +132,8 @@ function File(source::Union{String, IO};
     allowmissing::Symbol=:all,
     categorical::Bool=false,
     strict::Bool=false,
-    debug::Bool=false)
+    debug::Bool=false,
+    kw...)
 
     isa(source, AbstractString) && (isfile(source) || throw(ArgumentError("\"$source\" is not a valid file")))
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa Dict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
@@ -230,6 +231,7 @@ getkwargs(df::Dates.DateFormat, dec::Union{UInt8, Char}, bools::Parsers.Trie) = 
 include("write.jl")
 include("deprecated.jl")
 include("validate.jl")
+include("transforms.jl")
 
 function __init__()
     # read a dummy file to "precompile" a bunch of methods; until the `precompile` function
@@ -237,6 +239,66 @@ function __init__()
     CSV.File(joinpath(@__DIR__, "../test/testfiles/test_utf8.csv"), allowmissing=:auto) |> DataFrame
     Threads.resize_nthreads!(VALUE_BUFFERS)
     return
+end
+
+"""
+`CSV.read(fullpath::Union{AbstractString,IO}, sink=DataFrame; kwargs...)` => `typeof(sink)`
+
+Parses a delimited file into a Julia structure (a DataFrame by default, but any valid Tables.jl sink function can be provided).
+
+Minimal error-reporting happens w/ `CSV.read` for performance reasons; for problematic csv files, try [`CSV.validate`](@ref) which takes exact same arguments as `CSV.read` and provides much more information for why reading the file failed.
+
+Positional arguments:
+
+* `fullpath`: can be a file name (String) of the location of the csv file or `IO` object to read the csv from directly
+* `sink`: `DataFrame` by default, but may also be any other Tables.jl sink function
+
+Supported keyword arguments include:
+* File layout options:
+  * `header=1`: the `header` argument can be an `Int`, indicating the row to parse for column names; or a `Range`, indicating a span of rows to be combined together as column names; or an entire `Vector of Symbols` or `Strings` to use as column names
+  * `normalizenames=true`: whether column names should be "normalized" into valid Julia identifier symbols
+  * `datarow`: an `Int` argument to specify the row where the data starts in the csv file; by default, the next row after the `header` row is used
+  * `skipto::Int`: similar to `datarow`, specifies the number of rows to skip before starting to read data
+  * `footerskip::Int`: number of rows at the end of a file to skip parsing
+  * `limit`: an `Int` to indicate a limited number of rows to parse in a csv file
+  * `transpose::Bool`: read a csv file "transposed", i.e. each column is parsed as a row
+  * `comment`: a `String` that occurs at the beginning of a line to signal parsing that row should be skipped
+  * `use_mmap::Bool=!Sys.iswindows()`: whether the file should be mmapped for reading, which in some cases can be faster
+* Parsing options:
+* `missingstrings`, `missingstring`: either a `String`, or `Vector{String}` to use as sentinel values that will be parsed as `missing`; by default, only an empty field (two consecutive delimiters) is considered `missing`
+  * `delim=','`: a `Char` or `String` that indicates how columns are delimited in a file
+  * `ignorerepeated::Bool=false`: whether repeated (consecutive) delimiters should be ignored while parsing; useful for fixed-width files with delimiter padding between cells
+  * `quotechar='"'`, `openquotechar`, `closequotechar`: a `Char` (or different start and end characters) that indicate a quoted field which may contain textual delimiters or newline characters
+  * `escapechar='\\'`: the `Char` used to escape quote characters in a text field
+  * `dateformat::Union{String, Dates.DateFormat, Nothing}`: a date format string to indicate how Date/DateTime columns are formatted in a delimited file
+  * `decimal`: a `Char` indicating how decimals are separated in floats, i.e. `3.14` used '.', or `3,14` uses a comma ','
+  * `truestrings`, `falsestrings`: `Vectors of Strings` that indicate how `true` or `false` values are represented
+* Column Type Options:
+  * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64
+  * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `Strings`
+  * `allowmissing=:all`: indicate how missing values are allowed in columns; possible values are `:all` - all columns may contain missings, `:auto` - auto-detect columns that contain missings or, `:none` - no columns may contain missings
+  * `categorical::Bool=false`: whether columns with low cardinality (small number of unique values) should be read directly as a `CategoricalArray`
+  * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with missing values
+"""
+function read end
+
+function read(fullpath::Union{AbstractString,IO}, sink=DataFrame, args...; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), kwargs...)
+    if !isempty(args)
+        Base.depwarn("`CSV.read(source, $sink, $args)` is deprecated; pass a valid Tables.jl sink function as the 2nd argument directly", nothing)
+        sink = sink(args...)
+    end
+    if append
+        Base.depwarn("`CSV.read(source; append=true)` is deprecated in favor of sink-specific options; e.g. DataFrames supports `CSV.File(filename) |> x->append!(existing_df, x)` to append the rows of a csv file to an existing DataFrame", nothing)
+        if sink isa DataFrame
+            sink = x->append!(sink, x)
+        end
+    end
+    f = CSV.File(fullpath; kwargs...)
+    if !isempty(transforms)
+        Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of `CSV.File(source) |> transform(col1=x->...) |> DataFrame`", nothing)
+        return f |> transform(transforms) |> sink
+    end
+    return f |> sink
 end
 
 end # module
