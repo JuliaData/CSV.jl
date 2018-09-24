@@ -1,4 +1,4 @@
-using Tables
+using Dates, Tables
 
 include("testfiles/testfiles.jl")
 
@@ -31,6 +31,20 @@ f = CSV.File(io; delim='\t', allowmissing=:auto)
 
 # #172
 @test_throws ArgumentError CSV.File(joinpath(dir, "test_newline_line_endings.csv"), types=Dict(1=>Integer))
+
+# #289
+tmp = CSV.File(IOBuffer(" \"a, b\", \"c\" "), datarow=1) |> DataFrame
+@test size(tmp) == (1, 2)
+@test tmp.Column1[1] == "a, b"
+@test tmp.Column2[1] == "c"
+
+tmp = CSV.File(IOBuffer(" \"2018-01-01\", \"1\" ,1,2,3"), datarow=1) |> DataFrame
+@test size(tmp) == (1, 5)
+@test tmp.Column1[1] == Date(2018, 1, 1)
+@test tmp.Column2[1] == 1
+@test tmp.Column3[1] == 1
+@test tmp.Column4[1] == 2
+@test tmp.Column5[1] == 3
 
 # @time f = CSV.File(joinpath(dir, "pandas_zeros.csv"), allowmissing=:none);
 # @time t = f |> columntable;
