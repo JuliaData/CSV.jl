@@ -76,7 +76,7 @@ tbl = CSV.File(file) |> SQLite.load!(db, "sqlite_table")
 Supported keyword arguments include:
 * File layout options:
   * `header=1`: the `header` argument can be an `Int`, indicating the row to parse for column names; or a `Range`, indicating a span of rows to be combined together as column names; or an entire `Vector of Symbols` or `Strings` to use as column names
-  * `normalizenames=true`: whether column names should be "normalized" into valid Julia identifier symbols
+  * `normalizenames=false`: whether column names should be "normalized" into valid Julia identifier symbols
   * `datarow`: an `Int` argument to specify the row where the data starts in the csv file; by default, the next row after the `header` row is used
   * `skipto::Int`: similar to `datarow`, specifies the number of rows to skip before starting to read data
   * `footerskip::Int`: number of rows at the end of a file to skip parsing
@@ -104,7 +104,7 @@ function File(source::Union{String, IO};
     # file options
     # header can be a row number, range of rows, or actual string vector
     header::Union{Integer, UnitRange{Int}, Vector}=1,
-    normalizenames::Bool=true,
+    normalizenames::Bool=false,
     # by default, data starts immediately after header or start of file
     datarow::Int=-1,
     skipto::Union{Nothing, Int}=nothing,
@@ -263,7 +263,7 @@ Positional arguments:
 Supported keyword arguments include:
 * File layout options:
   * `header=1`: the `header` argument can be an `Int`, indicating the row to parse for column names; or a `Range`, indicating a span of rows to be combined together as column names; or an entire `Vector of Symbols` or `Strings` to use as column names
-  * `normalizenames=true`: whether column names should be "normalized" into valid Julia identifier symbols
+  * `normalizenames=false`: whether column names should be "normalized" into valid Julia identifier symbols
   * `datarow`: an `Int` argument to specify the row where the data starts in the csv file; by default, the next row after the `header` row is used
   * `skipto::Int`: similar to `datarow`, specifies the number of rows to skip before starting to read data
   * `footerskip::Int`: number of rows at the end of a file to skip parsing
