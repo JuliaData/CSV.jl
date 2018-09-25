@@ -54,11 +54,11 @@ end
 
     df = CSV.read(IOBuffer(csv); transforms=Dict("A"=>x->coalesce(x+1, 0)))
     @test df.A == [2, 0, 4]
-    @test typeof(df.A) == Vector{Int64}
+    @test eltype(df.A) <: Signed
 
     df = CSV.read(IOBuffer(csv); transforms=Dict("A"=>x->coalesce(x+1, 0.0)))
     @test df.A == [2, 0.0, 4]
-    @test typeof(df.A) == Vector{Real}
+    @test eltype(df.A) <: Real
 
     df = CSV.read(IOBuffer(csv); transforms=Dict(2=>x->x==2.0 ? missing : x))
     @test size(df) == (3, 3)
