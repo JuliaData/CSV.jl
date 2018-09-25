@@ -599,7 +599,13 @@ end
         return missing
     else
         @inbounds pool = source.pools[col]
-        return get🐱(pool, str::Tuple{Ptr{UInt8}, Int})
+        str::Tuple{Ptr{UInt8}, Int}
+        i = get(pool, str, nothing)
+        if i === nothing
+            i = get!(pool, unsafe_string(str[1], str[2]))
+            issorted(levels(pool)) || levels!(pool, sort(levels(pool)))
+        end
+        return CatStr(i, pool)
     end
 end
 

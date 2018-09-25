@@ -99,8 +99,8 @@ function detect(types, io, positions, parsinglayers, kwargs, typemap, categorica
         pools = Vector{CategoricalPool{String, UInt32, CatStr}}(undef, cols)
         for col = 1:cols
             T = types[col]
-            if length(levels[col]) / sum(values(levels[col])) < .67 && T !== Missing && Base.nonmissingtype(T) <: String
-                types[col] = substitute(T, CategoricalArrays.catvaluetype(Base.nonmissingtype(T), UInt32))
+            if T === String || T === Union{String, Missing}
+                types[col] = substitute(T, CatStr)
                 pools[col] = CategoricalPool{String, UInt32}(collect(keys(levels[col])))
             end
         end
