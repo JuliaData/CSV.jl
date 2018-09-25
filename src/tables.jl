@@ -101,17 +101,6 @@ parsingtype(::Type{Missing}) = Missing
 parsingtype(::Type{Union{Missing, T}}) where {T} = T
 parsingtype(::Type{T}) where {T} = T
 
-@inline function get🐱(pool::CategoricalPool, val::Tuple{Ptr{UInt8}, Int})
-    index = Base.ht_keyindex2!(pool.invindex, val)
-    if index > 0
-        @inbounds v = pool.invindex.vals[index]
-        return CatStr(v, pool)
-    else
-        v = CategoricalArrays.push_level!(pool, val)
-        return CatStr(v, pool)
-    end
-end
-
 @inline function parsefield(f, ::Type{CatStr}, row, col, strict)
     r = Parsers.parse(f.parsinglayers, f.io, Tuple{Ptr{UInt8}, Int})
     f.lastparsedcode[] = r.code
@@ -119,7 +108,13 @@ end
         return missing
     else
         @inbounds pool = f.pools[col]
-        return get🐱(pool, r.result::Tuple{Ptr{UInt8}, Int})
+        val = r.result::Tuple{Ptr{UInt8}, Int}
+        i = get(pool, val, nothing)
+        if i === nothing
+            i = get!(pool, unsafe_string(val[1], val[2]))
+            issorted(levels(pool)) || levels!(pool, sort(levels(pool)))
+        end
+        return CatStr(i, pool)
     end
 end
 

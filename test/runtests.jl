@@ -85,6 +85,22 @@ end
     @test length(df) == 100000
 end
 
+@testset "CategoricalArray levels (including ordering)" begin
+    f = CSV.File(IOBuffer("X\nb\nc\na\nc"), types=[CategoricalString{UInt32}])
+    v = iterate(f, 1)[1].X
+    @test v == "b"
+    @test levels(v.pool) == ["b"]
+    v = iterate(f, 2)[1].X
+    @test v == "c"
+    @test levels(v.pool) == ["b", "c"]
+    v = iterate(f, 3)[1].X
+    @test v == "a"
+    @test levels(v.pool) == ["a", "b", "c"]
+    v = iterate(f, 4)[1].X
+    @test v == "c"
+    @test levels(v.pool) == ["a", "b", "c"]
+end
+
 include("deprecated.jl")
 
 end
