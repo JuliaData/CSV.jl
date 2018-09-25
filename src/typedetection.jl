@@ -62,7 +62,7 @@ function detect(types, io, positions, parsinglayers, kwargs, typemap, categorica
     len = transpose ? ref[] : length(positions)
     cols = length(types)
 
-    defaultstringtype = len > 100_000 ? WeakRefString{UInt8} : String
+    defaultstringtype = String
     # prep if categorical
     levels = categorical ? Any[Dict{String, Int}() for _ = 1:cols] : []
 
