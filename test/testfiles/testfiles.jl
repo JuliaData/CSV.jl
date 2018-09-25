@@ -1,6 +1,7 @@
 getschema(f::CSV.File) = NamedTuple{Tuple(f.names), Tuple{f.types...}}
 
 function testfile(file, kwargs, sz, sch, testfunc)
+    println("testing $file")
     f = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...)
     @test getschema(f) == sch
     @test size(f) == sz
@@ -176,7 +177,7 @@ testfiles = [
         x->(x|>columntable).OriginalWellName[24] = "NORTH DAKOTA STATE \"\"A\"\" #1"
     ),
     # #84
-    ("census.txt", (delim='\t', allowmissing=:auto),
+    ("census.txt", (delim='\t', allowmissing=:auto, normalizenames=true),
         (3, 9),
         NamedTuple{(:GEOID, :POP10, :HU10, :ALAND, :AWATER, :ALAND_SQMI, :AWATER_SQMI, :INTPTLAT, :INTPTLONG),Tuple{Int64,Int64,Int64,Int64,Int64,Float64,Float64,Float64,Float64}},
         (GEOID = [601, 602, 603], POP10 = [18570, 41520, 54689], HU10 = [7744, 18073, 25653], ALAND = [166659789, 79288158, 81880442], AWATER = [799296, 4446273, 183425], ALAND_SQMI = [64.348, 30.613, 31.614], AWATER_SQMI = [0.309, 1.717, 0.071], INTPTLAT = [18.180555, 18.362268, 18.455183], INTPTLONG = [-66.749961, -67.17613, -67.119887])
@@ -211,7 +212,7 @@ testfiles = [
         (cat = CategoricalVector{CategoricalString{UInt32}}(["a", "a", "a", "b", "b", "b", "b", "b", "b", "b", "c", "c", "c", "c", "a"]),)
     ),
     # other various files from around the interwebs
-    ("baseball.csv", (categorical=true,),
+    ("baseball.csv", (categorical=true, normalizenames=true),
         (35, 15),
         NamedTuple{(:Rk, :Year, :Age, :Tm, :Lg, :Column6, :W, :L, :W_L_, :G, :Finish, :Wpost, :Lpost, :W_L_post, :Column15), Tuple{Union{Int64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{CategoricalString{UInt32}, Missing},Union{CategoricalString{UInt32}, Missing},Union{CategoricalString{UInt32}, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{CategoricalString{UInt32}, Missing}}},
         nothing
@@ -241,7 +242,7 @@ testfiles = [
         NamedTuple{(:Transaction_date, :Product, :Price, :Payment_Type, :Name, :City, :State, :Country, :Account_Created, :Last_Login, :Latitude, :Longitude),Tuple{CategoricalString{UInt32},CategoricalString{UInt32},CategoricalString{UInt32},CategoricalString{UInt32},CategoricalString{UInt32},CategoricalString{UInt32},Union{Missing, CategoricalString{UInt32}},CategoricalString{UInt32},CategoricalString{UInt32},CategoricalString{UInt32},Float64,Float64}},
         nothing
     ),
-    ("stocks.csv", (allowmissing=:auto,),
+    ("stocks.csv", (allowmissing=:auto, normalizenames=true),
         (30, 2),
         NamedTuple{(:Stock_Name, :Company_Name), Tuple{String, String}},
         nothing
@@ -291,7 +292,7 @@ testfiles = [
         NamedTuple{(:Column1, :Column2, :Column3, :Column4, :Column5, :Column6, :Column7, :Column8, :Column9, :Column10, :Column11, :Column12, :Column13, :Column14, :Column15, :Column16, :Column17, :Column18, :Column19, :Column20),Tuple{Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int64,Int64,Int64,Int64,Missing,Float64,Float64,Float64,Float64,Float64,Float64}},
         (Column1 = [3.52848962348857e9, 3.52848962448866e9, 3.52848962548857e9, 3.52848962648866e9, 3.52848962748875e9], Column2 = [312.73, 312.49, 312.74, 312.49, 312.62], Column3 = [0.0, 0.0, 0.0, 0.0, 0.0], Column4 = [41.87425, 41.87623, 41.87155, 41.86422, 41.87615], Column5 = [297.6302, 297.6342, 297.6327, 297.632, 297.6324], Column6 = [0.0, 0.0, 0.0, 0.0, 0.0], Column7 = [286.3423, 286.3563, 286.3723, 286.3837, 286.397], Column8 = [-99.99, -99.99, -99.99, -99.99, -99.99], Column9 = [-99.99, -99.99, -99.99, -99.99, -99.99], Column10 = [12716, 12716, 12716, 12716, 12716], Column11 = [0, 0, 0, 0, 0], Column12 = [0, 0, 0, 0, 0], Column13 = [0, 0, 0, 0, 0], Column14 = Missing[missing, missing, missing, missing, missing], Column15 = [-24.81942, -24.8206, -24.82111, -24.82091, -24.82035], Column16 = [853.8073, 852.1921, 853.4257, 854.1342, 851.171], Column17 = [0.0, 0.0, 0.0, 0.0, 0.0], Column18 = [0.0, 0.0, 0.0, 0.0, 0.0], Column19 = [60.07, 38.27, 61.38, 49.23, 42.49], Column20 = [132.356, 132.356, 132.356, 132.356, 132.356])
     ),
-    ("pandas_zeros.csv", (allowmissing=:auto,),
+    ("pandas_zeros.csv", (allowmissing=:auto, normalizenames=true),
         (100000, 50),
         NamedTuple{Tuple(Symbol("_$i") for i = 0:49), NTuple{50, Int64}},
         nothing
