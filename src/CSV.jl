@@ -143,10 +143,11 @@ function File(source::Union{String, IO};
 
     kwargs = getkwargs(dateformat, decimal, getbools(truestrings, falsestrings))
     d = string(delim)
+    whitespacedelim = d == " " || d == "\t"
     missingstrings = isempty(missingstrings) ? [missingstring] : missingstrings
     parsinglayers = Parsers.Sentinel(missingstrings) |>
                     x->Parsers.Strip(x, d == " " ? 0x00 : ' ', d == "\t" ? 0x00 : '\t') |>
-                    (openquotechar !== nothing ? x->Parsers.Quoted(x, openquotechar, closequotechar, escapechar) : x->Parsers.Quoted(x, quotechar, escapechar)) |>
+                    (openquotechar !== nothing ? x->Parsers.Quoted(x, openquotechar, closequotechar, escapechar, !whitespacedelim) : x->Parsers.Quoted(x, quotechar, escapechar, !whitespacedelim)) |>
                     x->Parsers.Delimited(x, d, "\n", "\r", "\r\n"; ignore_repeated=ignorerepeated)
 
     header = (isa(header, Integer) && header == 1 && (datarow == 1 || skipto == 1)) ? -1 : header
