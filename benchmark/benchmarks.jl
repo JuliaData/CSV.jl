@@ -371,3 +371,31 @@ function Base.getproperty(csvrow::Row{F}, ::Type{T}, col::Int, name::Symbol) whe
     end
     return r
 end
+
+
+# code for generating various-sized csv files
+# used to determine the row vs. column-access threshold
+function gencsv(rows, cols)
+    df = DataFrame([round.(rand(rows), digits=4) for _ ∈ 1:cols], Symbol.(["col$i" for i ∈ 1:cols]))
+    CSV.write("random_$(rows)_$(cols).csv", df)
+end
+
+function go(compile=true)
+    # for cols in (10, 25, 50, 75, 100, 250)
+    #     for rows in (10, 50, 100, 1000, 5000, 10000, 50000, 100000)
+    #         println("generating $rows by $cols csv file...")
+    #         @time gencsv(rows, cols)
+    #     end
+    # end
+    rt = NamedTuple{(:compiled, :rows, :cols, :time), Tuple{Int, Int, Float64}}[]
+    for cols in (10, 25, 50, 75, 100, 250)
+        for rows in (10, 50, 100, 1000, 5000, 10000, 50000, 100000)
+            println("reading $rows by $cols csv file...")
+            e = @elapsed begin
+                df = CSV.File("random_$(rows)_$(cols).csv") |> DataFrame;
+            end
+            push!(rt, (compiled=compile, rows=rows, cols=cols, time=e))
+        end
+    end
+    CSV.write("results_$compile.csv", rt)
+end

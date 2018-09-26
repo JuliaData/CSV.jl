@@ -168,7 +168,8 @@ function File(source::Union{String, IO};
         originalpositions = Int64[]
         footerskip > 0 && resize!(positions, length(positions) - footerskip)
         ref = Ref{Int}(0)
-        columnaccess = length(positions) <= 1024
+        # if the # of cells in the file is less than 500K
+        columnaccess = (length(names) * length(positions)) < 500_000
         debug && @show positions
     end
 
