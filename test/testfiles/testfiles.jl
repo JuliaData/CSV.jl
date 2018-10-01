@@ -435,5 +435,11 @@ testfiles = [
         (2, 8),
         NamedTuple{(:a, :b, :c, :a_1, :a_2, :a_3, :a_4, :b_1), Tuple{Int64, Int64, Int64, Int64, Int64, Int64, Int64, Int64}},
         (a = [1, 9], b = [2, 10], c = [3, 11], a_1 = [4, 12], a_2 = [5, 13], a_3 = [6, 14], a_4 = [7, 15], b_1 = [8, 16])
-    )
+    ),
+    # #310
+    ("test_bad_datetime.csv", (allowmissing=:auto,),
+        (2, 3),
+        NamedTuple{(:event,:time,:type), Tuple{String, String, String}},
+        (event = ["StartMovie", "Type"], time = ["2018-09-20T18:00:30.12345+00:00", "2018-09-20T18:02:13.67188+00:00"], type = ["Event", "Event"])
+    ),
 ];
