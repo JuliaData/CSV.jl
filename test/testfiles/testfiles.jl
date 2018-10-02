@@ -439,7 +439,7 @@ testfiles = [
     # #310
     ("test_bad_datetime.csv", (allowmissing=:auto,),
         (2, 3),
-        NamedTuple{(:event,:time,:type), Tuple{String, String, String}},
-        (event = ["StartMovie", "Type"], time = ["2018-09-20T18:00:30.12345+00:00", "2018-09-20T18:02:13.67188+00:00"], type = ["Event", "Event"])
+        NamedTuple{(:event,:time,:typ), Tuple{String, String, String}},
+        (event = ["StartMovie", "Type"], time = ["2018-09-20T18:00:30.12345+00:00", "2018-09-20T18:02:13.67188+00:00"], typ = ["Event", "Event"])
     ),
 ];
