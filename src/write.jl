@@ -17,8 +17,11 @@ Keyword arguments include:
 """
 function write end
 
+_seekstart(p::Base.Process) = return
+_seekstart(io::IO) = seekstart(io)
+
 function with(f::Function, io::IO, append)
-    !append && seekstart(io)
+    !append && _seekstart(io)
     f(io)
 end
 

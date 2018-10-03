@@ -111,4 +111,15 @@ using Dates, WeakRefStrings, CategoricalArrays, Tables
     CSV.write(io, (x= [[1 2; 3 4]],y=[[5 6; 7 8]]), delim=';')
     @test String(take!(io)) == "x;y\n\"[1 2; 3 4]\";\"[5 6; 7 8]\"\n"
 
+    try
+        io = open("$file.gz", "w")
+        open(`gzip`, "w", io) do f
+            CSV.write(f, (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]))
+        end
+        run(`gunzip $file.gz`)
+        @test String(read("$file")) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
+        rm(file)
+    catch e
+        @error "error running test" exception=(e, stacktrace(catch_backtrace()))
+    end
 end
