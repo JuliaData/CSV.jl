@@ -209,7 +209,22 @@ testfiles = [
     ("categorical.csv", (categorical=true, allowmissing=:auto),
         (15, 1),
         NamedTuple{(:cat,), Tuple{CategoricalString{UInt32}}},
-        (cat = CategoricalVector{CategoricalString{UInt32}}(["a", "a", "a", "b", "b", "b", "b", "b", "b", "b", "c", "c", "c", "c", "a"]),)
+        (cat = ["a", "a", "a", "b", "b", "b", "b", "b", "b", "b", "c", "c", "c", "c", "a"],)
+    ),
+    ("categorical.csv", (categorical=0.3, allowmissing=:auto),
+        (15, 1),
+        NamedTuple{(:cat,), Tuple{CategoricalString{UInt32}}},
+        (cat = ["a", "a", "a", "b", "b", "b", "b", "b", "b", "b", "c", "c", "c", "c", "a"],)
+    ),
+    ("categorical.csv", (categorical=false, allowmissing=:auto),
+        (15, 1),
+        NamedTuple{(:cat,), Tuple{String}},
+        (cat = ["a", "a", "a", "b", "b", "b", "b", "b", "b", "b", "c", "c", "c", "c", "a"],)
+    ),
+    ("categorical.csv", (categorical=0.0, allowmissing=:auto),
+        (15, 1),
+        NamedTuple{(:cat,), Tuple{String}},
+        (cat = ["a", "a", "a", "b", "b", "b", "b", "b", "b", "b", "c", "c", "c", "c", "a"],)
     ),
     # other various files from around the interwebs
     ("baseball.csv", (categorical=true, normalizenames=true),

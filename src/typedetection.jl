@@ -50,7 +50,7 @@ function detect(types, io, positions, parsinglayers, kwargs, typemap, categorica
     cols = length(types)
 
     # prep if categorical
-    levels = categorical ? Dict{String, Int}[Dict{String, Int}() for _ = 1:cols] : Dict{String, Int}[]
+    levels = categorical !== false ? Dict{String, Int}[Dict{String, Int}() for _ = 1:cols] : Dict{String, Int}[]
 
     lastcode = Base.RefValue(Parsers.SUCCESS)
     rows = 0
@@ -81,11 +81,12 @@ function detect(types, io, positions, parsinglayers, kwargs, typemap, categorica
     debug && println("scanned $rows / $len = $((rows / len) * 100)% of file to infer types")
     debug && @show types
 
-    if categorical
+    if categorical !== false
         pools = Vector{CategoricalPool{String, UInt32, CatStr}}(undef, cols)
         for col = 1:cols
             T = types[col]
-            if T === String || T === Union{String, Missing}
+            if (T === String || T === Union{String, Missing}) &&
+               (categorical === true || length(levels[col]) / sum(values(levels[col])) < categorical)
                 types[col] = substitute(T, CatStr)
                 pools[col] = CategoricalPool{String, UInt32}(collect(keys(levels[col])))
             end
@@ -110,7 +111,7 @@ end
 
 function detecttype(@nospecialize(prevT), io, layers, kwargs, levels, row, col, categorical, lastcode)
     pos = position(io)
-    if categorical
+    if categorical !== false
         result = Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
         Parsers.ok(result.code) || throw(Error(Parsers.Error(io, result), row, col))
         lastcode[] = result.code
