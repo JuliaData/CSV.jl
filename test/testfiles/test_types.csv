@@ -1,0 +1,2 @@
+int,float,date,datetime,bool,string,weakrefstring,missing
+1,1.0,2018-01-01,2018-01-01T00:00:00,true,hey,there,
