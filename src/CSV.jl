@@ -89,7 +89,7 @@ Supported keyword arguments include:
   * `delim=','`: a `Char` or `String` that indicates how columns are delimited in a file
   * `ignorerepeated::Bool=false`: whether repeated (consecutive) delimiters should be ignored while parsing; useful for fixed-width files with delimiter padding between cells
   * `quotechar='"'`, `openquotechar`, `closequotechar`: a `Char` (or different start and end characters) that indicate a quoted field which may contain textual delimiters or newline characters
-  * `escapechar='\\'`: the `Char` used to escape quote characters in a text field
+  * `escapechar='"'`: the `Char` used to escape quote characters in a text field
   * `dateformat::Union{String, Dates.DateFormat, Nothing}`: a date format string to indicate how Date/DateTime columns are formatted in a delimited file
   * `decimal`: a `Char` indicating how decimals are separated in floats, i.e. `3.14` used '.', or `3,14` uses a comma ','
   * `truestrings`, `falsestrings`: `Vectors of Strings` that indicate how `true` or `false` values are represented
