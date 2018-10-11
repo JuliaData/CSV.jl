@@ -32,14 +32,14 @@ function transform(src::T, funcs) where {T}
 end
 
 getfunc(row, nt::NamedTuple, i, nm) = get(nt, i, identity)
-getfunc(row, d::Dict{String, <:Function}, i, nm) = get(d, String(nm), identity)
-getfunc(row, d::Dict{Symbol, <:Function}, i, nm) = get(d, nm, identity)
-getfunc(row, d::Dict{Int, <:Function}, i, nm) = get(d, i, identity)
+getfunc(row, d::Dict{String, <:Base.Callable}, i, nm) = get(d, String(nm), identity)
+getfunc(row, d::Dict{Symbol, <:Base.Callable}, i, nm) = get(d, nm, identity)
+getfunc(row, d::Dict{Int, <:Base.Callable}, i, nm) = get(d, i, identity)
 
 getfunc(row, nt::NamedTuple, nm) = get(nt, nm, identity)
-getfunc(row, d::Dict{String, <:Function}, nm) = get(d, String(nm), identity)
-getfunc(row, d::Dict{Symbol, <:Function}, nm) = get(d, nm, identity)
-getfunc(row, d::Dict{Int, <:Function}, nm) = get(d, findfirst(isequal(nm), propertynames(row)), identity)
+getfunc(row, d::Dict{String, <:Base.Callable}, nm) = get(d, String(nm), identity)
+getfunc(row, d::Dict{Symbol, <:Base.Callable}, nm) = get(d, nm, identity)
+getfunc(row, d::Dict{Int, <:Base.Callable}, nm) = get(d, findfirst(isequal(nm), propertynames(row)), identity)
 
 Tables.istable(::Type{<:Transforms}) = true
 Tables.rowaccess(::Type{<:Transforms}) = true
