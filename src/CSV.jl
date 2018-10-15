@@ -242,9 +242,6 @@ include("validate.jl")
 include("transforms.jl")
 
 function __init__()
-    # read a dummy file to "precompile" a bunch of methods; until the `precompile` function
-    # can propertly store machine code, this is our best option
-    CSV.File(joinpath(@__DIR__, "../test/testfiles/test_utf8.csv"), allowmissing=:auto) |> DataFrame
     Threads.resize_nthreads!(VALUE_BUFFERS)
     return
 end
