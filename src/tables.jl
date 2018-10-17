@@ -12,49 +12,43 @@ function Base.getproperty(c::Columns, nm::Symbol)
     getfield(c, 2)[findfirst(x->x==nm, getfield(c, 1))]
 end
 
-function Tables.columns(@nospecialize(f::File{transpose, true})) where {transpose}
+function Tables.columns(f::File{transpose, true}) where {transpose}
     len = length(f)
     types = f.types
     columns = Any[Tables.allocatecolumn(T, len) for T in types]
-    for (i, row) in enumerate(f)
+    funcs = [get(FUNCTIONMAP, parsingtype(T), FUNC_ANY[]) for T in types]
+    transpose && (f.positions .= f.originalpositions)
+    for row = 1:len
+        @inbounds Parsers.fastseek!(f.io, f.positions[row])
+        f.currentrow[] = row
+        f.lastparsedcol[] = 0
+        f.lastparsedcode[] = Parsers.SUCCESS
         for col = 1:length(types)
-            columns[col][i] = getproperty(row, types[col], col, :_)
+            @inbounds ccall(funcs[col], Cvoid, (Any, Any, Cssize_t, Cssize_t), columns[col], f, col, row)
         end
     end
     return Columns(f.names, columns)
 end
-
-# row interfaces
-abstract type Row end
-
-struct UntypedRow{F} <: Row
-    file::F
-    row::Int
-end
-Base.propertynames(r::UntypedRow) = getfield(r, 1).names
 
 struct RowIterator{names, types, F}
     file::F
 end
 Tables.schema(r::RowIterator) = Tables.Schema(r.file.names, r.file.types)
 
-struct TypedRow{F} <: Row
-    rowiterator::F
+struct Row{T}
+    source::T
     row::Int
 end
-Base.propertynames(r::TypedRow{F}) where {F <: RowIterator{names}} where {names} = names
+Base.propertynames(r::Row{F}) where {F <: File} = getfield(r, 1).names
+Base.propertynames(r::Row{R}) where {R <: RowIterator} = getfield(r, 1).file.names
 
 function Base.show(io::IO, r::Row)
     println(io, "CSV.Row($(getfield(r, 2))) of:")
     show(io, getfield(r, 1))
 end
 
-getranspose(r::UntypedRow{F}) where {F <: File{transpose}} where {transpose} = transpose
-getranspose(r::RowIterator{N, T, F}) where {N, T, F <: File{transpose}} where {transpose} = transpose
-getranspose(r::TypedRow) = getranspose(getfield(r, 1))
-
-# File iterates UntypedRows
-Base.eltype(f::F) where {F <: File} = UntypedRow{F}
+# File iteration
+Base.eltype(f::F) where {F <: File} = Row{F}
 Base.length(f::File{transpose}) where {transpose} = transpose ? f.lastparsedcol[] : length(f.positions)
 Base.size(f::File) = (length(f), length(f.names))
 
@@ -69,22 +63,21 @@ Base.size(f::File) = (length(f), length(f.names))
         f.lastparsedcol[] = 0
         f.lastparsedcode[] = Parsers.SUCCESS
     end
-    return UntypedRow(f, st), st + 1
+    return Row(f, st), st + 1
 end
 
 # Tables.rows(f) -> RowIterator
 Tables.rowaccess(::Type{<:File}) = true
 Tables.rows(f::F) where {F <: File} = RowIterator{Tuple(f.names), Tuple{f.types...}, F}(f)
 
-Base.eltype(f::R) where {R <: RowIterator} = TypedRow{R}
-Base.length(f::RowIterator) = getranspose(f) ? f.file.lastparsedcol[] : length(f.file.positions)
-Base.size(f::RowIterator) = (length(f.file), length(f.file.names))
+Base.eltype(f::R) where {R <: RowIterator} = Row{R}
+Base.length(f::RowIterator) = length(f.file)
+Base.size(f::RowIterator) = size(f.file)
 
 # RowIterator iterates TypedRows
-@inline function Base.iterate(r::RowIterator, st=1)
+@inline function Base.iterate(r::RowIterator{N, T, F}, st=1) where {N, T, F <: File{transpose}} where {transpose}
     f = r.file
     st > length(f) && return nothing
-    transpose = getranspose(r)
     # println("row=$st")
     if transpose
         st === 1 && (f.positions .= f.originalpositions)
@@ -94,7 +87,7 @@ Base.size(f::RowIterator) = (length(f.file), length(f.file.names))
         f.lastparsedcol[] = 0
         f.lastparsedcode[] = Parsers.SUCCESS
     end
-    return TypedRow(r, st), st + 1
+    return Row(r, st), st + 1
 end
 
 parsingtype(::Type{Missing}) = Missing
@@ -142,22 +135,47 @@ end
     return true
 end
 
-@inline function Base.getproperty(csvrow::UntypedRow, name::Symbol)
-    f = getfield(csvrow, 1)
-    i = findfirst(x->x===name, f.names)
-    return getproperty(csvrow, f.types[i], i, name)
+getsetInt!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, Int64, col, i), i); return nothing)
+getsetFloat!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, Float64, col, i), i); return nothing)
+getsetDate!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, Date, col, i), i); return nothing)
+getsetDateTime!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, DateTime, col, i), i); return nothing)
+getsetBool!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, Bool, col, i), i); return nothing)
+getsetString!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, String, col, i), i); return nothing)
+getsetMissing!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, Missing, col, i), i); return nothing)
+getsetWeakRefString!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, WeakRefString{UInt8}, col, i), i); return nothing)
+getsetCatStr!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, CatStr, col, i), i); return nothing)
+function getsetAny!(column, f::File, col::Int, i::Int)
+    setindex!(column, getproperty(f, f.types[col], col, i), i)
+    return
 end
-@inline Base.getproperty(csvrow::TypedRow{F}, name::Symbol) where {F <: RowIterator{names, types}} where {names, types} =
-    getproperty(csvrow, Tables.columntype(names, types, name), Tables.columnindex(names, name), name)
+const FUNC_ANY = Ref{Ptr{Cvoid}}()
+
+const FUNCTIONMAP = Dict(
+    Int64 => C_NULL,
+    Float64 => C_NULL,
+    Date => C_NULL,
+    DateTime => C_NULL,
+    Bool => C_NULL,
+    String => C_NULL,
+    Missing => C_NULL,
+    WeakRefString{UInt8} => C_NULL,
+    CatStr => C_NULL,
+)
 
 getfile(f::File) = f
 getfile(r::RowIterator) = r.file
 
-function Base.getproperty(csvrow::Row, ::Type{T}, col::Int, name::Symbol) where {T}
+@inline function Base.getproperty(row::Row, name::Symbol)
+    f = getfile(getfield(row, 1))
+    i = findfirst(x->x===name, f.names)
+    return getproperty(f, f.types[i], i, getfield(row, 2))
+end
+
+@inline Base.getproperty(row::Row, ::Type{T}, col::Int, name::Symbol) where {T} =
+    getproperty(getfile(getfield(row, 1)), T, col, getfield(row, 2))
+
+function Base.getproperty(f::File{transpose}, ::Type{T}, col::Int, row::Int) where {transpose, T}
     col === 0 && return missing
-    transpose = getranspose(csvrow)
-    f = getfile(getfield(csvrow, 1))
-    row = getfield(csvrow, 2)
     if transpose
         @inbounds Parsers.fastseek!(f.io, f.positions[col])
     else

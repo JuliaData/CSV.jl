@@ -2,12 +2,6 @@ module CSV
 
 using Mmap, Dates, Random, Unicode, Parsers, Tables, CategoricalArrays, WeakRefStrings
 
-@inline Parsers.intern(::Type{WeakRefString{UInt8}}, x::Tuple{Ptr{UInt8}, Int}) = WeakRefString(x)
-
-substitute(::Type{Union{T, Missing}}, ::Type{T1}) where {T, T1} = Union{T1, Missing}
-substitute(::Type{T}, ::Type{T1}) where {T, T1} = T1
-substitute(::Type{Missing}, ::Type{T1}) where {T1} = Missing
-
 newline(code::Parsers.ReturnCode) = (code & Parsers.NEWLINE) > 0
 
 const CatStr = CategoricalString{UInt32}
@@ -170,7 +164,7 @@ function File(source::Union{String, IO};
         ref = Ref{Int}(0)
         # if the # of cells in the file is less than 500K
         columnaccess = (length(names) * length(positions)) < 500_000
-        debug && @show positions
+        # debug && @show positions
     end
 
     if types isa Vector
@@ -181,18 +175,19 @@ function File(source::Union{String, IO};
                 pools[col] = CategoricalPool{String, UInt32}()
             end
         end
+        finaltypes = types
     else
-        types, pools = detect(initialtypes(initialtype(allowmissing), types, names), io, positions, parsinglayers, kwargs, typemap, categorical, transpose, ref, debug)
+        finaltypes, pools = detect(initialtypes(initialtype(allowmissing), types, names), io, positions, parsinglayers, kwargs, typemap, categorical, transpose, ref, debug)
         if allowmissing === :none
             # make sure we didn't detect any missing values in any columns
-            if any(T->T >: Missing, types)
-                throw(ArgumentError("`allowmissing=:none`, but missing values were detected in csv file: $types"))
+            if any(T->T >: Missing, finaltypes)
+                throw(ArgumentError("`allowmissing=:none`, but missing values were detected in csv file: $finaltypes"))
             end
         end
     end
 
     !transpose && seek(io, positions[1])
-    return File{transpose, columnaccess, typeof(io), typeof(parsinglayers), typeof(kwargs)}(names, types, getname(source), io, parsinglayers, positions, originalpositions, Ref(1), ref, Ref(Parsers.SUCCESS), kwargs, pools, strict)
+    return File{transpose, columnaccess, typeof(io), typeof(parsinglayers), typeof(kwargs)}(names, finaltypes, getname(source), io, parsinglayers, positions, originalpositions, Ref(1), ref, Ref(Parsers.SUCCESS), kwargs, pools, strict)
 end
 
 include("filedetection.jl")
@@ -243,6 +238,16 @@ include("transforms.jl")
 
 function __init__()
     Threads.resize_nthreads!(VALUE_BUFFERS)
+    FUNCTIONMAP[Int64] = @cfunction(getsetInt!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
+    FUNCTIONMAP[Float64] = @cfunction(getsetFloat!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
+    FUNCTIONMAP[Date] = @cfunction(getsetDate!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
+    FUNCTIONMAP[DateTime] = @cfunction(getsetDateTime!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
+    FUNCTIONMAP[Bool] = @cfunction(getsetBool!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
+    FUNCTIONMAP[String] = @cfunction(getsetString!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
+    FUNCTIONMAP[Missing] = @cfunction(getsetMissing!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
+    FUNCTIONMAP[WeakRefString{UInt8}] = @cfunction(getsetWeakRefString!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
+    FUNCTIONMAP[CatStr] = @cfunction(getsetCatStr!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
+    FUNC_ANY[] = @cfunction(getsetAny!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
     return
 end
 
