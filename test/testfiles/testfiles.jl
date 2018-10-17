@@ -457,7 +457,7 @@ testfiles = [
         NamedTuple{(:event,:time,:typ), Tuple{String, String, String}},
         (event = ["StartMovie", "Type"], time = ["2018-09-20T18:00:30.12345+00:00", "2018-09-20T18:02:13.67188+00:00"], typ = ["Event", "Event"])
     ),
-    ("test_types.csv", (types=Dict(:weakrefstring=>WeakRefString{UInt8})),
+    ("test_types.csv", (types=Dict(:weakrefstring=>WeakRefString{UInt8}),),
         (1, 8),
         NamedTuple{(:int,:float,:date,:datetime,:bool,:string,:weakrefstring,:missing), Tuple{Union{Int64,Missing},Union{Float64,Missing},Union{Date,Missing},Union{DateTime,Missing},Union{Bool,Missing},Union{String,Missing},Union{WeakRefString{UInt8},Missing},Missing}},
         (int = Union{Missing, Int64}[1], float = Union{Missing, Float64}[1.0], date = Union{Missing, Date}[2018-01-01], datetime = Union{Missing, DateTime}[2018-01-01T00:00:00], bool = Union{Missing, Bool}[true], string = Union{Missing, String}["hey"], weakrefstring = Union{Missing, String}["there"], missing = Missing[missing])
