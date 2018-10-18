@@ -31,6 +31,7 @@ struct File{transpose, columnaccess, I, P, KW}
     kwargs::KW
     pools::Vector{CategoricalPool{String, UInt32, CatStr}}
     strict::Bool
+    silencewarnings::Bool
 end
 
 function Base.show(io::IO, f::File{transpose}) where {transpose}
@@ -93,6 +94,7 @@ Supported keyword arguments include:
   * `allowmissing=:all`: indicate how missing values are allowed in columns; possible values are `:all` - all columns may contain missings, `:auto` - auto-detect columns that contain missings or, `:none` - no columns may contain missings
   * `categorical::Union{Bool, Real}=false`: if `true`, columns detected as `String` are returned as a `CategoricalArray`; alternatively, the proportion of unique values below which `String` columns should be treated as categorical (for example 0.1 for 10%)
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with missing values
+  * `silencewarnings::Bool=false`: whether invalid value warnings should be silenced (requires `strict=false`)
 """
 function File(source::Union{String, IO};
     # file options
@@ -126,6 +128,7 @@ function File(source::Union{String, IO};
     allowmissing::Symbol=:all,
     categorical::Union{Bool, Real}=false,
     strict::Bool=false,
+    silencewarnings::Bool=false,
     debug::Bool=false,
     kw...)
 
@@ -157,7 +160,7 @@ function File(source::Union{String, IO};
         columnaccess = false
     else
         names, datapos = datalayout(header, parsinglayers, io, datarow, normalizenames)
-        eof(io) && return File{false, true, typeof(io), typeof(parsinglayers), typeof(kwargs)}(names, Type[Missing for _ in names], getname(source), io, parsinglayers, Int64[], Int64[], Ref{Int}(0), Ref{Int}(0), Ref(Parsers.SUCCESS), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict)
+        eof(io) && return File{false, true, typeof(io), typeof(parsinglayers), typeof(kwargs)}(names, Type[Missing for _ in names], getname(source), io, parsinglayers, Int64[], Int64[], Ref{Int}(0), Ref{Int}(0), Ref(Parsers.SUCCESS), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict, silencewarnings)
         positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8, limit, parsinglayers, comment === nothing ? nothing : Parsers.Trie(comment))
         originalpositions = Int64[]
         footerskip > 0 && resize!(positions, length(positions) - footerskip)
@@ -187,7 +190,7 @@ function File(source::Union{String, IO};
     end
 
     !transpose && seek(io, positions[1])
-    return File{transpose, columnaccess, typeof(io), typeof(parsinglayers), typeof(kwargs)}(names, finaltypes, getname(source), io, parsinglayers, positions, originalpositions, Ref(1), ref, Ref(Parsers.SUCCESS), kwargs, pools, strict)
+    return File{transpose, columnaccess, typeof(io), typeof(parsinglayers), typeof(kwargs)}(names, finaltypes, getname(source), io, parsinglayers, positions, originalpositions, Ref(1), ref, Ref(Parsers.SUCCESS), kwargs, pools, strict, silencewarnings)
 end
 
 include("filedetection.jl")
