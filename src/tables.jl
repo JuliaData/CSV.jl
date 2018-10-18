@@ -1,5 +1,5 @@
 Tables.istable(::Type{<:File}) = true
-Tables.schema(f::File) = Tables.Schema(f.names, f.types)
+Tables.schema(f::File)  = Tables.Schema(f.names, f.types)
 
 Tables.columnaccess(::Type{File{t, c, I, P, KW}}) where {t, c, I, P, KW} = c
 
@@ -30,17 +30,11 @@ function Tables.columns(f::File{transpose, true}) where {transpose}
     return Columns(f.names, columns)
 end
 
-struct RowIterator{names, types, F}
+struct Row{F}
     file::F
-end
-Tables.schema(r::RowIterator) = Tables.Schema(r.file.names, r.file.types)
-
-struct Row{T}
-    source::T
     row::Int
 end
-Base.propertynames(r::Row{F}) where {F <: File} = getfield(r, 1).names
-Base.propertynames(r::Row{R}) where {R <: RowIterator} = getfield(r, 1).file.names
+Base.propertynames(r::Row) = getfield(r, 1).names
 
 function Base.show(io::IO, r::Row)
     println(io, "CSV.Row($(getfield(r, 2))) of:")
@@ -66,29 +60,8 @@ Base.size(f::File) = (length(f), length(f.names))
     return Row(f, st), st + 1
 end
 
-# Tables.rows(f) -> RowIterator
 Tables.rowaccess(::Type{<:File}) = true
-Tables.rows(f::F) where {F <: File} = RowIterator{Tuple(f.names), Tuple{f.types...}, F}(f)
-
-Base.eltype(f::R) where {R <: RowIterator} = Row{R}
-Base.length(f::RowIterator) = length(f.file)
-Base.size(f::RowIterator) = size(f.file)
-
-# RowIterator iterates TypedRows
-@inline function Base.iterate(r::RowIterator{N, T, F}, st=1) where {N, T, F <: File{transpose}} where {transpose}
-    f = r.file
-    st > length(f) && return nothing
-    # println("row=$st")
-    if transpose
-        st === 1 && (f.positions .= f.originalpositions)
-    else
-        @inbounds Parsers.fastseek!(f.io, f.positions[st])
-        f.currentrow[] = st
-        f.lastparsedcol[] = 0
-        f.lastparsedcode[] = Parsers.SUCCESS
-    end
-    return Row(r, st), st + 1
-end
+Tables.rows(f::File) = f
 
 parsingtype(::Type{Missing}) = Missing
 parsingtype(::Type{Union{Missing, T}}) where {T} = T
@@ -162,17 +135,14 @@ const FUNCTIONMAP = Dict(
     CatStr => C_NULL,
 )
 
-getfile(f::File) = f
-getfile(r::RowIterator) = r.file
-
 @inline function Base.getproperty(row::Row, name::Symbol)
-    f = getfile(getfield(row, 1))
+    f = getfield(row, 1)
     i = findfirst(x->x===name, f.names)
     return getproperty(f, f.types[i], i, getfield(row, 2))
 end
 
-@inline Base.getproperty(row::Row, ::Type{T}, col::Int, name::Symbol) where {T} =
-    getproperty(getfile(getfield(row, 1)), T, col, getfield(row, 2))
+Base.getproperty(row::Row, ::Type{T}, col::Int, name::Symbol) where {T} =
+    getproperty(getfield(row, 1), T, col, getfield(row, 2))
 
 function Base.getproperty(f::File{transpose}, ::Type{T}, col::Int, row::Int) where {transpose, T}
     col === 0 && return missing
