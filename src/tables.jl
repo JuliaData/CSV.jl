@@ -67,7 +67,7 @@ parsingtype(::Type{Missing}) = Missing
 parsingtype(::Type{Union{Missing, T}}) where {T} = T
 parsingtype(::Type{T}) where {T} = T
 
-@inline function parsefield(f, ::Type{CatStr}, row, col, strict)
+@inline function parsefield(f, ::Type{CatStr}, row, col)
     r = Parsers.parse(f.parsinglayers, f.io, Tuple{Ptr{UInt8}, Int})
     f.lastparsedcode[] = r.code
     if r.result isa Missing
@@ -84,12 +84,13 @@ parsingtype(::Type{T}) where {T} = T
     end
 end
 
-@inline function parsefield(f, T, row, col, strict)
+@inline function parsefield(f, T, row, col)
     r = Parsers.parse(f.parsinglayers, f.io, T; f.kwargs...)
     f.lastparsedcode[] = r.code
     if !Parsers.ok(r.code)
-        strict ? throw(Error(Parsers.Error(f.io, r), row, col)) :
-            println("warning: failed parsing $T on row=$row, col=$col, error=$(Parsers.codes(r.code))")
+        f.strict ? throw(Error(Parsers.Error(f.io, r), row, col)) :
+            f.silencewarnings ? nothing :
+                println("warning: failed parsing $T on row=$row, col=$col, error=$(Parsers.codes(r.code))")
     end
     return r.result
 end
@@ -174,7 +175,7 @@ function Base.getproperty(f::File{transpose}, ::Type{T}, col::Int, row::Int) whe
             end
         end
     end
-    r = parsefield(f, parsingtype(T), row, col, f.strict)
+    r = parsefield(f, parsingtype(T), row, col)
     if transpose
         @inbounds f.positions[col] = position(f.io)
     else
