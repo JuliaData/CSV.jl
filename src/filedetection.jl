@@ -179,12 +179,10 @@ function skipto!(layers, io::IO, cur, dest)
     return
 end
 
-#TODO: read Symbols directly
-const COMMA_NEWLINES = Parsers.Trie([",", "\n", "\r", "\r\n"], Parsers.DELIMITED)
 const READSPLITLINE_RESULT = Parsers.Result(String)
 const DELIM_NEWLINE = Parsers.DELIMITED | Parsers.NEWLINE
 
-readsplitline(io::IO) = readsplitline(Parsers.Delimited(false, Parsers.Quoted(), COMMA_NEWLINES), io)
+readsplitline(io::IO; delim=",") = readsplitline(Parsers.Delimited(Parsers.Quoted(), delim, "\n", "\r", "\r\n"), io)
 function readsplitline(layers::Parsers.Delimited, io::IO)
     vals = Union{String, Missing}[]
     eof(io) && return vals

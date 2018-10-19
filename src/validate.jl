@@ -23,7 +23,7 @@ function validate(s::File)
     for row = 1:rows
         rowstr = ""
         for col = 1:cols
-            r = Parsers.parse(s.parsinglayers, s.io, Base.nonmissingtype(types[col]))
+            r = parsefield(s, parsingtype(types[col]), row, col)
             rowstr *= "$(col == 1 ? "" : ", ")$(r.result)"
             Parsers.ok(r.code) || throw(Error(Parsers.Error(s.io, r), row, col))
             if col < cols

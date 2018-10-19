@@ -65,26 +65,9 @@ initialtypes(T, t::Dict{String, V}, names) where {V} = Type[get(t, string(nm), T
 initialtypes(T, t::Dict{Symbol, V}, names) where {V} = Type[get(t, nm, T) for nm in names]
 initialtypes(T, t::Dict{Int, V}, names) where {V}    = Type[get(t, i, T) for i = 1:length(names)]
 
-struct Fib{N}
-    len::Int
-end
-Fib(len) = Fib{1024}(len)
-
-@inline function Base.iterate(f::Fib)
-    f.len == 0 && return nothing
-    return 1, (1, 1, 1, 1)
-end
-
-@inline function Base.iterate(f::Fib{N}, (off, len, prevfib, fib)) where {N}
-    (off + fib) > f.len && return nothing
-    if rem(len, N) == 0
-        prevfib, fib = fib, prevfib + fib
-    end
-    return off + fib, (off + fib, len + 1, prevfib, fib)
-end
-
 const EMPTY_LEVELS = Dict{String, Int}[]
 const EMPTY_POOLS = CategoricalPool{String, UInt32, CatStr}[]
+const MAX_ROWS = 10_000
 
 function detect(types, io, positions, parsinglayers, kwargs, typemap, categorical, transpose, ref, debug)
     len = transpose ? ref[] : length(positions)
@@ -97,30 +80,39 @@ function detect(types, io, positions, parsinglayers, kwargs, typemap, categorica
 
     lastcode = Base.RefValue(Parsers.SUCCESS)
     rows = 0
-    for row in Fib(len)
-        rows += 1
-        !transpose && seek(io, positions[row])
-        lastcode[] = Parsers.SUCCESS
-        for col = 1:cols
-            if !transpose && newline(lastcode[])
-                typecodes[col] = promote_typecode(typecodes[col], MISSING)
-                continue
+    if len > MAX_ROWS
+        rng = range(1, length=100, stop=len-100)
+        step = min(100, trunc(Int64, Float64(rng.step)))
+    else
+        rng = 1:len
+        step = 1
+    end
+    for startingrow in rng
+        for row = trunc(Int64, startingrow):trunc(Int64, startingrow + step - 1)
+            rows += 1
+            !transpose && seek(io, positions[row])
+            lastcode[] = Parsers.SUCCESS
+            for col = 1:cols
+                if !transpose && newline(lastcode[])
+                    typecodes[col] = promote_typecode(typecodes[col], MISSING)
+                    continue
+                end
+                transpose && seek(io, positions[col])
+                # if debug
+                #     pos = position(io)
+                #     result = Parsers.parse(parsinglayers, io, String)
+                #     seek(io, pos)
+                # end
+                @inbounds T = typecodes[col]
+                if T === USER
+                    detecttype(STRING, io, parsinglayers, kwargs, levels, row, col, categorical, lastcode)
+                else
+                    S = detecttype(T & ~MISSING, io, parsinglayers, kwargs, levels, row, col, categorical, lastcode)
+                    typecodes[col] = promote_typecode(T, S)
+                    debug && (T !== typecodes[col]) && println("row: $row, col: $col, '$(result.result)', promoted to: $(TYPEMAP[typecodes[col]])")
+                end
+                transpose && setindex!(positions, position(io), col)
             end
-            transpose && seek(io, positions[col])
-            # if debug
-            #     pos = position(io)
-            #     result = Parsers.parse(parsinglayers, io, String)
-            #     seek(io, pos)
-            # end
-            @inbounds T = typecodes[col]
-            if T === USER
-                detecttype(STRING, io, parsinglayers, kwargs, levels, row, col, categorical, lastcode)
-            else
-                S = detecttype(T & ~MISSING, io, parsinglayers, kwargs, levels, row, col, categorical, lastcode)
-                typecodes[col] = promote_typecode(T, S)
-                debug && (T !== typecodes[col]) && println("row: $row, col: $col, '$(result.result)', promoted to: $(TYPEMAP[typecodes[col]])")
-            end
-            transpose && setindex!(positions, position(io), col)
         end
     end
     debug && println("scanned $rows / $len = $((rows / len) * 100)% of file to infer types")
