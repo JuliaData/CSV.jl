@@ -38,6 +38,9 @@ include("write.jl")
     1 2 3  4 5
     1  2 3  4 5""")
     @test_throws CSV.TooManyColumnsError CSV.validate(io; delim=' ')
+
+    # 323
+    CSV.validate(IOBuffer("a0001000\na0001000"), datarow=1, categorical=true)
 end
 
 @testset "transform" begin
