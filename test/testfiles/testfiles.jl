@@ -465,12 +465,12 @@ testfiles = [
     # #326
     ("test_issue_326.wsv", (delim=" ", ignorerepeated=true),
         (2, 3),
-        NamedTuple{(:Column1, :A, :B),Tuple{Array{Missing,1},Array{Union{Missing, Int64},1},Array{Union{Missing, Int64},1}}},
+        NamedTuple{(:Column1, :A, :B),Tuple{Missing,Union{Missing, Int64},Union{Missing, Int64}}},
         (Column1 = Missing[missing, missing], A = Union{Missing, Int64}[1, 11], B = Union{Missing, Int64}[2, 22])
     ),
     ("test_missing_last_field.csv", NamedTuple(),
         (2, 3),
-        NamedTuple{(:col1, :col2, :col3),Tuple{Array{Union{Missing, Float64},1},Array{Union{Missing, Float64},1},Array{Union{Missing, Float64},1}}},
+        NamedTuple{(:col1, :col2, :col3),Tuple{Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64}}},
         (col1 = Union{Missing, Float64}[1.0, 4.0], col2 = Union{Missing, Float64}[2.0, 5.0], col3 = Union{Missing, Float64}[3.0, missing])
     ),
 ];
