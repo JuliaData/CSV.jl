@@ -46,11 +46,12 @@ function countfields(io, parsinglayers)
     rows = 0
     result = Parsers.Result(Tuple{Ptr{UInt8}, Int})
     while !eof(io)
+        result.code = Parsers.SUCCESS
         Parsers.parse!(parsinglayers, io, result)
         Parsers.ok(result.code) || throw(Error(result, rows+1, 1))
         rows += 1
-        xor(result.code & DELIM_NEWLINE, Parsers.DELIMITED) == 0 && continue
-        ((result.code & Parsers.NEWLINE) > 0 || eof(io)) && break
+        (result.code & Parsers.DELIMITED) > 0 && continue
+        (newline(result.code) || eof(io)) && break
     end
     return rows
 end
@@ -182,7 +183,7 @@ end
 const READSPLITLINE_RESULT = Parsers.Result(String)
 const DELIM_NEWLINE = Parsers.DELIMITED | Parsers.NEWLINE
 
-readsplitline(io::IO; delim=",") = readsplitline(Parsers.Delimited(Parsers.Quoted(), delim, "\n", "\r", "\r\n"), io)
+readsplitline(io::IO; delim=",") = readsplitline(Parsers.Delimited(Parsers.Quoted(), delim; newline=true), io)
 function readsplitline(layers::Parsers.Delimited, io::IO)
     vals = Union{String, Missing}[]
     eof(io) && return vals
@@ -196,7 +197,7 @@ function readsplitline(layers::Parsers.Delimited, io::IO)
         # @show result
         push!(vals, result.result)
         col += 1
-        xor(result.code & DELIM_NEWLINE, Parsers.DELIMITED) == 0 && continue
+        (result.code & Parsers.DELIMITED) > 0 && continue
         (newline(result.code) || eof(io)) && break
     end
     return vals
