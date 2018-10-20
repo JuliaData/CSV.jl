@@ -139,7 +139,7 @@ makestr(d::UInt8) = string(Char(d))
 makestr(d::Char) = string(d)
 makestr(d::String) = d
 
-readline!(io::IO; delim=",") = readline!(Parsers.Delimited(Parsers.Quoted(), delim, "\n", "\r", "\r\n"), io)
+readline!(io::IO; delim=",") = readline!(Parsers.Delimited(Parsers.Quoted(), delim; newline=true), io)
 readline!(s::Source) = readline!(s.parsinglayers, s.io)
 function countlines(io::IO, q::UInt8, e::UInt8)
     nl = 1
@@ -468,7 +468,7 @@ function Source(fullpath::Union{AbstractString,IO};
     df = makedf(dateformat)
     dec = decimal % UInt8
     d = makestr(delim)
-    parsinglayers = Parsers.Delimited(Parsers.Quoted(Parsers.Strip(Parsers.Sentinel(missingstring), d == " " ? 0x00 : ' ', d == "\t" ? 0x00 : '\t'), quotechar, escapechar), d, "\n", "\r", "\r\n")
+    parsinglayers = Parsers.Delimited(Parsers.Quoted(Parsers.Strip(Parsers.Sentinel(missingstring), d == " " ? 0x00 : ' ', d == "\t" ? 0x00 : '\t'), quotechar, escapechar), d; newline=true)
 
     # data layout detection: figure out rows, columnnames, and datapos
     if transpose

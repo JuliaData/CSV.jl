@@ -145,7 +145,7 @@ function File(source::Union{String, IO};
     parsinglayers = Parsers.Sentinel(missingstrings) |>
                     x->Parsers.Strip(x, d == " " ? 0x00 : ' ', d == "\t" ? 0x00 : '\t') |>
                     (openquotechar !== nothing ? x->Parsers.Quoted(x, openquotechar, closequotechar, escapechar, !whitespacedelim) : x->Parsers.Quoted(x, quotechar, escapechar, !whitespacedelim)) |>
-                    x->Parsers.Delimited(x, d, "\n", "\r", "\r\n"; ignore_repeated=ignorerepeated)
+                    x->Parsers.Delimited(x, d; ignorerepeated=ignorerepeated, newline=true)
 
     header = (isa(header, Integer) && header == 1 && (datarow == 1 || skipto == 1)) ? -1 : header
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
