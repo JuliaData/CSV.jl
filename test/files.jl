@@ -46,6 +46,10 @@ tmp = CSV.File(IOBuffer(" \"2018-01-01\", \"1\" ,1,2,3"), datarow=1) |> DataFram
 @test tmp.Column4[1] == 2
 @test tmp.Column5[1] == 3
 
+# #329
+df = CSV.read(joinpath(dir, "test_types.csv"), types=Dict(:string=>Union{Missing,DateTime}), silencewarnings=true)
+@test df.string[1] === missing
+
 # @time f = CSV.File(joinpath(dir, "pandas_zeros.csv"), allowmissing=:none);
 # @time t = f |> columntable;
 # @time t = Tables.buildcolumns(nothing, Tables.rows(f));
