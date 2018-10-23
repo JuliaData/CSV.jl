@@ -50,6 +50,9 @@ end
     3,3.0,"sailor"
     """
 
+    df = CSV.read(IOBuffer(csv), transforms=Dict{String, Base.Callable}("C" => Symbol))
+    @test df.C == [:hey, :there, :sailor]
+
     df = CSV.read(IOBuffer(csv); transforms=Dict("A"=>x->x+1))
     @test isequal(df.A, [2, missing, 4])
     @test typeof(df.A) == Vector{Union{Missing, Int64}}
