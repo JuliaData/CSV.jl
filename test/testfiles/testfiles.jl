@@ -462,4 +462,15 @@ testfiles = [
         NamedTuple{(:int,:float,:date,:datetime,:bool,:string,:weakrefstring,:missing), Tuple{Union{Int64,Missing},Union{Float64,Missing},Union{Date,Missing},Union{DateTime,Missing},Union{Bool,Missing},Union{String,Missing},WeakRefString{UInt8},Missing}},
         (int = Union{Missing, Int64}[1], float = Union{Missing, Float64}[1.0], date = Union{Missing, Date}[Date("2018-01-01")], datetime = Union{Missing, DateTime}[DateTime("2018-01-01T00:00:00")], bool = Union{Missing, Bool}[true], string = Union{Missing, String}["hey"], weakrefstring = String["there"], missing = Missing[missing])
     ),
+    # #326
+    ("test_issue_326.wsv", (delim=" ", ignorerepeated=true),
+        (2, 3),
+        NamedTuple{(:Column1, :A, :B),Tuple{Missing,Union{Missing, Int64},Union{Missing, Int64}}},
+        (Column1 = Missing[missing, missing], A = Union{Missing, Int64}[1, 11], B = Union{Missing, Int64}[2, 22])
+    ),
+    ("test_missing_last_field.csv", NamedTuple(),
+        (2, 3),
+        NamedTuple{(:col1, :col2, :col3),Tuple{Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64}}},
+        (col1 = Union{Missing, Float64}[1.0, 4.0], col2 = Union{Missing, Float64}[2.0, 5.0], col3 = Union{Missing, Float64}[3.0, missing])
+    ),
 ];
