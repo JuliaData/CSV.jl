@@ -44,7 +44,7 @@ end
 # File iteration
 Base.eltype(f::F) where {F <: File} = Row{F}
 Base.length(f::File{transpose}) where {transpose} = transpose ? f.lastparsedcol[] : length(f.positions)
-Base.size(f::File) = (length(f), length(f.names))
+tablesize(f::File) = (length(f), length(f.names))
 
 @inline function Base.iterate(f::File{transpose}, st=1) where {transpose}
     st > length(f) && return nothing
