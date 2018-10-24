@@ -4,7 +4,7 @@ function testfile(file, kwargs, sz, sch, testfunc)
     println("testing $file")
     f = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...)
     @test getschema(f) == sch
-    @test size(f) == sz
+    @test CSV.tablesize(f) == sz
     if testfunc === nothing
         f |> columntable # just test that we read the file correctly
     elseif testfunc isa Function
