@@ -23,7 +23,7 @@ julia> Pkg.add("CSV")
 
 ## Project Status
 
-The package is tested against Julia `0.6` and nightly on Linux, OS X, and Windows.
+The package is tested against Julia `0.7`, `1.0` and nightly on Linux, OS X, and Windows.
 
 ## Contributing and Questions
 
