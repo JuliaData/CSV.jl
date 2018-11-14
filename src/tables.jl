@@ -136,9 +136,12 @@ const FUNCTIONMAP = Dict(
     CatStr => C_NULL,
 )
 
+@noinline badcolumnerror(name) = "`$name` is not a valid column name"
+
 @inline function Base.getproperty(row::Row, name::Symbol)
     f = getfield(row, 1)
     i = findfirst(x->x===name, f.names)
+    i === nothing && throw(ArgumentError(badcolumnerror(name)))
     return getproperty(f, f.types[i], i, getfield(row, 2))
 end
 
