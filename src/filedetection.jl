@@ -184,7 +184,7 @@ const READSPLITLINE_RESULT = Parsers.Result(String)
 const DELIM_NEWLINE = Parsers.DELIMITED | Parsers.NEWLINE
 
 readsplitline(io::IO; delim=",", cmt=nothing) = readsplitline(Parsers.Delimited(Parsers.Quoted(), delim; newline=true), io, cmt)
-function readsplitline(layers::Parsers.Delimited, io::IO, ::Nothing)
+function readsplitline(layers::Parsers.Delimited, io::IO, ::Nothing=nothing)
     vals = Union{String, Missing}[]
     eof(io) && return vals
     col = 1
