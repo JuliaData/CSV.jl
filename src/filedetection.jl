@@ -110,29 +110,29 @@ function datalayout_transpose(header, parsinglayers, io, datarow, footerskip, no
     return rows, makeunique(map(x->normalizenames ? normalizename(x) : Symbol(x), columnnames)), columnpositions
 end
 
-function datalayout(header::Integer, parsinglayers, io, datarow, normalizenames)
+function datalayout(header::Integer, parsinglayers, io, datarow, normalizenames, cmt)
     # default header = 1
     if header <= 0
         # no header row in dataset; skip to data to figure out # of columns
         skipto!(parsinglayers, io, 1, datarow)
         datapos = position(io)
-        row_vals = readsplitline(parsinglayers, io)
+        row_vals = readsplitline(parsinglayers, io, cmt)
         seek(io, datapos)
         columnnames = [Symbol("Column$i") for i = eachindex(row_vals)]
     else
         skipto!(parsinglayers, io, 1, header)
-        columnnames = makeunique([ismissing(x) ? Symbol("Column$i") : (normalizenames ? normalizename(x) : Symbol(x)) for (i, x) in enumerate(readsplitline(parsinglayers, io))])
+        columnnames = makeunique([ismissing(x) ? Symbol("Column$i") : (normalizenames ? normalizename(x) : Symbol(x)) for (i, x) in enumerate(readsplitline(parsinglayers, io, cmt))])
         datarow != header+1 && skipto!(parsinglayers, io, header+1, datarow)
         datapos = position(io)
     end
     return columnnames, datapos
 end
 
-function datalayout(header::AbstractRange, parsinglayers, io, datarow, normalizenames)
+function datalayout(header::AbstractRange, parsinglayers, io, datarow, normalizenames, cmt)
     skipto!(parsinglayers, io, 1, first(header))
-    columnnames = [x for x in readsplitline(parsinglayers, io)]
+    columnnames = [x for x in readsplitline(parsinglayers, io, cmt)]
     for row = first(header):(last(header)-1)
-        for (i,c) in enumerate([x for x in readsplitline(parsinglayers, io)])
+        for (i,c) in enumerate([x for x in readsplitline(parsinglayers, io, cmt)])
             columnnames[i] *= "_" * c
         end
     end
@@ -141,13 +141,13 @@ function datalayout(header::AbstractRange, parsinglayers, io, datarow, normalize
     return makeunique([normalizenames ? normalizename(nm) : Symbol(nm) for nm in columnnames]), datapos
 end
 
-function datalayout(header::Vector, parsinglayers, io, datarow, normalizenames)
+function datalayout(header::Vector, parsinglayers, io, datarow, normalizenames, cmt)
     skipto!(parsinglayers, io, 1, datarow)
     datapos = position(io)
     if eof(io)
         columnnames = makeunique([normalizenames ? normalizename(nm) : Symbol(nm) for nm in header])
     else
-        row_vals = readsplitline(parsinglayers, io)
+        row_vals = readsplitline(parsinglayers, io, cmt)
         seek(io, datapos)
         if isempty(header)
             columnnames = [Symbol("Column$i") for i in eachindex(row_vals)]
@@ -183,13 +183,32 @@ end
 const READSPLITLINE_RESULT = Parsers.Result(String)
 const DELIM_NEWLINE = Parsers.DELIMITED | Parsers.NEWLINE
 
-readsplitline(io::IO; delim=",") = readsplitline(Parsers.Delimited(Parsers.Quoted(), delim; newline=true), io)
-function readsplitline(layers::Parsers.Delimited, io::IO)
+readsplitline(io::IO; delim=",", cmt=nothing) = readsplitline(Parsers.Delimited(Parsers.Quoted(), delim; newline=true), io, cmt)
+function readsplitline(layers::Parsers.Delimited, io::IO, ::Nothing)
     vals = Union{String, Missing}[]
     eof(io) && return vals
     col = 1
     result = READSPLITLINE_RESULT
     while true
+        result.code = Parsers.SUCCESS
+        Parsers.parse!(layers, io, result)
+        # @debug "readsplitline!: result=$result"
+        Parsers.ok(result.code) || throw(Error(Parsers.Error(io, result), 1, col))
+        # @show result
+        push!(vals, result.result)
+        col += 1
+        (result.code & Parsers.DELIMITED) > 0 && continue
+        (newline(result.code) || eof(io)) && break
+    end
+    return vals
+end
+function readsplitline(layers::Parsers.Delimited, io::IO, cmt)
+    vals = Union{String, Missing}[]
+    eof(io) && return vals
+    col = 1
+    result = READSPLITLINE_RESULT
+    while true
+        consumecommentedline!(layers, io, cmt)
         result.code = Parsers.SUCCESS
         Parsers.parse!(layers, io, result)
         # @debug "readsplitline!: result=$result"
@@ -211,6 +230,7 @@ function consumecommentedline!(layers, io, comment::Parsers.Trie)
 end
 
 function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Nothing, layers, comment)
+    consumecommentedline!(layers, io, comment)
     nl = Int64[position(io)] # we always start at the beginning of the first data row
     b = 0x00
     while !eof(io)
@@ -244,6 +264,7 @@ end
 function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Int, layers, comment)
     nl = Vector{Int64}(undef, limit)
     limit == 0 && return nl
+    consumecommentedline!(layers, io, comment)
     nl[1] = position(io) # we always start at the beginning of the first data row
     b = 0x00
     i = 2
