@@ -76,7 +76,7 @@ function datalayout_transpose(header, parsinglayers, io, datarow, footerskip, no
             push!(columnpositions, position(io))
             readline!(parsinglayers, io)
         end
-        seek(io, datapos)
+        Parsers.fastseek!(io, datapos)
     elseif isa(header, AbstractRange)
         # column names span several columns
         throw(ArgumentError("not implemented for transposed csv files"))
@@ -104,7 +104,7 @@ function datalayout_transpose(header, parsinglayers, io, datarow, footerskip, no
             push!(columnpositions, position(io))
             readline!(parsinglayers, io)
         end
-        seek(io, datapos)
+        Parsers.fastseek!(io, datapos)
     end
     rows = rows - footerskip # rows now equals the actual number of rows in the dataset
     return rows, makeunique(map(x->normalizenames ? normalizename(x) : Symbol(x), columnnames)), columnpositions
@@ -117,7 +117,7 @@ function datalayout(header::Integer, parsinglayers, io, datarow, normalizenames)
         skipto!(parsinglayers, io, 1, datarow)
         datapos = position(io)
         row_vals = readsplitline(parsinglayers, io)
-        seek(io, datapos)
+        Parsers.fastseek!(io, datapos)
         columnnames = [Symbol("Column$i") for i = eachindex(row_vals)]
     else
         skipto!(parsinglayers, io, 1, header)
@@ -148,7 +148,7 @@ function datalayout(header::Vector, parsinglayers, io, datarow, normalizenames)
         columnnames = makeunique([normalizenames ? normalizename(nm) : Symbol(nm) for nm in header])
     else
         row_vals = readsplitline(parsinglayers, io)
-        seek(io, datapos)
+        Parsers.fastseek!(io, datapos)
         if isempty(header)
             columnnames = [Symbol("Column$i") for i in eachindex(row_vals)]
         else

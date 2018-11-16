@@ -189,7 +189,7 @@ function File(source::Union{String, IO};
         end
     end
 
-    !transpose && seek(io, positions[1])
+    !transpose && Parsers.fastseek!(io, positions[1])
     return File{transpose, columnaccess, typeof(io), typeof(parsinglayers), typeof(kwargs)}(names, finaltypes, getname(source), io, parsinglayers, positions, originalpositions, Ref(1), ref, Ref(Parsers.SUCCESS), kwargs, pools, strict, silencewarnings)
 end
 
@@ -197,8 +197,8 @@ include("filedetection.jl")
 include("typedetection.jl")
 include("tables.jl")
 
-getio(str::String, use_mmap) = IOBuffer(use_mmap ? Mmap.mmap(str) : Base.read(str))
-getio(io::IO, use_mmap) = io
+getio(str::String, use_mmap) = use_mmap ? IOBuffer(Mmap.mmap(str)) : Parsers.BufferedIO(open(str))
+getio(io::IO, use_mmap) = Parsers.BufferedIO(io)
 getname(str::String) = str
 getname(io::I) where {I <: IO} = string("<", I, ">")
 
@@ -207,8 +207,8 @@ function consumeBOM!(io)
     startpos = position(io)
     if !eof(io) && Parsers.peekbyte(io) == 0xef
         Parsers.readbyte(io)
-        (!eof(io) && Parsers.readbyte(io) == 0xbb) || seek(io, startpos)
-        (!eof(io) && Parsers.readbyte(io) == 0xbf) || seek(io, startpos)
+        (!eof(io) && Parsers.readbyte(io) == 0xbb) || Parsers.fastseek!(io, startpos)
+        (!eof(io) && Parsers.readbyte(io) == 0xbf) || Parsers.fastseek!(io, startpos)
     end
     return
 end
@@ -309,7 +309,7 @@ function read(fullpath::Union{AbstractString,IO}, sink=DataFrame, args...; appen
     f = CSV.File(fullpath; kwargs...)
     if !isempty(transforms)
         Base.depwarn("`CSV.read(source; transforms=Dict(...)` is deprecated in favor of `CSV.File(source) |> transform(col1=x->...) |> DataFrame`", nothing)
-        return f |> transform(transforms) |> sink
+        return sink(transform(f, transforms))
     end
     return f |> sink
 end
