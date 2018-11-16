@@ -473,4 +473,15 @@ testfiles = [
         NamedTuple{(:col1, :col2, :col3),Tuple{Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64}}},
         (col1 = Union{Missing, Float64}[1.0, 4.0], col2 = Union{Missing, Float64}[2.0, 5.0], col3 = Union{Missing, Float64}[3.0, missing])
     ),
+    # #351
+    ("test_comment_first_row.csv", (allowmissing=:auto, comment="#"),
+        (2, 3),
+        NamedTuple{(:a, :b, :c), Tuple{Int64, Int64, Int64}},
+        (a=[1,7], b=[2,8], c=[3,9])
+    ),
+    ("test_comment_first_row.csv", (allowmissing=:auto, comment="#", header=2),
+        (2, 3),
+        NamedTuple{(:a, :b, :c), Tuple{Int64, Int64, Int64}},
+        (a=[1,7], b=[2,8], c=[3,9])
+    ),
 ];
