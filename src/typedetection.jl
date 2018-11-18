@@ -90,18 +90,18 @@ function detect(types, io, positions, parsinglayers, kwargs, typemap, categorica
     for startingrow in rng
         for row = trunc(Int64, startingrow):trunc(Int64, startingrow + step - 1)
             rows += 1
-            !transpose && seek(io, positions[row])
+            !transpose && Parsers.fastseek!(io, positions[row])
             lastcode[] = Parsers.SUCCESS
             for col = 1:cols
                 if !transpose && newline(lastcode[])
                     typecodes[col] = promote_typecode(typecodes[col], MISSING)
                     continue
                 end
-                transpose && seek(io, positions[col])
+                transpose && Parsers.fastseek!(io, positions[col])
                 # if debug
                 #     pos = position(io)
                 #     result = Parsers.parse(parsinglayers, io, String)
-                #     seek(io, pos)
+                #     Parsers.fastseek!(io, pos)
                 # end
                 @inbounds T = typecodes[col]
                 if T === USER
@@ -145,7 +145,7 @@ function incr!(dict::Dict{String, Int}, key::Tuple{Ptr{UInt8}, Int})
 end
 
 @inline function trytype(io, pos, layers, T, kwargs, lastcode)
-    seek(io, pos)
+    Parsers.fastseek!(io, pos)
     res = Parsers.parse(layers, io, T; kwargs...)
     lastcode[] = res.code
     return Parsers.ok(res.code) ? typecode(res.result) : EMPTY
