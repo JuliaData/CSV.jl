@@ -53,7 +53,7 @@ Base.IteratorSize(::Type{<:Transforms{T}}) where {T} = Base.IteratorSize(T)
 Base.length(t::Transforms) = length(getfield(t, 1))
 Base.eltype(t::Transforms{T, F}) where {T, F} = TransformsRow{eltype(getfield(t, 1)), F}
 
-function Base.iterate(t::Transforms, st=())
+@inline function Base.iterate(t::Transforms, st=())
     state = iterate(getfield(t, 1), st...)
     state === nothing && return nothing
     return TransformsRow(state[1], getfield(t, 2)), (state[2],)

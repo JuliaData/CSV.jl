@@ -4,4 +4,4 @@ DataFrames 0.14.0
 WeakRefStrings 0.4.1
 CategoricalArrays 0.3.0
 Tables
-Parsers
+Parsers 0.2.14
