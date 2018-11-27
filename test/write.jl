@@ -122,4 +122,10 @@ using Dates, WeakRefStrings, CategoricalArrays, Tables
     catch e
         @error "error running test" exception=(e, stacktrace(catch_backtrace()))
     end
+
+    # 357
+    x1 = (ISBN=[9500286327, 671727680, 385333757], Book_Title=["Tres Mosqueteros, Los: Adaptacic\"n", "Romeo and Juliet", "Losing Julia"])
+    CSV.write(  "x1.csv",  x1; delim=';' ,quotechar='"' ,escapechar='\\' )
+    @test read("x1.csv", String) == "ISBN;Book_Title\n9500286327;\"Tres Mosqueteros, Los: Adaptacic\\\"n\"\n671727680;Romeo and Juliet\n385333757;Losing Julia\n"
+    rm("x1.csv")
 end
