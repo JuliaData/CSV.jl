@@ -59,7 +59,7 @@ function bufferedescape(io, delim, oq, cq, e)
     n == 0 && return
     needtoescape, needtoquote = check(n, delim, oq, cq)
     seekstart(VALUE_BUFFER)
-    if needtoquote
+    if (needtoquote | needtoescape)
         if needtoescape
             Base.write(io, oq)
             buf = VALUE_BUFFER.data
