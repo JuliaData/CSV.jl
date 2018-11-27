@@ -50,7 +50,7 @@ using Dates, WeakRefStrings, CategoricalArrays, Tables
     @test String(take!(io)) == "col1,col2,col3\n1,NA,7\nNA,NA,8\n3,NA,9\n"
 
     (col1=["hey, there, sailor", "this, also, has, commas", "this\n has\n newlines\n", "no quoting", "just a random \" quote character", ],) |> CSV.write(io)
-    @test String(take!(io)) == "col1\n\"hey, there, sailor\"\n\"this, also, has, commas\"\n\"this\n has\n newlines\n\"\nno quoting\njust a random \" quote character\n"
+    @test String(take!(io)) == "col1\n\"hey, there, sailor\"\n\"this, also, has, commas\"\n\"this\n has\n newlines\n\"\nno quoting\n\"just a random \\\" quote character\"\n"
 
     (col1=["\"hey there sailor\""],) |> CSV.write(io)
     @test String(take!(io)) == "col1\n\"\\\"hey there sailor\\\"\"\n"
