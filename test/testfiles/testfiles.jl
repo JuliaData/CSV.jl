@@ -484,4 +484,10 @@ testfiles = [
         NamedTuple{(:a, :b, :c), Tuple{Int64, Int64, Int64}},
         (a=[1,7], b=[2,8], c=[3,9])
     ),
+    # #340
+    ("test_delim.tsv", NamedTuple(),
+        (3, 3),
+        NamedTuple{(:col1, :col2, :col3),Tuple{Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64}}},
+        (col1 = Union{Missing, Float64}[1.0, 4.0, 7.0], col2 = Union{Missing, Float64}[2.0, 5.0, 8.0], col3 = Union{Missing, Float64}[3.0, 6.0, 9.0])
+    ),
 ];

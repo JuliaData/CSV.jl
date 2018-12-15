@@ -112,7 +112,7 @@ function File(source::Union{String, IO};
     # parsing options
     missingstrings=String[],
     missingstring="",
-    delim::Union{Char, String}=",",
+    delim::Union{Nothing, Char, String}=nothing,
     ignorerepeated::Bool=false,
     quotechar::Union{UInt8, Char}='"',
     openquotechar::Union{UInt8, Char, Nothing}=nothing,
@@ -139,6 +139,13 @@ function File(source::Union{String, IO};
     consumeBOM!(io)
 
     kwargs = getkwargs(dateformat, decimal, getbools(truestrings, falsestrings))
+    if isa(delim, Nothing)
+        if isa(source, AbstractString)
+            delim = endswith(source, ".tsv") ? '\t' : ','
+        else
+            delim = ','
+        end
+    end
     d = string(delim)
     whitespacedelim = d == " " || d == "\t"
     missingstrings = isempty(missingstrings) ? [missingstring] : missingstrings
