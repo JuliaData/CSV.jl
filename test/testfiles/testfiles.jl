@@ -487,7 +487,7 @@ testfiles = [
     # #340
     ("test_delim.tsv", NamedTuple(),
         (3, 3),
-        NamedTuple{(:col1, :col2, :col3),Tuple{Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64}}},
-        (col1 = Union{Missing, Float64}[1.0, 4.0, 7.0], col2 = Union{Missing, Float64}[2.0, 5.0, 8.0], col3 = Union{Missing, Float64}[3.0, 6.0, 9.0])
+        NamedTuple{(:col1, :col2, :col3),Tuple{Union{Missing, Int},Union{Missing, Int},Union{Missing, Int}}},
+        (col1 = Union{Missing, Int}[1, 4, 7], col2 = Union{Missing, Int}[2, 5, 8], col3 = Union{Missing, Int}[3, 6, 9])
     ),
 ];
