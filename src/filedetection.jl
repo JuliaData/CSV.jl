@@ -110,29 +110,29 @@ function datalayout_transpose(header, parsinglayers, io, datarow, footerskip, no
     return rows, makeunique(map(x->normalizenames ? normalizename(x) : Symbol(x), columnnames)), columnpositions
 end
 
-function datalayout(header::Integer, parsinglayers, io, datarow, normalizenames, cmt)
+function datalayout(header::Integer, parsinglayers, io, datarow, normalizenames, cmt, ignorerepeated)
     # default header = 1
     if header <= 0
         # no header row in dataset; skip to data to figure out # of columns
         skipto!(parsinglayers, io, 1, datarow)
         datapos = position(io)
-        row_vals = readsplitline(parsinglayers, io, cmt)
+        row_vals = readsplitline(parsinglayers, io, cmt, ignorerepeated)
         Parsers.fastseek!(io, datapos)
         columnnames = [Symbol("Column$i") for i = eachindex(row_vals)]
     else
         skipto!(parsinglayers, io, 1, header)
-        columnnames = makeunique([ismissing(x) ? Symbol("Column$i") : (normalizenames ? normalizename(x) : Symbol(x)) for (i, x) in enumerate(readsplitline(parsinglayers, io, cmt))])
+        columnnames = makeunique([ismissing(x) ? Symbol("Column$i") : (normalizenames ? normalizename(x) : Symbol(x)) for (i, x) in enumerate(readsplitline(parsinglayers, io, cmt, ignorerepeated))])
         datarow != header+1 && skipto!(parsinglayers, io, header+1, datarow)
         datapos = position(io)
     end
     return columnnames, datapos
 end
 
-function datalayout(header::AbstractRange, parsinglayers, io, datarow, normalizenames, cmt)
+function datalayout(header::AbstractRange, parsinglayers, io, datarow, normalizenames, cmt, ignorerepeated)
     skipto!(parsinglayers, io, 1, first(header))
-    columnnames = [x for x in readsplitline(parsinglayers, io, cmt)]
+    columnnames = [x for x in readsplitline(parsinglayers, io, cmt, ignorerepeated)]
     for row = first(header):(last(header)-1)
-        for (i,c) in enumerate([x for x in readsplitline(parsinglayers, io, cmt)])
+        for (i,c) in enumerate([x for x in readsplitline(parsinglayers, io, cmt, ignorerepeated)])
             columnnames[i] *= "_" * c
         end
     end
@@ -141,13 +141,13 @@ function datalayout(header::AbstractRange, parsinglayers, io, datarow, normalize
     return makeunique([normalizenames ? normalizename(nm) : Symbol(nm) for nm in columnnames]), datapos
 end
 
-function datalayout(header::Vector, parsinglayers, io, datarow, normalizenames, cmt)
+function datalayout(header::Vector, parsinglayers, io, datarow, normalizenames, cmt, ignorerepeated)
     skipto!(parsinglayers, io, 1, datarow)
     datapos = position(io)
     if eof(io)
         columnnames = makeunique([normalizenames ? normalizename(nm) : Symbol(nm) for nm in header])
     else
-        row_vals = readsplitline(parsinglayers, io, cmt)
+        row_vals = readsplitline(parsinglayers, io, cmt, ignorerepeated)
         Parsers.fastseek!(io, datapos)
         if isempty(header)
             columnnames = [Symbol("Column$i") for i in eachindex(row_vals)]
@@ -183,32 +183,15 @@ end
 const READSPLITLINE_RESULT = Parsers.Result(String)
 const DELIM_NEWLINE = Parsers.DELIMITED | Parsers.NEWLINE
 
-readsplitline(io::IO; delim=",", cmt=nothing) = readsplitline(Parsers.Delimited(Parsers.Quoted(), delim; newline=true), io, cmt)
-function readsplitline(layers::Parsers.Delimited, io::IO, ::Nothing=nothing)
-    vals = Union{String, Missing}[]
-    eof(io) && return vals
-    col = 1
-    result = READSPLITLINE_RESULT
-    while true
-        result.code = Parsers.SUCCESS
-        Parsers.parse!(layers, io, result)
-        # @debug "readsplitline!: result=$result"
-        Parsers.ok(result.code) || throw(Error(Parsers.Error(io, result), 1, col))
-        # @show result
-        push!(vals, result.result)
-        col += 1
-        (result.code & Parsers.DELIMITED) > 0 && continue
-        (newline(result.code) || eof(io)) && break
-    end
-    return vals
-end
-function readsplitline(layers::Parsers.Delimited, io::IO, cmt)
+readsplitline(io::IO; delim=",", cmt=nothing, ignorerepeated=false) = readsplitline(Parsers.Delimited(Parsers.Quoted(), delim; newline=true), io, cmt, ignorerepeated)
+function readsplitline(layers::Parsers.Delimited, io::IO, cmt=nothing, ignorerepeated=false)
     vals = Union{String, Missing}[]
     eof(io) && return vals
     col = 1
     result = READSPLITLINE_RESULT
     while true
         consumecommentedline!(layers, io, cmt)
+        ignorerepeated && Parsers.checkdelim!(layers, io)
         result.code = Parsers.SUCCESS
         Parsers.parse!(layers, io, result)
         # @debug "readsplitline!: result=$result"
@@ -229,8 +212,9 @@ function consumecommentedline!(layers, io, comment::Parsers.Trie)
     end
 end
 
-function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Nothing, layers, comment)
+function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Nothing, layers, comment, ignorerepeated)
     consumecommentedline!(layers, io, comment)
+    ignorerepeated && Parsers.checkdelim!(layers, io)
     nl = Int64[position(io)] # we always start at the beginning of the first data row
     b = 0x00
     while !eof(io)
@@ -251,20 +235,23 @@ function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Nothing, layers, commen
             end
         elseif b === UInt8('\n')
             consumecommentedline!(layers, io, comment)
+            ignorerepeated && Parsers.checkdelim!(layers, io)
             !eof(io) && push!(nl, position(io))
         elseif b === UInt8('\r')
             !eof(io) && Parsers.peekbyte(io) === UInt8('\n') && Parsers.readbyte(io)
             consumecommentedline!(layers, io, comment)
+            ignorerepeated && Parsers.checkdelim!(layers, io)
             !eof(io) && push!(nl, position(io))
         end
     end
     return nl
 end
 
-function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Int, layers, comment)
+function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Int, layers, comment, ignorerepeated)
     nl = Vector{Int64}(undef, limit)
     limit == 0 && return nl
     consumecommentedline!(layers, io, comment)
+    ignorerepeated && Parsers.checkdelim!(layers, io)
     nl[1] = position(io) # we always start at the beginning of the first data row
     b = 0x00
     i = 2
@@ -286,11 +273,13 @@ function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Int, layers, comment)
             end
         elseif b === UInt8('\n')
             consumecommentedline!(layers, io, comment)
+            ignorerepeated && Parsers.checkdelim!(layers, io)
             !eof(io) && setindex!(nl, position(io), i)
             i += 1
         elseif b === UInt8('\r')
             !eof(io) && Parsers.peekbyte(io) === UInt8('\n') && Parsers.readbyte(io)
             consumecommentedline!(layers, io, comment)
+            ignorerepeated && Parsers.checkdelim!(layers, io)
             !eof(io) && setindex!(nl, position(io), i)
             i += 1
         end
