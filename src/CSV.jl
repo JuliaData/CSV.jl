@@ -160,9 +160,9 @@ function File(source::Union{String, IO};
         columnaccess = false
     else
         cmt = comment === nothing ? nothing : Parsers.Trie(comment)
-        names, datapos = datalayout(header, parsinglayers, io, datarow, normalizenames, cmt)
+        names, datapos = datalayout(header, parsinglayers, io, datarow, normalizenames, cmt, ignorerepeated)
         eof(io) && return File{false, true, typeof(io), typeof(parsinglayers), typeof(kwargs)}(names, Type[Missing for _ in names], getname(source), io, parsinglayers, Int64[], Int64[], Ref{Int}(0), Ref{Int}(0), Ref(Parsers.SUCCESS), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict, silencewarnings)
-        positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8, limit, parsinglayers, cmt)
+        positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8, limit, parsinglayers, cmt, ignorerepeated)
         originalpositions = Int64[]
         footerskip > 0 && resize!(positions, length(positions) - footerskip)
         ref = Ref{Int}(0)
