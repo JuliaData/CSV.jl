@@ -114,17 +114,18 @@ function write(file::Union{String, IO}, itr; kwargs...)
     return write(sch, rows, file; kwargs...)
 end
 
-function printheader(io, header, delim, oq, cq, e, df)
+function printheader(io, header, delim, recorddelim, oq, cq, e, df)
     cols = length(header)
     for (col, nm) in enumerate(header)
         bufferedwrite(io, string(nm), nothing) && bufferedescape(io, delim, oq, cq, e)
-        Base.write(io, ifelse(col == cols, UInt8('\n'), delim))
+        Base.write(io, ifelse(col == cols, recorddelim, delim))
     end
     return
 end
 
 function write(sch::Tables.Schema{schema_names}, rows, file::Union{String, IO};
     delim::Union{Char, String}=',',
+    recorddelim::Union{Char, String}='\n',
     quotechar::Char='"',
     openquotechar::Union{Char, Nothing}=nothing,
     closequotechar::Union{Char, Nothing}=nothing,
@@ -144,7 +145,7 @@ function write(sch::Tables.Schema{schema_names}, rows, file::Union{String, IO};
         for row in rows
             Tables.eachcolumn(sch, row) do val, col, nm
                 bufferedwrite(io, coalesce(val, missingstring), dateformat) && bufferedescape(io, delim, oq, cq, e)
-                Base.write(io, ifelse(col == cols, UInt8('\n'), delim))
+                Base.write(io, ifelse(col == cols, recorddelim, delim))
             end
         end
     end
@@ -154,6 +155,7 @@ end
 # handle unknown schema case
 function write(::Nothing, rows, file::Union{String, IO};
     delim::Union{Char, String}=',',
+    recorddelim::Union{Char, String}='\n',
     quotechar::Char='"',
     openquotechar::Union{Char, Nothing}=nothing,
     closequotechar::Union{Char, Nothing}=nothing,
@@ -184,7 +186,7 @@ function write(::Nothing, rows, file::Union{String, IO};
         while true
             Tables.eachcolumn(sch, row) do val, col, nm
                 bufferedwrite(io, coalesce(val, missingstring), dateformat) && bufferedescape(io, delim, oq, cq, e)
-                Base.write(io, ifelse(col == cols, UInt8('\n'), delim))
+                Base.write(io, ifelse(col == cols, recorddelim, delim))
             end
             state = iterate(rows, st)
             state === nothing && break
