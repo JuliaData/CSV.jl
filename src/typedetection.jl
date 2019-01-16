@@ -61,9 +61,9 @@ end
 # providedtypes: Dict{String, Type}, Dict{Int, Type}, Vector{Type}
 initialtype(allowmissing) = (allowmissing === :auto || allowmissing === :none) ? Union{} : Missing
 initialtypes(T, ::Nothing, names) = Type[T for _ = 1:length(names)]
-initialtypes(T, t::Dict{String, V}, names) where {V} = Type[get(t, string(nm), T) for nm in names]
-initialtypes(T, t::Dict{Symbol, V}, names) where {V} = Type[get(t, nm, T) for nm in names]
-initialtypes(T, t::Dict{Int, V}, names) where {V}    = Type[get(t, i, T) for i = 1:length(names)]
+initialtypes(T, t::AbstractDict{String, V}, names) where {V} = Type[get(t, string(nm), T) for nm in names]
+initialtypes(T, t::AbstractDict{Symbol, V}, names) where {V} = Type[get(t, nm, T) for nm in names]
+initialtypes(T, t::AbstractDict{Int, V}, names) where {V}    = Type[get(t, i, T) for i = 1:length(names)]
 
 const EMPTY_LEVELS = Dict{String, Int}[]
 const EMPTY_POOLS = CategoricalPool{String, UInt32, CatStr}[]

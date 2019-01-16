@@ -133,7 +133,7 @@ function File(source::Union{String, IO};
     kw...)
 
     isa(source, AbstractString) && (isfile(source) || throw(ArgumentError("\"$source\" is not a valid file")))
-    (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa Dict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
+    (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
     io = getio(source, use_mmap)
 
     consumeBOM!(io)
@@ -167,9 +167,9 @@ function File(source::Union{String, IO};
         columnaccess = false
     else
         cmt = comment === nothing ? nothing : Parsers.Trie(comment)
-        names, datapos = datalayout(header, parsinglayers, io, datarow, normalizenames, cmt)
+        names, datapos = datalayout(header, parsinglayers, io, datarow, normalizenames, cmt, ignorerepeated)
         eof(io) && return File{false, true, typeof(io), typeof(parsinglayers), typeof(kwargs)}(names, Type[Missing for _ in names], getname(source), io, parsinglayers, Int64[], Int64[], Ref{Int}(0), Ref{Int}(0), Ref(Parsers.SUCCESS), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict, silencewarnings)
-        positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8, limit, parsinglayers, cmt)
+        positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8, limit, parsinglayers, cmt, ignorerepeated)
         originalpositions = Int64[]
         footerskip > 0 && resize!(positions, length(positions) - footerskip)
         ref = Ref{Int}(0)

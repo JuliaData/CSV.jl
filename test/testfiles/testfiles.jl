@@ -464,14 +464,20 @@ testfiles = [
     ),
     # #326
     ("test_issue_326.wsv", (delim=" ", ignorerepeated=true),
-        (2, 3),
-        NamedTuple{(:Column1, :A, :B),Tuple{Missing,Union{Missing, Int64},Union{Missing, Int64}}},
-        (Column1 = Missing[missing, missing], A = Union{Missing, Int64}[1, 11], B = Union{Missing, Int64}[2, 22])
+        (2, 2),
+        NamedTuple{(:A, :B),Tuple{Union{Missing, Int64},Union{Missing, Int64}}},
+        (A = Union{Missing, Int64}[1, 11], B = Union{Missing, Int64}[2, 22])
     ),
     ("test_missing_last_field.csv", NamedTuple(),
         (2, 3),
         NamedTuple{(:col1, :col2, :col3),Tuple{Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64}}},
         (col1 = Union{Missing, Float64}[1.0, 4.0], col2 = Union{Missing, Float64}[2.0, 5.0], col3 = Union{Missing, Float64}[3.0, missing])
+    ),
+    # #340
+    ("test_delim.tsv", NamedTuple(),
+        (3, 3),
+        NamedTuple{(:col1, :col2, :col3),Tuple{Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64}}},
+        (col1 = Union{Missing, Int64}[1, 4, 7], col2 = Union{Missing, Int64}[2, 5, 8], col3 = Union{Missing, Int64}[3, 6, 9])
     ),
     # #351
     ("test_comment_first_row.csv", (allowmissing=:auto, comment="#"),
@@ -484,10 +490,10 @@ testfiles = [
         NamedTuple{(:a, :b, :c), Tuple{Int64, Int64, Int64}},
         (a=[1,7], b=[2,8], c=[3,9])
     ),
-    # #340
-    ("test_delim.tsv", NamedTuple(),
-        (3, 3),
-        NamedTuple{(:col1, :col2, :col3),Tuple{Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64}}},
-        (col1 = Union{Missing, Int64}[1, 4, 7], col2 = Union{Missing, Int64}[2, 5, 8], col3 = Union{Missing, Int64}[3, 6, 9])
+    # #371
+    ("test_repeated_delim_371.csv", (ignorerepeated=true, delim=' ', allowmissing=:auto),
+        (15, 4),
+        NamedTuple{(:FAMILY, :PERSON, :MARKER, :RATIO), Tuple{String, String, String, Float64}},
+        (FAMILY = ["A", "A", "A", "A", "A", "A", "EPGP013951", "EPGP014065", "EPGP014065", "EPGP014065", "EP07", "83346_EPGP014244", "83346_EPGP014244", "83506", "87001"], PERSON = ["EP01223", "EP01227", "EP01228", "EP01228", "EP01227", "EP01228", "EPGP013952", "EPGP014066", "EPGP014065", "EPGP014068", "706", "T3011", "T3231", "T17255", "301"], MARKER = ["rs710865", "rs11249215", "rs11249215", "rs10903129", "rs621559", "rs1514175", "rs773564", "rs2794520", "rs296547", "rs296547", "rs10927875", "rs2251760", "rs2251760", "rs2475335", "rs2413583"], RATIO = [0.0214, 0.0107, 0.00253, 0.0116, 0.00842, 0.0202, 0.00955, 0.0193, 0.0135, 0.0239, 0.0157, 0.0154, 0.0154, 0.00784, 0.0112])
     ),
 ];
