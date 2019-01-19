@@ -124,7 +124,7 @@ function detect(types, io, positions, parsinglayers, kwargs, typemap, categorica
             if (categorical === true || (categorical !== false &&
                     length(levels[i]) / sum(values(levels[i])) < categorical)) && (T & STRING) > 0
                 S = T < 0 ? Union{CatStr, Missing} : CatStr
-                pools[i] = CategoricalPool{String, UInt32}(collect(keys(levels[i])))
+                pools[i] = CategoricalPool{String, UInt32}(sort!(collect(keys(levels[i]))))
             end
             @inbounds types[i] = get(typemap, S, S)
         end
