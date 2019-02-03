@@ -1,10 +1,10 @@
 module CSV
 
-using Mmap, Dates, Random, Unicode, Parsers, Tables, CategoricalArrays, WeakRefStrings
+using Mmap, Dates, Random, Unicode, Parsers, Tables, PooledArrays, CategoricalArrays, WeakRefStrings
 
 newline(code::Parsers.ReturnCode) = (code & Parsers.NEWLINE) > 0
 
-const CatStr = CategoricalString{UInt32}
+const CatString = CategoricalString{UInt32}
 
 struct Error <: Exception
     error::Parsers.Error
@@ -29,7 +29,8 @@ struct File{transpose, columnaccess, I, P, KW}
     lastparsedcol::Base.RefValue{Int}
     lastparsedcode::Base.RefValue{Parsers.ReturnCode}
     kwargs::KW
-    pools::Vector{CategoricalPool{String, UInt32, CatStr}}
+    pools::Vector{Tuple{Vector{String}, Dict{String, UInt32}}}
+    catpools::Vector{CategoricalPool{String, UInt32, CatString}}
     strict::Bool
     silencewarnings::Bool
 end
@@ -92,6 +93,7 @@ Supported keyword arguments include:
   * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64
   * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `Strings`
   * `allowmissing=:all`: indicate how missing values are allowed in columns; possible values are `:all` - all columns may contain missings, `:auto` - auto-detect columns that contain missings or, `:none` - no columns may contain missings
+  * `pool::Union{Bool, Real}=false`: if `true`, columns detected as `String` are returned as a `PooledArray`; alternatively, the proportion of unique values below which `String` columns should be pooled (for example 0.1 for 10%)
   * `categorical::Union{Bool, Real}=false`: if `true`, columns detected as `String` are returned as a `CategoricalArray`; alternatively, the proportion of unique values below which `String` columns should be treated as categorical (for example 0.1 for 10%)
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with missing values
   * `silencewarnings::Bool=false`: whether invalid value warnings should be silenced (requires `strict=false`)
@@ -126,6 +128,7 @@ function File(source::Union{String, IO};
     types=nothing,
     typemap::Dict=EMPTY_TYPEMAP,
     allowmissing::Symbol=:all,
+    pool::Union{Bool, Real}=false,
     categorical::Union{Bool, Real}=false,
     strict::Bool=false,
     silencewarnings::Bool=false,
@@ -161,7 +164,7 @@ function File(source::Union{String, IO};
     else
         cmt = comment === nothing ? nothing : Parsers.Trie(comment)
         names, datapos = datalayout(header, parsinglayers, io, datarow, normalizenames, cmt, ignorerepeated)
-        eof(io) && return File{false, true, typeof(io), typeof(parsinglayers), typeof(kwargs)}(names, Type[Missing for _ in names], getname(source), io, parsinglayers, Int64[], Int64[], Ref{Int}(0), Ref{Int}(0), Ref(Parsers.SUCCESS), kwargs, CategoricalPool{String, UInt32, CatStr}[], strict, silencewarnings)
+        eof(io) && return File{false, true, typeof(io), typeof(parsinglayers), typeof(kwargs)}(names, Type[Missing for _ in names], getname(source), io, parsinglayers, Int64[], Int64[], Ref{Int}(0), Ref{Int}(0), Ref(Parsers.SUCCESS), kwargs, Tuple{Vector{String}, Dict{String, UInt32}}[], CategoricalPool{String, UInt32, CatString}[], strict, silencewarnings)
         positions = rowpositions(io, quotechar % UInt8, escapechar % UInt8, limit, parsinglayers, cmt, ignorerepeated)
         originalpositions = Int64[]
         footerskip > 0 && resize!(positions, length(positions) - footerskip)
@@ -172,16 +175,19 @@ function File(source::Union{String, IO};
     end
 
     if types isa Vector
-        pools = Vector{CategoricalPool{String, UInt32, CatStr}}(undef, length(types))
+        pools = Vector{Tuple{Vector{String}, Dict{String, UInt32}}}(undef, length(types))
+        catpools = Vector{CategoricalPool{String, UInt32, CatString}}(undef, length(types))
         for col = 1:length(types)
             T = types[col]
-            if T !== Missing && Base.nonmissingtype(T) <: CatStr
-                pools[col] = CategoricalPool{String, UInt32}()
+            if T !== Missing && Base.nonmissingtype(T) <: PooledString
+                pools[col] = (String[], Dict{String, UInt32}())
+            elseif T !== Missing && Base.nonmissingtype(T) <: CatString
+                catpools[col] = CategoricalPool{String, UInt32}()
             end
         end
         finaltypes = types
     else
-        finaltypes, pools = detect(initialtypes(initialtype(allowmissing), types, names), io, positions, parsinglayers, kwargs, typemap, categorical, transpose, ref, debug)
+        finaltypes, pools, catpools = detect(initialtypes(initialtype(allowmissing), types, names), io, positions, parsinglayers, kwargs, typemap, pool, categorical, transpose, ref, debug)
         if allowmissing === :none
             # make sure we didn't detect any missing values in any columns
             if any(T->T >: Missing, finaltypes)
@@ -191,11 +197,12 @@ function File(source::Union{String, IO};
     end
 
     !transpose && Parsers.fastseek!(io, positions[1])
-    return File{transpose, columnaccess, typeof(io), typeof(parsinglayers), typeof(kwargs)}(names, finaltypes, getname(source), io, parsinglayers, positions, originalpositions, Ref(1), ref, Ref(Parsers.SUCCESS), kwargs, pools, strict, silencewarnings)
+    return File{transpose, columnaccess, typeof(io), typeof(parsinglayers), typeof(kwargs)}(names, finaltypes, getname(source), io, parsinglayers, positions, originalpositions, Ref(1), ref, Ref(Parsers.SUCCESS), kwargs, pools, catpools, strict, silencewarnings)
 end
 
 include("filedetection.jl")
 include("typedetection.jl")
+include("pooledstring.jl")
 include("tables.jl")
 
 getio(str::String, use_mmap) = use_mmap ? IOBuffer(Mmap.mmap(str)) : Parsers.BufferedIO(open(str))
@@ -250,7 +257,8 @@ function __init__()
     FUNCTIONMAP[String] = @cfunction(getsetString!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
     FUNCTIONMAP[Missing] = @cfunction(getsetMissing!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
     FUNCTIONMAP[WeakRefString{UInt8}] = @cfunction(getsetWeakRefString!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
-    FUNCTIONMAP[CatStr] = @cfunction(getsetCatStr!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
+    FUNCTIONMAP[PooledString] = @cfunction(getsetPooledString!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
+    FUNCTIONMAP[CatString] = @cfunction(getsetCatString!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
     FUNC_ANY[] = @cfunction(getsetAny!, Cvoid, (Any, Any, Cssize_t, Cssize_t))
     return
 end
@@ -291,6 +299,7 @@ Supported keyword arguments include:
   * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64
   * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `Strings`
   * `allowmissing=:all`: indicate how missing values are allowed in columns; possible values are `:all` - all columns may contain missings, `:auto` - auto-detect columns that contain missings or, `:none` - no columns may contain missings
+  * `pool::Union{Bool, Real}=false`: if `true`, columns detected as `String` are returned as a `PooledArray`; alternatively, the proportion of unique values below which `String` columns should be pooled (for example 0.1 for 10%)
   * `categorical::Union{Bool, Real}=false`: if `true`, columns detected as `String` are returned as a `CategoricalArray`; alternatively, the proportion of unique values below which `String` columns should be treated as categorical (for example 0.1 for 10%)
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with missing values
 """

@@ -90,7 +90,7 @@ mutable struct Source{P, I, DF, D} <: Data.Source
     decimal::UInt8
     fullpath::String
     datapos::D # the position in the IOBuffer where the rows of data begins or columnpositions for transposed files
-    pools::Vector{CategoricalPool{String, UInt32, CategoricalString{UInt32}}}
+    catpools::Vector{CategoricalPool{String, UInt32, CategoricalString{UInt32}}}
 end
 
 function Base.show(io::IO, f::Source)
@@ -481,7 +481,7 @@ function Source(fullpath::Union{AbstractString,IO};
     @debug "columnnames=$columnnames, cols=$cols, rows=$rows, datapos=$datapos"
 
     # Detect column types
-    pools = CategoricalPool{String, UInt32, CatStr}[]
+    catpools = CategoricalPool{String, UInt32, CatString}[]
     if isa(types, Vector) && length(types) == cols
         # types might be a Vector{DataType}, which will be a problem if Unions are needed
         columntypes = convert(Vector{Type}, types)
@@ -507,12 +507,12 @@ function Source(fullpath::Union{AbstractString,IO};
             df = any(x->Base.nonmissingtype(x) <: DateTime, columntypes) ? Dates.default_format(DateTime) : Dates.default_format(Date)
         end
         if categorical
-            pools = Vector{CategoricalPool{String, UInt32, CatStr}}(undef, cols)
+            catpools = Vector{CategoricalPool{String, UInt32, CatString}}(undef, cols)
             for i = 1:cols
                 T = columntypes[i]
                 if length(levels[i]) / sum(values(levels[i])) < .67 && T !== Missing && Base.nonmissingtype(T) <: String
                     columntypes[i] = substitute(T, CategoricalArrays.catvaluetype(Base.nonmissingtype(T), UInt32))
-                    pools[i] = CategoricalPool{String, UInt32}(collect(keys(levels[i])))
+                    catpools[i] = CategoricalPool{String, UInt32}(collect(keys(levels[i])))
                 end
             end
         end
@@ -567,7 +567,7 @@ function Source(fullpath::Union{AbstractString,IO};
     else
         seek(source, datapos)
     end
-    return Source(sch, parsinglayers, source, bools, df, dec, String(fullpath), datapos, pools)
+    return Source(sch, parsinglayers, source, bools, df, dec, String(fullpath), datapos, catpools)
 end
 
 # Data.Source interface
@@ -597,19 +597,19 @@ end
 @inline Data.streamfrom(source::Source, ::Type{Data.Field}, ::Type{T}, row, col::Int) where {T <: Union{Dates.TimeType, Missing}} = parsefield(source, Base.nonmissingtype(T), row, col; dateformat=source.dateformat)
 @inline Data.streamfrom(source::Source, ::Type{Data.Field}, ::Type{Missing}, row, col::Int) = parsefield(source, Missing, row, col)
 
-@inline function Data.streamfrom(source::Source, ::Type{Data.Field}, ::Union{Type{Union{CatStr, Missing}}, Type{CatStr}}, row, col::Int)
+@inline function Data.streamfrom(source::Source, ::Type{Data.Field}, ::Union{Type{Union{CatString, Missing}}, Type{CatString}}, row, col::Int)
     str = parsefield(source, Tuple{Ptr{UInt8}, Int}, row, col)
     if str isa Missing
         return missing
     else
-        @inbounds pool = source.pools[col]
+        @inbounds pool = source.catpools[col]
         str::Tuple{Ptr{UInt8}, Int}
         i = get(pool, str, nothing)
         if i === nothing
             i = get!(pool, unsafe_string(str[1], str[2]))
             issorted(levels(pool)) || levels!(pool, sort(levels(pool)))
         end
-        return CatStr(i, pool)
+        return CatString(i, pool)
     end
 end
 

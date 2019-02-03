@@ -66,17 +66,18 @@ initialtypes(T, t::AbstractDict{Symbol, V}, names) where {V} = Type[get(t, nm, T
 initialtypes(T, t::AbstractDict{Int, V}, names) where {V}    = Type[get(t, i, T) for i = 1:length(names)]
 
 const EMPTY_LEVELS = Dict{String, Int}[]
-const EMPTY_POOLS = CategoricalPool{String, UInt32, CatStr}[]
+const EMPTY_CATPOOLS = CategoricalPool{String, UInt32, CatString}[]
+const EMPTY_POOLS = Tuple{String, Dict{String, UInt32}}[]
 const MAX_ROWS = 10_000
 
-function detect(types, io, positions, parsinglayers, kwargs, typemap, categorical, transpose, ref, debug)
+function detect(types, io, positions, parsinglayers, kwargs, typemap, pool, categorical, transpose, ref, debug)
     len = transpose ? ref[] : length(positions)
     cols = length(types)
     typecodes = [typecode(T) for T in types]
     # @show typecodes
 
-    # prep if categorical
-    levels = categorical !== false ? Dict{String, Int}[Dict{String, Int}() for _ = 1:cols] : EMPTY_LEVELS
+    levels = pool !== false || categorical !== false ?
+        Dict{String, Int}[Dict{String, Int}() for _ = 1:cols] : EMPTY_LEVELS
 
     lastcode = Base.RefValue(Parsers.SUCCESS)
     rows = 0
@@ -105,9 +106,9 @@ function detect(types, io, positions, parsinglayers, kwargs, typemap, categorica
                 # end
                 @inbounds T = typecodes[col]
                 if T === USER
-                    detecttype(STRING, io, parsinglayers, kwargs, levels, row, col, categorical, lastcode)
+                    detecttype(STRING, io, parsinglayers, kwargs, levels, row, col, pool, categorical, lastcode)
                 else
-                    S = detecttype(T & ~MISSING, io, parsinglayers, kwargs, levels, row, col, categorical, lastcode)
+                    S = detecttype(T & ~MISSING, io, parsinglayers, kwargs, levels, row, col, pool, categorical, lastcode)
                     typecodes[col] = promote_typecode(T, S)
                     debug && (T !== typecodes[col]) && println("row: $row, col: $col, '$(result.result)', promoted to: $(TYPEMAP[typecodes[col]])")
                 end
@@ -117,19 +118,27 @@ function detect(types, io, positions, parsinglayers, kwargs, typemap, categorica
     end
     debug && println("scanned $rows / $len = $((rows / len) * 100)% of file to infer types")
 
-    pools = categorical !== false ? Vector{CategoricalPool{String, UInt32, CatStr}}(undef, cols) : EMPTY_POOLS
+    pools = pool !== false ? pools = Vector{Tuple{Vector{String}, Dict{String, UInt32}}}(undef, length(types)) : EMPTY_POOLS
+    catpools = categorical !== false ? Vector{CategoricalPool{String, UInt32, CatString}}(undef, cols) : EMPTY_CATPOOLS
     for (i, T) in enumerate(typecodes)
         if T < USER
             @inbounds S = TYPEMAP[T]
-            if (categorical === true || (categorical !== false &&
+            if (pool === true || (pool !== false &&
+                length(levels[i]) / sum(values(levels[i])) < pool)) && (T & STRING) > 0
+                S = T < 0 ? Union{PooledString, Missing} : PooledString
+                # Sorting isn't strictly required, but some operations could take advantage
+                # of the fact that references are sorted
+                levs = sort!(collect(keys(levels[i])))
+                pools[i] = (levs, Dict{String, UInt32}(zip(levs, 1:length(levs))))
+            elseif (categorical === true || (categorical !== false &&
                     length(levels[i]) / sum(values(levels[i])) < categorical)) && (T & STRING) > 0
-                S = T < 0 ? Union{CatStr, Missing} : CatStr
-                pools[i] = CategoricalPool{String, UInt32}(sort!(collect(keys(levels[i]))))
+                S = T < 0 ? Union{CatString, Missing} : CatString
+                catpools[i] = CategoricalPool{String, UInt32}(sort!(collect(keys(levels[i]))))
             end
             @inbounds types[i] = get(typemap, S, S)
         end
     end
-    return types, pools
+    return types, pools, catpools
 end
 
 function incr!(dict::Dict{String, Int}, key::Tuple{Ptr{UInt8}, Int})
@@ -151,9 +160,9 @@ end
     return Parsers.ok(res.code) ? typecode(res.result) : EMPTY
 end
 
-function detecttype(prevT, io, layers, kwargs, levels, row, col, categorical, lastcode)
+function detecttype(prevT, io, layers, kwargs, levels, row, col, pool, categorical, lastcode)
     pos = position(io)
-    if categorical !== false
+    if pool !== false || categorical !== false
         result = Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
         Parsers.ok(result.code) || throw(Error(Parsers.Error(io, result), row, col))
         lastcode[] = result.code

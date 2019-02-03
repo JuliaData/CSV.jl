@@ -67,23 +67,40 @@ parsingtype(::Type{Missing}) = Missing
 parsingtype(::Type{Union{Missing, T}}) where {T} = T
 parsingtype(::Type{T}) where {T} = T
 
-@inline function getparsedvalue(f, r, ::Type{CatStr}, col)
+@inline function getparsedvalue(f, r, ::Type{PooledString}, col)
     if r.result isa Missing
         return missing
     else
-        @inbounds pool = f.pools[col]
+        @inbounds pool, invpool = f.pools[col]
+        val = r.result::Tuple{Ptr{UInt8}, Int}
+        i = get(invpool, val, nothing)
+        if i === nothing
+            s = unsafe_string(val[1], val[2])
+            i = get!(invpool, s, length(pool)+1)
+            push!(pool, s)
+        end
+        s = @inbounds pool[i]
+        return PooledString(i, invpool, s)
+    end
+end
+@inline function getparsedvalue(f, r, ::Type{CatString}, col)
+    if r.result isa Missing
+        return missing
+    else
+        @inbounds pool = f.catpools[col]
         val = r.result::Tuple{Ptr{UInt8}, Int}
         i = get(pool, val, nothing)
         if i === nothing
             i = get!(pool, unsafe_string(val[1], val[2]))
             issorted(levels(pool)) || levels!(pool, sort(levels(pool)))
         end
-        return CatStr(i, pool)
+        return CatString(i, pool)
     end
 end
 getparsedvalue(f, r, T, col) = r.result
 
-parsefield(f, ::Type{CatStr}, row, col) = parsefield(f, Tuple{Ptr{UInt8}, Int}, row, col)
+parsefield(f, ::Type{PooledString}, row, col) = parsefield(f, Tuple{Ptr{UInt8}, Int}, row, col)
+parsefield(f, ::Type{CatString}, row, col) = parsefield(f, Tuple{Ptr{UInt8}, Int}, row, col)
 @inline function parsefield(f, T, row, col)
     r = Parsers.parse(f.parsinglayers, f.io, T; f.kwargs...)
     f.lastparsedcode[] = r.code
@@ -117,7 +134,8 @@ getsetBool!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getprope
 getsetString!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, String, col, i), i); return nothing)
 getsetMissing!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, Missing, col, i), i); return nothing)
 getsetWeakRefString!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, WeakRefString{UInt8}, col, i), i); return nothing)
-getsetCatStr!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, CatStr, col, i), i); return nothing)
+getsetPooledString!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, PooledString, col, i), i); return nothing)
+getsetCatString!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, CatString, col, i), i); return nothing)
 function getsetAny!(column, f::File, col::Int, i::Int)
     setindex!(column, getproperty(f, f.types[col], col, i), i)
     return
@@ -133,7 +151,8 @@ const FUNCTIONMAP = Dict(
     String => C_NULL,
     Missing => C_NULL,
     WeakRefString{UInt8} => C_NULL,
-    CatStr => C_NULL,
+    PooledString => C_NULL,
+    CatString => C_NULL,
 )
 
 @noinline badcolumnerror(name) = "`$name` is not a valid column name"
