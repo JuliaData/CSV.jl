@@ -490,4 +490,10 @@ testfiles = [
         NamedTuple{(:FAMILY, :PERSON, :MARKER, :RATIO), Tuple{String, String, String, Float64}},
         (FAMILY = ["A", "A", "A", "A", "A", "A", "EPGP013951", "EPGP014065", "EPGP014065", "EPGP014065", "EP07", "83346_EPGP014244", "83346_EPGP014244", "83506", "87001"], PERSON = ["EP01223", "EP01227", "EP01228", "EP01228", "EP01227", "EP01228", "EPGP013952", "EPGP014066", "EPGP014065", "EPGP014068", "706", "T3011", "T3231", "T17255", "301"], MARKER = ["rs710865", "rs11249215", "rs11249215", "rs10903129", "rs621559", "rs1514175", "rs773564", "rs2794520", "rs296547", "rs296547", "rs10927875", "rs2251760", "rs2251760", "rs2475335", "rs2413583"], RATIO = [0.0214, 0.0107, 0.00253, 0.0116, 0.00842, 0.0202, 0.00955, 0.0193, 0.0135, 0.0239, 0.0157, 0.0154, 0.0154, 0.00784, 0.0112])
     ),
+    # #154
+    ("test_file_issue_154.csv", (allowmissing=:auto, normalizenames=true),
+        (2, 4),
+        NamedTuple{(:a, :b, :_, :Column4), Tuple{Int64, Int64, Missing, Union{Missing, String}}},
+        (a = [0, 12], b = [1, 5], _ = Missing[missing, missing], Column4 = Union{Missing, String}[" comment ", missing])
+    ),
 ];

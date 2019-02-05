@@ -8,7 +8,7 @@ normalizename(name::Symbol) = name
 function normalizename(name::String)
     uname = strip(Unicode.normalize(name))
     id = Base.isidentifier(uname) ? uname : map(c->Base.is_id_char(c) ? c : '_', uname)
-    cleansed = string((!Base.is_id_start_char(id[1]) || id in RESERVED) ? "_" : "", id)
+    cleansed = string((isempty(id) || !Base.is_id_start_char(id[1]) || id in RESERVED) ? "_" : "", id)
     return Symbol(replace(cleansed, r"(_)\1+"=>"_"))
 end
 
