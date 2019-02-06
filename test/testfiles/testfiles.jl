@@ -479,6 +479,11 @@ testfiles = [
         NamedTuple{(:col1, :col2, :col3),Tuple{Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64}}},
         (col1 = Union{Missing, Int64}[1, 4, 7], col2 = Union{Missing, Int64}[2, 5, 8], col3 = Union{Missing, Int64}[3, 6, 9])
     ),
+    ("test_delim.wsv", NamedTuple(),
+        (3, 3),
+        NamedTuple{(:col1, :col2, :col3),Tuple{Union{Missing, Int64},Union{Missing, Int64},Union{Missing, Int64}}},
+        (col1 = Union{Missing, Int64}[1, 4, 7], col2 = Union{Missing, Int64}[2, 5, 8], col3 = Union{Missing, Int64}[3, 6, 9])
+    ),
     # #351
     ("test_comment_first_row.csv", (allowmissing=:auto, comment="#"),
         (2, 3),

@@ -139,11 +139,17 @@ function File(source::Union{String, IO};
     consumeBOM!(io)
 
     kwargs = getkwargs(dateformat, decimal, getbools(truestrings, falsestrings))
-    if isa(delim, Nothing)
+    if delim === nothing
         if isa(source, AbstractString)
-            delim = endswith(source, ".tsv") ? '\t' : ','
+            if endswith(source, ".tsv")
+                delim = "\t"
+            elseif endswith(source, ".wsv")
+                delim = " "
+            else
+                delim = ","
+            end
         else
-            delim = ','
+            delim = ","
         end
     end
     d = string(delim)
