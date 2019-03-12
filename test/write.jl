@@ -22,8 +22,7 @@ using Dates, WeakRefStrings, CategoricalArrays, Tables
     @test String(take!(io)) == "1,4,7\n2,5,8\n3,6,9\n"
 
     # various types
-    data = codeunits("hey there sailor")
-    weakrefs = WeakRefStringArray(data, [WeakRefString(pointer(data), 3), WeakRefString(pointer(data), 3), WeakRefString(pointer(data), 3)])
+    weakrefs = StringVector{WeakRefString{UInt8}}(["hey", "hey", "hey"])
     cats = CategoricalVector{String, UInt32}(["b", "a", "b"])
 
     (col1=[true, false, true],
@@ -32,7 +31,7 @@ using Dates, WeakRefStrings, CategoricalArrays, Tables
      col4=[Date(2017, 1, 1), Date(2018, 1, 1), Date(2019, 1, 1)],
      col5=[DateTime(2017, 1, 1, 4, 5, 6, 7), DateTime(2018, 1, 1, 4, 5, 6, 7), DateTime(2019, 1, 1, 4, 5, 6, 7)],
      col6=["hey", "there", "sailor"],
-     col7=[WeakRefString(pointer(data), 3), WeakRefString(pointer(data), 3), WeakRefString(pointer(data), 3)],
+     col7=[weakrefs[1], weakrefs[2], weakrefs[3]],
      col8=weakrefs,
      col9=cats,
     ) |> CSV.write(io)
