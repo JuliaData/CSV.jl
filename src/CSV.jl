@@ -42,7 +42,7 @@ end
 const EMPTY_TYPEMAP = Dict{Type, Type}()
 
 """
-    CSV.File(source::Union{String, IO}; kwargs...) => CSV.File
+    CSV.File(source; kwargs...) => CSV.File
 
 Read a csv input (a filename given as a String, or any other IO source), returning a `CSV.File` object.
 Opens the file and uses passed arguments to detect the number of columns and column types.
@@ -96,7 +96,7 @@ Supported keyword arguments include:
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with missing values
   * `silencewarnings::Bool=false`: whether invalid value warnings should be silenced (requires `strict=false`)
 """
-function File(source::Union{String, IO};
+function File(source;
     # file options
     # header can be a row number, range of rows, or actual string vector
     header::Union{Integer, UnitRange{Int}, Vector}=1,
@@ -132,7 +132,7 @@ function File(source::Union{String, IO};
     debug::Bool=false,
     kw...)
 
-    isa(source, AbstractString) && (isfile(source) || throw(ArgumentError("\"$source\" is not a valid file")))
+    !isa(source, IO) && (isfile(source) || throw(ArgumentError("\"$source\" is not a valid file")))
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
     io = getio(source, use_mmap)
 
@@ -211,9 +211,9 @@ include("filedetection.jl")
 include("typedetection.jl")
 include("tables.jl")
 
-getio(str::String, use_mmap) = use_mmap ? IOBuffer(Mmap.mmap(str)) : Parsers.BufferedIO(open(str))
+getio(filename, use_mmap) = use_mmap ? IOBuffer(Mmap.mmap(filename)) : Parsers.BufferedIO(open(filename))
 getio(io::IO, use_mmap) = Parsers.BufferedIO(io)
-getname(str::String) = str
+getname(filename) = String(filename)
 getname(io::I) where {I <: IO} = string("<", I, ">")
 
 function consumeBOM!(io)
@@ -269,7 +269,7 @@ function __init__()
 end
 
 """
-`CSV.read(fullpath::Union{AbstractString,IO}, sink=DataFrame; kwargs...)` => `typeof(sink)`
+`CSV.read(fullpath, sink=DataFrame; kwargs...)` => `typeof(sink)`
 
 Parses a delimited file into a Julia structure (a DataFrame by default, but any valid Tables.jl sink function can be provided).
 
@@ -309,7 +309,7 @@ Supported keyword arguments include:
 """
 function read end
 
-function read(fullpath::Union{AbstractString,IO}, sink=DataFrame, args...; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), kwargs...)
+function read(fullpath, sink=DataFrame, args...; append::Bool=false, transforms::AbstractDict=Dict{Int,Function}(), kwargs...)
     if !isempty(args)
         Base.depwarn("`CSV.read(source, $sink, $args)` is deprecated; pass a valid Tables.jl sink function as the 2nd argument directly", nothing)
         sink = sink(args...)
