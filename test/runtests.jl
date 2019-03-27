@@ -1,4 +1,5 @@
-using Test, CSV, Dates, Tables, WeakRefStrings, CategoricalArrays, DataFrames
+using Test, CSV, Dates, Tables, WeakRefStrings, CategoricalArrays, DataFrames, PooledArrays
+using DataStructures: OrderedDict
 
 const dir = joinpath(dirname(pathof(CSV)), "../test/testfiles")
 
@@ -50,23 +51,23 @@ end
     3,3.0,"sailor"
     """
 
-    df = CSV.read(IOBuffer(csv), transforms=Dict{String, Base.Callable}("C" => Symbol))
+    df = CSV.read(IOBuffer(csv)) |> transform(Dict{String, Base.Callable}("C" => Symbol)) |> DataFrame
     @test df.C == [:hey, :there, :sailor]
 
-    df = CSV.read(IOBuffer(csv); transforms=Dict("A"=>x->x+1))
+    df = CSV.read(IOBuffer(csv)) |> transform(Dict("A"=>x->x+1)) |> DataFrame
     @test isequal(df.A, [2, missing, 4])
     @test typeof(df.A) == Vector{Union{Missing, Int64}}
     @test size(df) == (3, 3)
 
-    df = CSV.read(IOBuffer(csv); transforms=Dict("A"=>x->coalesce(x+1, 0)))
+    df = CSV.read(IOBuffer(csv)) |> transform(Dict("A"=>x->coalesce(x+1, 0))) |> DataFrame
     @test df.A == [2, 0, 4]
     @test eltype(df.A) <: Signed
 
-    df = CSV.read(IOBuffer(csv); transforms=Dict("A"=>x->coalesce(x+1, 0.0)))
+    df = CSV.read(IOBuffer(csv)) |> transform(Dict("A"=>x->coalesce(x+1, 0.0))) |> DataFrame
     @test df.A == [2, 0.0, 4]
     @test eltype(df.A) <: Real
 
-    df = CSV.read(IOBuffer(csv); transforms=Dict(2=>x->x==2.0 ? missing : x))
+    df = CSV.read(IOBuffer(csv)) |> transform(Dict(2=>x->x==2.0 ? missing : x)) |> DataFrame
     @test size(df) == (3, 3)
     @test isequal(df.B, [1.0, missing, 3.0])
     @test typeof(df.B) == Vector{Union{Float64, Missing}}
@@ -120,7 +121,5 @@ end
     @test v == "c"
     @test levels(v.pool) == ["a", "b", "c"]
 end
-
-include("deprecated.jl")
 
 end

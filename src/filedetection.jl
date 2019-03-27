@@ -1,36 +1,3 @@
-const RESERVED = Set(["local", "global", "export", "let",
-    "for", "struct", "while", "const", "continue", "import",
-    "function", "if", "else", "try", "begin", "break", "catch",
-    "return", "using", "baremodule", "macro", "finally",
-    "module", "elseif", "end", "quote", "do"])
-
-normalizename(name::Symbol) = name
-function normalizename(name::String)
-    uname = strip(Unicode.normalize(name))
-    id = Base.isidentifier(uname) ? uname : map(c->Base.is_id_char(c) ? c : '_', uname)
-    cleansed = string((isempty(id) || !Base.is_id_start_char(id[1]) || id in RESERVED) ? "_" : "", id)
-    return Symbol(replace(cleansed, r"(_)\1+"=>"_"))
-end
-
-function makeunique(names)
-    set = Set(names)
-    length(set) == length(names) && return names
-    nms = Symbol[]
-    for nm in names
-        if nm in nms
-            k = 1
-            newnm = Symbol("$(nm)_$k")
-            while newnm in set || newnm in nms
-                k += 1
-                newnm = Symbol("$(nm)_$k")
-            end
-            nm = newnm
-        end
-        push!(nms, nm)
-    end
-    return nms
-end
-
 function skiptoheader!(parsinglayers, io, row, header)
     while row < header
         while !eof(io)
@@ -56,7 +23,7 @@ function countfields(io, parsinglayers)
     return rows
 end
 
-function datalayout_transpose(header, parsinglayers, io, datarow, footerskip, normalizenames)
+function datalayout_transpose(header, parsinglayers, io, datarow, normalizenames)
     if isa(header, Integer) && header > 0
         # skip to header column to read column names
         row = skiptoheader!(parsinglayers, io, 1, header)
@@ -106,7 +73,6 @@ function datalayout_transpose(header, parsinglayers, io, datarow, footerskip, no
         end
         Parsers.fastseek!(io, datapos)
     end
-    rows = rows - footerskip # rows now equals the actual number of rows in the dataset
     return rows, makeunique(map(x->normalizenames ? normalizename(x) : Symbol(x), columnnames)), columnpositions
 end
 
@@ -159,13 +125,14 @@ function datalayout(header::Vector, parsinglayers, io, datarow, normalizenames, 
     return columnnames, datapos
 end
 
-const READLINE_RESULT = Parsers.Result(Tuple{Ptr{UInt8}, Int})
+const READLINE_RESULT = [Parsers.Result(Tuple{Ptr{UInt8}, Int})]
 # readline! is used for implementation of skipto!
 function readline!(layers, io::IO)
     eof(io) && return
+    result = READLINE_RESULT[Threads.threadid()]
     while true
-        READLINE_RESULT.code = Parsers.SUCCESS
-        res = Parsers.parse!(layers, io, READLINE_RESULT)
+        result.code = Parsers.SUCCESS
+        res = Parsers.parse!(layers, io, result)
         Parsers.ok(res.code) || throw(Parsers.Error(res))
         (newline(res.code) || eof(io)) && break
     end
@@ -180,7 +147,7 @@ function skipto!(layers, io::IO, cur, dest)
     return
 end
 
-const READSPLITLINE_RESULT = Parsers.Result(String)
+const READSPLITLINE_RESULT = [Parsers.Result(String)]
 const DELIM_NEWLINE = Parsers.DELIMITED | Parsers.NEWLINE
 
 readsplitline(io::IO; delim=",", cmt=nothing, ignorerepeated=false) = readsplitline(Parsers.Delimited(Parsers.Quoted(), delim; newline=true), io, cmt, ignorerepeated)
@@ -188,7 +155,7 @@ function readsplitline(layers::Parsers.Delimited, io::IO, cmt=nothing, ignorerep
     vals = Union{String, Missing}[]
     eof(io) && return vals
     col = 1
-    result = READSPLITLINE_RESULT
+    result = READSPLITLINE_RESULT[Threads.threadid()]
     while true
         consumecommentedline!(layers, io, cmt)
         ignorerepeated && Parsers.checkdelim!(layers, io)
@@ -202,26 +169,32 @@ function readsplitline(layers::Parsers.Delimited, io::IO, cmt=nothing, ignorerep
         (result.code & Parsers.DELIMITED) > 0 && continue
         (newline(result.code) || eof(io)) && break
     end
+
     return vals
 end
 
 consumecommentedline!(layers, io, ::Nothing) = nothing
 function consumecommentedline!(layers, io, comment::Parsers.Trie)
-    while Parsers.match!(comment, io, READLINE_RESULT, false)
+    result = READLINE_RESULT[Threads.threadid()]
+    while Parsers.match!(comment, io, result, false)
         readline!(layers, io)
     end
 end
 
-function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Nothing, layers, comment, ignorerepeated)
+function guessnrows(io::IO, q::UInt8, e::UInt8, layers, comment, ignorerepeated)
+    fs = bytesavailable(io)
     consumecommentedline!(layers, io, comment)
     ignorerepeated && Parsers.checkdelim!(layers, io)
-    nl = Int64[position(io)] # we always start at the beginning of the first data row
+    nbytes = 0
+    nlines = 0
     b = 0x00
-    while !eof(io)
+    while !eof(io) && nlines < 10
         b = Parsers.readbyte(io)
+        nbytes += 1
         if b === q
             while !eof(io)
                 b = Parsers.readbyte(io)
+                nbytes += 1
                 if b === e
                     if eof(io)
                         break
@@ -229,6 +202,7 @@ function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Nothing, layers, commen
                         break
                     end
                     b = Parsers.readbyte(io)
+                    nbytes += 1
                 elseif b === q
                     break
                 end
@@ -236,54 +210,14 @@ function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Nothing, layers, commen
         elseif b === UInt8('\n')
             consumecommentedline!(layers, io, comment)
             ignorerepeated && Parsers.checkdelim!(layers, io)
-            !eof(io) && push!(nl, position(io))
+            nlines += 1
         elseif b === UInt8('\r')
             !eof(io) && Parsers.peekbyte(io) === UInt8('\n') && Parsers.readbyte(io)
             consumecommentedline!(layers, io, comment)
             ignorerepeated && Parsers.checkdelim!(layers, io)
-            !eof(io) && push!(nl, position(io))
+            nlines += 1
         end
     end
-    return nl
-end
-
-function rowpositions(io::IO, q::UInt8, e::UInt8, limit::Int, layers, comment, ignorerepeated)
-    nl = Vector{Int64}(undef, limit)
-    limit == 0 && return nl
-    consumecommentedline!(layers, io, comment)
-    ignorerepeated && Parsers.checkdelim!(layers, io)
-    nl[1] = position(io) # we always start at the beginning of the first data row
-    b = 0x00
-    i = 2
-    while !eof(io) && i <= limit
-        b = Parsers.readbyte(io)
-        if b === q
-            while !eof(io)
-                b = Parsers.readbyte(io)
-                if b === e
-                    if eof(io)
-                        break
-                    elseif e === q && Parsers.peekbyte(io) !== q
-                        break
-                    end
-                    b = Parsers.readbyte(io)
-                elseif b === q
-                    break
-                end
-            end
-        elseif b === UInt8('\n')
-            consumecommentedline!(layers, io, comment)
-            ignorerepeated && Parsers.checkdelim!(layers, io)
-            !eof(io) && setindex!(nl, position(io), i)
-            i += 1
-        elseif b === UInt8('\r')
-            !eof(io) && Parsers.peekbyte(io) === UInt8('\n') && Parsers.readbyte(io)
-            consumecommentedline!(layers, io, comment)
-            ignorerepeated && Parsers.checkdelim!(layers, io)
-            !eof(io) && setindex!(nl, position(io), i)
-            i += 1
-        end
-    end
-    (i-1) < limit && resize!(nl, i-1)
-    return nl
+    guess = fs / (nbytes / (nlines + 1)) * 1.1
+    return isfinite(guess) ? ceil(Int, guess) : 0
 end

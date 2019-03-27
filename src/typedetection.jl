@@ -1,24 +1,3 @@
-const EMPTY    = 0b00000000 % Int8
-const MISSING  = 0b10000000 % Int8
-const INT      = 0b00000001 % Int8
-const FLOAT    = 0b00000010 % Int8
-const DATE     = 0b00000100 % Int8
-const DATETIME = 0b00001000 % Int8
-const BOOL     = 0b00010000 % Int8
-const STRING   = 0b00100000 % Int8
-const USER     = 0b01111111 % Int8
-
-typecode(::Missing) = MISSING
-typecode(::Int64) = INT
-typecode(::Float64) = FLOAT
-typecode(::Date) = DATE
-typecode(::DateTime) = DATETIME
-typecode(::Bool) = BOOL
-typecode(::String) = STRING
-typecode(::Tuple{Ptr{UInt8}, Int}) = STRING
-typecode(::Type{Union{}}) = EMPTY
-typecode(::Type{Missing}) = MISSING
-typecode(x) = USER
 
 const TYPEMAP = Dict(
     EMPTY    => Union{},
@@ -195,18 +174,4 @@ function detecttype(prevT, io, layers, kwargs, levels, row, col, categorical, la
     end
     str = trytype(io, pos, layers, Tuple{Ptr{UInt8}, Int}, kwargs, lastcode)
     return str === MISSING ? MISSING : STRING
-end
-
-function timetype(df::Dates.DateFormat)
-    date = false
-    time = false
-    for token in df.tokens
-        T = typeof(token)
-        if T == Dates.DatePart{'H'}
-            time = true
-        elseif T == Dates.DatePart{'y'} || T == Dates.DatePart{'Y'}
-            date = true
-        end
-    end
-    return ifelse(date & time, DateTime, ifelse(time, Time, Date))
 end

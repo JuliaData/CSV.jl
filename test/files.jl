@@ -1,7 +1,4 @@
-using Dates, Tables
-using DataStructures: OrderedDict
-
-include("testfiles/testfiles.jl")
+include(joinpath(dir, "testfiles.jl"))
 
 @testset "CSV.File" begin
 
@@ -54,7 +51,7 @@ df = CSV.read(joinpath(dir, "test_types.csv"), types=Dict(:string=>Union{Missing
 # #352
 @test_throws ArgumentError first(CSV.File(joinpath(dir, "test_types.csv"))).a
 
-# @time f = CSV.File(joinpath(dir, "pandas_zeros.csv"), allowmissing=:none);
+# @time f = CSV.File(joinpath(dir, "pandas_zeros.csv"), allowmissing=:none) |> columntable;
 # @time t = f |> columntable;
 # @time t = Tables.buildcolumns(nothing, Tables.rows(f));
 # using Profile
