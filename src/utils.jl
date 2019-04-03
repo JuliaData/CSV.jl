@@ -9,9 +9,13 @@ export PooledString
 
 const TypeCode = Int8
 
+# default value to signal that parsing should try to detect a type
 const EMPTY    = 0b00000000 % TypeCode
+
 # MISSING is a mask that can be combined w/ any other TypeCode
 const MISSING  = 0b10000000 % TypeCode
+
+# enum-like type codes for basic supported types
 const INT      = 0b00000001 % TypeCode
 const FLOAT    = 0b00000010 % TypeCode
 const DATE     = 0b00000011 % TypeCode
@@ -24,16 +28,20 @@ const POOL     = 0b01000000 % TypeCode
 const PSTRING  = 0b01000001 % TypeCode # PooledString
 const CSTRING  = 0b01000010 % TypeCode # CategoricalString
 
+# a user-provided type; a mask that can be combined w/ basic types
+const USER     = 0b00100000 % TypeCode
+
 missingtype(x::TypeCode) = (x & MISSING) === MISSING
 pooled(x::TypeCode) = (x & POOL) === POOL
+user(x::TypeCode) = (x & USER) === USER
 
 typecode(::Type{Missing}) = MISSING
-typecode(::Type{Int64}) = INT
-typecode(::Type{Float64}) = FLOAT
+typecode(::Type{<:Integer}) = INT
+typecode(::Type{<:AbstractFloat}) = FLOAT
 typecode(::Type{Date}) = DATE
 typecode(::Type{DateTime}) = DATETIME
 typecode(::Type{Bool}) = BOOL
-typecode(::Type{String}) = STRING
+typecode(::Type{<:AbstractString}) = STRING
 typecode(::Type{Tuple{Ptr{UInt8}, Int}}) = STRING
 typecode(::Type{PooledString}) = PSTRING
 typecode(::Type{CatStr}) = CSTRING

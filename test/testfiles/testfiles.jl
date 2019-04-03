@@ -503,4 +503,30 @@ testfiles = [
         NamedTuple{(:a, :b, :_, :Column4), Tuple{Int64, Int64, Missing, Union{Missing, String}}},
         (a = [0, 12], b = [1, 5], _ = Missing[missing, missing], Column4 = Union{Missing, String}[" comment ", missing])
     ),
+    (IOBuffer("""A,B,C\n1,1,10\n6,1"""), NamedTuple(),
+        (2, 3),
+        NamedTuple{(:A, :B, :C), Tuple{Int64, Int64, Union{Int64, Missing}}},
+        (A = [1, 6], B = [1, 1], C = [10, missing])
+    ),
+    (IOBuffer("""A;B;C\n1,1,10\n2,0,16"""), (normalizenames=true,),
+        (2, 1),
+        NamedTuple{(:A_B_C,), Tuple{Int64}},
+        (A_B_C = [1, 2],)
+    ),
+    (IOBuffer("""A;B;C\n1,1,10\n2,0,16"""), (delim=';',),
+        (2, 3),
+        NamedTuple{(:A, :B, :C), Tuple{String, Missing, Missing}},
+        (A = ["1,1,10", "2,0,16"], B = [missing, missing], C = [missing, missing])
+    ),
+    (IOBuffer("""a b c d e\n1 2  3 4 5\n1 2 3  4 5\n1  2 3  4 5"""), (delim=' ',),
+        (3, 5),
+        NamedTuple{(:a, :b, :c, :d, :e), Tuple{Int64, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}}},
+        (a = [1, 1, 1], b = [2, 2, missing], c = [missing, 3, 2], d = [3, missing, 3], e = [4, 4, missing])
+    ),
+    # 323
+    (IOBuffer("a0001000\na0001000"), (datarow=1, categorical=true),
+        (2, 1),
+        NamedTuple{(:Column1,), Tuple{CategoricalString{UInt32}}},
+        (Column1 = ["a0001000", "a0001000"],)
+    ),
 ];

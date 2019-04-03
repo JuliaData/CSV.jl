@@ -48,11 +48,11 @@ end
 
 # "materialize" a CSV.Array as a real Array/CategoricalArray/PooledArray/StringArray
 # and resize the resulting array according to the # of rows we actually parsed
-function vec(buf, x::Array, rows, E, pool, categorical)
+function vec(buf, x::Array, rows, E, pool)
     if pooled(x.typecode)
         if pool !== false
             A = PooledArray(PooledArrays.RefArray(x.refs), missingtype(x.typecode) ? x.poolm : x.pool)
-        elseif categorical !== false
+        else
             if missingtype(x.typecode)
                 delete!(x.poolm, missing)
                 pool = CategoricalPool(convert(Dict{String, UInt32}, x.poolm))
@@ -183,7 +183,7 @@ function Tables.columns(f::File{transpose}) where {transpose}
         end
     end
     finalrow = row
-    return DataFrame(AbstractVector[vec(io.data, x, finalrow, f.escapestring, f.pool, f.categorical) for x in columns], f.names)
+    return DataFrame(AbstractVector[vec(io.data, x, finalrow, f.escapestring, f.pool) for x in columns], f.names)
 end
 
 @noinline notenoughcolumns(cols, ncols, row) = println("warning: only found $cols / $ncols columns on row: $row. Filling remaining columns with `missing`...")

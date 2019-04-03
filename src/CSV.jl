@@ -36,7 +36,7 @@ end
 
 function Base.show(io::IO, f::File{transpose}) where {transpose}
     println(io, "CSV.File(\"$(f.name)\"):")
-    show(io, f.names)
+    println(io, f.names)
 end
 
 const EMPTY_POSITIONS = Int64[]
@@ -125,7 +125,7 @@ function File(source::Union{String, IO};
     truestrings::Union{Vector{String}, Nothing}=nothing,
     falsestrings::Union{Vector{String}, Nothing}=nothing,
     # type options
-    type::Type=Union{},
+    type=nothing,
     types=nothing,
     typemap::Dict=EMPTY_TYPEMAP,
     allowmissing::Symbol=:all,
@@ -185,9 +185,9 @@ function File(source::Union{String, IO};
         rowsguess = guessnrows(io, quotechar % UInt8, escapechar % UInt8, parsinglayers, cmt, ignorerepeated)
     end
 
-    T = typecode(type)
+    T = type === nothing ? EMPTY : (typecode(type) | USER)
     if types isa Vector
-        tcs = [typecode(T) for T in types]
+        tcs = [typecode(T) | USER for T in types]
     elseif types isa AbstractDict
         tcs = initialtypes(T, types, names)
     else

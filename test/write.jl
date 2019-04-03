@@ -127,4 +127,13 @@ using Dates, WeakRefStrings, CategoricalArrays, Tables
     CSV.write(  "x1.csv",  x1; delim=';' ,quotechar='"' ,escapechar='\\' )
     @test read("x1.csv", String) == "ISBN;Book_Title\n9500286327;\"Tres Mosqueteros, Los: Adaptacic\\\"n\"\n671727680;Romeo and Juliet\n385333757;Losing Julia\n"
     rm("x1.csv")
+
+    # #137
+    tbl = (a=[11,22], dt=[Date(2017,12,7), Date(2017,12,14)], dttm=[DateTime(2017,12,7), DateTime(2017,12,14)])
+    io = IOBuffer()
+    tbl |> CSV.write(io; delim='\t')
+    seekstart(io)
+    f = CSV.File(io; delim='\t')
+    @test (f |> columntable) == tbl
+
 end
