@@ -1,6 +1,8 @@
 module CSV
 
-using Mmap, Dates, Random, Unicode, Parsers, Tables, CategoricalArrays, PooledArrays, WeakRefStrings, DataFrames
+# stdlib
+using Mmap, Dates, Random, Unicode
+using Parsers, Tables, CategoricalArrays, PooledArrays, WeakRefStrings, DataFrames
 
 function validate(fullpath::Union{AbstractString,IO}; kwargs...)
     Base.depwarn("`CSV.validate` is deprecated. `CSV.read` now prints warnings on misshapen files.", :validate)

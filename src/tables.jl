@@ -335,7 +335,7 @@ end
         valuesm = convert(Vector{Union{Missing, Int64}}, values)
         col.typecode |= MISSING
         @inbounds valuesm[row] = missing
-        setfield!(col, TYPEINDEX[col.typecode], valuesm)
+        col.intsm = valuesm
     else
         @inbounds values[row] = r.result
     end
