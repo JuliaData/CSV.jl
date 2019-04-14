@@ -221,3 +221,41 @@ function guessnrows(io::IO, q::UInt8, e::UInt8, layers, comment, ignorerepeated)
     guess = fs / (nbytes / (nlines + 1)) * 1.1
     return isfinite(guess) ? ceil(Int, guess) : 0
 end
+
+
+
+pos = UInt32(1)
+    pos = skipto(io.data, pos, 1, dest, oq, cq, eq, ::Val{quotetype}, ::Val{newlinetype})
+function skipto(buf, pos, cur, dest, oq, cq, eq, ::Val{quotetype}, ::Val{newlinetype}) where {quotetype, newlinetype}
+    cur >= dest && return pos
+    len = length(buf)
+    pos >= len && return pos
+    ptr = pointer(buf, pos)
+    openquotes = Vec{32, UInt8}(oq)
+    closequotes = Vec{32, UInt8}(cq)
+    escapes = Vec{32, UInt8}(eq)
+    prev_iter_ends_odd_backslash = UInt32(0)
+    prev_iter_inside_quote = UInt32(0)
+    newlines = newlinetype == RETURN ? RETURNS : NEWLINES
+    while cur < dest
+        ccall("llvm.prefetch", llvmcall, Cvoid, (Ptr{UInt8}, Int32, Int32, Int32), ptr + UInt32(64), Int32(0), Int32(3), Int32(1))
+        bytes = vload(Vec{32, UInt8}, ptr)
+        quotemask, prev_iter_ends_odd_backslash, prev_iter_inside_quote = getquotemask(Val(quotetype), bytes, openquotes, closequotes, escapes, prev_iter_ends_odd_backslash, prev_iter_inside_quote)
+        newlinemask = compress(Val(32), bytes == newlines) & ~quotemask
+        nlines = count_ones(newlinemask)
+        if cur + nlines >= dest
+            off = UInt32(0)
+            while cur < dest
+                tz = Base.cttz_int(newlinemask)
+                off = tz + UInt32(1)
+                newlinemask = newlinemask & (newlinemask - UInt32(1))
+                cur += 1
+            end
+            pos += off
+        end
+        cur += nlines
+        ptr += UInt32(32)
+        pos += UInt32(32)
+    end
+    return pos
+end

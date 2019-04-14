@@ -1,9 +1,4 @@
-newline(code::Parsers.ReturnCode) = (code & Parsers.NEWLINE) === Parsers.NEWLINE
-escapestring(code::Parsers.ReturnCode) = (code & Parsers.ESCAPED_STRING) === Parsers.ESCAPED_STRING
-quotedstring(code::Parsers.ReturnCode) = (code & Parsers.QUOTED) === Parsers.QUOTED
-sentinel(code::Parsers.ReturnCode) = (code & Parsers.SENTINEL) === Parsers.SENTINEL && Parsers.ok(code)
-
-const CatStr = CategoricalString{UInt32}
+# const CatStr = CategoricalString{UInt32}
 struct PooledString end
 export PooledString
 
@@ -25,17 +20,21 @@ const STRING   = 0b00000110 % TypeCode
 
 # POOL is also a mask that can be combined with PSTRING or CSTRING
 const POOL     = 0b01000000 % TypeCode
-const PSTRING  = 0b01000001 % TypeCode # PooledString
-const CSTRING  = 0b01000010 % TypeCode # CategoricalString
+const PSTRING  = 0b01000111 % TypeCode # PooledString
+const CSTRING  = 0b01001000 % TypeCode # CategoricalString
+const MISSINGTYPE = 0b00001001 % TypeCode
 
 # a user-provided type; a mask that can be combined w/ basic types
 const USER     = 0b00100000 % TypeCode
 
+const TYPEBITS = 0b00001111 % TypeCode
+
 missingtype(x::TypeCode) = (x & MISSING) === MISSING
 pooled(x::TypeCode) = (x & POOL) === POOL
 user(x::TypeCode) = (x & USER) === USER
+typebits(x::TypeCode) = x & TYPEBITS
 
-typecode(::Type{Missing}) = MISSING
+typecode(::Type{Missing}) = MISSINGTYPE
 typecode(::Type{<:Integer}) = INT
 typecode(::Type{<:AbstractFloat}) = FLOAT
 typecode(::Type{Date}) = DATE
@@ -44,7 +43,7 @@ typecode(::Type{Bool}) = BOOL
 typecode(::Type{<:AbstractString}) = STRING
 typecode(::Type{Tuple{Ptr{UInt8}, Int}}) = STRING
 typecode(::Type{PooledString}) = PSTRING
-typecode(::Type{CatStr}) = CSTRING
+# typecode(::Type{CatStr}) = CSTRING
 typecode(::Type{Union{}}) = EMPTY
 typecode(::Type{Union{T, Missing}}) where {T} = typecode(T) | MISSING
 typecode(::Type{T}) where {T} = EMPTY
@@ -67,29 +66,16 @@ const TYPECODES = Dict(
 typecodes(x::Dict) = Dict(typecode(k)=>typecode(v) for (k, v) in x)
 typecodes(x::Dict{TypeCode, TypeCode}) = x
 
-function consumeBOM!(io)
-    # BOM character detection
-    startpos = position(io)
-    if !eof(io) && Parsers.peekbyte(io) == 0xef
-        Parsers.readbyte(io)
-        (!eof(io) && Parsers.readbyte(io) == 0xbb) || Parsers.fastseek!(io, startpos)
-        (!eof(io) && Parsers.readbyte(io) == 0xbf) || Parsers.fastseek!(io, startpos)
-    end
-    return
-end
-
-function getio(source, use_mmap)
+getbuf(source::Vector{UInt8}, use_mmap) = source
+function getbuf(source, use_mmap)
     if use_mmap && source isa String
-        return IOBuffer(Mmap.mmap(source))
+        return Mmap.mmap(source)
     end
     iosource = source isa String ? open(source) : source
     A = Mmap.mmap(Vector{UInt8}, bytesavailable(iosource))
     read!(iosource, A)
-    return IOBuffer(A)
+    return A
 end
-
-getname(str::String) = str
-getname(io::I) where {I <: IO} = string("<", I, ">")
 
 getbools(::Nothing, ::Nothing) = nothing
 getbools(trues::Vector{String}, falses::Vector{String}) = Parsers.Trie(append!([x=>true for x in trues], [x=>false for x in falses]))
