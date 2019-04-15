@@ -1,4 +1,4 @@
-include(joinpath(dir, "testfiles.jl"))
+include(joinpath(dir, "testfiles.jl"));
 
 @testset "CSV.File" begin
 

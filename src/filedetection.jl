@@ -181,43 +181,97 @@ function consumecommentedline!(layers, io, comment::Parsers.Trie)
     end
 end
 
-function guessnrows(io::IO, q::UInt8, e::UInt8, layers, comment, ignorerepeated)
+consumecommentedline!(io, ::Nothing) = nothing
+function consumecommentedline!(io, comment)
+    result = READLINE_RESULT[Threads.threadid()]
+    while Parsers.match!(comment, io, result, false) && !eof(io)
+        b = Parsers.readbyte(io)
+        while !eof(io) && b !== UInt8('\n') && b !== UInt8('\r')
+            b = Parsers.readbyte(io)
+        end
+        b === UInt8('\r') && !eof(io) && Parsers.peekbyte(io) === UInt8('\n') && Parsers.readbyte(io)
+    end
+end
+
+struct ByteValueCounter
+    counts::Vector{Int64}
+    ByteValueCounter() = new(zeros(Int64, 256))
+end
+
+function incr!(c::ByteValueCounter, b::UInt8)
+    @inbounds c.counts[b] += 1
+    return
+end
+
+function guessnrows(io::IO, oq::UInt8, cq::UInt8, eq::UInt8, source, delim, comment, debug)
     fs = bytesavailable(io)
-    consumecommentedline!(layers, io, comment)
-    ignorerepeated && Parsers.checkdelim!(layers, io)
+    pos = position(io)
     nbytes = 0
+    lastbytenewline = false
     nlines = 0
+    bvc = ByteValueCounter()
     b = 0x00
+    consumecommentedline!(io, comment)
     while !eof(io) && nlines < 10
         b = Parsers.readbyte(io)
         nbytes += 1
-        if b === q
+        if b === oq
             while !eof(io)
                 b = Parsers.readbyte(io)
                 nbytes += 1
-                if b === e
+                if b === eq
                     if eof(io)
                         break
-                    elseif e === q && Parsers.peekbyte(io) !== q
+                    elseif eq === cq && Parsers.peekbyte(io) !== cq
                         break
                     end
                     b = Parsers.readbyte(io)
                     nbytes += 1
-                elseif b === q
+                elseif b === cq
                     break
                 end
             end
         elseif b === UInt8('\n')
-            consumecommentedline!(layers, io, comment)
-            ignorerepeated && Parsers.checkdelim!(layers, io)
+            consumecommentedline!(io, comment)
             nlines += 1
+            lastbytenewline = true
         elseif b === UInt8('\r')
             !eof(io) && Parsers.peekbyte(io) === UInt8('\n') && Parsers.readbyte(io)
-            consumecommentedline!(layers, io, comment)
-            ignorerepeated && Parsers.checkdelim!(layers, io)
+            consumecommentedline!(io, comment)
             nlines += 1
+            lastbytenewline = true
+        else
+            lastbytenewline = false
+            incr!(bvc, b)
         end
     end
-    guess = fs / (nbytes / (nlines + 1)) * 1.1
-    return isfinite(guess) ? ceil(Int, guess) : 0
+    nlines += !lastbytenewline
+
+     if delim === nothing
+        if isa(source, AbstractString) && endswith(source, ".tsv")
+            d = "\t"
+        elseif isa(source, AbstractString) && endswith(source, ".wsv")
+            d = " "
+        elseif nlines > 1
+            for attempted_delim in (',', '\t', ' ', '|', ';', ':')
+                debug && @show attempted_delim
+                debug && @show bvc.counts[Int(attempted_delim)]
+                debug && @show nlines
+                cnt = bvc.counts[Int(attempted_delim)]
+                if cnt > 0 && cnt % nlines == 0
+                    d = string(attempted_delim)
+                    break
+                end
+            end
+            d = ","
+        else
+            d = ","
+        end
+    else
+        d = string(delim)
+    end
+    Parsers.fastseek!(io, pos)
+    guess = fs / (nbytes / nlines) * 1.1
+    rowsguess = isfinite(guess) ? ceil(Int, guess) : 0
+    return rowsguess, d
 end
