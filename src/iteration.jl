@@ -54,7 +54,9 @@ function getcell(f::File, ::Type{T}, col::Int, row::Int) where {T}
     elseif type === POOL && f.categorical
         x = ref(f.tape[indexoffset + 1])
         return CatStr(x, f.categoricalpools[col])
-    else # STRING
+    elseif f.escapestrings[col]
+        return convert(f.quotedstringtype, WeakRefString(pointer(f.io.data, offlen >> 16), offlen & 0x000000000000ffff))
+    else
         return unsafe_string(pointer(f.io.data, offlen >> 16), offlen & 0x000000000000ffff)
     end
 end

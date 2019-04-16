@@ -32,13 +32,13 @@ f = CSV.File(IOBuffer("a\"b\n1\"\"2\"\n"); delim='"')
 @test f.types == [Int64, Int64]
 
 # 387
-f = CSV.File(IOBuffer("a,b\n1,1\n2,2\n3,3\n"))
+f = CSV.File(IOBuffer("a,b\n1,1\n1,2\n1,3\n"))
 
 for rows in Iterators.partition(f, 2)
     for row in rows
         # get last property
         getproperty(row, :b)
-        println(row.a)
+        @test row.a == 1
     end
 end
 

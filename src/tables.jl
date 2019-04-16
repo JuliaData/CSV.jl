@@ -51,11 +51,11 @@ function makecolumn(T, rows)
     return A
 end
 
-function finalcolumn(col, T, buf, E, escapestrings, refs, i, pool, categorical, categoricalpools)
+function finalcolumn(col, T, buf, QS, escapestrings, refs, i, pool, categorical, categoricalpools)
     if T === STRING
-        return StringArray{escapestrings ? E : String, 1}(buf, col.offsets, col.lengths)
+        return StringArray{escapestrings ? QS : String, 1}(buf, col.offsets, col.lengths)
     elseif T === (STRING | MISSING)
-        return StringArray{Union{escapestrings ? E : String, Missing}, 1}(buf, col.offsets, col.lengths)
+        return StringArray{Union{escapestrings ? QS : String, Missing}, 1}(buf, col.offsets, col.lengths)
     elseif pool > 0.0 && (T === POOL || (T === (POOL | MISSING)))
         refs = refs[i]
         if !categorical
@@ -140,5 +140,5 @@ function Tables.columns(f::File)
     end
     finalcolumns = columns
     finaltypecodes = typecodes
-    return DataFrame([finalcolumn(finalcolumns[i], finaltypecodes[i], f.io.data, f.escapestring, f.escapestrings[i], f.refs, i, f.pool, f.categorical, f.categoricalpools) for i = 1:ncol], f.names)
+    return DataFrame([finalcolumn(finalcolumns[i], finaltypecodes[i], f.io.data, f.quotedstringtype, f.escapestrings[i], f.refs, i, f.pool, f.categorical, f.categoricalpools) for i = 1:ncol], f.names)
 end

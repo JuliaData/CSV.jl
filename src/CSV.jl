@@ -31,7 +31,7 @@ struct File
     types::Vector{Type}
     typecodes::Vector{TypeCode}
     escapestrings::Vector{Bool}
-    escapestring
+    quotedstringtype
     refs::Vector{Dict{Union{Missing, String}, UInt32}}
     pool::Float64
     categorical::Bool
@@ -172,7 +172,7 @@ function File(source::Union{Vector{UInt8}, String, IO};
                     x->Parsers.Strip(x, d == " " ? 0x00 : ' ', d == "\t" ? 0x00 : '\t') |>
                     (openquotechar !== nothing ? x->Parsers.Quoted(x, openquotechar, closequotechar, escapechar, !whitespacedelim) : x->Parsers.Quoted(x, quotechar, escapechar, !whitespacedelim)) |>
                     x->Parsers.Delimited(x, d; ignorerepeated=ignorerepeated, newline=true)
-    escapestring = WeakRefStrings.EscapeString{oq, cq, eq}
+    quotedstringtype = WeakRefStrings.QuotedString{oq, cq, eq}
 
     if transpose
         # need to determine names, columnpositions (rows), and ref
@@ -223,7 +223,7 @@ function File(source::Union{Vector{UInt8}, String, IO};
     else
         categoricalpools = EMPTY_CATEGORICAL_POOLS
     end
-    return File(getname(source), io, names, types, typecodes, escapestrings, escapestring, refs, pool[], catg, categoricalpools, rows - footerskip, ncols, tape)
+    return File(getname(source), io, names, types, typecodes, escapestrings, quotedstringtype, refs, pool[], catg, categoricalpools, rows - footerskip, ncols, tape)
 end
 
 # using Parsers, Mmap
