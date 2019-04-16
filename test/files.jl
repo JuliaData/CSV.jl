@@ -13,11 +13,10 @@ end
 @test_throws ArgumentError CSV.File(joinpath(dir, "test_no_header.csv"); datarow=1, header=2);
 
 #test bad types
-# f = CSV.File(joinpath(dir, "test_float_in_int_column.csv"); types=[Int, Int, Int]) |> columntable
-# @test_throws CSV.Error (f |> columntable)
+@test_throws CSV.Error CSV.File(joinpath(dir, "test_float_in_int_column.csv"); types=[Int, Int, Int], strict=true)
 
 # Integer overflow; #100
-# @test_throws CSV.Error (CSV.File(joinpath(dir, "int8_overflow.csv"); types=[Int8], strict=true) |> columntable)
+@test_throws CSV.Error CSV.File(joinpath(dir, "int64_overflow.csv"); types=[Int8], strict=true)
 
 # #172
 @test_throws ArgumentError CSV.File(joinpath(dir, "test_newline_line_endings.csv"), types=Dict(1=>Integer))
@@ -37,11 +36,11 @@ tmp = CSV.File(IOBuffer(" \"2018-01-01\", \"1\" ,1,2,3"), datarow=1) |> DataFram
 @test tmp.Column5[1] == 3
 
 # #329
-# df = CSV.read(joinpath(dir, "test_types.csv"), types=Dict(:string=>Union{Missing,DateTime}), silencewarnings=true)
-# @test df.string[1] === missing
+df = CSV.read(joinpath(dir, "test_types.csv"), types=Dict(:string=>Union{Missing,DateTime}), silencewarnings=true)
+@test df.string[1] === missing
 
 # #352
-# @test_throws ArgumentError first(CSV.File(joinpath(dir, "test_types.csv"))).a
+@test_throws ArgumentError first(CSV.File(joinpath(dir, "test_types.csv"))).a
 
 # @time f = CSV.File(joinpath(dir, "pandas_zeros.csv"), allowmissing=:none) |> columntable;
 # @time t = f |> columntable;

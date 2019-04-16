@@ -28,25 +28,30 @@ struct File
     name::String
     io::IOBuffer
     names::Vector{Symbol}
+    types::Vector{Type}
     typecodes::Vector{TypeCode}
     escapestrings::Vector{Bool}
     escapestring
     refs::Vector{Dict{Union{Missing, String}, UInt32}}
     pool::Float64
     categorical::Bool
+    categoricalpools::Vector{CategoricalPool{String, UInt32, CatStr}}
     rows::Int64
+    cols::Int64
     tape::Vector{UInt64}
 end
 
 function Base.show(io::IO, f::File)
     println(io, "CSV.File(\"$(f.name)\"):")
-    println(io, f.names)
+    println(io, "Size: $(f.rows) x $(f.cols)")
+    show(io, Tables.schema(f))
 end
 
 const EMPTY_POSITIONS = Int64[]
 const EMPTY_TYPEMAP = Dict{TypeCode, TypeCode}()
 const EMPTY_REFS = Dict{Union{Missing, String}, UInt32}[]
 const EMPTY_LAST_REFS = UInt32[]
+const EMPTY_CATEGORICAL_POOLS = CategoricalPool{String, UInt32, CatStr}[]
 
 """
     CSV.File(source::Union{String, IO}; kwargs...) => CSV.File
@@ -112,7 +117,7 @@ function File(source::Union{Vector{UInt8}, String, IO};
     # by default, data starts immediately after header or start of file
     datarow::Int=-1,
     skipto::Union{Nothing, Int}=nothing,
-    footerskip=nothing,
+    footerskip::Int=0,
     limit::Int=typemax(Int64),
     transpose::Bool=false,
     comment::Union{String, Nothing}=nothing,
@@ -144,7 +149,6 @@ function File(source::Union{Vector{UInt8}, String, IO};
 
     isa(source, AbstractString) && (isfile(source) || throw(ArgumentError("\"$source\" is not a valid file")))
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
-    footerskip !== nothing && @warn "`footerskip` keyword argument no longer supported; use `skipto` and `limit` keyword arguments to control which rows are parsed"
     header = (isa(header, Integer) && header == 1 && (datarow == 1 || skipto == 1)) ? -1 : header
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
     datarow = skipto !== nothing ? skipto : (datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow) # by default, data starts on line after header
@@ -181,11 +185,14 @@ function File(source::Union{Vector{UInt8}, String, IO};
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
 
+    catg = false
     T = type === nothing ? EMPTY : (typecode(type) | USER)
     if types isa Vector
         typecodes = TypeCode[typecode(T) | USER for T in types]
+        catg = any(T->T <: CatStr, types)
     elseif types isa AbstractDict
         typecodes = initialtypes(T, types, names)
+        catg = any(T->T <: CatStr, values(types))
     else
         typecodes = TypeCode[T for _ = 1:length(names)]
     end
@@ -195,8 +202,8 @@ function File(source::Union{Vector{UInt8}, String, IO};
     ncols = length(names)
     tape = Mmap.mmap(Vector{UInt64}, roundup((rowsguess * ncols * 2) << 1, Mmap.PAGESIZE))
     escapestrings = fill(false, ncols)
-    catg = categorical === true || categorical isa Float64
-    pool = Ref{Float64}(pool === true || categorical === true ? 1.0 :
+    catg |= categorical === true || categorical isa Float64
+    pool = Ref{Float64}(pool === true || categorical === true || any(pooled, typecodes) ? 1.0 :
                         pool isa Float64 ? pool :
                         categorical isa Float64 ? categorical : 0.0)
     refs = pool[] > 0.0 ? [Dict{Union{Missing, String}, UInt32}() for i = 1:ncols] : EMPTY_REFS
@@ -207,8 +214,16 @@ function File(source::Union{Vector{UInt8}, String, IO};
     foreach(1:ncols) do i
         typecodes[i] &= ~USER
     end
-    debug && println("typecodes after parsing: $typecodes")
-    return File(getname(source), io, names, typecodes, escapestrings, escapestring, refs, pool[], catg, rows, tape)
+    types = [pooled(T) ? catg ? CatStr : PooledString : TYPECODES[T] for T in typecodes]
+    debug && println("types after parsing: $types")
+    if catg
+        foreach(x->delete!(x, missing), refs)
+        categoricalpools = [CategoricalPool(convert(Dict{String, UInt32}, r)) for r in refs]
+        foreach(x->levels!(x, sort(levels(x))), categoricalpools)
+    else
+        categoricalpools = EMPTY_CATEGORICAL_POOLS
+    end
+    return File(getname(source), io, names, types, typecodes, escapestrings, escapestring, refs, pool[], catg, categoricalpools, rows - footerskip, ncols, tape)
 end
 
 # using Parsers, Mmap
@@ -246,7 +261,7 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, escapestrings, io, li
                 elseif type === BOOL
                     nT = parsevalue!(Bool, tape, tapeidx, io, parsinglayers, T, kwargs, strict, silencewarnings, lastcode, escapestrings, row, i)
                 elseif type === POOL
-                    @inbounds nT = parsepooled!(i, tape, tapeidx, io, parsinglayers, T, lastcode, rowsguess, pool, refs[i], lastrefs)
+                    nT = parsepooled!(i, tape, tapeidx, io, parsinglayers, T, lastcode, rowsguess, pool, refs[i], lastrefs)
                 else # STRING
                     nT = parsestring!(i, tape, tapeidx, io, parsinglayers, T, lastcode, escapestrings)
                 end
@@ -290,7 +305,7 @@ end
 @noinline notenoughcolumns(cols, ncols, row) = println("warning: only found $cols / $ncols columns on row: $row. Filling remaining columns with `missing`...")
 @noinline toomanycolumns(cols, row) = println("warning: parsed expected $cols columns, but didn't reach end of line on row: $row. Ignoring rest of row...")
 @noinline stricterror(io, r, row, col) = throw(Error(Parsers.Error(io, r), row, col))
-@noinline warning(T, row, col, r) = println("warning: failed parsing $T on row=$row, col=$col, error=$(Parsers.codes(r.code))")
+@noinline warning(T, row, col, r) = println("warning: failed parsing $(TYPECODES[T & ~USER]) on row=$row, col=$col, error=$(Parsers.codes(r.code))")
 
 @inline function setposlen!(tape, tapeidx, r)
     pos = sentinel(r.code) ? MISSING_BIT : (UInt64(r.pos) << 16)
@@ -387,6 +402,7 @@ function parseint!(tape, tapeidx, io, layers, T, kwargs, strict, silencewarnings
                 r.code |= Parsers.SENTINEL
                 silencewarnings || warning(Int64, row, col, r)
                 T |= MISSING
+                tape[tapeidx] = MISSING_BIT
             else
                 stricterror(io, r, row, col)
             end
@@ -423,6 +439,7 @@ function parsevalue!(::Type{type}, tape, tapeidx, io, layers, T, kwargs, strict,
                 r.code |= Parsers.SENTINEL
                 silencewarnings || warning(T, row, col, r)
                 T |= MISSING
+                tape[tapeidx] = MISSING_BIT
             else
                 stricterror(io, r, row, col)
             end
@@ -476,6 +493,7 @@ function parsepooled!(col, tape, tapeidx, io, parsinglayers, T, lastcode, rowsgu
 end
 
 include("tables.jl")
+include("iteration.jl")
 include("write.jl")
 
 function __init__()

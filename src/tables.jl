@@ -1,6 +1,6 @@
 Tables.istable(::Type{<:File}) = true
 Tables.columnaccess(::Type{<:File}) = true
-Tables.schema(f::File)  = nothing
+Tables.schema(f::File)  = Tables.Schema(f.names, f.types)
 
 fieldindex(::Type{Missing}) = 3
 fieldindex(::Type{Int64}) = 4
@@ -51,7 +51,7 @@ function makecolumn(T, rows)
     return A
 end
 
-function finalcolumn(col, T, buf, E, escapestrings, refs, i, pool, categorical)
+function finalcolumn(col, T, buf, E, escapestrings, refs, i, pool, categorical, categoricalpools)
     if T === STRING
         return StringArray{escapestrings ? E : String, 1}(buf, col.offsets, col.lengths)
     elseif T === (STRING | MISSING)
@@ -61,14 +61,10 @@ function finalcolumn(col, T, buf, E, escapestrings, refs, i, pool, categorical)
         if !categorical
             return PooledArray(PooledArrays.RefArray(col.lengths), missingtype(T) ? refs : convert(Dict{String, UInt32}, refs))
         else
+            pool = categoricalpools[i]
             if missingtype(T)
-                delete!(refs, missing)
-                pool = CategoricalPool(convert(Dict{String, UInt32}, refs))
-                levels!(pool, sort(levels(pool)))
                 return CategoricalArray{Union{Missing, String}, 1}(col.lengths, pool)
             else
-                pool = CategoricalPool(convert(Dict{String, UInt32}, refs))
-                levels!(pool, sort(levels(pool)))
                 return CategoricalArray{String, 1}(col.lengths, pool)
             end
         end
@@ -93,8 +89,7 @@ function setchunkm!(A, row, chunkrows, tape, tapeidx, ncol, f)
 end
 
 function Tables.columns(f::File)
-    t = time()
-    ncol = length(f.names)
+    ncol = f.cols
     ncol == 0 && return DataFrame()
     f.rows == 0 && return DataFrame(AbstractVector[Missing[] for i = 1:ncol], f.names)
     typecodes = f.typecodes
@@ -145,6 +140,5 @@ function Tables.columns(f::File)
     end
     finalcolumns = columns
     finaltypecodes = typecodes
-    println(time() - t)
-    return DataFrame([finalcolumn(finalcolumns[i], finaltypecodes[i], f.io.data, f.escapestring, f.escapestrings[i], f.refs, i, f.pool, f.categorical) for i = 1:ncol], f.names)
+    return DataFrame([finalcolumn(finalcolumns[i], finaltypecodes[i], f.io.data, f.escapestring, f.escapestrings[i], f.refs, i, f.pool, f.categorical, f.categoricalpools) for i = 1:ncol], f.names)
 end

@@ -253,6 +253,7 @@ function guessnrows(io::IO, oq::UInt8, cq::UInt8, eq::UInt8, source, delim, comm
         elseif isa(source, AbstractString) && endswith(source, ".wsv")
             d = " "
         elseif nlines > 1
+            d = nothing
             for attempted_delim in (',', '\t', ' ', '|', ';', ':')
                 debug && @show attempted_delim
                 debug && @show bvc.counts[Int(attempted_delim)]
@@ -263,7 +264,7 @@ function guessnrows(io::IO, oq::UInt8, cq::UInt8, eq::UInt8, source, delim, comm
                     break
                 end
             end
-            d = ","
+            d = something(d, ",")
         else
             d = ","
         end

@@ -83,7 +83,7 @@ testfiles = [
         NamedTuple{(:Column1, :Column2, :Column3), Tuple{Float64, Float64, Float64}},
         (Column1 = [1.0, 4.0, 7.0], Column2 = [2.0, 5.0, 8.0], Column3 = [3.0, 6.0, 9.0])
     ),
-    ("test_2_footer_rows.csv", (header=4, limit=3),
+    ("test_2_footer_rows.csv", (header=4, footerskip=2),
         (3, 3),
         NamedTuple{(:col1, :col2, :col3), Tuple{Int64, Int64, Int64}},
         (col1 = [1, 4, 7], col2 = [2, 5, 8], col3 = [3, 6, 9])
@@ -178,7 +178,7 @@ testfiles = [
         x->x.OriginalWellName[24] == "NORTH DAKOTA STATE \"\"A\"\" #1"
     ),
     # #84
-    ("census.txt", (delim='\t', normalizenames=true),
+    ("census.txt", (normalizenames=true,),
         (3, 9),
         NamedTuple{(:GEOID, :POP10, :HU10, :ALAND, :AWATER, :ALAND_SQMI, :AWATER_SQMI, :INTPTLAT, :INTPTLONG),Tuple{Int64,Int64,Int64,Int64,Int64,Float64,Float64,Float64,Float64}},
         (GEOID = [601, 602, 603], POP10 = [18570, 41520, 54689], HU10 = [7744, 18073, 25653], ALAND = [166659789, 79288158, 81880442], AWATER = [799296, 4446273, 183425], ALAND_SQMI = [64.348, 30.613, 31.614], AWATER_SQMI = [0.309, 1.717, 0.071], INTPTLAT = [18.180555, 18.362268, 18.455183], INTPTLONG = [-66.749961, -67.17613, -67.119887])

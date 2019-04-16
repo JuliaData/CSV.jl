@@ -29,6 +29,7 @@ const DATETIME    = 0b00000101 % TypeCode
 const BOOL        = 0b00000110 % TypeCode
 const STRING      = 0b00000111 % TypeCode
 const POOL        = 0b00001000 % TypeCode
+pooled(x::TypeCode) = (x & POOL) == POOL
 
 # a user-provided type; a mask that can be combined w/ basic types
 const USER     = 0b00100000 % TypeCode
@@ -53,6 +54,7 @@ typecode(::Type{T}) where {T} = EMPTY
 typecode(x::T) where {T} = typecode(T)
 
 const TYPECODES = Dict(
+    EMPTY => Missing,
     MISSINGTYPE => Missing,
     INT => Int64,
     FLOAT => Float64,
@@ -169,9 +171,9 @@ function makeunique(names)
     return nms
 end
 
-initialtypes(T, x::AbstractDict{String}, names) = TypeCode[haskey(x, string(nm)) ? typecode(x[string(nm)]) : T for nm in names]
-initialtypes(T, x::AbstractDict{Symbol}, names) = TypeCode[haskey(x, nm) ? typecode(x[nm]) : T for nm in names]
-initialtypes(T, x::AbstractDict{Int}, names)    = TypeCode[haskey(x, i) ? typecode(x[i]) : T for i = 1:length(names)]
+initialtypes(T, x::AbstractDict{String}, names) = TypeCode[haskey(x, string(nm)) ? typecode(x[string(nm)]) | USER : T for nm in names]
+initialtypes(T, x::AbstractDict{Symbol}, names) = TypeCode[haskey(x, nm) ? typecode(x[nm]) | USER : T for nm in names]
+initialtypes(T, x::AbstractDict{Int}, names)    = TypeCode[haskey(x, i) ? typecode(x[i]) | USER : T for i = 1:length(names)]
 
 function timetype(df::Dates.DateFormat)
     date = false
