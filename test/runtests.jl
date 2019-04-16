@@ -13,6 +13,7 @@ end
 
 @testset "CSV" begin
 
+include("basics.jl")
 include("files.jl")
 include("iteration.jl")
 include("write.jl")
@@ -76,5 +77,11 @@ end
     @test v == "b"
     @test levels(v.pool) == ["a", "b", "c"]
 end
+
+# @testset "PooledArrays" begin
+
+# df = CSV.read()
+
+# end
 
 end

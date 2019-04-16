@@ -94,10 +94,11 @@ function datalayout(header::Integer, parsinglayers, io, datarow, normalizenames,
     return columnnames, datapos
 end
 
-function datalayout(header::AbstractRange, parsinglayers, io, datarow, normalizenames, cmt, ignorerepeated)
-    skipto!(parsinglayers, io, 1, first(header))
+function datalayout(header::AbstractVector{<:Integer}, parsinglayers, io, datarow, normalizenames, cmt, ignorerepeated)
+    skipto!(parsinglayers, io, 1, header[1])
     columnnames = [x for x in readsplitline(parsinglayers, io, cmt, ignorerepeated)]
-    for row = first(header):(last(header)-1)
+    for row = 2:length(header)
+        skipto!(parsinglayers, io, 1, header[row] - header[row-1])
         for (i,c) in enumerate([x for x in readsplitline(parsinglayers, io, cmt, ignorerepeated)])
             columnnames[i] *= "_" * c
         end
@@ -107,7 +108,7 @@ function datalayout(header::AbstractRange, parsinglayers, io, datarow, normalize
     return makeunique([normalizenames ? normalizename(nm) : Symbol(nm) for nm in columnnames]), datapos
 end
 
-function datalayout(header::Vector, parsinglayers, io, datarow, normalizenames, cmt, ignorerepeated)
+function datalayout(header::Union{Vector{Symbol}, Vector{String}}, parsinglayers, io, datarow, normalizenames, cmt, ignorerepeated)
     skipto!(parsinglayers, io, 1, datarow)
     datapos = position(io)
     if eof(io)

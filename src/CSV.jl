@@ -112,7 +112,7 @@ Supported keyword arguments include:
 function File(source::Union{Vector{UInt8}, String, IO};
     # file options
     # header can be a row number, range of rows, or actual string vector
-    header::Union{Integer, UnitRange{Int}, Vector}=1,
+    header::Union{Integer, Vector{Symbol}, Vector{String}, AbstractVector{<:Integer}}=1,
     normalizenames::Bool=false,
     # by default, data starts immediately after header or start of file
     datarow::Int=-1,
@@ -144,14 +144,14 @@ function File(source::Union{Vector{UInt8}, String, IO};
     pool::Union{Bool, Real}=false,
     strict::Bool=false,
     silencewarnings::Bool=false,
-    debug::Bool=false,
-    kw...)
+    debug::Bool=false)
 
     isa(source, AbstractString) && (isfile(source) || throw(ArgumentError("\"$source\" is not a valid file")))
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
+    delim !== nothing && ((delim isa Char && iscntrl(delim) && delim != '\t') || (delim isa String && any(iscntrl, delim) && !all(==('\t'), delim))) && throw(ArgumentError("invalid delim argument = '$(escape_string(string(delim)))', must be a non-control character or string without control characters"))
     header = (isa(header, Integer) && header == 1 && (datarow == 1 || skipto == 1)) ? -1 : header
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
-    datarow = skipto !== nothing ? skipto : (datarow == -1 ? (isa(header, Vector) ? 0 : last(header)) + 1 : datarow) # by default, data starts on line after header
+    datarow = skipto !== nothing ? skipto : (datarow == -1 ? (isa(header, Vector{Symbol}) || isa(header, Vector{String}) ? 0 : last(header)) + 1 : datarow) # by default, data starts on line after header
 
     debug && println("header is: $header, datarow computed as: $datarow")
     io = getio(source, use_mmap)
@@ -278,7 +278,10 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, escapestrings, io, li
                             for j = (i + 1):ncols
                                 # put in dummy missing values on the tape for missing columns
                                 tape[tapeidx] = MISSING_BIT
-                                typecodes[j] |= MISSING
+                                T = typecodes[j]
+                                if T > MISSINGTYPE
+                                    typecodes[j] |= MISSING
+                                end
                                 tapeidx += 2
                             end
                             break
@@ -302,8 +305,8 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, escapestrings, io, li
     return row
 end
 
-@noinline notenoughcolumns(cols, ncols, row) = println("warning: only found $cols / $ncols columns on row: $row. Filling remaining columns with `missing`...")
-@noinline toomanycolumns(cols, row) = println("warning: parsed expected $cols columns, but didn't reach end of line on row: $row. Ignoring rest of row...")
+@noinline notenoughcolumns(cols, ncols, row) = println("warning: only found $cols / $ncols columns on data row: $row. Filling remaining columns with `missing`...")
+@noinline toomanycolumns(cols, row) = println("warning: parsed expected $cols columns, but didn't reach end of line on data row: $row. Ignoring any extra columns on this row...")
 @noinline stricterror(io, r, row, col) = throw(Error(Parsers.Error(io, r), row, col))
 @noinline warning(T, row, col, r) = println("warning: failed parsing $(TYPECODES[T & ~USER]) on row=$row, col=$col, error=$(Parsers.codes(r.code))")
 

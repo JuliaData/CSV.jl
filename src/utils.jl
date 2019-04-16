@@ -108,8 +108,12 @@ function getio(source, use_mmap)
         return IOBuffer(Mmap.mmap(source))
     end
     iosource = source isa String ? open(source) : source
-    A = Mmap.mmap(Vector{UInt8}, bytesavailable(iosource))
-    read!(iosource, A)
+    io = IOBuffer()
+    while !eof(iosource)
+        Base.write(io, iosource)
+    end
+    A = Mmap.mmap(Vector{UInt8}, io.size)
+    copyto!(A, 1, io.data, 1, io.size)
     return IOBuffer(A)
 end
 

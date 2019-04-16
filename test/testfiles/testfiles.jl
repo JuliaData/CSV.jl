@@ -123,6 +123,12 @@ testfiles = [
         NamedTuple{(:col1_sub1_part1, :col2_sub2_part2, :col3_sub3_part3),Tuple{Int64,Int64,Int64}},
         (col1_sub1_part1 = [1, 4, 7], col2_sub2_part2 = [2, 5, 8], col3_sub3_part3 = [3, 6, 9])
     ),
+    # 343
+    ("test_header_int_list.csv", (header=[1, 3, 5],),
+        (3, 3),
+        NamedTuple{(:col1_sub1_part1, :col2_sub2_part2, :col3_sub3_part3),Tuple{Int64,Int64,Int64}},
+        (col1_sub1_part1 = [1, 4, 7], col2_sub2_part2 = [2, 5, 8], col3_sub3_part3 = [3, 6, 9])
+    ),
     ("test_basic.csv", (types=Dict(2=>Float64),),
         (3, 3),
         NamedTuple{(:col1, :col2, :col3),Tuple{Int64,Float64,Int64}},
@@ -529,4 +535,11 @@ testfiles = [
         NamedTuple{(:Column1,), Tuple{CategoricalString{UInt32}}},
         (Column1 = ["a0001000", "a0001000"],)
     ),
+    # 396
+    ("heat_flux.dat", (delim=' ', ignorerepeated=true, datarow=2, header=[:t, :heat_flux]),
+        (16001, 2),
+        NamedTuple{(:t, :heat_flux), Tuple{Float64, Float64}},
+        nothing
+    ),
+
 ];
