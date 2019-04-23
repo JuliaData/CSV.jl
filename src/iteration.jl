@@ -42,7 +42,8 @@ function getcell(f::File, ::Type{T}, col::Int, row::Int) where {T}
     if type === INT
         return int64(f.tape[indexoffset + 1])
     elseif type === FLOAT
-        return float64(f.tape[indexoffset + 1])
+        @inbounds x = f.tape[indexoffset + 1]
+        return intvalue(offlen >> 16) ? Float64(int64(x)) : float64(x)
     elseif type === DATE
         return date(f.tape[indexoffset + 1])
     elseif type === DATETIME
@@ -55,8 +56,10 @@ function getcell(f::File, ::Type{T}, col::Int, row::Int) where {T}
         x = ref(f.tape[indexoffset + 1])
         return CatStr(x, f.categoricalpools[col])
     elseif f.escapestrings[col]
-        return convert(f.quotedstringtype, WeakRefString(pointer(f.io.data, offlen >> 16), offlen & 0x000000000000ffff))
+        off = offlen >> 16
+        return convert(f.quotedstringtype, WeakRefString(pointer(f.buf, intvalue(off) ? intpos(off) : off), offlen & 0x000000000000ffff))
     else
-        return unsafe_string(pointer(f.io.data, offlen >> 16), offlen & 0x000000000000ffff)
+        off = offlen >> 16
+        return unsafe_string(pointer(f.buf, intvalue(off) ? intpos(off) : off), offlen & 0x000000000000ffff)
     end
 end

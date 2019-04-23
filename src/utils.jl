@@ -1,8 +1,3 @@
-newline(code::Parsers.ReturnCode) = (code & Parsers.NEWLINE) === Parsers.NEWLINE
-escapestring(code::Parsers.ReturnCode) = (code & Parsers.ESCAPED_STRING) === Parsers.ESCAPED_STRING
-quotedstring(code::Parsers.ReturnCode) = (code & Parsers.QUOTED) === Parsers.QUOTED
-sentinel(code::Parsers.ReturnCode) = (code & Parsers.SENTINEL) === Parsers.SENTINEL && Parsers.ok(code)
-
 const CatStr = CategoricalString{UInt32}
 struct PooledString end
 export PooledString
@@ -76,6 +71,10 @@ gettypecodes(x::Dict{TypeCode, TypeCode}) = x
 const MISSING_BIT = 0x8000000000000000
 missingvalue(x::UInt64) = (x & MISSING_BIT) == MISSING_BIT
 
+const INT_BIT = 0x0000400000000000
+intvalue(x::UInt64) = (x & INT_BIT) == INT_BIT
+intpos(x::UInt64) = (x & ~INT_BIT)
+
 # utilities to convert values to raw UInt64 and back for tape writing
 int64(x::UInt64) = Core.bitcast(Int64, x)
 float64(x::UInt64) = Core.bitcast(Float64, x)
@@ -90,22 +89,31 @@ uint64(x::Bool) = UInt64(x)
 uint64(x::Union{Date, DateTime}) = uint64(Dates.value(x))
 uint64(x::UInt32) = UInt64(x)
 
-function consumeBOM!(io)
+function consumeBOM!(source)
     # BOM character detection
-    startpos = position(io)
-    if !eof(io) && Parsers.peekbyte(io) == 0xef
-        Parsers.readbyte(io)
-        (!eof(io) && Parsers.readbyte(io) == 0xbb) || Parsers.fastseek!(io, startpos)
-        (!eof(io) && Parsers.readbyte(io) == 0xbf) || Parsers.fastseek!(io, startpos)
+    startpos = pos = 1
+    len = length(source)
+    if pos <= len && source[pos] == 0xef
+        pos += 1
+        if pos <= len && source[pos] == 0xbb
+            pos += 1
+        else
+            pos = startpos
+        end
+        if pos <= len && source[pos] == 0xbf
+            pos += 1
+        else
+            pos = startpos
+        end
     end
-    return
+    return pos
 end
 
-function getio(source, use_mmap)
+function getsource(source, use_mmap)
     if source isa Vector{UInt8}
-        return IOBuffer(source)
+        return source
     elseif use_mmap && source isa String
-        return IOBuffer(Mmap.mmap(source))
+        return Mmap.mmap(source)
     end
     iosource = source isa String ? open(source) : source
     io = IOBuffer()
@@ -114,33 +122,33 @@ function getio(source, use_mmap)
     end
     A = Mmap.mmap(Vector{UInt8}, io.size)
     copyto!(A, 1, io.data, 1, io.size)
-    return IOBuffer(A)
+    return A
 end
 
 getname(buf::Vector{UInt8}) = "<raw buffer>"
 getname(str::String) = str
 getname(io::I) where {I <: IO} = string("<", I, ">")
 
-getbools(::Nothing, ::Nothing) = nothing
-getbools(trues::Vector{String}, falses::Vector{String}) = Parsers.Trie(append!([x=>true for x in trues], [x=>false for x in falses]))
-getbools(trues::Vector{String}, ::Nothing) = Parsers.Trie(append!([x=>true for x in trues], ["false"=>false]))
-getbools(::Nothing, falses::Vector{String}) = Parsers.Trie(append!(["true"=>true], [x=>false for x in falses]))
+# getbools(::Nothing, ::Nothing) = nothing
+# getbools(trues::Vector{String}, falses::Vector{String}) = Parsers.Trie(append!([x=>true for x in trues], [x=>false for x in falses]))
+# getbools(trues::Vector{String}, ::Nothing) = Parsers.Trie(append!([x=>true for x in trues], ["false"=>false]))
+# getbools(::Nothing, falses::Vector{String}) = Parsers.Trie(append!(["true"=>true], [x=>false for x in falses]))
 
-getkwargs(df::Nothing, dec::Nothing, bools::Nothing) = NamedTuple()
-getkwargs(df::String, dec::Nothing, bools::Nothing) = (dateformat=Dates.DateFormat(df),)
-getkwargs(df::Dates.DateFormat, dec::Nothing, bools::Nothing) = (dateformat=df,)
+# getkwargs(df::Nothing, dec::Nothing, bools::Nothing) = NamedTuple()
+# getkwargs(df::String, dec::Nothing, bools::Nothing) = (dateformat=Dates.DateFormat(df),)
+# getkwargs(df::Dates.DateFormat, dec::Nothing, bools::Nothing) = (dateformat=df,)
 
-getkwargs(df::Nothing, dec::Union{UInt8, Char}, bools::Nothing) = (decimal=dec % UInt8,)
-getkwargs(df::String, dec::Union{UInt8, Char}, bools::Nothing) = (dateformat=Dates.DateFormat(df), decimal=dec % UInt8)
-getkwargs(df::Dates.DateFormat, dec::Union{UInt8, Char}, bools::Nothing) = (dateformat=df, decimal=dec % UInt8)
+# getkwargs(df::Nothing, dec::Union{UInt8, Char}, bools::Nothing) = (decimal=dec % UInt8,)
+# getkwargs(df::String, dec::Union{UInt8, Char}, bools::Nothing) = (dateformat=Dates.DateFormat(df), decimal=dec % UInt8)
+# getkwargs(df::Dates.DateFormat, dec::Union{UInt8, Char}, bools::Nothing) = (dateformat=df, decimal=dec % UInt8)
 
-getkwargs(df::Nothing, dec::Nothing, bools::Parsers.Trie) = (bools=bools,)
-getkwargs(df::String, dec::Nothing, bools::Parsers.Trie) = (dateformat=Dates.DateFormat(df), bools=bools)
-getkwargs(df::Dates.DateFormat, dec::Nothing, bools::Parsers.Trie) = (dateformat=df, bools=bools)
+# getkwargs(df::Nothing, dec::Nothing, bools::Parsers.Trie) = (bools=bools,)
+# getkwargs(df::String, dec::Nothing, bools::Parsers.Trie) = (dateformat=Dates.DateFormat(df), bools=bools)
+# getkwargs(df::Dates.DateFormat, dec::Nothing, bools::Parsers.Trie) = (dateformat=df, bools=bools)
 
-getkwargs(df::Nothing, dec::Union{UInt8, Char}, bools::Parsers.Trie) = (decimal=dec % UInt8, bools=bools)
-getkwargs(df::String, dec::Union{UInt8, Char}, bools::Parsers.Trie) = (dateformat=Dates.DateFormat(df), decimal=dec % UInt8, bools=bools)
-getkwargs(df::Dates.DateFormat, dec::Union{UInt8, Char}, bools::Parsers.Trie) = (dateformat=df, decimal=dec % UInt8, bools=bools)
+# getkwargs(df::Nothing, dec::Union{UInt8, Char}, bools::Parsers.Trie) = (decimal=dec % UInt8, bools=bools)
+# getkwargs(df::String, dec::Union{UInt8, Char}, bools::Parsers.Trie) = (dateformat=Dates.DateFormat(df), decimal=dec % UInt8, bools=bools)
+# getkwargs(df::Dates.DateFormat, dec::Union{UInt8, Char}, bools::Parsers.Trie) = (dateformat=df, decimal=dec % UInt8, bools=bools)
 
 const RESERVED = Set(["local", "global", "export", "let",
     "for", "struct", "while", "const", "continue", "import",

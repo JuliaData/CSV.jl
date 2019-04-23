@@ -26,7 +26,7 @@ end
 
 struct File
     name::String
-    io::IOBuffer
+    buf::Vector{UInt8}
     names::Vector{Symbol}
     types::Vector{Type}
     typecodes::Vector{TypeCode}
@@ -132,7 +132,7 @@ function File(source::Union{Vector{UInt8}, String, IO};
     closequotechar::Union{UInt8, Char, Nothing}=nothing,
     escapechar::Union{UInt8, Char}='"',
     dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
-    decimal::Union{UInt8, Char, Nothing}=nothing,
+    decimal::Union{UInt8, Char, Nothing}=UInt8('.'),
     truestrings::Union{Vector{String}, Nothing}=nothing,
     falsestrings::Union{Vector{String}, Nothing}=nothing,
     # type options
@@ -144,7 +144,8 @@ function File(source::Union{Vector{UInt8}, String, IO};
     pool::Union{Bool, Real}=false,
     strict::Bool=false,
     silencewarnings::Bool=false,
-    debug::Bool=false)
+    debug::Bool=false,
+    parsingdebug::Bool=false)
 
     isa(source, AbstractString) && (isfile(source) || throw(ArgumentError("\"$source\" is not a valid file")))
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
@@ -154,33 +155,33 @@ function File(source::Union{Vector{UInt8}, String, IO};
     datarow = skipto !== nothing ? skipto : (datarow == -1 ? (isa(header, Vector{Symbol}) || isa(header, Vector{String}) ? 0 : last(header)) + 1 : datarow) # by default, data starts on line after header
 
     debug && println("header is: $header, datarow computed as: $datarow")
-    io = getio(source, use_mmap)
-    consumeBOM!(io)
+    buf = getsource(source, use_mmap)
+    len = length(buf)
+    pos = consumeBOM!(buf)
 
     oq = something(openquotechar, quotechar) % UInt8
     cq = something(closequotechar, quotechar) % UInt8
     eq = escapechar % UInt8
-    cmt = comment === nothing ? nothing : Parsers.Trie(comment)
-    rowsguess, d = guessnrows(io, oq, cq, eq, source, delim, cmt, debug)
-    debug && println("estimated rows: $rowsguess")
-    debug && println("detected delimiter: \"$(escape_string(d))\"")
-
-    kwargs = getkwargs(dateformat, decimal, getbools(truestrings, falsestrings))
-    whitespacedelim = d == " " || d == "\t"
-    missingstrings = isempty(missingstrings) ? [missingstring] : missingstrings
-    parsinglayers = Parsers.Sentinel(missingstrings) |>
-                    x->Parsers.Strip(x, d == " " ? 0x00 : ' ', d == "\t" ? 0x00 : '\t') |>
-                    (openquotechar !== nothing ? x->Parsers.Quoted(x, openquotechar, closequotechar, escapechar, !whitespacedelim) : x->Parsers.Quoted(x, quotechar, escapechar, !whitespacedelim)) |>
-                    x->Parsers.Delimited(x, d; ignorerepeated=ignorerepeated, newline=true)
     quotedstringtype = WeakRefStrings.QuotedString{oq, cq, eq}
+    cmt = comment === nothing ? nothing : (pointer(comment), sizeof(comment))
+    rowsguess, del = guessnrows(buf, oq, cq, eq, source, delim, cmt, debug)
+    debug && println("estimated rows: $rowsguess")
+    debug && println("detected delimiter: \"$(escape_string(del isa UInt8 ? string(Char(del)) : del))\"")
+
+    wh1 = del == UInt(' ') || delim == " " ? 0x00 : UInt8(' ')
+    wh2 = del == UInt8('\t') || delim == "\t" ? 0x00 : UInt8('\t')
+    trues = truestrings === nothing ? nothing : truestrings
+    falses = falsestrings === nothing ? nothing : falsestrings
+    sentinel = isempty(missingstrings) ? (missingstring == "" ? missing : [missingstring]) : missingstrings
+    options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, del, decimal, trues, falses, dateformat, ignorerepeated, true, parsingdebug, strict, silencewarnings)
 
     if transpose
         # need to determine names, columnpositions (rows), and ref
-        rowsguess, names, positions = datalayout_transpose(header, parsinglayers, io, datarow, normalizenames)
+        rowsguess, names, positions = datalayout_transpose(header, buf, pos, len, options, datarow, normalizenames)
         datapos = positions[1]
     else
         positions = EMPTY_POSITIONS
-        names, datapos = datalayout(header, parsinglayers, io, datarow, normalizenames, cmt, ignorerepeated)
+        names, datapos = datalayout(header, buf, pos, len, options, datarow, normalizenames, cmt, ignorerepeated)
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
@@ -198,18 +199,17 @@ function File(source::Union{Vector{UInt8}, String, IO};
     end
     debug && println("computed typecodes are: $typecodes")
 
-    # might as well round up to the next largest pagesize, since mmap will allocate it anyway
+    # might as well round up to the next largest pagesize, since mmap aligns to it anyway
     ncols = length(names)
-    tape = Mmap.mmap(Vector{UInt64}, roundup((rowsguess * ncols * 2) << 1, Mmap.PAGESIZE))
+    tape = Mmap.mmap(Vector{UInt64}, roundup((rowsguess * ncols * 2), Mmap.PAGESIZE))
     escapestrings = fill(false, ncols)
     catg |= categorical === true || categorical isa Float64
-    pool = Ref{Float64}(pool === true || categorical === true || any(pooled, typecodes) ? 1.0 :
-                        pool isa Float64 ? pool :
-                        categorical isa Float64 ? categorical : 0.0)
-    refs = pool[] > 0.0 ? [Dict{Union{Missing, String}, UInt32}() for i = 1:ncols] : EMPTY_REFS
-    lastrefs = pool[] > 0.0 ? [UInt32(0) for i = 1:ncols] : EMPTY_LAST_REFS
+    pool = (pool === true || categorical === true || any(pooled, typecodes)) ? 1.0 :
+            pool isa Float64 ? pool : categorical isa Float64 ? categorical : 0.0
+    refs = pool > 0.0 ? [Dict{Union{Missing, String}, UInt32}() for i = 1:ncols] : EMPTY_REFS
+    lastrefs = pool > 0.0 ? [UInt32(0) for i = 1:ncols] : EMPTY_LAST_REFS
     t = time()
-    rows = parsetape(Val(transpose), ncols, gettypecodes(typemap), tape, escapestrings, io, limit, parsinglayers, cmt, ignorerepeated, positions, pool, refs, lastrefs, rowsguess, typecodes, kwargs, strict, silencewarnings)
+    rows = parsetape(Val(transpose), ncols, gettypecodes(typemap), tape, escapestrings, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options)
     debug && println("time for initial parsing to tape: $(time() - t)")
     foreach(1:ncols) do i
         typecodes[i] &= ~USER
@@ -223,59 +223,74 @@ function File(source::Union{Vector{UInt8}, String, IO};
     else
         categoricalpools = EMPTY_CATEGORICAL_POOLS
     end
-    return File(getname(source), io, names, types, typecodes, escapestrings, quotedstringtype, refs, pool[], catg, categoricalpools, rows - footerskip, ncols, tape)
+    return File(getname(source), buf, names, types, typecodes, escapestrings, quotedstringtype, refs, pool, catg, categoricalpools, rows - footerskip, ncols, tape)
 end
 
-# using Parsers, Mmap
-# transpose = false; ncols = 20; typemap = Dict{CSV.TypeCode, CSV.TypeCode}(); rowsguess = 1100000; escapestrings = fill(false, ncols); io = IOBuffer(Mmap.mmap(file)); limit = typemax(Int64); parsinglayers = Parsers.defaultparser; cmt = nothing; ignorerepeated = false; positions = Int64[]; pool = Ref(0.0); refs = Dict{Union{String, Missing}, UInt32}[]; lastrefs = UInt32[]; typecodes = Int8[]; kwargs = NamedTuple; strict = false; silencewarnings = false;
-# tape = Mmap.mmap(Vector{UInt64}, CSV.roundup((rowsguess * ncols * 2) << 1, Mmap.PAGESIZE))
-# @code_warntype debuginfo=:source CSV.parsetape(Val(transpose), ncols, CSV.gettypecodes(typemap), tape, escapestrings, io, limit, parsinglayers, cmt, ignorerepeated, positions, pool, refs, lastrefs, rowsguess, typecodes, kwargs, strict, silencewarnings)
-function parsetape(::Val{transpose}, ncols, typemap, tape, escapestrings, io, limit, parsinglayers, cmt, ignorerepeated, positions, pool, refs, lastrefs, rowsguess, typecodes, kwargs, strict, silencewarnings) where {transpose}
-    lastcode = Ref{Parsers.ReturnCode}()
+function scan(file)
+    buf = Mmap.mmap(file)
+    len = length(buf)
+    tape = Mmap.mmap(Vector{UInt64}, len >> 1)
+    pos = 112
+    tapeidx = 1
+    for row = 1:1_000_000
+        for col = 1:20
+            x, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, Parsers.XOPTIONS)
+            @inbounds tape[tapeidx] = (Core.bitcast(UInt64, vpos) << 16) | Core.bitcast(UInt64, vlen)
+            @inbounds tape[tapeidx+1] = uint64(x)
+            tapeidx += 2
+            pos += tlen
+        end
+    end
+    return tape
+end
+
+function parsetape(::Val{transpose}, ncols, typemap, tape, escapestrings, buf, pos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options::Parsers.Options{ignorerepeated}) where {transpose, ignorerepeated}
     row = 0
     tapeidx = 1
-    len = length(tape)
-    if !eof(io)
+    tapelen = length(tape)
+    if pos <= len
         while row < limit
             row += 1
-            consumecommentedline!(parsinglayers, io, cmt)
-            ignorerepeated && Parsers.checkdelim!(parsinglayers, io)
-            for i = 1:ncols
+            pos = consumecommentedline!(buf, pos, len, cmt)
+            if ignorerepeated
+                pos = Parsers.checkdelim!(buf, pos, len, options)
+            end
+            for col = 1:ncols
                 if transpose
-                    @inbounds Parsers.fastseek!(io, positions[i])
+                    @inbounds pos = positions[col]
                 end
-                @inbounds T = typecodes[i]
+                @inbounds T = typecodes[col]
                 type = typebits(T)
                 if type === EMPTY
-                    nT = parseempty!(i, tape, tapeidx, io, parsinglayers, kwargs, typemap, lastcode, escapestrings, pool, refs, lastrefs)
+                    nT, pos, code = parseempty!(tape, tapeidx, buf, pos, len, options, col, typemap, escapestrings, pool, refs, lastrefs, debug)
                 elseif type === MISSINGTYPE
-                    nT = parsemissing!(i, tape, tapeidx, io, parsinglayers, kwargs, typemap, lastcode, escapestrings, pool, refs, lastrefs)
+                    nT, pos, code = parsemissing!(tape, tapeidx, buf, pos, len, options, col, typemap, escapestrings, pool, refs, lastrefs, debug)
                 elseif type === INT
-                    nT = parseint!(tape, tapeidx, io, parsinglayers, T, kwargs, strict, silencewarnings, lastcode, escapestrings, row, i)
+                    nT, pos, code = parseint!(T, tape, tapeidx, buf, pos, len, options, row, col, escapestrings)
                 elseif type === FLOAT
-                    nT = parsevalue!(Float64, tape, tapeidx, io, parsinglayers, T, kwargs, strict, silencewarnings, lastcode, escapestrings, row, i)
+                    nT, pos, code = parsevalue!(Float64, T, tape, tapeidx, buf, pos, len, options, row, col, escapestrings)
                 elseif type === DATE
-                    nT = parsevalue!(Date, tape, tapeidx, io, parsinglayers, T, kwargs, strict, silencewarnings, lastcode, escapestrings, row, i)
+                    nT, pos, code = parsevalue!(Date, T, tape, tapeidx, buf, pos, len, options, row, col, escapestrings)
                 elseif type === DATETIME
-                    nT = parsevalue!(DateTime, tape, tapeidx, io, parsinglayers, T, kwargs, strict, silencewarnings, lastcode, escapestrings, row, i)
+                    nT, pos, code = parsevalue!(DateTime, T, tape, tapeidx, buf, pos, len, options, row, col, escapestrings)
                 elseif type === BOOL
-                    nT = parsevalue!(Bool, tape, tapeidx, io, parsinglayers, T, kwargs, strict, silencewarnings, lastcode, escapestrings, row, i)
+                    nT, pos, code = parsevalue!(Bool, T, tape, tapeidx, buf, pos, len, options, row, col, escapestrings)
                 elseif type === POOL
-                    nT = parsepooled!(i, tape, tapeidx, io, parsinglayers, T, lastcode, rowsguess, pool, refs[i], lastrefs)
+                    nT, pos, code = parsepooled!(T, tape, tapeidx, buf, pos, len, options, col, rowsguess, pool, refs[col], lastrefs)
                 else # STRING
-                    nT = parsestring!(i, tape, tapeidx, io, parsinglayers, T, lastcode, escapestrings)
+                    nT, pos, code = parsestring!(T, tape, tapeidx, buf, pos, len, options, col, escapestrings)
                 end
                 if nT !== T
-                    typecodes[i] = nT
+                    @inbounds typecodes[col] = nT
                 end
                 tapeidx += 2
                 if transpose
-                    @inbounds positions[i] = position(io)
+                    @inbounds positions[col] = pos
                 else
-                    if i < ncols
-                        if newline(lastcode[])
-                            silencewarnings || notenoughcolumns(i, ncols, row)
-                            for j = (i + 1):ncols
+                    if col < ncols
+                        if Parsers.newline(code)
+                            options.silencewarnings || notenoughcolumns(col, ncols, row)
+                            for j = (col + 1):ncols
                                 # put in dummy missing values on the tape for missing columns
                                 tape[tapeidx] = MISSING_BIT
                                 T = typecodes[j]
@@ -284,19 +299,20 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, escapestrings, io, li
                                 end
                                 tapeidx += 2
                             end
-                            break
+                            break # from for col = 1:ncols
                         end
                     else
-                        if !eof(io) && !newline(lastcode[])
-                            silencewarnings || toomanycolumns(ncols, row)
+                        if pos <= len && !Parsers.newline(code)
+                            options.silencewarnings || toomanycolumns(ncols, row)
                             # ignore the rest of the line
-                            readline!(parsinglayers, io)
+                            pos = readline!(buf, pos, len, options)
                         end
                     end
                 end
             end
-            eof(io) && break
-            if tapeidx > len
+            pos > len && break
+            # eof(io) && break
+            if tapeidx > tapelen
                 println("WARNING: didn't pre-allocate enough while parsing: preallocated=$(row)")
                 break
             end
@@ -307,163 +323,203 @@ end
 
 @noinline notenoughcolumns(cols, ncols, row) = println("warning: only found $cols / $ncols columns on data row: $row. Filling remaining columns with `missing`...")
 @noinline toomanycolumns(cols, row) = println("warning: parsed expected $cols columns, but didn't reach end of line on data row: $row. Ignoring any extra columns on this row...")
-@noinline stricterror(io, r, row, col) = throw(Error(Parsers.Error(io, r), row, col))
-@noinline warning(T, row, col, r) = println("warning: failed parsing $(TYPECODES[T & ~USER]) on row=$row, col=$col, error=$(Parsers.codes(r.code))")
+@noinline stricterror(T, buf, pos, len, code, row, col) = throw(ArgumentError("error parsing $T on row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))"))
+@noinline warning(T, buf, pos, len, code, row, col) = println("warnings: error parsing $T on row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))")
+@noinline fatalerror(buf, pos, len, code, row, col) = throw(ArgumentError("fatal error, encountered an invalidly quoted field while parsing on row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code)), check your `quotechar` arguments or manually fix the field in the file itself"))
 
-@inline function setposlen!(tape, tapeidx, r)
-    pos = sentinel(r.code) ? MISSING_BIT : (UInt64(r.pos) << 16)
-    @inbounds tape[tapeidx] = pos | UInt64(r.len)
+@inline function setposlen!(tape, tapeidx, code, pos, len)
+    pos = Parsers.sentinel(code) ? MISSING_BIT : (Core.bitcast(UInt64, pos) << 16)
+    @inbounds tape[tapeidx] = pos | Core.bitcast(UInt64, len)
     return
 end
 
-function parseempty!(col, tape, tapeidx, io, layers, kwargs, typemap, lastcode, escapestrings, pool, refs, lastrefs)
-    r = detecttype(io, layers, kwargs)
-    T = typecode(r.result)
+function parseempty!(tape, tapeidx, buf, pos, len, options, col, typemap, escapestrings, pool, refs, lastrefs, debug)
+    x, code, vpos, vlen, tlen = detecttype(buf, pos, len, options, debug)
+    T = Parsers.sentinel(code) ? MISSINGTYPE : typecode(x)
     T = get(typemap, T, T)
-    @inbounds lastcode[] = r.code
-    setposlen!(tape, tapeidx, r)
-    if MISSINGTYPE < T < STRING
-        @inbounds tape[tapeidx + 1] = uint64(r.result)
-    elseif T === STRING
-        if pool[] > 0.0
-            T = POOL
-            ref = getref!(refs[col], r.result, lastrefs, col)
-            @inbounds tape[tapeidx + 1] = uint64(ref)
-        else
-            @inbounds escapestrings[col] |= escapestring(r.code)
+    if T == INT
+        @inbounds tape[tapeidx] = ((Core.bitcast(UInt64, vpos) | INT_BIT) << 16) | Core.bitcast(UInt64, vlen)
+        @inbounds tape[tapeidx + 1] = uint64(x)
+    else
+        setposlen!(tape, tapeidx, code, vpos, vlen)
+        if MISSINGTYPE < T < STRING
+            @inbounds tape[tapeidx + 1] = uint64(x)
+        elseif T === STRING
+            if pool > 0.0
+                T = POOL
+                ref = getref!(refs[col], (pointer(buf, vpos), vlen), lastrefs, col)
+                @inbounds tape[tapeidx + 1] = uint64(ref)
+            else
+                @inbounds escapestrings[col] |= Parsers.escapedstring(code)
+            end
         end
     end
-    return T
+    return T, pos + tlen, code
 end
 
-function parsemissing!(col, tape, tapeidx, io, layers, kwargs, typemap, lastcode, escapestrings, pool, refs, lastrefs)
-    r = detecttype(io, layers, kwargs)
-    T = typecode(r.result)
+function parsemissing!(tape, tapeidx, buf, pos, len, options, col, typemap, escapestrings, pool, refs, lastrefs, debug)
+    x, code, vpos, vlen, tlen = detecttype(buf, pos, len, options, debug)
+    T = Parsers.sentinel(code) ? MISSINGTYPE : typecode(x)
     T = get(typemap, T, T)
-    @inbounds lastcode[] = r.code
-    setposlen!(tape, tapeidx, r)
-    if MISSINGTYPE < T < STRING
-        @inbounds tape[tapeidx + 1] = uint64(r.result)
-    elseif T === STRING
-        if pool[] > 0.0
-            T = POOL
-            ref = getref!(refs[col], r.result, lastrefs, col)
-            @inbounds tape[tapeidx + 1] = uint64(ref)
-        else
-            @inbounds escapestrings[col] |= escapestring(r.code)
+    if T == INT
+        @inbounds tape[tapeidx] = ((Core.bitcast(UInt64, vpos) | INT_BIT) << 16) | Core.bitcast(UInt64, vlen)
+        @inbounds tape[tapeidx + 1] = uint64(x)
+    else
+        setposlen!(tape, tapeidx, code, vpos, vlen)
+        if MISSINGTYPE < T < STRING
+            @inbounds tape[tapeidx + 1] = uint64(x)
+        elseif T === STRING
+            if pool > 0.0
+                T = POOL
+                ref = getref!(refs[col], (pointer(buf, vpos), vlen), lastrefs, col)
+                @inbounds tape[tapeidx + 1] = uint64(ref)
+            else
+                @inbounds escapestrings[col] |= Parsers.escapedstring(code)
+            end
         end
     end
-    return T === MISSINGTYPE ? T : T | MISSING
+    return T === MISSINGTYPE ? T : T | MISSING, pos + tlen, code
 end
 
-@inline function trytype(io, pos, layers, T, kwargs)
-    Parsers.fastseek!(io, pos)
-    res = Parsers.parse(layers, io, T; kwargs...)
-    return res
-end
-
-function detecttype(io, layers, kwargs)
-    pos = position(io)
-    int = trytype(io, pos, layers, Int64, kwargs)
-    Parsers.ok(int.code) && return int
-    float = trytype(io, pos, layers, Float64, kwargs)
-    Parsers.ok(float.code) && return float
-    if !haskey(kwargs, :dateformat)
+function detecttype(buf, pos, len, options, debug)
+    int, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, options)
+    if debug
+        println("type detection on: \"$(escape_string(unsafe_string(pointer(buf, pos), tlen)))\"")
+        println("attempted Int: $(Parsers.codes(code))")
+    end
+    Parsers.ok(code) && return int, code, vpos, vlen, tlen
+    float, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, options)
+    if debug
+        println("attempted Float64: $(Parsers.codes(code))")
+    end
+    Parsers.ok(code) && return float, code, vpos, vlen, tlen
+    if options.dateformat === nothing
         try
-            date = trytype(io, pos, layers, Date, kwargs)
-            Parsers.ok(date.code) && return date
+            date, code, vpos, vlen, tlen = Parsers.xparse(Date, buf, pos, len, options)
+            if debug
+                println("attempted Date: $(Parsers.codes(code))")
+            end 
+            Parsers.ok(code) && return date, code, vpos, vlen, tlen
         catch e
         end
         try
-            datetime = trytype(io, pos, layers, DateTime, kwargs)
-            Parsers.ok(datetime.code) && return datetime
+            datetime, code, vpos, vlen, tlen = Parsers.xparse(DateTime, buf, pos, len, options)
+            if debug
+                println("attempted DateTime: $(Parsers.codes(code))")
+            end
+            Parsers.ok(code) && return datetime, code, vpos, vlen, tlen
         catch e
         end
     else
         # use user-provided dateformat
-        T = timetype(kwargs.dateformat)
-        dt = trytype(io, pos, layers, T, kwargs)
-        Parsers.ok(dt.code) && return dt
+        T = timetype(options.dateformat)
+        dt, code, vpos, vlen, tlen = Parsers.xparse(T, buf, pos, len, options)
+        if debug
+            println("attempted $T: $(Parsers.codes(code))")
+        end
+        Parsers.ok(code) && return dt, code, vpos, vlen, tlen
     end
-    bool = trytype(io, pos, layers, Bool, kwargs)
-    Parsers.ok(bool.code) && return bool
-    return trytype(io, pos, layers, Tuple{Ptr{UInt8}, Int}, kwargs)
+    bool, code, vpos, vlen, tlen = Parsers.xparse(Bool, buf, pos, len, options)
+    if debug
+        println("attempted Bool: $(Parsers.codes(code))")
+    end
+    Parsers.ok(code) && return bool, code, vpos, vlen, tlen
+    str, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
+    return "", code, vpos, vlen, tlen
 end
 
-function parseint!(tape, tapeidx, io, layers, T, kwargs, strict, silencewarnings, lastcode, escapestrings, row, col)
-    r = Parsers.parse(layers, io, Int64)
-    @inbounds lastcode[] = r.code
-    if Parsers.ok(r.code)
-        if r.result !== missing
-            @inbounds tape[tapeidx + 1] = uint64(r.result)
-        else
-            T |= MISSING
-        end
-    else
-        if user(T)
-            if !strict
-                r.code |= Parsers.SENTINEL
-                silencewarnings || warning(Int64, row, col, r)
-                T |= MISSING
-                tape[tapeidx] = MISSING_BIT
-            else
-                stricterror(io, r, row, col)
+function parseint!(T, tape, tapeidx, buf, pos, len, options, row, col, escapestrings)
+    x, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, options)
+    if Parsers.succeeded(code)
+        if !Parsers.sentinel(code)
+            @inbounds tape[tapeidx + 1] = uint64(x)
+            if !user(T)
+                @inbounds tape[tapeidx] = ((Core.bitcast(UInt64, vpos) | INT_BIT) << 16) | Core.bitcast(UInt64, vlen)
             end
         else
-            Parsers.fastseek!(io, r.pos - (quotedstring(r.code) ? 1 : 0))
-            s = Parsers.parse(layers, io, Float64; kwargs...)
-            if Parsers.ok(s.code)
-                @inbounds tape[tapeidx + 1] = uint64(s.result)
+            T |= MISSING
+            @inbounds tape[tapeidx] = MISSING_BIT
+        end
+    else
+        if Parsers.invalidquotedfield(code)
+            # this usually means parsing is borked because of an invalidly quoted field, hard error
+            fatalerror(buf, pos, len, code, row, col)
+        end
+        if user(T)
+            if !options.strict
+                code |= Parsers.SENTINEL
+                options.silencewarnings || warning(Int64, buf, pos, tlen, code, row, col)
+                T |= MISSING
+                @inbounds tape[tapeidx] = MISSING_BIT
+            else
+                stricterror(Int64, buf, pos, tlen, code, row, col)
+            end
+        else
+            y, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, options)
+            if Parsers.succeeded(code)
+                @inbounds tape[tapeidx + 1] = uint64(y)
                 T = (T & ~INT) | FLOAT
             else
+                _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
                 T = (T & ~INT) | STRING
-                @inbounds escapestrings[col] |= escapestring(s.code)
+                @inbounds escapestrings[col] |= Parsers.escapedstring(code)
+            end
+            if !user(T)
+                setposlen!(tape, tapeidx, code, vpos, vlen)
             end
         end
     end
-    if !user(T)
-        setposlen!(tape, tapeidx, r)
-    end
-    return T
+    return T, pos + tlen, code
 end
 
-function parsevalue!(::Type{type}, tape, tapeidx, io, layers, T, kwargs, strict, silencewarnings, lastcode, escapestrings, row, col) where {type}
-    r = Parsers.parse(layers, io, type; kwargs...)
-    @inbounds lastcode[] = r.code
-    if Parsers.ok(r.code)
-        if r.result !== missing
-            tape[tapeidx + 1] = uint64(r.result)
+function parsevalue!(::Type{type}, T, tape, tapeidx, buf, pos, len, options, row, col, escapestrings) where {type}
+    x, code, vpos, vlen, tlen = Parsers.xparse(type, buf, pos, len, options)
+    if Parsers.succeeded(code)
+        if !Parsers.sentinel(code)
+            @inbounds tape[tapeidx + 1] = uint64(x)
         else
             T |= MISSING
         end
     else
+        if Parsers.invalidquotedfield(code)
+            # this usually means parsing is borked because of an invalidly quoted field, hard error
+            fatalerror(buf, pos, len, code, row, col)
+        end
         if user(T)
-            if !strict
-                r.code |= Parsers.SENTINEL
-                silencewarnings || warning(T, row, col, r)
+            if !options.strict
+                code |= Parsers.SENTINEL
+                options.silencewarnings || warning(type, buf, pos, tlen, code, row, col)
                 T |= MISSING
-                tape[tapeidx] = MISSING_BIT
+                @inbounds tape[tapeidx] = MISSING_BIT
             else
-                stricterror(io, r, row, col)
+                stricterror(type, buf, pos, tlen, code, row, col)
             end
         else
             T = STRING | (missingtype(T) ? MISSING : EMPTY)
-            @inbounds escapestrings[col] |= escapestring(r.code)
+            @inbounds escapestrings[col] |= Parsers.escapedstring(code)
         end
     end
     if !user(T)
-        setposlen!(tape, tapeidx, r)
+        setposlen!(tape, tapeidx, code, vpos, vlen)
     end
-    return T
+    return T, pos + tlen, code
 end
 
-@inline function parsestring!(col, tape, tapeidx, io, layers, T, lastcode, escapestrings)
-    r = Parsers.parse(layers, io, Tuple{Ptr{UInt8}, Int})
-    @inbounds lastcode[] = r.code
-    setposlen!(tape, tapeidx, r)
-    @inbounds escapestrings[col] |= escapestring(r.code)
-    return T | (sentinel(r.code) ? MISSING : EMPTY)
+@inline function parsestring!(T, tape, tapeidx, buf, pos, len, options, col, escapestrings)
+    x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
+    setposlen!(tape, tapeidx, code, vpos, vlen)
+    @inbounds escapestrings[col] |= Parsers.escapedstring(code)
+    T |= ifelse(Parsers.sentinel(code), MISSING, EMPTY)
+    return T, pos + tlen, code
 end
+
+# argh, fellow pirates beware, this be my stolen treasure
+function Base.hash(x::Tuple{Ptr{UInt8},Int}, h::UInt)
+    h += Base.memhash_seed
+    ccall(Base.memhash, UInt, (Ptr{UInt8}, Csize_t, UInt32), x[1], x[2], h % UInt32) + h
+end
+Base.isequal(x::Tuple{Ptr{UInt8}, Int}, y::String) =
+    x[2] == sizeof(y) && 0 == ccall(:memcmp, Int32, (Ptr{UInt8}, Ptr{UInt8}, UInt), x[1], y, x[2])
 
 @inline function getref!(x::Dict, key::Tuple{Ptr{UInt8}, Int}, lastrefs, col)
     index = Base.ht_keyindex2!(x, key)
@@ -477,34 +533,26 @@ end
     end
 end
 
-function parsepooled!(col, tape, tapeidx, io, parsinglayers, T, lastcode, rowsguess, pool, refs, lastrefs)
-    r = Parsers.parse(parsinglayers, io, Tuple{Ptr{UInt8}, Int})
-    @inbounds lastcode[] = r.code
-    setposlen!(tape, tapeidx, r)
-    if sentinel(r.code)
+function parsepooled!(T, tape, tapeidx, buf, pos, len, options, col, rowsguess, pool, refs, lastrefs)
+    x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
+    setposlen!(tape, tapeidx, code, vpos, vlen)
+    if Parsers.sentinel(code)
         T |= MISSING
         ref = UInt32(0)
     else
-        ref = getref!(refs, r.result, lastrefs, col)
+        ref = getref!(refs, (pointer(buf, vpos), vlen), lastrefs, col)
     end
-    if !user(T) && (length(refs) / rowsguess) > pool[]
+    if !user(T) && (length(refs) / rowsguess) > pool
         T = STRING | (missingtype(T) ? MISSING : EMPTY)
     else
         @inbounds tape[tapeidx + 1] = uint64(ref)
     end
-    return T
+    return T, pos + tlen, code
 end
 
 include("tables.jl")
 include("iteration.jl")
 include("write.jl")
-
-function __init__()
-    Threads.resize_nthreads!(VALUE_BUFFERS)
-    Threads.resize_nthreads!(READSPLITLINE_RESULT)
-    Threads.resize_nthreads!(READLINE_RESULT)
-    return
-end
 
 """
 `CSV.read(source::Union{AbstractString,IO}; kwargs...)` => `DataFrame`
@@ -545,5 +593,10 @@ Supported keyword arguments include:
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with missing values
 """
 read(source::Union{AbstractString, IO}; kwargs...) = CSV.File(source; kwargs...) |> DataFrame
+
+function __init__()
+    Threads.resize_nthreads!(VALUE_BUFFERS)
+    return
+end
 
 end # module

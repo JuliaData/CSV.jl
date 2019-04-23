@@ -43,7 +43,7 @@ testfiles = [
         NamedTuple{(), Tuple{}},
         NamedTuple()
     ),
-    ("test_empty_file_newlines.csv", NamedTuple(),
+    ("test_empty_file_newlines.csv", (normalizenames=true,),
         (9, 1),
         NamedTuple{(:Column1,), Tuple{Missing}},
         (Column1 = Missing[missing, missing, missing, missing, missing, missing, missing, missing, missing],)
@@ -506,8 +506,8 @@ testfiles = [
     # #154
     ("test_file_issue_154.csv", (normalizenames=true,),
         (2, 4),
-        NamedTuple{(:a, :b, :_, :Column4), Tuple{Int64, Int64, Missing, Union{Missing, String}}},
-        (a = [0, 12], b = [1, 5], _ = Missing[missing, missing], Column4 = Union{Missing, String}[" comment ", missing])
+        NamedTuple{(:a, :b, :_, :Column4), Tuple{Int64, Int64, String, Union{Missing, String}}},
+        (a = [0, 12], b = [1, 5], _ = [" ", " "], Column4 = Union{Missing, String}[" comment ", missing])
     ),
     (IOBuffer("""A,B,C\n1,1,10\n6,1"""), NamedTuple(),
         (2, 3),

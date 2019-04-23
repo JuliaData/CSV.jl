@@ -41,7 +41,7 @@ function makecolumn(T, rows)
     if T === EMPTY
         A = Column(Missing[])
     elseif T === MISSINGTYPE
-        A = Column(missings(rows))
+        A = Column(fill(missing, rows))
     elseif T === STRING || T === (STRING | MISSING) ||
            T === POOL || T === (POOL | MISSING)
         A = Column(rows)
@@ -80,10 +80,30 @@ function setchunk!(A, row, chunkrows, tape, tapeidx, ncol, f)
     return
 end
 
+function setchunk!(A::Vector{Float64}, row, chunkrows, tape, tapeidx, ncol, f)
+    for rowoff = 0:chunkrows
+        @inbounds offlen = tape[tapeidx + (rowoff * ncol * 2)]
+        @inbounds x = tape[tapeidx + (rowoff * ncol * 2) + 1]
+        @inbounds A[row + rowoff] = intvalue(offlen >> 16) ? Float64(int64(x)) : float64(x)
+    end
+    return
+end
+
 function setchunkm!(A, row, chunkrows, tape, tapeidx, ncol, f)
     for rowoff = 0:chunkrows
         @inbounds offlen = tape[tapeidx + (rowoff * ncol * 2)]
         @inbounds A[row + rowoff] = missingvalue(offlen) ? missing : f(tape[tapeidx + (rowoff * ncol * 2) + 1])
+    end
+    return
+end
+
+function setchunkm!(A::Vector{Union{Missing, Float64}}, row, chunkrows, tape, tapeidx, ncol, f)
+    for rowoff = 0:chunkrows
+        @inbounds offlen = tape[tapeidx + (rowoff * ncol * 2)]
+        if !missingvalue(offlen)
+            @inbounds x = tape[tapeidx + (rowoff * ncol * 2) + 1]
+            @inbounds A[row + rowoff] = intvalue(offlen >> 16) ? Float64(int64(x)) : float64(x)
+        end
     end
     return
 end
@@ -131,7 +151,12 @@ function Tables.columns(f::File)
             else
                 for rowoff = 0:chunkrows
                     @inbounds offlen = tape[rowidx + off + (rowoff * ncol * 2)]
-                    @inbounds col.offsets[row + rowoff] = missingvalue(offlen) ? 0xfffffffffffffffe : offlen >> 16
+                    if missingvalue(offlen)
+                        @inbounds col.offsets[row + rowoff] = 0xfffffffffffffffe
+                    else
+                        offset = offlen >> 16
+                        @inbounds col.offsets[row + rowoff] = (intvalue(offset) ? intpos(offset) : offset) - 1
+                    end
                     @inbounds col.lengths[row + rowoff] = unsafe_trunc(UInt32, offlen & 0x000000000000ffff)
                 end
             end
@@ -140,5 +165,5 @@ function Tables.columns(f::File)
     end
     finalcolumns = columns
     finaltypecodes = typecodes
-    return DataFrame([finalcolumn(finalcolumns[i], finaltypecodes[i], f.io.data, f.quotedstringtype, f.escapestrings[i], f.refs, i, f.pool, f.categorical, f.categoricalpools) for i = 1:ncol], f.names)
+    return DataFrame([finalcolumn(finalcolumns[i], finaltypecodes[i], f.buf, f.quotedstringtype, f.escapestrings[i], f.refs, i, f.pool, f.categorical, f.categoricalpools) for i = 1:ncol], f.names)
 end
