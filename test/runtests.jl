@@ -1,5 +1,4 @@
 using Test, CSV, Dates, Tables, WeakRefStrings, CategoricalArrays, DataFrames, PooledArrays
-using DataStructures: OrderedDict
 
 const dir = joinpath(dirname(pathof(CSV)), "../test/testfiles")
 

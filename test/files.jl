@@ -51,8 +51,4 @@ df = CSV.read(joinpath(dir, "test_types.csv"), types=Dict(:string=>Union{Missing
 # Profile.print(C=true)
 # Profile.print()
 
-# Test that using an OrderedDict for types doesn't error #373
-df = CSV.read(joinpath(dir, "test_types.csv"), types=OrderedDict(:string=>Union{Missing,DateTime}))
-@test df.string[1] === missing
-
 end # testset
