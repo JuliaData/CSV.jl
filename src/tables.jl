@@ -2,6 +2,7 @@ Tables.istable(::Type{<:File}) = true
 Tables.columnaccess(::Type{<:File}) = true
 Tables.schema(f::File)  = Tables.Schema(f.names, f.types)
 
+# fieldindex maps a given column type to its corresponding typed array field in Column
 fieldindex(::Type{Missing}) = 3
 fieldindex(::Type{Int64}) = 4
 fieldindex(::Type{Float64}) = 5
@@ -11,6 +12,9 @@ fieldindex(::Type{Bool}) = 8
 fieldindex(::Type{<:AbstractString}) = 0
 fieldindex(::Type{Union{T, Missing}}) where {T} = fieldindex(T) + 5
 
+# Column is a special container that only initializes an array of one type
+# in Tables.columns, it allows us to have a type-stable Vector{Column} for all columns
+# and then based on a column's typecode, we can access the internal typed array as needed
 mutable struct Column
     offsets::Vector{UInt64}
     lengths::Vector{UInt32}
@@ -51,15 +55,22 @@ function makecolumn(T, rows)
     return A
 end
 
-function finalcolumn(col, T, buf, QS, escapestrings, refs, i, pool, categorical, categoricalpools)
+function finalcolumn(col, T, buf, QS, escapedstrings, refs, i, pool, categorical, categoricalpools)
     if T === STRING
-        return StringArray{escapestrings ? QS : String, 1}(buf, col.offsets, col.lengths)
+        return StringArray{escapedstrings ? QS : String, 1}(buf, col.offsets, col.lengths)
     elseif T === (STRING | MISSING)
-        return StringArray{Union{escapestrings ? QS : String, Missing}, 1}(buf, col.offsets, col.lengths)
+        return StringArray{Union{escapedstrings ? QS : String, Missing}, 1}(buf, col.offsets, col.lengths)
     elseif pool > 0.0 && (T === POOL || (T === (POOL | MISSING)))
         refs = refs[i]
         if !categorical
-            return PooledArray(PooledArrays.RefArray(col.lengths), missingtype(T) ? refs : convert(Dict{String, UInt32}, refs))
+            if missingtype(T)
+                missingref = maximum(col.lengths) + UInt32(1)
+                replace!(col.lengths, UInt32(0) => missingref)
+                refs[missing] = missingref
+            else
+                refs = convert(Dict{String, UInt32}, refs)
+            end
+            return PooledArray(PooledArrays.RefArray(col.lengths), refs)
         else
             pool = categoricalpools[i]
             if missingtype(T)
@@ -84,7 +95,7 @@ function setchunk!(A::Vector{Float64}, row, chunkrows, tape, tapeidx, ncol, f)
     for rowoff = 0:chunkrows
         @inbounds offlen = tape[tapeidx + (rowoff * ncol * 2)]
         @inbounds x = tape[tapeidx + (rowoff * ncol * 2) + 1]
-        @inbounds A[row + rowoff] = intvalue(offlen >> 16) ? Float64(int64(x)) : float64(x)
+        @inbounds A[row + rowoff] = intvalue(offlen) ? Float64(int64(x)) : float64(x)
     end
     return
 end
@@ -102,7 +113,7 @@ function setchunkm!(A::Vector{Union{Missing, Float64}}, row, chunkrows, tape, ta
         @inbounds offlen = tape[tapeidx + (rowoff * ncol * 2)]
         if !missingvalue(offlen)
             @inbounds x = tape[tapeidx + (rowoff * ncol * 2) + 1]
-            @inbounds A[row + rowoff] = intvalue(offlen >> 16) ? Float64(int64(x)) : float64(x)
+            @inbounds A[row + rowoff] = intvalue(offlen) ? Float64(int64(x)) : float64(x)
         end
     end
     return
@@ -114,7 +125,10 @@ function Tables.columns(f::File)
     f.rows == 0 && return DataFrame(AbstractVector[Missing[] for i = 1:ncol], f.names)
     typecodes = f.typecodes
     columns = Column[makecolumn(typecodes[i], f.rows) for i = 1:ncol]
+    escapedstrings = fill(false, ncol)
     tape = f.tape
+    # the idea of chunking here is to make sure we access as close to a "page" of memory from tape
+    # at a time while storing the values in the output columns; this hasn't been rigourously tested for a performance increase
     chunk = max(1, div(256, ncol))
     totalrows = f.rows
     rowidx = 1
@@ -152,12 +166,15 @@ function Tables.columns(f::File)
                 for rowoff = 0:chunkrows
                     @inbounds offlen = tape[rowidx + off + (rowoff * ncol * 2)]
                     if missingvalue(offlen)
-                        @inbounds col.offsets[row + rowoff] = 0xfffffffffffffffe
+                        @inbounds col.offsets[row + rowoff] = WeakRefStrings.MISSING_OFFSET
                     else
-                        offset = offlen >> 16
-                        @inbounds col.offsets[row + rowoff] = (intvalue(offset) ? intpos(offset) : offset) - 1
+                        # minus 1 because the tape stores the byte *position* and StringArray wants the *offset*
+                        @inbounds col.offsets[row + rowoff] = getpos(offlen) - 1
+                        @inbounds col.lengths[row + rowoff] = unsafe_trunc(UInt32, getlen(offlen))
+                        if escapedvalue(offlen)
+                            @inbounds escapedstrings[j] = true
+                        end
                     end
-                    @inbounds col.lengths[row + rowoff] = unsafe_trunc(UInt32, offlen & 0x000000000000ffff)
                 end
             end
         end
@@ -165,5 +182,5 @@ function Tables.columns(f::File)
     end
     finalcolumns = columns
     finaltypecodes = typecodes
-    return DataFrame([finalcolumn(finalcolumns[i], finaltypecodes[i], f.buf, f.quotedstringtype, f.escapestrings[i], f.refs, i, f.pool, f.categorical, f.categoricalpools) for i = 1:ncol], f.names)
+    return DataFrame([finalcolumn(finalcolumns[i], finaltypecodes[i], f.buf, f.escapedstringtype, escapedstrings[i], f.refs, i, f.pool, f.categorical, f.categoricalpools) for i = 1:ncol], f.names)
 end

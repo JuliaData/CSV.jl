@@ -65,4 +65,103 @@ df = CSV.read(IOBuffer("col1,col2\n1.0,hi"), limit=3)
 df = CSV.read(IOBuffer("x\n\",\"\n\",\""))
 @test size(df) == (2, 1)
 
+# delimiter auto-detection
+df = CSV.read(IOBuffer("x\n1\n2\n"))
+@test size(df) == (2, 1)
+
+df = CSV.read(IOBuffer("x,y\n1,\n2,\n"))
+@test size(df) == (2, 2)
+
+df = CSV.read(IOBuffer("x y\n1 \n2 \n"))
+@test size(df) == (2, 2)
+
+df = CSV.read(IOBuffer("x\ty\n1\t\n2\t\n"))
+@test size(df) == (2, 2)
+
+df = CSV.read(IOBuffer("x|y\n1|\n2|\n"))
+@test size(df) == (2, 2)
+
+# type promotion
+# int => float
+df = CSV.read(IOBuffer("x\n1\n3.14"))
+@test size(df) == (2, 1)
+@test df.x[1] === 1.0
+@test df.x[2] === 3.14
+
+# int => missing
+df = CSV.read(IOBuffer("x\n1\n\n"))
+@test size(df) == (2, 1)
+@test df.x[1] === 1
+@test df.x[2] === missing
+
+# missing => int
+df = CSV.read(IOBuffer("x\n\n1\n"))
+@test size(df) == (2, 1)
+@test df.x[1] === missing
+@test df.x[2] === 1
+
+# missing => int => float
+df = CSV.read(IOBuffer("x\n\n1\n3.14\n"))
+@test size(df) == (3, 1)
+@test df.x[1] === missing
+@test df.x[2] === 1.0
+@test df.x[3] === 3.14
+
+# int => missing => float
+df = CSV.read(IOBuffer("x\n1\n\n3.14\n"))
+@test size(df) == (3, 1)
+@test df.x[1] === 1.0
+@test df.x[2] === missing
+@test df.x[3] === 3.14
+
+# int => float => missing
+df = CSV.read(IOBuffer("x\n1\n3.14\n\n"))
+@test size(df) == (3, 1)
+@test df.x[1] === 1.0
+@test df.x[2] === 3.14
+@test df.x[3] === missing
+
+# int => string
+df = CSV.read(IOBuffer("x\n1\nabc"))
+@test size(df) == (2, 1)
+@test df.x[1] == "1"
+@test df.x[2] == "abc"
+
+# float => string
+df = CSV.read(IOBuffer("x\n3.14\nabc"))
+@test size(df) == (2, 1)
+@test df.x[1] == "3.14"
+@test df.x[2] == "abc"
+
+# int => float => string
+df = CSV.read(IOBuffer("x\n1\n3.14\nabc"))
+@test size(df) == (3, 1)
+@test df.x[1] == "1"
+@test df.x[2] == "3.14"
+@test df.x[3] == "abc"
+
+# missing => int => float => string
+df = CSV.read(IOBuffer("x\n\n1\n3.14\nabc"))
+@test size(df) == (4, 1)
+@test df.x[1] === missing
+@test df.x[2] == "1"
+@test df.x[3] == "3.14"
+@test df.x[4] == "abc"
+
+# missing => catg
+df = CSV.read(IOBuffer("x\n\na\n"), categorical=true)
+@test size(df) == (2, 1)
+@test df.x[1] === missing
+@test df.x[2] == "a"
+
+# catg => missing
+df = CSV.read(IOBuffer("x\na\n\n"), categorical=true)
+@test size(df) == (2, 1)
+@test df.x[1] == "a"
+@test df.x[2] === missing
+
+# catg => string
+df = CSV.read(IOBuffer("x\na\nb\na\nb\na\nb\na\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nn\nm\no\np\nq\nr\n"), categorical=0.5)
+@test typeof(df.x) == StringArray{String,1}
+
 end

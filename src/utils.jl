@@ -68,12 +68,18 @@ const TYPECODES = Dict(
 gettypecodes(x::Dict) = Dict(typecode(k)=>typecode(v) for (k, v) in x)
 gettypecodes(x::Dict{TypeCode, TypeCode}) = x
 
+# bit patterns for missing value, int value, escaped string, position and len in tape parsing
 const MISSING_BIT = 0x8000000000000000
 missingvalue(x::UInt64) = (x & MISSING_BIT) == MISSING_BIT
 
-const INT_BIT = 0x0000400000000000
+const INT_BIT = 0x4000000000000000
 intvalue(x::UInt64) = (x & INT_BIT) == INT_BIT
-intpos(x::UInt64) = (x & ~INT_BIT)
+
+const ESCAPE_BIT = 0x2000000000000000
+escapedvalue(x::UInt64) = (x & ESCAPE_BIT) == ESCAPE_BIT
+
+getpos(x::UInt64) = (x & 0x1fffffffffff0000) >> 16
+getlen(x::UInt64) = x & 0x000000000000ffff
 
 # utilities to convert values to raw UInt64 and back for tape writing
 int64(x::UInt64) = Core.bitcast(Int64, x)

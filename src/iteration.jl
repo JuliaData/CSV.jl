@@ -6,11 +6,11 @@ struct Row{F}
     file::F
     row::Int
 end
-Base.propertynames(r::Row) = getfield(r, 1).names
+Base.propertynames(r::Row) = getfield(r, :file).names
 
 function Base.show(io::IO, r::Row)
-    println(io, "CSV.Row($(getfield(r, 2))) of:")
-    show(io, getfield(r, 1))
+    println(io, "CSV.Row($(getfield(r, :row))) of:")
+    show(io, getfield(r, :file))
 end
 
 Base.eltype(f::F) where {F <: File} = Row{F}
@@ -24,42 +24,40 @@ end
 @noinline badcolumnerror(name) = throw(ArgumentError("`$name` is not a valid column name"))
 
 @inline function Base.getproperty(row::Row, name::Symbol)
-    f = getfield(row, 1)
+    f = getfield(row, :file)
     i = findfirst(x->x===name, f.names)
     i === nothing && badcolumnerror(name)
-    return getcell(f, f.types[i], i, getfield(row, 2))
+    return getcell(f, f.types[i], i, getfield(row, :row))
 end
 
-Base.getproperty(row::Row, ::Type{T}, col::Int, name::Symbol) where {T} =
-    getcell(getfield(row, 1), T, col, getfield(row, 2))
+@inline Base.getproperty(row::Row, ::Type{T}, col::Int, name::Symbol) where {T} =
+    getcell(getfield(row, :file), T, col, getfield(row, :row))
 
 # internal method for getting a cell value
-function getcell(f::File, ::Type{T}, col::Int, row::Int) where {T}
+@inline function getcell(f::File, ::Type{T}, col::Int, row::Int) where {T}
     indexoffset = ((f.cols * (row - 1) * 2) + (col - 1) * 2) + 1
     offlen = f.tape[indexoffset]
     missingvalue(offlen) && return missing
-    type = typebits(f.typecodes[col])
-    if type === INT
-        return int64(f.tape[indexoffset + 1])
-    elseif type === FLOAT
-        @inbounds x = f.tape[indexoffset + 1]
-        return intvalue(offlen >> 16) ? Float64(int64(x)) : float64(x)
-    elseif type === DATE
-        return date(f.tape[indexoffset + 1])
-    elseif type === DATETIME
-        return datetime(f.tape[indexoffset + 1])
-    elseif type === BOOL
-        return bool(f.tape[indexoffset + 1])
-    elseif type === MISSINGTYPE
-        return missing
-    elseif type === POOL && f.categorical
-        x = ref(f.tape[indexoffset + 1])
-        return CatStr(x, f.categoricalpools[col])
-    elseif f.escapestrings[col]
-        off = offlen >> 16
-        return convert(f.quotedstringtype, WeakRefString(pointer(f.buf, intvalue(off) ? intpos(off) : off), offlen & 0x000000000000ffff))
+    return getvalue(Base.nonmissingtype(T), f, indexoffset, offlen, col)
+end
+
+getvalue(::Type{Int64}, f, indexoffset, offlen, col) = int64(f.tape[indexoffset + 1])
+function getvalue(::Type{Float64}, f, indexoffset, offlen, col)
+    @inbounds x = f.tape[indexoffset + 1]
+    return intvalue(offlen) ? Float64(int64(x)) : float64(x)
+end
+getvalue(::Type{Date}, f, indexoffset, offlen, col) = date(f.tape[indexoffset + 1])
+getvalue(::Type{DateTime}, f, indexoffset, offlen, col) = datetime(f.tape[indexoffset + 1])
+getvalue(::Type{Bool}, f, indexoffset, offlen, col) = bool(f.tape[indexoffset + 1])
+getvalue(::Type{Missing}, f, indexoffset, offlen, col) = missing
+function getvalue(::Type{CatStr}, f, indexoffset, offlen, col)
+    x = ref(f.tape[indexoffset + 1])
+    return CatStr(x, f.categoricalpools[col])
+end
+function getvalue(::Union{Type{String}, Type{PooledString}}, f, indexoffset, offlen, col)
+    if escapedvalue(offlen)
+        return convert(f.escapedstringtype, WeakRefString(pointer(f.buf, getpos(offlen)), getlen(offlen)))
     else
-        off = offlen >> 16
-        return unsafe_string(pointer(f.buf, intvalue(off) ? intpos(off) : off), offlen & 0x000000000000ffff)
+        return unsafe_string(pointer(f.buf, getpos(offlen)), getlen(offlen))
     end
 end
