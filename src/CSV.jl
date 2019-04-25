@@ -415,8 +415,7 @@ function detecttype(buf, pos, len, options, debug)
             end 
             Parsers.ok(code) && return date, code, vpos, vlen, tlen
         catch e
-            @show e
-            showerror(stdout, e)
+            @error exception=(e, stacktrace(catch_backtrace()))
         end
         try
             datetime, code, vpos, vlen, tlen = Parsers.xparse(DateTime, buf, pos, len, options)
@@ -425,8 +424,7 @@ function detecttype(buf, pos, len, options, debug)
             end
             Parsers.ok(code) && return datetime, code, vpos, vlen, tlen
         catch e
-            @show e
-            showerror(stdout, e)
+            @error exception=(e, stacktrace(catch_backtrace()))
         end
     else
         # use user-provided dateformat
