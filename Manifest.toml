@@ -16,12 +16,12 @@ uuid = "34da2185-b29b-5c13-b0c7-acf172513d20"
 version = "2.1.0"
 
 [[DataFrames]]
-deps = ["CategoricalArrays", "Compat", "Dates", "InteractiveUtils", "IteratorInterfaceExtensions", "LinearAlgebra", "Missings", "PooledArrays", "Printf", "REPL", "Random", "Reexport", "SortingAlgorithms", "Statistics", "StatsBase", "TableTraits", "Tables", "Test", "Unicode"]
-git-tree-sha1 = "46d043878c39249c02f5ba7537b3959c19bb7887"
+deps = ["CategoricalArrays", "Compat", "IteratorInterfaceExtensions", "Missings", "PooledArrays", "Printf", "REPL", "Reexport", "SortingAlgorithms", "Statistics", "StatsBase", "TableTraits", "Tables", "Unicode"]
+git-tree-sha1 = "0438d21a97a979c0ded3fbc438e6a5769ccd1397"
 repo-rev = "master"
 repo-url = "https://github.com/JuliaData/DataFrames.jl.git"
 uuid = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
-version = "0.17.1+"
+version = "0.18.0"
 
 [[DataStructures]]
 deps = ["InteractiveUtils", "OrderedCollections", "Random", "Serialization", "Test"]
@@ -89,7 +89,9 @@ version = "1.1.0"
 
 [[Parsers]]
 deps = ["Dates", "Mmap", "Test"]
-git-tree-sha1 = "127ff1b0b8593f8b73a178e5615d1a2a9d94ccf4"
+git-tree-sha1 = "78cf1eaf73eaf5c1c6336ddb8cabe72a588e884a"
+repo-rev = "master"
+repo-url = "https://github.com/JuliaData/Parsers.jl.git"
 uuid = "69de0a69-1ddd-5017-9359-2bf0b02dc9f0"
 version = "0.3.0"
 

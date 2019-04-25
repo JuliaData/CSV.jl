@@ -91,14 +91,14 @@ df = CSV.read(IOBuffer("x\n1\n3.14"))
 # int => missing
 df = CSV.read(IOBuffer("x\n1\n\n"))
 @test size(df) == (2, 1)
-@test df.x[1] === 1
+@test df.x[1] == 1
 @test df.x[2] === missing
 
 # missing => int
 df = CSV.read(IOBuffer("x\n\n1\n"))
 @test size(df) == (2, 1)
 @test df.x[1] === missing
-@test df.x[2] === 1
+@test df.x[2] == 1
 
 # missing => int => float
 df = CSV.read(IOBuffer("x\n\n1\n3.14\n"))
