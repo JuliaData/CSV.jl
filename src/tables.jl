@@ -32,7 +32,7 @@ mutable struct Column
     datetimesm::Vector{Union{DateTime, Missing}}
     boolsm::Vector{Union{Bool, Missing}}
 
-    Column(rows::Int) = new(Vector{UInt64}(undef, rows), Vector{UInt32}(undef, rows))
+    Column(rows::Integer) = new(Vector{UInt64}(undef, rows), Vector{UInt32}(undef, rows))
 
     function Column(A::AbstractVector{T}) where {T}
         c = new()
