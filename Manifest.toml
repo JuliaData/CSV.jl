@@ -89,7 +89,7 @@ version = "1.1.0"
 
 [[Parsers]]
 deps = ["Dates", "Mmap", "Test"]
-git-tree-sha1 = "78cf1eaf73eaf5c1c6336ddb8cabe72a588e884a"
+git-tree-sha1 = "e66aaefff2a1cec2ab31451cc1fa1c925199dde2"
 repo-rev = "master"
 repo-url = "https://github.com/JuliaData/Parsers.jl.git"
 uuid = "69de0a69-1ddd-5017-9359-2bf0b02dc9f0"
