@@ -234,24 +234,6 @@ function File(source::Union{Vector{UInt8}, String, IO};
     return File(getname(source), buf, names, types, typecodes, escapedstringtype, refs, pool, catg, categoricalpools, rows - footerskip, ncols, tape)
 end
 
-function scan(file)
-    buf = Mmap.mmap(file)
-    len = length(buf)
-    tape = Mmap.mmap(Vector{UInt64}, len >> 1)
-    pos = 112
-    tapeidx = 1
-    for row = 1:1_000_000
-        for col = 1:20
-            x, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, Parsers.XOPTIONS)
-            @inbounds tape[tapeidx] = (Core.bitcast(UInt64, vpos) << 16) | Core.bitcast(UInt64, vlen)
-            @inbounds tape[tapeidx+1] = uint64(x)
-            tapeidx += 2
-            pos += tlen
-        end
-    end
-    return tape
-end
-
 function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options::Parsers.Options{ignorerepeated}) where {transpose, ignorerepeated}
     row = 0
     tapeidx = 1
@@ -415,7 +397,7 @@ function detecttype(buf, pos, len, options, debug)
             end 
             Parsers.ok(code) && return date, code, vpos, vlen, tlen
         catch e
-            @error exception=(e, stacktrace(catch_backtrace()))
+            # @error exception=(e, stacktrace(catch_backtrace()))
         end
         try
             datetime, code, vpos, vlen, tlen = Parsers.xparse(DateTime, buf, pos, len, options)
@@ -424,7 +406,7 @@ function detecttype(buf, pos, len, options, debug)
             end
             Parsers.ok(code) && return datetime, code, vpos, vlen, tlen
         catch e
-            @error exception=(e, stacktrace(catch_backtrace()))
+            # @error exception=(e, stacktrace(catch_backtrace()))
         end
     else
         # use user-provided dateformat
