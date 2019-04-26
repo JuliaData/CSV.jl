@@ -1,189 +1,186 @@
 Tables.istable(::Type{<:File}) = true
+Tables.columnaccess(::Type{<:File}) = true
 Tables.schema(f::File)  = Tables.Schema(f.names, f.types)
 
-Tables.columnaccess(::Type{File{t, c, I, P, KW}}) where {t, c, I, P, KW} = c
+# fieldindex maps a given column type to its corresponding typed array field in Column
+fieldindex(::Type{Missing}) = 3
+fieldindex(::Type{Int64}) = 4
+fieldindex(::Type{Float64}) = 5
+fieldindex(::Type{Date}) = 6
+fieldindex(::Type{DateTime}) = 7
+fieldindex(::Type{Bool}) = 8
+fieldindex(::Type{<:AbstractString}) = 0
+fieldindex(::Type{Union{T, Missing}}) where {T} = fieldindex(T) + 5
 
-struct Columns
-    names
-    columns
-end
-Base.propertynames(c::Columns) = getfield(c, 1)
-function Base.getproperty(c::Columns, nm::Symbol)
-    getfield(c, 2)[findfirst(x->x==nm, getfield(c, 1))]
-end
+# Column is a special container that only initializes an array of one type
+# in Tables.columns, it allows us to have a type-stable Vector{Column} for all columns
+# and then based on a column's typecode, we can access the internal typed array as needed
+mutable struct Column
+    offsets::Vector{UInt64}
+    lengths::Vector{UInt32}
 
-function Tables.columns(f::File{transpose, true}) where {transpose}
-    len = length(f)
-    types = f.types
-    columns = Any[Tables.allocatecolumn(T, len) for T in types]
-    funcs = [get(FUNCTIONMAP, parsingtype(T), FUNC_ANY[]) for T in types]
-    transpose && (f.positions .= f.originalpositions)
-    for row = 1:len
-        @inbounds Parsers.fastseek!(f.io, f.positions[row])
-        f.currentrow[] = row
-        f.lastparsedcol[] = 0
-        f.lastparsedcode[] = Parsers.SUCCESS
-        for col = 1:length(types)
-            @inbounds ccall(funcs[col], Cvoid, (Any, Any, Cssize_t, Cssize_t), columns[col], f, col, row)
-        end
+    missings::Vector{Missing}
+    ints::Vector{Int64}
+    floats::Vector{Float64}
+    dates::Vector{Date}
+    datetimes::Vector{DateTime}
+    bools::Vector{Bool}
+    
+    intsm::Vector{Union{Int64, Missing}}
+    floatsm::Vector{Union{Float64, Missing}}
+    datesm::Vector{Union{Date, Missing}}
+    datetimesm::Vector{Union{DateTime, Missing}}
+    boolsm::Vector{Union{Bool, Missing}}
+
+    Column(rows::Integer) = new(Vector{UInt64}(undef, rows), Vector{UInt32}(undef, rows))
+
+    function Column(A::AbstractVector{T}) where {T}
+        c = new()
+        setfield!(c, fieldindex(T), A)
+        return c
     end
-    return Columns(f.names, columns)
 end
 
-struct Row{F}
-    file::F
-    row::Int
-end
-Base.propertynames(r::Row) = getfield(r, 1).names
-
-function Base.show(io::IO, r::Row)
-    println(io, "CSV.Row($(getfield(r, 2))) of:")
-    show(io, getfield(r, 1))
-end
-
-# File iteration
-Base.eltype(f::F) where {F <: File} = Row{F}
-Base.length(f::File{transpose}) where {transpose} = transpose ? f.lastparsedcol[] : length(f.positions)
-tablesize(f::File) = (length(f), length(f.names))
-
-@inline function Base.iterate(f::File{transpose}, st=1) where {transpose}
-    st > length(f) && return nothing
-    # println("row=$st")
-    if transpose
-        st === 1 && (f.positions .= f.originalpositions)
+function makecolumn(T, rows)
+    if T === EMPTY
+        A = Column(Missing[])
+    elseif T === MISSINGTYPE
+        A = Column(fill(missing, rows))
+    elseif T === STRING || T === (STRING | MISSING) ||
+           T === POOL || T === (POOL | MISSING)
+        A = Column(rows)
     else
-        @inbounds Parsers.fastseek!(f.io, f.positions[st])
-        f.currentrow[] = st
-        f.lastparsedcol[] = 0
-        f.lastparsedcode[] = Parsers.SUCCESS
+        A = Column(Vector{TYPECODES[T]}(undef, rows))
     end
-    return Row(f, st), st + 1
+    return A
 end
 
-Tables.rowaccess(::Type{<:File}) = true
-Tables.rows(f::File) = f
-
-parsingtype(::Type{Missing}) = Missing
-parsingtype(::Type{Union{Missing, T}}) where {T} = T
-parsingtype(::Type{T}) where {T} = T
-
-@inline function getparsedvalue(f, r, ::Type{CatStr}, col)
-    if r.result isa Missing
-        return missing
+function finalcolumn(col, T, buf, QS, escapedstrings, refs, i, pool, categorical, categoricalpools)
+    if T === STRING
+        return StringArray{escapedstrings ? QS : String, 1}(buf, col.offsets, col.lengths)
+    elseif T === (STRING | MISSING)
+        return StringArray{Union{escapedstrings ? QS : String, Missing}, 1}(buf, col.offsets, col.lengths)
+    elseif pool > 0.0 && (T === POOL || (T === (POOL | MISSING)))
+        refs = refs[i]
+        if !categorical
+            if missingtype(T)
+                missingref = maximum(col.lengths) + UInt32(1)
+                replace!(col.lengths, UInt32(0) => missingref)
+                refs[missing] = missingref
+            else
+                refs = convert(Dict{String, UInt32}, refs)
+            end
+            return PooledArray(PooledArrays.RefArray(col.lengths), refs)
+        else
+            pool = categoricalpools[i]
+            if missingtype(T)
+                return CategoricalArray{Union{Missing, String}, 1}(col.lengths, pool)
+            else
+                return CategoricalArray{String, 1}(col.lengths, pool)
+            end
+        end
     else
-        @inbounds pool = f.pools[col]
-        val = r.result::Tuple{Ptr{UInt8}, Int}
-        i = get(pool, val, nothing)
-        if i === nothing
-            i = get!(pool, unsafe_string(val[1], val[2]))
-            issorted(levels(pool)) || levels!(pool, sort(levels(pool)))
-        end
-        return CatStr(i, pool)
+        return getfield(col, fieldindex(TYPECODES[T]))
     end
 end
-getparsedvalue(f, r, T, col) = r.result
 
-parsefield(f, ::Type{CatStr}, row, col) = parsefield(f, Tuple{Ptr{UInt8}, Int}, row, col)
-@inline function parsefield(f, T, row, col)
-    r = Parsers.parse(f.parsinglayers, f.io, T; f.kwargs...)
-    f.lastparsedcode[] = r.code
-    if !Parsers.ok(r.code)
-        f.strict ? throw(Error(Parsers.Error(f.io, r), row, col)) :
-            f.silencewarnings ? nothing :
-                println("warning: failed parsing $T on row=$row, col=$col, error=$(Parsers.codes(r.code))")
+function setchunk!(A, row, chunkrows, tape, tapeidx, ncol, f)
+    for rowoff = 0:chunkrows
+        @inbounds A[row + rowoff] = f(tape[tapeidx + (rowoff * ncol * 2) + 1])
     end
-    return r
-end
-
-@noinline function skipcells(f, n)
-    r = Parsers.Result(Tuple{Ptr{UInt8}, Int})
-    for _ = 1:n
-        r.code = Parsers.SUCCESS
-        Parsers.parse!(f.parsinglayers, f.io, r)
-        if newline(r.code)
-            f.lastparsedcode[] = r.code
-            return false
-        end
-    end
-    f.lastparsedcode[] = r.code
-    return true
-end
-
-getsetInt!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, Int64, col, i), i); return nothing)
-getsetFloat!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, Float64, col, i), i); return nothing)
-getsetDate!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, Date, col, i), i); return nothing)
-getsetDateTime!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, DateTime, col, i), i); return nothing)
-getsetBool!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, Bool, col, i), i); return nothing)
-getsetString!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, String, col, i), i); return nothing)
-getsetMissing!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, Missing, col, i), i); return nothing)
-getsetWeakRefString!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, WeakRefString{UInt8}, col, i), i); return nothing)
-getsetCatStr!(column, f::File, col::Int, i::Int) = (r = setindex!(column, getproperty(f, CatStr, col, i), i); return nothing)
-function getsetAny!(column, f::File, col::Int, i::Int)
-    setindex!(column, getproperty(f, f.types[col], col, i), i)
     return
 end
-const FUNC_ANY = Ref{Ptr{Cvoid}}()
 
-const FUNCTIONMAP = Dict(
-    Int64 => C_NULL,
-    Float64 => C_NULL,
-    Date => C_NULL,
-    DateTime => C_NULL,
-    Bool => C_NULL,
-    String => C_NULL,
-    Missing => C_NULL,
-    WeakRefString{UInt8} => C_NULL,
-    CatStr => C_NULL,
-)
-
-@noinline badcolumnerror(name) = "`$name` is not a valid column name"
-
-@inline function Base.getproperty(row::Row, name::Symbol)
-    f = getfield(row, 1)
-    i = findfirst(x->x===name, f.names)
-    i === nothing && throw(ArgumentError(badcolumnerror(name)))
-    return getproperty(f, f.types[i], i, getfield(row, 2))
+function setchunk!(A::Vector{Float64}, row, chunkrows, tape, tapeidx, ncol, f)
+    for rowoff = 0:chunkrows
+        @inbounds offlen = tape[tapeidx + (rowoff * ncol * 2)]
+        @inbounds x = tape[tapeidx + (rowoff * ncol * 2) + 1]
+        @inbounds A[row + rowoff] = intvalue(offlen) ? Float64(int64(x)) : float64(x)
+    end
+    return
 end
 
-Base.getproperty(row::Row, ::Type{T}, col::Int, name::Symbol) where {T} =
-    getproperty(getfield(row, 1), T, col, getfield(row, 2))
+function setchunkm!(A, row, chunkrows, tape, tapeidx, ncol, f)
+    for rowoff = 0:chunkrows
+        @inbounds offlen = tape[tapeidx + (rowoff * ncol * 2)]
+        @inbounds A[row + rowoff] = missingvalue(offlen) ? missing : f(tape[tapeidx + (rowoff * ncol * 2) + 1])
+    end
+    return
+end
 
-function Base.getproperty(f::File{transpose}, ::Type{T}, col::Int, row::Int) where {transpose, T}
-    col === 0 && return missing
-    if transpose
-        @inbounds Parsers.fastseek!(f.io, f.positions[col])
-    else
-        if f.currentrow[] != row
-            @inbounds Parsers.fastseek!(f.io, f.positions[row])
-            f.lastparsedcol[] = 0
-        end
-        lastparsed = f.lastparsedcol[]
-        if col === lastparsed + 1
-            if newline(f.lastparsedcode[])
-                f.lastparsedcol[] = col
-                return missing
-            end
-        elseif col > lastparsed + 1
-            # skipping cells
-            if newline(f.lastparsedcode[]) || !skipcells(f, col - (lastparsed + 1))
-                f.lastparsedcol[] = col
-                return missing
-            end
-        else
-            @inbounds Parsers.fastseek!(f.io, f.positions[row])
-            # randomly seeking within row
-            if !skipcells(f, col - 1)
-                f.lastparsedcol[] = col
-                return missing
-            end
+function setchunkm!(A::Vector{Union{Missing, Float64}}, row, chunkrows, tape, tapeidx, ncol, f)
+    for rowoff = 0:chunkrows
+        @inbounds offlen = tape[tapeidx + (rowoff * ncol * 2)]
+        if !missingvalue(offlen)
+            @inbounds x = tape[tapeidx + (rowoff * ncol * 2) + 1]
+            @inbounds A[row + rowoff] = intvalue(offlen) ? Float64(int64(x)) : float64(x)
         end
     end
-    S = parsingtype(T)
-    r = getparsedvalue(f, parsefield(f, S, row, col), S, col)
-    if transpose
-        @inbounds f.positions[col] = position(f.io)
-    else
-        f.lastparsedcol[] = col
+    return
+end
+
+function Tables.columns(f::File)
+    ncol = f.cols
+    ncol == 0 && return DataFrame()
+    f.rows == 0 && return DataFrame(AbstractVector[Missing[] for i = 1:ncol], f.names)
+    typecodes = f.typecodes
+    columns = Column[makecolumn(typecodes[i], f.rows) for i = 1:ncol]
+    escapedstrings = fill(false, ncol)
+    tape = f.tape
+    # the idea of chunking here is to make sure we access as close to a "page" of memory from tape
+    # at a time while storing the values in the output columns; this hasn't been rigourously tested for a performance increase
+    chunk = max(1, div(256, ncol))
+    totalrows = f.rows
+    rowidx = 1
+    for row = 1:chunk:f.rows
+        chunkrows = min(chunk - 1, totalrows - row)
+        for j = 1:ncol
+            @inbounds col = columns[j]
+            @inbounds T = typecodes[j]
+            off = (j - 1) * 2
+            if T === INT
+                setchunk!(col.ints, row, chunkrows, tape, rowidx + off, ncol, int64)
+            elseif T === (INT | MISSING)
+                setchunkm!(col.intsm, row, chunkrows, tape, rowidx + off, ncol, int64)
+            elseif T === FLOAT
+                setchunk!(col.floats, row, chunkrows, tape, rowidx + off, ncol, float64)
+            elseif T === (FLOAT | MISSING)
+                setchunkm!(col.floatsm, row, chunkrows, tape, rowidx + off, ncol, float64)
+            elseif T === DATE
+                setchunk!(col.dates, row, chunkrows, tape, rowidx + off, ncol, date)
+            elseif T === (DATE | MISSING)
+                setchunkm!(col.datesm, row, chunkrows, tape, rowidx + off, ncol, date)
+            elseif T === DATETIME
+                setchunk!(col.datetimes, row, chunkrows, tape, rowidx + off, ncol, datetime)
+            elseif T === (DATETIME | MISSING)
+                setchunkm!(col.datetimesm, row, chunkrows, tape, rowidx + off, ncol, datetime)
+            elseif T === BOOL
+                setchunk!(col.bools, row, chunkrows, tape, rowidx + off, ncol, bool)
+            elseif T === (BOOL | MISSING)
+                setchunkm!(col.boolsm, row, chunkrows, tape, rowidx + off, ncol, bool)
+            elseif T === MISSINGTYPE
+                # don't need to do anything
+            elseif T === POOL || T === (POOL | MISSING)
+                setchunk!(col.lengths, row, chunkrows, tape, rowidx + off, ncol, ref)
+            else
+                for rowoff = 0:chunkrows
+                    @inbounds offlen = tape[rowidx + off + (rowoff * ncol * 2)]
+                    if missingvalue(offlen)
+                        @inbounds col.offsets[row + rowoff] = WeakRefStrings.MISSING_OFFSET
+                    else
+                        # minus 1 because the tape stores the byte *position* and StringArray wants the *offset*
+                        @inbounds col.offsets[row + rowoff] = getpos(offlen) - 1
+                        @inbounds col.lengths[row + rowoff] = unsafe_trunc(UInt32, getlen(offlen))
+                        if escapedvalue(offlen)
+                            @inbounds escapedstrings[j] = true
+                        end
+                    end
+                end
+            end
+        end
+        rowidx += ncol * 2 * chunk
     end
-    return r
+    finalcolumns = columns
+    finaltypecodes = typecodes
+    return DataFrame([finalcolumn(finalcolumns[i], finaltypecodes[i], f.buf, f.escapedstringtype, escapedstrings[i], f.refs, i, f.pool, f.categorical, f.categoricalpools) for i = 1:ncol], f.names)
 end

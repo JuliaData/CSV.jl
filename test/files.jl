@@ -1,7 +1,4 @@
-using Dates, Tables
-using DataStructures: OrderedDict
-
-include("testfiles/testfiles.jl")
+include(joinpath(dir, "testfiles.jl"));
 
 @testset "CSV.File" begin
 
@@ -16,19 +13,10 @@ end
 @test_throws ArgumentError CSV.File(joinpath(dir, "test_no_header.csv"); datarow=1, header=2);
 
 #test bad types
-f = CSV.File(joinpath(dir, "test_float_in_int_column.csv"); types=[Int, Int, Int], strict=true)
-@test_throws CSV.Error (f |> columntable)
+@test_throws CSV.Error CSV.File(joinpath(dir, "test_float_in_int_column.csv"); types=[Int, Int, Int], strict=true)
 
 # Integer overflow; #100
-@test_throws CSV.Error (CSV.File(joinpath(dir, "int8_overflow.csv"); types=[Int8], strict=true) |> columntable)
-
-# #137
-tbl = (a=[11,22], dt=[Date(2017,12,7), Date(2017,12,14)], dttm=[DateTime(2017,12,7), DateTime(2017,12,14)])
-io = IOBuffer()
-tbl |> CSV.write(io; delim='\t')
-seekstart(io)
-f = CSV.File(io; delim='\t', allowmissing=:auto)
-@test (f |> columntable) == tbl
+@test_throws CSV.Error CSV.File(joinpath(dir, "int64_overflow.csv"); types=[Int8], strict=true)
 
 # #172
 @test_throws ArgumentError CSV.File(joinpath(dir, "test_newline_line_endings.csv"), types=Dict(1=>Integer))
@@ -54,7 +42,7 @@ df = CSV.read(joinpath(dir, "test_types.csv"), types=Dict(:string=>Union{Missing
 # #352
 @test_throws ArgumentError first(CSV.File(joinpath(dir, "test_types.csv"))).a
 
-# @time f = CSV.File(joinpath(dir, "pandas_zeros.csv"), allowmissing=:none);
+# @time f = CSV.File(joinpath(dir, "pandas_zeros.csv"), allowmissing=:none) |> columntable;
 # @time t = f |> columntable;
 # @time t = Tables.buildcolumns(nothing, Tables.rows(f));
 # using Profile
@@ -62,9 +50,5 @@ df = CSV.read(joinpath(dir, "test_types.csv"), types=Dict(:string=>Union{Missing
 # @profile f |> columntable;
 # Profile.print(C=true)
 # Profile.print()
-
-# Test that using an OrderedDict for types doesn't error #373
-df = CSV.read(joinpath(dir, "test_types.csv"), types=OrderedDict(:string=>Union{Missing,DateTime}))
-@test df.string[1] === missing
 
 end # testset

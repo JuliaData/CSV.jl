@@ -1,6 +1,6 @@
 @testset "CSV.File iteration" begin
     for file in ("test_not_enough_columns.csv", "test_correct_trailing_missings.csv")
-        f = CSV.File(joinpath(dir, file), allowmissing=:auto)
+        f = CSV.File(joinpath(dir, file))
     
         rows = collect(f)
         @test isequal(map(row->row.A, rows), [1, 4])
