@@ -182,5 +182,5 @@ function Tables.columns(f::File)
     end
     finalcolumns = columns
     finaltypecodes = typecodes
-    return DataFrame([finalcolumn(finalcolumns[i], finaltypecodes[i], f.buf, f.escapedstringtype, escapedstrings[i], f.refs, i, f.pool, f.categorical, f.categoricalpools) for i = 1:ncol], f.names)
+    return DataFrame([finalcolumn(finalcolumns[i], finaltypecodes[i], f.buf, f.escapedstringtype, escapedstrings[i], f.refs, i, f.pool, f.categorical, f.categoricalpools) for i = 1:ncol], f.names; copycols=false)
 end
