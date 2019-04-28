@@ -102,6 +102,11 @@ df = CSV.read(IOBuffer("X\nb\nc\n\nc"), pool=true)
 @test size(df) == (4, 1)
 @test df.X[3] === missing
 
+df = CSV.read(IOBuffer("X\nc\nc\n\nc\nc\nc\nc"))
+@test typeof(df.X) == PooledArray{Union{Missing, String},UInt32,1,Array{UInt32,1}}
+@test size(df) == (7, 1)
+@test isequal(df.X, ["c", "c", missing, "c", "c", "c", "c"])
+
 end
 
 end
