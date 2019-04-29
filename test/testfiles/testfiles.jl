@@ -88,7 +88,7 @@ testfiles = [
         NamedTuple{(:col1, :col2, :col3), Tuple{Int64, Int64, Int64}},
         (col1 = [1, 4, 7], col2 = [2, 5, 8], col3 = [3, 6, 9])
     ),
-    ("test_dates.csv", (debug=true,),
+    ("test_dates.csv", NamedTuple(),
         (3, 1),
         NamedTuple{(:col1,), Tuple{Date}},
         (col1 = Date[Date("2015-01-01"), Date("2015-01-02"), Date("2015-01-03")],)
