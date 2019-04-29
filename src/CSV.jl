@@ -99,7 +99,7 @@ Supported keyword arguments include:
   * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64; if a `Vector` if provided, it must match the # of columns provided or detected in `header`
   * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `String`
   * `categorical::Union{Bool, Float64}=false`: if `true`, columns detected as `String` are returned as a `CategoricalArray`; alternatively, the proportion of unique values below which `String` columns should be treated as categorical (for example 0.1 for 10%, which means if the # of unique strings in a column is under 10%, it will be parsed as a CategoricalArray)
-  * `pool::Union{Bool, Float64}=false`: if `true`, columns detected as `String` are returned as a `PooledArray`; alternatively, the proportion of unique values below which `String` columns should be pooled (for example 0.1 for 10%)
+  * `pool::Union{Bool, Float64}=0.1`: if `true`, columns detected as `String` are returned as a `PooledArray`; alternatively, the proportion of unique values below which `String` columns should be pooled (by default 0.1, meaning that if the # of unique strings in a column is under 10%, it will be pooled)
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
   * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
 """
@@ -134,7 +134,7 @@ function File(source;
     types=nothing,
     typemap::Dict=EMPTY_TYPEMAP,
     categorical::Union{Bool, Real}=false,
-    pool::Union{Bool, Real}=false,
+    pool::Union{Bool, Real}=0.1,
     strict::Bool=false,
     silencewarnings::Bool=false,
     debug::Bool=false,
@@ -213,7 +213,7 @@ function File(source;
     tape = Mmap.mmap(Vector{UInt64}, roundup((rowsguess * ncols * 2), Mmap.PAGESIZE))
     catg |= categorical === true || categorical isa Float64
     pool = (pool === true || categorical === true || any(pooled, typecodes)) ? 1.0 :
-            pool isa Float64 ? pool : categorical isa Float64 ? categorical : 0.0
+            categorical isa Float64 ? categorical : pool isa Float64 ? pool : 0.0
     refs = pool > 0.0 ? [Dict{Union{Missing, String}, UInt32}() for i = 1:ncols] : EMPTY_REFS
     lastrefs = pool > 0.0 ? [UInt32(0) for i = 1:ncols] : EMPTY_LAST_REFS
     t = time()
@@ -530,7 +530,7 @@ function parsepooled!(T, tape, tapeidx, buf, pos, len, options, col, rowsguess, 
         ref = getref!(refs, WeakRefString(pointer(buf, vpos), vlen), lastrefs, col)
     end
     if !user(T) && (length(refs) / rowsguess) > pool
-        @inbounds typecodes[col] = STRING | (missingtype(T) ? MISSING : EMPTY)
+        @inbounds typecodes[col] = STRING | (missingtype(typecodes[col]) ? MISSING : EMPTY)
     else
         @inbounds tape[tapeidx + 1] = uint64(ref)
     end
@@ -575,11 +575,11 @@ Supported keyword arguments include:
   * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64; if a `Vector` if provided, it must match the # of columns provided or detected in `header`
   * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `String`
   * `categorical::Union{Bool, Float64}=false`: if `true`, columns detected as `String` are returned as a `CategoricalArray`; alternatively, the proportion of unique values below which `String` columns should be treated as categorical (for example 0.1 for 10%, which means if the # of unique strings in a column is under 10%, it will be parsed as a CategoricalArray)
-  * `pool::Union{Bool, Float64}=false`: if `true`, columns detected as `String` are returned as a `PooledArray`; alternatively, the proportion of unique values below which `String` columns should be pooled (for example 0.1 for 10%)
+  * `pool::Union{Bool, Float64}=0.1`: if `true`, columns detected as `String` are returned as a `PooledArray`; alternatively, the proportion of unique values below which `String` columns should be pooled (by default 0.1, meaning that if the # of unique strings in a column is under 10%, it will be pooled)
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
   * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
 """
-read(source; kwargs...) = CSV.File(source; kwargs...) |> DataFrame
+read(source; kwargs...) = CSV.File(source; kwargs...) |> DataFrame!
 
 function __init__()
     Threads.resize_nthreads!(VALUE_BUFFERS)
