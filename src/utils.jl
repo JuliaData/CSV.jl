@@ -118,10 +118,10 @@ end
 function getsource(source, use_mmap)
     if source isa Vector{UInt8}
         return source
-    elseif use_mmap && source isa String
+    elseif use_mmap && !isa(source, IO)
         return Mmap.mmap(source)
     end
-    iosource = source isa String ? open(source) : source
+    iosource = source isa IO ? source : open(String(source))
     io = IOBuffer()
     while !eof(iosource)
         Base.write(io, iosource)
@@ -132,29 +132,8 @@ function getsource(source, use_mmap)
 end
 
 getname(buf::Vector{UInt8}) = "<raw buffer>"
-getname(str::String) = str
+getname(str) = String(str)
 getname(io::I) where {I <: IO} = string("<", I, ">")
-
-# getbools(::Nothing, ::Nothing) = nothing
-# getbools(trues::Vector{String}, falses::Vector{String}) = Parsers.Trie(append!([x=>true for x in trues], [x=>false for x in falses]))
-# getbools(trues::Vector{String}, ::Nothing) = Parsers.Trie(append!([x=>true for x in trues], ["false"=>false]))
-# getbools(::Nothing, falses::Vector{String}) = Parsers.Trie(append!(["true"=>true], [x=>false for x in falses]))
-
-# getkwargs(df::Nothing, dec::Nothing, bools::Nothing) = NamedTuple()
-# getkwargs(df::String, dec::Nothing, bools::Nothing) = (dateformat=Dates.DateFormat(df),)
-# getkwargs(df::Dates.DateFormat, dec::Nothing, bools::Nothing) = (dateformat=df,)
-
-# getkwargs(df::Nothing, dec::Union{UInt8, Char}, bools::Nothing) = (decimal=dec % UInt8,)
-# getkwargs(df::String, dec::Union{UInt8, Char}, bools::Nothing) = (dateformat=Dates.DateFormat(df), decimal=dec % UInt8)
-# getkwargs(df::Dates.DateFormat, dec::Union{UInt8, Char}, bools::Nothing) = (dateformat=df, decimal=dec % UInt8)
-
-# getkwargs(df::Nothing, dec::Nothing, bools::Parsers.Trie) = (bools=bools,)
-# getkwargs(df::String, dec::Nothing, bools::Parsers.Trie) = (dateformat=Dates.DateFormat(df), bools=bools)
-# getkwargs(df::Dates.DateFormat, dec::Nothing, bools::Parsers.Trie) = (dateformat=df, bools=bools)
-
-# getkwargs(df::Nothing, dec::Union{UInt8, Char}, bools::Parsers.Trie) = (decimal=dec % UInt8, bools=bools)
-# getkwargs(df::String, dec::Union{UInt8, Char}, bools::Parsers.Trie) = (dateformat=Dates.DateFormat(df), decimal=dec % UInt8, bools=bools)
-# getkwargs(df::Dates.DateFormat, dec::Union{UInt8, Char}, bools::Parsers.Trie) = (dateformat=df, decimal=dec % UInt8, bools=bools)
 
 const RESERVED = Set(["local", "global", "export", "let",
     "for", "struct", "while", "const", "continue", "import",

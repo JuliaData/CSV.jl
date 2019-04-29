@@ -48,7 +48,7 @@ const EMPTY_LAST_REFS = UInt32[]
 const EMPTY_CATEGORICAL_POOLS = CategoricalPool{String, UInt32, CatStr}[]
 
 """
-    CSV.File(source::Union{String, IO}; kwargs...) => CSV.File
+    CSV.File(source; kwargs...) => CSV.File
 
 Read a csv input (a filename given as a String, or any other IO source), returning a `CSV.File` object.
 Opens the file and uses passed arguments to detect the number of columns and column types.
@@ -103,7 +103,7 @@ Supported keyword arguments include:
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
   * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
 """
-function File(source::Union{Vector{UInt8}, String, IO};
+function File(source;
     # file options
     # header can be a row number, range of rows, or actual string vector
     header::Union{Integer, Vector{Symbol}, Vector{String}, AbstractVector{<:Integer}}=1,
@@ -142,7 +142,7 @@ function File(source::Union{Vector{UInt8}, String, IO};
     allowmissing::Union{Nothing, Symbol}=nothing)
 
     # initial argument validation and adjustment
-    isa(source, AbstractString) && (isfile(source) || throw(ArgumentError("\"$source\" is not a valid file")))
+    !isa(source, IO) && !isa(source, Vector{UInt8} && (isfile(source) || throw(ArgumentError("\"$source\" is not a valid file")))
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
     delim !== nothing && ((delim isa Char && iscntrl(delim) && delim != '\t') || (delim isa String && any(iscntrl, delim) && !all(==('\t'), delim))) && throw(ArgumentError("invalid delim argument = '$(escape_string(string(delim)))', must be a non-control character or string without control characters"))
     allowmissing !== nothing && @warn "`allowmissing` is a deprecated keyword argument"
@@ -542,13 +542,13 @@ include("iteration.jl")
 include("write.jl")
 
 """
-`CSV.read(source::Union{AbstractString,IO}; kwargs...)` => `DataFrame`
+`CSV.read(source; kwargs...)` => `DataFrame`
 
 Parses a delimited file into a `DataFrame`.
 
 Positional arguments:
 
-* `source`: can be a file name (String) of the location of the csv file or `IO` object to read the csv from directly
+* `source`: can be a file name (String or FilePaths.jl type) of the location of the csv file or an `IO` or `Vector{UInt8}` buffer to read the csv from directly
 
 Supported keyword arguments include:
 * File layout options:
@@ -579,7 +579,7 @@ Supported keyword arguments include:
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
   * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
 """
-read(source::Union{AbstractString, IO}; kwargs...) = CSV.File(source; kwargs...) |> DataFrame
+read(source; kwargs...) = CSV.File(source; kwargs...) |> DataFrame
 
 function __init__()
     Threads.resize_nthreads!(VALUE_BUFFERS)
