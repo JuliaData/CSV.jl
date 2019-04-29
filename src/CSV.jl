@@ -142,7 +142,7 @@ function File(source;
     allowmissing::Union{Nothing, Symbol}=nothing)
 
     # initial argument validation and adjustment
-    !isa(source, IO) && !isa(source, Vector{UInt8} && (isfile(source) || throw(ArgumentError("\"$source\" is not a valid file")))
+    !isa(source, IO) && !isa(source, Vector{UInt8} && isfile(source) || throw(ArgumentError("\"$source\" is not a valid file"))
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
     delim !== nothing && ((delim isa Char && iscntrl(delim) && delim != '\t') || (delim isa String && any(iscntrl, delim) && !all(==('\t'), delim))) && throw(ArgumentError("invalid delim argument = '$(escape_string(string(delim)))', must be a non-control character or string without control characters"))
     allowmissing !== nothing && @warn "`allowmissing` is a deprecated keyword argument"
