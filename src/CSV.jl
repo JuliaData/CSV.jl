@@ -530,7 +530,7 @@ function parsepooled!(T, tape, tapeidx, buf, pos, len, options, col, rowsguess, 
         ref = getref!(refs, WeakRefString(pointer(buf, vpos), vlen), lastrefs, col)
     end
     if !user(T) && (length(refs) / rowsguess) > pool
-        @inbounds typecodes[col] = STRING | (missingtype(T) ? MISSING : EMPTY)
+        @inbounds typecodes[col] = STRING | (missingtype(typecodes[col]) ? MISSING : EMPTY)
     else
         @inbounds tape[tapeidx + 1] = uint64(ref)
     end
