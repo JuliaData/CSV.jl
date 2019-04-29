@@ -579,7 +579,7 @@ Supported keyword arguments include:
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
   * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
 """
-read(source::Union{AbstractString, IO}; kwargs...) = CSV.File(source; kwargs...) |> DataFrame
+read(source::Union{AbstractString, IO}; kwargs...) = CSV.File(source; kwargs...) |> DataFrame!
 
 function __init__()
     Threads.resize_nthreads!(VALUE_BUFFERS)
