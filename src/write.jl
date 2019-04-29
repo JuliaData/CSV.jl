@@ -53,7 +53,11 @@ function bufferedwrite(io, x::AbstractFloat, df, decimal)
         print(io, "Inf")
         return false
     end
-    buffer = Base.Grisu.getbuf()
+    @static if VERSION < v"1.1.0"
+        buffer = Base.Grisu.DIGITSs[Threads.threadid()]
+    else
+        buffer = Base.Grisu.getbuf()
+    end
     len, pt, neg = Base.Grisu.grisu(x,Base.Grisu.SHORTEST,n,buffer)
     pdigits = pointer(buffer)
     e = pt-len
