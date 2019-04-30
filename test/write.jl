@@ -35,7 +35,7 @@ using Dates, WeakRefStrings, CategoricalArrays, Tables
      col8=weakrefs,
      col9=cats,
     ) |> CSV.write(io)
-    @test String(take!(io)) == "col1,col2,col3,col4,col5,col6,col7,col8,col9\ntrue,4.1,NaN,2017-01-01,2017-01-01T04:05:06.007,hey,hey,hey,b\nfalse,5.2,Inf,2018-01-01,2018-01-01T04:05:06.007,there,hey,hey,a\ntrue,4.0e10,-Inf,2019-01-01,2019-01-01T04:05:06.007,sailor,hey,hey,b\n"
+    @test String(take!(io)) == "col1,col2,col3,col4,col5,col6,col7,col8,col9\ntrue,4.1,NaN,2017-01-01,2017-01-01T04:05:06.007,hey,hey,hey,b\nfalse,5.2,Inf,2018-01-01,2018-01-01T04:05:06.007,there,hey,hey,a\ntrue,4e10,-Inf,2019-01-01,2019-01-01T04:05:06.007,sailor,hey,hey,b\n"
 
     (col4=[Date(2017, 1, 1), Date(2018, 1, 1), Date(2019, 1, 1)],
      col5=[DateTime(2017, 1, 1, 4, 5, 6, 7), DateTime(2018, 1, 1, 4, 5, 6, 7), DateTime(2019, 1, 1, 4, 5, 6, 7)],
@@ -48,13 +48,13 @@ using Dates, WeakRefStrings, CategoricalArrays, Tables
     (col1=[1,missing,3], col2=[missing, missing, missing], col3=[7,8,9]) |> CSV.write(io; missingstring="NA")
     @test String(take!(io)) == "col1,col2,col3\n1,NA,7\nNA,NA,8\n3,NA,9\n"
 
-    (col1=["hey, there, sailor", "this, also, has, commas", "this\n has\n newlines\n", "no quoting", "just a random \" quote character", ],) |> CSV.write(io)
+    (col1=["hey, there, sailor", "this, also, has, commas", "this\n has\n newlines\n", "no quoting", "just a random \" quote character", ],) |> CSV.write(io; escapechar='\\')
     @test String(take!(io)) == "col1\n\"hey, there, sailor\"\n\"this, also, has, commas\"\n\"this\n has\n newlines\n\"\nno quoting\n\"just a random \\\" quote character\"\n"
 
-    (col1=["\"hey there sailor\""],) |> CSV.write(io)
+    (col1=["\"hey there sailor\""],) |> CSV.write(io; escapechar='\\')
     @test String(take!(io)) == "col1\n\"\\\"hey there sailor\\\"\"\n"
 
-    (col1=["{\"key\": \"value\"}", "{\"key\": null}"],) |> CSV.write(io; openquotechar='{', closequotechar='}')
+    (col1=["{\"key\": \"value\"}", "{\"key\": null}"],) |> CSV.write(io; openquotechar='{', closequotechar='}', escapechar='\\')
     @test String(take!(io)) == "col1\n{\\{\"key\": \"value\"\\}}\n{\\{\"key\": null\\}}\n"
 
     (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io)
@@ -86,17 +86,17 @@ using Dates, WeakRefStrings, CategoricalArrays, Tables
 
     # unknown schema case
     io = IOBuffer()
-    CSV.write(nothing, Tables.rows((col1=[1,2,3], col2=[4,5,6], col3=[7,8,9])), io)
+    CSV.write(nothing, Tables.rows((col1=[1,2,3], col2=[4,5,6], col3=[7,8,9])), io, UInt8('"'), UInt8('"'), UInt8('"'), '\n', '.')
     @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
 
     rt = [(a=1, b=4.0, c=7), (a=2.0, b=missing, c="8"), (a=3, b=6.0, c="9")]
-    CSV.write(nothing, rt, io)
-    @test String(take!(io)) == "a,b,c\n1,4.0,7\n2.0,,8\n3,6.0,9\n"
+    CSV.write(nothing, rt, io, UInt8('"'), UInt8('"'), UInt8('"'), '\n', '.')
+    @test String(take!(io)) == "a,b,c\n1,4,7\n2,,8\n3,6,9\n"
 
-    CSV.write(nothing, Tables.rows((col1=Int[], col2=Float64[])), io)
+    CSV.write(nothing, Tables.rows((col1=Int[], col2=Float64[])), io, UInt8('"'), UInt8('"'), UInt8('"'), '\n', '.')
     @test String(take!(io)) == ""
 
-    CSV.write(nothing, Tables.rows((col1=Int[], col2=Float64[])), io; header=["col1", "col2"])
+    CSV.write(nothing, Tables.rows((col1=Int[], col2=Float64[])), io, UInt8('"'), UInt8('"'), UInt8('"'), '\n', '.'; header=["col1", "col2"])
     @test String(take!(io)) == "col1,col2\n"
 
     # 280
@@ -138,4 +138,35 @@ using Dates, WeakRefStrings, CategoricalArrays, Tables
     f = CSV.File(io; delim='\t')
     @test (f |> columntable) == tbl
 
+    # custom newline: #375
+    io = IOBuffer()
+    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; newline='\r')
+    @test String(take!(io)) == "col1,col2,col3\r1,4,7\r2,5,8\r3,6,9\r"
+
+    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; newline="\r\n")
+    @test String(take!(io)) == "col1,col2,col3\r\n1,4,7\r\n2,5,8\r\n3,6,9\r\n"
+
+    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; delim="::", newline="\r\n")
+    @test String(take!(io)) == "col1::col2::col3\r\n1::4::7\r\n2::5::8\r\n3::6::9\r\n"
+
+    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; delim="::", newline="\r")
+    @test String(take!(io)) == "col1::col2::col3\r1::4::7\r2::5::8\r3::6::9\r"
+
+    # quotedstrings: #362
+    (col1=[1,2,3], col2=["hey", "the::re", "::sailor"], col3=[7,8,9]) |> CSV.write(io; delim="::", quotestrings=true)
+    @test String(take!(io)) == "col1::col2::col3\n1::\"hey\"::7\n2::\"the::re\"::8\n3::\"::sailor\"::9\n"
+
+    (col1=[1,2,3], col2=[4,5,6], col3=["hey \r\n there","sailor","ho"]) |> CSV.write(io; delim="::", newline="\r\n")
+    @test String(take!(io)) == "col1::col2::col3\r\n1::4::\"hey \r\n there\"\r\n2::5::sailor\r\n3::6::ho\r\n"
+
+    (col1=[1,2,3], col2=[4,5,6], col3=["hey \r\n there","sailor","ho"]) |> CSV.write(io; delim="::", newline="\r\n", quotestrings=true)
+    @test String(take!(io)) == "col1::col2::col3\r\n1::4::\"hey \r\n there\"\r\n2::5::\"sailor\"\r\n3::6::\"ho\"\r\n"
+
+    # validate char args: #369
+    @test_throws ArgumentError (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; escapechar='☃')
+    
+    # custom float decimal: #385
+    (col1=[1.1,2.2,3.3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; delim='\t', decimal=',')
+    @test String(take!(io)) == "col1\tcol2\tcol3\n1,1\t4\t7\n2,2\t5\t8\n3,3\t6\t9\n"
+    
 end
