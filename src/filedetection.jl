@@ -14,7 +14,6 @@ function countfields(buf, pos, len, options)
     rows = 0
     while pos <= len
         _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
-        Parsers.succeeded(code) || throw(ArgumentError("invalid field detected: \"$(escape_string(String(buf[pos:pos+tlen-1])))\""))
         pos += tlen
         rows += 1
         Parsers.delimited(code) && continue
@@ -137,7 +136,6 @@ end
 function readline!(buf, pos, len, options)
     while pos <= len
         _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
-        Parsers.succeeded(code) || throw(ArgumentError("invalid field detected: \"$(escape_string(String(buf[pos:pos+tlen-1])))\""))
         pos += tlen
         (Parsers.newline(code) || pos > len) && break
     end
@@ -162,7 +160,6 @@ function readsplitline(buf, pos, len, options::Parsers.Options{ignorerepeated}, 
             pos = Parsers.checkdelim!(buf, pos, len, options)
         end
         _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-        Parsers.succeeded(code) || throw(ArgumentError("invalid field detected: \"$(escape_string(String(buf[pos:pos+tlen-1])))\""))
         if Parsers.sentinel(code)
             push!(vals, missing)
         else
