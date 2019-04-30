@@ -12,9 +12,14 @@ end
 
 @testset "CSV" begin
 
+@testset "CSV.File" begin
+
 include("basics.jl")
-include("files.jl")
+include("testfiles.jl")
 include("iteration.jl")
+
+end # @testset "CSV.File"
+
 include("write.jl")
 
 @testset "transform" begin
@@ -85,27 +90,27 @@ end
 
 @testset "PooledArrays" begin
 
-df = CSV.read(IOBuffer("X\nb\nc\na\nc"), pool=true)
-@test typeof(df.X) == PooledArrays.PooledArray{String,UInt32,1,Array{UInt32,1}}
-@test size(df) == (4, 1)
-@test df.X == ["b", "c", "a", "c"]
-@test df.X.refs[2] == df.X.refs[4]
+    df = CSV.read(IOBuffer("X\nb\nc\na\nc"), pool=true)
+    @test typeof(df.X) == PooledArrays.PooledArray{String,UInt32,1,Array{UInt32,1}}
+    @test size(df) == (4, 1)
+    @test df.X == ["b", "c", "a", "c"]
+    @test df.X.refs[2] == df.X.refs[4]
 
-df = CSV.read(IOBuffer("X\nb\nc\na\nc"), pool=0.5)
-@test typeof(df.X) == PooledArrays.PooledArray{String,UInt32,1,Array{UInt32,1}}
-@test size(df) == (4, 1)
-@test df.X == ["b", "c", "a", "c"]
-@test df.X.refs[2] == df.X.refs[4]
+    df = CSV.read(IOBuffer("X\nb\nc\na\nc"), pool=0.5)
+    @test typeof(df.X) == PooledArrays.PooledArray{String,UInt32,1,Array{UInt32,1}}
+    @test size(df) == (4, 1)
+    @test df.X == ["b", "c", "a", "c"]
+    @test df.X.refs[2] == df.X.refs[4]
 
-df = CSV.read(IOBuffer("X\nb\nc\n\nc"), pool=true)
-@test typeof(df.X) == PooledArray{Union{Missing, String},UInt32,1,Array{UInt32,1}}
-@test size(df) == (4, 1)
-@test df.X[3] === missing
+    df = CSV.read(IOBuffer("X\nb\nc\n\nc"), pool=true)
+    @test typeof(df.X) == PooledArray{Union{Missing, String},UInt32,1,Array{UInt32,1}}
+    @test size(df) == (4, 1)
+    @test df.X[3] === missing
 
-df = CSV.read(IOBuffer("X\nc\nc\n\nc\nc\nc\nc"))
-@test typeof(df.X) == PooledArray{Union{Missing, String},UInt32,1,Array{UInt32,1}}
-@test size(df) == (7, 1)
-@test isequal(df.X, ["c", "c", missing, "c", "c", "c", "c"])
+    df = CSV.read(IOBuffer("X\nc\nc\n\nc\nc\nc\nc"))
+    @test typeof(df.X) == PooledArray{Union{Missing, String},UInt32,1,Array{UInt32,1}}
+    @test size(df) == (7, 1)
+    @test isequal(df.X, ["c", "c", missing, "c", "c", "c", "c"])
 
 end
 

@@ -177,10 +177,10 @@ function File(source;
     # determine column names and where the data starts in the file; for transpose, we note the starting byte position of each column
     if transpose
         rowsguess, names, positions = datalayout_transpose(header, buf, pos, len, options, datarow, normalizenames)
-        datapos = positions[1]
+        datapos = isempty(positions) ? 0 : positions[1]
     else
         positions = EMPTY_POSITIONS
-        names, datapos = datalayout(header, buf, pos, len, options, datarow, normalizenames, cmt, ignorerepeated)
+        names, datapos = datalayout(header, buf, pos, len, options, datarow, normalizenames, cmt)
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
@@ -252,9 +252,9 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit,
                 @inbounds T = typecodes[col]
                 type = typebits(T)
                 if type === EMPTY
-                    pos, code = parseempty!(tape, tapeidx, buf, pos, len, options, col, typemap, pool, refs, lastrefs, debug, typecodes)
+                    pos, code = parseempty!(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes)
                 elseif type === MISSINGTYPE
-                    pos, code = parsemissing!(tape, tapeidx, buf, pos, len, options, col, typemap, pool, refs, lastrefs, debug, typecodes)
+                    pos, code = parsemissing!(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes)
                 elseif type === INT
                     pos, code = parseint!(T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
                 elseif type === FLOAT
@@ -266,9 +266,9 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit,
                 elseif type === BOOL
                     pos, code = parsevalue!(Bool, T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
                 elseif type === POOL
-                    pos, code = parsepooled!(T, tape, tapeidx, buf, pos, len, options, col, rowsguess, pool, refs[col], lastrefs, typecodes)
+                    pos, code = parsepooled!(T, tape, tapeidx, buf, pos, len, options, row, col, rowsguess, pool, refs[col], lastrefs, typecodes)
                 else # STRING
-                    pos, code = parsestring!(T, tape, tapeidx, buf, pos, len, options, col, typecodes)
+                    pos, code = parsestring!(T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
                 end
                 tapeidx += 2
                 if transpose
@@ -331,8 +331,12 @@ const NONINTVALUE = Val(false)
     return
 end
 
-function parseempty!(tape, tapeidx, buf, pos, len, options, col, typemap, pool, refs, lastrefs, debug, typecodes)
+function parseempty!(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes)
     x, code, vpos, vlen, tlen = detecttype(buf, pos, len, options, debug)
+    if Parsers.invalidquotedfield(code)
+        # this usually means parsing is borked because of an invalidly quoted field, hard error
+        fatalerror(buf, pos, tlen, code, row, col)
+    end
     T = Parsers.sentinel(code) ? MISSINGTYPE : typecode(x)
     T = get(typemap, T, T)
     if T == INT
@@ -345,7 +349,7 @@ function parseempty!(tape, tapeidx, buf, pos, len, options, col, typemap, pool, 
         elseif T === STRING
             if pool > 0.0
                 T = POOL
-                ref = getref!(refs[col], WeakRefString(pointer(buf, vpos), vlen), lastrefs, col)
+                ref = getref!(refs[col], WeakRefString(pointer(buf, vpos), vlen), lastrefs, col, code, options)
                 @inbounds tape[tapeidx + 1] = uint64(ref)
             end
         end
@@ -354,8 +358,12 @@ function parseempty!(tape, tapeidx, buf, pos, len, options, col, typemap, pool, 
     return pos + tlen, code
 end
 
-function parsemissing!(tape, tapeidx, buf, pos, len, options, col, typemap, pool, refs, lastrefs, debug, typecodes)
+function parsemissing!(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes)
     x, code, vpos, vlen, tlen = detecttype(buf, pos, len, options, debug)
+    if Parsers.invalidquotedfield(code)
+        # this usually means parsing is borked because of an invalidly quoted field, hard error
+        fatalerror(buf, pos, tlen, code, row, col)
+    end
     T = Parsers.sentinel(code) ? MISSINGTYPE : typecode(x)
     T = get(typemap, T, T)
     if T == INT
@@ -368,7 +376,7 @@ function parsemissing!(tape, tapeidx, buf, pos, len, options, col, typemap, pool
         elseif T === STRING
             if pool > 0.0
                 T = POOL
-                ref = getref!(refs[col], WeakRefString(pointer(buf, vpos), vlen), lastrefs, col)
+                ref = getref!(refs[col], WeakRefString(pointer(buf, vpos), vlen), lastrefs, col, code, options)
                 @inbounds tape[tapeidx + 1] = uint64(ref)
             end
         end
@@ -441,7 +449,7 @@ end
     else
         if Parsers.invalidquotedfield(code)
             # this usually means parsing is borked because of an invalidly quoted field, hard error
-            fatalerror(buf, pos, len, code, row, col)
+            fatalerror(buf, pos, tlen, code, row, col)
         end
         if user(T)
             if !options.strict
@@ -473,11 +481,12 @@ function parsevalue!(::Type{type}, T, tape, tapeidx, buf, pos, len, options, row
             @inbounds tape[tapeidx + 1] = uint64(x)
         else
             @inbounds typecodes[col] = T | MISSING
+            @inbounds tape[tapeidx] = MISSING_BIT
         end
     else
         if Parsers.invalidquotedfield(code)
             # this usually means parsing is borked because of an invalidly quoted field, hard error
-            fatalerror(buf, pos, len, code, row, col)
+            fatalerror(buf, pos, tlen, code, row, col)
         end
         if user(T)
             if !options.strict
@@ -499,35 +508,43 @@ function parsevalue!(::Type{type}, T, tape, tapeidx, buf, pos, len, options, row
     return pos + tlen, code
 end
 
-@inline function parsestring!(T, tape, tapeidx, buf, pos, len, options, col, typecodes)
+@inline function parsestring!(T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
     x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
     setposlen!(tape, tapeidx, code, vpos, vlen)
+    if Parsers.invalidquotedfield(code)
+        # this usually means parsing is borked because of an invalidly quoted field, hard error
+        fatalerror(buf, pos, tlen, code, row, col)
+    end
     if Parsers.sentinel(code)
         @inbounds typecodes[col] = STRING | MISSING
     end
     return pos + tlen, code
 end
 
-@inline function getref!(x::Dict, key::WeakRefString, lastrefs, col)
+@inline function getref!(x::Dict, key::WeakRefString, lastrefs, col, code, options)
     index = Base.ht_keyindex2!(x, key)
     if index > 0
         @inbounds found_key = x.vals[index]
         return found_key::UInt32
     else
         @inbounds new = (lastrefs[col] += UInt32(1))
-        @inbounds Base._setindex!(x, new, String(key), -index)
+        @inbounds Base._setindex!(x, new, Parsers.escapedstring(code) ? convert(EscapedString{options.e}, key) : String(key), -index)
         return new
     end
 end
 
-function parsepooled!(T, tape, tapeidx, buf, pos, len, options, col, rowsguess, pool, refs, lastrefs, typecodes)
+function parsepooled!(T, tape, tapeidx, buf, pos, len, options, row, col, rowsguess, pool, refs, lastrefs, typecodes)
     x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
     setposlen!(tape, tapeidx, code, vpos, vlen)
+    if Parsers.invalidquotedfield(code)
+        # this usually means parsing is borked because of an invalidly quoted field, hard error
+        fatalerror(buf, pos, tlen, code, row, col)
+    end
     if Parsers.sentinel(code)
         @inbounds typecodes[col] = T | MISSING
         ref = UInt32(0)
     else
-        ref = getref!(refs, WeakRefString(pointer(buf, vpos), vlen), lastrefs, col)
+        ref = getref!(refs, WeakRefString(pointer(buf, vpos), vlen), lastrefs, col, code, options)
     end
     if !user(T) && (length(refs) / rowsguess) > pool
         @inbounds typecodes[col] = STRING | (missingtype(typecodes[col]) ? MISSING : EMPTY)
