@@ -22,9 +22,9 @@ function countfields(buf, pos, len, options)
     return rows, pos
 end
 
-function columnname(buf, vpos, vlen, code, options)
+function columnname(buf, vpos, vlen, code, options, i)
     if Parsers.sentinel(code)
-        return missing
+        return "Column$i"
     elseif Parsers.escapedstring(code)
         return convert(EscapedString{options.e}, WeakRefString(pointer(buf, vpos), vlen))
     else
@@ -38,7 +38,7 @@ function datalayout_transpose(header, buf, pos, len, options, datarow, normalize
         row, pos = skiptoheader!(buf, pos, len, options, 1, header)
         # io now at start of 1st header cell
         _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-        columnnames = [columnname(buf, vpos, vlen, code, options)]
+        columnnames = [columnname(buf, vpos, vlen, code, options, 1)]
         pos += tlen
         columnpositions = [pos]
         datapos = pos
@@ -51,7 +51,7 @@ function datalayout_transpose(header, buf, pos, len, options, datarow, normalize
             row, pos = skiptoheader!(buf, pos, len, options, 1, header)
             cols += 1
             _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-            push!(columnnames, columnname(buf, vpos, vlen, code, options))
+            push!(columnnames, columnname(buf, vpos, vlen, code, options, cols))
             pos += tlen
             push!(columnpositions, pos)
             pos = readline!(buf, pos, len, options)
@@ -98,7 +98,7 @@ function datalayout(header::Integer, buf, pos, len, options, datarow, normalizen
     else
         pos = skipto!(buf, pos, len, options, 1, header)
         fields, pos = readsplitline(buf, pos, len, options, cmt)
-        columnnames = makeunique([ismissing(x) ? Symbol(:Column, i) : (normalizenames ? normalizename(x) : Symbol(x)) for (i, x) in enumerate(fields)])
+        columnnames = makeunique([normalizenames ? normalizename(x) : Symbol(x) for (i, x) in enumerate(fields)])
         if datarow != header+1
             pos = skipto!(buf, pos, len, options, header+1, datarow)
         end
@@ -109,13 +109,12 @@ end
 
 function datalayout(header::AbstractVector{<:Integer}, buf, pos, len, options, datarow, normalizenames, cmt)
     pos = skipto!(buf, pos, len, options, 1, header[1])
-    fields, pos = readsplitline(buf, pos, len, options, cmt)
-    columnnames = [ismissing(x) ? "Column$i" : x for (i, x) in enumerate(fields)]
+    columnnames, pos = readsplitline(buf, pos, len, options, cmt)
     for row = 2:length(header)
         pos = skipto!(buf, pos, len, options, 1, header[row] - header[row-1])
         fields, pos = readsplitline(buf, pos, len, options, cmt)
         for (i, x) in enumerate(fields)
-            columnnames[i] *= "_" * (ismissing(x) ? "Column$i" : x)
+            columnnames[i] *= "_" * x
         end
     end
     if datarow != last(header)+1
@@ -161,7 +160,7 @@ function skipto!(buf, pos, len, options, cur, dest)
 end
 
 function readsplitline(buf, pos, len, options::Parsers.Options{ignorerepeated}, cmt) where {ignorerepeated}
-    vals = Union{String, Missing}[]
+    vals = String[]
     pos > len && return vals, pos
     col = 1
     while true
@@ -170,7 +169,7 @@ function readsplitline(buf, pos, len, options::Parsers.Options{ignorerepeated}, 
             pos = Parsers.checkdelim!(buf, pos, len, options)
         end
         _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-        push!(vals, columnname(buf, vpos, vlen, code, options))
+        push!(vals, columnname(buf, vpos, vlen, code, options, col))
         pos += tlen
         col += 1
         Parsers.delimited(code) && continue
