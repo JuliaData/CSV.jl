@@ -1,4 +1,4 @@
-function skiptoheader!(buf, pos, len, options, row, header)
+function skiptofield!(buf, pos, len, options, row, header)
     while row < header
         while pos <= len
             _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
@@ -22,14 +22,25 @@ function countfields(buf, pos, len, options)
     return rows, pos
 end
 
+function columnname(buf, vpos, vlen, code, options, i)
+    if Parsers.sentinel(code)
+        return "Column$i"
+    elseif Parsers.escapedstring(code)
+        return convert(EscapedString{options.e}, WeakRefString(pointer(buf, vpos), vlen))
+    else
+        return unsafe_string(pointer(buf, vpos), vlen)
+    end
+end
+
 function datalayout_transpose(header, buf, pos, len, options, datarow, normalizenames)
     if isa(header, Integer) && header > 0
         # skip to header column to read column names
-        row, pos = skiptoheader!(buf, pos, len, options, 1, header)
+        row, pos = skiptofield!(buf, pos, len, options, 1, header)
         # io now at start of 1st header cell
         _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-        columnnames = [unsafe_string(pointer(buf, vpos), vlen)]
+        columnnames = [columnname(buf, vpos, vlen, code, options, 1)]
         pos += tlen
+        row, pos = skiptofield!(buf, pos, len, options, header+1, datarow)
         columnpositions = [pos]
         datapos = pos
         rows, pos = countfields(buf, pos, len, options)
@@ -38,11 +49,12 @@ function datalayout_transpose(header, buf, pos, len, options, datarow, normalize
         cols = 1
         while pos <= len
             # skip to header column to read column names
-            row, pos = skiptoheader!(buf, pos, len, options, 1, header)
+            row, pos = skiptofield!(buf, pos, len, options, 1, header)
             cols += 1
             _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-            push!(columnnames, unsafe_string(pointer(buf, vpos), vlen))
+            push!(columnnames, columnname(buf, vpos, vlen, code, options, cols))
             pos += tlen
+            row, pos = skiptofield!(buf, pos, len, options, header+1, datarow)
             push!(columnpositions, pos)
             pos = readline!(buf, pos, len, options)
         end
@@ -53,11 +65,12 @@ function datalayout_transpose(header, buf, pos, len, options, datarow, normalize
         # emtpy file, use column names if provided
         datapos = pos
         columnpositions = Int[]
-        columnnames = header
+        columnnames = header isa Vector && !isempty(header) ? header : []
+        rows = 0
     else
         # column names provided explicitly or should be generated, they don't exist in data
         # skip to datarow
-        row, pos = skiptoheader!(buf, pos, len, options, 1, datarow)
+        row, pos = skiptofield!(buf, pos, len, options, 1, datarow)
         # io now at start of 1st data cell
         columnnames = [isa(header, Integer) || isempty(header) ? "Column1" : header[1]]
         columnpositions = [pos]
@@ -67,7 +80,7 @@ function datalayout_transpose(header, buf, pos, len, options, datarow, normalize
         cols = 1
         while pos <= len
             # skip to datarow column
-            row, pos = skiptoheader!(buf, pos, len, options, 1, datarow)
+            row, pos = skiptofield!(buf, pos, len, options, 1, datarow)
             cols += 1
             push!(columnnames, isa(header, Integer) || isempty(header) ? "Column$cols" : header[cols])
             push!(columnpositions, pos)
@@ -77,7 +90,7 @@ function datalayout_transpose(header, buf, pos, len, options, datarow, normalize
     return rows, makeunique(map(x->normalizenames ? normalizename(x) : Symbol(x), columnnames)), columnpositions
 end
 
-function datalayout(header::Integer, buf, pos, len, options, datarow, normalizenames, cmt, ignorerepeated)
+function datalayout(header::Integer, buf, pos, len, options, datarow, normalizenames, cmt)
     # default header = 1
     if header <= 0
         # no header row in dataset; skip to data to figure out # of columns
@@ -88,7 +101,7 @@ function datalayout(header::Integer, buf, pos, len, options, datarow, normalizen
     else
         pos = skipto!(buf, pos, len, options, 1, header)
         fields, pos = readsplitline(buf, pos, len, options, cmt)
-        columnnames = makeunique([ismissing(x) ? Symbol(:Column, i) : (normalizenames ? normalizename(x) : Symbol(x)) for (i, x) in enumerate(fields)])
+        columnnames = makeunique([normalizenames ? normalizename(x) : Symbol(x) for (i, x) in enumerate(fields)])
         if datarow != header+1
             pos = skipto!(buf, pos, len, options, header+1, datarow)
         end
@@ -97,15 +110,14 @@ function datalayout(header::Integer, buf, pos, len, options, datarow, normalizen
     return columnnames, datapos
 end
 
-function datalayout(header::AbstractVector{<:Integer}, buf, pos, len, options, datarow, normalizenames, cmt, ignorerepeated)
+function datalayout(header::AbstractVector{<:Integer}, buf, pos, len, options, datarow, normalizenames, cmt)
     pos = skipto!(buf, pos, len, options, 1, header[1])
-    fields, pos = readsplitline(buf, pos, len, options, cmt)
-    columnnames = [ismissing(x) ? "Column$i" : x for (i, x) in enumerate(fields)]
+    columnnames, pos = readsplitline(buf, pos, len, options, cmt)
     for row = 2:length(header)
         pos = skipto!(buf, pos, len, options, 1, header[row] - header[row-1])
         fields, pos = readsplitline(buf, pos, len, options, cmt)
         for (i, x) in enumerate(fields)
-            columnnames[i] *= "_" * (ismissing(x) ? "Column$i" : x)
+            columnnames[i] *= "_" * x
         end
     end
     if datarow != last(header)+1
@@ -115,7 +127,7 @@ function datalayout(header::AbstractVector{<:Integer}, buf, pos, len, options, d
     return makeunique([normalizenames ? normalizename(nm) : Symbol(nm) for nm in columnnames]), datapos
 end
 
-function datalayout(header::Union{Vector{Symbol}, Vector{String}}, buf, pos, len, options, datarow, normalizenames, cmt, ignorerepeated)
+function datalayout(header::Union{Vector{Symbol}, Vector{String}}, buf, pos, len, options, datarow, normalizenames, cmt)
     pos = skipto!(buf, pos, len, options, 1, datarow)
     datapos = pos
     if pos > len
@@ -150,8 +162,8 @@ function skipto!(buf, pos, len, options, cur, dest)
     return pos
 end
 
-function readsplitline(buf, pos, len, options::Parsers.Options{ignorerepeated}, cmt=nothing) where {ignorerepeated}
-    vals = Union{String, Missing}[]
+function readsplitline(buf, pos, len, options::Parsers.Options{ignorerepeated}, cmt) where {ignorerepeated}
+    vals = String[]
     pos > len && return vals, pos
     col = 1
     while true
@@ -160,11 +172,7 @@ function readsplitline(buf, pos, len, options::Parsers.Options{ignorerepeated}, 
             pos = Parsers.checkdelim!(buf, pos, len, options)
         end
         _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-        if Parsers.sentinel(code)
-            push!(vals, missing)
-        else
-            push!(vals, unsafe_string(pointer(buf, vpos), vlen))
-        end
+        push!(vals, columnname(buf, vpos, vlen, code, options, col))
         pos += tlen
         col += 1
         Parsers.delimited(code) && continue

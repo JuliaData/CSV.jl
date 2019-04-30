@@ -40,7 +40,6 @@ typecode(::Type{Date}) = DATE
 typecode(::Type{DateTime}) = DATETIME
 typecode(::Type{Bool}) = BOOL
 typecode(::Type{<:AbstractString}) = STRING
-typecode(::Type{Tuple{Ptr{UInt8}, Int}}) = STRING
 typecode(::Type{PooledString}) = POOL
 typecode(::Type{CatStr}) = POOL
 typecode(::Type{Union{}}) = EMPTY
