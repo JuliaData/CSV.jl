@@ -428,7 +428,7 @@ end
 
 @inline function parseint!(T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
     x, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, options)
-    if Parsers.succeeded(code)
+    if code > 0
         if !Parsers.sentinel(code)
             @inbounds tape[tapeidx + 1] = uint64(x)
             if !user(T)
@@ -453,7 +453,7 @@ end
             end
         else
             y, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, options)
-            if Parsers.succeeded(code)
+            if code > 0
                 @inbounds tape[tapeidx + 1] = uint64(y)
                 @inbounds typecodes[col] = FLOAT | (missingtype(T) ? MISSING : EMPTY)
             else
@@ -468,7 +468,7 @@ end
 
 function parsevalue!(::Type{type}, T, tape, tapeidx, buf, pos, len, options, row, col, typecodes) where {type}
     x, code, vpos, vlen, tlen = Parsers.xparse(type, buf, pos, len, options)
-    if Parsers.succeeded(code)
+    if code > 0
         if !Parsers.sentinel(code)
             @inbounds tape[tapeidx + 1] = uint64(x)
         else
