@@ -50,7 +50,7 @@ const EMPTY_CATEGORICAL_POOLS = CategoricalPool{String, UInt32, CatStr}[]
 """
     CSV.File(source; kwargs...) => CSV.File
 
-Read a csv input (a filename given as a String, or any other IO source), returning a `CSV.File` object.
+Read a csv input (a filename given as a String or FilePaths.jl type, or any other IO source), returning a `CSV.File` object.
 Opens the file and uses passed arguments to detect the number of columns and column types.
 The returned `CSV.File` object supports the [Tables.jl](https://github.com/JuliaData/Tables.jl) interface
 and can iterate `CSV.Row`s. `CSV.Row` supports `propertynames` and `getproperty` to access individual row values.
@@ -67,7 +67,7 @@ By supporting the Tables.jl interface, a `CSV.File` can also be a table input to
 
 ```julia
 # materialize a csv file as a DataFrame
-df = CSV.File(file) |> DataFrame
+df = CSV.File(file) |> DataFrame!
 
 # load a csv file directly into an sqlite database table
 db = SQLite.DB()
@@ -202,16 +202,16 @@ function File(source;
     # we now do our parsing pass over the file, starting at datapos
     # we fill in our "tape", which has two UInt64 slots for each cell in row-major order (linearly indexed)
     # the 1st UInt64 is used for noting the byte position, len, and other metadata of the field within the file:
-        # top bit indicates a missing value
-        # 2nd bit indicates a cell initially parsed as Int (used if column later gets promoted to Float64)
-        # 3rd bit indicates if a field was quoted and included escape chararacters (will have to be unescaped later)
-        # 45 bits for position (allows for maximum file of 35TB)
+        # leftmost bit indicates a sentinel value was detected while parsing, resulting cell value will be `missing`
+        # 2nd leftmost bit indicates a cell initially parsed as Int (used if column later gets promoted to Float64)
+        # 3rd leftmost bit indicates if a field was quoted and included escape chararacters (will have to be unescaped later)
+        # 45 bits for position (allows for maximum file size of 35TB)
         # 16 bits for field length (allows for maximum field size of 65K)
     # the 2nd UInt64 is used for storing the raw bits of a parsed, typed value: Int64, Float64, Date, DateTime, Bool, or categorical/pooled UInt32 ref
     ncols = length(names)
     # might as well round up to the next largest pagesize, since mmap aligns to it anyway
     tape = Mmap.mmap(Vector{UInt64}, roundup((rowsguess * ncols * 2), Mmap.PAGESIZE))
-    catg |= categorical === true || categorical isa Float64
+    catg |= categorical !== false
     pool = (pool === true || categorical === true || any(pooled, typecodes)) ? 1.0 :
             categorical isa Float64 ? categorical : pool isa Float64 ? pool : 0.0
     refs = pool > 0.0 ? [Dict{Union{Missing, String}, UInt32}() for i = 1:ncols] : EMPTY_REFS
@@ -428,7 +428,7 @@ end
 
 @inline function parseint!(T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
     x, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, options)
-    if Parsers.succeeded(code)
+    if code > 0
         if !Parsers.sentinel(code)
             @inbounds tape[tapeidx + 1] = uint64(x)
             if !user(T)
@@ -453,7 +453,7 @@ end
             end
         else
             y, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, options)
-            if Parsers.succeeded(code)
+            if code > 0
                 @inbounds tape[tapeidx + 1] = uint64(y)
                 @inbounds typecodes[col] = FLOAT | (missingtype(T) ? MISSING : EMPTY)
             else
@@ -468,7 +468,7 @@ end
 
 function parsevalue!(::Type{type}, T, tape, tapeidx, buf, pos, len, options, row, col, typecodes) where {type}
     x, code, vpos, vlen, tlen = Parsers.xparse(type, buf, pos, len, options)
-    if Parsers.succeeded(code)
+    if code > 0
         if !Parsers.sentinel(code)
             @inbounds tape[tapeidx + 1] = uint64(x)
         else
