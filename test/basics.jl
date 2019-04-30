@@ -164,4 +164,20 @@ df = CSV.read(IOBuffer("x\na\n\n"), categorical=true)
 df = CSV.read(IOBuffer("x\na\nb\na\nb\na\nb\na\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nn\nm\no\np\nq\nr\n"), categorical=0.5)
 @test typeof(df.x) == StringArray{String,1}
 
+# a few corner cases for escape strings
+df = CSV.read(IOBuffer("\"column name with \"\" escape character inside\"\n1\n"))
+@test names(df)[1] == Symbol("column name with \" escape character inside")
+
+df = CSV.read(IOBuffer("\"column name with \"\" escape character inside\",1\n,2"), transpose=true)
+@test names(df)[1] == Symbol("column name with \" escape character inside")
+@test names(df)[2] == :Column2
+
+df = CSV.read(IOBuffer("x\na\nb\n\"quoted field with \"\" escape character inside\"\n"), categorical=true)
+@test df.x[1] == "a"
+@test df.x[3] == "quoted field with \" escape character inside"
+
+df = CSV.read(IOBuffer("x\na\nb\n\"quoted field with \"\" escape character inside\"\n"), pool=true)
+@test df.x[1] == "a"
+@test df.x[3] == "quoted field with \" escape character inside"
+
 end
