@@ -1,5 +1,3 @@
-using CSV, Tables, Test
-
 function testfile(file, kwargs, expected_sz, expected_sch, testfunc)
     println("testing $file")
     t = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
@@ -543,3 +541,7 @@ testfiles = [
     ),
 
 ];
+
+for test in testfiles
+    testfile(test...)
+end

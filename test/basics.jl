@@ -1,4 +1,40 @@
-@testset "basics" begin
+@testset "CSV.File basics" begin
+
+#test on non-existent file
+@test_throws ArgumentError CSV.File("");
+
+#test where datarow > headerrow
+@test_throws ArgumentError CSV.File(joinpath(dir, "test_no_header.csv"); datarow=1, header=2);
+
+#test bad types
+@test_throws CSV.Error CSV.File(joinpath(dir, "test_float_in_int_column.csv"); types=[Int, Int, Int], strict=true)
+
+# Integer overflow; #100
+@test_throws CSV.Error CSV.File(joinpath(dir, "int64_overflow.csv"); types=[Int8], strict=true)
+
+# #172
+@test_throws ArgumentError CSV.File(joinpath(dir, "test_newline_line_endings.csv"), types=Dict(1=>Integer))
+
+# #289
+tmp = CSV.File(IOBuffer(" \"a, b\", \"c\" "), datarow=1) |> DataFrame
+@test size(tmp) == (1, 2)
+@test tmp.Column1[1] == "a, b"
+@test tmp.Column2[1] == "c"
+
+tmp = CSV.File(IOBuffer(" \"2018-01-01\", \"1\" ,1,2,3"), datarow=1) |> DataFrame
+@test size(tmp) == (1, 5)
+@test tmp.Column1[1] == Date(2018, 1, 1)
+@test tmp.Column2[1] == 1
+@test tmp.Column3[1] == 1
+@test tmp.Column4[1] == 2
+@test tmp.Column5[1] == 3
+
+# #329
+df = CSV.read(joinpath(dir, "test_types.csv"), types=Dict(:string=>Union{Missing,DateTime}), silencewarnings=true)
+@test df.string[1] === missing
+
+# #352
+@test_throws ArgumentError first(CSV.File(joinpath(dir, "test_types.csv"))).a
 
 @test_throws ArgumentError CSV.File(IOBuffer("a\0b\n1\02\n"); delim='\0')
 @test_throws ArgumentError CSV.File(IOBuffer("a\0b\n1\02\n"); delim="\0")
@@ -179,5 +215,96 @@ df = CSV.read(IOBuffer("x\na\nb\n\"quoted field with \"\" escape character insid
 df = CSV.read(IOBuffer("x\na\nb\n\"quoted field with \"\" escape character inside\"\n"), pool=true)
 @test df.x[1] == "a"
 @test df.x[3] == "quoted field with \" escape character inside"
+
+# invalid quoted field is fatal error
+@test_throws CSV.Error CSV.read(IOBuffer("x\n\"quoted field that never ends"))
+@test_throws CSV.Error CSV.read(IOBuffer("x\nhey\n\"quoted field that never ends"))
+@test_throws CSV.Error CSV.read(IOBuffer("x\n\n\"quoted field that never ends"))
+@test_throws CSV.Error CSV.read(IOBuffer("x\n1\n\"quoted field that never ends"))
+@test_throws CSV.Error CSV.read(IOBuffer("x\n1.0\n\"quoted field that never ends"))
+@test_throws CSV.Error CSV.read(IOBuffer("x\na\n\"quoted field that never ends"), categorical=true)
+
+# invalid integer
+df = CSV.read(IOBuffer("x\nabc\n"), type=Int)
+@test size(df) == (1, 1)
+@test df.x[1] === missing
+
+@test_throws CSV.Error CSV.read(IOBuffer("x\nabc\n"), type=Int, strict=true)
+
+# transpose corner cases
+df = CSV.read(IOBuffer("x,y,1\nx2,y2,2\n"), transpose=true, header=2)
+@test names(df) == [:y, :y2]
+@test size(df) == (1, 2)
+@test df.y[1] == 1
+@test df.y2[1] == 2
+
+df = CSV.read(IOBuffer("x,y,1\nx2,y2,2\n"), transpose=true, header=1, datarow=3)
+@test names(df) == [:x, :x2]
+@test size(df) == (1, 2)
+@test df.x[1] == 1
+@test df.x2[1] == 2
+
+df = CSV.read(IOBuffer("x,y,1\nx2,y2,2\n"), transpose=true, header=false, datarow=3)
+@test names(df) == [:Column1, :Column2]
+@test size(df) == (1, 2)
+@test df.Column1[1] == 1
+@test df.Column2[1] == 2
+
+df = CSV.read(IOBuffer(""), transpose=true, header=false)
+@test size(df) == (0, 0)
+
+df = CSV.read(IOBuffer(""), transpose=true, header=Symbol[])
+@test size(df) == (0, 0)
+
+# providing empty header vector
+df = CSV.read(IOBuffer("x\nabc\n"), header=Symbol[])
+@test names(df) == [:Column1]
+
+# Union{Bool, Missing}
+df = CSV.read(IOBuffer("x\ntrue\n\n"))
+@test size(df) == (2, 1)
+@test df.x[1] === true
+@test df.x[2] === missing
+
+# Union{Date, Missing}
+df = CSV.read(IOBuffer("x\n2019-01-01\n\n"))
+@test size(df) == (2, 1)
+@test df.x[1] === Date(2019, 1, 1)
+@test df.x[2] === missing
+
+# use_mmap=false
+df = CSV.read(IOBuffer("x\n2019-01-01\n\n"), use_mmap=false)
+@test size(df) == (2, 1)
+@test df.x[1] === Date(2019, 1, 1)
+@test df.x[2] === missing
+
+# types is Dict{String, Type}
+df = CSV.read(IOBuffer("x\n2019-01-01\n\n"), types=Dict("x"=>Date))
+@test size(df) == (2, 1)
+@test df.x[1] === Date(2019, 1, 1)
+@test df.x[2] === missing
+
+# various CSV.File/CSV.Row properties
+f = CSV.File(IOBuffer("int,float,date,datetime,bool,null,str,catg,int_float\n1,3.14,2019-01-01,2019-01-01T01:02:03,true,,hey,abc,2\n2,NaN,2019-01-02,2019-01-03T01:02:03,false,,there,abc,3.14\n"), categorical=0.3)
+@test Tables.istable(f)
+@test Tables.rowaccess(typeof(f))
+@test Tables.columnaccess(typeof(f))
+@test Tables.schema(f) == Tables.Schema([:int, :float, :date, :datetime, :bool, :null, :str, :catg, :int_float], [Int64, Float64, Date, DateTime, Bool, Missing, String, CSV.CatStr, Float64])
+@test Tables.rows(f) === f
+@test eltype(f) == CSV.Row
+row = first(f)
+@test propertynames(row) == [:int, :float, :date, :datetime, :bool, :null, :str, :catg, :int_float]
+@test row.int == 1
+@test row.float == 3.14
+@test row.date == Date(2019, 1, 1)
+@test row.datetime == DateTime(2019, 1, 1, 1, 2, 3)
+@test row.bool == true
+@test row.null === missing
+@test row.str == "hey"
+@test row.catg == "abc"
+@test typeof(row.catg) == CSV.CatStr
+@test row.int_float === 2.0
+row = iterate(f, 2)[1]
+@test row.int_float === 3.14
 
 end

@@ -2,8 +2,8 @@
 Tables.rowaccess(::Type{<:File}) = true
 Tables.rows(f::File) = f
 
-struct Row{F}
-    file::F
+struct Row
+    file::File
     row::Int
 end
 Base.propertynames(r::Row) = getfield(r, :file).names
@@ -13,7 +13,7 @@ function Base.show(io::IO, r::Row)
     show(io, getfield(r, :file))
 end
 
-Base.eltype(f::F) where {F <: File} = Row{F}
+Base.eltype(f::File) = Row
 Base.length(f::File) = f.rows
 
 @inline function Base.iterate(f::File, st=1)

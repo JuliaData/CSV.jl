@@ -1,4 +1,4 @@
-function skiptoheader!(buf, pos, len, options, row, header)
+function skiptofield!(buf, pos, len, options, row, header)
     while row < header
         while pos <= len
             _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
@@ -35,11 +35,12 @@ end
 function datalayout_transpose(header, buf, pos, len, options, datarow, normalizenames)
     if isa(header, Integer) && header > 0
         # skip to header column to read column names
-        row, pos = skiptoheader!(buf, pos, len, options, 1, header)
+        row, pos = skiptofield!(buf, pos, len, options, 1, header)
         # io now at start of 1st header cell
         _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
         columnnames = [columnname(buf, vpos, vlen, code, options, 1)]
         pos += tlen
+        row, pos = skiptofield!(buf, pos, len, options, header+1, datarow)
         columnpositions = [pos]
         datapos = pos
         rows, pos = countfields(buf, pos, len, options)
@@ -48,11 +49,12 @@ function datalayout_transpose(header, buf, pos, len, options, datarow, normalize
         cols = 1
         while pos <= len
             # skip to header column to read column names
-            row, pos = skiptoheader!(buf, pos, len, options, 1, header)
+            row, pos = skiptofield!(buf, pos, len, options, 1, header)
             cols += 1
             _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
             push!(columnnames, columnname(buf, vpos, vlen, code, options, cols))
             pos += tlen
+            row, pos = skiptofield!(buf, pos, len, options, header+1, datarow)
             push!(columnpositions, pos)
             pos = readline!(buf, pos, len, options)
         end
@@ -63,11 +65,12 @@ function datalayout_transpose(header, buf, pos, len, options, datarow, normalize
         # emtpy file, use column names if provided
         datapos = pos
         columnpositions = Int[]
-        columnnames = header
+        columnnames = header isa Vector && !isempty(header) ? header : []
+        rows = 0
     else
         # column names provided explicitly or should be generated, they don't exist in data
         # skip to datarow
-        row, pos = skiptoheader!(buf, pos, len, options, 1, datarow)
+        row, pos = skiptofield!(buf, pos, len, options, 1, datarow)
         # io now at start of 1st data cell
         columnnames = [isa(header, Integer) || isempty(header) ? "Column1" : header[1]]
         columnpositions = [pos]
@@ -77,7 +80,7 @@ function datalayout_transpose(header, buf, pos, len, options, datarow, normalize
         cols = 1
         while pos <= len
             # skip to datarow column
-            row, pos = skiptoheader!(buf, pos, len, options, 1, datarow)
+            row, pos = skiptofield!(buf, pos, len, options, 1, datarow)
             cols += 1
             push!(columnnames, isa(header, Integer) || isempty(header) ? "Column$cols" : header[cols])
             push!(columnpositions, pos)
