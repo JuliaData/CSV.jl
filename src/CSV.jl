@@ -180,7 +180,7 @@ function File(source;
         datapos = positions[1]
     else
         positions = EMPTY_POSITIONS
-        names, datapos = datalayout(header, buf, pos, len, options, datarow, normalizenames, cmt, ignorerepeated)
+        names, datapos = datalayout(header, buf, pos, len, options, datarow, normalizenames, cmt)
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
@@ -345,7 +345,7 @@ function parseempty!(tape, tapeidx, buf, pos, len, options, col, typemap, pool, 
         elseif T === STRING
             if pool > 0.0
                 T = POOL
-                ref = getref!(refs[col], WeakRefString(pointer(buf, vpos), vlen), lastrefs, col)
+                ref = getref!(refs[col], WeakRefString(pointer(buf, vpos), vlen), lastrefs, col, code, options)
                 @inbounds tape[tapeidx + 1] = uint64(ref)
             end
         end
@@ -368,7 +368,7 @@ function parsemissing!(tape, tapeidx, buf, pos, len, options, col, typemap, pool
         elseif T === STRING
             if pool > 0.0
                 T = POOL
-                ref = getref!(refs[col], WeakRefString(pointer(buf, vpos), vlen), lastrefs, col)
+                ref = getref!(refs[col], WeakRefString(pointer(buf, vpos), vlen), lastrefs, col, code, options)
                 @inbounds tape[tapeidx + 1] = uint64(ref)
             end
         end
@@ -508,14 +508,14 @@ end
     return pos + tlen, code
 end
 
-@inline function getref!(x::Dict, key::WeakRefString, lastrefs, col)
+@inline function getref!(x::Dict, key::WeakRefString, lastrefs, col, code, options)
     index = Base.ht_keyindex2!(x, key)
     if index > 0
         @inbounds found_key = x.vals[index]
         return found_key::UInt32
     else
         @inbounds new = (lastrefs[col] += UInt32(1))
-        @inbounds Base._setindex!(x, new, String(key), -index)
+        @inbounds Base._setindex!(x, new, Parsers.escapedstring(code) ? convert(EscapedString{options.e}, key) : String(key), -index)
         return new
     end
 end
@@ -527,7 +527,7 @@ function parsepooled!(T, tape, tapeidx, buf, pos, len, options, col, rowsguess, 
         @inbounds typecodes[col] = T | MISSING
         ref = UInt32(0)
     else
-        ref = getref!(refs, WeakRefString(pointer(buf, vpos), vlen), lastrefs, col)
+        ref = getref!(refs, WeakRefString(pointer(buf, vpos), vlen), lastrefs, col, code, options)
     end
     if !user(T) && (length(refs) / rowsguess) > pool
         @inbounds typecodes[col] = STRING | (missingtype(typecodes[col]) ? MISSING : EMPTY)

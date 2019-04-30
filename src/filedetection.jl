@@ -22,13 +22,23 @@ function countfields(buf, pos, len, options)
     return rows, pos
 end
 
+function columnname(buf, vpos, vlen, code, options)
+    if Parsers.sentinel(code)
+        return missing
+    elseif Parsers.escapedstring(code)
+        return convert(EscapedString{options.e}, WeakRefString(pointer(buf, vpos), vlen))
+    else
+        return unsafe_string(pointer(buf, vpos), vlen)
+    end
+end
+
 function datalayout_transpose(header, buf, pos, len, options, datarow, normalizenames)
     if isa(header, Integer) && header > 0
         # skip to header column to read column names
         row, pos = skiptoheader!(buf, pos, len, options, 1, header)
         # io now at start of 1st header cell
         _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-        columnnames = [unsafe_string(pointer(buf, vpos), vlen)]
+        columnnames = [columnname(buf, vpos, vlen, code, options)]
         pos += tlen
         columnpositions = [pos]
         datapos = pos
@@ -41,7 +51,7 @@ function datalayout_transpose(header, buf, pos, len, options, datarow, normalize
             row, pos = skiptoheader!(buf, pos, len, options, 1, header)
             cols += 1
             _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-            push!(columnnames, unsafe_string(pointer(buf, vpos), vlen))
+            push!(columnnames, columnname(buf, vpos, vlen, code, options))
             pos += tlen
             push!(columnpositions, pos)
             pos = readline!(buf, pos, len, options)
@@ -77,7 +87,7 @@ function datalayout_transpose(header, buf, pos, len, options, datarow, normalize
     return rows, makeunique(map(x->normalizenames ? normalizename(x) : Symbol(x), columnnames)), columnpositions
 end
 
-function datalayout(header::Integer, buf, pos, len, options, datarow, normalizenames, cmt, ignorerepeated)
+function datalayout(header::Integer, buf, pos, len, options, datarow, normalizenames, cmt)
     # default header = 1
     if header <= 0
         # no header row in dataset; skip to data to figure out # of columns
@@ -97,7 +107,7 @@ function datalayout(header::Integer, buf, pos, len, options, datarow, normalizen
     return columnnames, datapos
 end
 
-function datalayout(header::AbstractVector{<:Integer}, buf, pos, len, options, datarow, normalizenames, cmt, ignorerepeated)
+function datalayout(header::AbstractVector{<:Integer}, buf, pos, len, options, datarow, normalizenames, cmt)
     pos = skipto!(buf, pos, len, options, 1, header[1])
     fields, pos = readsplitline(buf, pos, len, options, cmt)
     columnnames = [ismissing(x) ? "Column$i" : x for (i, x) in enumerate(fields)]
@@ -115,7 +125,7 @@ function datalayout(header::AbstractVector{<:Integer}, buf, pos, len, options, d
     return makeunique([normalizenames ? normalizename(nm) : Symbol(nm) for nm in columnnames]), datapos
 end
 
-function datalayout(header::Union{Vector{Symbol}, Vector{String}}, buf, pos, len, options, datarow, normalizenames, cmt, ignorerepeated)
+function datalayout(header::Union{Vector{Symbol}, Vector{String}}, buf, pos, len, options, datarow, normalizenames, cmt)
     pos = skipto!(buf, pos, len, options, 1, datarow)
     datapos = pos
     if pos > len
@@ -150,7 +160,7 @@ function skipto!(buf, pos, len, options, cur, dest)
     return pos
 end
 
-function readsplitline(buf, pos, len, options::Parsers.Options{ignorerepeated}, cmt=nothing) where {ignorerepeated}
+function readsplitline(buf, pos, len, options::Parsers.Options{ignorerepeated}, cmt) where {ignorerepeated}
     vals = Union{String, Missing}[]
     pos > len && return vals, pos
     col = 1
@@ -160,11 +170,7 @@ function readsplitline(buf, pos, len, options::Parsers.Options{ignorerepeated}, 
             pos = Parsers.checkdelim!(buf, pos, len, options)
         end
         _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-        if Parsers.sentinel(code)
-            push!(vals, missing)
-        else
-            push!(vals, unsafe_string(pointer(buf, vpos), vlen))
-        end
+        push!(vals, columnname(buf, vpos, vlen, code, options))
         pos += tlen
         col += 1
         Parsers.delimited(code) && continue
