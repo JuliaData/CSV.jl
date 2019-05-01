@@ -49,13 +49,31 @@ function makecolumn(T, rows)
     elseif T === STRING || T === (STRING | MISSING) ||
            T === POOL || T === (POOL | MISSING)
         A = Column(rows)
-    else
-        A = Column(Vector{TYPECODES[T]}(undef, rows))
+    elseif T === INT
+        A = Column(Vector{Int64}(undef, rows))
+    elseif T === (INT | MISSING)
+        A = Column(Vector{Union{Int64, Missing}}(undef, rows))
+    elseif T === FLOAT
+        A = Column(Vector{Float64}(undef, rows))
+    elseif T === (FLOAT | MISSING)
+        A = Column(Vector{Union{Float64, Missing}}(undef, rows))
+    elseif T === DATE
+        A = Column(Vector{Date}(undef, rows))
+    elseif T === (DATE | MISSING)
+        A = Column(Vector{Union{Date, Missing}}(undef, rows))
+    elseif T === DATETIME
+        A = Column(Vector{DateTime}(undef, rows))
+    elseif T === (DATETIME | MISSING)
+        A = Column(Vector{Union{DateTime, Missing}}(undef, rows))
+    elseif T === BOOL
+        A = Column(Vector{Bool}(undef, rows))
+    elseif T === (BOOL | MISSING)
+        A = Column(Vector{Union{Bool, Missing}}(undef, rows))
     end
     return A
 end
 
-function finalcolumn(col, T, buf, QS, escapedstrings, refs, i, pool, categorical, categoricalpools)
+@inline function finalcolumn(col, T, buf, QS, escapedstrings, refs, i, pool, categorical, categoricalpools)
     if T === STRING
         return StringArray{escapedstrings ? QS : String, 1}(buf, col.offsets, col.lengths)
     elseif T === (STRING | MISSING)
@@ -79,8 +97,28 @@ function finalcolumn(col, T, buf, QS, escapedstrings, refs, i, pool, categorical
                 return CategoricalArray{String, 1}(col.lengths, pool)
             end
         end
-    else
-        return getfield(col, fieldindex(TYPECODES[T]))
+    elseif T === MISSINGTYPE
+        return col.missings
+    elseif T === INT
+        return col.ints
+    elseif T === (INT | MISSING)
+        return col.intsm
+    elseif T === FLOAT
+        return col.floats
+    elseif T === (FLOAT | MISSING)
+        return col.floatsm
+    elseif T === DATE
+        return col.dates
+    elseif T === (DATE | MISSING)
+        return col.datesm
+    elseif T === DATETIME
+        return col.datetimes
+    elseif T === (DATETIME | MISSING)
+        return col.datetimesm
+    elseif T === BOOL
+        return col.bools
+    elseif T === (BOOL | MISSING)
+        return col.boolsm
     end
 end
 
@@ -182,5 +220,6 @@ function Tables.columns(f::File)
     end
     finalcolumns = columns
     finaltypecodes = typecodes
-    return DataFrame([finalcolumn(finalcolumns[i], finaltypecodes[i], f.buf, f.escapedstringtype, escapedstrings[i], f.refs, i, f.pool, f.categorical, f.categoricalpools) for i = 1:ncol], f.names; copycols=false)
+    finalescapedstrings = escapedstrings
+    return DataFrame(AbstractVector[finalcolumn(finalcolumns[i], finaltypecodes[i], f.buf, f.escapedstringtype, finalescapedstrings[i], f.refs, i, f.pool, f.categorical, f.categoricalpools) for i = 1:ncol], f.names; copycols=false)
 end
