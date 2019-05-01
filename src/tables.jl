@@ -84,14 +84,14 @@ function finalcolumn(col, T, buf, QS, escapedstrings, refs, i, pool, categorical
     end
 end
 
-function setchunk!(A, row, chunkrows, tape, tapeidx, ncol, f)
+@inline function setchunk!(A, row, chunkrows, tape, tapeidx, ncol, f)
     for rowoff = 0:chunkrows
         @inbounds A[row + rowoff] = f(tape[tapeidx + (rowoff * ncol * 2) + 1])
     end
     return
 end
 
-function setchunk!(A::Vector{Float64}, row, chunkrows, tape, tapeidx, ncol, f)
+@inline function setchunk!(A::Vector{Float64}, row, chunkrows, tape, tapeidx, ncol, f)
     for rowoff = 0:chunkrows
         @inbounds offlen = tape[tapeidx + (rowoff * ncol * 2)]
         @inbounds x = tape[tapeidx + (rowoff * ncol * 2) + 1]
@@ -100,7 +100,7 @@ function setchunk!(A::Vector{Float64}, row, chunkrows, tape, tapeidx, ncol, f)
     return
 end
 
-function setchunkm!(A, row, chunkrows, tape, tapeidx, ncol, f)
+@inline function setchunkm!(A, row, chunkrows, tape, tapeidx, ncol, f)
     for rowoff = 0:chunkrows
         @inbounds offlen = tape[tapeidx + (rowoff * ncol * 2)]
         @inbounds A[row + rowoff] = missingvalue(offlen) ? missing : f(tape[tapeidx + (rowoff * ncol * 2) + 1])
@@ -108,7 +108,7 @@ function setchunkm!(A, row, chunkrows, tape, tapeidx, ncol, f)
     return
 end
 
-function setchunkm!(A::Vector{Union{Missing, Float64}}, row, chunkrows, tape, tapeidx, ncol, f)
+@inline function setchunkm!(A::Vector{Union{Missing, Float64}}, row, chunkrows, tape, tapeidx, ncol, f)
     for rowoff = 0:chunkrows
         @inbounds offlen = tape[tapeidx + (rowoff * ncol * 2)]
         if !missingvalue(offlen)

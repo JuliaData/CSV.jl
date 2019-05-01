@@ -252,9 +252,9 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit,
                 @inbounds T = typecodes[col]
                 type = typebits(T)
                 if type === EMPTY
-                    pos, code = parseempty!(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes)
+                    pos, code = detect(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes)
                 elseif type === MISSINGTYPE
-                    pos, code = parsemissing!(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes)
+                    pos, code = detect(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes)
                 elseif type === INT
                     pos, code = parseint!(T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
                 elseif type === FLOAT
@@ -331,107 +331,80 @@ const NONINTVALUE = Val(false)
     return
 end
 
-function parseempty!(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes)
-    x, code, vpos, vlen, tlen = detecttype(buf, pos, len, options, debug)
-    if Parsers.invalidquotedfield(code)
-        # this usually means parsing is borked because of an invalidly quoted field, hard error
-        fatalerror(buf, pos, tlen, code, row, col)
-    end
-    T = Parsers.sentinel(code) ? MISSINGTYPE : typecode(x)
-    T = get(typemap, T, T)
-    if T == INT
-        setposlen!(tape, tapeidx, code, vpos, vlen, INTVALUE)
-        @inbounds tape[tapeidx + 1] = uint64(x)
-    else
-        setposlen!(tape, tapeidx, code, vpos, vlen)
-        if MISSINGTYPE < T < STRING
-            @inbounds tape[tapeidx + 1] = uint64(x)
-        elseif T === STRING
-            if pool > 0.0
-                T = POOL
-                ref = getref!(refs[col], WeakRefString(pointer(buf, vpos), vlen), lastrefs, col, code, options)
-                @inbounds tape[tapeidx + 1] = uint64(ref)
-            end
-        end
-    end
-    @inbounds typecodes[col] = T
-    return pos + tlen, code
-end
-
-function parsemissing!(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes)
-    x, code, vpos, vlen, tlen = detecttype(buf, pos, len, options, debug)
-    if Parsers.invalidquotedfield(code)
-        # this usually means parsing is borked because of an invalidly quoted field, hard error
-        fatalerror(buf, pos, tlen, code, row, col)
-    end
-    T = Parsers.sentinel(code) ? MISSINGTYPE : typecode(x)
-    T = get(typemap, T, T)
-    if T == INT
-        setposlen!(tape, tapeidx, code, vpos, vlen, INTVALUE)
-        @inbounds tape[tapeidx + 1] = uint64(x)
-    else
-        setposlen!(tape, tapeidx, code, vpos, vlen)
-        if MISSINGTYPE < T < STRING
-            @inbounds tape[tapeidx + 1] = uint64(x)
-        elseif T === STRING
-            if pool > 0.0
-                T = POOL
-                ref = getref!(refs[col], WeakRefString(pointer(buf, vpos), vlen), lastrefs, col, code, options)
-                @inbounds tape[tapeidx + 1] = uint64(ref)
-            end
-        end
-    end
-    @inbounds typecodes[col] = T === MISSINGTYPE ? T : T | MISSING
-    return pos + tlen, code
-end
-
-function detecttype(buf, pos, len, options, debug)
+function detect(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes)
     int, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, options)
-    if debug
-        println("type detection on: \"$(escape_string(unsafe_string(pointer(buf, pos), tlen)))\"")
-        println("attempted Int: $(Parsers.codes(code))")
+    if Parsers.invalidquotedfield(code)
+        fatalerror(buf, pos, tlen, code, row, col)
     end
-    Parsers.ok(code) && return int, code, vpos, vlen, tlen
+    if Parsers.sentinel(code) && code > 0
+        setposlen!(tape, tapeidx, code, vpos, vlen)
+        @inbounds typecodes[col] = MISSINGTYPE
+        @goto done
+    end
+    @inbounds T = typecodes[col]
+    if Parsers.ok(code) && !haskey(typemap, INT)
+        setposlen!(tape, tapeidx, code, vpos, vlen, INTVALUE)
+        @inbounds tape[tapeidx + 1] = uint64(int)
+        @inbounds typecodes[col] = T == MISSINGTYPE ? (INT | MISSING) : INT
+        @goto done
+    end
     float, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, options)
-    if debug
-        println("attempted Float64: $(Parsers.codes(code))")
+    if Parsers.ok(code) && !haskey(typemap, FLOAT)
+        setposlen!(tape, tapeidx, code, vpos, vlen)
+        @inbounds tape[tapeidx + 1] = uint64(float)
+        @inbounds typecodes[col] = T == MISSINGTYPE ? (FLOAT | MISSING) : FLOAT
+        @goto done
     end
-    Parsers.ok(code) && return float, code, vpos, vlen, tlen
     if options.dateformat === nothing
         try
             date, code, vpos, vlen, tlen = Parsers.xparse(Date, buf, pos, len, options)
-            if debug
-                println("attempted Date: $(Parsers.codes(code))")
-            end 
-            Parsers.ok(code) && return date, code, vpos, vlen, tlen
+            if Parsers.ok(code) && !haskey(typemap, DATE)
+                setposlen!(tape, tapeidx, code, vpos, vlen)
+                @inbounds tape[tapeidx + 1] = uint64(date)
+                @inbounds typecodes[col] = T == MISSINGTYPE ? (DATE | MISSING) : DATE
+                @goto done
+            end
         catch e
-            # @error exception=(e, stacktrace(catch_backtrace()))
         end
         try
             datetime, code, vpos, vlen, tlen = Parsers.xparse(DateTime, buf, pos, len, options)
-            if debug
-                println("attempted DateTime: $(Parsers.codes(code))")
+            if Parsers.ok(code) && !haskey(typemap, DATETIME)
+                setposlen!(tape, tapeidx, code, vpos, vlen)
+                @inbounds tape[tapeidx + 1] = uint64(datetime)
+                @inbounds typecodes[col] = T == MISSINGTYPE ? (DATETIME | MISSING) : DATETIME
+                @goto done
             end
-            Parsers.ok(code) && return datetime, code, vpos, vlen, tlen
         catch e
-            # @error exception=(e, stacktrace(catch_backtrace()))
         end
     else
         # use user-provided dateformat
-        T = timetype(options.dateformat)
-        dt, code, vpos, vlen, tlen = Parsers.xparse(T, buf, pos, len, options)
-        if debug
-            println("attempted $T: $(Parsers.codes(code))")
+        DT = timetype(options.dateformat)
+        dt, code, vpos, vlen, tlen = Parsers.xparse(DT, buf, pos, len, options)
+        if Parsers.ok(code)
+            setposlen!(tape, tapeidx, code, vpos, vlen)
+            @inbounds tape[tapeidx + 1] = uint64(dt)
+            @inbounds typecodes[col] = DT == Date ? (T == MISSINGTYPE ? (DATE | MISSING) : DATE) : (T == MISSINGTYPE ? (DATETIME | MISSING) : DATETIME)
+            @goto done
         end
-        Parsers.ok(code) && return dt, code, vpos, vlen, tlen
     end
     bool, code, vpos, vlen, tlen = Parsers.xparse(Bool, buf, pos, len, options)
-    if debug
-        println("attempted Bool: $(Parsers.codes(code))")
+    if Parsers.ok(code) && !haskey(typemap, BOOL)
+        setposlen!(tape, tapeidx, code, vpos, vlen)
+        @inbounds tape[tapeidx + 1] = uint64(bool)
+        @inbounds typecodes[col] = T == MISSINGTYPE ? (BOOL | MISSING) : BOOL
+        @goto done
     end
-    Parsers.ok(code) && return bool, code, vpos, vlen, tlen
-    str, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-    return "", code, vpos, vlen, tlen
+    _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
+    setposlen!(tape, tapeidx, code, vpos, vlen)
+    if pool > 0.0
+        ref = getref!(refs[col], WeakRefString(pointer(buf, vpos), vlen), lastrefs, col, code, options)
+        @inbounds tape[tapeidx + 1] = uint64(ref)
+        @inbounds typecodes[col] = T == MISSINGTYPE ? (POOL | MISSING) : POOL
+    else
+        @inbounds typecodes[col] = T == MISSINGTYPE ? (STRING | MISSING) : STRING
+    end
+@label done
+    return pos + tlen, code
 end
 
 @inline function parseint!(T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
