@@ -49,8 +49,7 @@ end
 
 const EMPTY_POSITIONS = Int64[]
 const EMPTY_TYPEMAP = Dict{TypeCode, TypeCode}()
-const EMPTY_REFS = Dict{String, UInt64}[]
-const EMPTY_LAST_REFS = UInt64[]
+const EMPTY_REFS = Vector{String}[]
 const EMPTY_REFVALUES = String[]
 
 """
@@ -229,6 +228,8 @@ function File(source;
     debug && println("types after parsing: $types")
     if pool > 0.0
         refs = [isassigned(refs, i) ? map(x->x[1], sort!(collect(refs[i]), by=x->x[2])) : EMPTY_REFVALUES for i = 1:ncols]
+    else
+        refs = EMPTY_REFS
     end
     return File(getname(source), buf, names, types, eq, refs, rows - footerskip, ncols, tape)
 end
