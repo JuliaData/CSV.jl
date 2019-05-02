@@ -40,7 +40,7 @@ end
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{Union{T, Missing}}, row::Int) where {T}
     @boundscheck checkbounds(c, row)
     @inbounds offlen = getfield(c.f, :tape)[c.r[row] - 1]
-    @inbounds x = ifelse(missingvalue(offlen), missing, func(T)(getfield(c.f, :tape)[c.r[row]]))
+    @inbounds x = ifelse(missingvalue(offlen), missing, reinterp_func(T)(getfield(c.f, :tape)[c.r[row]]))
     return x
 end
 
