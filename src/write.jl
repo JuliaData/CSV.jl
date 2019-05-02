@@ -1,5 +1,5 @@
 """
-    CSV.write(file, file; kwargs...) => file
+    CSV.write(file; kwargs...) => file
     table |> CSV.write(file; kwargs...) => file
 
 Write a [Tables.jl interface input](https://github.com/JuliaData/Tables.jl) to a csv file, given as an `IO` argument or String/FilePaths.jl type representing the file name to write to.

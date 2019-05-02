@@ -56,6 +56,7 @@ const EMPTY_REFVALUES = String[]
     CSV.File(source; kwargs...) => CSV.File
 
 Read a csv input (a filename given as a String or FilePaths.jl type, or any other IO source), returning a `CSV.File` object.
+
 Opens the file and uses passed arguments to detect the number of columns and column types.
 The returned `CSV.File` object supports the [Tables.jl](https://github.com/JuliaData/Tables.jl) interface
 and can iterate `CSV.Row`s. `CSV.Row` supports `propertynames` and `getproperty` to access individual row values.
