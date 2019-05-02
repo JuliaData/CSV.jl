@@ -2,7 +2,9 @@ module CSV
 
 # stdlib
 using Mmap, Dates, Random, Unicode
-using Parsers, Tables, CategoricalArrays, PooledArrays, WeakRefStrings, DataFrames
+using Parsers, Tables, DataFrames
+
+..(x, field::Symbol) = getfield(x, field)
 
 function validate(fullpath::Union{AbstractString,IO}; kwargs...)
     Base.depwarn("`CSV.validate` is deprecated. `CSV.read` now prints warnings on misshapen files.", :validate)
@@ -24,28 +26,23 @@ struct File
     buf::Vector{UInt8}
     names::Vector{Symbol}
     types::Vector{Type}
-    typecodes::Vector{TypeCode}
-    escapedstringtype
-    refs::Vector{Dict{Union{Missing, String}, UInt32}}
-    pool::Float64
-    categorical::Bool
-    categoricalpools::Vector{CategoricalPool{String, UInt32, CatStr}}
+    e::UInt8
+    refs::Vector{Vector{String}}
     rows::Int64
     cols::Int64
     tape::Vector{UInt64}
 end
 
 function Base.show(io::IO, f::File)
-    println(io, "CSV.File(\"$(f.name)\"):")
-    println(io, "Size: $(f.rows) x $(f.cols)")
+    println(io, "CSV.File(\"$(..(f, :name))\"):")
+    println(io, "Size: $(..(f, :rows)) x $(..(f, :cols))")
     show(io, Tables.schema(f))
 end
 
 const EMPTY_POSITIONS = Int64[]
 const EMPTY_TYPEMAP = Dict{TypeCode, TypeCode}()
-const EMPTY_REFS = Dict{Union{Missing, String}, UInt32}[]
+const EMPTY_REFS = Dict{String, UInt32}[]
 const EMPTY_LAST_REFS = UInt32[]
-const EMPTY_CATEGORICAL_POOLS = CategoricalPool{String, UInt32, CatStr}[]
 
 """
     CSV.File(source; kwargs...) => CSV.File
@@ -160,7 +157,6 @@ function File(source;
     oq = something(openquotechar, quotechar) % UInt8
     cq = something(closequotechar, quotechar) % UInt8
     eq = escapechar % UInt8
-    escapedstringtype = WeakRefStrings.EscapedString{eq}
     cmt = comment === nothing ? nothing : (pointer(comment), sizeof(comment))
     rowsguess, del = guessnrows(buf, oq, cq, eq, source, delim, cmt, debug)
     debug && println("estimated rows: $rowsguess")
@@ -186,14 +182,11 @@ function File(source;
     debug && println("byte position of data computed at: $datapos")
 
     # deduce initial column types for parsing based on whether any user-provided types were provided or not
-    catg = false
     T = type === nothing ? EMPTY : (typecode(type) | USER)
     if types isa Vector
         typecodes = TypeCode[typecode(T) | USER for T in types]
-        catg = any(T->T <: CatStr, types)
     elseif types isa AbstractDict
         typecodes = initialtypes(T, types, names)
-        catg = any(T->T <: CatStr, values(types))
     else
         typecodes = TypeCode[T for _ = 1:length(names)]
     end
@@ -211,27 +204,22 @@ function File(source;
     ncols = length(names)
     # might as well round up to the next largest pagesize, since mmap aligns to it anyway
     tape = Mmap.mmap(Vector{UInt64}, roundup((rowsguess * ncols * 2), Mmap.PAGESIZE))
-    catg |= categorical !== false
     pool = (pool === true || categorical === true || any(pooled, typecodes)) ? 1.0 :
             categorical isa Float64 ? categorical : pool isa Float64 ? pool : 0.0
-    refs = pool > 0.0 ? [Dict{Union{Missing, String}, UInt32}() for i = 1:ncols] : EMPTY_REFS
-    lastrefs = pool > 0.0 ? [UInt32(0) for i = 1:ncols] : EMPTY_LAST_REFS
+    refs = pool > 0.0 ? [Dict{String, UInt64}() for i = 1:ncols] : EMPTY_REFS
+    lastrefs = pool > 0.0 ? [UInt64(0) for i = 1:ncols] : EMPTY_LAST_REFS
     t = time()
     rows = parsetape(Val(transpose), ncols, gettypecodes(typemap), tape, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options)
     debug && println("time for initial parsing to tape: $(time() - t)")
     foreach(1:ncols) do i
         typecodes[i] &= ~USER
     end
-    types = [pooled(T) ? catg ? CatStr : PooledString : TYPECODES[T] for T in typecodes]
+    types = [TYPECODES[T] for T in typecodes]
     debug && println("types after parsing: $types")
-    if catg
-        foreach(x->delete!(x, missing), refs)
-        categoricalpools = [CategoricalPool(convert(Dict{String, UInt32}, r)) for r in refs]
-        foreach(x->levels!(x, sort(levels(x))), categoricalpools)
-    else
-        categoricalpools = EMPTY_CATEGORICAL_POOLS
+    if pool > 0.0
+        refs = [map(x->x[1], sort!(collect(ref), by=x->x[2])) for ref in refs]
     end
-    return File(getname(source), buf, names, types, typecodes, escapedstringtype, refs, pool, catg, categoricalpools, rows - footerskip, ncols, tape)
+    return File(getname(source), buf, names, types, eq, refs, rows - footerskip, ncols, tape)
 end
 
 function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options::Parsers.Options{ignorerepeated}) where {transpose, ignorerepeated}
@@ -397,8 +385,8 @@ function detect(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, 
     _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
     setposlen!(tape, tapeidx, code, vpos, vlen)
     if pool > 0.0
-        ref = getref!(refs[col], WeakRefString(pointer(buf, vpos), vlen), lastrefs, col, code, options)
-        @inbounds tape[tapeidx + 1] = uint64(ref)
+        ref = getref!(refs[col], PointerString(pointer(buf, vpos), vlen), lastrefs, col, code, options)
+        @inbounds tape[tapeidx + 1] = ref
         @inbounds typecodes[col] = T == MISSINGTYPE ? (POOL | MISSING) : POOL
     else
         @inbounds typecodes[col] = T == MISSINGTYPE ? (STRING | MISSING) : STRING
@@ -494,14 +482,14 @@ end
     return pos + tlen, code
 end
 
-@inline function getref!(x::Dict, key::WeakRefString, lastrefs, col, code, options)
+@inline function getref!(x::Dict, key::PointerString, lastrefs, col, code, options)
     index = Base.ht_keyindex2!(x, key)
     if index > 0
         @inbounds found_key = x.vals[index]
-        return found_key::UInt32
+        return found_key::UInt64
     else
-        @inbounds new = (lastrefs[col] += UInt32(1))
-        @inbounds Base._setindex!(x, new, Parsers.escapedstring(code) ? convert(EscapedString{options.e}, key) : String(key), -index)
+        @inbounds new = (lastrefs[col] += UInt64(1))
+        @inbounds Base._setindex!(x, new, Parsers.escapedstring(code) ? unescape(key, options.e) : String(key), -index)
         return new
     end
 end
@@ -515,14 +503,14 @@ function parsepooled!(T, tape, tapeidx, buf, pos, len, options, row, col, rowsgu
     end
     if Parsers.sentinel(code)
         @inbounds typecodes[col] = T | MISSING
-        ref = UInt32(0)
+        ref = UInt64(0)
     else
-        ref = getref!(refs, WeakRefString(pointer(buf, vpos), vlen), lastrefs, col, code, options)
+        ref = getref!(refs, PointerString(pointer(buf, vpos), vlen), lastrefs, col, code, options)
     end
     if !user(T) && (length(refs) / rowsguess) > pool
         @inbounds typecodes[col] = STRING | (missingtype(typecodes[col]) ? MISSING : EMPTY)
     else
-        @inbounds tape[tapeidx + 1] = uint64(ref)
+        @inbounds tape[tapeidx + 1] = ref
     end
     return pos + tlen, code
 end

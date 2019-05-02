@@ -6,7 +6,7 @@ struct Row
     file::File
     row::Int
 end
-Base.propertynames(r::Row) = getfield(r, :file).names
+Base.propertynames(r::Row) = getfield(getfield(r, :file), :names)
 
 function Base.show(io::IO, r::Row)
     println(io, "CSV.Row($(getfield(r, :row))) of:")
@@ -14,10 +14,10 @@ function Base.show(io::IO, r::Row)
 end
 
 Base.eltype(f::File) = Row
-Base.length(f::File) = f.rows
+Base.length(f::File) = getfield(f, :rows)
 
 @inline function Base.iterate(f::File, st=1)
-    st > f.rows && return nothing
+    st > length(f) && return nothing
     return Row(f, st), st + 1
 end
 
@@ -25,9 +25,9 @@ end
 
 @inline function Base.getproperty(row::Row, name::Symbol)
     f = getfield(row, :file)
-    i = findfirst(x->x===name, f.names)
+    i = findfirst(x->x===name, getfield(f, :names))
     i === nothing && badcolumnerror(name)
-    return getcell(f, f.types[i], i, getfield(row, :row))
+    return getcell(f, getfield(f, :types)[i], i, getfield(row, :row))
 end
 
 @inline Base.getproperty(row::Row, ::Type{T}, col::Int, name::Symbol) where {T} =
@@ -35,29 +35,31 @@ end
 
 # internal method for getting a cell value
 @inline function getcell(f::File, ::Type{T}, col::Int, row::Int) where {T}
-    indexoffset = ((f.cols * (row - 1) * 2) + (col - 1) * 2) + 1
-    offlen = f.tape[indexoffset]
+    indexoffset = ((getfield(f, :cols) * (row - 1) * 2) + (col - 1) * 2) + 1
+    offlen = getfield(f, :tape)[indexoffset]
     missingvalue(offlen) && return missing
     return getvalue(Base.nonmissingtype(T), f, indexoffset, offlen, col)
 end
 
 getvalue(::Type{Int64}, f, indexoffset, offlen, col) = int64(f.tape[indexoffset + 1])
 function getvalue(::Type{Float64}, f, indexoffset, offlen, col)
-    @inbounds x = f.tape[indexoffset + 1]
+    @inbounds x = getfield(f, :tape)[indexoffset + 1]
     return intvalue(offlen) ? Float64(int64(x)) : float64(x)
 end
-getvalue(::Type{Date}, f, indexoffset, offlen, col) = date(f.tape[indexoffset + 1])
-getvalue(::Type{DateTime}, f, indexoffset, offlen, col) = datetime(f.tape[indexoffset + 1])
-getvalue(::Type{Bool}, f, indexoffset, offlen, col) = bool(f.tape[indexoffset + 1])
+getvalue(::Type{Date}, f, indexoffset, offlen, col) = date(getfield(f, :tape)[indexoffset + 1])
+getvalue(::Type{DateTime}, f, indexoffset, offlen, col) = datetime(getfield(f, :tape)[indexoffset + 1])
+getvalue(::Type{Bool}, f, indexoffset, offlen, col) = bool(getfield(f, :tape)[indexoffset + 1])
 getvalue(::Type{Missing}, f, indexoffset, offlen, col) = missing
-function getvalue(::Type{CatStr}, f, indexoffset, offlen, col)
-    x = ref(f.tape[indexoffset + 1])
-    return CatStr(x, f.categoricalpools[col])
+
+function getvalue(::Type{PooledString}, f, indexoffset, offlen, col)
+    @inbounds x = getfield(f, :tape)[indexoffset + 1]
+    return PooledString(x, getfield(f, :refs)[col])
 end
-function getvalue(::Union{Type{String}, Type{PooledString}}, f, indexoffset, offlen, col)
+
+function getvalue(::Type{String}, f, indexoffset, offlen, col)
     if escapedvalue(offlen)
-        return convert(f.escapedstringtype, WeakRefString(pointer(f.buf, getpos(offlen)), getlen(offlen)))
+        return unescape(PointerString(pointer(getfield(f, :buf), getpos(offlen)), getlen(offlen)), getfield(f, :e))
     else
-        return unsafe_string(pointer(f.buf, getpos(offlen)), getlen(offlen))
+        return unsafe_string(pointer(getfield(f, :buf), getpos(offlen)), getlen(offlen))
     end
 end

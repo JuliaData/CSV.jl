@@ -1,6 +1,51 @@
-const CatStr = CategoricalString{UInt32}
-struct PooledString end
+struct PooledString <: AbstractString
+    ref::UInt64
+    refs::Vector{String}
+end
+
+Base.show(io::IO, x::PooledString) = print(io, '"', escape_string(x.refs[x.ref]), '"')
 export PooledString
+
+Base.get(x::PooledString) = x.refs[x.ref]
+Base.string(x::PooledString) = get(x)
+Base.eltype(x::PooledString) = Char
+Base.length(x::PooledString) = length(get(x))
+Base.sizeof(x::PooledString) = sizeof(get(x))
+Base.nextind(x::PooledString, i::Int) = nextind(get(x), i)
+Base.prevind(x::PooledString, i::Int) = prevind(get(x), i)
+Base.iterate(x::PooledString) = iterate(get(x))
+Base.iterate(x::PooledString, i::Int) = iterate(get(x), i)
+Base.getindex(x::PooledString, i::Int) = getindex(get(x), i)
+Base.codeunit(x::PooledString, i::Integer) = codeunit(get(x), i)
+Base.ascii(x::PooledString) = ascii(get(x))
+Base.isvalid(x::PooledString) = isvalid(get(x))
+Base.isvalid(x::PooledString, i::Integer) = isvalid(get(x), i)
+Base.collect(x::PooledString) = collect(get(x))
+Base.reverse(x::PooledString) = reverse(get(x))
+Base.ncodeunits(x::PooledString) = ncodeunits(get(x))
+
+struct PointerString <: AbstractString
+    ptr::Ptr{UInt8}
+    len::Int
+end
+
+function Base.hash(s::PointerString, h::UInt)
+    h += Base.memhash_seed
+    ccall(Base.memhash, UInt, (Ptr{UInt8}, Csize_t, UInt32), s.ptr, s.len, h % UInt32) + h
+end
+
+import Base: ==
+function ==(x::String, y::PointerString)
+    sizeof(x) == y.len && ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t), pointer(x), y.ptr, y.len) == 0
+end
+==(y::PointerString, x::String) = x == y
+
+Base.ncodeunits(s::PointerString) = s.len
+@inline function Base.codeunit(s::PointerString, i::Integer)
+    @boundscheck checkbounds(s, i)
+    GC.@preserve s unsafe_load(s.ptr + i - 1)
+end
+Base.String(x::PointerString) = unsafe_string(x.ptr, x.len)
 
 const TypeCode = Int8
 
@@ -41,7 +86,6 @@ typecode(::Type{DateTime}) = DATETIME
 typecode(::Type{Bool}) = BOOL
 typecode(::Type{<:AbstractString}) = STRING
 typecode(::Type{PooledString}) = POOL
-typecode(::Type{CatStr}) = POOL
 typecode(::Type{Union{}}) = EMPTY
 typecode(::Type{Union{T, Missing}}) where {T} = typecode(T) | MISSING
 typecode(::Type{T}) where {T} = EMPTY
@@ -55,12 +99,14 @@ const TYPECODES = Dict(
     DATE => Date,
     DATETIME => DateTime,
     BOOL => Bool,
+    POOL => PooledString,
     STRING => String,
     INT | MISSING => Union{Int64, Missing},
     FLOAT | MISSING => Union{Float64, Missing},
     DATE | MISSING => Union{Date, Missing},
     DATETIME | MISSING => Union{DateTime, Missing},
     BOOL | MISSING => Union{Bool, Missing},
+    POOL | MISSING => Union{PooledString, Missing},
     STRING | MISSING => Union{String, Missing}
 )
 
@@ -186,3 +232,24 @@ function timetype(df::Dates.DateFormat)
 end
 
 roundup(a, n) = (a + (n - 1)) & ~(n - 1)
+
+function unescape(s, e)
+    n = ncodeunits(s)
+    buf = Base.StringVector(n)
+    len = 1
+    i = 1
+    @inbounds begin
+        while i <= n
+            b = codeunit(s, i)
+            if b == e
+                i += 1
+                b = codeunit(s, i)
+            end
+            @inbounds buf[len] = b
+            len += 1
+            i += 1
+        end
+    end
+    resize!(buf, len - 1)
+    return String(buf)
+end
