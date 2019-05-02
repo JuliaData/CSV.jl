@@ -10,11 +10,7 @@
 
 ## Installation
 
-The package is registered in `METADATA.jl` and so can be installed with `Pkg.add`.
-
-```julia
-julia> Pkg.add("CSV")
-```
+The package is registered in the [`General`](https://github.com/JuliaRegistries/General) registry and so can be installed at the REPL with `] add CSV`.
 
 ## Documentation
 
@@ -23,14 +19,12 @@ julia> Pkg.add("CSV")
 
 ## Project Status
 
-The package is tested against Julia `0.7`, `1.0` and nightly on Linux, OS X, and Windows.
+The package is tested against Julia `1.0`, `1.1` and nightly on Linux, OS X, and Windows.
 
 ## Contributing and Questions
 
 Contributions are very welcome, as are feature requests and suggestions. Please open an
 [issue][issues-url] if you encounter any problems or would just like to ask a question.
-
-
 
 [docs-latest-img]: https://img.shields.io/badge/docs-latest-blue.svg
 [docs-latest-url]: https://JuliaData.github.io/CSV.jl/latest
