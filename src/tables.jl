@@ -20,11 +20,11 @@ Base.size(c::Column) = (length(c.r),)
 Base.IndexStyle(::Type{<:Column}) = Base.IndexLinear()
 Base.copy(c::Column{T}) where {T} = T[x for x in c]
 
-func(::Type{Int64}) = int64
-func(::Type{Float64}) = float64
-func(::Type{Date}) = date
-func(::Type{DateTime}) = datetime
-func(::Type{Bool}) = bool
+reinterp_func(::Type{Int64}) = int64
+reinterp_func(::Type{Float64}) = float64
+reinterp_func(::Type{Date}) = date
+reinterp_func(::Type{DateTime}) = datetime
+reinterp_func(::Type{Bool}) = bool
 
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{Missing}, row::Int)
     @boundscheck checkbounds(c, row)
@@ -33,7 +33,7 @@ end
 
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{T}, row::Int) where {T}
     @boundscheck checkbounds(c, row)
-    @inbounds x = func(T)(getfield(c.f, :tape)[c.r[row]])
+    @inbounds x = reinterp_func(T)(getfield(c.f, :tape)[c.r[row]])
     return x
 end
 
@@ -93,14 +93,6 @@ end
         s = unsafe_string(pointer(getfield(c.f, :buf), getpos(offlen)), getlen(offlen))
         return escapedvalue(offlen) ? unescape(s, getfield(c.f, :e)) : s
     end
-end
-
-function mysum(c::AbstractVector{T}) where {T}
-    x = zero(T)
-    @simd for i = 1:length(c)
-        @inbounds x += c[i]
-    end
-    return x
 end
 
 function Base.getproperty(f::File, col::Symbol)

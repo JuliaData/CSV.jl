@@ -4,8 +4,6 @@ module CSV
 using Mmap, Dates, Random, Unicode
 using Parsers, Tables, DataFrames
 
-..(x, field::Symbol) = getfield(x, field)
-
 function validate(fullpath::Union{AbstractString,IO}; kwargs...)
     Base.depwarn("`CSV.validate` is deprecated. `CSV.read` now prints warnings on misshapen files.", :validate)
     Tables.columns(File(fullpath; kwargs...))
@@ -34,8 +32,8 @@ struct File
 end
 
 function Base.show(io::IO, f::File)
-    println(io, "CSV.File(\"$(..(f, :name))\"):")
-    println(io, "Size: $(..(f, :rows)) x $(..(f, :cols))")
+    println(io, "CSV.File(\"$(getfield(f, :name))\"):")
+    println(io, "Size: $(getfield(f, :rows)) x $(getfield(f, :cols))")
     show(io, Tables.schema(f))
 end
 
