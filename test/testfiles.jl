@@ -213,12 +213,12 @@ testfiles = [
     ),
     ("categorical.csv", (pool=true,),
         (15, 1),
-        NamedTuple{(:cat,), Tuple{PooledString}},
+        NamedTuple{(:cat,), Tuple{String}},
         (cat = ["a", "a", "a", "b", "b", "b", "b", "b", "b", "b", "c", "c", "c", "c", "a"],)
     ),
     ("categorical.csv", (pool=0.3,),
         (15, 1),
-        NamedTuple{(:cat,), Tuple{PooledString}},
+        NamedTuple{(:cat,), Tuple{String}},
         (cat = ["a", "a", "a", "b", "b", "b", "b", "b", "b", "b", "c", "c", "c", "c", "a"],)
     ),
     ("categorical.csv", (pool=false,),
@@ -234,32 +234,32 @@ testfiles = [
     # other various files from around the interwebs
     ("baseball.csv", (pool=true, normalizenames=true),
         (35, 15),
-        NamedTuple{(:Rk, :Year, :Age, :Tm, :Lg, :Column6, :W, :L, :W_L_, :G, :Finish, :Wpost, :Lpost, :W_L_post, :Column15), Tuple{Union{Int64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{PooledString, Missing},Union{PooledString, Missing},Union{PooledString, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{PooledString, Missing}}},
+        NamedTuple{(:Rk, :Year, :Age, :Tm, :Lg, :Column6, :W, :L, :W_L_, :G, :Finish, :Wpost, :Lpost, :W_L_post, :Column15), Tuple{Union{Int64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{String, Missing},Union{String, Missing},Union{String, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{String, Missing}}},
         nothing
     ),
     ("FL_insurance_sample.csv", (pool=true,),
         (36634, 18),
-        NamedTuple{(:policyID, :statecode, :county, :eq_site_limit, :hu_site_limit, :fl_site_limit, :fr_site_limit, :tiv_2011, :tiv_2012, :eq_site_deductible, :hu_site_deductible, :fl_site_deductible, :fr_site_deductible, :point_latitude, :point_longitude, :line, :construction, :point_granularity),Tuple{Int64,PooledString,PooledString,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,PooledString,PooledString,Int64}},
+        NamedTuple{(:policyID, :statecode, :county, :eq_site_limit, :hu_site_limit, :fl_site_limit, :fr_site_limit, :tiv_2011, :tiv_2012, :eq_site_deductible, :hu_site_deductible, :fl_site_deductible, :fr_site_deductible, :point_latitude, :point_longitude, :line, :construction, :point_granularity),Tuple{Int64,String,String,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,String,String,Int64}},
         nothing
     ),
     ("FL_insurance_sample.csv", (pool=true,),
         (36634, 18),
-        NamedTuple{(:policyID, :statecode, :county, :eq_site_limit, :hu_site_limit, :fl_site_limit, :fr_site_limit, :tiv_2011, :tiv_2012, :eq_site_deductible, :hu_site_deductible, :fl_site_deductible, :fr_site_deductible, :point_latitude, :point_longitude, :line, :construction, :point_granularity),Tuple{Int64,PooledString,PooledString,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,PooledString,PooledString,Int64}},
+        NamedTuple{(:policyID, :statecode, :county, :eq_site_limit, :hu_site_limit, :fl_site_limit, :fr_site_limit, :tiv_2011, :tiv_2012, :eq_site_deductible, :hu_site_deductible, :fl_site_deductible, :fr_site_deductible, :point_latitude, :point_longitude, :line, :construction, :point_granularity),Tuple{Int64,String,String,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,String,String,Int64}},
         nothing
     ),
     ("SacramentocrimeJanuary2006.csv", (pool=true,),
         (7584, 9),
-        NamedTuple{(:cdatetime, :address, :district, :beat, :grid, :crimedescr, :ucr_ncic_code, :latitude, :longitude),Tuple{PooledString,PooledString,Int64,PooledString,Int64,PooledString,Int64,Float64,Float64}},
+        NamedTuple{(:cdatetime, :address, :district, :beat, :grid, :crimedescr, :ucr_ncic_code, :latitude, :longitude),Tuple{String,String,Int64,String,Int64,String,Int64,Float64,Float64}},
         nothing
     ),
     ("Sacramentorealestatetransactions.csv", (pool=true, normalizenames=false),
         (985, 12),
-        NamedTuple{(:street, :city, :zip, :state, :beds, :baths, :sq__ft, :type, :sale_date, :price, :latitude, :longitude),Tuple{PooledString,PooledString,Int64,PooledString,Int64,Int64,Int64,PooledString,PooledString,Int64,Float64,Float64}},
+        NamedTuple{(:street, :city, :zip, :state, :beds, :baths, :sq__ft, :type, :sale_date, :price, :latitude, :longitude),Tuple{String,String,Int64,String,Int64,Int64,Int64,String,String,Int64,Float64,Float64}},
         nothing
     ),
     ("SalesJan2009.csv", (pool=true,),
         (998, 12),
-        NamedTuple{(:Transaction_date, :Product, :Price, :Payment_Type, :Name, :City, :State, :Country, :Account_Created, :Last_Login, :Latitude, :Longitude),Tuple{PooledString,PooledString,String,PooledString,PooledString,PooledString,Union{Missing, PooledString},PooledString,PooledString,PooledString,Float64,Float64}},
+        NamedTuple{(:Transaction_date, :Product, :Price, :Payment_Type, :Name, :City, :State, :Country, :Account_Created, :Last_Login, :Latitude, :Longitude),Tuple{String,String,String,String,String,String,Union{Missing, String},String,String,String,Float64,Float64}},
         nothing
     ),
     ("stocks.csv", (normalizenames=true,),
@@ -269,7 +269,7 @@ testfiles = [
     ),
     ("TechCrunchcontinentalUSA.csv", (pool=true,),
         (1460, 10),
-        NamedTuple{(:permalink, :company, :numEmps, :category, :city, :state, :fundedDate, :raisedAmt, :raisedCurrency, :round),Tuple{PooledString,PooledString,Union{Missing, Int64},Union{Missing, PooledString},Union{Missing, PooledString},PooledString,PooledString,Int64,PooledString,PooledString}},
+        NamedTuple{(:permalink, :company, :numEmps, :category, :city, :state, :fundedDate, :raisedAmt, :raisedCurrency, :round),Tuple{String,String,Union{Missing, Int64},Union{Missing, String},Union{Missing, String},String,String,Int64,String,String}},
         nothing
     ),
     ("Fielding.csv", (pool=false,),
@@ -279,7 +279,7 @@ testfiles = [
     ),
     ("latest (1).csv", (header=0, missingstring="\\N", pool=true),
         (1000, 25),
-        NamedTuple{(:Column1, :Column2, :Column3, :Column4, :Column5, :Column6, :Column7, :Column8, :Column9, :Column10, :Column11, :Column12, :Column13, :Column14, :Column15, :Column16, :Column17, :Column18, :Column19, :Column20, :Column21, :Column22, :Column23, :Column24, :Column25),Tuple{PooledString,PooledString,Int64,Int64,PooledString,Int64,PooledString,Int64,Date,Date,Int64,PooledString,Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Int64},Union{Missing, Float64},Float64,Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Int64},Float64,Union{Missing, Float64},Union{Missing, Float64}}},
+        NamedTuple{(:Column1, :Column2, :Column3, :Column4, :Column5, :Column6, :Column7, :Column8, :Column9, :Column10, :Column11, :Column12, :Column13, :Column14, :Column15, :Column16, :Column17, :Column18, :Column19, :Column20, :Column21, :Column22, :Column23, :Column24, :Column25),Tuple{String,String,Int64,Int64,String,Int64,String,Int64,Date,Date,Int64,String,Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Int64},Union{Missing, Float64},Float64,Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Int64},Float64,Union{Missing, Float64},Union{Missing, Float64}}},
         nothing
     ),
     # #217
@@ -530,7 +530,7 @@ testfiles = [
     # 323
     (IOBuffer("a0001000\na0001000"), (datarow=1, pool=true),
         (2, 1),
-        NamedTuple{(:Column1,), Tuple{PooledString}},
+        NamedTuple{(:Column1,), Tuple{String}},
         (Column1 = ["a0001000", "a0001000"],)
     ),
     # 396

@@ -1,28 +1,5 @@
-struct PooledString <: AbstractString
-    ref::UInt64
-    refs::Vector{String}
-end
-
-Base.show(io::IO, x::PooledString) = print(io, '"', escape_string(x.refs[x.ref]), '"')
 export PooledString
-
-Base.get(x::PooledString) = x.refs[x.ref]
-Base.string(x::PooledString) = get(x)
-Base.eltype(x::PooledString) = Char
-Base.length(x::PooledString) = length(get(x))
-Base.sizeof(x::PooledString) = sizeof(get(x))
-Base.nextind(x::PooledString, i::Int) = nextind(get(x), i)
-Base.prevind(x::PooledString, i::Int) = prevind(get(x), i)
-Base.iterate(x::PooledString) = iterate(get(x))
-Base.iterate(x::PooledString, i::Int) = iterate(get(x), i)
-Base.getindex(x::PooledString, i::Int) = getindex(get(x), i)
-Base.codeunit(x::PooledString, i::Integer) = codeunit(get(x), i)
-Base.ascii(x::PooledString) = ascii(get(x))
-Base.isvalid(x::PooledString) = isvalid(get(x))
-Base.isvalid(x::PooledString, i::Integer) = isvalid(get(x), i)
-Base.collect(x::PooledString) = collect(get(x))
-Base.reverse(x::PooledString) = reverse(get(x))
-Base.ncodeunits(x::PooledString) = ncodeunits(get(x))
+struct PooledString <: AbstractString end
 
 struct PointerString <: AbstractString
     ptr::Ptr{UInt8}

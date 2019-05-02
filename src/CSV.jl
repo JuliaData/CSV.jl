@@ -31,9 +31,19 @@ struct File
     tape::Vector{UInt64}
 end
 
+getname(f::File) = getfield(f, :name)
+getbuf(f::File) = getfield(f, :buf)
+getnames(f::File) = getfield(f, :names)
+gettypes(f::File) = getfield(f, :types)
+gete(f::File) = getfield(f, :e)
+getrefs(f::File) = getfield(f, :refs)
+getrows(f::File) = getfield(f, :rows)
+getcols(f::File) = getfield(f, :cols)
+gettape(f::File) = getfield(f, :tape)
+
 function Base.show(io::IO, f::File)
-    println(io, "CSV.File(\"$(getfield(f, :name))\"):")
-    println(io, "Size: $(getfield(f, :rows)) x $(getfield(f, :cols))")
+    println(io, "CSV.File(\"$(getname(f))\"):")
+    println(io, "Size: $(getrows(f)) x $(getcols(f))")
     show(io, Tables.schema(f))
 end
 
@@ -94,8 +104,7 @@ Supported keyword arguments include:
   * `type`: a single type to use for parsing an entire file; i.e. all columns will be treated as the same type; useful for matrix-like data files
   * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64; if a `Vector` if provided, it must match the # of columns provided or detected in `header`
   * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `String`
-  * `categorical::Union{Bool, Float64}=false`: if `true`, columns detected as `String` are returned as a `CategoricalArray`; alternatively, the proportion of unique values below which `String` columns should be treated as categorical (for example 0.1 for 10%, which means if the # of unique strings in a column is under 10%, it will be parsed as a CategoricalArray)
-  * `pool::Union{Bool, Float64}=0.1`: if `true`, columns detected as `String` are returned as a `PooledArray`; alternatively, the proportion of unique values below which `String` columns should be pooled (by default 0.1, meaning that if the # of unique strings in a column is under 10%, it will be pooled)
+  * `pool::Union{Bool, Float64}=0.1`: if `true`, *all* columns detected as `String` will be internally pooled; alternatively, the proportion of unique values below which `String` columns should be pooled (by default 0.1, meaning that if the # of unique strings in a column is under 10%, it will be pooled)
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
   * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
 """
@@ -207,9 +216,9 @@ function File(source;
     ncols = length(names)
     # might as well round up to the next largest pagesize, since mmap aligns to it anyway
     tape = Mmap.mmap(Vector{UInt64}, roundup((rowsguess * ncols * 2), Mmap.PAGESIZE))
-    pool = (pool === true || any(pooled, typecodes)) ? 1.0 : pool isa Float64 ? pool : 0.0
-    refs = pool > 0.0 ? Vector{Dict{String, UInt64}}(undef, ncols) : EMPTY_REFS
-    lastrefs = pool > 0.0 ? zeros(UInt64, ncols) : EMPTY_LAST_REFS
+    pool = pool === true ? 1.0 : pool isa Float64 ? pool : 0.0
+    refs = Vector{Dict{String, UInt64}}(undef, ncols)
+    lastrefs = zeros(UInt64, ncols)
     t = time()
     rows = parsetape(Val(transpose), ncols, gettypecodes(typemap), tape, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options)
     debug && println("time for initial parsing to tape: $(time() - t)")
@@ -562,12 +571,12 @@ Supported keyword arguments include:
   * `type`: a single type to use for parsing an entire file; i.e. all columns will be treated as the same type; useful for matrix-like data files
   * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64; if a `Vector` if provided, it must match the # of columns provided or detected in `header`
   * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `String`
-  * `categorical::Union{Bool, Float64}=false`: if `true`, columns detected as `String` are returned as a `CategoricalArray`; alternatively, the proportion of unique values below which `String` columns should be treated as categorical (for example 0.1 for 10%, which means if the # of unique strings in a column is under 10%, it will be parsed as a CategoricalArray)
-  * `pool::Union{Bool, Float64}=0.1`: if `true`, columns detected as `String` are returned as a `PooledArray`; alternatively, the proportion of unique values below which `String` columns should be pooled (by default 0.1, meaning that if the # of unique strings in a column is under 10%, it will be pooled)
+  * `pool::Union{Bool, Float64}=0.1`: if `true`, columns detected as `String` will be internally pooled; alternatively, the proportion of unique values below which `String` columns should be pooled (by default 0.1, meaning that if the # of unique strings in a column is under 10%, it will be pooled)
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
   * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
+  * `copycols::Bool=false`: whether a copy of columns should be made when creating the DataFrame; by default, no copy is made, and the DataFrame is built with immutable, read-only CSV.Column vectors. If mutable operations are needed on the DataFrame, set `copycols=true`.
 """
-read(source; kwargs...) = CSV.File(source; kwargs...) |> DataFrame!
+read(source; copycols::Bool=false, kwargs...) = DataFrame(CSV.File(source; kwargs...), copycols=copycols)
 
 function __init__()
     Threads.resize_nthreads!(VALUE_BUFFERS)

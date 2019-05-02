@@ -198,7 +198,7 @@ df = CSV.read(IOBuffer("x\na\n\n"), pool=true)
 
 # catg => string
 df = CSV.read(IOBuffer("x\na\nb\na\nb\na\nb\na\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nn\nm\no\np\nq\nr\n"), pool=0.5)
-@test typeof(df.x) == CSV.Column{String}
+@test typeof(df.x) == CSV.Column{String, String}
 
 # a few corner cases for escape strings
 df = CSV.read(IOBuffer("\"column name with \"\" escape character inside\"\n1\n"))
@@ -289,7 +289,7 @@ f = CSV.File(IOBuffer("int,float,date,datetime,bool,null,str,catg,int_float\n1,3
 @test Tables.istable(f)
 @test Tables.rowaccess(typeof(f))
 @test Tables.columnaccess(typeof(f))
-@test Tables.schema(f) == Tables.Schema([:int, :float, :date, :datetime, :bool, :null, :str, :catg, :int_float], [Int64, Float64, Date, DateTime, Bool, Missing, String, PooledString, Float64])
+@test Tables.schema(f) == Tables.Schema([:int, :float, :date, :datetime, :bool, :null, :str, :catg, :int_float], [Int64, Float64, Date, DateTime, Bool, Missing, String, String, Float64])
 @test Tables.rows(f) === f
 @test eltype(f) == CSV.Row
 row = first(f)
@@ -302,7 +302,7 @@ row = first(f)
 @test row.null === missing
 @test row.str == "hey"
 @test row.catg == "abc"
-@test typeof(row.catg) == PooledString
+@test typeof(row.catg) == String
 @test row.int_float === 2.0
 row = iterate(f, 2)[1]
 @test row.int_float === 3.14
