@@ -26,7 +26,7 @@ function columnname(buf, vpos, vlen, code, options, i)
     if Parsers.sentinel(code)
         return "Column$i"
     elseif Parsers.escapedstring(code)
-        return convert(EscapedString{options.e}, WeakRefString(pointer(buf, vpos), vlen))
+        return unescape(PointerString(pointer(buf, vpos), vlen), options.e)
     else
         return unsafe_string(pointer(buf, vpos), vlen)
     end

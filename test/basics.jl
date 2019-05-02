@@ -185,20 +185,20 @@ df = CSV.read(IOBuffer("x\n\n1\n3.14\nabc"))
 @test df.x[4] == "abc"
 
 # missing => catg
-df = CSV.read(IOBuffer("x\n\na\n"), categorical=true)
+df = CSV.read(IOBuffer("x\n\na\n"), pool=true)
 @test size(df) == (2, 1)
 @test df.x[1] === missing
 @test df.x[2] == "a"
 
 # catg => missing
-df = CSV.read(IOBuffer("x\na\n\n"), categorical=true)
+df = CSV.read(IOBuffer("x\na\n\n"), pool=true)
 @test size(df) == (2, 1)
 @test df.x[1] == "a"
 @test df.x[2] === missing
 
 # catg => string
-df = CSV.read(IOBuffer("x\na\nb\na\nb\na\nb\na\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nn\nm\no\np\nq\nr\n"), categorical=0.5)
-@test typeof(df.x) == StringArray{String,1}
+df = CSV.read(IOBuffer("x\na\nb\na\nb\na\nb\na\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nn\nm\no\np\nq\nr\n"), pool=0.5)
+@test typeof(df.x) == CSV.Column{String, String}
 
 # a few corner cases for escape strings
 df = CSV.read(IOBuffer("\"column name with \"\" escape character inside\"\n1\n"))
@@ -208,7 +208,7 @@ df = CSV.read(IOBuffer("\"column name with \"\" escape character inside\",1\n,2"
 @test names(df)[1] == Symbol("column name with \" escape character inside")
 @test names(df)[2] == :Column2
 
-df = CSV.read(IOBuffer("x\na\nb\n\"quoted field with \"\" escape character inside\"\n"), categorical=true)
+df = CSV.read(IOBuffer("x\na\nb\n\"quoted field with \"\" escape character inside\"\n"), pool=true)
 @test df.x[1] == "a"
 @test df.x[3] == "quoted field with \" escape character inside"
 
@@ -222,7 +222,7 @@ df = CSV.read(IOBuffer("x\na\nb\n\"quoted field with \"\" escape character insid
 @test_throws CSV.Error CSV.read(IOBuffer("x\n\n\"quoted field that never ends"))
 @test_throws CSV.Error CSV.read(IOBuffer("x\n1\n\"quoted field that never ends"))
 @test_throws CSV.Error CSV.read(IOBuffer("x\n1.0\n\"quoted field that never ends"))
-@test_throws CSV.Error CSV.read(IOBuffer("x\na\n\"quoted field that never ends"), categorical=true)
+@test_throws CSV.Error CSV.read(IOBuffer("x\na\n\"quoted field that never ends"), pool=true)
 
 # invalid integer
 df = CSV.read(IOBuffer("x\nabc\n"), type=Int)
@@ -285,11 +285,11 @@ df = CSV.read(IOBuffer("x\n2019-01-01\n\n"), types=Dict("x"=>Date))
 @test df.x[2] === missing
 
 # various CSV.File/CSV.Row properties
-f = CSV.File(IOBuffer("int,float,date,datetime,bool,null,str,catg,int_float\n1,3.14,2019-01-01,2019-01-01T01:02:03,true,,hey,abc,2\n2,NaN,2019-01-02,2019-01-03T01:02:03,false,,there,abc,3.14\n"), categorical=0.3)
+f = CSV.File(IOBuffer("int,float,date,datetime,bool,null,str,catg,int_float\n1,3.14,2019-01-01,2019-01-01T01:02:03,true,,hey,abc,2\n2,NaN,2019-01-02,2019-01-03T01:02:03,false,,there,abc,3.14\n"), pool=0.3)
 @test Tables.istable(f)
 @test Tables.rowaccess(typeof(f))
 @test Tables.columnaccess(typeof(f))
-@test Tables.schema(f) == Tables.Schema([:int, :float, :date, :datetime, :bool, :null, :str, :catg, :int_float], [Int64, Float64, Date, DateTime, Bool, Missing, String, CSV.CatStr, Float64])
+@test Tables.schema(f) == Tables.Schema([:int, :float, :date, :datetime, :bool, :null, :str, :catg, :int_float], [Int64, Float64, Date, DateTime, Bool, Missing, String, String, Float64])
 @test Tables.rows(f) === f
 @test eltype(f) == CSV.Row
 row = first(f)
@@ -302,7 +302,7 @@ row = first(f)
 @test row.null === missing
 @test row.str == "hey"
 @test row.catg == "abc"
-@test typeof(row.catg) == CSV.CatStr
+@test typeof(row.catg) == String
 @test row.int_float === 2.0
 row = iterate(f, 2)[1]
 @test row.int_float === 3.14
