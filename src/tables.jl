@@ -80,8 +80,8 @@ end
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{String}, row::Int)
     @boundscheck checkbounds(c, row)
     @inbounds offlen = getfield(c.f, :tape)[c.r[row] - 1]
-    s = unsafe_string(pointer(getfield(c.f, :buf), getpos(offlen)), getlen(offlen))
-    return escapedvalue(offlen) ? unescape(s, getfield(c.f, :e)) : s
+    s = PointerString(pointer(getfield(c.f, :buf), getpos(offlen)), getlen(offlen))
+    return escapedvalue(offlen) ? unescape(s, getfield(c.f, :e)) : String(s)
 end
 
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{Union{String, Missing}}, row::Int)
@@ -90,8 +90,8 @@ end
     if missingvalue(offlen)
         return missing
     else
-        s = unsafe_string(pointer(getfield(c.f, :buf), getpos(offlen)), getlen(offlen))
-        return escapedvalue(offlen) ? unescape(s, getfield(c.f, :e)) : s
+        s = PointerString(pointer(getfield(c.f, :buf), getpos(offlen)), getlen(offlen))
+        return escapedvalue(offlen) ? unescape(s, getfield(c.f, :e)) : String(s)
     end
 end
 

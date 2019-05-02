@@ -57,9 +57,6 @@ function getvalue(::Type{PooledString}, f, indexoffset, offlen, col)
 end
 
 function getvalue(::Type{String}, f, indexoffset, offlen, col)
-    if escapedvalue(offlen)
-        return unescape(PointerString(pointer(getfield(f, :buf), getpos(offlen)), getlen(offlen)), getfield(f, :e))
-    else
-        return unsafe_string(pointer(getfield(f, :buf), getpos(offlen)), getlen(offlen))
-    end
+    s = PointerString(pointer(getfield(f, :buf), getpos(offlen)), getlen(offlen))
+    return escapedvalue(offlen) ? unescape(s, getfield(f, :e)) : String(s)
 end
