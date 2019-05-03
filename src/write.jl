@@ -1,20 +1,20 @@
 """
-    CSV.write(file, file; kwargs...) => file
+    CSV.write(file, table; kwargs...) => file
     table |> CSV.write(file; kwargs...) => file
 
-Write a [Tables.jl interface input](https://github.com/JuliaData/Tables.jl) to a csv file, given as an `IO` argument or String/FilePaths.jl type representing the file name to write to.
+Write a [Tables.jl interface input](https://github.com/JuliaData/Tables.jl) to a csv file, given as an `IO` argument or `String`/FilePaths.jl type representing the file name to write to.
 
-Keyword arguments include:
+Supported keyword arguments include:
 * `delim::Union{Char, String}=','`: a character or string to print out as the file's delimiter
 * `quotechar::Char='"'`: ascii character to use for quoting text fields that may contain delimiters or newlines
 * `openquotechar::Char`: instead of `quotechar`, use `openquotechar` and `closequotechar` to support different starting and ending quote characters
 * `escapechar::Char='"'`: ascii character used to escape quote characters in a text field
-* `missingstring::String=""`: string to print 
-* `dateformat=Dates.default_format(T)`: the date format string to use for printing out Date & DateTime columns
+* `missingstring::String=""`: string to print for `missing` values 
+* `dateformat=Dates.default_format(T)`: the date format string to use for printing out `Date` & `DateTime` columns
 * `append=false`: whether to append writing to an existing file/IO, if `true`, it will not write column names by default
 * `writeheader=!append`: whether to write an initial row of delimited column names, not written by default if appending
 * `header`: pass a list of column names (Symbols or Strings) to use instead of the column names of the input table
-* `newline='\n'`: character or string to use to separate rows (lines in the csv file)
+* `newline='\\n'`: character or string to use to separate rows (lines in the csv file)
 * `quotestrings=false`: whether to force all strings to be quoted or not
 * `decimal='.'`: character to use as the decimal point when writing floating point numbers
 """

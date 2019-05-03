@@ -56,6 +56,7 @@ const EMPTY_REFVALUES = String[]
     CSV.File(source; kwargs...) => CSV.File
 
 Read a csv input (a filename given as a String or FilePaths.jl type, or any other IO source), returning a `CSV.File` object.
+
 Opens the file and uses passed arguments to detect the number of columns and column types.
 The returned `CSV.File` object supports the [Tables.jl](https://github.com/JuliaData/Tables.jl) interface
 and can iterate `CSV.Row`s. `CSV.Row` supports `propertynames` and `getproperty` to access individual row values.
@@ -540,42 +541,11 @@ include("iteration.jl")
 include("write.jl")
 
 """
-`CSV.read(source; kwargs...)` => `DataFrame`
+`CSV.read(source; copycols::Bool=false, kwargs...)` => `DataFrame`
 
-Parses a delimited file into a `DataFrame`.
+Parses a delimited file into a `DataFrame`. `copycols` determines whether a copy of columns should be made when creating the DataFrame; by default, no copy is made, and the DataFrame is built with immutable, read-only `CSV.Column` vectors. If mutable operations are needed on the DataFrame columns, set `copycols=true`.
 
-Positional arguments:
-
-* `source`: can be a file name (String or FilePaths.jl type) of the location of the csv file or an `IO` or `Vector{UInt8}` buffer to read the csv from directly
-
-Supported keyword arguments include:
-* File layout options:
-  * `header=1`: the `header` argument can be an `Int`, indicating the row to parse for column names; or a `Range`, indicating a span of rows to be concatenated together as column names; or an entire `Vector{Symbol}` or `Vector{String}` to use as column names; if a file doesn't have column names, either provide them as a `Vector`, or set `header=0` or `header=false` and column names will be auto-generated (`Column1`, `Column2`, etc.)
-  * `normalizenames=false`: whether column names should be "normalized" into valid Julia identifier symbols; useful when iterating rows and accessing column values of a row via `getproperty` (e.g. `row.col1`)
-  * `datarow`: an `Int` argument to specify the row where the data starts in the csv file; by default, the next row after the `header` row is used. If `header=0`, then the 1st row is assumed to be the start of data
-  * `skipto::Int`: similar to `datarow`, specifies the number of rows to skip before starting to read data
-  * `footerskip::Int`: number of rows at the end of a file to skip parsing
-  * `limit`: an `Int` to indicate a limited number of rows to parse in a csv file; use in combination with `skipto` to read a specific, contiguous chunk within a file
-  * `transpose::Bool`: read a csv file "transposed", i.e. each column is parsed as a row
-  * `comment`: rows that begin with this `String` will be skipped while parsing
-  * `use_mmap::Bool=!Sys.iswindows()`: whether the file should be mmapped for reading, which in some cases can be faster
-* Parsing options:
-  * `missingstrings`, `missingstring`: either a `String`, or `Vector{String}` to use as sentinel values that will be parsed as `missing`; by default, only an empty field (two consecutive delimiters) is considered `missing`
-  * `delim=','`: a `Char` or `String` that indicates how columns are delimited in a file; if no argument is provided, parsing will try to detect the most consistent delimiter on the first 10 rows of the file
-  * `ignorerepeated::Bool=false`: whether repeated (consecutive) delimiters should be ignored while parsing; useful for fixed-width files with delimiter padding between cells
-  * `quotechar='"'`, `openquotechar`, `closequotechar`: a `Char` (or different start and end characters) that indicate a quoted field which may contain textual delimiters or newline characters
-  * `escapechar='"'`: the `Char` used to escape quote characters in a quoted field
-  * `dateformat::Union{String, Dates.DateFormat, Nothing}`: a date format string to indicate how Date/DateTime columns are formatted for the entire file
-  * `decimal='.'`: a `Char` indicating how decimals are separated in floats, i.e. `3.14` used '.', or `3,14` uses a comma ','
-  * `truestrings`, `falsestrings`: `Vectors of Strings` that indicate how `true` or `false` values are represented; by default only `true` and `false` are treated as `Bool`
-* Column Type Options:
-  * `type`: a single type to use for parsing an entire file; i.e. all columns will be treated as the same type; useful for matrix-like data files
-  * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64; if a `Vector` if provided, it must match the # of columns provided or detected in `header`
-  * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `String`
-  * `pool::Union{Bool, Float64}=0.1`: if `true`, columns detected as `String` will be internally pooled; alternatively, the proportion of unique values below which `String` columns should be pooled (by default 0.1, meaning that if the # of unique strings in a column is under 10%, it will be pooled)
-  * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
-  * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
-  * `copycols::Bool=false`: whether a copy of columns should be made when creating the DataFrame; by default, no copy is made, and the DataFrame is built with immutable, read-only CSV.Column vectors. If mutable operations are needed on the DataFrame, set `copycols=true`.
+`CSV.read` supports the same keyword arguments as [`CSV.File`](@ref).
 """
 read(source; copycols::Bool=false, kwargs...) = DataFrame(CSV.File(source; kwargs...), copycols=copycols)
 
