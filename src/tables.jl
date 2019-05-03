@@ -22,11 +22,59 @@ end
 
 Base.size(c::Column) = (length(c.r),)
 Base.IndexStyle(::Type{<:Column}) = Base.IndexLinear()
+
 function Base.copy(c::Column{T}) where {T}
     len = length(c)
     A = Vector{T}(undef, len)
     @simd for i = 1:len
         @inbounds A[i] = c[i]
+    end
+    return A
+end
+
+function Base.copy(c::Column{T, T}) where {T <: Union{String, Union{String, Missing}}}
+    len = length(c)
+    A = StringVector{T}(undef, len)
+    @simd for i = 1:len
+        @inbounds A[i] = c[i]
+    end
+    return A
+end
+
+function Base.copy(c::Column{T, S}) where {T <: Union{String, Union{String, Missing}}, S <: Union{PooledString, Union{PooledString, Missing}}}
+    len = length(c)
+    catg = getcategorical(c.f)
+    if S === PooledString
+        refs = Dict{String, UInt32}()
+        foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(getrefs(c.f)[c.col]))
+        values = Vector{UInt32}(undef, len)
+        @simd for i = 1:len
+            @inbounds values[i] = ref(gettape(c.f)[c.r[i]])
+        end
+    else
+        if catg
+            refs = Dict{String, UInt32}()
+            foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(getrefs(c.f)[c.col]))
+            missingref = UInt32(0)
+            values = Vector{UInt32}(undef, len)
+        else
+            refs = Dict{Union{String, Missing}, UInt32}()
+            foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(getrefs(c.f)[c.col]))
+            missingref = UInt32(length(refs) + 1)
+            refs[missing] = missingref
+            values = Vector{UInt32}(undef, len)
+        end
+        @simd for i = 1:len
+            @inbounds offlen = gettape(c.f)[c.r[i] - 1]
+            @inbounds values[i] = ifelse(missingvalue(offlen), missingref, ref(gettape(c.f)[c.r[i]]))
+        end
+    end
+    if catg
+        pool = CategoricalPool(refs)
+        levels!(pool, sort(levels(pool)))
+        A = CategoricalArray{T, 1}(values, pool)
+    else
+        A = PooledArray(PooledArrays.RefArray(values), refs)
     end
     return A
 end
