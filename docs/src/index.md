@@ -4,6 +4,7 @@ CSV.jl is built to be a fast and flexible pure-Julia library for handling delimi
 
 
 ```@contents
+Depth = 3
 ```
 
 ## Key Functions
