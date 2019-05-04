@@ -1,8 +1,9 @@
 module CSV
 
 # stdlib
-using Mmap, Dates, Random, Unicode
-using Parsers, Tables, DataFrames
+using Mmap, Dates, Unicode
+using Parsers, Tables
+using PooledArrays, CategoricalArrays, WeakRefStrings, DataFrames
 
 function validate(fullpath::Union{AbstractString,IO}; kwargs...)
     Base.depwarn("`CSV.validate` is deprecated. `CSV.read` now prints warnings on misshapen files.", :validate)
@@ -25,6 +26,7 @@ struct File
     names::Vector{Symbol}
     types::Vector{Type}
     e::UInt8 # escape character, for unescaping strings later
+    categorical::Bool
     refs::Vector{Vector{String}}
     rows::Int64
     cols::Int64
@@ -36,6 +38,7 @@ getbuf(f::File) = getfield(f, :buf)
 getnames(f::File) = getfield(f, :names)
 gettypes(f::File) = getfield(f, :types)
 gete(f::File) = getfield(f, :e)
+getcategorical(f::File) = getfield(f, :categorical)
 getrefs(f::File) = getfield(f, :refs)
 getrows(f::File) = getfield(f, :rows)
 getcols(f::File) = getfield(f, :cols)
@@ -105,6 +108,7 @@ Supported keyword arguments include:
   * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64; if a `Vector` if provided, it must match the # of columns provided or detected in `header`
   * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `String`
   * `pool::Union{Bool, Float64}=0.1`: if `true`, *all* columns detected as `String` will be internally pooled; alternatively, the proportion of unique values below which `String` columns should be pooled (by default 0.1, meaning that if the # of unique strings in a column is under 10%, it will be pooled)
+  * `categorical::Bool=false`: whether pooled columns should be copied as CategoricalArray instead of PooledArray
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
   * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
 """
@@ -151,8 +155,11 @@ function File(source;
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
     delim !== nothing && ((delim isa Char && iscntrl(delim) && delim != '\t') || (delim isa String && any(iscntrl, delim) && !all(==('\t'), delim))) && throw(ArgumentError("invalid delim argument = '$(escape_string(string(delim)))', must be a non-control character or string without control characters"))
     allowmissing !== nothing && @warn "`allowmissing` is a deprecated keyword argument"
-    if categorical !== false
-        @warn "categorical=$categorical is deprecated in favor of `pool=$categorical`"
+    if !(categorical isa Bool)
+        @warn "categorical=$categorical is deprecated in favor of `pool=$categorical`; categorical is only used to determine CategoricalArray vs. PooledArrays"
+        pool = categorical
+        categorical = categorical > 0.0
+    elseif categorical === true
         pool = categorical
     end
     header = (isa(header, Integer) && header == 1 && (datarow == 1 || skipto == 1)) ? -1 : header
@@ -197,8 +204,10 @@ function File(source;
     T = type === nothing ? EMPTY : (typecode(type) | USER)
     if types isa Vector
         typecodes = TypeCode[typecode(T) | USER for T in types]
+        categorical = categorical | any(x->x == CategoricalString{UInt32}, types)
     elseif types isa AbstractDict
         typecodes = initialtypes(T, types, names)
+        categorical = categorical | any(x->x == CategoricalString{UInt32}, values(types))
     else
         typecodes = TypeCode[T for _ = 1:length(names)]
     end
@@ -232,7 +241,7 @@ function File(source;
     else
         refs = EMPTY_REFS
     end
-    return File(getname(source), buf, names, types, eq, refs, rows - footerskip, ncols, tape)
+    return File(getname(source), buf, names, types, eq, categorical, refs, rows - footerskip, ncols, tape)
 end
 
 function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options::Parsers.Options{ignorerepeated}) where {transpose, ignorerepeated}
