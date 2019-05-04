@@ -63,6 +63,7 @@ typecode(::Type{DateTime}) = DATETIME
 typecode(::Type{Bool}) = BOOL
 typecode(::Type{<:AbstractString}) = STRING
 typecode(::Type{PooledString}) = POOL
+typecode(::Type{CategoricalString{UInt32}}) = POOL
 typecode(::Type{Union{}}) = EMPTY
 typecode(::Type{Union{T, Missing}}) where {T} = typecode(T) | MISSING
 typecode(::Type{T}) where {T} = EMPTY
