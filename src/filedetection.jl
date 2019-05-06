@@ -218,6 +218,7 @@ function guessnrows(buf, oq::UInt8, cq::UInt8, eq::UInt8, source, delim, comment
     len = fs = length(buf)
     pos = 1
     nbytes = 0
+    smallestline = nothing
     lastbytenewline = false
     nlines = 0
     bvc = ByteValueCounter()
@@ -227,39 +228,46 @@ function guessnrows(buf, oq::UInt8, cq::UInt8, eq::UInt8, source, delim, comment
         @inbounds b = buf[pos]
         pos += 1
         nbytes += 1
-        if b === oq
+        if b == oq
             while pos <= len
                 @inbounds b = buf[pos]
                 pos += 1
                 nbytes += 1
-                if b === eq
+                if b == eq
                     if pos > len
                         break
-                    elseif eq === cq && buf[pos] !== cq
+                    elseif eq == cq && buf[pos] != cq
                         break
                     end
                     @inbounds b = buf[pos]
                     pos += 1
                     nbytes += 1
-                elseif b === cq
+                elseif b == cq
                     break
                 end
             end
-        elseif b === UInt8('\n')
+        elseif b == UInt8('\n')
             consumecommentedline!(buf, pos, len, comment)
             nlines += 1
             lastbytenewline = true
-        elseif b === UInt8('\r')
+            smallestline = min(nbytes, something(smallestline, typemax(Int64)))
+            nbytes = 0
+        elseif b == UInt8('\r')
             pos <= len && buf[pos] == UInt8('\n') && (pos += 1)
             consumecommentedline!(buf, pos, len, comment)
             nlines += 1
             lastbytenewline = true
+            smallestline = min(nbytes, something(smallestline, typemax(Int64)))
+            nbytes = 0
         else
             lastbytenewline = false
             incr!(bvc, b)
         end
     end
     nlines += !lastbytenewline
+    if nbytes > 0
+        smallestline = min(nbytes, something(smallestline, typemax(Int64)))
+    end
 
      if delim === nothing
         if isa(source, AbstractString) && endswith(source, ".tsv")
@@ -286,7 +294,9 @@ function guessnrows(buf, oq::UInt8, cq::UInt8, eq::UInt8, source, delim, comment
         d = (delim isa Char && isascii(delim)) ? delim % UInt8 :
             (sizeof(delim) == 1 && isascii(delim)) ? delim[1] % UInt8 : delim
     end
-    guess = fs / (nbytes / nlines) * 1.25
+    smallestline = something(smallestline, 0)
+    debug && println("smallest line detected with $smallestline bytes")
+    guess = fs / smallestline
     rowsguess = isfinite(guess) ? ceil(Int, guess) : 0
     return rowsguess, d
 end
