@@ -224,7 +224,7 @@ function File(source;
     # the 2nd UInt64 is used for storing the raw bits of a parsed, typed value: Int64, Float64, Date, DateTime, Bool, or categorical/pooled UInt32 ref
     ncols = length(names)
     # might as well round up to the next largest pagesize, since mmap aligns to it anyway
-    tape = Mmap.mmap(Vector{UInt64}, roundup((rowsguess * ncols * 2), Mmap.PAGESIZE))
+    tape = Mmap.mmap(Vector{UInt64}, roundup(trunc(Int64, rowsguess * ncols * 2.1), Mmap.PAGESIZE))
     pool = pool === true ? 1.0 : pool isa Float64 ? pool : 0.0
     refs = Vector{Dict{String, UInt64}}(undef, ncols)
     lastrefs = zeros(UInt64, ncols)
@@ -308,7 +308,7 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit,
                 end
             end
             pos > len && break
-            if tapeidx > tapelen
+            if tapeidx >= tapelen
                 println("WARNING: didn't pre-allocate enough while parsing: preallocated=$(row)")
                 break
             end
