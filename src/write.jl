@@ -41,7 +41,7 @@ function _reset(io::IOBuffer)
     io.size = 0
 end
 
-function bufferedwrite(io, x::AbstractFloat, df, decimal)
+function bufferedwrite(io, x::Union{Float16, Float32, Float64, BigFloat}, df, decimal)
     dot = false
     n = 0
     if isnan(x)
