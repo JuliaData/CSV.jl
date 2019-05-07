@@ -143,15 +143,22 @@ function getsource(source, use_mmap)
         return source
     elseif use_mmap && !isa(source, IO)
         return Mmap.mmap(source)
+    elseif !isa(source, IO)
+        m = Mmap.mmap(source)
+        m2 = Mmap.mmap(Vector{UInt8}, length(m))
+        copyto!(m2, 1, m, 1, length(m))
+        finalize(m)
+        return m2
+    else
+        iosource = source isa IO ? source : open(String(source))
+        io = IOBuffer()
+        while !eof(iosource)
+            Base.write(io, iosource)
+        end
+        A = Mmap.mmap(Vector{UInt8}, io.size)
+        copyto!(A, 1, io.data, 1, io.size)
+        return A
     end
-    iosource = source isa IO ? source : open(String(source))
-    io = IOBuffer()
-    while !eof(iosource)
-        Base.write(io, iosource)
-    end
-    A = Mmap.mmap(Vector{UInt8}, io.size)
-    copyto!(A, 1, io.data, 1, io.size)
-    return A
 end
 
 getname(buf::Vector{UInt8}) = "<raw buffer>"
