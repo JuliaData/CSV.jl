@@ -306,12 +306,17 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit,
                         end
                     end
                 end
+                if tapeidx > tapelen
+                    debug && println("WARNING: didn't pre-allocate enough while parsing: preallocated=$(row)")
+                    oldtape = tape
+                    newtape = Mmap.mmap(Vector{UInt64}, ceil(Int64, length(oldtape) * 1.5))
+                    copyto!(newtape, 1, oldtape, 1, length(oldtape))
+                    tape = newtape
+                    tapelen = length(tape)
+                    finalize(oldtape)
+                end
             end
             pos > len && break
-            if tapeidx >= tapelen
-                println("WARNING: didn't pre-allocate enough while parsing: preallocated=$(row)")
-                break
-            end
         end
     end
     return row
