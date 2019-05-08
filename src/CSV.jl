@@ -248,6 +248,7 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit,
     row = 0
     tapeidx = 1
     tapelen = length(tape)
+    tapeincr = ncols * 2
     if pos <= len && len > 0
         while row < limit
             row += 1
@@ -306,17 +307,17 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit,
                         end
                     end
                 end
-                if tapeidx > tapelen
-                    debug && reallocatetape()
-                    oldtape = tape
-                    newtape = Mmap.mmap(Vector{UInt64}, ceil(Int64, length(oldtape) * 1.5))
-                    copyto!(newtape, 1, oldtape, 1, length(oldtape))
-                    tape = newtape
-                    tapelen = length(tape)
-                    finalize(oldtape)
-                end
             end
             pos > len && break
+            if tapeidx + tapeincr > tapelen
+                debug && reallocatetape()
+                oldtape = tape
+                newtape = Mmap.mmap(Vector{UInt64}, ceil(Int64, length(oldtape) * 1.4))
+                copyto!(newtape, 1, oldtape, 1, length(oldtape))
+                tape = newtape
+                tapelen = length(tape)
+                finalize(oldtape)
+            end
         end
     end
     return row, tape
