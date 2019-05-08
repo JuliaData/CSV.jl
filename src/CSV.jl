@@ -229,7 +229,7 @@ function File(source;
     refs = Vector{Dict{String, UInt64}}(undef, ncols)
     lastrefs = zeros(UInt64, ncols)
     t = time()
-    rows = parsetape(Val(transpose), ncols, gettypecodes(typemap), tape, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options)
+    rows, tape = parsetape(Val(transpose), ncols, gettypecodes(typemap), tape, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options)
     debug && println("time for initial parsing to tape: $(time() - t)")
     foreach(1:ncols) do i
         typecodes[i] &= ~USER
@@ -307,7 +307,7 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit,
                     end
                 end
                 if tapeidx > tapelen
-                    debug && println("WARNING: didn't pre-allocate enough while parsing: preallocated=$(row)")
+                    debug && reallocatetape()
                     oldtape = tape
                     newtape = Mmap.mmap(Vector{UInt64}, ceil(Int64, length(oldtape) * 1.5))
                     copyto!(newtape, 1, oldtape, 1, length(oldtape))
@@ -319,9 +319,10 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit,
             pos > len && break
         end
     end
-    return row
+    return row, tape
 end
 
+@noinline reallocatetape() = println("warning: didn't pre-allocate enough tape while parsing, re-allocating...")
 @noinline notenoughcolumns(cols, ncols, row) = println("warning: only found $cols / $ncols columns on data row: $row. Filling remaining columns with `missing`")
 @noinline toomanycolumns(cols, row) = println("warning: parsed expected $cols columns, but didn't reach end of line on data row: $row. Ignoring any extra columns on this row")
 @noinline stricterror(T, buf, pos, len, code, row, col) = throw(Error("error parsing $T on row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))"))
