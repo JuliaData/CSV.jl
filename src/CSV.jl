@@ -248,7 +248,7 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit,
     row = 0
     tapeidx = 1
     tapelen = length(tape)
-    if pos <= len
+    if pos <= len && len > 0
         while row < limit
             row += 1
             pos = consumecommentedline!(buf, pos, len, cmt)
