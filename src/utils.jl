@@ -152,11 +152,19 @@ function getsource(source, use_mmap)
     else
         iosource = source isa IO ? source : open(String(source))
         io = IOBuffer()
-        while !eof(iosource)
-            Base.write(io, iosource)
+        if applicable(readavailable, iosource)
+            while !eof(iosource)
+                Base.write(io, iosource)
+            end
+            A = Mmap.mmap(Vector{UInt8}, io.size)
+            copyto!(A, 1, io.data, 1, io.size)
+        else
+            while !eof(iosource)
+                Base.write(io, read(iosource, UInt8))
+            end
+            A = Mmap.mmap(Vector{UInt8}, io.size)
+            copyto!(A, 1, io.data, 1, io.size)
         end
-        A = Mmap.mmap(Vector{UInt8}, io.size)
-        copyto!(A, 1, io.data, 1, io.size)
         return A
     end
 end
