@@ -97,7 +97,7 @@ function datalayout(header::Integer, buf, pos, len, options, datarow, normalizen
     if header <= 0
         # no header row in dataset; skip to data to figure out # of columns
         pos = skipto!(buf, pos, len, options, 1, datarow)
-        datapos = pos
+        datapos = Int64(pos)
         fields, pos = readsplitline(buf, pos, len, options, cmt)
         columnnames = [Symbol(:Column, i) for i = eachindex(fields)]
     else
@@ -107,7 +107,7 @@ function datalayout(header::Integer, buf, pos, len, options, datarow, normalizen
         if datarow != header+1
             pos = skipto!(buf, pos, len, options, header+1, datarow)
         end
-        datapos = pos
+        datapos = Int64(pos)
     end
     return columnnames, datapos::Int64
 end
