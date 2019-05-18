@@ -118,7 +118,7 @@ uint64(x::Bool) = UInt64(x)
 uint64(x::Union{Date, DateTime}) = uint64(Dates.value(x))
 uint64(x::UInt32) = UInt64(x)
 
-function consumeBOM!(source)
+@noinline function consumeBOM!(source)
     # BOM character detection
     startpos = pos = 1
     len = length(source)

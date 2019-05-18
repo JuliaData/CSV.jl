@@ -22,27 +22,33 @@ Base.showerror(io::IO, e::Error) = println(io, e.msg)
 
 struct File
     name::String
-    buf::Vector{UInt8}
     names::Vector{Symbol}
     types::Vector{Type}
-    e::UInt8 # escape character, for unescaping strings later
-    categorical::Bool
-    refs::Vector{Vector{String}}
     rows::Int64
     cols::Int64
-    tape::Vector{UInt64}
+    e::UInt8
+    categorical::Bool
+    refs::Vector{Vector{String}}
+    buf::Vector{UInt8}
+    tapes::Vector{Vector{UInt64}}
 end
 
 getname(f::File) = getfield(f, :name)
-getbuf(f::File) = getfield(f, :buf)
 getnames(f::File) = getfield(f, :names)
 gettypes(f::File) = getfield(f, :types)
-gete(f::File) = getfield(f, :e)
-getcategorical(f::File) = getfield(f, :categorical)
-getrefs(f::File) = getfield(f, :refs)
 getrows(f::File) = getfield(f, :rows)
 getcols(f::File) = getfield(f, :cols)
-gettape(f::File) = getfield(f, :tape)
+gete(f::File) = getfield(f, :e)
+getcategorical(f::File) = getfield(f, :categorical)
+function getrefs(f::File, col)
+    @inbounds r = getfield(f, :refs)[col]
+    return r
+end
+getbuf(f::File) = getfield(f, :buf)
+function gettape(f::File, col)
+    @inbounds t = getfield(f, :tapes)[col]
+    return t
+end
 
 function Base.show(io::IO, f::File)
     println(io, "CSV.File(\"$(getname(f))\"):")
@@ -149,6 +155,51 @@ function File(source;
     debug::Bool=false,
     parsingdebug::Bool=false,
     allowmissing::Union{Nothing, Symbol}=nothing)
+    file(source, header, normalizenames, datarow, skipto, footerskip,
+        limit, transpose, comment, use_mmap, missingstrings, missingstring,
+        delim, ignorerepeated, quotechar, openquotechar, closequotechar,
+        escapechar, dateformat, decimal, truestrings, falsestrings, type,
+        types, typemap, categorical, pool, strict, silencewarnings, debug,
+        parsingdebug, allowmissing)
+end
+
+function file(source,
+    # file options
+    # header can be a row number, range of rows, or actual string vector
+    header=1,
+    normalizenames=false,
+    # by default, data starts immediately after header or start of file
+    datarow=-1,
+    skipto=nothing,
+    footerskip=0,
+    limit=typemax(Int64),
+    transpose=false,
+    comment=nothing,
+    use_mmap=!Sys.iswindows(),
+    # parsing options
+    missingstrings=String[],
+    missingstring="",
+    delim=nothing,
+    ignorerepeated=false,
+    quotechar='"',
+    openquotechar=nothing,
+    closequotechar=nothing,
+    escapechar='"',
+    dateformat=nothing,
+    decimal=UInt8('.'),
+    truestrings=nothing,
+    falsestrings=nothing,
+    # type options
+    type=nothing,
+    types=nothing,
+    typemap=EMPTY_TYPEMAP,
+    categorical=false,
+    pool=0.1,
+    strict=false,
+    silencewarnings=false,
+    debug=false,
+    parsingdebug=false,
+    allowmissing=nothing)
 
     # initial argument validation and adjustment
     !isa(source, IO) && !isa(source, Vector{UInt8}) && !isfile(source) && throw(ArgumentError("\"$source\" is not a valid file"))
@@ -224,31 +275,33 @@ function File(source;
     # the 2nd UInt64 is used for storing the raw bits of a parsed, typed value: Int64, Float64, Date, DateTime, Bool, or categorical/pooled UInt32 ref
     ncols = length(names)
     # might as well round up to the next largest pagesize, since mmap aligns to it anyway
-    tape = Mmap.mmap(Vector{UInt64}, roundup(trunc(Int64, rowsguess * ncols * 2.1), Mmap.PAGESIZE))
+    tapelen = roundup(trunc(Int64, rowsguess), Mmap.PAGESIZE)
+    tapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, tapelen) for i = 1:ncols]
     pool = pool === true ? 1.0 : pool isa Float64 ? pool : 0.0
     refs = Vector{Dict{String, UInt64}}(undef, ncols)
     lastrefs = zeros(UInt64, ncols)
     t = time()
-    rows, tape = parsetape(Val(transpose), ncols, gettypecodes(typemap), tape, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options)
+    rows, tapes = parsetape(Val(transpose), ncols, gettypecodes(typemap), tapes, tapelen, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options)
     debug && println("time for initial parsing to tape: $(time() - t)")
-    foreach(1:ncols) do i
+    for i = 1:ncols
         typecodes[i] &= ~USER
     end
-    types = [TYPECODES[T] for T in typecodes]
+    finaltypes = Type[TYPECODES[T] for T in typecodes]
     debug && println("types after parsing: $types")
+    finalrefs = Vector{Vector{String}}(undef, ncols)
     if pool > 0.0
-        refs = [isassigned(refs, i) ? map(x->x[1], sort!(collect(refs[i]), by=x->x[2])) : EMPTY_REFVALUES for i = 1:ncols]
-    else
-        refs = EMPTY_REFS
+        for i = 1:ncols
+            if isassigned(refs, i)
+                finalrefs[i] = map(x->x[1], sort!(collect(refs[i]), by=x->x[2]))
+            end
+        end
     end
-    return File(getname(source), buf, names, types, eq, categorical, refs, rows - footerskip, ncols, tape)
+    return File(getname(source), names, finaltypes, rows - footerskip, ncols, eq, categorical, finalrefs, buf, tapes)
 end
 
-function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options::Parsers.Options{ignorerepeated}) where {transpose, ignorerepeated}
+function parsetape(::Val{transpose}, ncols, typemap, tapes, tapelen, buf, pos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options::Parsers.Options{ignorerepeated}) where {transpose, ignorerepeated}
     row = 0
     tapeidx = 1
-    tapelen = length(tape)
-    tapeincr = ncols * 2
     if pos <= len && len > 0
         while row < limit
             row += 1
@@ -261,6 +314,7 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit,
                     @inbounds pos = positions[col]
                 end
                 @inbounds T = typecodes[col]
+                @inbounds tape = tapes[col]
                 type = typebits(T)
                 if type === EMPTY
                     pos, code = detect(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes)
@@ -281,7 +335,6 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit,
                 else # STRING
                     pos, code = parsestring!(T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
                 end
-                tapeidx += 2
                 if transpose
                     @inbounds positions[col] = pos
                 else
@@ -290,12 +343,12 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit,
                             options.silencewarnings || notenoughcolumns(col, ncols, row)
                             for j = (col + 1):ncols
                                 # put in dummy missing values on the tape for missing columns
+                                @inbounds tape = tapes[j]
                                 tape[tapeidx] = MISSING_BIT
                                 T = typecodes[j]
                                 if T > MISSINGTYPE
                                     typecodes[j] |= MISSING
                                 end
-                                tapeidx += 2
                             end
                             break # from for col = 1:ncols
                         end
@@ -308,19 +361,25 @@ function parsetape(::Val{transpose}, ncols, typemap, tape, buf, pos, len, limit,
                     end
                 end
             end
+            tapeidx += 2
             pos > len && break
-            if tapeidx + tapeincr > tapelen
+            if tapeidx > tapelen
                 debug && reallocatetape()
-                oldtape = tape
-                newtape = Mmap.mmap(Vector{UInt64}, ceil(Int64, length(oldtape) * 1.4))
-                copyto!(newtape, 1, oldtape, 1, length(oldtape))
-                tape = newtape
-                tapelen = length(tape)
-                finalize(oldtape)
+                oldtapes = tapes
+                newtapelen = ceil(Int64, tapelen * 1.4)
+                newtapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, newtapelen) for i = 1:ncols]
+                for i = 1:ncols
+                    copyto!(newtapes[i], 1, oldtapes[i], 1, tapelen)
+                end
+                tapes = newtapes
+                tapelen = newtapelen
+                for i = 1:ncols
+                    finalize(oldtapes[i])
+                end
             end
         end
     end
-    return row, tape
+    return row, tapes
 end
 
 @noinline reallocatetape() = println("warning: didn't pre-allocate enough tape while parsing, re-allocating...")
@@ -334,17 +393,13 @@ const INTVALUE = Val(true)
 const NONINTVALUE = Val(false)
 
 @inline function setposlen!(tape, tapeidx, code, pos, len, ::Val{IntValue}=NONINTVALUE) where {IntValue}
-    pos <<= 16
-    if Parsers.sentinel(code)
-        pos |= MISSING_BIT
-    end
-    if Parsers.escapedstring(code)
-        pos |= ESCAPE_BIT
-    end
+    pos = Core.bitcast(UInt64, pos) << 16
+    pos |= ifelse(Parsers.sentinel(code), MISSING_BIT, UInt64(0))
+    pos |= ifelse(Parsers.escapedstring(code), ESCAPE_BIT, UInt64(0))
     if IntValue
         pos |= INT_BIT
     end
-    @inbounds tape[tapeidx] = Core.bitcast(UInt64, pos) | Core.bitcast(UInt64, len)
+    @inbounds tape[tapeidx] = pos | Core.bitcast(UInt64, len)
     return
 end
 

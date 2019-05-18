@@ -39,25 +39,37 @@ end
 
 # internal method for getting a cell value
 @inline function getcell(f::File, ::Type{T}, col::Int, row::Int) where {T}
-    indexoffset = ((getcols(f) * (row - 1) * 2) + (col - 1) * 2) + 1
-    offlen = gettape(f)[indexoffset]
+    ind = metaind(row)
+    @inbounds offlen = gettape(f, col)[ind]
     missingvalue(offlen) && return missing
-    return getvalue(Base.nonmissingtype(T), f, indexoffset, offlen, col)
+    return getvalue(Base.nonmissingtype(T), f, ind, offlen, col)
 end
 
-getvalue(::Type{Int64}, f, indexoffset, offlen, col) = int64(gettape(f)[indexoffset + 1])
-function getvalue(::Type{Float64}, f, indexoffset, offlen, col)
-    @inbounds x = gettape(f)[indexoffset + 1]
-    return intvalue(offlen) ? Float64(int64(x)) : float64(x)
+function getvalue(::Type{Int64}, f, indexoffset, offlen, col)
+    @inbounds x = int64(gettape(f, col)[indexoffset + 1])
+    return x
 end
-getvalue(::Type{Date}, f, indexoffset, offlen, col) = date(gettape(f)[indexoffset + 1])
-getvalue(::Type{DateTime}, f, indexoffset, offlen, col) = datetime(gettape(f)[indexoffset + 1])
-getvalue(::Type{Bool}, f, indexoffset, offlen, col) = bool(gettape(f)[indexoffset + 1])
+function getvalue(::Type{Float64}, f, indexoffset, offlen, col)
+    @inbounds x = gettape(f, col)[indexoffset + 1]
+    return ifelse(intvalue(offlen), Float64(int64(x)), float64(x))
+end
+function getvalue(::Type{Date}, f, indexoffset, offlen, col)
+    @inbounds x = date(gettape(f, col)[indexoffset + 1])
+    return x
+end
+function getvalue(::Type{DateTime}, f, indexoffset, offlen, col)
+    @inbounds x = datetime(gettape(f, col)[indexoffset + 1])
+    return x
+end
+function getvalue(::Type{Bool}, f, indexoffset, offlen, col)
+    @inbounds x = bool(gettape(f, col)[indexoffset + 1])
+    return x
+end
 getvalue(::Type{Missing}, f, indexoffset, offlen, col) = missing
 
 function getvalue(::Type{PooledString}, f, indexoffset, offlen, col)
-    @inbounds x = gettape(f)[indexoffset + 1]
-    str = getrefs(f)[col][x]
+    @inbounds x = gettape(f, col)[indexoffset + 1]
+    @inbounds str = getrefs(f, col)[x]
     return str
 end
 
