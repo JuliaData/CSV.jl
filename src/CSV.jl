@@ -287,7 +287,7 @@ function file(source,
         typecodes[i] &= ~USER
     end
     finaltypes = Type[TYPECODES[T] for T in typecodes]
-    debug && println("types after parsing: $types")
+    debug && println("types after parsing: $finaltypes")
     finalrefs = Vector{Vector{String}}(undef, ncols)
     if pool > 0.0
         for i = 1:ncols
@@ -363,7 +363,7 @@ function parsetape(::Val{transpose}, ncols, typemap, tapes, tapelen, buf, pos, l
             end
             tapeidx += 2
             pos > len && break
-            if tapeidx > tapelen
+            if tapeidx + 1 > tapelen
                 debug && reallocatetape()
                 oldtapes = tapes
                 newtapelen = ceil(Int64, tapelen * 1.4)
