@@ -18,7 +18,7 @@ function Column(f::File, i::Int)
     return Column{_eltype(T), T}(f, i)
 end
 
-Base.size(c::Column) = (getrows(c.file),)
+Base.size(c::Column) = (Int(getrows(c.file)),)
 Base.IndexStyle(::Type{<:Column}) = Base.IndexLinear()
 metaind(x) = 2 * x - 1
 valind(x) = 2 * x
