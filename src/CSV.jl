@@ -274,13 +274,8 @@ function file(source,
         # 16 bits for field length (allows for maximum field size of 65K)
     # the 2nd UInt64 is used for storing the raw bits of a parsed, typed value: Int64, Float64, Date, DateTime, Bool, or categorical/pooled UInt32 ref
     ncols = length(names)
-    # might as well round up to the next largest pagesize, since mmap aligns to it anyway
-    tapelen = roundup(trunc(Int64, rowsguess), Mmap.PAGESIZE)
-    if use_mmap
-        tapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, tapelen) for i = 1:ncols]
-    else
-        tapes = Vector{UInt64}[Vector{UInt64}(undef, tapelen) for i = 1:ncols]
-    end
+    tapelen = rowsguess
+    tapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, tapelen) for i = 1:ncols]
     pool = pool === true ? 1.0 : pool isa Float64 ? pool : 0.0
     refs = Vector{Dict{String, UInt64}}(undef, ncols)
     lastrefs = zeros(UInt64, ncols)
