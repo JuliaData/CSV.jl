@@ -274,7 +274,7 @@ function file(source,
         # 16 bits for field length (allows for maximum field size of 65K)
     # the 2nd UInt64 is used for storing the raw bits of a parsed, typed value: Int64, Float64, Date, DateTime, Bool, or categorical/pooled UInt32 ref
     ncols = length(names)
-    tapelen = rowsguess
+    tapelen = rowsguess * 2
     tapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, tapelen) for i = 1:ncols]
     pool = pool === true ? 1.0 : pool isa Float64 ? pool : 0.0
     refs = Vector{Dict{String, UInt64}}(undef, ncols)
