@@ -118,7 +118,7 @@ uint64(x::Bool) = UInt64(x)
 uint64(x::Union{Date, DateTime}) = uint64(Dates.value(x))
 uint64(x::UInt32) = UInt64(x)
 
-function consumeBOM!(source)
+@noinline function consumeBOM!(source)
     # BOM character detection
     startpos = pos = 1
     len = length(source)
@@ -172,7 +172,7 @@ const RESERVED = Set(["local", "global", "export", "let",
     "module", "elseif", "end", "quote", "do"])
 
 normalizename(name::Symbol) = name
-function normalizename(name::String)
+function normalizename(name::String)::Symbol
     uname = strip(Unicode.normalize(name))
     id = Base.isidentifier(uname) ? uname : map(c->Base.is_id_char(c) ? c : '_', uname)
     cleansed = string((isempty(id) || !Base.is_id_start_char(id[1]) || id in RESERVED) ? "_" : "", id)
@@ -181,7 +181,7 @@ end
 
 function makeunique(names)
     set = Set(names)
-    length(set) == length(names) && return names
+    length(set) == length(names) && return Symbol[Symbol(x) for x in names]
     nms = Symbol[]
     for nm in names
         if nm in nms
