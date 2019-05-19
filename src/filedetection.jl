@@ -41,7 +41,7 @@ function datalayout_transpose(header, buf, pos, len, options, datarow, normalize
         columnnames = [columnname(buf, vpos, vlen, code, options, 1)]
         pos += tlen
         row, pos = skiptofield!(buf, pos, len, options, header+1, datarow)
-        columnpositions = [pos]
+        columnpositions = Int64[pos]
         datapos = pos
         rows, pos = countfields(buf, pos, len, options)
         
@@ -60,20 +60,22 @@ function datalayout_transpose(header, buf, pos, len, options, datarow, normalize
         end
     elseif isa(header, AbstractRange)
         # column names span several columns
+        columnpositions = Int64[]
+        columnnames = String[]
         throw(ArgumentError("not implemented for transposed csv files"))
     elseif pos > len
         # emtpy file, use column names if provided
         datapos = pos
-        columnpositions = Int[]
-        columnnames = header isa Vector && !isempty(header) ? header : []
+        columnpositions = Int64[]
+        columnnames = header isa Vector && !isempty(header) ? String[string(x) for x in header] : []
         rows = 0
     else
         # column names provided explicitly or should be generated, they don't exist in data
         # skip to datarow
         row, pos = skiptofield!(buf, pos, len, options, 1, datarow)
         # io now at start of 1st data cell
-        columnnames = [isa(header, Integer) || isempty(header) ? "Column1" : header[1]]
-        columnpositions = [pos]
+        columnnames = [isa(header, Integer) || isempty(header) ? "Column1" : string(header[1])]
+        columnpositions = Int64[pos]
         datapos = pos
         rows, pos = countfields(buf, pos, len, options)
         # we're now done w/ column 1, if EOF we're done, otherwise, parse column 2's column name
@@ -82,12 +84,12 @@ function datalayout_transpose(header, buf, pos, len, options, datarow, normalize
             # skip to datarow column
             row, pos = skiptofield!(buf, pos, len, options, 1, datarow)
             cols += 1
-            push!(columnnames, isa(header, Integer) || isempty(header) ? "Column$cols" : header[cols])
+            push!(columnnames, isa(header, Integer) || isempty(header) ? "Column$cols" : string(header[cols]))
             push!(columnpositions, pos)
             pos = readline!(buf, pos, len, options)
         end
     end
-    return rows, makeunique(map(x->normalizenames ? normalizename(x) : Symbol(x), columnnames)), columnpositions
+    return rows, makeunique(map(x->normalizenames ? normalizename(x) : Symbol(x), columnnames))::Vector{Symbol}, columnpositions
 end
 
 function datalayout(header::Integer, buf, pos, len, options, datarow, normalizenames, cmt)
@@ -95,7 +97,7 @@ function datalayout(header::Integer, buf, pos, len, options, datarow, normalizen
     if header <= 0
         # no header row in dataset; skip to data to figure out # of columns
         pos = skipto!(buf, pos, len, options, 1, datarow)
-        datapos = pos
+        datapos = Int64(pos)
         fields, pos = readsplitline(buf, pos, len, options, cmt)
         columnnames = [Symbol(:Column, i) for i = eachindex(fields)]
     else
@@ -105,9 +107,9 @@ function datalayout(header::Integer, buf, pos, len, options, datarow, normalizen
         if datarow != header+1
             pos = skipto!(buf, pos, len, options, header+1, datarow)
         end
-        datapos = pos
+        datapos = Int64(pos)
     end
-    return columnnames, datapos
+    return columnnames, datapos::Int64
 end
 
 function datalayout(header::AbstractVector{<:Integer}, buf, pos, len, options, datarow, normalizenames, cmt)

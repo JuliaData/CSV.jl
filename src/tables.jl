@@ -5,9 +5,8 @@ Tables.columns(f::File) = f
 Base.propertynames(f::File) = getnames(f)
 
 struct Column{T, P} <: AbstractVector{T}
-    f::File
+    file::File
     col::Int
-    r::StepRange{Int, Int}
 end
 
 _eltype(::Type{T}) where {T} = T
@@ -15,13 +14,14 @@ _eltype(::Type{PooledString}) = String
 _eltype(::Type{Union{PooledString, Missing}}) = Union{String, Missing}
 
 function Column(f::File, i::Int)
-    T = gettypes(f)[i]
-    r = range(2 + ((i - 1) * 2), step=getcols(f) * 2, length=getrows(f))
-    return Column{_eltype(T), T}(f, i, r)
+    @inbounds T = gettypes(f)[i]
+    return Column{_eltype(T), T}(f, i)
 end
 
-Base.size(c::Column) = (length(c.r),)
+Base.size(c::Column) = (Int(getrows(c.file)),)
 Base.IndexStyle(::Type{<:Column}) = Base.IndexLinear()
+metaind(x) = 2 * x - 1
+valind(x) = 2 * x
 
 function Base.copy(c::Column{T}) where {T}
     len = length(c)
@@ -43,30 +43,31 @@ end
 
 function Base.copy(c::Column{T, S}) where {T <: Union{String, Union{String, Missing}}, S <: Union{PooledString, Union{PooledString, Missing}}}
     len = length(c)
-    catg = getcategorical(c.f)
+    catg = getcategorical(c.file)
+    tape = gettape(c.file, c.col)
     if S === PooledString
         refs = Dict{String, UInt32}()
-        foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(getrefs(c.f)[c.col]))
+        foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(getrefs(c.file, c.col)))
         values = Vector{UInt32}(undef, len)
         @simd for i = 1:len
-            @inbounds values[i] = ref(gettape(c.f)[c.r[i]])
+            @inbounds values[i] = ref(tape[valind(i)])
         end
     else
         if catg
             refs = Dict{String, UInt32}()
-            foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(getrefs(c.f)[c.col]))
+            foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(getrefs(c.file, c.col)))
             missingref = UInt32(0)
             values = Vector{UInt32}(undef, len)
         else
             refs = Dict{Union{String, Missing}, UInt32}()
-            foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(getrefs(c.f)[c.col]))
+            foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(getrefs(c.file, c.col)))
             missingref = UInt32(length(refs) + 1)
             refs[missing] = missingref
             values = Vector{UInt32}(undef, len)
         end
         @simd for i = 1:len
-            @inbounds offlen = gettape(c.f)[c.r[i] - 1]
-            @inbounds values[i] = ifelse(missingvalue(offlen), missingref, ref(gettape(c.f)[c.r[i]]))
+            @inbounds offlen = tape[metaind(i)]
+            @inbounds values[i] = ifelse(missingvalue(offlen), missingref, ref(tape[valind(i)]))
         end
     end
     if catg
@@ -92,65 +93,65 @@ end
 
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{T}, row::Int) where {T}
     @boundscheck checkbounds(c, row)
-    @inbounds x = reinterp_func(T)(gettape(c.f)[c.r[row]])
+    @inbounds x = reinterp_func(T)(gettape(c.file, c.col)[valind(row)])
     return x
 end
 
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{Union{T, Missing}}, row::Int) where {T}
     @boundscheck checkbounds(c, row)
-    @inbounds offlen = gettape(c.f)[c.r[row] - 1]
-    @inbounds x = ifelse(missingvalue(offlen), missing, reinterp_func(T)(gettape(c.f)[c.r[row]]))
+    @inbounds offlen = gettape(c.file, c.col)[metaind(row)]
+    @inbounds x = ifelse(missingvalue(offlen), missing, reinterp_func(T)(gettape(c.file, c.col)[valind(row)]))
     return x
 end
 
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{Float64}, row::Int)
     @boundscheck checkbounds(c, row)
-    @inbounds offlen = gettape(c.f)[c.r[row] - 1]
-    @inbounds v = gettape(c.f)[c.r[row]]
+    @inbounds offlen = gettape(c.file, c.col)[metaind(row)]
+    @inbounds v = gettape(c.file, c.col)[valind(row)]
     @inbounds x = ifelse(intvalue(offlen), Float64(int64(v)), float64(v))
     return x
 end
 
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{Union{Float64, Missing}}, row::Int)
     @boundscheck checkbounds(c, row)
-    @inbounds offlen = gettape(c.f)[c.r[row] - 1]
-    @inbounds v = gettape(c.f)[c.r[row]]
+    @inbounds offlen = gettape(c.file, c.col)[metaind(row)]
+    @inbounds v = gettape(c.file, c.col)[valind(row)]
     @inbounds x = ifelse(missingvalue(offlen), missing, ifelse(intvalue(offlen), Float64(int64(v)), float64(v)))
     return x
 end
 
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{String, PooledString}, row::Int)
     @boundscheck checkbounds(c, row)
-    @inbounds x = getrefs(c.f)[c.col][gettape(c.f)[c.r[row]]]
+    @inbounds x = getrefs(c.file, c.col)[gettape(c.file, c.col)[valind(row)]]
     return x
 end
 
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{Union{String, Missing}, Union{PooledString, Missing}}, row::Int)
     @boundscheck checkbounds(c, row)
-    @inbounds offlen = gettape(c.f)[c.r[row] - 1]
+    @inbounds offlen = gettape(c.file, c.col)[metaind(row)]
     if missingvalue(offlen)
         return missing
     else
-        @inbounds x = getrefs(c.f)[c.col][gettape(c.f)[c.r[row]]]
+        @inbounds x = getrefs(c.file, c.col)[gettape(c.file, c.col)[valind(row)]]
         return x
     end
 end
 
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{String}, row::Int)
     @boundscheck checkbounds(c, row)
-    @inbounds offlen = gettape(c.f)[c.r[row] - 1]
-    s = PointerString(pointer(getbuf(c.f), getpos(offlen)), getlen(offlen))
-    return escapedvalue(offlen) ? unescape(s, gete(c.f)) : String(s)
+    @inbounds offlen = gettape(c.file, c.col)[metaind(row)]
+    s = PointerString(pointer(getbuf(c.file), getpos(offlen)), getlen(offlen))
+    return escapedvalue(offlen) ? unescape(s, gete(c.file)) : String(s)
 end
 
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{Union{String, Missing}}, row::Int)
     @boundscheck checkbounds(c, row)
-    @inbounds offlen = gettape(c.f)[c.r[row] - 1]
+    @inbounds offlen = gettape(c.file, c.col)[metaind(row)]
     if missingvalue(offlen)
         return missing
     else
-        s = PointerString(pointer(getbuf(c.f), getpos(offlen)), getlen(offlen))
-        return escapedvalue(offlen) ? unescape(s, gete(c.f)) : String(s)
+        s = PointerString(pointer(getbuf(c.file), getpos(offlen)), getlen(offlen))
+        return escapedvalue(offlen) ? unescape(s, gete(c.file)) : String(s)
     end
 end
 
