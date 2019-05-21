@@ -286,12 +286,16 @@ function file(source,
         typecodes[i] &= ~USER
     end
     finaltypes = Type[TYPECODES[T] for T in typecodes]
-    debug && println("types after parsing: $finaltypes")
+    debug && println("types after parsing: $finaltypes, pool = $pool")
     finalrefs = Vector{Vector{String}}(undef, ncols)
     if pool > 0.0
         for i = 1:ncols
             if isassigned(refs, i)
                 finalrefs[i] = map(x->x[1], sort!(collect(refs[i]), by=x->x[2]))
+            elseif typecodes[i] == POOL || typecodes[i] == (POOL | MISSING)
+                # case where user manually specified types, but no rows were parsed
+                # so the refs never got initialized; initialize them here to empty
+                finalrefs[i] = Vector{String}[]
             end
         end
     end
