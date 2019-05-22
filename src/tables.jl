@@ -23,6 +23,8 @@ Base.IndexStyle(::Type{<:Column}) = Base.IndexLinear()
 metaind(x) = 2 * x - 1
 valind(x) = 2 * x
 
+Base.setindex!(c::Column, x, i::Int) = throw(ArgumentError("CSV.Column is read-only; to get a mutable vector, do `copy(col)` or to make all columns mutable do `CSV.read(file; copycols=true)` or `CSV.File(file) |> DataFrame`"))
+
 function Base.copy(c::Column{T}) where {T}
     len = length(c)
     A = Vector{T}(undef, len)
