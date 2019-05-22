@@ -314,4 +314,8 @@ df = CSV.read(IOBuffer("x\n"), types=[CSV.PooledString], copycols=true)
 df = CSV.read(IOBuffer("x\n"), types=[Union{CSV.PooledString, Missing}], copycols=true)
 @test size(df) == (0, 1)
 
+f = CSV.File(IOBuffer("x\n1\n2\n3\n#4"), comment="#")
+@test length(f.x) == 3
+@test f.x[end] == 3
+
 end

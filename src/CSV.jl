@@ -307,11 +307,12 @@ function parsetape(::Val{transpose}, ncols, typemap, tapes, tapelen, buf, pos, l
     tapeidx = 1
     if pos <= len && len > 0
         while row < limit
-            row += 1
             pos = consumecommentedline!(buf, pos, len, cmt)
             if ignorerepeated
                 pos = Parsers.checkdelim!(buf, pos, len, options)
             end
+            pos > len && break
+            row += 1
             for col = 1:ncols
                 if transpose
                     @inbounds pos = positions[col]
