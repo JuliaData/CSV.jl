@@ -613,6 +613,7 @@ end
 
 include("tables.jl")
 include("iteration.jl")
+include("views.jl")
 include("write.jl")
 
 """

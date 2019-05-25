@@ -1,10 +1,13 @@
 function testfile(file, kwargs, expected_sz, expected_sch, testfunc)
     println("testing $file")
+    v = CSV.View(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
+    file isa IO && seekstart(file)
     t = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
     actual_sch = Tables.schema(t)
     @test Tuple(expected_sch.types) == actual_sch.types
     @test Tuple(expected_sch.names) == actual_sch.names
     @test (length(t) == 0 ? 0 : length(t[1]), length(t)) == expected_sz
+    @test (length(v) == 0 ? 0 : length(v[1]), length(v)) == expected_sz
     if testfunc === nothing
     elseif testfunc isa Function
         testfunc(t)
