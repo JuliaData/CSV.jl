@@ -85,5 +85,15 @@ function Rows(source;
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
-    return File(getname(source), names, finaltypes, rows - footerskip, ncols, eq, categorical, finalrefs, buf, tapes)
+    return Rows(getname(source), names, length(names), eq, buf, transpose, limit, positions, options)
+end
+
+Tables.rowaccess(::Type{<:Rows}) = true
+Tables.rows(f::Rows) = f
+
+Base.eltype(r::Rows) = NamedTuple{Tuple(r.names), NTuple{r.cols, Union{String, Missing}}}
+Base.IteratorSize(::Type{Rows}) = Base.SizeUnknown()
+
+function Base.iterate(r::Rows, st=1)
+
 end
