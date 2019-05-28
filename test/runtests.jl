@@ -115,4 +115,14 @@ end
 
 end
 
+@testset "CSV.Rows" begin
+
+    rows = CSV.Rows(IOBuffer("X\nb\nc\na\nc"))
+    show(rows)
+    row = first(rows)
+    @test row.X == "b"
+    @test row[1] == "b"
+
+end
+
 end

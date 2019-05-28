@@ -1,6 +1,9 @@
 function testfile(file, kwargs, expected_sz, expected_sch, testfunc)
     println("testing $file")
-    rows = collect(CSV.Rows(file isa IO ? file : joinpath(dir, file); kwargs...))
+    rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
+    actual_sch = Tables.schema(rows)
+    @test Tuple(expected_sch.names) == actual_sch.names
+    @test (length(rows) == 0 ? 0 : length(rows[1]), length(rows)) == expected_sz
     if file isa IO
         seekstart(file)
     end
