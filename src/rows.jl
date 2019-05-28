@@ -1,21 +1,20 @@
-struct Rows
+struct Rows{transpose}
     name::String
     names::Vector{Symbol}
     cols::Int64
     e::UInt8
     buf::Vector{UInt8}
+    datapos::Int64
+    limit::Int64
+    options::Parsers.Options
+    positions::Vector{Int64}
+    cmt::Union{Tuple{Ptr{UInt8}, Int}, Nothing}
 end
 
-getname(f::Rows) = getfield(f, :name)
-getnames(f::Rows) = getfield(f, :names)
-getcols(f::Rows) = getfield(f, :cols)
-gete(f::Rows) = getfield(f, :e)
-getbuf(f::Rows) = getfield(f, :buf)
-
-function Base.show(io::IO, f::Rows)
-    println(io, "CSV.Rows(\"$(getname(f))\"):")
-    println(io, "Size: $(getcols(f))")
-    show(io, Tables.schema(f))
+function Base.show(io::IO, r::Rows)
+    println(io, "CSV.Rows(\"$(r.name)\"):")
+    println(io, "Size: $(r.cols)")
+    show(io, Tables.schema(r))
 end
 
 function Rows(source;
@@ -44,7 +43,8 @@ function Rows(source;
     strict::Bool=false,
     silencewarnings::Bool=false,
     debug::Bool=false,
-    parsingdebug::Bool=false)
+    parsingdebug::Bool=false,
+    kw...)
 
     # initial argument validation and adjustment
     !isa(source, IO) && !isa(source, Vector{UInt8}) && !isfile(source) && throw(ArgumentError("\"$source\" is not a valid file"))
@@ -85,15 +85,78 @@ function Rows(source;
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
-    return Rows(getname(source), names, length(names), eq, buf, transpose, limit, positions, options)
+    return Rows{transpose}(getname(source), names, length(names), eq, buf, datapos, limit, options, positions, cmt)
 end
 
 Tables.rowaccess(::Type{<:Rows}) = true
-Tables.rows(f::Rows) = f
+Tables.rows(r::Rows) = r
+Tables.schema(r::Rows) = Tables.Schema(r.names, fill(Union{String, Missing}, r.cols))
+Base.eltype(r::Rows) = Row2
+Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
 
-Base.eltype(r::Rows) = NamedTuple{Tuple(r.names), NTuple{r.cols, Union{String, Missing}}}
-Base.IteratorSize(::Type{Rows}) = Base.SizeUnknown()
-
-function Base.iterate(r::Rows, st=1)
-
+getignorerepeated(p::Parsers.Options{ignorerepeated}) where {ignorerepeated} = ignorerepeated
+function Base.iterate(r::Rows{transpose}, (pos, len, row, options)=(r.datapos, length(r.buf), 1, r.options)) where {transpose}
+    (pos > len || row > r.limit) && return nothing
+    ignorerepeated = getignorerepeated(options)
+    buf, positions, ncols = r.buf, r.positions, r.cols
+    pos = consumecommentedline!(buf, pos, len, r.cmt)
+    ignorerepeated && (pos = Parsers.checkdelim!(buf, pos, len, options))
+    pos > len && return nothing
+    tape = Vector{UInt64}(undef, ncols)
+    for col = 1:ncols
+        if transpose
+            @inbounds pos = positions[col]
+        end
+        x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
+        setposlen!(tape, col, code, vpos, vlen)
+        if Parsers.invalidquotedfield(code)
+            fatalerror(buf, pos, tlen, code, row, col)
+        end
+        pos += tlen
+        if transpose
+            @inbounds positions[col] = pos
+        else
+            if col < ncols
+                if Parsers.newline(code)
+                    options.silencewarnings || notenoughcolumns(col, ncols, row)
+                    for j = (col + 1):ncols
+                        tape[col] = MISSING_BIT
+                    end
+                    break
+                end
+            else
+                if pos <= len && !Parsers.newline(code)
+                    options.silencewarnings || toomanycolumns(ncols, row)
+                    pos = readline!(buf, pos, len, options)
+                end
+            end
+        end
+        pos > len && break
+    end
+    return Row2(r.names, tape, r.buf, r.e), (pos, len, row + 1, options)
 end
+
+struct Row2 <: AbstractVector{Union{String, Missing}}
+    names::Vector{Symbol}
+    tape::Vector{UInt64}
+    buf::Vector{UInt8}
+    e::UInt8
+end
+
+getnames(r::Row2) = getfield(r, :names)
+gettape(r::Row2) = getfield(r, :tape)
+getbuf(r::Row2) = getfield(r, :buf)
+gete(r::Row2) = getfield(r, :e)
+
+Base.IndexStyle(::Type{Row2}) = Base.IndexLinear()
+Base.size(r::Row2) = (length(getnames(r)),)
+
+@inline Base.@propagate_inbounds function Base.getindex(r::Row2, i::Int)
+    @boundscheck checkbounds(r, i)
+    @inbounds offlen = gettape(r)[i]
+    missingvalue(offlen) && return missing
+    s = PointerString(pointer(getbuf(r), getpos(offlen)), getlen(offlen))
+    return escapedvalue(offlen) ? unescape(s, gete(r)) : String(s)
+end
+Base.getproperty(r::Row2, nm::Symbol) = getindex(r, findfirst(==(nm), getnames(r)))
+

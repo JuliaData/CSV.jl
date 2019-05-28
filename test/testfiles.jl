@@ -1,5 +1,9 @@
 function testfile(file, kwargs, expected_sz, expected_sch, testfunc)
     println("testing $file")
+    rows = collect(CSV.Rows(file isa IO ? file : joinpath(dir, file); kwargs...))
+    if file isa IO
+        seekstart(file)
+    end
     t = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
     actual_sch = Tables.schema(t)
     @test Tuple(expected_sch.types) == actual_sch.types
