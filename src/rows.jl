@@ -1,4 +1,4 @@
-struct Rows{transpose, reusebuffer}
+struct Rows{transpose, reusebuffer, O}
     name::String
     names::Vector{Symbol}
     cols::Int64
@@ -6,7 +6,7 @@ struct Rows{transpose, reusebuffer}
     buf::Vector{UInt8}
     datapos::Int64
     limit::Int64
-    options::Parsers.Options
+    options::O # Parsers.Options
     positions::Vector{Int64}
     cmt::Union{Tuple{Ptr{UInt8}, Int}, Nothing}
     tape::Vector{UInt64}
@@ -87,7 +87,7 @@ function Rows(source;
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
-    return Rows{transpose, reusebuffer}(getname(source), names, length(names), eq, buf, datapos, limit, options, positions, cmt, Vector{UInt64}(undef, length(names)))
+    return Rows{transpose, reusebuffer, typeof(options)}(getname(source), names, length(names), eq, buf, datapos, limit, options, positions, cmt, Vector{UInt64}(undef, length(names)))
 end
 
 Tables.rowaccess(::Type{<:Rows}) = true
@@ -97,10 +97,11 @@ Base.eltype(r::Rows) = Row2
 Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
 
 getignorerepeated(p::Parsers.Options{ignorerepeated}) where {ignorerepeated} = ignorerepeated
-function Base.iterate(r::Rows{transpose, reusebuffer}, (pos, len, row, options)=(r.datapos, length(r.buf), 1, r.options)) where {transpose, reusebuffer}
+
+@inline function Base.iterate(r::Rows{transpose, reusebuffer}, (pos, len, row)=(r.datapos, length(r.buf), 1)) where {transpose, reusebuffer}
     (pos > len || row > r.limit) && return nothing
+    buf, positions, ncols, options = r.buf, r.positions, r.cols, r.options
     ignorerepeated = getignorerepeated(options)
-    buf, positions, ncols = r.buf, r.positions, r.cols
     pos = consumecommentedline!(buf, pos, len, r.cmt)
     ignorerepeated && (pos = Parsers.checkdelim!(buf, pos, len, options))
     pos > len && return nothing
@@ -135,7 +136,7 @@ function Base.iterate(r::Rows{transpose, reusebuffer}, (pos, len, row, options)=
         end
         pos > len && break
     end
-    return Row2(r.names, tape, r.buf, r.e), (pos, len, row + 1, options)
+    return Row2(r.names, tape, r.buf, r.e), (pos, len, row + 1)
 end
 
 struct Row2 <: AbstractVector{Union{String, Missing}}
