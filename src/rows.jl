@@ -1,4 +1,4 @@
-struct Rows{transpose}
+struct Rows{transpose, reusebuffer}
     name::String
     names::Vector{Symbol}
     cols::Int64
@@ -9,6 +9,7 @@ struct Rows{transpose}
     options::Parsers.Options
     positions::Vector{Int64}
     cmt::Union{Tuple{Ptr{UInt8}, Int}, Nothing}
+    tape::Vector{UInt64}
 end
 
 function Base.show(io::IO, r::Rows)
@@ -44,6 +45,7 @@ function Rows(source;
     silencewarnings::Bool=false,
     debug::Bool=false,
     parsingdebug::Bool=false,
+    reusebuffer::Bool=false,
     kw...)
 
     # initial argument validation and adjustment
@@ -85,7 +87,7 @@ function Rows(source;
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
-    return Rows{transpose}(getname(source), names, length(names), eq, buf, datapos, limit, options, positions, cmt)
+    return Rows{transpose, reusebuffer}(getname(source), names, length(names), eq, buf, datapos, limit, options, positions, cmt, Vector{UInt64}(undef, length(names)))
 end
 
 Tables.rowaccess(::Type{<:Rows}) = true
@@ -95,14 +97,14 @@ Base.eltype(r::Rows) = Row2
 Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
 
 getignorerepeated(p::Parsers.Options{ignorerepeated}) where {ignorerepeated} = ignorerepeated
-function Base.iterate(r::Rows{transpose}, (pos, len, row, options)=(r.datapos, length(r.buf), 1, r.options)) where {transpose}
+function Base.iterate(r::Rows{transpose, reusebuffer}, (pos, len, row, options)=(r.datapos, length(r.buf), 1, r.options)) where {transpose, reusebuffer}
     (pos > len || row > r.limit) && return nothing
     ignorerepeated = getignorerepeated(options)
     buf, positions, ncols = r.buf, r.positions, r.cols
     pos = consumecommentedline!(buf, pos, len, r.cmt)
     ignorerepeated && (pos = Parsers.checkdelim!(buf, pos, len, options))
     pos > len && return nothing
-    tape = Vector{UInt64}(undef, ncols)
+    tape = reusebuffer ? r.tape : Vector{UInt64}(undef, ncols)
     for col = 1:ncols
         if transpose
             @inbounds pos = positions[col]
