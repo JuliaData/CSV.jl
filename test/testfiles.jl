@@ -441,6 +441,11 @@ testfiles = [
         NamedTuple{(:A, :B, :C, :D, :E),Tuple{Int64,Int64,Int64,Missing,Missing}},
         (A = [1, 4], B = [2, 5], C = [3, 6], D = Missing[missing, missing], E = Missing[missing, missing])
     ),
+    ("test_not_enough_columns2.csv", NamedTuple(),
+        (2, 5),
+        NamedTuple{(:A, :B, :C, :D, :E),Tuple{Int64,Int64,Int64,Union{Int64, Missing},Union{Int64, Missing}}},
+        (A = [1, 6], B = [2, 7], C = [3, 8], D = [4, missing], E = [5, missing])
+    ),
     ("test_correct_trailing_missings.csv", NamedTuple(),
         (2, 5),
         NamedTuple{(:A, :B, :C, :D, :E),Tuple{Int64,Int64,Int64,Missing,Missing}},

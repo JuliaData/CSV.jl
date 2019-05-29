@@ -120,10 +120,10 @@ getignorerepeated(p::Parsers.Options{ignorerepeated}) where {ignorerepeated} = i
             @inbounds positions[col] = pos
         else
             if col < ncols
-                if Parsers.newline(code)
+                if Parsers.newline(code) || pos > len
                     options.silencewarnings || notenoughcolumns(col, ncols, row)
                     for j = (col + 1):ncols
-                        tape[col] = MISSING_BIT
+                        tape[j] = MISSING_BIT
                     end
                     break
                 end
