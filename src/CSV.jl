@@ -343,7 +343,7 @@ function parsetape(::Val{transpose}, ncols, typemap, tapes, tapelen, buf, pos, l
                     @inbounds positions[col] = pos
                 else
                     if col < ncols
-                        if Parsers.newline(code)
+                        if Parsers.newline(code) || pos > len
                             options.silencewarnings || notenoughcolumns(col, ncols, row)
                             for j = (col + 1):ncols
                                 # put in dummy missing values on the tape for missing columns
@@ -613,6 +613,7 @@ end
 
 include("tables.jl")
 include("iteration.jl")
+include("rows.jl")
 include("write.jl")
 
 """
