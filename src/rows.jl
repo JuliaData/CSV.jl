@@ -134,7 +134,6 @@ getignorerepeated(p::Parsers.Options{ignorerepeated}) where {ignorerepeated} = i
                 end
             end
         end
-        pos > len && break
     end
     return Row2(r.names, tape, r.buf, r.e), (pos, len, row + 1)
 end
