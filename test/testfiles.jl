@@ -1,5 +1,11 @@
 function testfile(file, kwargs, expected_sz, expected_sch, testfunc)
     println("testing $file")
+    rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
+    actual_sch = Tables.schema(rows)
+    @test Tuple(expected_sch.names) == actual_sch.names
+    if file isa IO
+        seekstart(file)
+    end
     t = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
     actual_sch = Tables.schema(t)
     @test Tuple(expected_sch.types) == actual_sch.types
@@ -434,6 +440,11 @@ testfiles = [
         (2, 5),
         NamedTuple{(:A, :B, :C, :D, :E),Tuple{Int64,Int64,Int64,Missing,Missing}},
         (A = [1, 4], B = [2, 5], C = [3, 6], D = Missing[missing, missing], E = Missing[missing, missing])
+    ),
+    ("test_not_enough_columns2.csv", NamedTuple(),
+        (2, 5),
+        NamedTuple{(:A, :B, :C, :D, :E),Tuple{Int64,Int64,Int64,Union{Int64, Missing},Union{Int64, Missing}}},
+        (A = [1, 6], B = [2, 7], C = [3, 8], D = [4, missing], E = [5, missing])
     ),
     ("test_correct_trailing_missings.csv", NamedTuple(),
         (2, 5),
