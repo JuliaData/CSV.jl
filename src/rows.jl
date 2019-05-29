@@ -18,6 +18,49 @@ function Base.show(io::IO, r::Rows)
     show(io, Tables.schema(r))
 end
 
+"""
+    CSV.Rows(source; kwargs...) => CSV.Rows
+
+Read a csv input (a filename given as a String or FilePaths.jl type, or any other IO source), returning a `CSV.Rows` object.
+
+While similar to [`CSV.File`](@ref), `CSV.Rows` provides a slightly different interface, the tradeoffs including:
+  * Very minimal memory footprint; while iterating, only the current row values are buffered
+  * Only provides row access via iteration; to access columns, one can stream the rows into a table type
+  * Performs no type inference; each column/cell is essentially treated as `Union{String, Missing}`, users can utilize the performant `Parsers.parse(T, str)` to convert values to a  more specific type if needed
+
+Opens the file and uses passed arguments to detect the number of columns, ***but not*** column types.
+The returned `CSV.Rows` object supports the [Tables.jl](https://github.com/JuliaData/Tables.jl) interface
+and can iterate rows. Each row object supports `propertynames`, `getproperty`, and `getindex` to access individual row values.
+Note that duplicate column names will be detected and adjusted to ensure uniqueness (duplicate column name `a` will become `a_1`).
+For example, one could iterate over a csv file with column names `a`, `b`, and `c` by doing:
+
+```julia
+for row in CSV.Rows(file)
+    println("a=\$(row.a), b=\$(row.b), c=\$(row.c)")
+end
+```
+
+Supported keyword arguments include:
+* File layout options:
+  * `header=1`: the `header` argument can be an `Int`, indicating the row to parse for column names; or a `Range`, indicating a span of rows to be concatenated together as column names; or an entire `Vector{Symbol}` or `Vector{String}` to use as column names; if a file doesn't have column names, either provide them as a `Vector`, or set `header=0` or `header=false` and column names will be auto-generated (`Column1`, `Column2`, etc.)
+  * `normalizenames=false`: whether column names should be "normalized" into valid Julia identifier symbols; useful when iterating rows and accessing column values of a row via `getproperty` (e.g. `row.col1`)
+  * `datarow`: an `Int` argument to specify the row where the data starts in the csv file; by default, the next row after the `header` row is used. If `header=0`, then the 1st row is assumed to be the start of data
+  * `skipto::Int`: similar to `datarow`, specifies the number of rows to skip before starting to read data
+  * `limit`: an `Int` to indicate a limited number of rows to parse in a csv file; use in combination with `skipto` to read a specific, contiguous chunk within a file
+  * `transpose::Bool`: read a csv file "transposed", i.e. each column is parsed as a row
+  * `comment`: rows that begin with this `String` will be skipped while parsing
+  * `use_mmap::Bool=!Sys.iswindows()`: whether the file should be mmapped for reading, which in some cases can be faster
+* Parsing options:
+  * `missingstrings`, `missingstring`: either a `String`, or `Vector{String}` to use as sentinel values that will be parsed as `missing`; by default, only an empty field (two consecutive delimiters) is considered `missing`
+  * `delim=','`: a `Char` or `String` that indicates how columns are delimited in a file; if no argument is provided, parsing will try to detect the most consistent delimiter on the first 10 rows of the file
+  * `ignorerepeated::Bool=false`: whether repeated (consecutive) delimiters should be ignored while parsing; useful for fixed-width files with delimiter padding between cells
+  * `quotechar='"'`, `openquotechar`, `closequotechar`: a `Char` (or different start and end characters) that indicate a quoted field which may contain textual delimiters or newline characters
+  * `escapechar='"'`: the `Char` used to escape quote characters in a quoted field
+  * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
+  * `silencewarnings::Bool=false`: if `strict=false`, whether warnings should be silenced
+* Iteration options:
+  * `reusebuffer=false`: while iterating, whether a single row buffer should be allocated and reused on each iteration; only use if each row will be iterated once and not re-used (e.g. it's not safe to use this option if doing `collect(CSV.Rows(file))`)
+"""
 function Rows(source;
     # file options
     # header can be a row number, range of rows, or actual string vector
