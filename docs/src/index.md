@@ -11,6 +11,7 @@ Depth = 3
 ```@docs
 CSV.File
 CSV.read
+CSV.Rows
 CSV.write
 ```
 
