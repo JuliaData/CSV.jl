@@ -1,3 +1,6 @@
+struct CSV_Foo
+end
+
 @testset "CSV.File basics" begin
 
 #test on non-existent file
@@ -319,8 +322,6 @@ f = CSV.File(IOBuffer("x\n1\n2\n3\n#4"), comment="#")
 @test f.x[end] == 3
 
 # 453
-struct CSV_Foo
-end
 @test_throws ArgumentError CSV.File(IOBuffer("x\n1\n2\n3\n#4"), types=[CSV_Foo])
 @test_throws ArgumentError CSV.File(IOBuffer("x\n1\n2\n3\n#4"), types=Dict(:x=>CSV_Foo))
 
