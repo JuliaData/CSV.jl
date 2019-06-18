@@ -142,6 +142,9 @@ end
     @test length(rows[1]) == 3
     @test rows[1] == ["1", "2", "3"]
 
+    # 447
+    @test_throws ArgumentError CSV.Rows(IOBuffer("x\n1\n2\n3\n#4"), ignorerepeated=true)
+
     # not enough columns
     rows = collect(CSV.Rows(IOBuffer("x,y,z\n1\n2,3\n4,5,6")))
     @test length(rows) == 3
