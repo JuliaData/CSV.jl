@@ -310,7 +310,7 @@ row = first(f)
 row = iterate(f, 2)[1]
 @test row.int_float === 3.14
 
-# 447
+# 448
 @test_throws ArgumentError CSV.File(IOBuffer("x\n1\n2\n3\n#4"), ignorerepeated=true)
 
 # reported by oxinabox on slack; issue w/ manually specified pool column type and 0 rows
@@ -327,5 +327,9 @@ f = CSV.File(IOBuffer("x\n1\n2\n3\n#4"), comment="#")
 # 453
 @test_throws ArgumentError CSV.File(IOBuffer("x\n1\n2\n3\n#4"), types=[CSV_Foo])
 @test_throws ArgumentError CSV.File(IOBuffer("x\n1\n2\n3\n#4"), types=Dict(:x=>CSV_Foo))
+
+# 447
+df = CSV.read(IOBuffer("a,b,c\n1,2,3\n\n"), ignoreemptylines=true)
+@test size(df) == (1, 3)
 
 end
