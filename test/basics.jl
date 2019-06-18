@@ -318,4 +318,10 @@ f = CSV.File(IOBuffer("x\n1\n2\n3\n#4"), comment="#")
 @test length(f.x) == 3
 @test f.x[end] == 3
 
+# 453
+struct CSV_Foo
+end
+@test_throws ArgumentError CSV.File(IOBuffer("x\n1\n2\n3\n#4"), types=[CSV_Foo])
+@test_throws ArgumentError CSV.File(IOBuffer("x\n1\n2\n3\n#4"), types=Dict(:x=>CSV_Foo))
+
 end
