@@ -1,4 +1,4 @@
-struct Rows{transpose, reusebuffer, O}
+struct Rows{transpose, ignoreemptylines, reusebuffer, O}
     name::String
     names::Vector{Symbol}
     cols::Int64
@@ -9,6 +9,7 @@ struct Rows{transpose, reusebuffer, O}
     options::O # Parsers.Options
     positions::Vector{Int64}
     cmt::Union{Tuple{Ptr{UInt8}, Int}, Nothing}
+    iel::Val{ignoreemptylines}
     tape::Vector{UInt64}
 end
 
@@ -50,6 +51,7 @@ Supported keyword arguments include:
   * `transpose::Bool`: read a csv file "transposed", i.e. each column is parsed as a row
   * `comment`: rows that begin with this `String` will be skipped while parsing
   * `use_mmap::Bool=!Sys.iswindows()`: whether the file should be mmapped for reading, which in some cases can be faster
+  * `ignoreemptylines::Bool=false`: whether empty rows/lines in a file should be ignored (if `false`, each column will be assigned `missing` for that empty row)
 * Parsing options:
   * `missingstrings`, `missingstring`: either a `String`, or `Vector{String}` to use as sentinel values that will be parsed as `missing`; by default, only an empty field (two consecutive delimiters) is considered `missing`
   * `delim=','`: a `Char` or `String` that indicates how columns are delimited in a file; if no argument is provided, parsing will try to detect the most consistent delimiter on the first 10 rows of the file
@@ -74,6 +76,7 @@ function Rows(source;
     transpose::Bool=false,
     comment::Union{String, Nothing}=nothing,
     use_mmap::Bool=!Sys.iswindows(),
+    ignoreemptylines::Bool=false,
     # parsing options
     missingstrings=String[],
     missingstring="",
@@ -110,7 +113,8 @@ function Rows(source;
     cq = something(closequotechar, quotechar) % UInt8
     eq = escapechar % UInt8
     cmt = comment === nothing ? nothing : (pointer(comment), sizeof(comment))
-    rowsguess, del = guessnrows(buf, oq, cq, eq, source, delim, cmt, debug)
+    IG = Val(ignoreemptylines)
+    rowsguess, del = guessnrows(buf, oq, cq, eq, source, delim, cmt, IG, debug)
     debug && println("estimated rows: $rowsguess")
     debug && println("detected delimiter: \"$(escape_string(del isa UInt8 ? string(Char(del)) : del))\"")
 
@@ -127,11 +131,11 @@ function Rows(source;
         datapos = isempty(positions) ? 0 : positions[1]
     else
         positions = EMPTY_POSITIONS
-        names, datapos = datalayout(header, buf, pos, len, options, datarow, normalizenames, cmt)
+        names, datapos = datalayout(header, buf, pos, len, options, datarow, normalizenames, cmt, IG)
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
-    return Rows{transpose, reusebuffer, typeof(options)}(getname(source), names, length(names), eq, buf, datapos, limit, options, positions, cmt, Vector{UInt64}(undef, length(names)))
+    return Rows{transpose, ignoreemptylines, reusebuffer, typeof(options)}(getname(source), names, length(names), eq, buf, datapos, limit, options, positions, cmt, IG, Vector{UInt64}(undef, length(names)))
 end
 
 Tables.rowaccess(::Type{<:Rows}) = true
@@ -142,11 +146,11 @@ Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
 
 getignorerepeated(p::Parsers.Options{ignorerepeated}) where {ignorerepeated} = ignorerepeated
 
-@inline function Base.iterate(r::Rows{transpose, reusebuffer}, (pos, len, row)=(r.datapos, length(r.buf), 1)) where {transpose, reusebuffer}
+@inline function Base.iterate(r::Rows{transpose, ignoreemptylines, reusebuffer}, (pos, len, row)=(r.datapos, length(r.buf), 1)) where {transpose, ignoreemptylines, reusebuffer}
     (pos > len || row > r.limit) && return nothing
     buf, positions, ncols, options = r.buf, r.positions, r.cols, r.options
     ignorerepeated = getignorerepeated(options)
-    pos = consumecommentedline!(buf, pos, len, r.cmt)
+    pos = consumecommentedline!(buf, pos, len, r.cmt, r.iel)
     ignorerepeated && (pos = Parsers.checkdelim!(buf, pos, len, options))
     pos > len && return nothing
     tape = reusebuffer ? r.tape : Vector{UInt64}(undef, ncols)

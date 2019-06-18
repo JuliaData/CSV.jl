@@ -100,6 +100,7 @@ Supported keyword arguments include:
   * `transpose::Bool`: read a csv file "transposed", i.e. each column is parsed as a row
   * `comment`: rows that begin with this `String` will be skipped while parsing
   * `use_mmap::Bool=!Sys.iswindows()`: whether the file should be mmapped for reading, which in some cases can be faster
+  * `ignoreemptylines::Bool=false`: whether empty rows/lines in a file should be ignored (if `false`, each column will be assigned `missing` for that empty row)
 * Parsing options:
   * `missingstrings`, `missingstring`: either a `String`, or `Vector{String}` to use as sentinel values that will be parsed as `missing`; by default, only an empty field (two consecutive delimiters) is considered `missing`
   * `delim=','`: a `Char` or `String` that indicates how columns are delimited in a file; if no argument is provided, parsing will try to detect the most consistent delimiter on the first 10 rows of the file
@@ -131,6 +132,7 @@ function File(source;
     transpose::Bool=false,
     comment::Union{String, Nothing}=nothing,
     use_mmap::Bool=!Sys.iswindows(),
+    ignoreemptylines::Bool=false,
     # parsing options
     missingstrings=String[],
     missingstring="",
@@ -156,7 +158,7 @@ function File(source;
     parsingdebug::Bool=false,
     allowmissing::Union{Nothing, Symbol}=nothing)
     file(source, header, normalizenames, datarow, skipto, footerskip,
-        limit, transpose, comment, use_mmap, missingstrings, missingstring,
+        limit, transpose, comment, use_mmap, ignoreemptylines, missingstrings, missingstring,
         delim, ignorerepeated, quotechar, openquotechar, closequotechar,
         escapechar, dateformat, decimal, truestrings, falsestrings, type,
         types, typemap, categorical, pool, strict, silencewarnings, debug,
@@ -176,6 +178,7 @@ function file(source,
     transpose=false,
     comment=nothing,
     use_mmap=!Sys.iswindows(),
+    ignoreemptylines=false,
     # parsing options
     missingstrings=String[],
     missingstring="",
@@ -241,7 +244,8 @@ function file(source,
     cq = something(closequotechar, quotechar) % UInt8
     eq = escapechar % UInt8
     cmt = comment === nothing ? nothing : (pointer(comment), sizeof(comment))
-    rowsguess, del = guessnrows(buf, oq, cq, eq, source, delim, cmt, debug)
+    IG = Val(ignoreemptylines)
+    rowsguess, del = guessnrows(buf, oq, cq, eq, source, delim, cmt, IG, debug)
     debug && println("estimated rows: $rowsguess")
     debug && println("detected delimiter: \"$(escape_string(del isa UInt8 ? string(Char(del)) : del))\"")
 
@@ -259,7 +263,7 @@ function file(source,
         datapos = isempty(positions) ? 0 : positions[1]
     else
         positions = EMPTY_POSITIONS
-        names, datapos = datalayout(header, buf, pos, len, options, datarow, normalizenames, cmt)
+        names, datapos = datalayout(header, buf, pos, len, options, datarow, normalizenames, cmt, IG)
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
@@ -293,7 +297,7 @@ function file(source,
     refs = Vector{Dict{String, UInt64}}(undef, ncols)
     lastrefs = zeros(UInt64, ncols)
     t = time()
-    rows, tapes = parsetape(Val(transpose), ncols, gettypecodes(typemap), tapes, tapelen, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options)
+    rows, tapes = parsetape(Val(transpose), IG, ncols, gettypecodes(typemap), tapes, tapelen, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options)
     debug && println("time for initial parsing to tape: $(time() - t)")
     for i = 1:ncols
         typecodes[i] &= ~USER
@@ -315,12 +319,12 @@ function file(source,
     return File(getname(source), names, finaltypes, rows - footerskip, ncols, eq, categorical, finalrefs, buf, tapes)
 end
 
-function parsetape(::Val{transpose}, ncols, typemap, tapes, tapelen, buf, pos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options::Parsers.Options{ignorerepeated}) where {transpose, ignorerepeated}
+function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, tapelen, buf, pos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options::Parsers.Options{ignorerepeated}) where {transpose, ignorerepeated}
     row = 0
     tapeidx = 1
     if pos <= len && len > 0
         while row < limit
-            pos = consumecommentedline!(buf, pos, len, cmt)
+            pos = consumecommentedline!(buf, pos, len, cmt, ignoreemptylines)
             if ignorerepeated
                 pos = Parsers.checkdelim!(buf, pos, len, options)
             end
