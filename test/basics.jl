@@ -86,6 +86,11 @@ rows = collect(f)
 @test rows[1].a == 1
 @test rows[1].a == 1
 
+# 459
+rows = collect(CSV.File(joinpath(dir, "time.csv"); dateformat="H:M:S"))
+@test rows[1].time == Time(0)
+@test rows[2].time == Time(0, 10)
+
 # 388
 df = CSV.read(joinpath(dir, "GSM2230757_human1_umifm_counts.csv"))
 @test size(df) == (3, 20128)
