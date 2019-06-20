@@ -43,16 +43,17 @@ const INT         = 0b00000010 % TypeCode
 const FLOAT       = 0b00000011 % TypeCode
 const DATE        = 0b00000100 % TypeCode
 const DATETIME    = 0b00000101 % TypeCode
-const BOOL        = 0b00000110 % TypeCode
-const STRING      = 0b00000111 % TypeCode
-const POOL        = 0b00001000 % TypeCode
+const TIME        = 0b00000110 % TypeCode
+const BOOL        = 0b00000111 % TypeCode
+const STRING      = 0b00001000 % TypeCode
+const POOL        = 0b00010000 % TypeCode
 pooled(x::TypeCode) = (x & POOL) == POOL
 
 # a user-provided type; a mask that can be combined w/ basic types
 const USER     = 0b00100000 % TypeCode
 user(x::TypeCode) = (x & USER) === USER
 
-const TYPEBITS = 0b00001111 % TypeCode
+const TYPEBITS = 0b00011111 % TypeCode
 typebits(x::TypeCode) = x & TYPEBITS
 
 typecode(::Type{Missing}) = MISSINGTYPE
@@ -60,6 +61,7 @@ typecode(::Type{<:Integer}) = INT
 typecode(::Type{<:AbstractFloat}) = FLOAT
 typecode(::Type{Date}) = DATE
 typecode(::Type{DateTime}) = DATETIME
+typecode(::Type{Time}) = TIME
 typecode(::Type{Bool}) = BOOL
 typecode(::Type{<:AbstractString}) = STRING
 typecode(::Type{PooledString}) = POOL
@@ -76,6 +78,7 @@ const TYPECODES = Dict(
     FLOAT => Float64,
     DATE => Date,
     DATETIME => DateTime,
+    TIME => Time,
     BOOL => Bool,
     POOL => PooledString,
     STRING => String,
@@ -110,13 +113,21 @@ float64(x::UInt64) = Core.bitcast(Float64, x)
 bool(x::UInt64) = x == 0x0000000000000001
 date(x::UInt64) = Date(Dates.UTD(int64(x)))
 datetime(x::UInt64) = DateTime(Dates.UTM(int64(x)))
+time(x::UInt64) = Time(Nanosecond(int64(x)))
 ref(x::UInt64) = unsafe_trunc(UInt32, x)
 
 uint64(x::Int64) = Core.bitcast(UInt64, x)
 uint64(x::Float64) = Core.bitcast(UInt64, x)
 uint64(x::Bool) = UInt64(x)
-uint64(x::Union{Date, DateTime}) = uint64(Dates.value(x))
+uint64(x::Union{Date, DateTime, Time}) = uint64(Dates.value(x))
 uint64(x::UInt32) = UInt64(x)
+
+reinterp_func(::Type{Int64}) = int64
+reinterp_func(::Type{Float64}) = float64
+reinterp_func(::Type{Date}) = date
+reinterp_func(::Type{DateTime}) = datetime
+reinterp_func(::Type{Time}) = time
+reinterp_func(::Type{Bool}) = bool
 
 @noinline function consumeBOM!(source)
     # BOM character detection

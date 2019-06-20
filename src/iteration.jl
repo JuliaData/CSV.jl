@@ -45,26 +45,16 @@ end
     return getvalue(Base.nonmissingtype(T), f, ind, offlen, col)
 end
 
-function getvalue(::Type{Int64}, f, indexoffset, offlen, col)
-    @inbounds x = int64(gettape(f, col)[indexoffset + 1])
+function getvalue(::Type{T}, f, indexoffset, offlen, col) where {T}
+    @inbounds x = reinterp_func(T)(gettape(f, col)[indexoffset + 1])
     return x
 end
+
 function getvalue(::Type{Float64}, f, indexoffset, offlen, col)
     @inbounds x = gettape(f, col)[indexoffset + 1]
     return ifelse(intvalue(offlen), Float64(int64(x)), float64(x))
 end
-function getvalue(::Type{Date}, f, indexoffset, offlen, col)
-    @inbounds x = date(gettape(f, col)[indexoffset + 1])
-    return x
-end
-function getvalue(::Type{DateTime}, f, indexoffset, offlen, col)
-    @inbounds x = datetime(gettape(f, col)[indexoffset + 1])
-    return x
-end
-function getvalue(::Type{Bool}, f, indexoffset, offlen, col)
-    @inbounds x = bool(gettape(f, col)[indexoffset + 1])
-    return x
-end
+
 getvalue(::Type{Missing}, f, indexoffset, offlen, col) = missing
 
 function getvalue(::Type{PooledString}, f, indexoffset, offlen, col)

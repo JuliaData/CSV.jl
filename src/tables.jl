@@ -82,12 +82,6 @@ function Base.copy(c::Column{T, S}) where {T <: Union{String, Union{String, Miss
     return A
 end
 
-reinterp_func(::Type{Int64}) = int64
-reinterp_func(::Type{Float64}) = float64
-reinterp_func(::Type{Date}) = date
-reinterp_func(::Type{DateTime}) = datetime
-reinterp_func(::Type{Bool}) = bool
-
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{Missing}, row::Int)
     @boundscheck checkbounds(c, row)
     return missing

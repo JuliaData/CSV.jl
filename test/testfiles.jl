@@ -562,6 +562,12 @@ testfiles = [
         NamedTuple{(:SampleID, :Mother_Child, :SubjectID, :MaternalID, :TimePoint, :Fecal_EtOH, :CollectionRep, :DOC, :RAInitials_DOC, :DOF, :RAInitials_DOF, :Date_Brought_In, :RAInitials_Brought, :Date_Shipped, :RAInitials_Shipped, :Date_Aliquoted, :Number_Replicates, :RAInitials_Aliquot, :StorageBox, :DOE, :Extract_number, :AliquotRep, :DNABox, :KitUsed, :RAInitials_Extract, :DNAConc, :DOM, :Mgx_processed, :Mgx_batch, :DO16S, :_16S_processed, :_16S_batch, :_16S_plate, :Notes, :Discrepancies, :Batch_1_Mapping, :Mgx_batch_Mapping, :_16S_batch_Mapping, :Mother_Child_Dyads), Tuple{String, String, Int64, String, Int64, String, Int64, Dates.Date, Union{Missing, String}, Union{Missing, Date}, Union{Missing, String}, Union{Missing, Date}, Union{Missing, String}, Union{Missing, Date}, Union{Missing, String}, Union{Missing, Date}, Union{Missing, String}, Union{Missing, String}, Union{Missing, String}, Union{Missing, Date}, Union{Missing, String}, Union{Missing, String}, Union{Missing, String}, Union{Missing, String}, Union{Missing, String}, Union{Missing, Float64}, Union{Missing, Date}, Union{Missing, String}, Union{Missing, String}, Union{Missing, Date}, Union{Missing, String}, Union{Missing, String}, Union{Missing, String}, Union{Missing, String}, Union{Missing, String}, Union{Missing, String}, Union{Missing, String}, Union{Missing, String}, Union{Missing, Int64}}},
         nothing
     ),
+    # 459, support parsing Time
+    ("time.csv", (dateformat="H:M:S",),
+        (2, 2),
+        NamedTuple{(:time, :value), Tuple{Time, Int64}},
+        (time = [Time(0), Time(0, 10)], value = [1, 2])
+    )
 ];
 
 for test in testfiles
