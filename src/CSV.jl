@@ -296,9 +296,9 @@ function file(source,
     pool = pool === true ? 1.0 : pool isa Float64 ? pool : 0.0
     refs = Vector{Dict{String, UInt64}}(undef, ncols)
     lastrefs = zeros(UInt64, ncols)
-    t = time()
+    t = Base.time()
     rows, tapes = parsetape(Val(transpose), IG, ncols, gettypecodes(typemap), tapes, tapelen, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options)
-    debug && println("time for initial parsing to tape: $(time() - t)")
+    debug && println("time for initial parsing to tape: $(Base.time() - t)")
     for i = 1:ncols
         typecodes[i] &= ~USER
     end
@@ -349,6 +349,8 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, ta
                     pos, code = parsevalue!(Date, T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
                 elseif type === DATETIME
                     pos, code = parsevalue!(DateTime, T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
+                elseif type === TIME
+                    pos, code = parsevalue!(Time, T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
                 elseif type === BOOL
                     pos, code = parsevalue!(Bool, T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
                 elseif type === POOL
@@ -476,7 +478,7 @@ function detect(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, 
         if Parsers.ok(code)
             setposlen!(tape, tapeidx, code, vpos, vlen)
             @inbounds tape[tapeidx + 1] = uint64(dt)
-            @inbounds typecodes[col] = DT == Date ? (T == MISSINGTYPE ? (DATE | MISSING) : DATE) : (T == MISSINGTYPE ? (DATETIME | MISSING) : DATETIME)
+            @inbounds typecodes[col] = DT == Date ? (T == MISSINGTYPE ? (DATE | MISSING) : DATE) : DT == DateTime ? (T == MISSINGTYPE ? (DATETIME | MISSING) : DATETIME) : (T == MISSINGTYPE ? (TIME | MISSING) : TIME)
             @goto done
         end
     end
