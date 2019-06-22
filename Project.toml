@@ -1,7 +1,7 @@
 name = "CSV"
 uuid = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 authors = ["Jacob Quinn <quinn.jacobd@gmail.com>"]
-version = "0.5.5"
+version = "0.5.6"
 
 [deps]
 CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
