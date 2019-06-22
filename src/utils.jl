@@ -249,3 +249,59 @@ function unescape(s, e)
     resize!(buf, len - 1)
     return String(buf)
 end
+
+"""
+    CSV.detect(str::String)
+
+Use the same logic used by `CSV.File` to detect column types, to parse a value from a plain string.
+This can be useful in conjunction with the `CSV.Rows` type, which returns each cell of a file as a String.
+The order of types attempted is: `Int64`, `Float64`, `Date`, `DateTime`, `Bool`, and if all fail, the input String is returned.
+No errors are thrown.
+For advanced usage, you can pass your own `Parsers.Options` type as a keyword argument `option=ops` for sentinel value detection.
+"""
+function detect end
+
+function detect(str::String; options=Parsers.OPTIONS)
+    buf = codeunits(str)
+    pos = 1
+    len = sizeof(str)
+    int, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, options)
+    if Parsers.sentinel(code) && code > 0
+        return missing
+    end
+    if Parsers.ok(code) && vlen == len
+        return int
+    end
+    float, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, options)
+    if Parsers.ok(code) && vlen == len
+        return float
+    end
+    if options.dateformat === nothing
+        try
+            date, code, vpos, vlen, tlen = Parsers.xparse(Date, buf, pos, len, options)
+            if Parsers.ok(code) && vlen == len
+                return date
+            end
+        catch e
+        end
+        try
+            datetime, code, vpos, vlen, tlen = Parsers.xparse(DateTime, buf, pos, len, options)
+            if Parsers.ok(code) && vlen == len
+                return datetime
+            end
+        catch e
+        end
+    else
+        # use user-provided dateformat
+        DT = timetype(options.dateformat)
+        dt, code, vpos, vlen, tlen = Parsers.xparse(DT, buf, pos, len, options)
+        if Parsers.ok(code) && vlen == len
+            return dt
+        end
+    end
+    bool, code, vpos, vlen, tlen = Parsers.xparse(Bool, buf, pos, len, options)
+    if Parsers.ok(code) && vlen == len
+        return bool
+    end
+    return str
+end

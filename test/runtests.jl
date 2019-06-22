@@ -184,4 +184,17 @@ end
 
 end
 
+@testset "CSV.detect" begin
+
+@test CSV.detect("") == ""
+@test CSV.detect("1") == 1
+@test CSV.detect("1.1") == 1.1
+@test CSV.detect("2015-01-01") == Date(2015)
+@test CSV.detect("2015-01-01T03:04:05") == DateTime(2015, 1, 1, 3, 4, 5)
+@test CSV.detect("true") === true
+@test CSV.detect("false") === false
+@test CSV.detect("abc") === "abc"
+
+end
+
 end
