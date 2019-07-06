@@ -292,11 +292,14 @@ function detect(str::String; options=Parsers.OPTIONS)
         catch e
         end
     else
-        # use user-provided dateformat
-        DT = timetype(options.dateformat)
-        dt, code, vpos, vlen, tlen = Parsers.xparse(DT, buf, pos, len, options)
-        if Parsers.ok(code) && vlen == len
-            return dt
+        try
+            # use user-provided dateformat
+            DT = timetype(options.dateformat)
+            dt, code, vpos, vlen, tlen = Parsers.xparse(DT, buf, pos, len, options)
+            if Parsers.ok(code) && vlen == len
+                return dt
+            end
+        catch e
         end
     end
     bool, code, vpos, vlen, tlen = Parsers.xparse(Bool, buf, pos, len, options)
