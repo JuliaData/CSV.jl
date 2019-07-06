@@ -337,4 +337,7 @@ f = CSV.File(IOBuffer("x\n1\n2\n3\n#4"), comment="#")
 df = CSV.read(IOBuffer("a,b,c\n1,2,3\n\n"), ignoreemptylines=true)
 @test size(df) == (1, 3)
 
+df = CSV.read(IOBuffer("zip\n11111-1111\n"), dateformat = "y-m-dTH:M:S.s")
+@test size(df) == (1, 1)
+
 end

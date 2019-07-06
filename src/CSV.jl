@@ -472,14 +472,17 @@ function detect(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, 
         catch e
         end
     else
-        # use user-provided dateformat
-        DT = timetype(options.dateformat)
-        dt, code, vpos, vlen, tlen = Parsers.xparse(DT, buf, pos, len, options)
-        if Parsers.ok(code)
-            setposlen!(tape, tapeidx, code, vpos, vlen)
-            @inbounds tape[tapeidx + 1] = uint64(dt)
-            @inbounds typecodes[col] = DT == Date ? (T == MISSINGTYPE ? (DATE | MISSING) : DATE) : DT == DateTime ? (T == MISSINGTYPE ? (DATETIME | MISSING) : DATETIME) : (T == MISSINGTYPE ? (TIME | MISSING) : TIME)
-            @goto done
+        try
+            # use user-provided dateformat
+            DT = timetype(options.dateformat)
+            dt, code, vpos, vlen, tlen = Parsers.xparse(DT, buf, pos, len, options)
+            if Parsers.ok(code)
+                setposlen!(tape, tapeidx, code, vpos, vlen)
+                @inbounds tape[tapeidx + 1] = uint64(dt)
+                @inbounds typecodes[col] = DT == Date ? (T == MISSINGTYPE ? (DATE | MISSING) : DATE) : DT == DateTime ? (T == MISSINGTYPE ? (DATETIME | MISSING) : DATETIME) : (T == MISSINGTYPE ? (TIME | MISSING) : TIME)
+                @goto done
+            end
+        catch e
         end
     end
     bool, code, vpos, vlen, tlen = Parsers.xparse(Bool, buf, pos, len, options)
