@@ -28,6 +28,11 @@ function with(f::Function, io::IO, append)
     f(io)
 end
 
+function with(f::Function, io::Union{Base.TTY, Base.Pipe, Base.PipeEndpoint}, append)
+    # seeking in an unbuffered pipe makes no sense...
+    f(io)
+end
+
 function with(f::Function, file::String, append)
     open(file, append ? "a" : "w") do io
         f(io)
