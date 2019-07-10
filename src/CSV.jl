@@ -595,13 +595,18 @@ end
 end
 
 @inline function getref!(x::Dict, key::PointerString, lastrefs, col, code, options)
-    index = Base.ht_keyindex2!(x, key)
+    if Parsers.escapedstring(code)
+        key2 = unescape(key, options.e)
+        index = Base.ht_keyindex2!(x, key2)
+    else
+        index = Base.ht_keyindex2!(x, key)
+    end
     if index > 0
         @inbounds found_key = x.vals[index]
         return found_key::UInt64
     else
         @inbounds new = (lastrefs[col] += UInt64(1))
-        @inbounds Base._setindex!(x, new, Parsers.escapedstring(code) ? unescape(key, options.e) : String(key), -index)
+        @inbounds Base._setindex!(x, new, Parsers.escapedstring(code) ? key2 : String(key), -index)
         return new
     end
 end

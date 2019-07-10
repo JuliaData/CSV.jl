@@ -567,7 +567,13 @@ testfiles = [
         (2, 2),
         NamedTuple{(:time, :value), Tuple{Time, Int64}},
         (time = [Time(0), Time(0, 10)], value = [1, 2])
-    )
+    ),
+    # https://github.com/JuliaData/DataFrames.jl/issues/1880
+    ("escaped_pooled.csv", (header=[:a, :b, :c], types=Dict(1=>CSV.PooledString)),
+        (2, 3),
+        NamedTuple{(:a, :b, :c), Tuple{String, String, Float64}},
+        (a = ["\\孕晚期下午和晚上血压高\"", "\\孕晚期下午和晚上血压高\""], b = ["为什么中老年人血压不高也要定期测量血压", "晚上睡眠不好会导致血压升高吗"], c = [0.744359, 0.714016])
+    ),
 ];
 
 for test in testfiles
