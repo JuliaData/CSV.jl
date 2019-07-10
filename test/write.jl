@@ -168,5 +168,19 @@ using Dates, WeakRefStrings, CategoricalArrays, Tables
     # custom float decimal: #385
     (col1=[1.1,2.2,3.3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; delim='\t', decimal=',')
     @test String(take!(io)) == "col1\tcol2\tcol3\n1,1\t4\t7\n2,2\t5\t8\n3,3\t6\t9\n"
-    
+
+    # write to stdout: #465
+    old_stdout = stdout
+    (rd, wr) = redirect_stdout()
+    try
+        (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(stdout)
+    finally
+        redirect_stdout(old_stdout)
+        try
+            close(wr)
+        catch
+        end
+    end
+
+    @test read(rd, String) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
 end
