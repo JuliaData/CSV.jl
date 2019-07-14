@@ -175,6 +175,7 @@ function getsource(source, use_mmap)
 end
 
 getname(buf::Vector{UInt8}) = "<raw buffer>"
+getname(cmd::Cmd) = Base.shell_escape(cmd)
 getname(str) = String(str)
 getname(io::I) where {I <: IO} = string("<", I, ">")
 
