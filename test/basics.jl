@@ -340,6 +340,6 @@ df = CSV.read(IOBuffer("a,b,c\n1,2,3\n\n"), ignoreemptylines=true)
 df = CSV.read(IOBuffer("zip\n11111-1111\n"), dateformat = "y-m-dTH:M:S.s")
 @test size(df) == (1, 1)
 
-@test CSV.read(`$(Base.Sys.iswindows() ? "type" : "cat") $(joinpath(dir, "test_basic.csv"))`) == CSV.read(joinpath(dir, "test_basic.csv"))
+@test CSV.read(`$(Base.Sys.isunix() ? "cat" : "type") $(joinpath(dir, "test_basic.csv"))`) == CSV.read(joinpath(dir, "test_basic.csv"))
 
 end
