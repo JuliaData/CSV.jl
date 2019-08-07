@@ -61,6 +61,41 @@ const EMPTY_TYPEMAP = Dict{TypeCode, TypeCode}()
 const EMPTY_REFS = Vector{String}[]
 const EMPTY_REFVALUES = String[]
 
+const INVALID_DELIMITERS = ['\r', '\n', '\0']
+
+"""
+    isvaliddelim(delim)
+
+Whether a character or string is valid for use as a delimiter.
+"""
+isvaliddelim(delim) = false
+isvaliddelim(delim::Char) = delim ∉ INVALID_DELIMITERS
+isvaliddelim(delim::AbstractString) = all(isvaliddelim, delim)
+
+"""
+    checkvaliddelim(delim)
+
+Checks whether a character or string is valid for use as a delimiter.  If
+`delim` is `nothing`, it is assumed that the delimiter will be auto-selected.
+Throws an error if `delim` is invalid.
+"""
+function checkvaliddelim(delim)
+    delim ≢ nothing && !isvaliddelim(delim) &&
+        throw(ArgumentError("invalid delim argument = '$(escape_string(string(delim)))', "*
+                            "the following delimiters are invalid: $INVALID_DELIMITERS"))
+end
+
+"""
+    checkvalidsource(source)
+
+Checks whether the argument is valid for use as a data source, otherwise throws
+an error.
+"""
+function checkvalidsource(source)
+    !isa(source, IO) && !isa(source, Vector{UInt8}) && !isfile(source) &&
+        throw(ArgumentError("\"$source\" is not a valid file"))
+end
+
 """
     CSV.File(source; kwargs...) => CSV.File
 
@@ -205,7 +240,7 @@ function file(source,
     allowmissing=nothing)
 
     # initial argument validation and adjustment
-    !isa(source, IO) && !isa(source, Vector{UInt8}) && !isfile(source) && throw(ArgumentError("\"$source\" is not a valid file"))
+    checkvalidsource(source)
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
     if type !== nothing && typecode(type) == EMPTY
         throw(ArgumentError("$type isn't supported in the `type` keyword argument; must be one of: `Int64`, `Float64`, `Date`, `DateTime`, `Bool`, `Missing`, `PooledString`, `CategoricalString{UInt32}`, or `String`"))
@@ -219,7 +254,7 @@ function file(source,
         end
         throw(ArgumentError("unsupported type $T in the `types` keyword argument; must be one of: `Int64`, `Float64`, `Date`, `DateTime`, `Bool`, `Missing`, `PooledString`, `CategoricalString{UInt32}`, or `String`"))
     end
-    delim !== nothing && ((delim isa Char && iscntrl(delim) && delim != '\t') || (delim isa String && any(iscntrl, delim) && !all(==('\t'), delim))) && throw(ArgumentError("invalid delim argument = '$(escape_string(string(delim)))', must be a non-control character or string without control characters"))
+    checkvaliddelim(delim)
     ignorerepeated && delim === nothing && throw(ArgumentError("auto-delimiter detection not supported when `ignorerepeated=true`; please provide delimiter via `delim=','`"))
     allowmissing !== nothing && @warn "`allowmissing` is a deprecated keyword argument"
     if !(categorical isa Bool)

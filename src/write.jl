@@ -234,6 +234,7 @@ function write(sch::Tables.Schema{names}, rows, file, oq, cq, e, newline, decima
     header::Vector=String[],
     quotestrings::Bool=false,
     kwargs...) where {names}
+    checkvaliddelim(delim)
     colnames = isempty(header) ? names : header
     cols = length(colnames)
     with(file, append) do io
@@ -258,6 +259,7 @@ function write(::Nothing, rows, file, oq, cq, e, newline, decimal;
     header::Vector=String[],
     quotestrings::Bool=false,
     kwargs...)
+    checkvaliddelim(delim)
     state = iterate(rows)
     if state === nothing
         if writeheader && !isempty(header)
