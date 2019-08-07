@@ -340,4 +340,8 @@ df = CSV.read(IOBuffer("a,b,c\n1,2,3\n\n"), ignoreemptylines=true)
 df = CSV.read(IOBuffer("zip\n11111-1111\n"), dateformat = "y-m-dTH:M:S.s")
 @test size(df) == (1, 1)
 
+ #476
+df = CSV.read(GzipDecompressorStream(open(joinpath(dir, "randoms.csv.gz"))))
+@test size(df) == (70000, 7)
+
 end
