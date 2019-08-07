@@ -92,7 +92,7 @@ Checks whether the argument is valid for use as a data source, otherwise throws
 an error.
 """
 function checkvalidsource(source)
-    !isa(source, IO) && !isa(source, Vector{UInt8}) && !isfile(source) &&
+    !isa(source, IO) && !isa(source, Vector{UInt8}) && !isa(source, Cmd) && !isfile(source) &&
         throw(ArgumentError("\"$source\" is not a valid file"))
 end
 
