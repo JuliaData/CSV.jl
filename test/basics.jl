@@ -356,5 +356,8 @@ if Sys.iswindows()
     end
 end
 @test CSV.read(`$(catcmd) $(joinpath(dir, "test_basic.csv"))`) == CSV.read(joinpath(dir, "test_basic.csv"))
+ #476
+df = CSV.read(GzipDecompressorStream(open(joinpath(dir, "randoms.csv.gz"))))
+@test size(df) == (70000, 7)
 
 end
