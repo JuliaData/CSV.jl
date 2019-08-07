@@ -1,4 +1,4 @@
-using Test, CSV, Dates, Tables, DataFrames, CategoricalArrays, PooledArrays
+using Test, CSV, Dates, Tables, DataFrames, CategoricalArrays, PooledArrays, CodecZlib
 
 const dir = joinpath(dirname(pathof(CSV)), "../test/testfiles")
 

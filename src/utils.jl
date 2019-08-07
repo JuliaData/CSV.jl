@@ -149,6 +149,26 @@ reinterp_func(::Type{Bool}) = bool
     return pos
 end
 
+function slurp(source)
+    N = 2^22 # 4 mb increments
+    ms = Tuple{Vector{UInt8}, Int}[]
+    tot = 0
+    while true
+        m = Mmap.mmap(Vector{UInt8}, N)
+        n = readbytes!(source, m, N)
+        tot += n
+        push!(ms, (m, n))
+        n < N && break
+    end
+    final = Mmap.mmap(Vector{UInt8}, tot)
+    pos = 1
+    for (m, n) in ms
+        copyto!(final, pos, m, 1, n)
+        pos += n
+    end
+    return final
+end
+
 function getsource(source, use_mmap)
     if source isa Vector{UInt8}
         return source
@@ -161,14 +181,7 @@ function getsource(source, use_mmap)
         finalize(m)
         return m2
     else
-        iosource = source isa IO ? source : open(String(source))
-        io = IOBuffer()
-        while !eof(iosource)
-            Base.write(io, iosource)
-        end
-        A = Mmap.mmap(Vector{UInt8}, io.size)
-        copyto!(A, 1, io.data, 1, io.size)
-        return A
+        return slurp(source isa IO ? source : open(String(source)))
     end
 end
 
