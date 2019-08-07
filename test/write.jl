@@ -182,5 +182,18 @@ using Dates, WeakRefStrings, CategoricalArrays, Tables
         end
     end
 
+    df = DataFrame(A=[1,2,3], B=["a", "b", "c"])
+    # test control character delimiters
+    for char ∈ Char.(UInt8[1,2,3,4])
+        io = IOBuffer()
+        CSV.write(io, df, delim=char)
+        seekstart(io)
+        @test CSV.read(io, delim=char) == df
+    end
+    # don't allow writing with delimiters we refuse to read
+    for char ∈ CSV.INVALID_DELIMITERS
+        @test_throws ArgumentError CSV.write(io, df, delim=char)
+    end
+
     @test read(rd, String) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
 end
