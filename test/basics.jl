@@ -340,6 +340,22 @@ df = CSV.read(IOBuffer("a,b,c\n1,2,3\n\n"), ignoreemptylines=true)
 df = CSV.read(IOBuffer("zip\n11111-1111\n"), dateformat = "y-m-dTH:M:S.s")
 @test size(df) == (1, 1)
 
+# Supporting commands across multiple platforms cribbed from julia/test/spawn.jl
+catcmd = `cat`
+havebb = false
+if Sys.iswindows()
+    busybox = download("https://frippery.org/files/busybox/busybox.exe", joinpath(tempdir(), "busybox.exe"))
+    havebb = try # use busybox-w32 on windows, if available
+        success(`$busybox`)
+        true
+    catch
+        false
+    end
+    if havebb
+        catcmd = `$busybox cat`
+    end
+end
+@test CSV.read(`$(catcmd) $(joinpath(dir, "test_basic.csv"))`) == CSV.read(joinpath(dir, "test_basic.csv"))
  #476
 df = CSV.read(GzipDecompressorStream(open(joinpath(dir, "randoms.csv.gz"))))
 @test size(df) == (70000, 7)

@@ -172,6 +172,8 @@ end
 function getsource(source, use_mmap)
     if source isa Vector{UInt8}
         return source
+    elseif source isa Cmd
+        return Base.read(source)
     elseif use_mmap && !isa(source, IO)
         return Mmap.mmap(source)
     elseif !isa(source, IO)
@@ -186,6 +188,7 @@ function getsource(source, use_mmap)
 end
 
 getname(buf::Vector{UInt8}) = "<raw buffer>"
+getname(cmd::Cmd) = string(cmd)
 getname(str) = String(str)
 getname(io::I) where {I <: IO} = string("<", I, ">")
 
