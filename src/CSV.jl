@@ -189,6 +189,7 @@ function File(source;
     pool::Union{Bool, Real}=0.1,
     strict::Bool=false,
     silencewarnings::Bool=false,
+    threaded::Union{Bool, Nothing}=nothing,
     debug::Bool=false,
     parsingdebug::Bool=false,
     allowmissing::Union{Nothing, Symbol}=nothing)
@@ -196,10 +197,11 @@ function File(source;
         limit, transpose, comment, use_mmap, ignoreemptylines, missingstrings, missingstring,
         delim, ignorerepeated, quotechar, openquotechar, closequotechar,
         escapechar, dateformat, decimal, truestrings, falsestrings, type,
-        types, typemap, categorical, pool, strict, silencewarnings, debug,
-        parsingdebug, allowmissing)
+        types, typemap, categorical, pool, strict, silencewarnings, threaded,
+        debug, parsingdebug, allowmissing)
 end
 
+# @code_typed CSV.file(source,1,false,-1,nothing,0,typemax(Int64),false,nothing,!Sys.iswindows(),false,String[],"",nothing,false,'"',nothing,nothing,'"',nothing,UInt8('.'),nothing,nothing,nothing,nothing,CSV.EMPTY_TYPEMAP,false,0.1,false,false,nothing,false,false,nothing)
 function file(source,
     # file options
     # header can be a row number, range of rows, or actual string vector
@@ -235,6 +237,7 @@ function file(source,
     pool=0.1,
     strict=false,
     silencewarnings=false,
+    threaded=nothing,
     debug=false,
     parsingdebug=false,
     allowmissing=nothing)
@@ -326,14 +329,84 @@ function file(source,
         # 16 bits for field length (allows for maximum field size of 65K)
     # the 2nd UInt64 is used for storing the raw bits of a parsed, typed value: Int64, Float64, Date, DateTime, Bool, or categorical/pooled UInt32 ref
     ncols = length(names)
-    tapelen = rowsguess * 2
-    tapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, tapelen) for i = 1:ncols]
-    pool = pool === true ? 1.0 : pool isa Float64 ? pool : 0.0
-    refs = Vector{Dict{String, UInt64}}(undef, ncols)
-    lastrefs = zeros(UInt64, ncols)
-    t = Base.time()
-    rows, tapes = parsetape(Val(transpose), IG, ncols, gettypecodes(typemap), tapes, tapelen, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options)
-    debug && println("time for initial parsing to tape: $(Base.time() - t)")
+    if (threaded === true) || (threaded === nothing && !transpose && limit == typemax(Int64) && rowsguess > 10_000 && footerskip == 0 && Threads.nthreads() > 1)
+        # multithread
+        typecodes = AtomicVector(typecodes)
+        N = Threads.nthreads()
+        chunksize = div((len - datapos), N)
+        ranges = [datapos, (chunksize * i for i = 1:N)...]
+        ranges[end] = len
+        findrowstarts!(buf, len, options, ranges)
+        rowchunkguess = div(rowsguess, N)
+        tapelen = rowchunkguess * 2
+        debug && println("parsing using $N threads: $rowchunkguess rows chunked at positions: $ranges")
+        tasks = let typecodes=typecodes, tapelen=tapelen, positions=positions, pool=pool
+            tasks = map(1:N) do i
+                Base.@_inline_meta
+                Threads.@spawn begin
+                    tt = Base.time()
+                    trefs = Vector{Dict{String, UInt64}}(undef, ncols)
+                    tlastrefs = zeros(UInt64, ncols)
+                    ttapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, tapelen) for i = 1:ncols]
+                    tdatapos = ranges[i]
+                    tlen = ranges[i + 1] - (i != N)
+                    ret = parsetape(Val(false), IG, ncols, gettypecodes(typemap), ttapes, tapelen, buf, tdatapos, tlen, limit, cmt, positions, pool, trefs, tlastrefs, rowchunkguess, typecodes, debug, options, true)
+                    debug && println("thread = $(Threads.threadid()): time for parsing: $(Base.time() - tt)")
+                    (ret[1], ret[2], trefs, tlastrefs)
+                end
+            end
+        end
+        # wait until each task finishes
+        results = map(fetch, tasks)
+        rows = sum(x->x[1], results)
+        tapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, rows * 2) for i = 1:ncols]
+        refs = Vector{Dict{String, UInt64}}(undef, ncols)
+        lastrefs = zeros(UInt64, ncols)
+        i = 1
+        for (r, tps, rs, lrs) in results
+            for col = 1:ncols
+                if isassigned(rs, col)
+                    # merge refs and recode if necessary
+                    if !isassigned(refs, col)
+                        refs[col] = rs[col]
+                        lastrefs[col] = lrs[col]
+                    else
+                        rng = collect(UInt64(0):lrs[col])
+                        recode = false
+                        for (k, v) in rs[col]
+                            refvalue = get(refs[col], k, UInt64(0))
+                            if refvalue != v
+                                recode = true
+                                if refvalue == 0
+                                    refvalue = (lastrefs[col] += UInt64(1))
+                                end
+                                refs[col][k] = refvalue
+                                rng[v] = refvalue
+                            end
+                        end
+                        if recode
+                            tp = tps[col]
+                            @simd for j = 2:2:(r * 2)
+                                @inbounds tp[j] = rng[tp[j]]
+                            end
+                        end
+                    end
+                end
+                # copy thread-tape to master tape
+                copyto!(tapes[col], i, tps[col], 1, r * 2)
+            end
+            i += r * 2
+        end
+    else
+        tapelen = rowsguess * 2
+        tapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, tapelen) for i = 1:ncols]
+        pool = pool === true ? 1.0 : pool isa Float64 ? pool : 0.0
+        refs = Vector{Dict{String, UInt64}}(undef, ncols)
+        lastrefs = zeros(UInt64, ncols)
+        t = Base.time()
+        rows, tapes = parsetape(Val(transpose), IG, ncols, gettypecodes(typemap), tapes, tapelen, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options, false)
+        debug && println("time for initial parsing to tape: $(Base.time() - t)")
+    end
     for i = 1:ncols
         typecodes[i] &= ~USER
     end
@@ -354,7 +427,7 @@ function file(source,
     return File(getname(source), names, finaltypes, rows - footerskip, ncols, eq, categorical, finalrefs, buf, tapes)
 end
 
-function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, tapelen, buf, pos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options::Parsers.Options{ignorerepeated}) where {transpose, ignorerepeated}
+function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, tapelen, buf, pos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options::Parsers.Options{ignorerepeated}, threaded) where {transpose, ignorerepeated}
     row = 0
     tapeidx = 1
     if pos <= len && len > 0
@@ -373,9 +446,9 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, ta
                 @inbounds tape = tapes[col]
                 type = typebits(T)
                 if type === EMPTY
-                    pos, code = detect(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes)
+                    pos, code = detect(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes, threaded)
                 elseif type === MISSINGTYPE
-                    pos, code = detect(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes)
+                    pos, code = detect(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes, threaded)
                 elseif type === INT
                     pos, code = parseint!(T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
                 elseif type === FLOAT
@@ -389,7 +462,7 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, ta
                 elseif type === BOOL
                     pos, code = parsevalue!(Bool, T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
                 elseif type === POOL
-                    pos, code = parsepooled!(T, tape, tapeidx, buf, pos, len, options, row, col, rowsguess, pool, refs, lastrefs, typecodes)
+                    pos, code = parsepooled!(T, tape, tapeidx, buf, pos, len, options, row, col, rowsguess, pool, refs, lastrefs, typecodes, threaded)
                 else # STRING
                     pos, code = parsestring!(T, tape, tapeidx, buf, pos, len, options, row, col, typecodes)
                 end
@@ -440,12 +513,12 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, ta
     return row, tapes
 end
 
-@noinline reallocatetape() = println("warning: didn't pre-allocate enough tape while parsing, re-allocating...")
-@noinline notenoughcolumns(cols, ncols, row) = println("warning: only found $cols / $ncols columns on data row: $row. Filling remaining columns with `missing`")
-@noinline toomanycolumns(cols, row) = println("warning: parsed expected $cols columns, but didn't reach end of line on data row: $row. Ignoring any extra columns on this row")
-@noinline stricterror(T, buf, pos, len, code, row, col) = throw(Error("error parsing $T on row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))"))
-@noinline warning(T, buf, pos, len, code, row, col) = println("warnings: error parsing $T on row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))")
-@noinline fatalerror(buf, pos, len, code, row, col) = throw(Error("fatal error, encountered an invalidly quoted field while parsing on row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code)), check your `quotechar` arguments or manually fix the field in the file itself"))
+@noinline reallocatetape() = println("thread = $(Threads.threadid()) warning: didn't pre-allocate enough tape while parsing, re-allocating...")
+@noinline notenoughcolumns(cols, ncols, row) = println("thread = $(Threads.threadid()) warning: only found $cols / $ncols columns on data row: $row. Filling remaining columns with `missing`")
+@noinline toomanycolumns(cols, row) = println("thread = $(Threads.threadid()) warning: parsed expected $cols columns, but didn't reach end of line on data row: $row. Ignoring any extra columns on this row")
+@noinline stricterror(T, buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) error parsing $T on row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))"))
+@noinline warning(T, buf, pos, len, code, row, col) = println("thread = $(Threads.threadid()) warning: error parsing $T on row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))")
+@noinline fatalerror(buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) fatal error, encountered an invalidly quoted field while parsing on row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code)), check your `quotechar` arguments or manually fix the field in the file itself"))
 
 const INTVALUE = Val(true)
 const NONINTVALUE = Val(false)
@@ -461,7 +534,7 @@ const NONINTVALUE = Val(false)
     return
 end
 
-function detect(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes)
+function detect(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes, threaded)
     int, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, options)
     if Parsers.invalidquotedfield(code)
         fatalerror(buf, pos, tlen, code, row, col)
@@ -646,7 +719,7 @@ end
     end
 end
 
-function parsepooled!(T, tape, tapeidx, buf, pos, len, options, row, col, rowsguess, pool, refs, lastrefs, typecodes)
+function parsepooled!(T, tape, tapeidx, buf, pos, len, options, row, col, rowsguess, pool, refs, lastrefs, typecodes, threaded)
     x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
     setposlen!(tape, tapeidx, code, vpos, vlen)
     if Parsers.invalidquotedfield(code)
