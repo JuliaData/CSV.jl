@@ -305,6 +305,14 @@ function file(source,
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
+    if threaded === nothing && VERSION >= v"1.3" && Threads.nthreads() > 1 && !transpose && limit == typemax(Int64) && footerskip == 0 && rowsguess >= 1_000
+        threaded = true
+    elseif threaded === true
+        if VERSION < v"1.3"
+            @warn "incompatible julia version for `threaded=true`: $VERSION, requires >= v\"1.3\", setting `threaded=false`"
+            threaded = false
+        end
+    end
 
     # deduce initial column types for parsing based on whether any user-provided types were provided or not
     T = type === nothing ? EMPTY : (typecode(type) | USER)
@@ -329,7 +337,7 @@ function file(source,
         # 16 bits for field length (allows for maximum field size of 65K)
     # the 2nd UInt64 is used for storing the raw bits of a parsed, typed value: Int64, Float64, Date, DateTime, Bool, or categorical/pooled UInt32 ref
     ncols = length(names)
-    if (threaded === true) || (threaded === nothing && !transpose && limit == typemax(Int64) && rowsguess > 10_000 && footerskip == 0 && Threads.nthreads() > 1)
+    if threaded === true
         # multithread
         typecodes = AtomicVector(typecodes)
         N = Threads.nthreads()
@@ -343,6 +351,7 @@ function file(source,
         tasks = let typecodes=typecodes, tapelen=tapelen, positions=positions, pool=pool
             tasks = map(1:N) do i
                 Base.@_inline_meta
+@static if VERSION >= v"1.3"
                 Threads.@spawn begin
                     tt = Base.time()
                     trefs = Vector{Dict{String, UInt64}}(undef, ncols)
@@ -354,6 +363,7 @@ function file(source,
                     debug && println("thread = $(Threads.threadid()): time for parsing: $(Base.time() - tt)")
                     (ret[1], ret[2], trefs, tlastrefs)
                 end
+end # @static if VERSION >= v"1.3"
             end
         end
         # wait until each task finishes
