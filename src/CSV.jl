@@ -305,10 +305,10 @@ function file(source,
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
-    if threaded === nothing && VERSION >= v"1.3" && Threads.nthreads() > 1 && !transpose && limit == typemax(Int64) && footerskip == 0 && rowsguess >= 1_000
+    if threaded === nothing && VERSION >= v"1.3-DEV" && Threads.nthreads() > 1 && !transpose && limit == typemax(Int64) && footerskip == 0 && rowsguess >= 1_000
         threaded = true
     elseif threaded === true
-        if VERSION < v"1.3"
+        if VERSION < v"1.3-DEV"
             @warn "incompatible julia version for `threaded=true`: $VERSION, requires >= v\"1.3\", setting `threaded=false`"
             threaded = false
         end
@@ -337,80 +337,13 @@ function file(source,
         # 16 bits for field length (allows for maximum field size of 65K)
     # the 2nd UInt64 is used for storing the raw bits of a parsed, typed value: Int64, Float64, Date, DateTime, Bool, or categorical/pooled UInt32 ref
     ncols = length(names)
+    pool = pool === true ? 1.0 : pool isa Float64 ? pool : 0.0
     if threaded === true
         # multithread
-        typecodes = AtomicVector(typecodes)
-        N = Threads.nthreads()
-        chunksize = div((len - datapos), N)
-        ranges = [datapos, (chunksize * i for i = 1:N)...]
-        ranges[end] = len
-        findrowstarts!(buf, len, options, ranges)
-        rowchunkguess = div(rowsguess, N)
-        tapelen = rowchunkguess * 2
-        debug && println("parsing using $N threads: $rowchunkguess rows chunked at positions: $ranges")
-        tasks = let typecodes=typecodes, tapelen=tapelen, positions=positions, pool=pool
-            tasks = map(1:N) do i
-                Base.@_inline_meta
-@static if VERSION >= v"1.3"
-                Threads.@spawn begin
-                    tt = Base.time()
-                    trefs = Vector{Dict{String, UInt64}}(undef, ncols)
-                    tlastrefs = zeros(UInt64, ncols)
-                    ttapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, tapelen) for i = 1:ncols]
-                    tdatapos = ranges[i]
-                    tlen = ranges[i + 1] - (i != N)
-                    ret = parsetape(Val(false), IG, ncols, gettypecodes(typemap), ttapes, tapelen, buf, tdatapos, tlen, limit, cmt, positions, pool, trefs, tlastrefs, rowchunkguess, typecodes, debug, options, true)
-                    debug && println("thread = $(Threads.threadid()): time for parsing: $(Base.time() - tt)")
-                    (ret[1], ret[2], trefs, tlastrefs)
-                end
-end # @static if VERSION >= v"1.3"
-            end
-        end
-        # wait until each task finishes
-        results = map(fetch, tasks)
-        rows = sum(x->x[1], results)
-        tapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, rows * 2) for i = 1:ncols]
-        refs = Vector{Dict{String, UInt64}}(undef, ncols)
-        lastrefs = zeros(UInt64, ncols)
-        i = 1
-        for (r, tps, rs, lrs) in results
-            for col = 1:ncols
-                if isassigned(rs, col)
-                    # merge refs and recode if necessary
-                    if !isassigned(refs, col)
-                        refs[col] = rs[col]
-                        lastrefs[col] = lrs[col]
-                    else
-                        rng = collect(UInt64(0):lrs[col])
-                        recode = false
-                        for (k, v) in rs[col]
-                            refvalue = get(refs[col], k, UInt64(0))
-                            if refvalue != v
-                                recode = true
-                                if refvalue == 0
-                                    refvalue = (lastrefs[col] += UInt64(1))
-                                end
-                                refs[col][k] = refvalue
-                                rng[v] = refvalue
-                            end
-                        end
-                        if recode
-                            tp = tps[col]
-                            @simd for j = 2:2:(r * 2)
-                                @inbounds tp[j] = rng[tp[j]]
-                            end
-                        end
-                    end
-                end
-                # copy thread-tape to master tape
-                copyto!(tapes[col], i, tps[col], 1, r * 2)
-            end
-            i += r * 2
-        end
+        rows, tapes, refs, typecodes = multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool, ncols, IG, typemap, limit, cmt, debug)
     else
         tapelen = rowsguess * 2
         tapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, tapelen) for i = 1:ncols]
-        pool = pool === true ? 1.0 : pool isa Float64 ? pool : 0.0
         refs = Vector{Dict{String, UInt64}}(undef, ncols)
         lastrefs = zeros(UInt64, ncols)
         t = Base.time()
@@ -435,6 +368,96 @@ end # @static if VERSION >= v"1.3"
         end
     end
     return File(getname(source), names, finaltypes, rows - footerskip, ncols, eq, categorical, finalrefs, buf, tapes)
+end
+
+function multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool, ncols, IG, typemap, limit, cmt, debug)
+    typecodes = AtomicVector(typecodes)
+    N = Threads.nthreads()
+    chunksize = div((len - datapos), N)
+    ranges = [datapos, (chunksize * i for i = 1:N)...]
+    ranges[end] = len
+    findrowstarts!(buf, len, options, ranges)
+    rowchunkguess = div(rowsguess, N)
+    tapelen = rowchunkguess * 2
+    debug && println("parsing using $N threads: $rowchunkguess rows chunked at positions: $ranges")
+    rowsv = Vector{Int}(undef, N)
+    tapesv = Vector{Vector{Vector{UInt64}}}(undef, N)
+    refsv = Vector{Vector{Dict{String, UInt64}}}(undef, N)
+    lastrefsv = Vector{Vector{UInt64}}(undef, N)
+    @sync for i = 1:N
+@static if VERSION >= v"1.3-DEV"
+        Threads.@spawn begin
+            tt = Base.time()
+            trefs = Vector{Dict{String, UInt64}}(undef, ncols)
+            tlastrefs = zeros(UInt64, ncols)
+            ttapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, tapelen) for i = 1:ncols]
+            tdatapos = ranges[i]
+            tlen = ranges[i + 1] - (i != N)
+            ret = parsetape(Val(false), IG, ncols, gettypecodes(typemap), ttapes, tapelen, buf, tdatapos, tlen, limit, cmt, EMPTY_POSITIONS, pool, trefs, tlastrefs, rowchunkguess, typecodes, debug, options, true)
+            debug && println("thread = $(Threads.threadid()): time for parsing: $(Base.time() - tt)")
+            rowsv[i] = ret[1]
+            tapesv[i] = ret[2]
+            refsv[i] = trefs
+            lastrefsv[i] = tlastrefs
+        end
+end # @static if VERSION >= v"1.3-DEV"
+    end
+    rows = sum(rowsv)
+    tapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, rows * 2) for i = 1:ncols]
+    refs = Vector{Dict{String, UInt64}}(undef, ncols)
+    lastrefs = zeros(UInt64, ncols)
+    rngs = Matrix{Vector{UInt64}}(undef, N, ncols)
+    recodes = falses(N, ncols)
+    for i = 1:N
+        rs = refsv[i]
+        lrs = lastrefsv[i]
+        for col = 1:ncols
+            if isassigned(rs, col)
+                # merge refs and recode if necessary
+                if !isassigned(refs, col)
+                    refs[col] = rs[col]
+                    lastrefs[col] = lrs[col]
+                else
+                    rng = collect(UInt64(0):lrs[col])
+                    recode = false
+                    for (k, v) in rs[col]
+                        refvalue = get(refs[col], k, UInt64(0))
+                        if refvalue != v
+                            recode = true
+                            if refvalue == 0
+                                refvalue = (lastrefs[col] += UInt64(1))
+                            end
+                            refs[col][k] = refvalue
+                            rng[v + 1] = refvalue
+                        end
+                    end
+                    recodes[i, col] = recode
+                    rngs[i, col] = rng
+                end
+            end
+        end
+    end
+    @sync for j = 1:N
+@static if VERSION >= v"1.3-DEV"
+        Threads.@spawn begin
+            r, tps, rs, lrs = rowsv[j], tapesv[j], refsv[j], lastrefsv[j]
+            tt = Base.time()
+            for col = 1:ncols
+                if recodes[j, col]
+                    tp = tps[col]
+                    rng = rngs[j, col]
+                    @simd for k = 2:2:(r * 2)
+                        @inbounds tp[k] = rng[tp[k] + 1]
+                    end
+                end
+                # copy thread-tape to master tape
+                copyto!(tapes[col], 1 + (2 * sum(rowsv[1:j-1])), tps[col], 1, r * 2)
+            end
+            debug && println("thread = $(Threads.threadid()): time for aggregating: $(Base.time() - tt)")
+        end
+end # @static if VERSION >= v"1.3-DEV"
+    end
+    return rows, tapes, refs, typecodes
 end
 
 function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, tapelen, buf, pos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options::Parsers.Options{ignorerepeated}, threaded) where {transpose, ignorerepeated}
