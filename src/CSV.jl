@@ -136,6 +136,7 @@ Supported keyword arguments include:
   * `comment`: rows that begin with this `String` will be skipped while parsing
   * `use_mmap::Bool=!Sys.iswindows()`: whether the file should be mmapped for reading, which in some cases can be faster
   * `ignoreemptylines::Bool=false`: whether empty rows/lines in a file should be ignored (if `false`, each column will be assigned `missing` for that empty row)
+  * `threaded::Bool`: whether parsing should utilize multiple threads; by default threads are used on large enough files, but isn't allowed when `transpose=true` or when `limit` is used; only available in Julia 1.3+
 * Parsing options:
   * `missingstrings`, `missingstring`: either a `String`, or `Vector{String}` to use as sentinel values that will be parsed as `missing`; by default, only an empty field (two consecutive delimiters) is considered `missing`
   * `delim=','`: a `Char` or `String` that indicates how columns are delimited in a file; if no argument is provided, parsing will try to detect the most consistent delimiter on the first 10 rows of the file
@@ -305,11 +306,17 @@ function file(source,
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
-    if threaded === nothing && VERSION >= v"1.3-DEV" && Threads.nthreads() > 1 && !transpose && limit == typemax(Int64) && footerskip == 0 && rowsguess >= 1_000
+    if threaded === nothing && VERSION >= v"1.3-DEV" && Threads.nthreads() > 1 && !transpose && limit == typemax(Int64) && (rowsguess * ncols) >= 5_000
         threaded = true
     elseif threaded === true
         if VERSION < v"1.3-DEV"
             @warn "incompatible julia version for `threaded=true`: $VERSION, requires >= v\"1.3\", setting `threaded=false`"
+            threaded = false
+        elseif transpose
+            @warn "`threaded=true` not supported on transposed files"
+            threaded = false
+        elseif limit != typemax(Int64)
+            @warn "`threaded=true` not supported when limiting # of rows"
             threaded = false
         end
     end
