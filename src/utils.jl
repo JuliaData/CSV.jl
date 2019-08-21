@@ -324,3 +324,33 @@ function detect(str::String; options=Parsers.OPTIONS)
     end
     return str
 end
+
+# multithreading structures
+const AtomicTypes = Union{
+    Bool, Int8, Int16, Int32, Int64, Int128,
+    UInt8, UInt16, UInt32, UInt64, UInt128,
+    Float16, Float32, Float64
+}
+
+struct AtomicVector{T} <: AbstractArray{T, 1}
+    A::Vector{Threads.Atomic{T}}
+
+    function AtomicVector{T}(undef, n::Int) where {T}
+        T <: AtomicTypes || throw(ArgumentError("invalid type for AtomicVector: $T"))
+        return new{T}(map(x->Threads.Atomic{T}(), 1:n))
+    end
+
+    function AtomicVector(A::Vector{T}) where {T}
+        T <: AtomicTypes || throw(ArgumentError("invalid type for AtomicVector: $T"))
+        return new{T}(map(x->Threads.Atomic{T}(A[x]), 1:length(A)))
+    end
+end
+
+Base.size(a::AtomicVector) = size(a.A)
+Base.IndexStyle(::Type{A}) where {A <: AtomicVector} = Base.IndexLinear()
+
+Base.getindex(a::AtomicVector, i::Int) = a.A[i][]
+Base.setindex!(a::AtomicVector, x, i::Int) = setindex!(a.A[i], x)
+
+incr!(a::Vector, i) = (a[i] += 1)
+incr!(a::AtomicVector{T}, i) where {T} = Threads.atomic_add!(a.A[i], convert(T, 1)) + 1

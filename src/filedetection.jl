@@ -270,7 +270,6 @@ function guessnrows(buf, oq::UInt8, cq::UInt8, eq::UInt8, source, delim, comment
     len = fs = length(buf)
     pos = 1
     nbytes = 0
-    smallestline = nothing
     lastbytenewline = false
     nlines = 0
     bvc = ByteValueCounter()
@@ -302,24 +301,17 @@ function guessnrows(buf, oq::UInt8, cq::UInt8, eq::UInt8, source, delim, comment
             consumecommentedline!(buf, pos, len, comment, ignoreemptylines)
             nlines += 1
             lastbytenewline = true
-            smallestline = min(nbytes, something(smallestline, typemax(Int64)))
-            nbytes = 0
         elseif b == UInt8('\r')
             pos <= len && buf[pos] == UInt8('\n') && (pos += 1)
             consumecommentedline!(buf, pos, len, comment, ignoreemptylines)
             nlines += 1
             lastbytenewline = true
-            smallestline = min(nbytes, something(smallestline, typemax(Int64)))
-            nbytes = 0
         else
             lastbytenewline = false
             incr!(bvc, b)
         end
     end
     nlines += !lastbytenewline
-    if nbytes > 0
-        smallestline = min(nbytes, something(smallestline, typemax(Int64)))
-    end
 
      if delim === nothing
         if isa(source, AbstractString) && endswith(source, ".tsv")
@@ -346,9 +338,87 @@ function guessnrows(buf, oq::UInt8, cq::UInt8, eq::UInt8, source, delim, comment
         d = (delim isa Char && isascii(delim)) ? delim % UInt8 :
             (sizeof(delim) == 1 && isascii(delim)) ? delim[1] % UInt8 : delim
     end
-    smallestline = something(smallestline, 0)
-    debug && println("smallest line detected with $smallestline bytes")
-    guess = fs / smallestline
+    debug && println("avg bytes / line detected with $(nbytes / nlines) bytes")
+    guess = (fs / (nbytes / nlines)) * 1.2
     rowsguess = isfinite(guess) ? ceil(Int, guess) : 0
     return rowsguess, d
+end
+
+@inline function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, cmt, ignoreemptylines, ranges, ncols) where {ignorerepeated}
+    for i = 2:(length(ranges) - 1)
+        pos = ranges[i]
+        while pos <= len
+            startpos = pos
+            code = Parsers.ReturnCode(0)
+            # assume not in quoted field; start parsing, count ncols + newline and if things match, return
+            while pos <= len
+                _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
+                pos += tlen
+                if Parsers.newline(code)
+                    pos = consumecommentedline!(buf, pos, len, cmt, ignoreemptylines)
+                    if ignorerepeated
+                        pos = Parsers.checkdelim!(buf, pos, len, options)
+                    end
+                    # assume we found the correct start of the next row
+                    ranges[i] = pos
+                    break
+                end
+            end
+            # now we read the next row and see if we get the right # of columns
+            for _ = 1:ncols
+                _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
+                pos += tlen
+                pos > len && break
+            end
+            if Parsers.newline(code)
+                # boom, we read a whole row and got correct # of columns
+                break
+            end
+            # else, assume we were inside a quoted field:
+            pos = startpos
+            # if first byte is quotechar, need to check previous char for escapechar and if so, skip forward
+            if buf[pos] == options.cq && buf[pos - 1] == options.e
+                pos += 1
+            end
+            # start parsing until we find quotechar (ignoring escaped quote chars)
+            cq, eq = options.cq, options.e
+            while pos <= len
+                b = buf[pos]
+                pos += 1
+                if b == eq
+                    if pos > len
+                        break
+                    elseif eq == cq && buf[pos] != cq
+                        break
+                    end
+                    b = buf[pos]
+                    pos += 1
+                elseif b == cq
+                    break
+                end
+            end
+            while pos <= len
+                _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
+                pos += tlen
+                if Parsers.newline(code)
+                    pos = consumecommentedline!(buf, pos, len, cmt, ignoreemptylines)
+                    if ignorerepeated
+                        pos = Parsers.checkdelim!(buf, pos, len, options)
+                    end
+                    # assume we found the correct start of the next row
+                    ranges[i] = pos
+                    break
+                end
+            end
+            # in the worse case, we read to the end of the file; this shouldn't happen
+            # because we're only identifying the starting byte positions of rows
+            # in the middle of the file; if we hit this, it's most likely a corrupt file
+            # with unquoted delimiters in string cells, or misquoted cells.
+            # but if there's an actual bug here somehow, let's ask the user to tell us about it for now
+            if pos > len
+                @warn "$i; something went wrong trying to determine row positions for multithreading; it'd be very helpful if you could open an issue at https://github.com/JuliaData/CSV.jl/issues so package authors can investigate"
+            end
+        end
+    end
+    return
 end
