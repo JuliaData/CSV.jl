@@ -376,7 +376,8 @@ function multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool
     chunksize = div((len - datapos), N)
     ranges = [datapos, (chunksize * i for i = 1:N)...]
     ranges[end] = len
-    findrowstarts!(buf, len, options, ranges)
+    debug && println("initial byte positions before adjusting for start of rows: $ranges")
+    findrowstarts!(buf, len, options, cmt, IG, ranges, ncols)
     rowchunkguess = div(rowsguess, N)
     tapelen = rowchunkguess * 2
     debug && println("parsing using $N threads: $rowchunkguess rows chunked at positions: $ranges")
@@ -530,7 +531,7 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, ta
             if tapeidx + 1 > tapelen
                 debug && reallocatetape()
                 oldtapes = tapes
-                newtapelen = ceil(Int64, tapelen * 1.4)
+                newtapelen = ceil(Int64, tapelen * 1.5)
                 newtapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, newtapelen) for i = 1:ncols]
                 for i = 1:ncols
                     copyto!(newtapes[i], 1, oldtapes[i], 1, tapelen)
@@ -752,7 +753,7 @@ end
     end
 end
 
-function parsepooled!(T, tape, tapeidx, buf, pos, len, options, row, col, rowsguess, pool, refs, lastrefs, typecodes, threaded)
+@inline function parsepooled!(T, tape, tapeidx, buf, pos, len, options, row, col, rowsguess, pool, refs, lastrefs, typecodes, threaded)
     x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
     setposlen!(tape, tapeidx, code, vpos, vlen)
     if Parsers.invalidquotedfield(code)
