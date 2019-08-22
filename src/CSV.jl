@@ -306,7 +306,7 @@ function file(source,
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
-    if threaded === nothing && VERSION >= v"1.3-DEV" && Threads.nthreads() > 1 && !transpose && limit == typemax(Int64) && (rowsguess * ncols) >= 5_000
+    if threaded === nothing && VERSION >= v"1.3-DEV" && Threads.nthreads() > 1 && !transpose && limit == typemax(Int64) && (rowsguess * length(names)) >= 5_000
         threaded = true
     elseif threaded === true
         if VERSION < v"1.3-DEV"
