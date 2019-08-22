@@ -1,0 +1,12 @@
+fluid,col2,col3,acentric_factor
+Ar,150.86,48.98,-0.002
+C2H4,282.34,50.41,0.087
+CO2,304.12,73.74,0.225
+CO,132.85,34.94,0.045
+CH4,190.56,45.99,0.011
+H2,32.98,12.93,-0.217
+Kr,209.40,55.00,0.005
+Xe,289.74,58.40,0.008
+# Values taken from a more complete list given in
+# R. C. Reid, J. M. Prausnitz, and B. E. Poling, 2001,
+# The Properties of Gases and Liquids, 5th Ed. New York: McGraw-Hill.

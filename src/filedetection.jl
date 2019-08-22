@@ -219,6 +219,7 @@ function consumecommentedline!(buf, pos, len, (cmtptr, cmtlen), ::Val{true})
                 pos > len && break
                 @inbounds b = buf[pos]
             end
+            b == UInt8('\r') && pos <= len && buf[pos + 1] == UInt8('\n') && (pos += 1)
             pos += 1
         else
             newpos = skipemptyrow!(buf, pos, len)
@@ -247,6 +248,7 @@ function consumecommentedline!(buf, pos, len, (cmtptr, cmtlen), ::Val{false})
                 pos > len && break
                 @inbounds b = buf[pos]
             end
+            b == UInt8('\r') && pos <= len && buf[pos + 1] == UInt8('\n') && (pos += 1)
             pos += 1
         else
             break
