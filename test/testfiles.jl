@@ -574,6 +574,12 @@ testfiles = [
         NamedTuple{(:a, :b, :c), Tuple{String, String, Float64}},
         (a = ["\\孕晚期下午和晚上血压高\"", "\\孕晚期下午和晚上血压高\""], b = ["为什么中老年人血压不高也要定期测量血压", "晚上睡眠不好会导致血压升高吗"], c = [0.744359, 0.714016])
     ),
+    # https://github.com/JuliaData/CSV.jl/issues/478
+    ("error_comment.txt", (comment="#",),
+        (8, 4),
+        NamedTuple{(:fluid, :col2, :col3, :acentric_factor), Tuple{String, Float64, Float64, Float64}},
+        (fluid = ["Ar", "C2H4", "CO2", "CO", "CH4", "H2", "Kr", "Xe"], col2 = [150.86, 282.34, 304.12, 132.85, 190.56, 32.98, 209.4, 289.74], col3 = [48.98, 50.41, 73.74, 34.94, 45.99, 12.93, 55.0, 58.4], acentric_factor = [-0.002, 0.087, 0.225, 0.045, 0.011, -0.217, 0.005, 0.008])
+    )
 ];
 
 for test in testfiles
