@@ -198,7 +198,7 @@ getignorerepeated(p::Parsers.Options{ignorerepeated}) where {ignorerepeated} = i
             else
                 if pos <= len && !Parsers.newline(code)
                     options.silencewarnings || toomanycolumns(ncols, row)
-                    pos = skipto(buf, pos, len, options.oq, options.e, options.cq, 1, 2)
+                    pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, 1, 2)
                 end
             end
         end

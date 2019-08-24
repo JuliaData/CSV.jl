@@ -95,6 +95,17 @@ testfiles = [
         NamedTuple{(:col1, :col2, :col3), Tuple{Int64, Int64, Int64}},
         (col1 = [1, 4, 7], col2 = [2, 5, 8], col3 = [3, 6, 9])
     ),
+    # 418
+    ("test_footer_missing.csv", NamedTuple(),
+        (5, 3),
+        NamedTuple{(:col1, :col2, :col3), Tuple{Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}}},
+        (col1 = Union{Missing, Int64}[1, 4, 7, 10, missing], col2 = Union{Missing, Int64}[2, 5, 8, 11, missing], col3 = Union{Missing, Int64}[3, 6, 9, 12, missing])
+    ),
+    ("test_footer_missing.csv", (footerskip=1,),
+        (4, 3),
+        NamedTuple{(:col1, :col2, :col3), Tuple{Int64, Int64, Int64}},
+        (col1 = [1, 4, 7, 10], col2 = [2, 5, 8, 11], col3 = [3, 6, 9, 12])
+    ),
     ("test_dates.csv", NamedTuple(),
         (3, 1),
         NamedTuple{(:col1,), Tuple{Date}},
