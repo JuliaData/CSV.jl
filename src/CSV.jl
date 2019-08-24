@@ -295,6 +295,12 @@ function file(source,
     end
     cmt = comment === nothing ? nothing : (pointer(comment), sizeof(comment))
 
+    if footerskip > 0 && len > 0
+        revlen = skiptorow(ReversedBuf(buf), 1 + (buf[end] == UInt('\n') || buf[end] == UInt8('\r')), len, oq, eq, cq, 0, footerskip) - 2
+        len -= revlen
+        debug && println("adjusted for footerskip, len = $(len + revlen - 1) => $len")
+    end
+
     if !transpose
         # step 1: detect the byte position where the column names start (headerpos)
         # and where the first data row starts (datapos)
@@ -396,7 +402,7 @@ function file(source,
             end
         end
     end
-    return File(getname(source), names, finaltypes, rows - footerskip, ncols, eq, categorical, finalrefs, buf, tapes)
+    return File(getname(source), names, finaltypes, rows, ncols, eq, categorical, finalrefs, buf, tapes)
 end
 
 function multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool, ncols, ignoreemptylines, typemap, limit, cmt, debug)
@@ -550,7 +556,7 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, ta
                         if pos <= len && !Parsers.newline(code)
                             options.silencewarnings || toomanycolumns(ncols, row)
                             # ignore the rest of the line
-                            pos = skipto(buf, pos, len, options.oq, options.e, options.cq, 1, 2)
+                            pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, 1, 2)
                         end
                     end
                 end

@@ -325,6 +325,14 @@ function detect(str::String; options=Parsers.OPTIONS)
     return str
 end
 
+struct ReversedBuf <: AbstractVector{UInt8}
+    buf::Vector{UInt8}
+end
+
+Base.size(a::ReversedBuf) = size(a.buf)
+Base.IndexStyle(::Type{ReversedBuf}) = Base.IndexLinear()
+Base.getindex(a::ReversedBuf, i::Int) = a.buf[end + 1 - i]
+
 # multithreading structures
 const AtomicTypes = Union{
     Bool, Int8, Int16, Int32, Int64, Int128,

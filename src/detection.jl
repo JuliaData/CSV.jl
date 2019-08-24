@@ -4,18 +4,18 @@ function detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, h
     if header isa Integer
         if header <= 0
             # no header row in dataset; skip to data
-            datapos = skipto(buf, pos, len, oq, eq, cq, 1, datarow)
+            datapos = skiptorow(buf, pos, len, oq, eq, cq, 1, datarow)
         else
-            headerpos = skipto(buf, pos, len, oq, eq, cq, 1, header)
+            headerpos = skiptorow(buf, pos, len, oq, eq, cq, 1, header)
             headerpos = checkcommentandemptyline(buf, headerpos, len, cmt, ignoreemptylines)
-            datapos = skipto(buf, headerpos, len, oq, eq, cq, header, datarow)
+            datapos = skiptorow(buf, headerpos, len, oq, eq, cq, header, datarow)
         end
     elseif header isa AbstractVector{<:Integer}
-        headerpos = skipto(buf, pos, len, oq, eq, cq, 1, header[1])
+        headerpos = skiptorow(buf, pos, len, oq, eq, cq, 1, header[1])
         headerpos = checkcommentandemptyline(buf, headerpos, len, cmt, ignoreemptylines)
-        datapos = skipto(buf, headerpos, len, oq, eq, cq, header[1], datarow)
+        datapos = skiptorow(buf, headerpos, len, oq, eq, cq, header[1], datarow)
     elseif header isa Union{AbstractVector{Symbol}, AbstractVector{String}}
-        datapos = skipto(buf, 1, len, oq, eq, cq, 1, datarow)
+        datapos = skiptorow(buf, 1, len, oq, eq, cq, 1, datarow)
     else
         throw(ArgumentError("unsupported header argument: $header"))
     end
@@ -163,7 +163,7 @@ function detectcolumnnames(buf, headerpos, datapos, len, options, header, normal
     elseif header isa AbstractVector{<:Integer}
         names, pos = readsplitline(buf, headerpos, len, options)
         for row = 2:length(header)
-            pos = skipto(buf, pos, len, options.oq, options.e, options.cq, 1, header[row] - header[row - 1])
+            pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, 1, header[row] - header[row - 1])
             fields, pos = readsplitline(buf, pos, len, options)
             for (i, x) in enumerate(fields)
                 names[i] *= "_" * x
@@ -183,7 +183,7 @@ function incr!(c::ByteValueCounter, b::UInt8)
     return
 end
 
-function skipto(buf, pos, len, oq, eq, cq, cur, dest)
+function skiptorow(buf, pos, len, oq, eq, cq, cur, dest)
     cur >= dest && return pos
     for _ = 1:(dest - cur)
         while pos <= len
