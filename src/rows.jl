@@ -1,4 +1,4 @@
-struct Rows{transpose, ignoreemptylines, reusebuffer, O}
+struct Rows{transpose, O}
     name::String
     names::Vector{Symbol}
     cols::Int64
@@ -9,7 +9,8 @@ struct Rows{transpose, ignoreemptylines, reusebuffer, O}
     options::O # Parsers.Options
     positions::Vector{Int64}
     cmt::Union{Tuple{Ptr{UInt8}, Int}, Nothing}
-    iel::Val{ignoreemptylines}
+    ignoreemptylines::Bool
+    reusebuffer::Bool
     tape::Vector{UInt64}
 end
 
@@ -106,36 +107,56 @@ function Rows(source;
     buf = getsource(source, use_mmap)
     len = length(buf)
     # skip over initial BOM character, if present
-    pos = consumeBOM!(buf)
+    pos = consumeBOM(buf)
 
-    # we call guessnrows upfront to simultaneously guess how many rows are in a file (based on average # of bytes in first 10 rows), and to figure out our delimiter: if provided, we use that, otherwise, we auto-detect based on filename or detected common delimiters in first 10 rows
     oq = something(openquotechar, quotechar) % UInt8
-    cq = something(closequotechar, quotechar) % UInt8
     eq = escapechar % UInt8
-    cmt = comment === nothing ? nothing : (pointer(comment), sizeof(comment))
-    IG = Val(ignoreemptylines)
-    rowsguess, del = guessnrows(buf, oq, cq, eq, source, delim, cmt, IG, debug)
-    debug && println("estimated rows: $rowsguess")
-    debug && println("detected delimiter: \"$(escape_string(del isa UInt8 ? string(Char(del)) : del))\"")
-
-    # build Parsers.Options w/ parsing arguments
-    wh1 = del == UInt(' ') || delim == " " ? 0x00 : UInt8(' ')
-    wh2 = del == UInt8('\t') || delim == "\t" ? 0x00 : UInt8('\t')
-    trues = falses = nothing
+    cq = something(closequotechar, quotechar) % UInt8
     sentinel = ((isempty(missingstrings) && missingstring == "") || (length(missingstrings) == 1 && missingstrings[1] == "")) ? missing : isempty(missingstrings) ? [missingstring] : missingstrings
-    options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, del, UInt8('.'), trues, falses, nothing, ignorerepeated, true, parsingdebug, strict, silencewarnings)
-
-    # determine column names and where the data starts in the file; for transpose, we note the starting byte position of each column
-    if transpose
-        rowsguess, names, positions = datalayout_transpose(header, buf, pos, len, options, datarow, normalizenames)
-        datapos = isempty(positions) ? 0 : positions[1]
+    
+    if delim === nothing
+        del = isa(source, AbstractString) && endswith(source, ".tsv") ? UInt8('\t') :
+            isa(source, AbstractString) && endswith(source, ".wsv") ? UInt8(' ') :
+            UInt8('\n')
     else
+        del = (delim isa Char && isascii(delim)) ? delim % UInt8 :
+            (sizeof(delim) == 1 && isascii(delim)) ? delim[1] % UInt8 : delim
+    end
+    cmt = comment === nothing ? nothing : (pointer(comment), sizeof(comment))
+
+    if !transpose
+        # step 1: detect the byte position where the column names start (headerpos)
+        # and where the first data row starts (datapos)
+        headerpos, datapos = detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, header, datarow)
+        debug && println("headerpos = $headerpos, datapos = $datapos")
+
+        # step 2: detect delimiter (or use given) and detect number of (estimated) rows and columns
+        d, rowsguess = detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, del, cmt, ignoreemptylines)
+        debug && println("estimated rows: $rowsguess")
+        debug && println("detected delimiter: \"$(escape_string(d isa UInt8 ? string(Char(d)) : d))\"")
+
+        # step 3: build Parsers.Options w/ parsing arguments
+        wh1 = d == UInt(' ') ? 0x00 : UInt8(' ')
+        wh2 = d == UInt8('\t') ? 0x00 : UInt8('\t')
+        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, UInt8('.'), nothing, nothing, nothing, ignorerepeated, true, parsingdebug, strict, silencewarnings)
+
+        # step 4: generate or parse column names
+        names = detectcolumnnames(buf, headerpos, datapos, len, options, header, normalizenames)
+        ncols = length(names)
         positions = EMPTY_POSITIONS
-        names, datapos = datalayout(header, buf, pos, len, options, datarow, normalizenames, cmt, IG)
+    else
+        # transpose
+        d, rowsguess = detectdelimandguessrows(buf, pos, pos, len, oq, eq, cq, del, cmt, ignoreemptylines)
+        wh1 = d == UInt(' ') ? 0x00 : UInt8(' ')
+        wh2 = d == UInt8('\t') ? 0x00 : UInt8('\t')
+        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, UInt8('.'), nothing, nothing, nothing, ignorerepeated, true, parsingdebug, strict, silencewarnings)
+        rowsguess, names, positions = detecttranspose(buf, pos, len, options, header, datarow, normalizenames)
+        ncols = length(names)
+        datapos = positions[1]
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
-    return Rows{transpose, ignoreemptylines, reusebuffer, typeof(options)}(getname(source), names, length(names), eq, buf, datapos, limit, options, positions, cmt, IG, Vector{UInt64}(undef, length(names)))
+    return Rows{transpose, typeof(options)}(getname(source), names, length(names), eq, buf, datapos, limit, options, positions, cmt, ignoreemptylines, reusebuffer, Vector{UInt64}(undef, length(names)))
 end
 
 Tables.rowaccess(::Type{<:Rows}) = true
@@ -146,14 +167,13 @@ Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
 
 getignorerepeated(p::Parsers.Options{ignorerepeated}) where {ignorerepeated} = ignorerepeated
 
-@inline function Base.iterate(r::Rows{transpose, ignoreemptylines, reusebuffer}, (pos, len, row)=(r.datapos, length(r.buf), 1)) where {transpose, ignoreemptylines, reusebuffer}
+@inline function Base.iterate(r::Rows{transpose}, (pos, len, row)=(r.datapos, length(r.buf), 1)) where {transpose}
     (pos > len || row > r.limit) && return nothing
     buf, positions, ncols, options = r.buf, r.positions, r.cols, r.options
-    ignorerepeated = getignorerepeated(options)
-    pos = consumecommentedline!(buf, pos, len, r.cmt, r.iel)
-    ignorerepeated && (pos = Parsers.checkdelim!(buf, pos, len, options))
+    pos = checkcommentandemptyline(buf, pos, len, r.cmt, r.ignoreemptylines)
+    getignorerepeated(options) && (pos = Parsers.checkdelim!(buf, pos, len, options))
     pos > len && return nothing
-    tape = reusebuffer ? r.tape : Vector{UInt64}(undef, ncols)
+    tape = r.reusebuffer ? r.tape : Vector{UInt64}(undef, ncols)
     for col = 1:ncols
         if transpose
             @inbounds pos = positions[col]
@@ -178,7 +198,7 @@ getignorerepeated(p::Parsers.Options{ignorerepeated}) where {ignorerepeated} = i
             else
                 if pos <= len && !Parsers.newline(code)
                     options.silencewarnings || toomanycolumns(ncols, row)
-                    pos = readline!(buf, pos, len, options)
+                    pos = skipto(buf, pos, len, options.oq, options.e, options.cq, 1, 2)
                 end
             end
         end

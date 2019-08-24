@@ -1,5 +1,8 @@
 function testfile(file, kwargs, expected_sz, expected_sch, testfunc)
     println("testing $file")
+    if file isa IO
+        seekstart(file)
+    end
     rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
     actual_sch = Tables.schema(rows)
     @test Tuple(expected_sch.names) == actual_sch.names
@@ -524,9 +527,9 @@ testfiles = [
         (A = [1, 6], B = [1, 1], C = [10, missing])
     ),
     (IOBuffer("""A;B;C\n1,1,10\n2,0,16"""), (normalizenames=true,),
-        (2, 1),
-        NamedTuple{(:A_B_C,), Tuple{Int64}},
-        (A_B_C = [1, 2],)
+        (2, 3),
+        NamedTuple{(:A, :B, :C), Tuple{String, Missing, Missing}},
+        (A = ["1,1,10", "2,0,16"], B = [missing, missing], C = [missing, missing])
     ),
     (IOBuffer("""A;B;C\n1,1,10\n2,0,16"""), (delim=';',),
         (2, 3),
