@@ -12,7 +12,7 @@ function validate(fullpath::Union{AbstractString,IO}; kwargs...)
 end
 
 include("utils.jl")
-include("filedetection.jl")
+include("detection.jl")
 
 struct Error <: Exception
     msg::String
@@ -276,37 +276,60 @@ function file(source,
     buf = getsource(source, use_mmap)
     len = length(buf)
     # skip over initial BOM character, if present
-    pos = consumeBOM!(buf)
+    pos = consumeBOM(buf)
 
-    # we call guessnrows upfront to simultaneously guess how many rows are in a file (based on average # of bytes in first 10 rows), and to figure out our delimiter: if provided, we use that, otherwise, we auto-detect based on filename or detected common delimiters in first 10 rows
     oq = something(openquotechar, quotechar) % UInt8
-    cq = something(closequotechar, quotechar) % UInt8
     eq = escapechar % UInt8
-    cmt = comment === nothing ? nothing : (pointer(comment), sizeof(comment))
-    IG = Val(ignoreemptylines)
-    rowsguess, del = guessnrows(buf, oq, cq, eq, source, delim, cmt, IG, debug)
-    debug && println("estimated rows: $rowsguess")
-    debug && println("detected delimiter: \"$(escape_string(del isa UInt8 ? string(Char(del)) : del))\"")
-
-    # build Parsers.Options w/ parsing arguments
-    wh1 = del == UInt(' ') || delim == " " ? 0x00 : UInt8(' ')
-    wh2 = del == UInt8('\t') || delim == "\t" ? 0x00 : UInt8('\t')
+    cq = something(closequotechar, quotechar) % UInt8
     trues = truestrings === nothing ? nothing : truestrings
     falses = falsestrings === nothing ? nothing : falsestrings
     sentinel = ((isempty(missingstrings) && missingstring == "") || (length(missingstrings) == 1 && missingstrings[1] == "")) ? missing : isempty(missingstrings) ? [missingstring] : missingstrings
-    options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, del, decimal, trues, falses, dateformat, ignorerepeated, true, parsingdebug, strict, silencewarnings)
-
-    # determine column names and where the data starts in the file; for transpose, we note the starting byte position of each column
-    if transpose
-        rowsguess, names, positions = datalayout_transpose(header, buf, pos, len, options, datarow, normalizenames)
-        datapos = isempty(positions) ? 0 : positions[1]
+    
+    if delim === nothing
+        del = isa(source, AbstractString) && endswith(source, ".tsv") ? UInt8('\t') :
+            isa(source, AbstractString) && endswith(source, ".wsv") ? UInt8(' ') :
+            UInt8('\n')
     else
+        del = (delim isa Char && isascii(delim)) ? delim % UInt8 :
+            (sizeof(delim) == 1 && isascii(delim)) ? delim[1] % UInt8 : delim
+    end
+    cmt = comment === nothing ? nothing : (pointer(comment), sizeof(comment))
+
+    if !transpose
+        # step 1: detect the byte position where the column names start (headerpos)
+        # and where the first data row starts (datapos)
+        headerpos, datapos = detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, header, datarow)
+        debug && println("headerpos = $headerpos, datapos = $datapos")
+
+        # step 2: detect delimiter (or use given) and detect number of (estimated) rows and columns
+        d, rowsguess = detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, del, cmt, ignoreemptylines)
+        debug && println("estimated rows: $rowsguess")
+        debug && println("detected delimiter: \"$(escape_string(d isa UInt8 ? string(Char(d)) : d))\"")
+
+        # step 3: build Parsers.Options w/ parsing arguments
+        wh1 = d == UInt(' ') ? 0x00 : UInt8(' ')
+        wh2 = d == UInt8('\t') ? 0x00 : UInt8('\t')
+        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformat, ignorerepeated, true, parsingdebug, strict, silencewarnings)
+
+        # step 4: generate or parse column names
+        names = detectcolumnnames(buf, headerpos, datapos, len, options, header, normalizenames)
+        ncols = length(names)
         positions = EMPTY_POSITIONS
-        names, datapos = datalayout(header, buf, pos, len, options, datarow, normalizenames, cmt, IG)
+    else
+        # transpose
+        d, rowsguess = detectdelimandguessrows(buf, pos, pos, len, oq, eq, cq, del, cmt, ignoreemptylines)
+        wh1 = d == UInt(' ') ? 0x00 : UInt8(' ')
+        wh2 = d == UInt8('\t') ? 0x00 : UInt8('\t')
+        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformat, ignorerepeated, true, parsingdebug, strict, silencewarnings)
+        rowsguess, names, positions = detecttranspose(buf, pos, len, options, header, datarow, normalizenames)
+        ncols = length(names)
+        datapos = isempty(positions) ? 0 : positions[1]
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
-    if threaded === nothing && VERSION >= v"1.3-DEV" && Threads.nthreads() > 1 && !transpose && limit == typemax(Int64) && rowsguess > Threads.nthreads() && (rowsguess * length(names)) >= 5_000
+
+    # determine if we can use threads while parsing
+    if threaded === nothing && VERSION >= v"1.3-DEV" && Threads.nthreads() > 1 && !transpose && limit == typemax(Int64) && rowsguess > Threads.nthreads() && (rowsguess * ncols) >= 5_000
         threaded = true
     elseif threaded === true
         if VERSION < v"1.3-DEV"
@@ -330,7 +353,7 @@ function file(source,
         typecodes = initialtypes(T, types, names)
         categorical = categorical | any(x->x == CategoricalString{UInt32}, values(types))
     else
-        typecodes = TypeCode[T for _ = 1:length(names)]
+        typecodes = TypeCode[T for _ = 1:ncols]
     end
     debug && println("computed typecodes are: $typecodes")
 
@@ -343,18 +366,17 @@ function file(source,
         # 45 bits for position (allows for maximum file size of 35TB)
         # 16 bits for field length (allows for maximum field size of 65K)
     # the 2nd UInt64 is used for storing the raw bits of a parsed, typed value: Int64, Float64, Date, DateTime, Bool, or categorical/pooled UInt32 ref
-    ncols = length(names)
     pool = pool === true ? 1.0 : pool isa Float64 ? pool : 0.0
     if threaded === true
         # multithread
-        rows, tapes, refs, typecodes = multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool, ncols, IG, typemap, limit, cmt, debug)
+        rows, tapes, refs, typecodes = multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool, ncols, ignoreemptylines, typemap, limit, cmt, debug)
     else
         tapelen = rowsguess * 2
         tapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, tapelen) for i = 1:ncols]
         refs = Vector{Dict{String, UInt64}}(undef, ncols)
         lastrefs = zeros(UInt64, ncols)
         t = Base.time()
-        rows, tapes = parsetape(Val(transpose), IG, ncols, gettypecodes(typemap), tapes, tapelen, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options, false)
+        rows, tapes = parsetape(Val(transpose), ignoreemptylines, ncols, gettypecodes(typemap), tapes, tapelen, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options, false)
         debug && println("time for initial parsing to tape: $(Base.time() - t)")
     end
     for i = 1:ncols
@@ -377,14 +399,14 @@ function file(source,
     return File(getname(source), names, finaltypes, rows - footerskip, ncols, eq, categorical, finalrefs, buf, tapes)
 end
 
-function multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool, ncols, IG, typemap, limit, cmt, debug)
+function multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool, ncols, ignoreemptylines, typemap, limit, cmt, debug)
     typecodes = AtomicVector(typecodes)
     N = Threads.nthreads()
     chunksize = div((len - datapos), N)
     ranges = [datapos, (chunksize * i for i = 1:N)...]
     ranges[end] = len
     debug && println("initial byte positions before adjusting for start of rows: $ranges")
-    findrowstarts!(buf, len, options, cmt, IG, ranges, ncols)
+    findrowstarts!(buf, len, options, cmt, ignoreemptylines, ranges, ncols)
     rowchunkguess = div(rowsguess, N)
     tapelen = rowchunkguess * 2
     debug && println("parsing using $N threads: $rowchunkguess rows chunked at positions: $ranges")
@@ -401,7 +423,7 @@ function multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool
             ttapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, tapelen) for i = 1:ncols]
             tdatapos = ranges[i]
             tlen = ranges[i + 1] - (i != N)
-            ret = parsetape(Val(false), IG, ncols, gettypecodes(typemap), ttapes, tapelen, buf, tdatapos, tlen, limit, cmt, EMPTY_POSITIONS, pool, trefs, tlastrefs, rowchunkguess, typecodes, debug, options, true)
+            ret = parsetape(Val(false), ignoreemptylines, ncols, gettypecodes(typemap), ttapes, tapelen, buf, tdatapos, tlen, limit, cmt, EMPTY_POSITIONS, pool, trefs, tlastrefs, rowchunkguess, typecodes, debug, options, true)
             debug && println("thread = $(Threads.threadid()): time for parsing: $(Base.time() - tt)")
             rowsv[i] = ret[1]
             tapesv[i] = ret[2]
@@ -473,7 +495,7 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, ta
     tapeidx = 1
     if pos <= len && len > 0
         while row < limit
-            pos = consumecommentedline!(buf, pos, len, cmt, ignoreemptylines)
+            pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines)
             if ignorerepeated
                 pos = Parsers.checkdelim!(buf, pos, len, options)
             end
@@ -528,7 +550,7 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, ta
                         if pos <= len && !Parsers.newline(code)
                             options.silencewarnings || toomanycolumns(ncols, row)
                             # ignore the rest of the line
-                            pos = readline!(buf, pos, len, options)
+                            pos = skipto(buf, pos, len, options.oq, options.e, options.cq, 1, 2)
                         end
                     end
                 end
