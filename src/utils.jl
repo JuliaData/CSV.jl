@@ -129,7 +129,7 @@ reinterp_func(::Type{DateTime}) = datetime
 reinterp_func(::Type{Time}) = time
 reinterp_func(::Type{Bool}) = bool
 
-@noinline function consumeBOM!(source)
+@noinline function consumeBOM(source)
     # BOM character detection
     startpos = pos = 1
     len = length(source)

@@ -97,7 +97,7 @@ end
     @test df.X == ["b", "c", "a", "c"]
     @test df.X.refs[2] == df.X.refs[4]
 
-    df = CSV.read(IOBuffer("X\nb\nc\na\nc"), pool=0.5, copycols=true)
+    df = CSV.read(IOBuffer("X\nb\nc\na\nc"), pool=0.6, copycols=true)
     @test typeof(df.X) == PooledArrays.PooledArray{String,UInt32,1,Array{UInt32,1}}
     @test size(df) == (4, 1)
     @test df.X == ["b", "c", "a", "c"]
@@ -108,10 +108,10 @@ end
     @test size(df) == (4, 1)
     @test df.X[3] === missing
 
-    df = CSV.read(IOBuffer("X\nc\nc\n\nc\nc\nc\nc"), copycols=true)
+    df = CSV.read(IOBuffer("X\nc\nc\n\nc\nc\nc\nc\nc\nc"), copycols=true)
     @test typeof(df.X) == PooledArray{Union{Missing, String},UInt32,1,Array{UInt32,1}}
-    @test size(df) == (7, 1)
-    @test isequal(df.X, ["c", "c", missing, "c", "c", "c", "c"])
+    @test size(df) == (9, 1)
+    @test isequal(df.X, ["c", "c", missing, "c", "c", "c", "c", "c", "c"])
 
 end
 
@@ -201,22 +201,22 @@ end
 
 rngs = [1, 1, 1]
 buf = b"normal cell,next cell\nnormal cell2,next cell2\nhey"
-CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, nothing, Val(false), rngs, 2)
+CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, nothing, false, rngs, 2)
 @test rngs[2] == 23
 
 rngs = [1, 1, 1]
 buf = b"quoted, cell\",next cell\n\"normal cell2\",next cell2\nhey"
-CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, nothing, Val(false), rngs, 2)
+CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, nothing, false, rngs, 2)
 @test rngs[2] == 25
 
 rngs = [1, 2, 1]
 buf = b"\"\"quoted, cell\",next cell\n\"normal cell2\",next cell2\nhey"
-CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, nothing, Val(false), rngs, 2)
+CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, nothing, false, rngs, 2)
 @test rngs[2] == 27
 
 rngs = [1, 2, 1]
 buf = b"quoted,\"\" cell\",next cell\n\"normal cell2\",next cell2\nhey"
-CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, nothing, Val(false), rngs, 2)
+CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, nothing, false, rngs, 2)
 @test rngs[2] == 27
 
 end
