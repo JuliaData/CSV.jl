@@ -298,3 +298,32 @@ CSV.File(file; pool=0.4)
 CSV.File(file; pool=0.6)
 ```
 In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt64`. By default, `pool=0.1`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide greater control: `pool=0.4` means that if 40% or less of a column's values are unique, then it will be pooled.
+
+### Reading CSV from gzip (.gz) and zip files
+
+#### Example: reading from a gzip (.gz) file
+```julia
+using CSV
+CSV.write("c:/data/a.csv", a)
+
+# Windows users who do not have gzip available on the PATH should manually gzip the CSV
+;gzip a.csv
+
+using CodecZlib
+@time a= CSV.read(GzipDecompressorStream(open("c:/data/a.csv.gz")))
+```
+
+#### Example: reading from a zip file
+```julia
+using ZipFile, CSV, DataFrames
+
+a = DataFrame(a = 1:3)
+CSV.write("a.csv", a)
+
+# zip the file; Windows users who do not have zip available on the PATH can manual zip the CSV
+;zip a.csv a.zip
+
+z = ZipFile.Reader("a.zip")
+
+df = CSV.read(z.files[1])
+```
