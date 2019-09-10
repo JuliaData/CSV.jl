@@ -1,4 +1,4 @@
-using Dates, WeakRefStrings, CategoricalArrays, Tables
+using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
 
 @testset "CSV.write" begin
 
