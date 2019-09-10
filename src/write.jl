@@ -95,7 +95,7 @@ function write(::Nothing, rows, file, opts;
     if state === nothing
         if writeheader && !isempty(header)
             with(file, append) do io
-                pos = writenames(buf, pos, len, io, header, cols, opts)
+                pos = writenames(buf, pos, len, io, header, length(header), opts)
                 Base.write(io, resize!(buf, pos - 1))
             end
         end
@@ -106,7 +106,9 @@ function write(::Nothing, rows, file, opts;
     sch = Tables.Schema(names, nothing)
     cols = length(names)
     with(file, append) do io
-        writeheader && writenames(buf, pos, len, io, names, cols, opts)
+        if writeheader
+            pos = writenames(buf, pos, len, io, names, cols, opts)
+        end
         while true
             pos = writerow(buf, pos, len, io, sch, row, cols, opts)
             state = iterate(rows, st)
@@ -244,7 +246,7 @@ end
 
 function writecell(buf, pos, len, io, x::T, opts) where {T <: Base.IEEEFloat}
     @check Parsers.neededdigits(T)
-    return Parsers.writeshortest(buf, pos, x)
+    return Parsers.writeshortest(buf, pos, x, false, false, true, -1, UInt8('e'), false, opts.decimal)
 end
 
 getvalue(x::T, df) where {T <: Dates.TimeType} = Dates.format(x, df === nothing ? Dates.default_format(T) : df)
@@ -270,11 +272,17 @@ function writecell(buf, pos, len, io, x::Symbol, opts)
     return pos
 end
 
+# generic fallback; convert to string
+writecell(buf, pos, len, io, x, opts) =
+    writecell(buf, pos, len, io, Base.string(x), opts)
+
 function writecell(buf, pos, len, io, x::AbstractString, opts)
     bytes = codeunits(x)
     sz = sizeof(bytes)
     # check if need to escape
     needtoescape, needtoquote = check(bytes, sz, opts.delim, opts.openquotechar, opts.closequotechar, opts.newline)
+    needtoquote |= needtoescape
+    needtoquote |= opts.quotestrings
     @check (sz + (needtoquote * 2) + (needtoescape * 2 * sz))
     if needtoquote
         @inbounds buf[pos] = opts.openquotechar
@@ -362,7 +370,7 @@ function check(bytes, sz, delim::Tuple, oq, cq, newline::Tuple)
     @inbounds needtoquote = bytes[1] === oq
     j = 1
     k = 1
-    @simd for i = 1:n
+    @simd for i = 1:sz
         @inbounds b = bytes[i]
         needtoescape |= b == cq
         if b == newline[j]
