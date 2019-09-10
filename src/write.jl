@@ -142,7 +142,7 @@ end
 macro check(n)
     esc(quote
         if (pos + $n - 1) > len
-            write(io, view(buf, 1:(pos - 1)))
+            Base.write(io, view(buf, 1:(pos - 1)))
             pos = 1
         end
     end)
