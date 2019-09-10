@@ -60,7 +60,7 @@ function write(file, itr;
     return write(sch, rows, file, opts; kwargs...)
 end
 
-function write(sch::Tables.Schema{names}, rows, file, opts;
+function write(sch::Tables.Schema{names}, rows, file, opts,
         append::Bool=false,
         writeheader::Bool=!append,
         header::Vector=String[],
@@ -71,13 +71,15 @@ function write(sch::Tables.Schema{names}, rows, file, opts;
     buf = Vector{UInt8}(undef, len)
     pos = 1
     with(file, append) do io
+        Base.@_inline_meta
         if writeheader
             pos = writenames(buf, pos, len, io, colnames, cols, opts)
         end
+        ref = Ref{Int}(pos)
         for row in rows
-            pos = writerow(buf, pos, len, io, sch, row, cols, opts)
+            writerow(buf, ref, len, io, sch, row, cols, opts)
         end
-        Base.write(io, resize!(buf, pos - 1))
+        Base.write(io, resize!(buf, ref[] - 1))
     end
     return file
 end
@@ -123,7 +125,7 @@ end
 _seekstart(p::Base.Process) = return
 _seekstart(io::IO) = seekstart(io)
 
-function with(f::Function, io::IO, append)
+@inline function with(f::Function, io::IO, append)
     !append && _seekstart(io)
     f(io)
 end
@@ -173,11 +175,14 @@ function writenames(buf, pos, len, io, header, cols, opts)
 end
 
 function writerow(buf, pos, len, io, sch, row, cols, opts)
-    Tables.eachcolumn(sch, row) do val, col, nm
-        pos = writecell(buf, pos, len, io, val, opts)
-        pos = writedelimnewline(buf, pos, len, io, ifelse(col == cols, opts.newline, opts.delim))
+    # ref = Ref{Int}(pos)
+    n, d = opts.newline, opts.delim
+    Tables.eachcolumn(sch, row, pos) do val, col, nm, pos
+        Base.@_inline_meta
+        posx = writecell(buf, pos[], len, io, val, opts)
+        pos[] = writedelimnewline(buf, posx, len, io, ifelse(col == cols, n, d))
     end
-    return pos
+    return
 end
 
 function writecell(buf, pos, len, io, ::Missing, opts)
