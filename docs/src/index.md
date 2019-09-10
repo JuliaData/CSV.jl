@@ -307,10 +307,12 @@ using CSV
 CSV.write("c:/data/a.csv", a)
 
 # Windows users who do not have gzip available on the PATH should manually gzip the CSV
-;gzip a.csv
+;gzip c:/data/a.csv
 
-using CodecZlib
-@time a= CSV.read(GzipDecompressorStream(open("c:/data/a.csv.gz")))
+using CodecZlib, BufferedStreams
+io = open("c:/data/a.csv.gz") |> GzipDecompressorStream |> BufferedInputStream
+@time a= CSV.read(io)
+close(io)
 ```
 
 #### Example: reading from a zip file
@@ -318,12 +320,12 @@ using CodecZlib
 using ZipFile, CSV, DataFrames
 
 a = DataFrame(a = 1:3)
-CSV.write("a.csv", a)
+CSV.write("c:/data/a.csv", a)
 
 # zip the file; Windows users who do not have zip available on the PATH can manual zip the CSV
-;zip a.csv a.zip
+;zip c:/data/a.zip c:/data/a.csv
 
-z = ZipFile.Reader("a.zip")
+z = ZipFile.Reader("c:/data/a.zip")
 
 df = CSV.read(z.files[1])
 ```
