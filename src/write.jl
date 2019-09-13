@@ -282,6 +282,9 @@ end
 writecell(buf, pos, len, io, x, opts) =
     writecell(buf, pos, len, io, Base.string(x), opts)
 
+writecell(buf, pos, len, io, x::CategoricalString, opts) =
+    writecell(buf, pos, len, io, Base.string(x), opts)
+
 function writecell(buf, pos, len, io, x::AbstractString, opts)
     bytes = codeunits(x)
     sz = sizeof(bytes)
