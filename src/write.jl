@@ -60,7 +60,7 @@ function write(file, itr;
     return write(sch, rows, file, opts; kwargs...)
 end
 
-function write(sch::Tables.Schema{names}, rows, file, opts,
+function write(sch::Tables.Schema{names}, rows, file, opts;
         append::Bool=false,
         writeheader::Bool=!append,
         header::Vector=String[],
@@ -111,13 +111,14 @@ function write(::Nothing, rows, file, opts;
         if writeheader
             pos = writenames(buf, pos, len, io, names, cols, opts)
         end
+        ref = Ref{Int}(pos)
         while true
-            pos = writerow(buf, pos, len, io, sch, row, cols, opts)
+            writerow(buf, ref, len, io, sch, row, cols, opts)
             state = iterate(rows, st)
             state === nothing && break
             row, st = state
         end
-        Base.write(io, resize!(buf, pos - 1))
+        Base.write(io, resize!(buf, ref[] - 1))
     end
     return file
 end
@@ -130,7 +131,7 @@ _seekstart(io::IO) = seekstart(io)
     f(io)
 end
 
-function with(f::Function, io::Union{Base.TTY, Base.Pipe, Base.PipeEndpoint}, append)
+function with(f::Function, io::Union{Base.TTY, Base.Pipe, Base.PipeEndpoint, Base.DevNull}, append)
     # seeking in an unbuffered pipe makes no sense...
     f(io)
 end
