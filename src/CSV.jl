@@ -830,7 +830,7 @@ Parses a delimited file into a `DataFrame`. `copycols` determines whether a copy
 read(source; copycols::Bool=false, kwargs...) = DataFrame(CSV.File(source; kwargs...), copycols=copycols)
 
 function __init__()
-    Threads.resize_nthreads!(VALUE_BUFFERS)
+    # Threads.resize_nthreads!(VALUE_BUFFERS)
     return
 end
 

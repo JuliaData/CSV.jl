@@ -20,15 +20,118 @@ Supported keyword arguments include:
 """
 function write end
 
+mutable struct Options{D, N, DF, M}
+    delim::D
+    openquotechar::UInt8
+    closequotechar::UInt8
+    escapechar::UInt8
+    newline::N # Union{UInt8, NTuple{N, UInt8}}
+    decimal::UInt8
+    dateformat::DF
+    quotestrings::Bool
+    missingstring::M
+end
+
+tup(x::Char) = x % UInt8
+tup(x::AbstractString) = Tuple(codeunits(x))
+tlen(::UInt8) = 1
+tlen(::NTuple{N, UInt8}) where {N} = N
+
+write(file; kwargs...) = x->write(file, x; kwargs...)
+function write(file, itr;
+    delim::Union{Char, String}=',',
+    quotechar::Char='"',
+    openquotechar::Union{Char, Nothing}=nothing,
+    closequotechar::Union{Char, Nothing}=nothing,
+    escapechar::Char='"',
+    newline::Union{Char, String}='\n',
+    decimal::Char='.',
+    dateformat=nothing,
+    quotestrings::Bool=false,
+    missingstring::AbstractString="",
+    kwargs...)
+    checkvaliddelim(delim)
+    (isascii(something(openquotechar, quotechar)) && isascii(something(closequotechar, quotechar)) && isascii(escapechar)) || throw(ArgumentError("quote and escape characters must be ASCII characters "))
+    oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
+    e = escapechar % UInt8
+    opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring))
+    rows = Tables.rows(itr)
+    sch = Tables.schema(rows)
+    return write(sch, rows, file, opts; kwargs...)
+end
+
+function write(sch::Tables.Schema{names}, rows, file, opts;
+        append::Bool=false,
+        writeheader::Bool=!append,
+        header::Vector=String[],
+    ) where {names}
+    colnames = isempty(header) ? names : header
+    cols = length(colnames)
+    len = 2^22
+    buf = Vector{UInt8}(undef, len)
+    pos = 1
+    with(file, append) do io
+        Base.@_inline_meta
+        if writeheader
+            pos = writenames(buf, pos, len, io, colnames, cols, opts)
+        end
+        ref = Ref{Int}(pos)
+        for row in rows
+            writerow(buf, ref, len, io, sch, row, cols, opts)
+        end
+        Base.write(io, resize!(buf, ref[] - 1))
+    end
+    return file
+end
+
+# handle unknown schema case
+function write(::Nothing, rows, file, opts;
+        append::Bool=false,
+        writeheader::Bool=!append,
+        header::Vector=String[],
+    )
+    len = 2^22
+    buf = Vector{UInt8}(undef, len)
+    pos = 1
+    state = iterate(rows)
+    if state === nothing
+        if writeheader && !isempty(header)
+            with(file, append) do io
+                pos = writenames(buf, pos, len, io, header, length(header), opts)
+                Base.write(io, resize!(buf, pos - 1))
+            end
+        end
+        return file
+    end
+    row, st = state
+    names = isempty(header) ? propertynames(row) : header
+    sch = Tables.Schema(names, nothing)
+    cols = length(names)
+    with(file, append) do io
+        if writeheader
+            pos = writenames(buf, pos, len, io, names, cols, opts)
+        end
+        ref = Ref{Int}(pos)
+        while true
+            writerow(buf, ref, len, io, sch, row, cols, opts)
+            state = iterate(rows, st)
+            state === nothing && break
+            row, st = state
+        end
+        Base.write(io, resize!(buf, ref[] - 1))
+    end
+    return file
+end
+
 _seekstart(p::Base.Process) = return
 _seekstart(io::IO) = seekstart(io)
 
-function with(f::Function, io::IO, append)
+@inline function with(f::Function, io::IO, append)
     !append && _seekstart(io)
     f(io)
 end
 
-function with(f::Function, io::Union{Base.TTY, Base.Pipe, Base.PipeEndpoint}, append)
+function with(f::Function, io::Union{Base.TTY, Base.Pipe, Base.PipeEndpoint, Base.DevNull}, append)
     # seeking in an unbuffered pipe makes no sense...
     f(io)
 end
@@ -39,251 +142,264 @@ function with(f::Function, file::String, append)
     end
 end
 
-const VALUE_BUFFERS = [IOBuffer()]
-
-function _reset(io::IOBuffer)
-    io.ptr = 1
-    io.size = 0
-end
-
-function bufferedwrite(io, x::Union{Float16, Float32, Float64, BigFloat}, df, decimal)
-    dot = false
-    n = 0
-    if isnan(x)
-        print(io, "NaN")
-        return false
-    end
-    x < 0 && print(io,'-')
-    if isinf(x)
-        print(io, "Inf")
-        return false
-    end
-    @static if VERSION < v"1.1.0"
-        buffer = Base.Grisu.DIGITSs[Threads.threadid()]
-    else
-        buffer = Base.Grisu.getbuf()
-    end
-    len, pt, neg = Base.Grisu.grisu(x,Base.Grisu.SHORTEST,n,buffer)
-    pdigits = pointer(buffer)
-    e = pt-len
-    k = -9<=e<=9 ? 1 : 2
-    if -pt > k+1 || e+dot > k+1
-        # => ########e###
-        unsafe_write(io, pdigits+0, len)
-        print(io, 'e')
-        print(io, string(e))
-        return false
-    elseif pt <= 0
-        # => 0.000########
-        print(io, "0$decimal")
-        while pt < 0
-            print(io, '0')
-            pt += 1
+macro check(n)
+    esc(quote
+        if (pos + $n - 1) > len
+            Base.write(io, view(buf, 1:(pos - 1)))
+            pos = 1
         end
-        unsafe_write(io, pdigits+0, len)
-    elseif e >= dot
-        # => ########000.
-        unsafe_write(io, pdigits+0, len)
-        while e > 0
-            print(io, '0')
-            e -= 1
-        end
-        if dot
-            print(io, decimal)
-        end
-    else # => ####.####
-        unsafe_write(io, pdigits+0, pt)
-        print(io, decimal)
-        unsafe_write(io, pdigits+pt, len-pt)
+    end)
+end
+
+function writedelimnewline(buf, pos, len, io, x::UInt8)
+    @check 1
+    @inbounds buf[pos] = x
+    return pos + 1
+end
+
+function writedelimnewline(buf, pos, len, io, x)
+    @check tlen(x)
+    for i = 1:tlen(x)
+        @inbounds buf[pos] = x[i]
+        pos += 1
     end
-    return false
+    return pos
 end
 
-function bufferedwrite(io, val::Number, df, decimal)
-    print(io, val)
-    return false
-end
-
-getvalue(x, df) = x
-getvalue(x::T, df) where {T <: Dates.TimeType} = Dates.format(x, df === nothing ? Dates.default_format(T) : df)
-
-function bufferedwrite(io, val, df, decimal)
-    VALUE_BUFFER = VALUE_BUFFERS[Threads.threadid()]
-    _reset(VALUE_BUFFER)
-    print(VALUE_BUFFER, getvalue(val, df))
-    return true
-end
-
-function bufferedescape(io, delim, oq, cq, e, newline, quotestrings)
-    VALUE_BUFFER = VALUE_BUFFERS[Threads.threadid()]
-    n = position(VALUE_BUFFER)
-    n == 0 && return
-    needtoescape, needtoquote = check(n, delim, oq, cq, newline)
-    needtoquote |= quotestrings
-    seekstart(VALUE_BUFFER)
-    if (needtoquote | needtoescape)
-        if needtoescape
-            Base.write(io, oq)
-            buf = VALUE_BUFFER.data
-            for i = 1:n
-                @inbounds b = buf[i]
-                if b === cq || b === oq
-                    Base.write(io, e, b)
-                else
-                    Base.write(io, b)
-                end
-            end
-            Base.write(io, cq)
-        else
-            Base.write(io, oq, VALUE_BUFFER, cq)
-        end
-    else
-        Base.write(io, VALUE_BUFFER)
-    end
-    return
-end
-
-function check(n, delim::Char, oq, cq, newline::Char)
-    needtoescape = false
-    buf = VALUE_BUFFERS[Threads.threadid()].data
-    @inbounds needtoquote = buf[1] === oq
-    d = delim % UInt8
-    new = newline % UInt8
-    @simd for i = 1:n
-        @inbounds b = buf[i]
-        needtoquote |= (b === d) | (b === new)
-        needtoescape |= b === cq
-    end
-    return needtoescape, needtoquote
-end
-
-function check(n, delim::Char, oq, cq, newline::String)
-    needtoescape = false
-    buf = VALUE_BUFFERS[Threads.threadid()].data
-    @inbounds needtoquote = buf[1] === oq
-    d = delim % UInt8
-    @simd for i = 1:n
-        @inbounds b = buf[i]
-        needtoquote |= b === d
-        needtoescape |= b === cq
-    end
-    needtoquote |= occursin(newline, String(buf[1:n]))
-    return needtoescape, needtoquote
-end
-
-function check(n, delim::String, oq, cq, newline::Char)
-    needtoescape = false
-    buf = VALUE_BUFFERS[Threads.threadid()].data
-    @inbounds needtoquote = buf[1] === oq
-    new = newline % UInt8
-    @simd for i = 1:n
-        @inbounds b = buf[i]
-        needtoquote |= b === new
-        needtoescape |= b === cq
-    end
-    needtoquote |= occursin(delim, String(buf[1:n]))
-    return needtoescape, needtoquote
-end
-
-function check(n, delim::String, oq, cq, newline::String)
-    needtoescape = false
-    buf = VALUE_BUFFERS[Threads.threadid()].data
-    @inbounds needtoquote = buf[1] === oq
-    @simd for i = 1:n
-        @inbounds b = buf[i]
-        needtoescape |= b === cq
-    end
-    str = String(buf[1:n])
-    needtoquote |= occursin(delim, str)
-    needtoquote |= occursin(newline, str)
-    return needtoescape, needtoquote
-end
-
-write(file; kwargs...) = x->write(file, x; kwargs...)
-function write(file, itr;
-    quotechar::Char='"',
-    openquotechar::Union{Char, Nothing}=nothing,
-    closequotechar::Union{Char, Nothing}=nothing,
-    escapechar::Char='"',
-    newline::Union{Char, String}='\n',
-    decimal::Char='.',
-    kwargs...)
-    (isascii(something(openquotechar, quotechar)) && isascii(something(closequotechar, quotechar)) && isascii(escapechar)) || throw(ArgumentError("quote and escape characters must be ASCII characters "))
-    oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
-    e = escapechar % UInt8
-    rows = Tables.rows(itr)
-    sch = Tables.schema(rows)
-    return write(sch, rows, file, oq, cq, e, newline, decimal; kwargs...)
-end
-
-function printheader(io, header, delim, oq, cq, e, newline)
+function writenames(buf, pos, len, io, header, cols, opts)
     cols = length(header)
     for (col, nm) in enumerate(header)
-        bufferedwrite(io, string(nm), nothing, UInt8('.')) && bufferedescape(io, delim, oq, cq, e, newline, false)
-        Base.write(io, ifelse(col == cols, newline, delim))
+        pos = writecell(buf, pos, len, io, nm, opts)
+        pos = writedelimnewline(buf, pos, len, io, ifelse(col == cols, opts.newline, opts.delim))
+    end
+    return pos
+end
+
+function writerow(buf, pos, len, io, sch, row, cols, opts)
+    # ref = Ref{Int}(pos)
+    n, d = opts.newline, opts.delim
+    Tables.eachcolumn(sch, row, pos) do val, col, nm, pos
+        Base.@_inline_meta
+        posx = writecell(buf, pos[], len, io, val, opts)
+        pos[] = writedelimnewline(buf, posx, len, io, ifelse(col == cols, n, d))
     end
     return
 end
 
-function write(sch::Tables.Schema{names}, rows, file, oq, cq, e, newline, decimal;
-    delim::Union{Char, String}=',',
-    missingstring::AbstractString="",
-    dateformat=nothing,
-    append::Bool=false,
-    writeheader::Bool=!append,
-    header::Vector=String[],
-    quotestrings::Bool=false,
-    kwargs...) where {names}
-    checkvaliddelim(delim)
-    colnames = isempty(header) ? names : header
-    cols = length(colnames)
-    with(file, append) do io
-        writeheader && printheader(io, colnames, delim, oq, cq, e, newline)
-        for row in rows
-            Tables.eachcolumn(sch, row) do val, col, nm
-                bufferedwrite(io, coalesce(val, missingstring), dateformat, decimal) && bufferedescape(io, delim, oq, cq, e, newline, quotestrings)
-                Base.write(io, ifelse(col == cols, newline, delim))
-            end
-        end
+function writecell(buf, pos, len, io, ::Missing, opts)
+    str = opts.missingstring
+    t = tlen(str)
+    t == 0 && return pos
+    @check t
+    Base.@nexprs 12 i -> begin
+        buf[pos] = str[i]
+        pos += 1
+        (i + 1) > t && return pos
     end
-    return file
+    for i = 13:t
+        buf[pos] = str[i]
+        pos += 1
+    end
+    return pos
 end
 
-# handle unknown schema case
-function write(::Nothing, rows, file, oq, cq, e, newline, decimal;
-    delim::Union{Char, String}=',',
-    missingstring::AbstractString="",
-    dateformat=nothing,
-    append::Bool=false,
-    writeheader::Bool=!append,
-    header::Vector=String[],
-    quotestrings::Bool=false,
-    kwargs...)
-    checkvaliddelim(delim)
-    state = iterate(rows)
-    if state === nothing
-        if writeheader && !isempty(header)
-            with(file, append) do io
-                printheader(io, header, delim, oq, cq, e, newline)
-            end
-        end
-        return file
+function writecell(buf, pos, len, io, x::Bool, opts)
+    @inbounds if x
+        @check 4
+        buf[pos] = UInt8('t')
+        buf[pos + 1] = UInt8('r')
+        buf[pos + 2] = UInt8('u')
+        buf[pos + 3] = UInt8('e')
+        pos += 4
+    else
+        @check 5
+        buf[pos] = UInt8('f')
+        buf[pos + 1] = UInt8('a')
+        buf[pos + 2] = UInt8('l')
+        buf[pos + 3] = UInt8('s')
+        buf[pos + 4] = UInt8('e')
+        pos += 5
     end
-    row, st = state
-    names = isempty(header) ? propertynames(row) : header
-    sch = Tables.Schema(names, nothing)
-    cols = length(names)
-    with(file, append) do io
-        writeheader && printheader(io, names, delim, oq, cq, e, newline)
-        while true
-            Tables.eachcolumn(sch, row) do val, col, nm
-                bufferedwrite(io, coalesce(val, missingstring), dateformat, decimal) && bufferedescape(io, delim, oq, cq, e, newline, quotestrings)
-                Base.write(io, ifelse(col == cols, newline, delim))
+    return pos
+end
+
+function writecell(buf, pos, len, io, y::Integer, opts)
+    x, neg = Base.split_sign(y)
+    if neg
+        @inbounds buf[pos] = UInt8('-')
+        pos += 1
+    end
+    n = i = ndigits(x, base=10, pad=1)
+    @check i
+    while i > 0
+        @inbounds buf[pos + i - 1] = 48 + rem(x, 10)
+        x = oftype(x, div(x, 10))
+        i -= 1
+    end
+    return pos + n
+end
+
+function writecell(buf, pos, len, io, x::AbstractFloat, opts)
+    bytes = codeunits(string(x))
+    sz = sizeof(bytes)
+    @check sz
+    for i = 1:sz
+        @inbounds buf[pos] = bytes[i]
+        pos += 1
+    end
+    return pos
+end
+
+function writecell(buf, pos, len, io, x::T, opts) where {T <: Base.IEEEFloat}
+    @check Parsers.neededdigits(T)
+    return Parsers.writeshortest(buf, pos, x, false, false, true, -1, UInt8('e'), false, opts.decimal)
+end
+
+getvalue(x::T, df) where {T <: Dates.TimeType} = Dates.format(x, df === nothing ? Dates.default_format(T) : df)
+
+function writecell(buf, pos, len, io, x::Dates.TimeType, opts)
+    bytes = codeunits(getvalue(x, opts.dateformat))
+    @check sizeof(bytes)
+    for i = 1:sizeof(bytes)
+        @inbounds buf[pos] = bytes[i]
+        pos += 1
+    end
+    return pos
+end
+
+function writecell(buf, pos, len, io, x::Symbol, opts)
+    ptr = Base.unsafe_convert(Ptr{UInt8}, x)
+    sz = ccall(:strlen, Csize_t, (Cstring,), ptr)
+    @check sz
+    for i = 1:sz
+        @inbounds buf[pos] = unsafe_load(ptr, i)
+        pos += 1
+    end
+    return pos
+end
+
+# generic fallback; convert to string
+writecell(buf, pos, len, io, x, opts) =
+    writecell(buf, pos, len, io, Base.string(x), opts)
+
+writecell(buf, pos, len, io, x::CategoricalString, opts) =
+    writecell(buf, pos, len, io, Base.string(x), opts)
+
+function writecell(buf, pos, len, io, x::AbstractString, opts)
+    bytes = codeunits(x)
+    sz = sizeof(bytes)
+    # check if need to escape
+    needtoescape, needtoquote = check(bytes, sz, opts.delim, opts.openquotechar, opts.closequotechar, opts.newline)
+    needtoquote |= needtoescape
+    needtoquote |= opts.quotestrings
+    @check (sz + (needtoquote * 2) + (needtoescape * 2 * sz))
+    if needtoquote
+        @inbounds buf[pos] = opts.openquotechar
+        pos += 1
+    end
+    if needtoescape
+        oq, cq, e = opts.openquotechar, opts.closequotechar, opts.escapechar
+        for i = 1:sz
+            @inbounds b = bytes[i]
+            if b == cq || b == oq
+                @inbounds buf[pos] = e
+                pos += 1
             end
-            state = iterate(rows, st)
-            state === nothing && break
-            row, st = state
+            @inbounds buf[pos] = b
+            pos += 1
+        end
+    else
+        for i = 1:sz
+            @inbounds buf[pos] = bytes[i]
+            pos += 1
         end
     end
-    return file
+    if needtoquote
+        @inbounds buf[pos] = opts.closequotechar
+        pos += 1
+    end
+    return pos
+end
+
+function check(bytes, sz, delim::UInt8, oq, cq, newline::UInt8)
+    needtoescape = false
+    @inbounds needtoquote = bytes[1] == oq
+    @simd for i = 1:sz
+        @inbounds b = bytes[i]
+        needtoquote |= (b == delim) | (b == newline)
+        needtoescape |= b == cq
+    end
+    return needtoescape, needtoquote
+end
+
+function check(bytes, sz, delim::UInt8, oq, cq, newline::Tuple)
+    needtoescape = false
+    @inbounds needtoquote = bytes[1] == oq
+    j = 1
+    for i = 1:sz
+        @inbounds b = bytes[i]
+        needtoquote |= b == delim
+        needtoescape |= b == cq
+        if b == newline[j]
+            j += 1
+            if j > length(newline)
+                needtoquote = true
+                j = 1
+            end
+        else
+            j = 1
+        end
+    end
+    return needtoescape, needtoquote
+end
+
+function check(bytes, sz, delim::Tuple, oq, cq, newline::UInt8)
+    needtoescape = false
+    @inbounds needtoquote = bytes[1] == oq
+    j = 1
+    for i = 1:sz
+        @inbounds b = bytes[i]
+        needtoquote |= b == newline
+        needtoescape |= b == cq
+        if b == delim[j]
+            j += 1
+            if j > length(delim)
+                needtoquote = true
+                j = 1
+            end
+        else
+            j = 1
+        end
+    end
+    return needtoescape, needtoquote
+end
+
+function check(bytes, sz, delim::Tuple, oq, cq, newline::Tuple)
+    needtoescape = false
+    @inbounds needtoquote = bytes[1] === oq
+    j = 1
+    k = 1
+    @simd for i = 1:sz
+        @inbounds b = bytes[i]
+        needtoescape |= b == cq
+        if b == newline[j]
+            j += 1
+            if j > length(newline)
+                needtoquote = true
+                j = 1
+            end
+        else
+            j = 1
+        end
+        if b == delim[k]
+            k += 1
+            if k > length(delim)
+                needtoquote = true
+                k = 1
+            end
+        else
+            k = 1
+        end
+    end
+    return needtoescape, needtoquote
 end
