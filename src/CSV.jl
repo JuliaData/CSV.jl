@@ -363,6 +363,7 @@ function file(source,
     end
     debug && println("computed typecodes are: $typecodes")
 
+    # TODO: Update this
     # we now do our parsing pass over the file, starting at datapos
     # we fill in our "tape", which has two UInt64 slots for each cell in row-major order (linearly indexed)
     # the 1st UInt64 is used for noting the byte position, len, and other metadata of the field within the file:
