@@ -377,12 +377,18 @@ function file(source,
         # multithread
         rows, tapes, refs, typecodes = multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool, ncols, ignoreemptylines, typemap, limit, cmt, debug)
     else
-        tapelen = rowsguess * 2
-        tapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, tapelen) for i = 1:ncols]
+        tapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, rowsguess) for i = 1:ncols]
+        poslens = Vector{Vector{UInt64}}(undef, ncols)
+        for i = 1:ncols
+            T = typecodes[i]
+            if !user(T)
+                poslens[i] = Mmap.mmap(Vector{UInt64}, rowsguess)
+            end
+        end
         refs = Vector{Dict{String, UInt64}}(undef, ncols)
         lastrefs = zeros(UInt64, ncols)
         t = Base.time()
-        rows, tapes = parsetape(Val(transpose), ignoreemptylines, ncols, gettypecodes(typemap), tapes, tapelen, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options, false)
+        rows, tapes, poslens = parsetape(Val(transpose), ignoreemptylines, ncols, gettypecodes(typemap), tapes, poslens, buf, datapos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options, false)
         debug && println("time for initial parsing to tape: $(Base.time() - t)")
     end
     for i = 1:ncols
@@ -496,9 +502,8 @@ end # @static if VERSION >= v"1.3-DEV"
     return rows, tapes, refs, typecodes
 end
 
-function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, tapelen, buf, pos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options::Parsers.Options{ignorerepeated}, threaded) where {transpose, ignorerepeated}
+function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, poslens, buf, pos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, debug, options::Parsers.Options{ignorerepeated}, threaded) where {transpose, ignorerepeated}
     row = 0
-    tapeidx = 1
     if pos <= len && len > 0
         while row < limit
             pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines)
@@ -515,7 +520,7 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, ta
                 @inbounds tape = tapes[col]
                 type = typebits(T)
                 if type === EMPTY
-                    pos, code = detect(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes, threaded)
+                    pos, code = detect(tape, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes, threaded)
                 elseif type === MISSINGTYPE
                     pos, code = detect(tape, tapeidx, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, debug, typecodes, threaded)
                 elseif type === INT

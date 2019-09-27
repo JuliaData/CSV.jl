@@ -362,3 +362,6 @@ Base.setindex!(a::AtomicVector, x, i::Int) = setindex!(a.A[i], x)
 
 incr!(a::Vector, i) = (a[i] += 1)
 incr!(a::AtomicVector{T}, i) where {T} = Threads.atomic_add!(a.A[i], convert(T, 1)) + 1
+
+unset!(A::Vector, i::Int) = ccall(:jl_arrayunset, Cvoid, (Array, Csize_t), A, i - 1)
+
