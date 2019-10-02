@@ -1,7 +1,7 @@
 name = "CSV"
 uuid = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 authors = ["Jacob Quinn <quinn.jacobd@gmail.com>"]
-version = "0.5.12"
+version = "0.5.13"
 
 [deps]
 CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
@@ -16,7 +16,7 @@ Unicode = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
 WeakRefStrings = "ea10d353-3f73-51f8-a26c-33c1cb351aa5"
 
 [compat]
-CategoricalArrays = "0.5,0.6"
+CategoricalArrays = "0.5,0.6,0.7"
 DataFrames = "0.18,0.19,0.20"
 Parsers = "0.3"
 PooledArrays = "0.5"
