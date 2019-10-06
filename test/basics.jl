@@ -37,7 +37,7 @@ df = CSV.read(joinpath(dir, "test_types.csv"), types=Dict(:string=>Union{Missing
 @test df.string[1] === missing
 
 # #352
-@test_throws ArgumentError first(CSV.File(joinpath(dir, "test_types.csv"))).a
+@test_throws KeyError first(CSV.File(joinpath(dir, "test_types.csv"))).a
 
 @test_throws ArgumentError CSV.File(IOBuffer("a\0b\n1\02\n"); delim='\0')
 @test_throws ArgumentError CSV.File(IOBuffer("a\0b\n1\02\n"); delim="\0")

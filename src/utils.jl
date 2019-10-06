@@ -32,6 +32,7 @@ const EMPTY       = 0b00000000 % TypeCode
 # MISSING is a mask that can be combined w/ any other TypeCode for Union{T, Missing}
 const MISSING     = 0b10000000 % TypeCode
 missingtype(x::TypeCode) = (x & MISSING) === MISSING
+usermissing(x::TypeCode) = x == (MISSING | USER)
 
 # MISSINGTYPE is for a column like `Vector{Missing}`
 # if we're trying to detect a column type and the 1st value of a column is `missing`
@@ -56,7 +57,7 @@ user(x::TypeCode) = (x & USER) === USER
 const TYPEBITS = 0b00011111 % TypeCode
 typebits(x::TypeCode) = x & TYPEBITS
 
-typecode(::Type{Missing}) = MISSINGTYPE
+typecode(::Type{Missing}) = MISSING
 typecode(::Type{<:Integer}) = INT
 typecode(::Type{<:AbstractFloat}) = FLOAT
 typecode(::Type{Date}) = DATE
@@ -74,6 +75,7 @@ typecode(x::T) where {T} = typecode(T)
 const TYPECODES = Dict(
     EMPTY => Missing,
     MISSINGTYPE => Missing,
+    MISSING => Missing,
     INT => Int64,
     FLOAT => Float64,
     DATE => Date,
@@ -98,14 +100,11 @@ gettypecodes(x::Dict{TypeCode, TypeCode}) = x
 const MISSING_BIT = 0x8000000000000000
 missingvalue(x::UInt64) = (x & MISSING_BIT) == MISSING_BIT
 
-const INT_BIT = 0x4000000000000000
-intvalue(x::UInt64) = (x & INT_BIT) == INT_BIT
-
-const ESCAPE_BIT = 0x2000000000000000
+const ESCAPE_BIT = 0x4000000000000000
 escapedvalue(x::UInt64) = (x & ESCAPE_BIT) == ESCAPE_BIT
 
-getpos(x::UInt64) = (x & 0x1fffffffffff0000) >> 16
-getlen(x::UInt64) = x & 0x000000000000ffff
+getpos(x::UInt64) = (x & 0x3ffffffffff00000) >> 20
+getlen(x::UInt64) = x & 0x00000000000fffff
 
 # utilities to convert values to raw UInt64 and back for tape writing
 int64(x::UInt64) = Core.bitcast(Int64, x)
@@ -363,5 +362,10 @@ Base.setindex!(a::AtomicVector, x, i::Int) = setindex!(a.A[i], x)
 incr!(a::Vector, i) = (a[i] += 1)
 incr!(a::AtomicVector{T}, i) where {T} = Threads.atomic_add!(a.A[i], convert(T, 1)) + 1
 
-unset!(A::Vector, i::Int) = ccall(:jl_arrayunset, Cvoid, (Array, Csize_t), A, i - 1)
+function unset!(A::Vector, i::Int, row, x)
+    finalize(A[i])
+    ccall(:jl_arrayunset, Cvoid, (Array, Csize_t), A, i - 1)
+    # println("deleting col = $i on thread = $(Threads.threadid()), row = $row, id = $x")
+    return
+end
 
