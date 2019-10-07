@@ -180,6 +180,8 @@ function getsource(source, use_mmap)
         return source
     elseif source isa Cmd
         return Base.read(source)
+    elseif source isa AbstractPath
+        return Base.read(Base.open(source))
     elseif use_mmap && !isa(source, IO)
         return Mmap.mmap(source)
     elseif !isa(source, IO)
@@ -195,6 +197,7 @@ end
 
 getname(buf::Vector{UInt8}) = "<raw buffer>"
 getname(cmd::Cmd) = string(cmd)
+getname(path::AbstractPath) = string(path)
 getname(str) = String(str)
 getname(io::I) where {I <: IO} = string("<", I, ">")
 
