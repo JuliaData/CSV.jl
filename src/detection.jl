@@ -31,6 +31,7 @@ function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, delim
     headerbvc = ByteValueCounter()
     bvc = ByteValueCounter()
     b = 0x00
+    # don't parse header row if there isn't one: #508
     if headerpos > 0
         pos = headerpos
         # parsing our header row is useful for delimiter

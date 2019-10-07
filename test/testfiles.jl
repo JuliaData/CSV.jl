@@ -593,6 +593,12 @@ testfiles = [
         (8, 4),
         NamedTuple{(:fluid, :col2, :col3, :acentric_factor), Tuple{String, Float64, Float64, Float64}},
         (fluid = ["Ar", "C2H4", "CO2", "CO", "CH4", "H2", "Kr", "Xe"], col2 = [150.86, 282.34, 304.12, 132.85, 190.56, 32.98, 209.4, 289.74], col3 = [48.98, 50.41, 73.74, 34.94, 45.99, 12.93, 55.0, 58.4], acentric_factor = [-0.002, 0.087, 0.225, 0.045, 0.011, -0.217, 0.005, 0.008])
+    ),
+    # https://github.com/JuliaData/CSV.jl/issues/508
+    ("test_508.csv", (comment="#", header=[:eats_steak, :how_cooked]),
+        (6, 2),
+        NamedTuple{(:eats_steak, :how_cooked), Tuple{String, Union{String, Missing}}},
+        (eats_steak=["Yes", "Yes", "Yes", "Yes", "No", "Yes"], how_cooked=["Medium rare", "Medium", "Medium", "Medium rare", missing, "Rare"])
     )
 ];
 
