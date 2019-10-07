@@ -83,8 +83,7 @@ end
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{Union{T, Missing}, S}, row::Int) where {T, S}
     @boundscheck checkbounds(c, row)
     @inbounds x = c.tape[row]
-    # TODO: sentinel
-    return ifelse(x == MISSING_BIT, missing, reinterp_func(T)(x))
+    return ifelse(x === c.sentinel, missing, reinterp_func(T)(x))
 end
 
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{T, PooledString}, row::Int) where {T}
@@ -97,7 +96,6 @@ end
 @inline Base.@propagate_inbounds function Base.getindex(c::Column{T, Union{PooledString, Missing}}, row::Int) where {T}
     @boundscheck checkbounds(c, row)
     @inbounds x = c.tape[row]
-    # TODO: sentinel
     if x == 0
         return missing
     else

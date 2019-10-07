@@ -99,6 +99,9 @@ gettypecodes(x::Dict{TypeCode, TypeCode}) = x
 # bit patterns for missing value, int value, escaped string, position and len in tape parsing
 const MISSING_BIT = 0x8000000000000000
 missingvalue(x::UInt64) = (x & MISSING_BIT) == MISSING_BIT
+sentinelvalue(::Type{Float64}) = Core.bitcast(UInt64, NaN) | MISSING_BIT
+sentinelvalue(::Type{T}) where {T} = MISSING_BIT
+const INT_SENTINELS = [-8899831978349840752, 7868026406538925040, -6217046242515721702, 1494576606923267742]
 
 const ESCAPE_BIT = 0x4000000000000000
 escapedvalue(x::UInt64) = (x & ESCAPE_BIT) == ESCAPE_BIT
@@ -333,34 +336,43 @@ Base.IndexStyle(::Type{ReversedBuf}) = Base.IndexLinear()
 Base.getindex(a::ReversedBuf, i::Int) = a.buf[end + 1 - i]
 
 # multithreading structures
-const AtomicTypes = Union{
-    Bool, Int8, Int16, Int32, Int64, Int128,
-    UInt8, UInt16, UInt32, UInt64, UInt128,
-    Float16, Float32, Float64
-}
+const AtomicTypes = Union{Base.Threads.atomictypes...}
 
 struct AtomicVector{T} <: AbstractArray{T, 1}
-    A::Vector{Threads.Atomic{T}}
+    A::Vector{T}
 
     function AtomicVector{T}(undef, n::Int) where {T}
         T <: AtomicTypes || throw(ArgumentError("invalid type for AtomicVector: $T"))
-        return new{T}(map(x->Threads.Atomic{T}(), 1:n))
+        return new{T}(zeros(T, n))
     end
 
     function AtomicVector(A::Vector{T}) where {T}
         T <: AtomicTypes || throw(ArgumentError("invalid type for AtomicVector: $T"))
-        return new{T}(map(x->Threads.Atomic{T}(A[x]), 1:length(A)))
+        return new{T}(A)
     end
 end
 
 Base.size(a::AtomicVector) = size(a.A)
 Base.IndexStyle(::Type{A}) where {A <: AtomicVector} = Base.IndexLinear()
 
-Base.getindex(a::AtomicVector, i::Int) = a.A[i][]
-Base.setindex!(a::AtomicVector, x, i::Int) = setindex!(a.A[i], x)
-
-incr!(a::Vector, i) = (a[i] += 1)
-incr!(a::AtomicVector{T}, i) where {T} = Threads.atomic_add!(a.A[i], convert(T, 1)) + 1
+for typ in Base.Threads.atomictypes
+    lt = Base.Threads.llvmtypes[typ]
+    ilt = Base.Threads.llvmtypes[Base.Threads.inttype(typ)]
+    rt = "$lt, $lt*"
+    irt = "$ilt, $ilt*"
+    @eval Base.getindex(x::AtomicVector{$typ}, i::Int) =
+        Base.llvmcall($"""
+                 %ptr = inttoptr i$(Base.Threads.WORD_SIZE) %0 to $lt*
+                 %rv = load atomic $rt %ptr acquire, align $(Base.Threads.gc_alignment(typ))
+                 ret $lt %rv
+                 """, $typ, Tuple{Ptr{$typ}}, pointer(x.A, i))
+    @eval Base.setindex!(x::AtomicVector{$typ}, v::$typ, i::Int) =
+        Base.llvmcall($"""
+                 %ptr = inttoptr i$(Base.Threads.WORD_SIZE) %0 to $lt*
+                 store atomic $lt %1, $lt* %ptr release, align $(Base.Threads.gc_alignment(typ))
+                 ret void
+                 """, Cvoid, Tuple{Ptr{$typ}, $typ}, pointer(x.A, i), v)
+end
 
 function unset!(A::Vector, i::Int, row, x)
     finalize(A[i])
