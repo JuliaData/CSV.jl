@@ -741,7 +741,13 @@ end
         if !Parsers.sentinel(code)
             @inbounds tape[row] = uint64(x)
             if missingtype(T) && x === INT_SENTINELS[intsentinel.x]
+                oldintsent = uint64(INT_SENTINELS[intsentinel.x])
                 intsentinel.x = min(intsentinel.x + 1, 4)
+                newintsent = uint64(INT_SENTINELS[intsentinel.x])
+                for i = 1:(row - 1)
+                    @inbounds z = tape[i]
+                    @inbounds tape[i] = ifelse(z === oldintsent, newintsent, z)
+                end
             end
         else
             @inbounds typecodes[col] = T | MISSING
@@ -878,7 +884,8 @@ end
         @inbounds r = refs[col]
     end
     if Parsers.sentinel(code)
-        @inbounds typecodes[col] = T | MISSING
+        T |= MISSING
+        @inbounds typecodes[col] = T
         ref = UInt64(0)
     else
         ref = getref!(r, PointerString(pointer(buf, vpos), vlen), lastrefs, col, code, options)
