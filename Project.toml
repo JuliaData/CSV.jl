@@ -23,6 +23,7 @@ Parsers = "0.3"
 PooledArrays = "0.5"
 Tables = "0.1,0.2"
 WeakRefStrings = "0.5,0.6"
+LazyArrays = "0.12"
 julia = "1"
 
 [extras]
