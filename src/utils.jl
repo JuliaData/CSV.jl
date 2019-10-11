@@ -31,7 +31,7 @@ const EMPTY       = 0b00000000 % TypeCode
 
 # MISSING is a mask that can be combined w/ any other TypeCode for Union{T, Missing}
 const MISSING     = 0b10000000 % TypeCode
-missingtype(x::TypeCode) = (x & MISSING) === MISSING
+missingtype(x::TypeCode) = (x & MISSING) == MISSING
 usermissing(x::TypeCode) = x == (MISSING | USER)
 
 # MISSINGTYPE is for a column like `Vector{Missing}`
@@ -47,12 +47,13 @@ const DATETIME    = 0b00000101 % TypeCode
 const TIME        = 0b00000110 % TypeCode
 const BOOL        = 0b00000111 % TypeCode
 const STRING      = 0b00001000 % TypeCode
+stringtype(x::TypeCode) = (x & STRING) == STRING
 const POOL        = 0b00010000 % TypeCode
 pooled(x::TypeCode) = (x & POOL) == POOL
 
 # a user-provided type; a mask that can be combined w/ basic types
 const USER     = 0b00100000 % TypeCode
-user(x::TypeCode) = (x & USER) === USER
+user(x::TypeCode) = (x & USER) == USER
 
 const TYPEBITS = 0b00011111 % TypeCode
 typebits(x::TypeCode) = x & TYPEBITS
@@ -93,6 +94,25 @@ const TYPECODES = Dict(
     STRING | MISSING => Union{String, Missing}
 )
 
+@inline function promote_typecode(T, S)
+    if T == EMPTY || T == S || user(T) || (T == MISSINGTYPE && S == MISSINGTYPE) ||
+        (T & ~MISSING) == (S & ~MISSING)
+        return T | S
+    elseif T == MISSINGTYPE
+        return S | MISSING
+    elseif S == MISSINGTYPE
+        return T | MISSING
+    elseif T == INT
+        return S == FLOAT ? S : S == (FLOAT | MISSING) ? S : missingtype(S) ? (STRING | MISSING) : STRING
+    elseif T == FLOAT
+        return S == INT ? FLOAT : S == (INT | MISSING) ? T | MISSING : missingtype(S) ? (STRING | MISSING) : STRING
+    elseif missingtype(T) || missingtype(S)
+        return STRING | MISSING
+    else
+        return STRING
+    end
+end
+
 gettypecodes(x::Dict) = Dict(typecode(k)=>typecode(v) for (k, v) in x)
 gettypecodes(x::Dict{TypeCode, TypeCode}) = x
 
@@ -101,7 +121,7 @@ const MISSING_BIT = 0x8000000000000000
 missingvalue(x::UInt64) = (x & MISSING_BIT) == MISSING_BIT
 sentinelvalue(::Type{Float64}) = Core.bitcast(UInt64, NaN) | MISSING_BIT
 sentinelvalue(::Type{T}) where {T} = MISSING_BIT
-const INT_SENTINELS = [-8899831978349840752, 7868026406538925040, -6217046242515721702, 1494576606923267742]
+sentinelvalue(::Type{Int64}) = rand(typemin(Int64):div(typemin(Int64), 1000)) * ifelse(rand(Bool), 1, -1)
 
 const ESCAPE_BIT = 0x4000000000000000
 escapedvalue(x::UInt64) = (x & ESCAPE_BIT) == ESCAPE_BIT
@@ -131,25 +151,8 @@ reinterp_func(::Type{DateTime}) = datetime
 reinterp_func(::Type{Time}) = time
 reinterp_func(::Type{Bool}) = bool
 
-@noinline function consumeBOM(source)
-    # BOM character detection
-    startpos = pos = 1
-    len = length(source)
-    if pos <= len && source[pos] == 0xef
-        pos += 1
-        if pos <= len && source[pos] == 0xbb
-            pos += 1
-        else
-            pos = startpos
-        end
-        if pos <= len && source[pos] == 0xbf
-            pos += 1
-        else
-            pos = startpos
-        end
-    end
-    return pos
-end
+# one-liner suggested from ScottPJones
+consumeBOM(buf) = (length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf) ? 4 : 1
 
 function slurp(source)
     N = 2^22 # 4 mb increments
