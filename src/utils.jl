@@ -121,6 +121,7 @@ const MISSING_BIT = 0x8000000000000000
 missingvalue(x::UInt64) = (x & MISSING_BIT) == MISSING_BIT
 sentinelvalue(::Type{Float64}) = Core.bitcast(UInt64, NaN) | MISSING_BIT
 sentinelvalue(::Type{T}) where {T} = MISSING_BIT
+const INT_SENTINEL = -8899831978349840752
 sentinelvalue(::Type{Int64}) = rand(typemin(Int64):div(typemin(Int64), 1000)) * ifelse(rand(Bool), 1, -1)
 
 const ESCAPE_BIT = 0x4000000000000000

@@ -404,7 +404,7 @@ function file(source,
         rows, tapes, refs, typecodes, intsentinels = multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool, ncols, ignoreemptylines, typemap, limit, cmt, debug)
         finalrows = sum(rows)
     else
-        intsentinels = fill(-8899831978349840752, ncols)
+        intsentinels = fill(INT_SENTINEL, ncols)
         tapes, poslens = allocate(rowsguess, ncols, typecodes)
         refs = Vector{Dict{String, UInt64}}(undef, ncols)
         lastrefs = zeros(UInt64, ncols)
@@ -466,7 +466,7 @@ function multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool
             tl_refs = Vector{Dict{String, UInt64}}(undef, ncols)
             tl_lastrefs = zeros(UInt64, ncols)
             tl_tapes, tl_poslens = allocate(rowchunkguess, ncols, typecodes)
-            tl_intsentinels = fill(-8899831978349840752, ncols)
+            tl_intsentinels = fill(INT_SENTINEL, ncols)
             tl_datapos = ranges[i]
             tl_len = ranges[i + 1] - (i != N)
             tl_rows, tl_tapes, tl_poslens = parsetape(Val(false), ignoreemptylines, ncols, gettypecodes(typemap), tl_tapes, tl_poslens, buf, tl_datapos, tl_len, limit, cmt, EMPTY_POSITIONS, pool, tl_refs, tl_lastrefs, rowchunkguess, perthreadtypecodes[i], tl_intsentinels, debug, options, true)
@@ -481,16 +481,47 @@ function multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool
 end # @static if VERSION >= v"1.3-DEV"
     end
     intsentinels = perthreadintsentinels[1]
+    anyintrecode = false
     # promote typecodes from each thread
     for col = 1:ncols
         for i = 1:N
             @inbounds typecodes[col] = promote_typecode(typecodes[col], perthreadtypecodes[i][col])
-            if perthreadintsentinels[N][col] != intsentinels[col]
+            if perthreadintsentinels[N][col] != INT_SENTINEL
                 intsentinels[col] = perthreadintsentinels[N][col]
+                anyintrecode = true
+            end
+        end
+    end
+    # if we need to recode any int column sentinels, we need to check that all the other threads
+    # don't already have the chosen int sentinel
+    if anyintrecode
+        for col = 1:ncols
+            while true
+                foundsent = false
+                intsent = uint64(intsentinels[col])
+                for i = 1:N
+                    if uint64(perthreadintsentinels[i][col]) != intsent
+                        tape = perthreadtapes[i][col]
+                        for j = 1:perthreadrows[i]
+                            @inbounds z = tape[j]
+                            if z == intsent
+                                foundsent = true
+                                break
+                            end
+                        end
+                        foundsent && break
+                    end
+                end
+                if foundsent
+                    intsentinels[col] = sentinelvalue(Int64)
+                else
+                    break
+                end
             end
         end
     end
     # merge refs for pooled columns from each thread and recode if needed
+    # take care of any column promoting that needs to happen as well between threads
     refs = Vector{Dict{String, UInt64}}(undef, ncols)
     lastrefs = zeros(UInt64, ncols)
     for i = 1:N
@@ -504,7 +535,8 @@ end # @static if VERSION >= v"1.3-DEV"
             @inbounds T = typecodes[col]
             @inbounds TL = tltypecodes[col]
             if T == MISSINGTYPE
-                # pass
+                unset!(tltapes, col, tlrows, 1)
+                tltapes[col] = UInt64[]
             elseif !stringtype(TL) && stringtype(T)
                 # promoting non-string to string column
                 copyto!(tltapes[col], 1, tlposlens[col], 1, tlrows)
