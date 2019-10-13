@@ -850,7 +850,7 @@ end
                     !foundnewsent && break
                     newintsent = uint64(sentinelvalue(Int64))
                 end
-                intsentinels[col] = newintsent
+                intsentinels[col] = int64(newintsent)
                 for i = 1:(row - 1)
                     @inbounds z = tape[i]
                     if z == oldintsent
