@@ -370,7 +370,6 @@ df = CSV.read(joinpath(dir, "test_int_sentinel.csv"))
 
 Random.seed!(1234)
 df = CSV.read(joinpath(dir, "test_int_sentinel.csv"), threaded=true)
-df.id.args[1].sentinel
 @test df.id[end] == CSV.INT_SENTINEL
 @test df.id[end-1] === missing
 @test df.id[50] == 4495412479959714370
