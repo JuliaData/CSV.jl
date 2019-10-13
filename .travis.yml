@@ -5,6 +5,11 @@ sudo: false
 os:
   - linux
   - osx
+  - windows
+
+arch:
+  - x64
+  - x86
 
 julia:
   - 1.0
@@ -16,6 +21,9 @@ env:
   - JULIA_PROJECT="@."
 
 matrix:
+  exclude:
+    - os: osx
+      arch: x86
   allow_failures:
   - julia: nightly
 
