@@ -31,7 +31,8 @@ const EMPTY       = 0b00000000 % TypeCode
 
 # MISSING is a mask that can be combined w/ any other TypeCode for Union{T, Missing}
 const MISSING     = 0b10000000 % TypeCode
-missingtype(x::TypeCode) = (x & MISSING) === MISSING
+missingtype(x::TypeCode) = (x & MISSING) == MISSING
+usermissing(x::TypeCode) = x == (MISSING | USER)
 
 # MISSINGTYPE is for a column like `Vector{Missing}`
 # if we're trying to detect a column type and the 1st value of a column is `missing`
@@ -46,17 +47,18 @@ const DATETIME    = 0b00000101 % TypeCode
 const TIME        = 0b00000110 % TypeCode
 const BOOL        = 0b00000111 % TypeCode
 const STRING      = 0b00001000 % TypeCode
+stringtype(x::TypeCode) = (x & STRING) == STRING
 const POOL        = 0b00010000 % TypeCode
 pooled(x::TypeCode) = (x & POOL) == POOL
 
 # a user-provided type; a mask that can be combined w/ basic types
 const USER     = 0b00100000 % TypeCode
-user(x::TypeCode) = (x & USER) === USER
+user(x::TypeCode) = (x & USER) == USER
 
 const TYPEBITS = 0b00011111 % TypeCode
 typebits(x::TypeCode) = x & TYPEBITS
 
-typecode(::Type{Missing}) = MISSINGTYPE
+typecode(::Type{Missing}) = MISSING
 typecode(::Type{<:Integer}) = INT
 typecode(::Type{<:AbstractFloat}) = FLOAT
 typecode(::Type{Date}) = DATE
@@ -74,6 +76,7 @@ typecode(x::T) where {T} = typecode(T)
 const TYPECODES = Dict(
     EMPTY => Missing,
     MISSINGTYPE => Missing,
+    MISSING => Missing,
     INT => Int64,
     FLOAT => Float64,
     DATE => Date,
@@ -91,21 +94,41 @@ const TYPECODES = Dict(
     STRING | MISSING => Union{String, Missing}
 )
 
+@inline function promote_typecode(T, S)
+    if T == EMPTY || T == S || user(T) || (T == MISSINGTYPE && S == MISSINGTYPE) ||
+        (T & ~MISSING) == (S & ~MISSING)
+        return T | S
+    elseif T == MISSINGTYPE
+        return S | MISSING
+    elseif S == MISSINGTYPE
+        return T | MISSING
+    elseif T == INT
+        return S == FLOAT ? S : S == (FLOAT | MISSING) ? S : missingtype(S) ? (STRING | MISSING) : STRING
+    elseif T == FLOAT
+        return S == INT ? FLOAT : S == (INT | MISSING) ? T | MISSING : missingtype(S) ? (STRING | MISSING) : STRING
+    elseif missingtype(T) || missingtype(S)
+        return STRING | MISSING
+    else
+        return STRING
+    end
+end
+
 gettypecodes(x::Dict) = Dict(typecode(k)=>typecode(v) for (k, v) in x)
 gettypecodes(x::Dict{TypeCode, TypeCode}) = x
 
 # bit patterns for missing value, int value, escaped string, position and len in tape parsing
 const MISSING_BIT = 0x8000000000000000
 missingvalue(x::UInt64) = (x & MISSING_BIT) == MISSING_BIT
+sentinelvalue(::Type{Float64}) = Core.bitcast(UInt64, NaN) | MISSING_BIT
+sentinelvalue(::Type{T}) where {T} = MISSING_BIT
+const INT_SENTINEL = -8899831978349840752
+sentinelvalue(::Type{Int64}) = rand(typemin(Int64):div(typemin(Int64), 1000)) * ifelse(rand(Bool), 1, -1)
 
-const INT_BIT = 0x4000000000000000
-intvalue(x::UInt64) = (x & INT_BIT) == INT_BIT
-
-const ESCAPE_BIT = 0x2000000000000000
+const ESCAPE_BIT = 0x4000000000000000
 escapedvalue(x::UInt64) = (x & ESCAPE_BIT) == ESCAPE_BIT
 
-getpos(x::UInt64) = (x & 0x1fffffffffff0000) >> 16
-getlen(x::UInt64) = x & 0x000000000000ffff
+getpos(x::UInt64) = (x & 0x3ffffffffff00000) >> 20
+getlen(x::UInt64) = x & 0x00000000000fffff
 
 # utilities to convert values to raw UInt64 and back for tape writing
 int64(x::UInt64) = Core.bitcast(Int64, x)
@@ -129,25 +152,8 @@ reinterp_func(::Type{DateTime}) = datetime
 reinterp_func(::Type{Time}) = time
 reinterp_func(::Type{Bool}) = bool
 
-@noinline function consumeBOM(source)
-    # BOM character detection
-    startpos = pos = 1
-    len = length(source)
-    if pos <= len && source[pos] == 0xef
-        pos += 1
-        if pos <= len && source[pos] == 0xbb
-            pos += 1
-        else
-            pos = startpos
-        end
-        if pos <= len && source[pos] == 0xbf
-            pos += 1
-        else
-            pos = startpos
-        end
-    end
-    return pos
-end
+# one-liner suggested from ScottPJones
+consumeBOM(buf) = (length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf) ? 4 : 1
 
 function slurp(source)
     N = 2^22 # 4 mb increments
@@ -334,31 +340,48 @@ Base.IndexStyle(::Type{ReversedBuf}) = Base.IndexLinear()
 Base.getindex(a::ReversedBuf, i::Int) = a.buf[end + 1 - i]
 
 # multithreading structures
-const AtomicTypes = Union{
-    Bool, Int8, Int16, Int32, Int64, Int128,
-    UInt8, UInt16, UInt32, UInt64, UInt128,
-    Float16, Float32, Float64
-}
+const AtomicTypes = Union{Base.Threads.atomictypes...}
 
 struct AtomicVector{T} <: AbstractArray{T, 1}
-    A::Vector{Threads.Atomic{T}}
+    A::Vector{T}
 
     function AtomicVector{T}(undef, n::Int) where {T}
         T <: AtomicTypes || throw(ArgumentError("invalid type for AtomicVector: $T"))
-        return new{T}(map(x->Threads.Atomic{T}(), 1:n))
+        return new{T}(zeros(T, n))
     end
 
     function AtomicVector(A::Vector{T}) where {T}
         T <: AtomicTypes || throw(ArgumentError("invalid type for AtomicVector: $T"))
-        return new{T}(map(x->Threads.Atomic{T}(A[x]), 1:length(A)))
+        return new{T}(A)
     end
 end
 
 Base.size(a::AtomicVector) = size(a.A)
 Base.IndexStyle(::Type{A}) where {A <: AtomicVector} = Base.IndexLinear()
 
-Base.getindex(a::AtomicVector, i::Int) = a.A[i][]
-Base.setindex!(a::AtomicVector, x, i::Int) = setindex!(a.A[i], x)
+for typ in Base.Threads.atomictypes
+    lt = Base.Threads.llvmtypes[typ]
+    ilt = Base.Threads.llvmtypes[Base.Threads.inttype(typ)]
+    rt = "$lt, $lt*"
+    irt = "$ilt, $ilt*"
+    @eval Base.getindex(x::AtomicVector{$typ}, i::Int) =
+        Base.llvmcall($"""
+                 %ptr = inttoptr i$(Base.Threads.WORD_SIZE) %0 to $lt*
+                 %rv = load atomic $rt %ptr acquire, align $(Base.Threads.gc_alignment(typ))
+                 ret $lt %rv
+                 """, $typ, Tuple{Ptr{$typ}}, pointer(x.A, i))
+    @eval Base.setindex!(x::AtomicVector{$typ}, v::$typ, i::Int) =
+        Base.llvmcall($"""
+                 %ptr = inttoptr i$(Base.Threads.WORD_SIZE) %0 to $lt*
+                 store atomic $lt %1, $lt* %ptr release, align $(Base.Threads.gc_alignment(typ))
+                 ret void
+                 """, Cvoid, Tuple{Ptr{$typ}, $typ}, pointer(x.A, i), v)
+end
 
-incr!(a::Vector, i) = (a[i] += 1)
-incr!(a::AtomicVector{T}, i) where {T} = Threads.atomic_add!(a.A[i], convert(T, 1)) + 1
+function unset!(A::Vector, i::Int, row, x)
+    finalize(A[i])
+    ccall(:jl_arrayunset, Cvoid, (Array, Csize_t), A, i - 1)
+    # println("deleting col = $i on thread = $(Threads.threadid()), row = $row, id = $x")
+    return
+end
+

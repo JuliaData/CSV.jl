@@ -4,26 +4,12 @@ Tables.schema(f::File)  = Tables.Schema(getnames(f), _eltype.(gettypes(f)))
 Tables.columns(f::File) = f
 Base.propertynames(f::File) = getnames(f)
 
-struct Column{T, P} <: AbstractVector{T}
-    file::File
-    col::Int
+function Base.getproperty(f::File, col::Symbol)
+    lookup = getfield(f, :lookup)
+    return get(lookup, col) do
+        getfield(f, col)
+    end
 end
-
-_eltype(::Type{T}) where {T} = T
-_eltype(::Type{PooledString}) = String
-_eltype(::Type{Union{PooledString, Missing}}) = Union{String, Missing}
-
-function Column(f::File, i::Int)
-    @inbounds T = gettypes(f)[i]
-    return Column{_eltype(T), T}(f, i)
-end
-
-Base.size(c::Column) = (Int(getrows(c.file)),)
-Base.IndexStyle(::Type{<:Column}) = Base.IndexLinear()
-metaind(x) = 2 * x - 1
-valind(x) = 2 * x
-
-Base.setindex!(c::Column, x, i::Int) = throw(ArgumentError("CSV.Column is read-only; to get a mutable vector, do `copy(col)` or to make all columns mutable do `CSV.read(file; copycols=true)` or `CSV.File(file) |> DataFrame`"))
 
 function Base.copy(c::Column{T}) where {T}
     len = length(c)
@@ -45,31 +31,32 @@ end
 
 function Base.copy(c::Column{T, S}) where {T <: Union{String, Union{String, Missing}}, S <: Union{PooledString, Union{PooledString, Missing}}}
     len = length(c)
-    catg = getcategorical(c.file)
-    tape = gettape(c.file, c.col)
+    catg = c.catg
+    tape = c.tape
+    crefs = c.refs
     if S === PooledString
         refs = Dict{String, UInt32}()
-        foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(getrefs(c.file, c.col)))
+        foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(crefs))
         values = Vector{UInt32}(undef, len)
         @simd for i = 1:len
-            @inbounds values[i] = ref(tape[valind(i)])
+            @inbounds values[i] = ref(tape[i])
         end
     else
         if catg
             refs = Dict{String, UInt32}()
-            foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(getrefs(c.file, c.col)))
+            foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(crefs))
             missingref = UInt32(0)
             values = Vector{UInt32}(undef, len)
-        else
+        else # Union{PooledString, Missing}
             refs = Dict{Union{String, Missing}, UInt32}()
-            foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(getrefs(c.file, c.col)))
+            foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(crefs))
             missingref = UInt32(length(refs) + 1)
             refs[missing] = missingref
             values = Vector{UInt32}(undef, len)
         end
         @simd for i = 1:len
-            @inbounds offlen = tape[metaind(i)]
-            @inbounds values[i] = ifelse(missingvalue(offlen), missingref, ref(tape[valind(i)]))
+            @inbounds v = ref(tape[i])
+            @inbounds values[i] = ifelse(v == UInt32(0), missingref, v)
         end
     end
     if catg
@@ -87,72 +74,50 @@ end
     return missing
 end
 
-@inline Base.@propagate_inbounds function Base.getindex(c::Column{T}, row::Int) where {T}
+@inline Base.@propagate_inbounds function Base.getindex(c::Column{T, S}, row::Int) where {T, S}
     @boundscheck checkbounds(c, row)
-    @inbounds x = reinterp_func(T)(gettape(c.file, c.col)[valind(row)])
+    @inbounds x = reinterp_func(T)(c.tape[row])
     return x
 end
 
-@inline Base.@propagate_inbounds function Base.getindex(c::Column{Union{T, Missing}}, row::Int) where {T}
+@inline Base.@propagate_inbounds function Base.getindex(c::Column{Union{T, Missing}, S}, row::Int) where {T, S}
     @boundscheck checkbounds(c, row)
-    @inbounds offlen = gettape(c.file, c.col)[metaind(row)]
-    @inbounds x = ifelse(missingvalue(offlen), missing, reinterp_func(T)(gettape(c.file, c.col)[valind(row)]))
-    return x
+    @inbounds x = c.tape[row]
+    return ifelse(x === c.sentinel, missing, reinterp_func(T)(x))
 end
 
-@inline Base.@propagate_inbounds function Base.getindex(c::Column{Float64}, row::Int)
+@inline Base.@propagate_inbounds function Base.getindex(c::Column{T, PooledString}, row::Int) where {T}
     @boundscheck checkbounds(c, row)
-    @inbounds offlen = gettape(c.file, c.col)[metaind(row)]
-    @inbounds v = gettape(c.file, c.col)[valind(row)]
-    @inbounds x = ifelse(intvalue(offlen), Float64(int64(v)), float64(v))
-    return x
+    @inbounds x = c.tape[row]
+    @inbounds str = c.refs[x]
+    return str
 end
 
-@inline Base.@propagate_inbounds function Base.getindex(c::Column{Union{Float64, Missing}}, row::Int)
+@inline Base.@propagate_inbounds function Base.getindex(c::Column{T, Union{PooledString, Missing}}, row::Int) where {T}
     @boundscheck checkbounds(c, row)
-    @inbounds offlen = gettape(c.file, c.col)[metaind(row)]
-    @inbounds v = gettape(c.file, c.col)[valind(row)]
-    @inbounds x = ifelse(missingvalue(offlen), missing, ifelse(intvalue(offlen), Float64(int64(v)), float64(v)))
-    return x
-end
-
-@inline Base.@propagate_inbounds function Base.getindex(c::Column{String, PooledString}, row::Int)
-    @boundscheck checkbounds(c, row)
-    @inbounds x = getrefs(c.file, c.col)[gettape(c.file, c.col)[valind(row)]]
-    return x
-end
-
-@inline Base.@propagate_inbounds function Base.getindex(c::Column{Union{String, Missing}, Union{PooledString, Missing}}, row::Int)
-    @boundscheck checkbounds(c, row)
-    @inbounds offlen = gettape(c.file, c.col)[metaind(row)]
-    if missingvalue(offlen)
+    @inbounds x = c.tape[row]
+    if x == 0
         return missing
     else
-        @inbounds x = getrefs(c.file, c.col)[gettape(c.file, c.col)[valind(row)]]
-        return x
+        @inbounds y = c.refs[x]
+        return y
     end
 end
 
-@inline Base.@propagate_inbounds function Base.getindex(c::Column{String}, row::Int)
+@inline Base.@propagate_inbounds function Base.getindex(c::Column{T, String}, row::Int) where {T}
     @boundscheck checkbounds(c, row)
-    @inbounds offlen = gettape(c.file, c.col)[metaind(row)]
-    s = PointerString(pointer(getbuf(c.file), getpos(offlen)), getlen(offlen))
-    return escapedvalue(offlen) ? unescape(s, gete(c.file)) : String(s)
+    @inbounds offlen = c.tape[row]
+    s = PointerString(pointer(c.buf, getpos(offlen)), getlen(offlen))
+    return escapedvalue(offlen) ? unescape(s, c.e) : String(s)
 end
 
-@inline Base.@propagate_inbounds function Base.getindex(c::Column{Union{String, Missing}}, row::Int)
+@inline Base.@propagate_inbounds function Base.getindex(c::Column{T, Union{String, Missing}}, row::Int) where {T}
     @boundscheck checkbounds(c, row)
-    @inbounds offlen = gettape(c.file, c.col)[metaind(row)]
+    @inbounds offlen = c.tape[row]
     if missingvalue(offlen)
         return missing
     else
-        s = PointerString(pointer(getbuf(c.file), getpos(offlen)), getlen(offlen))
-        return escapedvalue(offlen) ? unescape(s, gete(c.file)) : String(s)
+        s = PointerString(pointer(c.buf, getpos(offlen)), getlen(offlen))
+        return escapedvalue(offlen) ? unescape(s, c.e) : String(s)
     end
-end
-
-function Base.getproperty(f::File, col::Symbol)
-    i = findfirst(==(col), getnames(f))
-    i === nothing && return getfield(f, col)
-    return Column(f, i)
 end
