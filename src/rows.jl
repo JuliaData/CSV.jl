@@ -12,6 +12,7 @@ struct Rows{transpose, O}
     ignoreemptylines::Bool
     reusebuffer::Bool
     tape::Vector{UInt64}
+    lookup::Dict{Symbol, Int}
 end
 
 function Base.show(io::IO, r::Rows)
@@ -156,7 +157,8 @@ function Rows(source;
     end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
-    return Rows{transpose, typeof(options)}(getname(source), names, length(names), eq, buf, datapos, limit, options, positions, cmt, ignoreemptylines, reusebuffer, Vector{UInt64}(undef, length(names)))
+    lookup = Dict(nm=>i for (i, nm) in enumerate(names))
+    return Rows{transpose, typeof(options)}(getname(source), names, length(names), eq, buf, datapos, limit, options, positions, cmt, ignoreemptylines, reusebuffer, Vector{UInt64}(undef, length(names)), lookup)
 end
 
 Tables.rowaccess(::Type{<:Rows}) = true
@@ -203,20 +205,24 @@ getignorerepeated(p::Parsers.Options{ignorerepeated}) where {ignorerepeated} = i
             end
         end
     end
-    return Row2(r.names, tape, r.buf, r.e), (pos, len, row + 1)
+    return Row2(r.names, r.lookup, tape, r.buf, r.e, r.options), (pos, len, row + 1)
 end
 
-struct Row2 <: AbstractVector{Union{String, Missing}}
+struct Row2{O} <: AbstractVector{Union{String, Missing}}
     names::Vector{Symbol}
+    lookup::Dict{Symbol, Int}
     tape::Vector{UInt64}
     buf::Vector{UInt8}
     e::UInt8
+    options::O
 end
 
 getnames(r::Row2) = getfield(r, :names)
+getlookup(r::Row2) = getfield(r, :lookup)
 gettape(r::Row2) = getfield(r, :tape)
 getbuf(r::Row2) = getfield(r, :buf)
 gete(r::Row2) = getfield(r, :e)
+getoptions(r::Row2) = getfield(R, :options)
 
 Base.IndexStyle(::Type{Row2}) = Base.IndexLinear()
 Base.size(r::Row2) = (length(getnames(r)),)
@@ -228,5 +234,24 @@ Base.size(r::Row2) = (length(getnames(r)),)
     s = PointerString(pointer(getbuf(r), getpos(offlen)), getlen(offlen))
     return escapedvalue(offlen) ? unescape(s, gete(r)) : String(s)
 end
-Base.getproperty(r::Row2, nm::Symbol) = getindex(r, findfirst(==(nm), getnames(r)))
 
+Base.propertynames(r::Row2) = getnames(r)
+
+function Base.getproperty(r::Row2, nm::Symbol)
+    @inbounds x = r[getlookup(r)[nm]]
+    return x
+end
+
+@inline Base.@propagate_inbounds function Parsers.parse(::Type{T}, r::Row2, i::Int) where {T}
+    @boundscheck checkbounds(r, i)
+    @inbounds offlen = gettape(r)[i]
+    missingvalue(offlen) && return missing
+    pos = getpos(offlen)
+    x, code, vpos, vlen, tlen = Parsers.xparse(T, getbuf(r), pos, pos + getlen(offlen), getoptions(r))
+    return Parsers.ok(code) ? x : missing
+end
+
+function Parsers.parse(::Type{T}, r::Row2, nm::Symbol) where {T}
+    @inbounds x = Parsers.parse(T, r, getlookup(r)[nm])
+    return x
+end

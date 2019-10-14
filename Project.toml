@@ -7,6 +7,7 @@ version = "0.5.13"
 CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+LazyArrays = "5078a376-72f3-5289-bfd5-ec5146d43c02"
 Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
 Parsers = "69de0a69-1ddd-5017-9359-2bf0b02dc9f0"
 PooledArrays = "2dfb63ee-cc39-5dd5-95bd-886bf059d720"
@@ -22,11 +23,13 @@ Parsers = "0.3"
 PooledArrays = "0.5"
 Tables = "0.1,0.2"
 WeakRefStrings = "0.5,0.6"
+LazyArrays = "0.12"
 julia = "1"
 
 [extras]
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 CodecZlib = "944b1d66-785c-5afd-91f1-9de20f533193"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
 test = ["Test", "CodecZlib"]

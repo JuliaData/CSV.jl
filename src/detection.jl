@@ -31,44 +31,47 @@ function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, delim
     headerbvc = ByteValueCounter()
     bvc = ByteValueCounter()
     b = 0x00
-    pos = max(1, headerpos)
-    # parsing our header row is useful for delimiter
-    # detection, but we don't track nbytes here
-    # because the header row size doesn't necessarily
-    # correlate w/ data row size
-    while pos <= len
-        parsedanylines = true
-        @inbounds b = buf[pos]
-        pos += 1
-        if b == oq
-            while pos <= len
-                @inbounds b = buf[pos]
-                pos += 1
-                if b == eq
-                    if pos > len
-                        break
-                    elseif eq == cq && buf[pos] != cq
-                        break
-                    end
+    # don't parse header row if there isn't one: #508
+    if headerpos > 0
+        pos = headerpos
+        # parsing our header row is useful for delimiter
+        # detection, but we don't track nbytes here
+        # because the header row size doesn't necessarily
+        # correlate w/ data row size
+        while pos <= len
+            parsedanylines = true
+            @inbounds b = buf[pos]
+            pos += 1
+            if b == oq
+                while pos <= len
                     @inbounds b = buf[pos]
                     pos += 1
-                elseif b == cq
-                    break
+                    if b == eq
+                        if pos > len
+                            break
+                        elseif eq == cq && buf[pos] != cq
+                            break
+                        end
+                        @inbounds b = buf[pos]
+                        pos += 1
+                    elseif b == cq
+                        break
+                    end
                 end
+            elseif b == UInt8('\n')
+                nlines += 1
+                lastbytenewline = true
+                break
+            elseif b == UInt8('\r')
+                pos <= len && buf[pos] == UInt8('\n') && (pos += 1)
+                nlines += 1
+                lastbytenewline = true
+                break
+            else
+                lastbytenewline = false
+                incr!(headerbvc, b)
+                incr!(bvc, b)
             end
-        elseif b == UInt8('\n')
-            nlines += 1
-            lastbytenewline = true
-            break
-        elseif b == UInt8('\r')
-            pos <= len && buf[pos] == UInt8('\n') && (pos += 1)
-            nlines += 1
-            lastbytenewline = true
-            break
-        else
-            lastbytenewline = false
-            incr!(headerbvc, b)
-            incr!(bvc, b)
         end
     end
     pos = max(1, checkcommentandemptyline(buf, datapos, len, cmt, ignoreemptylines))

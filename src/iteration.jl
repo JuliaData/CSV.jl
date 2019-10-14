@@ -2,9 +2,9 @@
 Tables.rowaccess(::Type{<:File}) = true
 Tables.rows(f::File) = f
 
-struct Row
+struct Row{T}
     file::File
-    row::Int
+    row::T
 end
 
 getfile(r::Row) = getfield(r, :file)
@@ -20,50 +20,58 @@ end
 Base.eltype(f::File) = Row
 Base.length(f::File) = getrows(f)
 
-@inline function Base.iterate(f::File, st=1)
+function Base.iterate(f::File)
+    cols = getcols(f)
+    (cols == 0 || getrows(f) == 0) && return nothing
+    c = getcolumn(f, 1)
+    if typeof(c) <: LazyArrays.ApplyArray
+        return Row(f, (1, 1, 1, c.args)), (1, 2, 2, c.args)
+    else
+        return Row(f, 1), 2
+    end
+end
+
+@inline function Base.iterate(f::File, st::Int)
     st > length(f) && return nothing
     return Row(f, st), st + 1
 end
 
+@inline function Base.iterate(f::File, st)
+    st[3] > length(f) && return nothing
+    if st[2] + 1 > length(st[4][st[1]])
+        st1 += 1
+        st2 = 1
+    else
+        st1 = st[1]
+        st2 = st[2]
+    end
+    return Row(f, st), (st1, st2, st + 1, st[4])
+end
+
 @noinline badcolumnerror(name) = throw(ArgumentError("`$name` is not a valid column name"))
 
-@inline function Base.getproperty(row::Row, name::Symbol)
-    f = getfile(row)
-    i = findfirst(x->x===name, getnames(f))
-    i === nothing && badcolumnerror(name)
-    return getcell(f, gettypes(f)[i], i, getrow(row))
-end
-
-@inline Base.getproperty(row::Row, ::Type{T}, col::Int, name::Symbol) where {T} =
-    getcell(getfile(row), T, col, getrow(row))
-
-# internal method for getting a cell value
-@inline function getcell(f::File, ::Type{T}, col::Int, row::Int) where {T}
-    ind = metaind(row)
-    @inbounds offlen = gettape(f, col)[ind]
-    missingvalue(offlen) && return missing
-    return getvalue(Base.nonmissingtype(T), f, ind, offlen, col)
-end
-
-function getvalue(::Type{T}, f, indexoffset, offlen, col) where {T}
-    @inbounds x = reinterp_func(T)(gettape(f, col)[indexoffset + 1])
+@inline function Base.getproperty(row::Row{Int}, name::Symbol)
+    column = getcolumn(getfile(row), name)
+    @inbounds x = column[getrow(row)]
     return x
 end
 
-function getvalue(::Type{Float64}, f, indexoffset, offlen, col)
-    @inbounds x = gettape(f, col)[indexoffset + 1]
-    return ifelse(intvalue(offlen), Float64(int64(x)), float64(x))
+@inline function Base.getindex(row::Row{Int}, i::Int)
+    column = getcolumn(getfile(row), i)
+    @inbounds x = column[getrow(row)]
+    return x
 end
 
-getvalue(::Type{Missing}, f, indexoffset, offlen, col) = missing
-
-function getvalue(::Type{PooledString}, f, indexoffset, offlen, col)
-    @inbounds x = gettape(f, col)[indexoffset + 1]
-    @inbounds str = getrefs(f, col)[x]
-    return str
+@inline function Base.getproperty(row::Row, name::Symbol)
+    column = getcolumn(getfile(row), name)
+    r = getrow(row)
+    @inbounds x = column.args[r[1]][r[2]]
+    return x
 end
 
-function getvalue(::Type{String}, f, indexoffset, offlen, col)
-    s = PointerString(pointer(getbuf(f), getpos(offlen)), getlen(offlen))
-    return escapedvalue(offlen) ? unescape(s, gete(f)) : String(s)
+@inline function Base.getindex(row::Row, i::Int)
+    column = getcolumn(getfile(row), i)
+    r = getrow(row)
+    @inbounds x = column.args[r[1]][r[2]]
+    return x
 end
