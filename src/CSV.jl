@@ -115,7 +115,7 @@ end
 """
     CSV.File(source; kwargs...) => CSV.File
 
-Read a UTF8 csv input (a filename given as a String or FilePaths.jl type, or any other IO source), returning a `CSV.File` object.
+Read a UTF-8 CSV input (a filename given as a String or FilePaths.jl type, or any other IO source), returning a `CSV.File` object.
 
 Opens the file and uses passed arguments to detect the number of columns and column types, unless column types are provided
 manually via the `types` keyword argument. Note that passing column types manually can increase performance and reduce the
