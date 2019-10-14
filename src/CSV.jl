@@ -137,7 +137,7 @@ end
 By supporting the Tables.jl interface, a `CSV.File` can also be a table input to any other table sink function. Like:
 
 ```julia
-# materialize a csv file as a DataFrame, allowing DataFrames to take ownership of the CSV.File columns
+# materialize a csv file as a DataFrame, without copying columns from CSV.File; these columns are read-only
 df = CSV.File(file) |> DataFrame!
 
 # load a csv file directly into an sqlite database table
@@ -486,7 +486,7 @@ end # @static if VERSION >= v"1.3-DEV"
     for col = 1:ncols
         for i = 1:N
             @inbounds typecodes[col] = promote_typecode(typecodes[col], perthreadtypecodes[i][col])
-            if perthreadintsentinels[N][col] != INT_SENTINEL
+            @inbounds if perthreadintsentinels[N][col] != INT_SENTINEL
                 intsentinels[col] = perthreadintsentinels[N][col]
                 anyintrecode = true
             end
