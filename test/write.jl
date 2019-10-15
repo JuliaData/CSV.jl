@@ -197,4 +197,10 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
     end
 
     @test read(rd, String) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
-end
+
+    # issue 515
+    io = IOBuffer()
+    (col1=[""],) |> CSV.write(io)
+    @test String(take!(io)) == "col1\n\n"
+
+end # @testset "CSV.write"
