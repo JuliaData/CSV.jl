@@ -178,14 +178,13 @@ end
 function getsource(source, use_mmap)
     if source isa Vector{UInt8}
         return source
-    elseif source isa Cmd
-        return Base.read(source)
-    elseif source isa AbstractPath
-        return Base.read(Base.open(source))
-    elseif use_mmap && !isa(source, IO)
-        return Mmap.mmap(source)
+    elseif source isa Cmd || (source isa AbstractPath && !isa(source, SystemPath))
+        return Base.read(open(source))
     elseif !isa(source, IO)
-        m = Mmap.mmap(source)
+        m = Mmap.mmap(source isa AbstractPath ? open(source) : source)
+        if use_mmap
+            return m
+        end
         m2 = Mmap.mmap(Vector{UInt8}, length(m))
         copyto!(m2, 1, m, 1, length(m))
         finalize(m)
@@ -197,8 +196,7 @@ end
 
 getname(buf::Vector{UInt8}) = "<raw buffer>"
 getname(cmd::Cmd) = string(cmd)
-getname(path::AbstractPath) = string(path)
-getname(str) = String(str)
+getname(str) = string(str)
 getname(io::I) where {I <: IO} = string("<", I, ">")
 
 const RESERVED = Set(["local", "global", "export", "let",
