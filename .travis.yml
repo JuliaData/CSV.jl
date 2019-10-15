@@ -1,5 +1,6 @@
 before_install:
   - git config --global core.autocrlf false
+  - git add --renormalize .
 
 language: julia
 
