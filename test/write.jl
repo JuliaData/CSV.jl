@@ -208,4 +208,9 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
     (col1=[""],) |> CSV.write(io)
     @test String(take!(io)) == "col1\n\n"
 
+    # test with FilePath
+    mktmpdir() do tmp
+        CSV.write(tmp / "test.txt", df)
+        @test CSV.read(tmp / "test.txt") == df
+    end
 end # @testset "CSV.write"
