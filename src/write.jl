@@ -322,6 +322,7 @@ function writecell(buf, pos, len, io, x::AbstractString, opts)
 end
 
 function check(bytes, sz, delim::UInt8, oq, cq, newline::UInt8)
+    isempty(bytes) && return false, false
     needtoescape = false
     @inbounds needtoquote = bytes[1] == oq
     @simd for i = 1:sz
