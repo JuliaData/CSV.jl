@@ -189,7 +189,8 @@ function getsource(source, use_mmap)
         finalize(m)
         return m2
     else
-        return slurp(source isa IO ? source : open(String(source)))
+        assert(isa(source, IO))
+        return slurp(source)
     end
 end
 
