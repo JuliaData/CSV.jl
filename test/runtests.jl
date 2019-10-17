@@ -141,6 +141,11 @@ end
     @test length(rows) == 1
     @test length(rows[1]) == 3
     @test rows[1] == ["1", "2", "3"]
+    row = rows[1]
+    @test CSV.Parsers.parse(Int, row, 1) == 1
+    @test CSV.Parsers.parse(Int, row, :x) == 1
+    @test CSV.detect(row, 2) == 2
+    @test CSV.detect(row, :y) == 2
 
     # 448
     @test_throws ArgumentError CSV.Rows(IOBuffer("x\n1\n2\n3\n#4"), ignorerepeated=true)
