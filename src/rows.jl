@@ -222,7 +222,7 @@ getlookup(r::Row2) = getfield(r, :lookup)
 gettape(r::Row2) = getfield(r, :tape)
 getbuf(r::Row2) = getfield(r, :buf)
 gete(r::Row2) = getfield(r, :e)
-getoptions(r::Row2) = getfield(R, :options)
+getoptions(r::Row2) = getfield(r, :options)
 
 Base.IndexStyle(::Type{Row2}) = Base.IndexLinear()
 Base.size(r::Row2) = (length(getnames(r)),)
@@ -251,7 +251,21 @@ end
     return Parsers.ok(code) ? x : missing
 end
 
+@inline Base.@propagate_inbounds function detect(r::Row2, i::Int)
+    @boundscheck checkbounds(r, i)
+    @inbounds offlen = gettape(r)[i]
+    missingvalue(offlen) && return missing
+    pos = getpos(offlen)
+    x = detect(getbuf(r), pos, pos + getlen(offlen) - 1, getoptions(r))
+    return x === nothing ? r[i] : x
+end
+
 function Parsers.parse(::Type{T}, r::Row2, nm::Symbol) where {T}
     @inbounds x = Parsers.parse(T, r, getlookup(r)[nm])
+    return x
+end
+
+function detect(r::Row2, nm::Symbol)
+    @inbounds x = detect(r, getlookup(r)[nm])
     return x
 end
