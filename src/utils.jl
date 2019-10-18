@@ -283,32 +283,31 @@ For advanced usage, you can pass your own `Parsers.Options` type as a keyword ar
 """
 function detect end
 
-function detect(str::String; options=Parsers.OPTIONS)
-    buf = codeunits(str)
-    pos = 1
-    len = sizeof(str)
+detect(str::String; options=Parsers.OPTIONS) = something(detect(codeunits(str), 1, sizeof(str), options), str)
+
+function detect(buf, pos, len, options)
     int, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, options)
     if Parsers.sentinel(code) && code > 0
         return missing
     end
-    if Parsers.ok(code) && vlen == len
+    if Parsers.ok(code) && vpos + vlen - 1 == len
         return int
     end
     float, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, options)
-    if Parsers.ok(code) && vlen == len
+    if Parsers.ok(code) && vpos + vlen - 1 == len
         return float
     end
     if options.dateformat === nothing
         try
             date, code, vpos, vlen, tlen = Parsers.xparse(Date, buf, pos, len, options)
-            if Parsers.ok(code) && vlen == len
+            if Parsers.ok(code) && vpos + vlen - 1 == len
                 return date
             end
         catch e
         end
         try
             datetime, code, vpos, vlen, tlen = Parsers.xparse(DateTime, buf, pos, len, options)
-            if Parsers.ok(code) && vlen == len
+            if Parsers.ok(code) && vpos + vlen - 1 == len
                 return datetime
             end
         catch e
@@ -318,17 +317,17 @@ function detect(str::String; options=Parsers.OPTIONS)
             # use user-provided dateformat
             DT = timetype(options.dateformat)
             dt, code, vpos, vlen, tlen = Parsers.xparse(DT, buf, pos, len, options)
-            if Parsers.ok(code) && vlen == len
+            if Parsers.ok(code) && vpos + vlen - 1 == len
                 return dt
             end
         catch e
         end
     end
     bool, code, vpos, vlen, tlen = Parsers.xparse(Bool, buf, pos, len, options)
-    if Parsers.ok(code) && vlen == len
+    if Parsers.ok(code) && vpos + vlen - 1 == len
         return bool
     end
-    return str
+    return nothing
 end
 
 struct ReversedBuf <: AbstractVector{UInt8}
