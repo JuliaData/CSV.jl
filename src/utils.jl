@@ -175,23 +175,20 @@ function slurp(source)
     return final
 end
 
+getsource(source::Vector{UInt8}, ::Any) = source
+getsource(source::Cmd, ::Any) = Base.read(source)
+getsource(source::AbstractPath, ::Any) = Base.read(open(source))
+getsource(source::IO, ::Any) = slurp(source)
+getsource(source::SystemPath, use_mmap) = getsource(string(source), use_mmap)
 function getsource(source, use_mmap)
-    if source isa Vector{UInt8}
-        return source
-    elseif source isa Cmd || (source isa AbstractPath && !isa(source, SystemPath))
-        return Base.read(open(source))
-    elseif !isa(source, IO)
-        m = Mmap.mmap(source isa AbstractPath ? open(source) : source)
-        if use_mmap
-            return m
-        end
-        m2 = Mmap.mmap(Vector{UInt8}, length(m))
-        copyto!(m2, 1, m, 1, length(m))
-        finalize(m)
-        return m2
-    else
-        return slurp(source isa IO ? source : open(String(source)))
+    m = Mmap.mmap(source)
+    if use_mmap
+        return m
     end
+    m2 = Mmap.mmap(Vector{UInt8}, length(m))
+    copyto!(m2, 1, m, 1, length(m))
+    finalize(m)
+    return m2
 end
 
 getname(buf::Vector{UInt8}) = "<raw buffer>"
