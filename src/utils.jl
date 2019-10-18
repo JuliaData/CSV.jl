@@ -290,24 +290,24 @@ function detect(buf, pos, len, options)
     if Parsers.sentinel(code) && code > 0
         return missing
     end
-    if Parsers.ok(code) && vpos + vlen == len
+    if Parsers.ok(code) && vpos + vlen - 1 == len
         return int
     end
     float, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, options)
-    if Parsers.ok(code) && vpos + vlen == len
+    if Parsers.ok(code) && vpos + vlen - 1 == len
         return float
     end
     if options.dateformat === nothing
         try
             date, code, vpos, vlen, tlen = Parsers.xparse(Date, buf, pos, len, options)
-            if Parsers.ok(code) && vpos + vlen == len
+            if Parsers.ok(code) && vpos + vlen - 1 == len
                 return date
             end
         catch e
         end
         try
             datetime, code, vpos, vlen, tlen = Parsers.xparse(DateTime, buf, pos, len, options)
-            if Parsers.ok(code) && vpos + vlen == len
+            if Parsers.ok(code) && vpos + vlen - 1 == len
                 return datetime
             end
         catch e
@@ -317,14 +317,14 @@ function detect(buf, pos, len, options)
             # use user-provided dateformat
             DT = timetype(options.dateformat)
             dt, code, vpos, vlen, tlen = Parsers.xparse(DT, buf, pos, len, options)
-            if Parsers.ok(code) && vpos + vlen == len
+            if Parsers.ok(code) && vpos + vlen - 1 == len
                 return dt
             end
         catch e
         end
     end
     bool, code, vpos, vlen, tlen = Parsers.xparse(Bool, buf, pos, len, options)
-    if Parsers.ok(code) && vpos + vlen == len
+    if Parsers.ok(code) && vpos + vlen - 1 == len
         return bool
     end
     return nothing
