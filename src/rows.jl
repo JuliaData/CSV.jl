@@ -256,7 +256,7 @@ end
     @inbounds offlen = gettape(r)[i]
     missingvalue(offlen) && return missing
     pos = getpos(offlen)
-    x = detect(getbuf(r), pos, pos + getlen(offlen), getoptions(r))
+    x = detect(getbuf(r), pos, pos + getlen(offlen) - 1, getoptions(r))
     return x === nothing ? r[i] : x
 end
 
