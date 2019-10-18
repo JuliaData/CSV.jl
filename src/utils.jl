@@ -283,7 +283,7 @@ For advanced usage, you can pass your own `Parsers.Options` type as a keyword ar
 """
 function detect end
 
-detect(str::String; options=Parsers.OPTIONS) = something(detect(codunits(str), 1, sizeof(str), options), str)
+detect(str::String; options=Parsers.OPTIONS) = something(detect(codeunits(str), 1, sizeof(str), options), str)
 
 function detect(buf, pos, len, options)
     int, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, options)
