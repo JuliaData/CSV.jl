@@ -3,7 +3,7 @@ module CSV
 # stdlib
 using Mmap, Dates, Unicode
 using Parsers, Tables
-using PooledArrays, CategoricalArrays, WeakRefStrings, DataFrames, LazyArrays
+using PooledArrays, CategoricalArrays, WeakRefStrings, DataFrames, FilePathsBase, LazyArrays
 
 function validate(fullpath::Union{AbstractString,IO}; kwargs...)
     Base.depwarn("`CSV.validate` is deprecated. `CSV.read` now prints warnings on misshapen files.", :validate)
@@ -119,7 +119,7 @@ Read a UTF-8 CSV input (a filename given as a String or FilePaths.jl type, or an
 
 Opens the file and uses passed arguments to detect the number of columns and column types, unless column types are provided
 manually via the `types` keyword argument. Note that passing column types manually can increase performance and reduce the
-memory use for each column type provided (column types can be given as a `Vector` for all columns, or specified per column via 
+memory use for each column type provided (column types can be given as a `Vector` for all columns, or specified per column via
 name or index in a `Dict`). For text encodings other than UTF-8, see the [StringEncodings.jl](https://github.com/JuliaStrings/StringEncodings.jl)
 package for re-encoding a file or IO stream.
 The returned `CSV.File` object supports the [Tables.jl](https://github.com/JuliaData/Tables.jl) interface

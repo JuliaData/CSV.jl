@@ -70,6 +70,11 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
     @test String(read(file)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
     rm(file)
 
+    filepath = Path(file)
+    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(filepath)
+    @test String(read(filepath)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
+    rm(filepath)
+
     open(file, "w") do io
         (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io)
     end
@@ -165,7 +170,7 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
 
     # validate char args: #369
     @test_throws ArgumentError (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; escapechar='☃')
-    
+
     # custom float decimal: #385
     (col1=[1.1,2.2,3.3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; delim='\t', decimal=',')
     @test String(take!(io)) == "col1\tcol2\tcol3\n1,1\t4\t7\n2,2\t5\t8\n3,3\t6\t9\n"
@@ -203,4 +208,9 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
     (col1=[""],) |> CSV.write(io)
     @test String(take!(io)) == "col1\n\n"
 
+    # test with FilePath
+    mktmpdir() do tmp
+        CSV.write(tmp / "test.txt", df)
+        @test CSV.read(tmp / "test.txt") == df
+    end
 end # @testset "CSV.write"
