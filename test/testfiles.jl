@@ -1,4 +1,4 @@
-function testfile(file, kwargs, expected_sz, expected_sch, testfunc)
+function testfile(file, kwargs, expected_sz, expected_sch, testfunc; dir=dir)
     println("testing $file")
     if file isa IO
         seekstart(file)
@@ -24,7 +24,7 @@ function testfile(file, kwargs, expected_sz, expected_sch, testfunc)
 end
 
 testfiles = [
-    # file, kwargs, expected_sz, expected_sch, testfunc = 
+    # file, kwargs, expected_sz, expected_sch, testfunc =
     ("test_utf8_with_BOM.csv", NamedTuple(),
         (3, 3),
         NamedTuple{(:col1, :col2, :col3),Tuple{Float64,Float64,Float64}},
@@ -605,3 +605,10 @@ testfiles = [
 for test in testfiles
     testfile(test...)
 end
+# Test file with FilePaths
+testfile("test_basic.csv", (types=Dict(2=>Float64),),
+    (3, 3),
+    NamedTuple{(:col1, :col2, :col3),Tuple{Int64,Float64,Int64}},
+    (col1 = [1, 4, 7], col2 = [2.0, 5.0, 8.0], col3 = [3, 6, 9]);
+    dir=Path(dir)
+)

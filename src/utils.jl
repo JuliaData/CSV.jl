@@ -175,27 +175,25 @@ function slurp(source)
     return final
 end
 
+getsource(source::Vector{UInt8}, ::Any) = source
+getsource(source::Cmd, ::Any) = Base.read(source)
+getsource(source::AbstractPath, ::Any) = Base.read(open(source))
+getsource(source::IO, ::Any) = slurp(source)
+getsource(source::SystemPath, use_mmap) = getsource(string(source), use_mmap)
 function getsource(source, use_mmap)
-    if source isa Vector{UInt8}
-        return source
-    elseif source isa Cmd
-        return Base.read(source)
-    elseif use_mmap && !isa(source, IO)
-        return Mmap.mmap(source)
-    elseif !isa(source, IO)
-        m = Mmap.mmap(source)
-        m2 = Mmap.mmap(Vector{UInt8}, length(m))
-        copyto!(m2, 1, m, 1, length(m))
-        finalize(m)
-        return m2
-    else
-        return slurp(source isa IO ? source : open(String(source)))
+    m = Mmap.mmap(source)
+    if use_mmap
+        return m
     end
+    m2 = Mmap.mmap(Vector{UInt8}, length(m))
+    copyto!(m2, 1, m, 1, length(m))
+    finalize(m)
+    return m2
 end
 
 getname(buf::Vector{UInt8}) = "<raw buffer>"
 getname(cmd::Cmd) = string(cmd)
-getname(str) = String(str)
+getname(str) = string(str)
 getname(io::I) where {I <: IO} = string("<", I, ">")
 
 const RESERVED = Set(["local", "global", "export", "let",

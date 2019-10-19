@@ -1,4 +1,4 @@
-using Test, CSV, Dates, Tables, DataFrames, CategoricalArrays, PooledArrays, CodecZlib
+using Test, CSV, Dates, Tables, DataFrames, CategoricalArrays, PooledArrays, CodecZlib, FilePathsBase
 
 const dir = joinpath(dirname(pathof(CSV)), "..", "test", "testfiles")
 
@@ -75,7 +75,7 @@ end
     v = f.X[1]
     @test v == "b"
     @test levels(v.pool) == ["a", "b", "c"]
-    
+
     f = CSV.read(IOBuffer("X\nb\nc\na\nc"), categorical=true, copycols=true)
     v = f.X[1]
     @test v == "b"
