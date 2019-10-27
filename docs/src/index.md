@@ -303,14 +303,19 @@ In this file, we have an `id` column and a `code` column. There can be advantage
 
 #### Example: reading from a gzip (.gz) file
 ```julia
-using CSV
-CSV.write("c:/data/a.csv", a)
+using CSV, DataFrames, CodecZlib
+a = DataFrame(a = 1:3)
+CSV.write("a.csv", a)
 
 # Windows users who do not have gzip available on the PATH should manually gzip the CSV
 ;gzip a.csv
 
-using CodecZlib
-@time a= CSV.read(GzipDecompressorStream(open("c:/data/a.csv.gz")))
+a_copy = open("a.csv.gz") do io
+    CSV.read(GzipDecompressorStream(io))
+end
+
+a == a_copy # true; restored successfully
+
 ```
 
 #### Example: reading from a zip file
@@ -321,9 +326,14 @@ a = DataFrame(a = 1:3)
 CSV.write("a.csv", a)
 
 # zip the file; Windows users who do not have zip available on the PATH can manual zip the CSV
-;zip a.csv a.zip
+;zip a.zip a.csv
 
 z = ZipFile.Reader("a.zip")
 
-df = CSV.read(z.files[1])
+# identify the right file in zip
+a_file_in_zip = filter(x->x.name == "a.csv", z.files)[1]
+
+a_copy = CSV.read(a_file_in_zip)
+
+a == a_copy
 ```
