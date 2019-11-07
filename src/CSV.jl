@@ -61,7 +61,7 @@ function Base.show(io::IO, r::Row)
     show(IOContext(io, :compact => true), NamedTuple{Tuple(names)}(Tuple(getproperty(r, nm) for nm in names)))
 end
 
-struct File{threaded} <: AbstractVector{Row}
+struct File{threaded} <: AbstractVector{Row{threaded}}
     name::String
     names::Vector{Symbol}
     types::Vector{Type}
@@ -90,7 +90,6 @@ end
 Base.IndexStyle(::Type{File}) = Base.IndexLinear()
 Base.eltype(f::File{threaded}) where {threaded} = Row{threaded}
 Base.size(f::File) = (getrows(f),)
-Base.Vector{AbstractVector}(f::File) = getcolumns(f)
 
 const EMPTY_POSITIONS = Int64[]
 const EMPTY_TYPEMAP = Dict{TypeCode, TypeCode}()
