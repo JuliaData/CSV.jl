@@ -765,6 +765,16 @@ function detect(tape, buf, pos, len, options, row, col, typemap, pool, refs, las
             end
         catch e
         end
+        try
+            time, code, vpos, vlen, tlen = Parsers.xparse(Time, buf, pos, len, options)
+            if Parsers.ok(code) && !haskey(typemap, TIME)
+                @inbounds setposlen!(poslens[col], row, code, vpos, vlen)
+                @inbounds tape[row] = uint64(time)
+                newT = TIME
+                @goto done
+            end
+        catch e
+        end
     else
         try
             # use user-provided dateformat

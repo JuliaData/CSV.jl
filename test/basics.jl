@@ -374,4 +374,8 @@ df = CSV.read(joinpath(dir, "test_int_sentinel.csv"), threaded=true)
 @test df.id[end-1] === missing
 @test df.id[50] == 4495412479959714370
 
+df = CSV.read(IOBuffer("thistime\n10:00:00.0\n12:00:00.0"))
+@test typeof(df.thistime[1]) <: Dates.Time
+@test df.thistime[1] === Time(10)
+
 end
