@@ -37,6 +37,8 @@ _eltype(::Type{Union{PooledString, Missing}}) = Union{String, Missing}
 Base.size(c::Column) = (c.len,)
 Base.IndexStyle(::Type{<:Column}) = Base.IndexLinear()
 
+# getindex definitions in tables.jl
+
 struct Row{threaded}
     names::Vector{Symbol}
     columns::Vector{AbstractVector}

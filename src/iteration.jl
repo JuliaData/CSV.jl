@@ -2,12 +2,12 @@
 Tables.rowaccess(::Type{<:File}) = true
 Tables.rows(f::File) = f
 
-@inline Base.@propagate_inbounds function Base.getindex(f::File{false}, row::Int)
+Base.@propagate_inbounds function Base.getindex(f::File{false}, row::Int)
     @boundscheck checkbounds(f, row)
     return Row{false}(getnames(f), getcolumns(f), getlookup(f), row, 0, 0)
 end
 
-@inline Base.@propagate_inbounds function Base.getindex(f::File{true}, row::Int)
+Base.@propagate_inbounds function Base.getindex(f::File{true}, row::Int)
     @boundscheck checkbounds(f, row)
     c = getcolumn(f, 1)
     i = row
@@ -73,6 +73,12 @@ end
     return x
 end
 
+@inline function Base.getindex(row::Row{false}, col::Symbol)
+    column = getcolumn(row, col)
+    @inbounds x = column[getrow(row)]
+    return x
+end
+
 @inline function Base.getproperty(row::Row{true}, col::Symbol)
     column = getcolumn(row, col)
     @inbounds x = column.args[getarrayindex(row)][getarrayi(row)]
@@ -80,6 +86,12 @@ end
 end
 
 @inline function Base.getindex(row::Row{true}, col::Int)
+    column = getcolumn(row, col)
+    @inbounds x = column.args[getarrayindex(row)][getarrayi(row)]
+    return x
+end
+
+@inline function Base.getindex(row::Row{true}, col::Symbol)
     column = getcolumn(row, col)
     @inbounds x = column.args[getarrayindex(row)][getarrayi(row)]
     return x
