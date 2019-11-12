@@ -69,31 +69,31 @@ function Base.copy(c::Column{T, S}) where {T <: Union{String, Union{String, Miss
     return A
 end
 
-@inline Base.@propagate_inbounds function Base.getindex(c::Column{Missing}, row::Int)
+Base.@propagate_inbounds function Base.getindex(c::Column{Missing}, row::Int)
     @boundscheck checkbounds(c, row)
     return missing
 end
 
-@inline Base.@propagate_inbounds function Base.getindex(c::Column{T, S}, row::Int) where {T, S}
+Base.@propagate_inbounds function Base.getindex(c::Column{T, S}, row::Int) where {T, S}
     @boundscheck checkbounds(c, row)
     @inbounds x = reinterp_func(T)(c.tape[row])
     return x
 end
 
-@inline Base.@propagate_inbounds function Base.getindex(c::Column{Union{T, Missing}, S}, row::Int) where {T, S}
+Base.@propagate_inbounds function Base.getindex(c::Column{Union{T, Missing}, S}, row::Int) where {T, S}
     @boundscheck checkbounds(c, row)
     @inbounds x = c.tape[row]
     return ifelse(x === c.sentinel, missing, reinterp_func(T)(x))
 end
 
-@inline Base.@propagate_inbounds function Base.getindex(c::Column{T, PooledString}, row::Int) where {T}
+Base.@propagate_inbounds function Base.getindex(c::Column{T, PooledString}, row::Int) where {T}
     @boundscheck checkbounds(c, row)
     @inbounds x = c.tape[row]
     @inbounds str = c.refs[x]
     return str
 end
 
-@inline Base.@propagate_inbounds function Base.getindex(c::Column{T, Union{PooledString, Missing}}, row::Int) where {T}
+Base.@propagate_inbounds function Base.getindex(c::Column{T, Union{PooledString, Missing}}, row::Int) where {T}
     @boundscheck checkbounds(c, row)
     @inbounds x = c.tape[row]
     if x == 0
@@ -104,14 +104,14 @@ end
     end
 end
 
-@inline Base.@propagate_inbounds function Base.getindex(c::Column{T, String}, row::Int) where {T}
+Base.@propagate_inbounds function Base.getindex(c::Column{T, String}, row::Int) where {T}
     @boundscheck checkbounds(c, row)
     @inbounds offlen = c.tape[row]
     s = PointerString(pointer(c.buf, getpos(offlen)), getlen(offlen))
     return escapedvalue(offlen) ? unescape(s, c.e) : String(s)
 end
 
-@inline Base.@propagate_inbounds function Base.getindex(c::Column{T, Union{String, Missing}}, row::Int) where {T}
+Base.@propagate_inbounds function Base.getindex(c::Column{T, Union{String, Missing}}, row::Int) where {T}
     @boundscheck checkbounds(c, row)
     @inbounds offlen = c.tape[row]
     if missingvalue(offlen)

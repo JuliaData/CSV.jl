@@ -299,7 +299,7 @@ f = CSV.File(IOBuffer("int,float,date,datetime,bool,null,str,catg,int_float\n1,3
 @test Tables.columnaccess(typeof(f))
 @test Tables.schema(f) == Tables.Schema([:int, :float, :date, :datetime, :bool, :null, :str, :catg, :int_float], [Int64, Float64, Date, DateTime, Bool, Missing, String, String, Float64])
 @test Tables.rows(f) === f
-@test eltype(f) == CSV.Row
+@test eltype(f) <: CSV.Row
 row = first(f)
 @test propertynames(row) == [:int, :float, :date, :datetime, :bool, :null, :str, :catg, :int_float]
 @test row.int == 1

@@ -37,7 +37,33 @@ _eltype(::Type{Union{PooledString, Missing}}) = Union{String, Missing}
 Base.size(c::Column) = (c.len,)
 Base.IndexStyle(::Type{<:Column}) = Base.IndexLinear()
 
-struct File
+# getindex definitions in tables.jl
+
+struct Row{threaded}
+    names::Vector{Symbol}
+    columns::Vector{AbstractVector}
+    lookup::Dict{Symbol, AbstractVector}
+    row::Int64
+    array_index::Int64
+    array_i::Int64
+end
+
+getnames(r::Row) = getfield(r, :names)
+getcolumn(r::Row, col::Int) = getfield(r, :columns)[col]
+getcolumn(r::Row, col::Symbol) = getfield(r, :lookup)[col]
+getrow(r::Row) = getfield(r, :row)
+getarrayindex(r::Row) = getfield(r, :array_index)
+getarrayi(r::Row) = getfield(r, :array_i)
+
+Base.propertynames(r::Row) = getnames(r)
+
+function Base.show(io::IO, r::Row)
+    print(io, "CSV.Row($(getrow(r))): ")
+    names = getnames(r)
+    show(IOContext(io, :compact => true), NamedTuple{Tuple(names)}(Tuple(getproperty(r, nm) for nm in names)))
+end
+
+struct File{threaded} <: AbstractVector{Row{threaded}}
     name::String
     names::Vector{Symbol}
     types::Vector{Type}
@@ -52,6 +78,8 @@ getnames(f::File) = getfield(f, :names)
 gettypes(f::File) = getfield(f, :types)
 getrows(f::File) = getfield(f, :rows)
 getcols(f::File) = getfield(f, :cols)
+getcolumns(f::File) = getfield(f, :columns)
+getlookup(f::File) = getfield(f, :lookup)
 getcolumn(f::File, col::Int) = getfield(f, :columns)[col]
 getcolumn(f::File, col::Symbol) = getfield(f, :lookup)[col]
 
@@ -60,6 +88,10 @@ function Base.show(io::IO, f::File)
     println(io, "Size: $(getrows(f)) x $(getcols(f))")
     show(io, Tables.schema(f))
 end
+
+Base.IndexStyle(::Type{File}) = Base.IndexLinear()
+Base.eltype(f::File{threaded}) where {threaded} = Row{threaded}
+Base.size(f::File) = (getrows(f),)
 
 const EMPTY_POSITIONS = Int64[]
 const EMPTY_TYPEMAP = Dict{TypeCode, TypeCode}()
@@ -440,7 +472,7 @@ function file(source,
         columns = AbstractVector[Column{_eltype(finaltypes[i]), finaltypes[i]}(tapes[i], rows, eq, categorical, finalrefs[i], buf, finaltypes[i] >: Int64 ? uint64(intsentinels[i]) : sentinelvalue(Base.nonmissingtype(finaltypes[i]))) for i = 1:ncols]
     end
     lookup = Dict(k => v for (k, v) in zip(names, columns))
-    return File(getname(source), names, finaltypes, finalrows, ncols, columns, lookup)
+    return File{something(threaded, false)}(getname(source), names, finaltypes, finalrows, ncols, columns, lookup)
 end
 
 function multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool, ncols, ignoreemptylines, typemap, limit, cmt, debug)
@@ -1037,6 +1069,8 @@ Parses a delimited file into a `DataFrame`. `copycols` determines whether a copy
 `CSV.read` supports the same keyword arguments as [`CSV.File`](@ref).
 """
 read(source; copycols::Bool=false, kwargs...) = DataFrame(CSV.File(source; kwargs...), copycols=copycols)
+
+DataFrames.DataFrame(f::CSV.File; copycols::Bool=false) = DataFrame(getcolumns(f), getnames(f); copycols=copycols)
 
 function __init__()
     # Threads.resize_nthreads!(VALUE_BUFFERS)
