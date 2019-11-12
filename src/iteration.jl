@@ -2,76 +2,97 @@
 Tables.rowaccess(::Type{<:File}) = true
 Tables.rows(f::File) = f
 
-struct Row{T}
-    file::File
-    row::T
+Base.@propagate_inbounds function Base.getindex(f::File{false}, row::Int)
+    @boundscheck checkbounds(f, row)
+    return Row{false}(getnames(f), getcolumns(f), getlookup(f), row, 0, 0)
 end
 
-getfile(r::Row) = getfield(r, :file)
-getrow(r::Row) = getfield(r, :row)
-
-Base.propertynames(r::Row) = getnames(getfile(r))
-
-function Base.show(io::IO, r::Row)
-    println(io, "CSV.Row($(getrow(r))) of:")
-    show(io, getfile(r))
+Base.@propagate_inbounds function Base.getindex(f::File{true}, row::Int)
+    @boundscheck checkbounds(f, row)
+    c = getcolumn(f, 1)
+    i = row
+    for (j, A) in enumerate(c.args)
+        n = length(A)
+        i <= n && return Row{true}(getnames(f), getcolumns(f), getlookup(f), row, j, i)
+        i -= n
+    end
+    return Row{true}(getnames(f), getcolumns(f), getlookup(f), row, 1, 1)
 end
 
-Base.eltype(f::File) = Row
-Base.length(f::File) = getrows(f)
+# non-threaded file
+@inline function Base.iterate(f::File{false}, st::Int=1)
+    st > length(f) && return nothing
+    return Row{false}(getnames(f), getcolumns(f), getlookup(f), st, 0, 0), st + 1
+end
 
-function Base.iterate(f::File)
+# threaded file
+mutable struct RowIterationState
+    row::Int64
+    array_index::Int64
+    array_i::Int64
+    array_len::Int64
+    array_lens::Vector{Int64}
+end
+
+@inline function Base.iterate(f::File{true})
     cols = getcols(f)
     (cols == 0 || getrows(f) == 0) && return nothing
     c = getcolumn(f, 1)
-    if typeof(c) <: LazyArrays.ApplyArray
-        return Row(f, (1, 1, 1, c.args)), (1, 2, 2, c.args)
-    else
-        return Row(f, 1), 2
-    end
+    array_lens = [length(x) for x in c.args]
+    st = RowIterationState(2, 1, 2, array_lens[1], array_lens)
+    return Row{true}(getnames(f), getcolumns(f), getlookup(f), 1, 1, 1), st
 end
 
-@inline function Base.iterate(f::File, st::Int)
-    st > length(f) && return nothing
-    return Row(f, st), st + 1
-end
-
-@inline function Base.iterate(f::File, st)
-    st[3] > length(f) && return nothing
-    if st[2] + 1 > length(st[4][st[1]])
-        st1 += 1
-        st2 = 1
+@inline function Base.iterate(f::File{true}, st)
+    row = st.row
+    array_index = st.array_index
+    array_i = st.array_i
+    row > length(f) && return nothing
+    if array_i + 1 > st.array_len
+        st.array_index += 1
+        st.array_i = 1
+        st.array_len = st.array_lens[min(end, st.array_index)]
     else
-        st1 = st[1]
-        st2 = st[2]
+        st.array_i += 1
     end
-    return Row(f, st), (st1, st2, st + 1, st[4])
+    st.row += 1
+    return Row{true}(getnames(f), getcolumns(f), getlookup(f), row, array_index, array_i), st
 end
 
 @noinline badcolumnerror(name) = throw(ArgumentError("`$name` is not a valid column name"))
 
-@inline function Base.getproperty(row::Row{Int}, name::Symbol)
-    column = getcolumn(getfile(row), name)
+@inline function Base.getproperty(row::Row{false}, col::Symbol)
+    column = getcolumn(row, col)
     @inbounds x = column[getrow(row)]
     return x
 end
 
-@inline function Base.getindex(row::Row{Int}, i::Int)
-    column = getcolumn(getfile(row), i)
+@inline function Base.getindex(row::Row{false}, col::Int)
+    column = getcolumn(row, col)
     @inbounds x = column[getrow(row)]
     return x
 end
 
-@inline function Base.getproperty(row::Row, name::Symbol)
-    column = getcolumn(getfile(row), name)
-    r = getrow(row)
-    @inbounds x = column.args[r[1]][r[2]]
+@inline function Base.getindex(row::Row{false}, col::Symbol)
+    column = getcolumn(row, col)
+    @inbounds x = column[getrow(row)]
     return x
 end
 
-@inline function Base.getindex(row::Row, i::Int)
-    column = getcolumn(getfile(row), i)
-    r = getrow(row)
-    @inbounds x = column.args[r[1]][r[2]]
+@inline function Base.getproperty(row::Row{true}, col::Symbol)
+    column = getcolumn(row, col)
+    @inbounds x = column.args[getarrayindex(row)][getarrayi(row)]
+    return x
+end
+
+@inline function Base.getindex(row::Row{true}, col::Int)
+    column = getcolumn(row, col)
+    @inbounds x = column.args[getarrayindex(row)][getarrayi(row)]
+    return x
+end
+
+@inline function Base.getindex(row::Row{true}, col::Symbol)
+    column = getcolumn(row, col)
+    @inbounds x = column.args[getarrayindex(row)][getarrayi(row)]
     return x
 end
