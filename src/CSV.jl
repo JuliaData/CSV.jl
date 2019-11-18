@@ -1070,7 +1070,7 @@ Parses a delimited file into a `DataFrame`. `copycols` determines whether a copy
 """
 read(source; copycols::Bool=false, kwargs...) = DataFrame(CSV.File(source; kwargs...), copycols=copycols)
 
-DataFrames.DataFrame(f::CSV.File; copycols::Bool=false) = DataFrame(getcolumns(f), getnames(f); copycols=copycols)
+DataFrames.DataFrame(f::CSV.File; copycols::Bool=true) = DataFrame(getcolumns(f), getnames(f); copycols=copycols)
 
 function __init__()
     # Threads.resize_nthreads!(VALUE_BUFFERS)
