@@ -378,4 +378,8 @@ df = CSV.read(IOBuffer("thistime\n10:00:00.0\n12:00:00.0"))
 @test typeof(df.thistime[1]) <: Dates.Time
 @test df.thistime[1] === Time(10)
 
+# 530
+df = CSV.read(IOBuffer(",column2\nNA,2\n2,3"), missingstrings=["NA"])
+@test names(df) == [:Column1, :column2]
+
 end
