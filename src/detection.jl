@@ -238,7 +238,7 @@ function readsplitline(buf, pos, len, options::Parsers.Options{ignorerepeated}) 
 end
 
 function columnname(buf, vpos, vlen, code, options, i)
-    if Parsers.sentinel(code)
+    if Parsers.sentinel(code) || vlen == 0
         return "Column$i"
     elseif Parsers.escapedstring(code)
         return unescape(PointerString(pointer(buf, vpos), vlen), options.e)
