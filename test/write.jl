@@ -213,4 +213,10 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
         CSV.write(tmp / "test.txt", df)
         @test CSV.read(tmp / "test.txt") == df
     end
+
+    # 540
+    io = IOBuffer()
+    CSV.write(io, NamedTuple{(Symbol("col1,col2"),), Tuple{Vector{String}}}((["hey"],)))
+    @test String(take!(io)) == "\"col1,col2\"\nhey\n"
+
 end # @testset "CSV.write"
