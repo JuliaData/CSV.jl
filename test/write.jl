@@ -160,13 +160,13 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
 
     # quotedstrings: #362
     (col1=[1,2,3], col2=["hey", "the::re", "::sailor"], col3=[7,8,9]) |> CSV.write(io; delim="::", quotestrings=true)
-    @test String(take!(io)) == "col1::col2::col3\n1::\"hey\"::7\n2::\"the::re\"::8\n3::\"::sailor\"::9\n"
+    @test String(take!(io)) == "\"col1\"::\"col2\"::\"col3\"\n1::\"hey\"::7\n2::\"the::re\"::8\n3::\"::sailor\"::9\n"
 
     (col1=[1,2,3], col2=[4,5,6], col3=["hey \r\n there","sailor","ho"]) |> CSV.write(io; delim="::", newline="\r\n")
     @test String(take!(io)) == "col1::col2::col3\r\n1::4::\"hey \r\n there\"\r\n2::5::sailor\r\n3::6::ho\r\n"
 
     (col1=[1,2,3], col2=[4,5,6], col3=["hey \r\n there","sailor","ho"]) |> CSV.write(io; delim="::", newline="\r\n", quotestrings=true)
-    @test String(take!(io)) == "col1::col2::col3\r\n1::4::\"hey \r\n there\"\r\n2::5::\"sailor\"\r\n3::6::\"ho\"\r\n"
+    @test String(take!(io)) == "\"col1\"::\"col2\"::\"col3\"\r\n1::4::\"hey \r\n there\"\r\n2::5::\"sailor\"\r\n3::6::\"ho\"\r\n"
 
     # validate char args: #369
     @test_throws ArgumentError (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; escapechar='☃')
@@ -213,4 +213,10 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
         CSV.write(tmp / "test.txt", df)
         @test CSV.read(tmp / "test.txt") == df
     end
+
+    # 540
+    io = IOBuffer()
+    CSV.write(io, NamedTuple{(Symbol("col1,col2"),), Tuple{Vector{String}}}((["hey"],)))
+    @test String(take!(io)) == "\"col1,col2\"\nhey\n"
+
 end # @testset "CSV.write"

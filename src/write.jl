@@ -169,7 +169,7 @@ end
 function writenames(buf, pos, len, io, header, cols, opts)
     cols = length(header)
     for (col, nm) in enumerate(header)
-        pos = writecell(buf, pos, len, io, nm, opts)
+        pos = writecell(buf, pos, len, io, String(nm), opts)
         pos = writedelimnewline(buf, pos, len, io, ifelse(col == cols, opts.newline, opts.delim))
     end
     return pos
