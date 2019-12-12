@@ -3,7 +3,7 @@ module CSV
 # stdlib
 using Mmap, Dates, Unicode
 using Parsers, Tables
-using PooledArrays, CategoricalArrays, WeakRefStrings, DataFrames, FilePathsBase, LazyArrays
+using PooledArrays, CategoricalArrays, WeakRefStrings, DataFrames, FilePathsBase
 
 function validate(fullpath::Union{AbstractString,IO}; kwargs...)
     Base.depwarn("`CSV.validate` is deprecated. `CSV.read` now prints warnings on misshapen files.", :validate)
@@ -20,6 +20,14 @@ end
 
 Base.showerror(io::IO, e::Error) = println(io, e.msg)
 
+mutable struct ThreadedIterationState
+    row::Int64
+    array_index::Int64
+    array_i::Int64
+    array_len::Int64
+    array_lens::Vector{Int64}
+end
+
 struct Column{T, P} <: AbstractVector{T}
     tape::Vector{UInt64}
     len::Int
@@ -30,12 +38,18 @@ struct Column{T, P} <: AbstractVector{T}
     sentinel::UInt64
 end
 
+struct Column2{T, P} <: AbstractVector{T}
+    columns::Vector{Column{T, P}}
+    len::Int
+end
+
 _eltype(::Type{T}) where {T} = T
 _eltype(::Type{PooledString}) = String
 _eltype(::Type{Union{PooledString, Missing}}) = Union{String, Missing}
 
-Base.size(c::Column) = (c.len,)
+Base.size(c::Union{Column, Column2}) = (c.len,)
 Base.IndexStyle(::Type{<:Column}) = Base.IndexLinear()
+Base.IndexStyle(::Type{<:Column2}) = Base.IndexLinear()
 
 # getindex definitions in tables.jl
 
@@ -69,7 +83,7 @@ struct File{threaded} <: AbstractVector{Row{threaded}}
     types::Vector{Type}
     rows::Int64
     cols::Int64
-    columns::Vector{AbstractVector}
+    columns::Vector{Union{Column, Column2}}
     lookup::Dict{Symbol, AbstractVector}
 end
 
@@ -467,9 +481,9 @@ function file(source,
         fill!(finalrefs, nothing)
     end
     if threaded === true
-        columns = AbstractVector[ApplyArray(vcat, (Column{_eltype(finaltypes[i]), finaltypes[i]}(tapes[j][i], rows[j], eq, categorical, finalrefs[i], buf, finaltypes[i] >: Int64 ? uint64(intsentinels[i]) : sentinelvalue(Base.nonmissingtype(finaltypes[i]))) for j = 1:Threads.nthreads())...) for i = 1:ncols]
+        columns = Union{Column, Column2}[Column2{_eltype(finaltypes[i]), finaltypes[i]}([Column{_eltype(finaltypes[i]), finaltypes[i]}(tapes[j][i], rows[j], eq, categorical, finalrefs[i], buf, finaltypes[i] >: Int64 ? uint64(intsentinels[i]) : sentinelvalue(Base.nonmissingtype(finaltypes[i]))) for j = 1:Threads.nthreads()], finalrows) for i = 1:ncols]
     else
-        columns = AbstractVector[Column{_eltype(finaltypes[i]), finaltypes[i]}(tapes[i], rows, eq, categorical, finalrefs[i], buf, finaltypes[i] >: Int64 ? uint64(intsentinels[i]) : sentinelvalue(Base.nonmissingtype(finaltypes[i]))) for i = 1:ncols]
+        columns = Union{Column, Column2}[Column{_eltype(finaltypes[i]), finaltypes[i]}(tapes[i], rows, eq, categorical, finalrefs[i], buf, finaltypes[i] >: Int64 ? uint64(intsentinels[i]) : sentinelvalue(Base.nonmissingtype(finaltypes[i]))) for i = 1:ncols]
     end
     lookup = Dict(k => v for (k, v) in zip(names, columns))
     return File{something(threaded, false)}(getname(source), names, finaltypes, finalrows, ncols, columns, lookup)

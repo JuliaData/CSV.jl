@@ -11,6 +11,53 @@ function Base.getproperty(f::File, col::Symbol)
     end
 end
 
+# Column2
+ # copy
+ # BroadcastStyle/broadcasted
+Base.mapreduce(f, op, xs::Column2; kwargs...) = Base.mapfoldl(f, op, xs; kwargs...)
+
+@inline function Base.iterate(c::Column2)
+    length(c) == 0 && return nothing
+    array_lens = [length(x) for x in c.columns]
+    st = ThreadedIterationState(2, 1, 2, array_lens[1], array_lens)
+    return c.columns[1][1], st
+end
+
+@inline function Base.iterate(c::Column2, st)
+    row = st.row
+    array_index = st.array_index
+    array_i = st.array_i
+    row > length(c) && return nothing
+    if array_i + 1 > st.array_len
+        st.array_index += 1
+        st.array_i = 1
+        st.array_len = st.array_lens[min(end, st.array_index)]
+    else
+        st.array_i += 1
+    end
+    st.row += 1
+    return c.columns[array_index][array_i], st
+end
+
+Base.@propagate_inbounds function Base.getindex(c::Column2, i::Integer)
+    i′ = i
+    for C in c.columns
+        n = length(C)
+        i′ ≤ n && return C[i′]
+        i′ -= n
+    end
+    throw(BoundsError(c, i))
+end
+
+function Base.copy(c::Column2{T}) where {T}
+    len = length(c)
+    A = Vector{T}(undef, len)
+    for (i, x) in enumerate(c)
+        @inbounds A[i] = x
+    end
+    return A
+end
+
 function Base.copy(c::Column{T}) where {T}
     len = length(c)
     A = Vector{T}(undef, len)
@@ -20,11 +67,69 @@ function Base.copy(c::Column{T}) where {T}
     return A
 end
 
+function Base.copy(c::Column2{T, T}) where {T <: Union{String, Union{String, Missing}}}
+    len = length(c)
+    A = StringVector{T}(undef, len)
+    for (i, x) in enumerate(c)
+        @inbounds A[i] = x
+    end
+    return A
+end
+
 function Base.copy(c::Column{T, T}) where {T <: Union{String, Union{String, Missing}}}
     len = length(c)
     A = StringVector{T}(undef, len)
     @simd for i = 1:len
         @inbounds A[i] = c[i]
+    end
+    return A
+end
+
+function Base.copy(c::Column2{T, S}) where {T <: Union{String, Union{String, Missing}}, S <: Union{PooledString, Union{PooledString, Missing}}}
+    len = length(c)
+    c1 = c.columns[1]
+    catg = c1.catg
+    crefs = c1.refs
+    if S === PooledString
+        refs = Dict{String, UInt32}()
+        foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(crefs))
+        values = Vector{UInt32}(undef, len)
+        j = 1
+        for cx in c.columns
+            tape = cx.tape
+            @simd for i = 1:length(tape)
+                @inbounds values[j] = ref(tape[i])
+                j += 1
+            end
+        end
+    else
+        if catg
+            refs = Dict{String, UInt32}()
+            foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(crefs))
+            missingref = UInt32(0)
+            values = Vector{UInt32}(undef, len)
+        else # Union{PooledString, Missing}
+            refs = Dict{Union{String, Missing}, UInt32}()
+            foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(crefs))
+            missingref = UInt32(length(refs) + 1)
+            refs[missing] = missingref
+            values = Vector{UInt32}(undef, len)
+        end
+        for cx in c.columns
+            tape = cx.tape
+            @simd for i = 1:length(tape)
+                @inbounds v = ref(tape[i])
+                @inbounds values[j] = ifelse(v == UInt32(0), missingref, v)
+                j += 1
+            end
+        end
+    end
+    if catg
+        pool = CategoricalPool(refs)
+        levels!(pool, sort(levels(pool)))
+        A = CategoricalArray{T, 1}(values, pool)
+    else
+        A = PooledArray(PooledArrays.RefArray(values), refs)
     end
     return A
 end
