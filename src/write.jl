@@ -123,8 +123,7 @@ function write(::Nothing, rows, file, opts;
     return file
 end
 
-_seekstart(p::Base.Process) = return
-_seekstart(io::IO) = seekstart(io)
+_seekstart(io::T) where {T <: IO} = hasmethod(seek, Tuple{T, Integer}) ? seekstart(io) : nothing
 
 @inline function with(f::Function, io::IO, append)
     !append && _seekstart(io)

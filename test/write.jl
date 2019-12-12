@@ -219,4 +219,9 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
     CSV.write(io, NamedTuple{(Symbol("col1,col2"),), Tuple{Vector{String}}}((["hey"],)))
     @test String(take!(io)) == "\"col1,col2\"\nhey\n"
 
+    io = Base.BufferStream()
+    CSV.write(io, (a=[1,2,3], b=[4.1, 5.2, 6.3]))
+    close(io)
+    @test read(io, String) == "a,b\n1,4.1\n2,5.2\n3,6.3\n"
+
 end # @testset "CSV.write"
