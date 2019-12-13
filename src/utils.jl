@@ -382,3 +382,4 @@ function unset!(A::Vector, i::Int, row, x)
     return
 end
 
+memcpy!(d, doff, s, soff, n) = ccall(:memcpy, Cvoid, (Ptr{UInt8}, Ptr{UInt8}, Int), d + doff - 1, s + soff - 1, n)
