@@ -11,35 +11,90 @@ function Base.getproperty(f::File, col::Symbol)
     end
 end
 
-function Base.copy(c::Column{T}) where {T}
+# Column2
+ # copy
+ # BroadcastStyle/broadcasted
+Base.mapreduce(f, op, xs::Column2; kwargs...) = Base.mapfoldl(f, op, xs; kwargs...)
+
+@inline function Base.iterate(c::Column2)
+    length(c) == 0 && return nothing
+    array_lens = [length(x) for x in c.columns]
+    st = ThreadedIterationState(2, 1, 2, array_lens[1], array_lens)
+    return c.columns[1][1], st
+end
+
+@inline function Base.iterate(c::Column2, st)
+    row = st.row
+    array_index = st.array_index
+    array_i = st.array_i
+    row > length(c) && return nothing
+    if array_i + 1 > st.array_len
+        st.array_index += 1
+        st.array_i = 1
+        st.array_len = st.array_lens[min(end, st.array_index)]
+    else
+        st.array_i += 1
+    end
+    st.row += 1
+    return c.columns[array_index][array_i], st
+end
+
+Base.@propagate_inbounds function Base.getindex(c::Column2, i::Integer)
+    i′ = i
+    for C in c.columns
+        n = length(C)
+        i′ ≤ n && return C[i′]
+        i′ -= n
+    end
+    throw(BoundsError(c, i))
+end
+
+function Base.copy(c::Union{Column{T}, Column2{T}}) where {T}
     len = length(c)
-    A = Vector{T}(undef, len)
-    @simd for i = 1:len
-        @inbounds A[i] = c[i]
+    A = (T == String || T == Union{String, Missing}) ? StringVector{T}(undef, len) : Vector{T}(undef, len)
+    if T <: Int64 || T <: Float64 || T <: Dates.TimeType
+        if c isa Column
+            memcpy!(pointer(A), 1, pointer(c.tape), 1, len * 8)
+            return A
+        else
+            doff = 1
+            for cx in c.columns
+                n = length(cx) * 8
+                memcpy!(pointer(A), doff, pointer(cx.tape), 1, n)
+                doff += n
+            end
+            return A
+        end
+    end
+    for (i, x) in enumerate(c)
+        @inbounds A[i] = x
     end
     return A
 end
 
-function Base.copy(c::Column{T, T}) where {T <: Union{String, Union{String, Missing}}}
-    len = length(c)
-    A = StringVector{T}(undef, len)
-    @simd for i = 1:len
-        @inbounds A[i] = c[i]
-    end
-    return A
-end
-
-function Base.copy(c::Column{T, S}) where {T <: Union{String, Union{String, Missing}}, S <: Union{PooledString, Union{PooledString, Missing}}}
-    len = length(c)
+function Base.copy(col::Union{Column{T, S}, Column2{T, S}}) where {T <: Union{String, Union{String, Missing}}, S <: Union{PooledString, Union{PooledString, Missing}}}
+    len = length(col)
+    c = col isa Column ? col : col.columns[1]
     catg = c.catg
-    tape = c.tape
     crefs = c.refs
     if S === PooledString
         refs = Dict{String, UInt32}()
         foreach(x->setindex!(refs, UInt32(x[1]), x[2]), enumerate(crefs))
         values = Vector{UInt32}(undef, len)
-        @simd for i = 1:len
-            @inbounds values[i] = ref(tape[i])
+        if col isa Column
+            tape = c.tape
+            @simd for i = 1:len
+                @inbounds values[i] = ref(tape[i])
+            end
+        else
+            i = 1
+            for cx in col.columns
+                tape = cx.tape
+                @simd for j = 1:length(cx)
+                    @inbounds values[i] = ref(tape[j])
+                    i += 1
+                end
+            end
         end
     else
         if catg
@@ -54,9 +109,22 @@ function Base.copy(c::Column{T, S}) where {T <: Union{String, Union{String, Miss
             refs[missing] = missingref
             values = Vector{UInt32}(undef, len)
         end
-        @simd for i = 1:len
-            @inbounds v = ref(tape[i])
-            @inbounds values[i] = ifelse(v == UInt32(0), missingref, v)
+        if col isa Column
+            tape = c.tape
+            @simd for i = 1:len
+                @inbounds v = ref(tape[i])
+                @inbounds values[i] = ifelse(v == UInt32(0), missingref, v)
+            end
+        else
+            i = 1
+            for cx in col.columns
+                tape = cx.tape
+                @simd for j = 1:length(cx)
+                    @inbounds v = ref(tape[i])
+                    @inbounds values[i] = ifelse(v == UInt32(0), missingref, v)
+                    i += 1
+                end
+            end
         end
     end
     if catg
