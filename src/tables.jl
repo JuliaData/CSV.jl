@@ -59,7 +59,7 @@ function Base.copy(c::Union{Column{T}, Column2{T}}) where {T}
         else
             doff = 1
             for cx in c.columns
-                n = length(cx.tape) * 8
+                n = length(cx) * 8
                 memcpy!(pointer(A), doff, pointer(cx.tape), 1, n)
                 doff += n
             end
@@ -74,7 +74,7 @@ end
 
 function Base.copy(col::Union{Column{T, S}, Column2{T, S}}) where {T <: Union{String, Union{String, Missing}}, S <: Union{PooledString, Union{PooledString, Missing}}}
     len = length(col)
-    c = col isa Column ? col : c.columns[1]
+    c = col isa Column ? col : col.columns[1]
     catg = c.catg
     crefs = c.refs
     if S === PooledString

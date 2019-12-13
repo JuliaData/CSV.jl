@@ -53,7 +53,7 @@ Base.IndexStyle(::Type{<:Column2}) = Base.IndexLinear()
 
 # getindex definitions in tables.jl
 
-struct Row{threaded}
+struct Row{threaded} <: AbstractVector{Any}
     names::Vector{Symbol}
     columns::Vector{AbstractVector}
     lookup::Dict{Symbol, AbstractVector}
@@ -69,13 +69,9 @@ getrow(r::Row) = getfield(r, :row)
 getarrayindex(r::Row) = getfield(r, :array_index)
 getarrayi(r::Row) = getfield(r, :array_i)
 
+Base.size(r::Row) = (length(getnames(r)),)
+Base.IndexStyle(::Type{<:Row}) = Base.IndexLinear()
 Base.propertynames(r::Row) = getnames(r)
-
-function Base.show(io::IO, r::Row)
-    print(io, "CSV.Row($(getrow(r))): ")
-    names = getnames(r)
-    show(IOContext(io, :compact => true), NamedTuple{Tuple(names)}(Tuple(getproperty(r, nm) for nm in names)))
-end
 
 struct File{threaded} <: AbstractVector{Row{threaded}}
     name::String
@@ -148,11 +144,11 @@ function checkvalidsource(source)
 end
 
 function allocate(rowsguess, ncols, typecodes)
-    tapes = Vector{UInt64}[Mmap.mmap(Vector{UInt64}, usermissing(typecodes[i]) ? 0 : rowsguess) for i = 1:ncols]
+    tapes = Vector{UInt64}[Vector{UInt64}(undef, usermissing(typecodes[i]) ? 0 : rowsguess) for i = 1:ncols]
     poslens = Vector{Vector{UInt64}}(undef, ncols)
     for i = 1:ncols
         if !user(typecodes[i])
-            poslens[i] = Mmap.mmap(Vector{UInt64}, rowsguess)
+            poslens[i] = Vector{UInt64}(undef, rowsguess)
         end
     end
     return tapes, poslens

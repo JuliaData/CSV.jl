@@ -11,7 +11,7 @@ Base.@propagate_inbounds function Base.getindex(f::File{true}, row::Int)
     @boundscheck checkbounds(f, row)
     c = getcolumn(f, 1)
     i = row
-    for (j, A) in enumerate(c.args)
+    for (j, A) in enumerate(c.columns)
         n = length(A)
         i <= n && return Row{true}(getnames(f), getcolumns(f), getlookup(f), row, j, i)
         i -= n
@@ -31,7 +31,7 @@ end
     cols = getcols(f)
     (cols == 0 || getrows(f) == 0) && return nothing
     c = getcolumn(f, 1)
-    array_lens = [length(x) for x in c.args]
+    array_lens = [length(x) for x in c.columns]
     st = ThreadedIterationState(2, 1, 2, array_lens[1], array_lens)
     return Row{true}(getnames(f), getcolumns(f), getlookup(f), 1, 1, 1), st
 end
@@ -74,18 +74,18 @@ end
 
 @inline function Base.getproperty(row::Row{true}, col::Symbol)
     column = getcolumn(row, col)
-    @inbounds x = column.args[getarrayindex(row)][getarrayi(row)]
+    @inbounds x = column.columns[getarrayindex(row)][getarrayi(row)]
     return x
 end
 
 @inline function Base.getindex(row::Row{true}, col::Int)
     column = getcolumn(row, col)
-    @inbounds x = column.args[getarrayindex(row)][getarrayi(row)]
+    @inbounds x = column.columns[getarrayindex(row)][getarrayi(row)]
     return x
 end
 
 @inline function Base.getindex(row::Row{true}, col::Symbol)
     column = getcolumn(row, col)
-    @inbounds x = column.args[getarrayindex(row)][getarrayi(row)]
+    @inbounds x = column.columns[getarrayindex(row)][getarrayi(row)]
     return x
 end
