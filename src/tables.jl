@@ -120,7 +120,7 @@ function Base.copy(col::Union{Column{T, S}, Column2{T, S}}) where {T <: Union{St
             for cx in col.columns
                 tape = cx.tape
                 @simd for j = 1:length(cx)
-                    @inbounds v = ref(tape[i])
+                    @inbounds v = ref(tape[j])
                     @inbounds values[i] = ifelse(v == UInt32(0), missingref, v)
                     i += 1
                 end
