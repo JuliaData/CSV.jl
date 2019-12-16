@@ -49,6 +49,8 @@ Base.@propagate_inbounds function Base.getindex(c::Column2, i::Integer)
     throw(BoundsError(c, i))
 end
 
+Base.copy(c::Union{Column{Missing, Missing}, Column2{Missing, Missing}}) = missings(length(c))
+
 function Base.copy(c::Union{Column{T}, Column2{T}}) where {T}
     len = length(c)
     A = (T == String || T == Union{String, Missing}) ? StringVector{T}(undef, len) : Vector{T}(undef, len)
