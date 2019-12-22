@@ -223,14 +223,15 @@ function readsplitline(buf, pos, len, options::Parsers.Options{ignorerepeated}) 
     vals = String[]
     (pos > len || pos == 0) && return vals, pos
     col = 1
+    if ignorerepeated
+        pos = Parsers.checkdelim!(buf, pos, len, options)
+    end
     while true
-        if ignorerepeated
-            pos = Parsers.checkdelim!(buf, pos, len, options)
-        end
         _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
         push!(vals, columnname(buf, vpos, vlen, code, options, col))
         pos += tlen
         col += 1
+        ignorerepeated && Parsers.newline(code) && break
         Parsers.delimited(code) && continue
         (Parsers.newline(code) || pos > len) && break
     end
