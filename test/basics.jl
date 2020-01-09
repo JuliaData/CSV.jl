@@ -382,4 +382,8 @@ df = CSV.read(IOBuffer("thistime\n10:00:00.0\n12:00:00.0"))
 df = CSV.read(IOBuffer(",column2\nNA,2\n2,3"), missingstrings=["NA"])
 @test names(df) == [:Column1, :column2]
 
+# reported on slack from Kevin Bonham
+df = CSV.read(IOBuffer("x\n01:02:03\n\n04:05:06\n"), delim=',')
+@test isequal(df.x, [Dates.Time(1,2,3), missing, Dates.Time(4,5,6)])
+
 end
