@@ -89,6 +89,7 @@ const TYPECODES = Dict(
     FLOAT | MISSING => Union{Float64, Missing},
     DATE | MISSING => Union{Date, Missing},
     DATETIME | MISSING => Union{DateTime, Missing},
+    TIME | MISSING => Union{Time, Missing},
     BOOL | MISSING => Union{Bool, Missing},
     POOL | MISSING => Union{PooledString, Missing},
     STRING | MISSING => Union{String, Missing}
