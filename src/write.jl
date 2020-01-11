@@ -10,6 +10,7 @@ Supported keyword arguments include:
 * `openquotechar::Char`: instead of `quotechar`, use `openquotechar` and `closequotechar` to support different starting and ending quote characters
 * `escapechar::Char='"'`: ascii character used to escape quote characters in a text field
 * `missingstring::String=""`: string to print for `missing` values
+* `treatnothingasmissing::Bool=false`:  `nothing` is treated like `missing` or like empty string
 * `dateformat=Dates.default_format(T)`: the date format string to use for printing out `Date` & `DateTime` columns
 * `append=false`: whether to append writing to an existing file/IO, if `true`, it will not write column names by default
 * `writeheader=!append`: whether to write an initial row of delimited column names, not written by default if appending
@@ -30,6 +31,7 @@ mutable struct Options{D, N, DF, M}
     dateformat::DF
     quotestrings::Bool
     missingstring::M
+    treatnothingasmissing::Bool
 end
 
 tup(x::Char) = x % UInt8
@@ -49,12 +51,13 @@ function write(file, itr;
     dateformat=nothing,
     quotestrings::Bool=false,
     missingstring::AbstractString="",
+    treatnothingasmissing::Bool=false,
     kwargs...)
     checkvaliddelim(delim)
     (isascii(something(openquotechar, quotechar)) && isascii(something(closequotechar, quotechar)) && isascii(escapechar)) || throw(ArgumentError("quote and escape characters must be ASCII characters "))
     oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
     e = escapechar % UInt8
-    opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring))
+    opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring), treatnothingasmissing)
     rows = Tables.rows(itr)
     sch = Tables.schema(rows)
     return write(sch, rows, file, opts; kwargs...)
@@ -183,6 +186,17 @@ function writerow(buf, pos, len, io, sch, row, cols, opts)
         pos[] = writedelimnewline(buf, posx, len, io, ifelse(col == cols, n, d))
     end
     return
+end
+
+# Special treatment for `nothing`. It can be treated like `missing`
+# if the `treatnothingasmissing` option is set to `true`.  Otherwise,
+# an empty string is written.
+function writecell(buf, pos, len, io, ::Nothing, opts)
+    if opts.treatnothingasmissing
+        writecell(buf, pos, len, io, missing, opts)
+    else
+        writecell(buf, pos, len, io, "", opts)
+    end
 end
 
 function writecell(buf, pos, len, io, ::Missing, opts)
