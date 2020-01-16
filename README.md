@@ -19,7 +19,7 @@ The package is registered in the [`General`](https://github.com/JuliaRegistries/
 
 ## Project Status
 
-The package is tested against Julia `1.0`, `1.1` and nightly on Linux, OS X, and Windows.
+The package is tested against Julia `1.0`, current stable release, and nightly on Linux, OS X, and Windows.
 
 ## Contributing and Questions
 
