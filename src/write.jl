@@ -30,6 +30,7 @@ mutable struct Options{D, N, DF, M}
     dateformat::DF
     quotestrings::Bool
     missingstring::M
+    transform::Union{Function, Nothing}
 end
 
 tup(x::Char) = x % UInt8
@@ -49,12 +50,13 @@ function write(file, itr;
     dateformat=nothing,
     quotestrings::Bool=false,
     missingstring::AbstractString="",
+    transform::Union{Function, Nothing}=nothing,
     kwargs...)
     checkvaliddelim(delim)
     (isascii(something(openquotechar, quotechar)) && isascii(something(closequotechar, quotechar)) && isascii(escapechar)) || throw(ArgumentError("quote and escape characters must be ASCII characters "))
     oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
     e = escapechar % UInt8
-    opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring))
+    opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring), transform)
     rows = Tables.rows(itr)
     sch = Tables.schema(rows)
     return write(sch, rows, file, opts; kwargs...)
@@ -179,6 +181,7 @@ function writerow(buf, pos, len, io, sch, row, cols, opts)
     n, d = opts.newline, opts.delim
     Tables.eachcolumn(sch, row, pos) do val, col, nm, pos
         Base.@_inline_meta
+        val = opts.transform !== nothing ? opts.transform(col, val) : val
         posx = writecell(buf, pos[], len, io, val, opts)
         pos[] = writedelimnewline(buf, posx, len, io, ifelse(col == cols, n, d))
     end
