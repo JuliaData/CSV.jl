@@ -51,8 +51,8 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
     (col1=[1,nothing,3], col2=[nothing, nothing, nothing], col3=[7,8,9]) |> CSV.write(io; treatnothingasmissing=true, missingstring="NA")
     @test String(take!(io)) == "col1,col2,col3\n1,NA,7\nNA,NA,8\n3,NA,9\n"
 
-    (col1=[1,nothing,3], col2=[nothing, nothing, nothing], col3=[7,8,9]) |> CSV.write(io; treatnothingasmissing=false, missingstring="NA")
-    @test String(take!(io)) == "col1,col2,col3\n1,,7\n,,8\n3,,9\n"
+    @test_throws ErrorException (col1=[1,nothing,3], col2=[nothing, nothing, nothing], col3=[7,8,9]) |>
+        CSV.write(io; treatnothingasmissing=false, missingstring="NA")
 
     (col1=["hey, there, sailor", "this, also, has, commas", "this\n has\n newlines\n", "no quoting", "just a random \" quote character", ],) |> CSV.write(io; escapechar='\\')
     @test String(take!(io)) == "col1\n\"hey, there, sailor\"\n\"this, also, has, commas\"\n\"this\n has\n newlines\n\"\nno quoting\n\"just a random \\\" quote character\"\n"

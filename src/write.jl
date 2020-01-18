@@ -171,7 +171,7 @@ end
 function writenames(buf, pos, len, io, header, cols, opts)
     cols = length(header)
     for (col, nm) in enumerate(header)
-        pos = writecell(buf, pos, len, io, String(nm), opts)
+        pos = writecell(buf, pos, len, io, String(nm), col, opts)
         pos = writedelimnewline(buf, pos, len, io, ifelse(col == cols, opts.newline, opts.delim))
     end
     return pos
@@ -182,7 +182,7 @@ function writerow(buf, pos, len, io, sch, row, cols, opts)
     n, d = opts.newline, opts.delim
     Tables.eachcolumn(sch, row, pos) do val, col, nm, pos
         Base.@_inline_meta
-        posx = writecell(buf, pos[], len, io, val, opts)
+        posx = writecell(buf, pos[], len, io, val, col, opts)
         pos[] = writedelimnewline(buf, posx, len, io, ifelse(col == cols, n, d))
     end
     return
@@ -191,15 +191,18 @@ end
 # Special treatment for `nothing`. It can be treated like `missing`
 # if the `treatnothingasmissing` option is set to `true`.  Otherwise,
 # an empty string is written.
-function writecell(buf, pos, len, io, ::Nothing, opts)
+function writecell(buf, pos, len, io, ::Nothing, col, opts)
     if opts.treatnothingasmissing
-        writecell(buf, pos, len, io, missing, opts)
+        writecell(buf, pos, len, io, missing, col, opts)
     else
-        writecell(buf, pos, len, io, "", opts)
+        error("A `nothing` value was found in column $col. " *
+              "You can handle this situation by 1) fix the data 2) use " *
+              "`treatnothingasmissing` option, or 3) use `Tables.transform` " *
+              "to convert `nothing` to something printable.")
     end
 end
 
-function writecell(buf, pos, len, io, ::Missing, opts)
+function writecell(buf, pos, len, io, ::Missing, col, opts)
     str = opts.missingstring
     t = tlen(str)
     t == 0 && return pos
@@ -216,7 +219,7 @@ function writecell(buf, pos, len, io, ::Missing, opts)
     return pos
 end
 
-function writecell(buf, pos, len, io, x::Bool, opts)
+function writecell(buf, pos, len, io, x::Bool, col, opts)
     @inbounds if x
         @check 4
         buf[pos] = UInt8('t')
@@ -236,7 +239,7 @@ function writecell(buf, pos, len, io, x::Bool, opts)
     return pos
 end
 
-function writecell(buf, pos, len, io, y::Integer, opts)
+function writecell(buf, pos, len, io, y::Integer, col, opts)
     x, neg = Base.split_sign(y)
     if neg
         @inbounds buf[pos] = UInt8('-')
@@ -252,7 +255,7 @@ function writecell(buf, pos, len, io, y::Integer, opts)
     return pos + n
 end
 
-function writecell(buf, pos, len, io, x::AbstractFloat, opts)
+function writecell(buf, pos, len, io, x::AbstractFloat, col, opts)
     bytes = codeunits(string(x))
     sz = sizeof(bytes)
     @check sz
@@ -263,14 +266,14 @@ function writecell(buf, pos, len, io, x::AbstractFloat, opts)
     return pos
 end
 
-function writecell(buf, pos, len, io, x::T, opts) where {T <: Base.IEEEFloat}
+function writecell(buf, pos, len, io, x::T, col, opts) where {T <: Base.IEEEFloat}
     @check Parsers.neededdigits(T)
     return Parsers.writeshortest(buf, pos, x, false, false, true, -1, UInt8('e'), false, opts.decimal)
 end
 
 getvalue(x::T, df) where {T <: Dates.TimeType} = Dates.format(x, df === nothing ? Dates.default_format(T) : df)
 
-function writecell(buf, pos, len, io, x::Dates.TimeType, opts)
+function writecell(buf, pos, len, io, x::Dates.TimeType, col, opts)
     bytes = codeunits(getvalue(x, opts.dateformat))
     @check sizeof(bytes)
     for i = 1:sizeof(bytes)
@@ -280,7 +283,7 @@ function writecell(buf, pos, len, io, x::Dates.TimeType, opts)
     return pos
 end
 
-function writecell(buf, pos, len, io, x::Symbol, opts)
+function writecell(buf, pos, len, io, x::Symbol, col, opts)
     ptr = Base.unsafe_convert(Ptr{UInt8}, x)
     sz = ccall(:strlen, Csize_t, (Cstring,), ptr)
     @check sz
@@ -292,13 +295,13 @@ function writecell(buf, pos, len, io, x::Symbol, opts)
 end
 
 # generic fallback; convert to string
-writecell(buf, pos, len, io, x, opts) =
-    writecell(buf, pos, len, io, Base.string(x), opts)
+writecell(buf, pos, len, io, x, col, opts) =
+    writecell(buf, pos, len, io, Base.string(x), col, opts)
 
-writecell(buf, pos, len, io, x::CategoricalString, opts) =
-    writecell(buf, pos, len, io, Base.string(x), opts)
+writecell(buf, pos, len, io, x::CategoricalString, col, opts) =
+    writecell(buf, pos, len, io, Base.string(x), col, opts)
 
-function writecell(buf, pos, len, io, x::AbstractString, opts)
+function writecell(buf, pos, len, io, x::AbstractString, col, opts)
     bytes = codeunits(x)
     sz = sizeof(bytes)
     # check if need to escape
