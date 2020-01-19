@@ -186,9 +186,9 @@ function writerow(buf, pos, len, io, sch, row, cols, opts)
         val === nothing && error(
             """
             A `nothing` value was found in column $col and it is not a printable value. 
-            There are several ways to handle this situation:\n
-            1) fix the data, perhaps replace `nothing` with `missing`, \n
-            2) use `transform` option with a funciton to replace `nothing` with whatever value (including `missing`), or\n
+            There are several ways to handle this situation:
+            1) fix the data, perhaps replace `nothing` with `missing`,
+            2) use `transform` option with a funciton to replace `nothing` with whatever value (including `missing`), or
             3) use `Tables.transform` option to transform specific columns
             """)
         posx = writecell(buf, pos[], len, io, val, opts)
