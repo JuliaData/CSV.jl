@@ -17,10 +17,11 @@ Supported keyword arguments include:
 * `newline='\\n'`: character or string to use to separate rows (lines in the csv file)
 * `quotestrings=false`: whether to force all strings to be quoted or not
 * `decimal='.'`: character to use as the decimal point when writing floating point numbers
+* `transform=(col,val)->val`: a function that is applied to every cell e.g. we can transform all `nothing` values to `missing` using `(col, val) -> something(val, missing)`
 """
 function write end
 
-mutable struct Options{D, N, DF, M}
+mutable struct Options{D, N, DF, M, TF}
     delim::D
     openquotechar::UInt8
     closequotechar::UInt8
@@ -30,7 +31,7 @@ mutable struct Options{D, N, DF, M}
     dateformat::DF
     quotestrings::Bool
     missingstring::M
-    transform::Union{Function, Nothing}
+    transform::TF  # Function
 end
 
 tup(x::Char) = x % UInt8
@@ -50,7 +51,7 @@ function write(file, itr;
     dateformat=nothing,
     quotestrings::Bool=false,
     missingstring::AbstractString="",
-    transform::Union{Function, Nothing}=nothing,
+    transform::Function=(col,val) -> val,
     kwargs...)
     checkvaliddelim(delim)
     (isascii(something(openquotechar, quotechar)) && isascii(something(closequotechar, quotechar)) && isascii(escapechar)) || throw(ArgumentError("quote and escape characters must be ASCII characters "))
@@ -181,7 +182,15 @@ function writerow(buf, pos, len, io, sch, row, cols, opts)
     n, d = opts.newline, opts.delim
     Tables.eachcolumn(sch, row, pos) do val, col, nm, pos
         Base.@_inline_meta
-        val = opts.transform !== nothing ? opts.transform(col, val) : val
+        val = opts.transform(col, val)
+        val === nothing && error(
+            """
+            A `nothing` value was found in column $col and it is not a printable value. 
+            There are several ways to handle this situation:\n
+            1) fix the data, perhaps replace `nothing` with `missing`, \n
+            2) use `transform` option with a funciton to replace `nothing` with whatever value (including `missing`), or\n
+            3) use `Tables.transform` option to transform specific columns
+            """)
         posx = writecell(buf, pos[], len, io, val, opts)
         pos[] = writedelimnewline(buf, posx, len, io, ifelse(col == cols, n, d))
     end
