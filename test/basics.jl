@@ -388,7 +388,7 @@ df = CSV.read(IOBuffer("x\n01:02:03\n\n04:05:06\n"), delim=',')
 
 # 566
 f = CSV.File(IOBuffer("x\r\n1\r\n2\r\n3\r\n4\r\n5\r\n"), footerskip=3)
-@test length(f) == 3
+@test length(f) == 2
 @test f[1][1] == 1
 
 end
