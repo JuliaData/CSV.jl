@@ -223,7 +223,12 @@ function writecell(buf, pos, len, io, x::Bool, opts)
 end
 
 function writecell(buf, pos, len, io, y::Integer, opts)
-    x, neg = Base.split_sign(y)
+    neg = false
+    x = y
+    if x < 0
+        neg = true
+        x *= -1
+    end
     if neg
         @inbounds buf[pos] = UInt8('-')
         pos += 1
