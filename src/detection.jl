@@ -209,6 +209,7 @@ function skiptorow(buf, pos, len, oq, eq, cq, cur, dest)
                     end
                 end
             elseif b == UInt8('\n')
+                typeof(buf) == ReversedBuf && pos <= len && buf[pos] == UInt8('\r') && (pos += 1)
                 break
             elseif b == UInt8('\r')
                 pos <= len && buf[pos] == UInt8('\n') && (pos += 1)
