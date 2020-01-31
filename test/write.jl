@@ -224,4 +224,9 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
     close(io)
     @test read(io, String) == "a,b\n1,4.1\n2,5.2\n3,6.3\n"
 
+    # 568
+    io = IOBuffer()
+    CSV.write(io, [(a=big(1),)])
+    @test String(take!(io)) == "a\n1\n"
+
 end # @testset "CSV.write"
