@@ -17,6 +17,7 @@ Supported keyword arguments include:
 * `newline='\\n'`: character or string to use to separate rows (lines in the csv file)
 * `quotestrings=false`: whether to force all strings to be quoted or not
 * `decimal='.'`: character to use as the decimal point when writing floating point numbers
+* `bom=false`: whether to write a UTF-8 BOM header (0xEF 0xBB 0xBF) or not
 """
 function write end
 
@@ -30,6 +31,7 @@ mutable struct Options{D, N, DF, M}
     dateformat::DF
     quotestrings::Bool
     missingstring::M
+    bom::Bool
 end
 
 tup(x::Char) = x % UInt8
@@ -49,12 +51,13 @@ function write(file, itr;
     dateformat=nothing,
     quotestrings::Bool=false,
     missingstring::AbstractString="",
+    bom::Bool=false,
     kwargs...)
     checkvaliddelim(delim)
     (isascii(something(openquotechar, quotechar)) && isascii(something(closequotechar, quotechar)) && isascii(escapechar)) || throw(ArgumentError("quote and escape characters must be ASCII characters "))
     oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
     e = escapechar % UInt8
-    opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring))
+    opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring), bom)
     rows = Tables.rows(itr)
     sch = Tables.schema(rows)
     return write(sch, rows, file, opts; kwargs...)
@@ -72,6 +75,7 @@ function write(sch::Tables.Schema{names}, rows, file, opts;
     pos = 1
     with(file, append) do io
         Base.@_inline_meta
+        ! append && opts.bom && (pos = writebom(buf, pos, len) )
         if writeheader
             pos = writenames(buf, pos, len, io, colnames, cols, opts)
         end
@@ -97,6 +101,7 @@ function write(::Nothing, rows, file, opts;
     if state === nothing
         if writeheader && !isempty(header)
             with(file, append) do io
+                ! append && opts.bom && (pos = writebom(buf, pos, len) )
                 pos = writenames(buf, pos, len, io, header, length(header), opts)
                 Base.write(io, resize!(buf, pos - 1))
             end
@@ -108,6 +113,7 @@ function write(::Nothing, rows, file, opts;
     sch = Tables.Schema(names, nothing)
     cols = length(names)
     with(file, append) do io
+        ! append && opts.bom && (pos = writebom(buf, pos, len) )
         if writeheader
             pos = writenames(buf, pos, len, io, names, cols, opts)
         end
@@ -148,6 +154,14 @@ macro check(n)
             pos = 1
         end
     end)
+end
+
+function writebom(buf, pos, len)
+    @check 3
+    @inbounds buf[pos] = 0xEF
+    @inbounds buf[pos+1] = 0xBB
+    @inbounds buf[pos+2] = 0xBF
+    pos += 3
 end
 
 function writedelimnewline(buf, pos, len, io, x::UInt8)
