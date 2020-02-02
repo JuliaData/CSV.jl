@@ -90,7 +90,7 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
     rm(file)
 
     # unknown schema case
-    opts = CSV.Options(UInt8(','), UInt8('"'), UInt8('"'), UInt8('"'), UInt8('\n'), UInt8('.'), nothing, false, ())
+    opts = CSV.Options(UInt8(','), UInt8('"'), UInt8('"'), UInt8('"'), UInt8('\n'), UInt8('.'), nothing, false, (), false)
     io = IOBuffer()
     CSV.write(nothing, Tables.rows((col1=[1,2,3], col2=[4,5,6], col3=[7,8,9])), io, opts)
     @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
