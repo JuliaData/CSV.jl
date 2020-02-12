@@ -2,6 +2,7 @@ Tables.istable(::Type{<:File}) = true
 Tables.columnaccess(::Type{<:File}) = true
 Tables.schema(f::File)  = Tables.Schema(getnames(f), _eltype.(gettypes(f)))
 Tables.columns(f::File) = f
+Tables.columnnames(f::File) = getnames(f)
 Base.propertynames(f::File) = getnames(f)
 
 function Base.getproperty(f::File, col::Symbol)
@@ -10,6 +11,9 @@ function Base.getproperty(f::File, col::Symbol)
         getfield(f, col)
     end
 end
+
+Tables.getcolumn(f::File, nm::Symbol) = getcolumn(f, nm)
+Tables.getcolumn(f::File, i::Int) = getcolumn(f, i)
 
 # Column2
  # copy
