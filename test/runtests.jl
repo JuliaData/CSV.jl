@@ -22,54 +22,6 @@ end # @testset "CSV.File"
 
 include("write.jl")
 
-@testset "transform" begin
-    csv = """A,B,C
-    1,1.0,"hey"
-    ,2.0,"there"
-    3,3.0,"sailor"
-    """
-
-    df = CSV.read(IOBuffer(csv)) |> Tables.transform(Dict{String, Base.Callable}("C" => Symbol)) |> DataFrame
-    @test df.C == [:hey, :there, :sailor]
-
-    df = CSV.read(IOBuffer(csv)) |> Tables.transform(Dict("A"=>x->x+1)) |> DataFrame
-    @test isequal(df.A, [2, missing, 4])
-    @test typeof(df.A) == Vector{Union{Missing, Int64}}
-    @test size(df) == (3, 3)
-
-    df = CSV.read(IOBuffer(csv)) |> Tables.transform(Dict("A"=>x->coalesce(x+1, 0))) |> DataFrame
-    @test df.A == [2, 0, 4]
-    @test eltype(df.A) <: Signed
-
-    df = CSV.read(IOBuffer(csv)) |> Tables.transform(Dict("A"=>x->coalesce(x+1, 0.0))) |> DataFrame
-    @test df.A == [2, 0.0, 4]
-    @test eltype(df.A) <: Real
-
-    df = CSV.read(IOBuffer(csv)) |> Tables.transform(Dict(2=>x->x==2.0 ? missing : x)) |> DataFrame
-    @test size(df) == (3, 3)
-    @test isequal(df.B, [1.0, missing, 3.0])
-    @test typeof(df.B) == Vector{Union{Float64, Missing}}
-
-    f = CSV.File(IOBuffer(csv))
-
-    # transforms on CSV.Columns
-    df = f |> Tables.transform(A=x->x+1) |> DataFrame
-    @test size(df) == (3, 3)
-    df = f |> Tables.transform(A=x->x+1) |> columntable
-    @test length(df) == 3
-    df = f |> Tables.transform(A=x->x+1) |> rowtable
-    @test length(df) == 3
-
-    # transforms on CSV.RowIterator
-    f = CSV.File(joinpath(dir, "pandas_zeros.csv"));
-    df = f |> Tables.transform(_0=x->x+1) |> DataFrame;
-    @test size(df) == (100000, 50)
-    df = f |> Tables.transform(_0=x->x+1) |> columntable;
-    @test length(df) == 50
-    # df = f |> Tables.transform(_0=x->x+1) |> rowtable;
-    # @test length(df) == 100000
-end
-
 @testset "CategoricalArray levels (including ordering)" begin
     f = CSV.read(IOBuffer("X\nb\nc\na\nc"), types=[CategoricalString{UInt32}], copycols=true)
     v = f.X[1]
@@ -140,7 +92,7 @@ end
     rows = collect(CSV.Rows(IOBuffer("x   y   z\n   1   2   3"), ignorerepeated=true, delim=' '))
     @test length(rows) == 1
     @test length(rows[1]) == 3
-    @test rows[1] == ["1", "2", "3"]
+    @test all(rows[1] .== ["1", "2", "3"])
     row = rows[1]
     @test CSV.Parsers.parse(Int, row, 1) == 1
     @test CSV.Parsers.parse(Int, row, :x) == 1
@@ -153,20 +105,20 @@ end
     # 447
     rows = collect(CSV.Rows(IOBuffer("a,b,c\n1,2,3\n\n"), ignoreemptylines=true))
     @test length(rows) == 1
-    @test rows[1] == ["1", "2", "3"]
+    @test all(rows[1] .== ["1", "2", "3"])
 
     # not enough columns
     rows = collect(CSV.Rows(IOBuffer("x,y,z\n1\n2,3\n4,5,6")))
     @test length(rows) == 3
-    @test isequal(rows[1], ["1", missing, missing])
-    @test isequal(rows[2], ["2", "3", missing])
-    @test rows[3] == ["4", "5", "6"]
+    @test all(isequal.(rows[1], ["1", missing, missing]))
+    @test all(isequal.(rows[2], ["2", "3", missing]))
+    @test all(rows[3] .== ["4", "5", "6"])
 
     # too many columns
     rows = collect(CSV.Rows(IOBuffer("x,y,z\n1,2,3\n4,5,6,7,8,")))
     @test length(rows) == 2
-    @test rows[1] == ["1", "2", "3"]
-    @test rows[2] == ["4", "5", "6"]
+    @test all(rows[1] .== ["1", "2", "3"])
+    @test all(rows[2] .== ["4", "5", "6"])
 
     # fatal
     @test_throws CSV.Error collect(CSV.Rows(IOBuffer("x\n\"invalid quoted field")))
@@ -174,17 +126,17 @@ end
     # reusebuffer
     rows = collect(CSV.Rows(IOBuffer("x\n1\n2\n3")))
     @test length(rows) == 3
-    @test rows[1] == ["1"]
-    @test rows[2] == ["2"]
-    @test rows[3] == ["3"]
+    @test rows[1][1] == "1"
+    @test rows[2][1] == "2"
+    @test rows[3][1] == "3"
     rows = collect(CSV.Rows(IOBuffer("x\n1\n2\n3"), reusebuffer=true))
     @test length(rows) == 3
-    @test rows[1] == ["3"]
-    @test rows[2] == ["3"]
-    @test rows[3] == ["3"]
+    @test rows[1][1] == "3"
+    @test rows[2][1] == "3"
+    @test rows[3][1] == "3"
 
     for (i, row) in enumerate(CSV.Rows(IOBuffer("x\n1\n2\n3"), reusebuffer=true))
-        @test row == [string(i)]
+        @test all(row .== [string(i)])
     end
 
 end

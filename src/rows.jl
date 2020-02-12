@@ -208,7 +208,7 @@ getignorerepeated(p::Parsers.Options{ignorerepeated}) where {ignorerepeated} = i
     return Row2(r.names, r.lookup, tape, r.buf, r.e, r.options), (pos, len, row + 1)
 end
 
-struct Row2{O} <: AbstractVector{Union{String, Missing}}
+struct Row2{O} <: Tables.AbstractRow
     names::Vector{Symbol}
     lookup::Dict{Symbol, Int}
     tape::Vector{UInt64}
@@ -224,10 +224,11 @@ getbuf(r::Row2) = getfield(r, :buf)
 gete(r::Row2) = getfield(r, :e)
 getoptions(r::Row2) = getfield(r, :options)
 
-Base.IndexStyle(::Type{Row2}) = Base.IndexLinear()
-Base.size(r::Row2) = (length(getnames(r)),)
+Tables.columnnames(r::Row2) = getnames(r)
 
-@inline Base.@propagate_inbounds function Base.getindex(r::Row2, i::Int)
+Base.checkbounds(r::Row2, i) = 0 < i < length(r)
+
+@inline Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Type{T}, i::Int, nm::Symbol) where {T}
     @boundscheck checkbounds(r, i)
     @inbounds offlen = gettape(r)[i]
     missingvalue(offlen) && return missing
@@ -235,9 +236,15 @@ Base.size(r::Row2) = (length(getnames(r)),)
     return escapedvalue(offlen) ? unescape(s, gete(r)) : String(s)
 end
 
-Base.propertynames(r::Row2) = getnames(r)
+@inline Base.@propagate_inbounds function Tables.getcolumn(r::Row2, i::Int)
+    @boundscheck checkbounds(r, i)
+    @inbounds offlen = gettape(r)[i]
+    missingvalue(offlen) && return missing
+    s = PointerString(pointer(getbuf(r), getpos(offlen)), getlen(offlen))
+    return escapedvalue(offlen) ? unescape(s, gete(r)) : String(s)
+end
 
-function Base.getproperty(r::Row2, nm::Symbol)
+function Tables.getcolumn(r::Row2, nm::Symbol)
     @inbounds x = r[getlookup(r)[nm]]
     return x
 end
