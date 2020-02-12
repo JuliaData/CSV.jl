@@ -53,7 +53,7 @@ Base.IndexStyle(::Type{<:Column2}) = Base.IndexLinear()
 
 # getindex definitions in tables.jl
 
-struct Row{threaded} <: AbstractVector{Any}
+struct Row{threaded} <: Tables.AbstractRow
     names::Vector{Symbol}
     columns::Vector{AbstractVector}
     lookup::Dict{Symbol, AbstractVector}
@@ -69,9 +69,7 @@ getrow(r::Row) = getfield(r, :row)
 getarrayindex(r::Row) = getfield(r, :array_index)
 getarrayi(r::Row) = getfield(r, :array_i)
 
-Base.size(r::Row) = (length(getnames(r)),)
-Base.IndexStyle(::Type{<:Row}) = Base.IndexLinear()
-Base.propertynames(r::Row) = getnames(r)
+Tables.columnnames(r::Row) = getnames(r)
 
 struct File{threaded} <: AbstractVector{Row{threaded}}
     name::String

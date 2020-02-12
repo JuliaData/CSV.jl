@@ -177,7 +177,7 @@ end
 function writerow(buf, pos, len, io, sch, row, cols, opts)
     # ref = Ref{Int}(pos)
     n, d = opts.newline, opts.delim
-    Tables.eachcolumn(sch, row, pos) do val, col, nm, pos
+    Tables.eachcolumn(sch, row) do val, col, nm
         Base.@_inline_meta
         posx = writecell(buf, pos[], len, io, val, opts)
         pos[] = writedelimnewline(buf, posx, len, io, ifelse(col == cols, n, d))
