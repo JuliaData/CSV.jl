@@ -391,4 +391,9 @@ f = CSV.File(IOBuffer("x\r\n1\r\n2\r\n3\r\n4\r\n5\r\n"), footerskip=3)
 @test length(f) == 2
 @test f[1][1] == 1
 
+# 578
+df = CSV.read(IOBuffer("h1234567890123456\t"^2262 * "lasthdr\r\n" *"dummy dummy dummy\r\n"* ("1.23\t"^2262 * "2.46\r\n")^10), datarow=3)
+@test size(df) == (10, 2263)
+@test all(x -> eltype(x) == Float64, eachcol(df))
+
 end
