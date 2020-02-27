@@ -700,6 +700,9 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, po
                                 @inbounds tape = tapes[j]
                                 T = typebits(typecodes[j])
                                 tape[row] = T == POOL ? 0 : T == INT ? uint64(intsentinels[j]) : sentinelvalue(TYPECODES[T])
+                                if isassigned(poslens, j)
+                                    setposlen!(poslens[j], row, Parsers.SENTINEL, pos, UInt64(0))
+                                end
                                 if T > MISSINGTYPE
                                     typecodes[j] |= MISSING
                                 end
