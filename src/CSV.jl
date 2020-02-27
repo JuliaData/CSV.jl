@@ -489,11 +489,11 @@ end
 function multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool, ncols, ignoreemptylines, typemap, limit, cmt, debug)
     N = Threads.nthreads()
     chunksize = div(len - datapos, N)
-    ranges = [datapos, (chunksize * i for i = 1:N)...]
+    ranges = [datapos, (datapos + chunksize * i for i = 1:N)...]
     ranges[end] = len
     debug && println("initial byte positions before adjusting for start of rows: $ranges")
     findrowstarts!(buf, len, options, cmt, ignoreemptylines, ranges, ncols)
-    rowchunkguess = div(rowsguess, N)
+    rowchunkguess = cld(rowsguess, N)
     debug && println("parsing using $N threads: $rowchunkguess rows chunked at positions: $ranges")
     perthreadrows = Vector{Int}(undef, N)
     perthreadtapes = Vector{Vector{Vector{UInt64}}}(undef, N)
@@ -650,6 +650,7 @@ end
 
 function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, poslens, buf, pos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, intsentinels, debug, options::Parsers.Options{ignorerepeated}, threaded) where {transpose, ignorerepeated}
     row = 0
+    startpos = pos
     if pos <= len && len > 0
         while row < limit
             pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines)
@@ -718,7 +719,7 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, po
             # if our initial row estimate was too few, we need to reallocate our tapes/poslens to read the rest of the file
             if row + 1 > rowsguess
                 # (bytes left in file) / (avg bytes per row) == estimated rows left in file (+ 10 for kicks)
-                estimated_rows_left = ceil(Int64, (len - pos) / (pos / row) + 10.0)
+                estimated_rows_left = ceil(Int64, (len - pos) / ((pos - startpos) / row) + 10.0)
                 newrowsguess = rowsguess + estimated_rows_left
                 debug && reallocatetape(row, rowsguess, newrowsguess)
                 newtapes = Vector{Vector{UInt64}}(undef, ncols)
