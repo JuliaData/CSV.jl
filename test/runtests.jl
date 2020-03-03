@@ -178,4 +178,11 @@ CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, nothing, false, rngs,
 
 end
 
+@testset "CSV.promote_typecode" begin
+
+@test CSV.promote_typecode(CSV.INT | CSV.MISSING, CSV.FLOAT) == (CSV.FLOAT | CSV.MISSING)
+@test CSV.promote_typecode(CSV.INT | CSV.MISSING, CSV.FLOAT | CSV.MISSING) == (CSV.FLOAT | CSV.MISSING)
+
+end
+
 end
