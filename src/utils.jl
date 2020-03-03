@@ -96,8 +96,7 @@ const TYPECODES = Dict(
 )
 
 @inline function promote_typecode(T, S)
-    if T == EMPTY || T == S || user(T) || (T == MISSINGTYPE && S == MISSINGTYPE) ||
-        (T & ~MISSING) == (S & ~MISSING)
+    if T == EMPTY || T == S || user(T) || (T & ~MISSING) == (S & ~MISSING)
         return T | S
     elseif T == MISSINGTYPE
         return S | MISSING
@@ -105,8 +104,12 @@ const TYPECODES = Dict(
         return T | MISSING
     elseif T == INT
         return S == FLOAT ? S : S == (FLOAT | MISSING) ? S : missingtype(S) ? (STRING | MISSING) : STRING
+    elseif T == (INT | MISSING)
+        return S == FLOAT || S == (FLOAT | MISSING) ? (FLOAT | MISSING) : (STRING | MISSING)
     elseif T == FLOAT
         return S == INT ? FLOAT : S == (INT | MISSING) ? T | MISSING : missingtype(S) ? (STRING | MISSING) : STRING
+    elseif T == (FLOAT | MISSING)
+        return S == INT || S == (INT | MISSING) ? (FLOAT | MISSING) : (STRING | MISSING)
     elseif missingtype(T) || missingtype(S)
         return STRING | MISSING
     else
