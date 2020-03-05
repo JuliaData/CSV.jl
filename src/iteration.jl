@@ -1,6 +1,5 @@
 # File iteration
-Tables.rowaccess(::Type{<:File}) = true
-Tables.rows(f::File) = f
+Tables.isrowtable(::Type{<:File}) = true
 
 Base.@propagate_inbounds function Base.getindex(f::File{false}, row::Int)
     @boundscheck checkbounds(f, row)
@@ -26,7 +25,6 @@ end
 end
 
 # threaded file
-
 @inline function Base.iterate(f::File{true})
     cols = getcols(f)
     (cols == 0 || getrows(f) == 0) && return nothing
@@ -54,37 +52,37 @@ end
 
 @noinline badcolumnerror(name) = throw(ArgumentError("`$name` is not a valid column name"))
 
-@inline function Base.getproperty(row::Row{false}, col::Symbol)
+@inline function Tables.getcolumn(row::Row{false}, ::Type{T}, i::Int, nm::Symbol) where {T}
+    column = getcolumn(row, i)
+    @inbounds x = column[getrow(row)]
+    return x
+end
+
+@inline function Tables.getcolumn(row::Row{false}, col::Symbol)
     column = getcolumn(row, col)
     @inbounds x = column[getrow(row)]
     return x
 end
 
-@inline function Base.getindex(row::Row{false}, col::Int)
+@inline function Tables.getcolumn(row::Row{false}, col::Int)
     column = getcolumn(row, col)
     @inbounds x = column[getrow(row)]
     return x
 end
 
-@inline function Base.getindex(row::Row{false}, col::Symbol)
-    column = getcolumn(row, col)
-    @inbounds x = column[getrow(row)]
+@inline function Tables.getcolumn(row::Row{true}, ::Type{T}, i::Int, nm::Symbol) where {T}
+    column = getcolumn(row, i)
+    @inbounds x = column.columns[getarrayindex(row)][getarrayi(row)]
     return x
 end
 
-@inline function Base.getproperty(row::Row{true}, col::Symbol)
+@inline function Tables.getcolumn(row::Row{true}, col::Int)
     column = getcolumn(row, col)
     @inbounds x = column.columns[getarrayindex(row)][getarrayi(row)]
     return x
 end
 
-@inline function Base.getindex(row::Row{true}, col::Int)
-    column = getcolumn(row, col)
-    @inbounds x = column.columns[getarrayindex(row)][getarrayi(row)]
-    return x
-end
-
-@inline function Base.getindex(row::Row{true}, col::Symbol)
+@inline function Tables.getcolumn(row::Row{true}, col::Symbol)
     column = getcolumn(row, col)
     @inbounds x = column.columns[getarrayindex(row)][getarrayi(row)]
     return x

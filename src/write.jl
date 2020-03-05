@@ -18,6 +18,7 @@ Supported keyword arguments include:
 * `quotestrings=false`: whether to force all strings to be quoted or not
 * `decimal='.'`: character to use as the decimal point when writing floating point numbers
 * `transform=(col,val)->val`: a function that is applied to every cell e.g. we can transform all `nothing` values to `missing` using `(col, val) -> something(val, missing)`
+* `bom=false`: whether to write a UTF-8 BOM header (0xEF 0xBB 0xBF) or not
 """
 function write end
 
@@ -32,6 +33,7 @@ mutable struct Options{D, N, DF, M, TF}
     quotestrings::Bool
     missingstring::M
     transform::TF  # Function
+    bom::Bool
 end
 
 tup(x::Char) = x % UInt8
@@ -52,12 +54,13 @@ function write(file, itr;
     quotestrings::Bool=false,
     missingstring::AbstractString="",
     transform::Function=(col,val) -> val,
+    bom::Bool=false,
     kwargs...)
     checkvaliddelim(delim)
     (isascii(something(openquotechar, quotechar)) && isascii(something(closequotechar, quotechar)) && isascii(escapechar)) || throw(ArgumentError("quote and escape characters must be ASCII characters "))
     oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
     e = escapechar % UInt8
-    opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring), transform)
+    opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring), transform, bom)
     rows = Tables.rows(itr)
     sch = Tables.schema(rows)
     return write(sch, rows, file, opts; kwargs...)
@@ -75,6 +78,7 @@ function write(sch::Tables.Schema{names}, rows, file, opts;
     pos = 1
     with(file, append) do io
         Base.@_inline_meta
+        ! append && opts.bom && (pos = writebom(buf, pos, len) )
         if writeheader
             pos = writenames(buf, pos, len, io, colnames, cols, opts)
         end
@@ -100,6 +104,7 @@ function write(::Nothing, rows, file, opts;
     if state === nothing
         if writeheader && !isempty(header)
             with(file, append) do io
+                ! append && opts.bom && (pos = writebom(buf, pos, len) )
                 pos = writenames(buf, pos, len, io, header, length(header), opts)
                 Base.write(io, resize!(buf, pos - 1))
             end
@@ -111,6 +116,7 @@ function write(::Nothing, rows, file, opts;
     sch = Tables.Schema(names, nothing)
     cols = length(names)
     with(file, append) do io
+        ! append && opts.bom && (pos = writebom(buf, pos, len) )
         if writeheader
             pos = writenames(buf, pos, len, io, names, cols, opts)
         end
@@ -153,6 +159,14 @@ macro check(n)
     end)
 end
 
+function writebom(buf, pos, len)
+    @check 3
+    @inbounds buf[pos] = 0xEF
+    @inbounds buf[pos+1] = 0xBB
+    @inbounds buf[pos+2] = 0xBF
+    pos += 3
+end
+
 function writedelimnewline(buf, pos, len, io, x::UInt8)
     @check 1
     @inbounds buf[pos] = x
@@ -180,7 +194,7 @@ end
 function writerow(buf, pos, len, io, sch, row, cols, opts)
     # ref = Ref{Int}(pos)
     n, d = opts.newline, opts.delim
-    Tables.eachcolumn(sch, row, pos) do val, col, nm, pos
+    Tables.eachcolumn(sch, row) do val, col, nm
         Base.@_inline_meta
         val = opts.transform(col, val)
         val === nothing && error(
@@ -235,7 +249,12 @@ function writecell(buf, pos, len, io, x::Bool, opts)
 end
 
 function writecell(buf, pos, len, io, y::Integer, opts)
-    x, neg = Base.split_sign(y)
+    neg = false
+    x = y
+    if x < 0
+        neg = true
+        x *= -1
+    end
     if neg
         @inbounds buf[pos] = UInt8('-')
         pos += 1

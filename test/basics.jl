@@ -386,4 +386,14 @@ df = CSV.read(IOBuffer(",column2\nNA,2\n2,3"), missingstrings=["NA"])
 df = CSV.read(IOBuffer("x\n01:02:03\n\n04:05:06\n"), delim=',')
 @test isequal(df.x, [Dates.Time(1,2,3), missing, Dates.Time(4,5,6)])
 
+# 566
+f = CSV.File(IOBuffer("x\r\n1\r\n2\r\n3\r\n4\r\n5\r\n"), footerskip=3)
+@test length(f) == 2
+@test f[1][1] == 1
+
+# 578
+df = CSV.read(IOBuffer("h1234567890123456\t"^2262 * "lasthdr\r\n" *"dummy dummy dummy\r\n"* ("1.23\t"^2262 * "2.46\r\n")^10), datarow=3)
+@test size(df) == (10, 2263)
+@test all(x -> eltype(x) == Float64, eachcol(df))
+
 end

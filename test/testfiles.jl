@@ -605,6 +605,12 @@ testfiles = [
         (3, 9),
         NamedTuple{(:RESULTAT, :NOM_CHAM, :INST, :NUME_ORDRE, :NOEUD, :COOR_X, :COOR_Y, :COOR_Z, :TEMP), Tuple{String, String, Float64, Int64, String, Float64, Float64, Float64, Float64}},
         (RESULTAT = ["A0", "B0", "C0"], NOM_CHAM = ["A1", "B1", "C1"], INST = [0.0, 0.0, 0.0], NUME_ORDRE = [0, 0, 0], NOEUD = ["N1", "N2", "N3"], COOR_X = [0.0, 2.3, 2.5], COOR_Y = [2.27374e-15, 0.0, 0.0], COOR_Z = [0.0, 0.0, 0.0], TEMP = [0.0931399, 0.311013, 0.424537])
+    ),
+    # https://github.com/JuliaData/CSV.jl/issues/577
+    ("csv_segfault.txt", (delim="\t", ignoreemptylines=true),
+        (468, 9),
+        NamedTuple{(Symbol("Time (CEST)"), :Latitude, :Longitude, :Course, :kts, :mph, :feet, :Rate, Symbol("Reporting Facility")),Tuple{String,Union{Missing, String},Union{Missing, String},Union{Missing, String},Union{Missing, String},Union{Missing, String},Union{Missing, String},Union{Missing, String},Union{Missing, String}}},
+        nothing
     )
 ];
 

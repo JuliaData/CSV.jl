@@ -21,6 +21,9 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
     (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; writeheader=false)
     @test String(take!(io)) == "1,4,7\n2,5,8\n3,6,9\n"
 
+    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; writeheader=false, bom=true)
+    @test String(take!(io)) == "\xEF\xBB\xBF1,4,7\n2,5,8\n3,6,9\n"
+
     # various types
     weakrefs = StringVector{WeakRefString{UInt8}}(["hey", "hey", "hey"])
     cats = CategoricalVector{String, UInt32}(["b", "a", "b"])
@@ -95,7 +98,12 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
     rm(file)
 
     # unknown schema case
-    opts = CSV.Options(UInt8(','), UInt8('"'), UInt8('"'), UInt8('"'), UInt8('\n'), UInt8('.'), nothing, false, (), (col,val)->val)
+    opts = CSV.Options(UInt8(','), UInt8('"'), UInt8('"'), UInt8('"'), UInt8('\n'), UInt8('.'), nothing, false, (), (col,val)->val, true)
+    rt = [(a=1, b=4.0, c=7), (a=2.0, b=missing, c="8"), (a=3, b=6.0, c="9")]
+    CSV.write(nothing, rt, io, opts)
+    @test String(take!(io)) == "\xEF\xBB\xBFa,b,c\n1,4.0,7\n2.0,,8\n3,6.0,9\n"
+
+    opts = CSV.Options(UInt8(','), UInt8('"'), UInt8('"'), UInt8('"'), UInt8('\n'), UInt8('.'), nothing, false, (), (col,val)->val, false)
     io = IOBuffer()
     CSV.write(nothing, Tables.rows((col1=[1,2,3], col2=[4,5,6], col3=[7,8,9])), io, opts)
     @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
@@ -228,5 +236,10 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
     CSV.write(io, (a=[1,2,3], b=[4.1, 5.2, 6.3]))
     close(io)
     @test read(io, String) == "a,b\n1,4.1\n2,5.2\n3,6.3\n"
+
+    # 568
+    io = IOBuffer()
+    CSV.write(io, [(a=big(1),)])
+    @test String(take!(io)) == "a\n1\n"
 
 end # @testset "CSV.write"

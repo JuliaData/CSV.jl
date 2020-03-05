@@ -53,7 +53,7 @@ Base.IndexStyle(::Type{<:Column2}) = Base.IndexLinear()
 
 # getindex definitions in tables.jl
 
-struct Row{threaded} <: AbstractVector{Any}
+struct Row{threaded} <: Tables.AbstractRow
     names::Vector{Symbol}
     columns::Vector{AbstractVector}
     lookup::Dict{Symbol, AbstractVector}
@@ -69,9 +69,7 @@ getrow(r::Row) = getfield(r, :row)
 getarrayindex(r::Row) = getfield(r, :array_index)
 getarrayi(r::Row) = getfield(r, :array_i)
 
-Base.size(r::Row) = (length(getnames(r)),)
-Base.IndexStyle(::Type{<:Row}) = Base.IndexLinear()
-Base.propertynames(r::Row) = getnames(r)
+Tables.columnnames(r::Row) = getnames(r)
 
 struct File{threaded} <: AbstractVector{Row{threaded}}
     name::String
@@ -359,7 +357,10 @@ function file(source,
     cmt = comment === nothing ? nothing : (pointer(comment), sizeof(comment))
 
     if footerskip > 0 && len > 0
-        revlen = skiptorow(ReversedBuf(buf), 1 + (buf[end] == UInt('\n') || buf[end] == UInt8('\r')), len, oq, eq, cq, 0, footerskip) - 2
+        lastbyte = buf[end]
+        endpos = (lastbyte == UInt8('\r') || lastbyte == UInt8('\n')) +
+            (lastbyte == UInt8('\n') && buf[end - 1] == UInt8('\r'))
+        revlen = skiptorow(ReversedBuf(buf), 1 + endpos, len, oq, eq, cq, 0, footerskip) - 2
         len -= revlen
         debug && println("adjusted for footerskip, len = $(len + revlen - 1) => $len")
     end
@@ -488,11 +489,11 @@ end
 function multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool, ncols, ignoreemptylines, typemap, limit, cmt, debug)
     N = Threads.nthreads()
     chunksize = div(len - datapos, N)
-    ranges = [datapos, (chunksize * i for i = 1:N)...]
+    ranges = [datapos, (datapos + chunksize * i for i = 1:N)...]
     ranges[end] = len
     debug && println("initial byte positions before adjusting for start of rows: $ranges")
     findrowstarts!(buf, len, options, cmt, ignoreemptylines, ranges, ncols)
-    rowchunkguess = div(rowsguess, N)
+    rowchunkguess = cld(rowsguess, N)
     debug && println("parsing using $N threads: $rowchunkguess rows chunked at positions: $ranges")
     perthreadrows = Vector{Int}(undef, N)
     perthreadtapes = Vector{Vector{Vector{UInt64}}}(undef, N)
@@ -649,6 +650,7 @@ end
 
 function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, poslens, buf, pos, len, limit, cmt, positions, pool, refs, lastrefs, rowsguess, typecodes, intsentinels, debug, options::Parsers.Options{ignorerepeated}, threaded) where {transpose, ignorerepeated}
     row = 0
+    startpos = pos
     if pos <= len && len > 0
         while row < limit
             pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines)
@@ -698,6 +700,9 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, po
                                 @inbounds tape = tapes[j]
                                 T = typebits(typecodes[j])
                                 tape[row] = T == POOL ? 0 : T == INT ? uint64(intsentinels[j]) : sentinelvalue(TYPECODES[T])
+                                if isassigned(poslens, j)
+                                    setposlen!(poslens[j], row, Parsers.SENTINEL, pos, UInt64(0))
+                                end
                                 if T > MISSINGTYPE
                                     typecodes[j] |= MISSING
                                 end
@@ -717,7 +722,7 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, po
             # if our initial row estimate was too few, we need to reallocate our tapes/poslens to read the rest of the file
             if row + 1 > rowsguess
                 # (bytes left in file) / (avg bytes per row) == estimated rows left in file (+ 10 for kicks)
-                estimated_rows_left = ceil(Int64, (len - pos) / (pos / row) + 10.0)
+                estimated_rows_left = ceil(Int64, (len - pos) / ((pos - startpos) / row) + 10.0)
                 newrowsguess = rowsguess + estimated_rows_left
                 debug && reallocatetape(row, rowsguess, newrowsguess)
                 newtapes = Vector{Vector{UInt64}}(undef, ncols)
