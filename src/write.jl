@@ -191,20 +191,22 @@ function writenames(buf, pos, len, io, header, cols, opts)
     return pos
 end
 
+@noinline nothingerror(col) = error(
+    """
+    A `nothing` value was found in column $col and it is not a printable value. 
+    There are several ways to handle this situation:
+    1) fix the data, perhaps replace `nothing` with `missing`,
+    2) use `transform` option with a funciton to replace `nothing` with whatever value (including `missing`), or
+    3) use `Tables.transform` option to transform specific columns
+    """)
+
 function writerow(buf, pos, len, io, sch, row, cols, opts)
     # ref = Ref{Int}(pos)
     n, d = opts.newline, opts.delim
     Tables.eachcolumn(sch, row) do val, col, nm
         Base.@_inline_meta
         val = opts.transform(col, val)
-        val === nothing && error(
-            """
-            A `nothing` value was found in column $col and it is not a printable value. 
-            There are several ways to handle this situation:
-            1) fix the data, perhaps replace `nothing` with `missing`,
-            2) use `transform` option with a funciton to replace `nothing` with whatever value (including `missing`), or
-            3) use `Tables.transform` option to transform specific columns
-            """)
+        val === nothing && nothingerror(col)
         posx = writecell(buf, pos[], len, io, val, opts)
         pos[] = writedelimnewline(buf, posx, len, io, ifelse(col == cols, n, d))
     end
