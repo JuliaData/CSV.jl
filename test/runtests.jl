@@ -185,4 +185,10 @@ end
 
 end
 
+@testset "CSV.File with select/drop" begin
+
+
+
+end
+
 end
