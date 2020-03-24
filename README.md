@@ -3,9 +3,9 @@
 
 *A fast, flexible delimited file reader/writer for Julia.*
 
-| **Documentation**                                                               | **PackageEvaluator**                                            | **Build Status**                                                                                |
-|:-------------------------------------------------------------------------------:|:---------------------------------------------------------------:|:-----------------------------------------------------------------------------------------------:|
-| [![][docs-stable-img]][docs-stable-url] [![][docs-latest-img]][docs-latest-url] | [![][pkg-0.6-img]][pkg-0.6-url] | [![][travis-img]][travis-url] [![][appveyor-img]][appveyor-url] [![][codecov-img]][codecov-url] |
+| **Documentation**                                                               | **Build Status**                                                                                |
+|:-------------------------------------------------------------------------------:|:-----------------------------------------------------------------------------------------------:|
+| [![][docs-stable-img]][docs-stable-url] [![][docs-latest-img]][docs-latest-url] | [![][travis-img]][travis-url] [![][codecov-img]][codecov-url] |
 
 
 ## Installation
@@ -35,13 +35,7 @@ Contributions are very welcome, as are feature requests and suggestions. Please 
 [travis-img]: https://travis-ci.org/JuliaData/CSV.jl.svg?branch=master
 [travis-url]: https://travis-ci.org/JuliaData/CSV.jl
 
-[appveyor-img]: https://ci.appveyor.com/api/projects/status/wcm124d03d2ey5o2?svg=true
-[appveyor-url]: https://ci.appveyor.com/project/quinnj/csv-jl-groth
-
 [codecov-img]: https://codecov.io/gh/JuliaData/CSV.jl/branch/master/graph/badge.svg
 [codecov-url]: https://codecov.io/gh/JuliaData/CSV.jl
 
 [issues-url]: https://github.com/JuliaData/CSV.jl/issues
-
-[pkg-0.6-img]: http://pkg.julialang.org/badges/CSV_0.6.svg
-[pkg-0.6-url]: http://pkg.julialang.org/?pkg=CSV
