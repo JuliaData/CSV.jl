@@ -78,7 +78,7 @@ struct File{threaded} <: AbstractVector{Row{threaded}}
     rows::Int64
     cols::Int64
     columns::Vector{Union{Column, Column2}}
-    lookup::Dict{Symbol, AbstractVector}
+    lookup::Dict{Symbol, Union{Column, Column2}}
 end
 
 getname(f::File) = getfield(f, :name)
@@ -198,6 +198,8 @@ Supported keyword arguments include:
   * `use_mmap::Bool=!Sys.iswindows()`: whether the file should be mmapped for reading, which in some cases can be faster
   * `ignoreemptylines::Bool=false`: whether empty rows/lines in a file should be ignored (if `false`, each column will be assigned `missing` for that empty row)
   * `threaded::Bool`: whether parsing should utilize multiple threads; by default threads are used on large enough files, but isn't allowed when `transpose=true` or when `limit` is used; only available in Julia 1.3+
+  * `select`: an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a "selector" function of the form `(i, name) -> keep::Bool`; only columns in the collection or for which the selector function returns `true` will be parsed and accessible in the resulting `CSV.File`. Invalid values in `select` are ignored.
+  * `drop`: inverse of `select`; an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a "drop" function of the form `(i, name) -> drop::Bool`; columns in the collection or for which the drop function returns `true` will ignored in the resulting `CSV.File`. Invalid values in `drop` are ignored.
 * Parsing options:
   * `missingstrings`, `missingstring`: either a `String`, or `Vector{String}` to use as sentinel values that will be parsed as `missing`; by default, only an empty field (two consecutive delimiters) is considered `missing`
   * `delim=','`: a `Char` or `String` that indicates how columns are delimited in a file; if no argument is provided, parsing will try to detect the most consistent delimiter on the first 10 rows of the file
@@ -230,6 +232,9 @@ function File(source;
     comment::Union{String, Nothing}=nothing,
     use_mmap::Bool=!Sys.iswindows(),
     ignoreemptylines::Bool=false,
+    threaded::Union{Bool, Nothing}=nothing,
+    select=nothing,
+    drop=nothing,
     # parsing options
     missingstrings=String[],
     missingstring="",
@@ -251,15 +256,14 @@ function File(source;
     pool::Union{Bool, Real}=0.1,
     strict::Bool=false,
     silencewarnings::Bool=false,
-    threaded::Union{Bool, Nothing}=nothing,
     debug::Bool=false,
     parsingdebug::Bool=false,
     allowmissing::Union{Nothing, Symbol}=nothing)
     file(source, header, normalizenames, datarow, skipto, footerskip,
-        limit, transpose, comment, use_mmap, ignoreemptylines, missingstrings, missingstring,
+        limit, transpose, comment, use_mmap, ignoreemptylines, threaded, select, drop, missingstrings, missingstring,
         delim, ignorerepeated, quotechar, openquotechar, closequotechar,
         escapechar, dateformat, decimal, truestrings, falsestrings, type,
-        types, typemap, categorical, pool, strict, silencewarnings, threaded,
+        types, typemap, categorical, pool, strict, silencewarnings,
         debug, parsingdebug, allowmissing)
 end
 
@@ -278,6 +282,9 @@ function file(source,
     comment=nothing,
     use_mmap=!Sys.iswindows(),
     ignoreemptylines=false,
+    threaded=nothing,
+    select=nothing,
+    drop=nothing,
     # parsing options
     missingstrings=String[],
     missingstring="",
@@ -299,7 +306,6 @@ function file(source,
     pool=0.1,
     strict=false,
     silencewarnings=false,
-    threaded=nothing,
     debug=false,
     parsingdebug=false,
     allowmissing=nothing)
@@ -425,6 +431,56 @@ function file(source,
     else
         typecodes = TypeCode[T for _ = 1:ncols]
     end
+    # set any unselected columns to typecode USER | MISSING
+    todrop = Int[]
+    if select !== nothing && drop !== nothing
+        error("`select` and `drop` keywords were both provided; only one or the other is allowed")
+    elseif select !== nothing
+        if select isa AbstractVector{Int}
+            for i = 1:ncols
+                i in select || push!(todrop, i)
+            end
+        elseif select isa AbstractVector{Symbol} || select isa AbstractVector{<:AbstractString}
+            select = map(Symbol, select)
+            for i = 1:ncols
+                names[i] in select || push!(todrop, i)
+            end
+        elseif select isa AbstractVector{Bool}
+            for i = 1:ncols
+                select[i] || push!(todrop, i)
+            end
+        elseif select isa Base.Callable
+            for i = 1:ncols
+                select(i, names[i]) || push!(todrop, i)
+            end
+        else
+            error("`select` keyword argument must be an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a selector function of the form `(i, name) -> keep::Bool`")
+        end
+    elseif drop !== nothing
+        if drop isa AbstractVector{Int}
+            for i = 1:ncols
+                i in drop && push!(todrop, i)
+            end
+        elseif drop isa AbstractVector{Symbol} || drop isa AbstractVector{<:AbstractString}
+            drop = map(Symbol, drop)
+            for i = 1:ncols
+                names[i] in drop && push!(todrop, i)
+            end
+        elseif drop isa AbstractVector{Bool}
+            for i = 1:ncols
+                drop[i] && push!(todrop, i)
+            end
+        elseif drop isa Base.Callable
+            for i = 1:ncols
+                drop(i, names[i]) && push!(todrop, i)
+            end
+        else
+            error("`drop` keyword argument must be an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a selector function of the form `(i, name) -> keep::Bool`")
+        end
+    end
+    for i in todrop
+        typecodes[i] = USER | MISSING
+    end
     debug && println("computed typecodes are: $typecodes")
 
     # we now do our parsing pass over the file, starting at datapos
@@ -482,6 +538,10 @@ function file(source,
     else
         columns = Union{Column, Column2}[Column{_eltype(finaltypes[i]), finaltypes[i]}(tapes[i], rows, eq, categorical, finalrefs[i], buf, finaltypes[i] >: Int64 ? uint64(intsentinels[i]) : sentinelvalue(Base.nonmissingtype(finaltypes[i]))) for i = 1:ncols]
     end
+    deleteat!(names, todrop)
+    deleteat!(finaltypes, todrop)
+    ncols -= length(todrop)
+    deleteat!(columns, todrop)
     lookup = Dict(k => v for (k, v) in zip(names, columns))
     return File{something(threaded, false)}(getname(source), names, finaltypes, finalrows, ncols, columns, lookup)
 end
