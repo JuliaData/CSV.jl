@@ -615,7 +615,7 @@ testfiles = [
     # https://github.com/JuliaData/CSV.jl/issues/575
     ("types_override.csv", (type=Int, types=Dict(:col1 => String)),
         (3, 5),
-        NamedTuple{(:col1,:col2,:col3,:col4,:col5), Tuple{String, Int, Int, Int, Int}},
+        NamedTuple{(:col1,:col2,:col3,:col4,:col5), Tuple{String, Int64, Int64, Int64, Int64}},
         (col1 = ["A", "B", "C"], col2 = [1, 5, 9], col3 = [2, 6, 10], col4 = [3, 7, 11], col5 = [4, 8, 12])
     )
 ];
