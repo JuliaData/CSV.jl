@@ -611,6 +611,12 @@ testfiles = [
         (468, 9),
         NamedTuple{(Symbol("Time (CEST)"), :Latitude, :Longitude, :Course, :kts, :mph, :feet, :Rate, Symbol("Reporting Facility")),Tuple{String,Union{Missing, String},Union{Missing, String},Union{Missing, String},Union{Missing, String},Union{Missing, String},Union{Missing, String},Union{Missing, String},Union{Missing, String}}},
         nothing
+    ),
+    # https://github.com/JuliaData/CSV.jl/issues/575
+    ("types_override.csv", (type=Int, types=Dict(:col1 => String)),
+        (3, 5),
+        NamedTuple{(:col1,:col2,:col3,:col4,:col5), Tuple{String, Int, Int, Int, Int}},
+        (col1 = ["A", "B", "C"], col2 = [1, 5, 9], col3 = [2, 6, 10], col4 = [3, 7, 11], col5 = [4, 8, 12])
     )
 ];
 
