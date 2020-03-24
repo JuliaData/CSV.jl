@@ -299,6 +299,31 @@ CSV.File(file; pool=0.6)
 ```
 In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt64`. By default, `pool=0.1`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide greater control: `pool=0.4` means that if 40% or less of a column's values are unique, then it will be pooled.
 
+### Select/Drop Columns From File
+#### File
+```
+a,b,c
+1,2,3
+4,5,6
+7,8,9
+```
+#### Syntax
+```julia
+# select
+CSV.File(file; select=[1, 3])
+CSV.File(file; select=[:a, :c])
+CSV.File(file; select=["a", "c"])
+CSV.File(file; select=[true, false, true])
+CSV.File(file; select=(i, nm) -> i in (1, 3))
+# drop
+CSV.File(file; drop=[2])
+CSV.File(file; drop=[:b])
+CSV.File(file; drop=["b"])
+CSV.File(file; drop=[false, true, false])
+CSV.File(file; drop=(i, nm) -> i == 2)
+```
+For this file, we have columns `a`, `b`, and `c`; we might only be interested in the data in columns `a` and `c`. Using the `select` or `drop` keyword arguments can allow efficiently choosing of columns from a file; columns not selected or dropped will be efficiently skipped while parsing, allowing for performance boosts. The arguments to `select` or `drop` can be one of: `AbstractVector{Int}` a collection of column indices; `AbstractVector{Symbol}` or `AbstractVector{String}` a collection of column names as `Symbol` or `String`; `AbstractVector{Bool}` a collection of `Bool` equal in length to the # of columns signaling whether a column should be selected or dropped; or a selector/drop function of the form `(i, name) -> keep_or_drop::Bool`, i.e. it takes a column index `i` and column name `name` and returns a `Bool` signaling whether a column should be selected or dropped.
+
 ### Reading CSV from gzip (.gz) and zip files
 
 #### Example: reading from a gzip (.gz) file
