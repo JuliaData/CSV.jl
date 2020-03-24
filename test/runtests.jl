@@ -185,4 +185,80 @@ end
 
 end
 
+@testset "CSV.File with select/drop" begin
+
+csv = """
+a,b,c,d,e
+1,2,3,4,5
+6,7,8,9,10
+"""
+
+f = CSV.File(IOBuffer(csv), select=[1, 3, 5])
+@test f.a == [1, 6]
+@test all(f[1] .== [1, 3, 5])
+@test length(f[1]) == 3
+
+f = CSV.File(IOBuffer(csv), select=[:a, :c, :e])
+@test f.a == [1, 6]
+@test all(f[1] .== [1, 3, 5])
+@test length(f[1]) == 3
+
+f = CSV.File(IOBuffer(csv), select=["a", "c", "e"])
+@test f.a == [1, 6]
+@test all(f[1] .== [1, 3, 5])
+@test length(f[1]) == 3
+
+f = CSV.File(IOBuffer(csv), select=[true, false, true, false, true])
+@test f.a == [1, 6]
+@test all(f[1] .== [1, 3, 5])
+@test length(f[1]) == 3
+
+f = CSV.File(IOBuffer(csv), select=(i, nm) -> i in (1, 3, 5))
+@test f.a == [1, 6]
+@test all(f[1] .== [1, 3, 5])
+@test length(f[1]) == 3
+
+f = CSV.File(IOBuffer(csv), select=Int[])
+@test length(f) == 2
+@test length(f[1]) == 0
+
+f = CSV.File(IOBuffer(csv), select=[1, 2, 3, 4, 5])
+@test length(f) == 2
+@test length(f[1]) == 5
+
+f = CSV.File(IOBuffer(csv), drop=[2, 4])
+@test f.a == [1, 6]
+@test all(f[1] .== [1, 3, 5])
+@test length(f[1]) == 3
+
+f = CSV.File(IOBuffer(csv), drop=[:b, :d])
+@test f.a == [1, 6]
+@test all(f[1] .== [1, 3, 5])
+@test length(f[1]) == 3
+
+f = CSV.File(IOBuffer(csv), drop=["b", "d"])
+@test f.a == [1, 6]
+@test all(f[1] .== [1, 3, 5])
+@test length(f[1]) == 3
+
+f = CSV.File(IOBuffer(csv), drop=[false, true, false, true, false])
+@test f.a == [1, 6]
+@test all(f[1] .== [1, 3, 5])
+@test length(f[1]) == 3
+
+f = CSV.File(IOBuffer(csv), drop=(i, nm) -> i in (2, 4))
+@test f.a == [1, 6]
+@test all(f[1] .== [1, 3, 5])
+@test length(f[1]) == 3
+
+f = CSV.File(IOBuffer(csv), drop=Int[])
+@test length(f) == 2
+@test length(f[1]) == 5
+
+f = CSV.File(IOBuffer(csv), drop=[1, 2, 3, 4, 5])
+@test length(f) == 2
+@test length(f[1]) == 0
+
+end
+
 end
