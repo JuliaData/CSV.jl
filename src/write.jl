@@ -17,11 +17,12 @@ Supported keyword arguments include:
 * `newline='\\n'`: character or string to use to separate rows (lines in the csv file)
 * `quotestrings=false`: whether to force all strings to be quoted or not
 * `decimal='.'`: character to use as the decimal point when writing floating point numbers
+* `transform=(col,val)->val`: a function that is applied to every cell e.g. we can transform all `nothing` values to `missing` using `(col, val) -> something(val, missing)`
 * `bom=false`: whether to write a UTF-8 BOM header (0xEF 0xBB 0xBF) or not
 """
 function write end
 
-mutable struct Options{D, N, DF, M}
+mutable struct Options{D, N, DF, M, TF}
     delim::D
     openquotechar::UInt8
     closequotechar::UInt8
@@ -31,6 +32,7 @@ mutable struct Options{D, N, DF, M}
     dateformat::DF
     quotestrings::Bool
     missingstring::M
+    transform::TF  # Function
     bom::Bool
 end
 
@@ -51,13 +53,14 @@ function write(file, itr;
     dateformat=nothing,
     quotestrings::Bool=false,
     missingstring::AbstractString="",
+    transform::Function=(col,val) -> val,
     bom::Bool=false,
     kwargs...)
     checkvaliddelim(delim)
     (isascii(something(openquotechar, quotechar)) && isascii(something(closequotechar, quotechar)) && isascii(escapechar)) || throw(ArgumentError("quote and escape characters must be ASCII characters "))
     oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
     e = escapechar % UInt8
-    opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring), bom)
+    opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring), transform, bom)
     rows = Tables.rows(itr)
     sch = Tables.schema(rows)
     return write(sch, rows, file, opts; kwargs...)
@@ -193,6 +196,15 @@ function writerow(buf, pos, len, io, sch, row, cols, opts)
     n, d = opts.newline, opts.delim
     Tables.eachcolumn(sch, row) do val, col, nm
         Base.@_inline_meta
+        val = opts.transform(col, val)
+        val === nothing && error(
+            """
+            A `nothing` value was found in column $col and it is not a printable value. 
+            There are several ways to handle this situation:
+            1) fix the data, perhaps replace `nothing` with `missing`,
+            2) use `transform` option with a funciton to replace `nothing` with whatever value (including `missing`), or
+            3) use `Tables.transform` option to transform specific columns
+            """)
         posx = writecell(buf, pos[], len, io, val, opts)
         pos[] = writedelimnewline(buf, posx, len, io, ifelse(col == cols, n, d))
     end

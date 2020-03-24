@@ -51,6 +51,11 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
     (col1=[1,missing,3], col2=[missing, missing, missing], col3=[7,8,9]) |> CSV.write(io; missingstring="NA")
     @test String(take!(io)) == "col1,col2,col3\n1,NA,7\nNA,NA,8\n3,NA,9\n"
 
+    @test_throws ErrorException (col1=[1,nothing,3], col2=[nothing, missing, missing], col3=[7,8,9]) |> CSV.write(io)
+
+    (col1=[1,nothing,3], col2=[nothing, missing, missing], col3=[7,8,9]) |> CSV.write(io; transform = (col, val) -> something(val, missing), missingstring="NA")
+    @test String(take!(io)) == "col1,col2,col3\n1,NA,7\nNA,NA,8\n3,NA,9\n"
+
     (col1=["hey, there, sailor", "this, also, has, commas", "this\n has\n newlines\n", "no quoting", "just a random \" quote character", ],) |> CSV.write(io; escapechar='\\')
     @test String(take!(io)) == "col1\n\"hey, there, sailor\"\n\"this, also, has, commas\"\n\"this\n has\n newlines\n\"\nno quoting\n\"just a random \\\" quote character\"\n"
 
@@ -93,12 +98,12 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
     rm(file)
 
     # unknown schema case
-    opts = CSV.Options(UInt8(','), UInt8('"'), UInt8('"'), UInt8('"'), UInt8('\n'), UInt8('.'), nothing, false, (), true)
+    opts = CSV.Options(UInt8(','), UInt8('"'), UInt8('"'), UInt8('"'), UInt8('\n'), UInt8('.'), nothing, false, (), (col,val)->val, true)
     rt = [(a=1, b=4.0, c=7), (a=2.0, b=missing, c="8"), (a=3, b=6.0, c="9")]
     CSV.write(nothing, rt, io, opts)
     @test String(take!(io)) == "\xEF\xBB\xBFa,b,c\n1,4.0,7\n2.0,,8\n3,6.0,9\n"
 
-    opts = CSV.Options(UInt8(','), UInt8('"'), UInt8('"'), UInt8('"'), UInt8('\n'), UInt8('.'), nothing, false, (), false)
+    opts = CSV.Options(UInt8(','), UInt8('"'), UInt8('"'), UInt8('"'), UInt8('\n'), UInt8('.'), nothing, false, (), (col,val)->val, false)
     io = IOBuffer()
     CSV.write(nothing, Tables.rows((col1=[1,2,3], col2=[4,5,6], col3=[7,8,9])), io, opts)
     @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
