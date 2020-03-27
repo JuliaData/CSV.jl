@@ -385,9 +385,18 @@ function file(source,
         # step 3: build Parsers.Options w/ parsing arguments
         wh1 = d == UInt(' ') ? 0x00 : UInt8(' ')
         wh2 = d == UInt8('\t') ? 0x00 : UInt8('\t')
-        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformat, ignorerepeated, true, parsingdebug, strict, silencewarnings)
+        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformat, ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings)
 
-        # step 4: generate or parse column names
+        # step 4a: if we're ignoring repeated delimiters, then we ignore any
+        # that start a row, so we need to check if we need to adjust our headerpos/datapos
+        if ignorerepeated
+            if headerpos > 0
+                headerpos = Parsers.checkdelim!(buf, headerpos, len, options)
+            end
+            datapos = Parsers.checkdelim!(buf, datapos, len, options)
+        end
+
+        # step 4b: generate or parse column names
         names = detectcolumnnames(buf, headerpos, datapos, len, options, header, normalizenames)
         ncols = length(names)
         positions = EMPTY_POSITIONS
@@ -396,7 +405,7 @@ function file(source,
         d, rowsguess = detectdelimandguessrows(buf, pos, pos, len, oq, eq, cq, del, cmt, ignoreemptylines)
         wh1 = d == UInt(' ') ? 0x00 : UInt8(' ')
         wh2 = d == UInt8('\t') ? 0x00 : UInt8('\t')
-        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformat, ignorerepeated, true, parsingdebug, strict, silencewarnings)
+        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformat, ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings)
         rowsguess, names, positions = detecttranspose(buf, pos, len, options, header, datarow, normalizenames)
         ncols = length(names)
         datapos = isempty(positions) ? 0 : positions[1]
@@ -713,11 +722,6 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, po
     startpos = pos
     if pos <= len && len > 0
         while row < limit
-            pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines)
-            if ignorerepeated
-                pos = Parsers.checkdelim!(buf, pos, len, options)
-            end
-            pos > len && break
             row += 1
             for col = 1:ncols
                 if transpose
