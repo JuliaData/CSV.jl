@@ -224,9 +224,6 @@ function readsplitline(buf, pos, len, options::Parsers.Options{ignorerepeated}) 
     vals = String[]
     (pos > len || pos == 0) && return vals, pos
     col = 1
-    if ignorerepeated
-        pos = Parsers.checkdelim!(buf, pos, len, options)
-    end
     while true
         _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
         push!(vals, columnname(buf, vpos, vlen, code, options, col))
@@ -307,10 +304,6 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, cmt,
                 _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
                 pos += tlen
                 if Parsers.newline(code)
-                    pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines)
-                    if ignorerepeated
-                        pos = Parsers.checkdelim!(buf, pos, len, options)
-                    end
                     # assume we found the correct start of the next row
                     ranges[i] = pos
                     break
@@ -353,10 +346,6 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, cmt,
                 _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
                 pos += tlen
                 if Parsers.newline(code)
-                    pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines)
-                    if ignorerepeated
-                        pos = Parsers.checkdelim!(buf, pos, len, options)
-                    end
                     # assume we found the correct start of the next row
                     ranges[i] = pos
                     break
