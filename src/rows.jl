@@ -1,15 +1,13 @@
-struct Rows{transpose, O}
+struct Rows{transpose, O, IO}
     name::String
     names::Vector{Symbol}
     cols::Int64
     e::UInt8
-    buf::Vector{UInt8}
+    buf::IO
     datapos::Int64
     limit::Int64
     options::O # Parsers.Options
     positions::Vector{Int64}
-    cmt::Union{Tuple{Ptr{UInt8}, Int}, Nothing}
-    ignoreemptylines::Bool
     reusebuffer::Bool
     tape::Vector{UInt64}
     lookup::Dict{Symbol, Int}
@@ -79,6 +77,8 @@ function Rows(source;
     comment::Union{String, Nothing}=nothing,
     use_mmap::Bool=!Sys.iswindows(),
     ignoreemptylines::Bool=false,
+    select=nothing,
+    drop=nothing,
     # parsing options
     missingstrings=String[],
     missingstring="",
@@ -88,7 +88,16 @@ function Rows(source;
     openquotechar::Union{UInt8, Char, Nothing}=nothing,
     closequotechar::Union{UInt8, Char, Nothing}=nothing,
     escapechar::Union{UInt8, Char}='"',
+    dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
+    decimal::Union{UInt8, Char}=UInt8('.'),
+    truestrings::Union{Vector{String}, Nothing}=nothing,
+    falsestrings::Union{Vector{String}, Nothing}=nothing,
     # type options
+    type=nothing,
+    types=nothing,
+    typemap::Dict=Dict{TypeCode, TypeCode}(),
+    categorical::Union{Bool, Real}=false,
+    pool::Union{Bool, Real}=0.1,
     strict::Bool=false,
     silencewarnings::Bool=false,
     debug::Bool=false,
@@ -96,78 +105,22 @@ function Rows(source;
     reusebuffer::Bool=false,
     kw...)
 
-    # initial argument validation and adjustment
-    checkvalidsource(source)
-    checkvaliddelim(delim)
-    ignorerepeated && delim === nothing && throw(ArgumentError("auto-delimiter detection not supported when `ignorerepeated=true`; please provide delimiter via `delim=','`"))
-    header = (isa(header, Integer) && header == 1 && (datarow == 1 || skipto == 1)) ? -1 : header
-    isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
-    datarow = skipto !== nothing ? skipto : (datarow == -1 ? (isa(header, Vector{Symbol}) || isa(header, Vector{String}) ? 0 : last(header)) + 1 : datarow) # by default, data starts on line after header
-    debug && println("header is: $header, datarow computed as: $datarow")
-    # getsource will turn any input into a `Vector{UInt8}`
-    buf = getsource(source, use_mmap)
-    len = length(buf)
-    # skip over initial BOM character, if present
-    pos = consumeBOM(buf)
-
-    oq = something(openquotechar, quotechar) % UInt8
-    eq = escapechar % UInt8
-    cq = something(closequotechar, quotechar) % UInt8
-    sentinel = ((isempty(missingstrings) && missingstring == "") || (length(missingstrings) == 1 && missingstrings[1] == "")) ? missing : isempty(missingstrings) ? [missingstring] : missingstrings
-    
-    if delim === nothing
-        del = isa(source, AbstractString) && endswith(source, ".tsv") ? UInt8('\t') :
-            isa(source, AbstractString) && endswith(source, ".wsv") ? UInt8(' ') :
-            UInt8('\n')
-    else
-        del = (delim isa Char && isascii(delim)) ? delim % UInt8 :
-            (sizeof(delim) == 1 && isascii(delim)) ? delim[1] % UInt8 : delim
-    end
-    cmt = comment === nothing ? nothing : (pointer(comment), sizeof(comment))
-
-    if !transpose
-        # step 1: detect the byte position where the column names start (headerpos)
-        # and where the first data row starts (datapos)
-        headerpos, datapos = detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, header, datarow)
-        debug && println("headerpos = $headerpos, datapos = $datapos")
-
-        # step 2: detect delimiter (or use given) and detect number of (estimated) rows and columns
-        d, rowsguess = detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, del, cmt, ignoreemptylines)
-        debug && println("estimated rows: $rowsguess")
-        debug && println("detected delimiter: \"$(escape_string(d isa UInt8 ? string(Char(d)) : d))\"")
-
-        # step 3: build Parsers.Options w/ parsing arguments
-        wh1 = d == UInt(' ') ? 0x00 : UInt8(' ')
-        wh2 = d == UInt8('\t') ? 0x00 : UInt8('\t')
-        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, UInt8('.'), nothing, nothing, nothing, ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings)
-
-        # step 4a: if we're ignoring repeated delimiters, then we ignore any
-        # that start a row, so we need to check if we need to adjust our headerpos/datapos
-        if ignorerepeated
-            if headerpos > 0
-                headerpos = Parsers.checkdelim!(buf, headerpos, len, options)
-            end
-            datapos = Parsers.checkdelim!(buf, datapos, len, options)
-        end
-
-        # step 4b: generate or parse column names
-        names = detectcolumnnames(buf, headerpos, datapos, len, options, header, normalizenames)
-        ncols = length(names)
-        positions = EMPTY_POSITIONS
-    else
-        # transpose
-        d, rowsguess = detectdelimandguessrows(buf, pos, pos, len, oq, eq, cq, del, cmt, ignoreemptylines)
-        wh1 = d == UInt(' ') ? 0x00 : UInt8(' ')
-        wh2 = d == UInt8('\t') ? 0x00 : UInt8('\t')
-        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, UInt8('.'), nothing, nothing, nothing, ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings)
-        rowsguess, names, positions = detecttranspose(buf, pos, len, options, header, datarow, normalizenames)
-        ncols = length(names)
-        datapos = positions[1]
-    end
-    debug && println("column names detected: $names")
-    debug && println("byte position of data computed at: $datapos")
-    lookup = Dict(nm=>i for (i, nm) in enumerate(names))
-    return Rows{transpose, typeof(options)}(getname(source), names, length(names), eq, buf, datapos, limit, options, positions, cmt, ignoreemptylines, reusebuffer, Vector{UInt64}(undef, length(names)), lookup)
+    h = Header(source, header, normalizenames, datarow, skipto, footerskip, limit, transpose, comment, use_mmap, ignoreemptylines, false, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, strict, silencewarnings, debug, parsingdebug, true)
+    lookup = Dict(nm=>i for (i, nm) in enumerate(h.names))
+    return Rows{transpose, typeof(h.options), typeof(h.buf)}(
+        h.name,
+        h.names,
+        h.cols,
+        h.e,
+        h.buf,
+        h.datapos,
+        limit,
+        h.options,
+        h.positions,
+        reusebuffer,
+        Vector{UInt64}(undef, h.cols),
+        lookup
+    )
 end
 
 Tables.rowaccess(::Type{<:Rows}) = true
@@ -175,8 +128,6 @@ Tables.rows(r::Rows) = r
 Tables.schema(r::Rows) = Tables.Schema(r.names, fill(Union{String, Missing}, r.cols))
 Base.eltype(r::Rows) = Row2
 Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
-
-getignorerepeated(p::Parsers.Options{ignorerepeated}) where {ignorerepeated} = ignorerepeated
 
 @inline function Base.iterate(r::Rows{transpose}, (pos, len, row)=(r.datapos, length(r.buf), 1)) where {transpose}
     (pos > len || row > r.limit) && return nothing

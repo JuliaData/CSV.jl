@@ -210,9 +210,7 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
         @test CSV.read(io, delim=char) == df
     end
     # don't allow writing with delimiters we refuse to read
-    for char ∈ CSV.INVALID_DELIMITERS
-        @test_throws ArgumentError CSV.write(io, df, delim=char)
-    end
+    @test_throws ArgumentError CSV.write(io, df, delim='\r')
 
     @test read(rd, String) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
 
