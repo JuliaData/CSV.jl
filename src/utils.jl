@@ -340,45 +340,6 @@ Base.size(a::ReversedBuf) = size(a.buf)
 Base.IndexStyle(::Type{ReversedBuf}) = Base.IndexLinear()
 Base.getindex(a::ReversedBuf, i::Int) = a.buf[end + 1 - i]
 
-# multithreading structures
-const AtomicTypes = Union{Base.Threads.atomictypes...}
-
-struct AtomicVector{T} <: AbstractArray{T, 1}
-    A::Vector{T}
-
-    function AtomicVector{T}(undef, n::Int) where {T}
-        T <: AtomicTypes || throw(ArgumentError("invalid type for AtomicVector: $T"))
-        return new{T}(zeros(T, n))
-    end
-
-    function AtomicVector(A::Vector{T}) where {T}
-        T <: AtomicTypes || throw(ArgumentError("invalid type for AtomicVector: $T"))
-        return new{T}(A)
-    end
-end
-
-Base.size(a::AtomicVector) = size(a.A)
-Base.IndexStyle(::Type{A}) where {A <: AtomicVector} = Base.IndexLinear()
-
-for typ in Base.Threads.atomictypes
-    lt = Base.Threads.llvmtypes[typ]
-    ilt = Base.Threads.llvmtypes[Base.Threads.inttype(typ)]
-    rt = "$lt, $lt*"
-    irt = "$ilt, $ilt*"
-    @eval Base.getindex(x::AtomicVector{$typ}, i::Int) =
-        Base.llvmcall($"""
-                 %ptr = inttoptr i$(Base.Threads.WORD_SIZE) %0 to $lt*
-                 %rv = load atomic $rt %ptr acquire, align $(Base.Threads.gc_alignment(typ))
-                 ret $lt %rv
-                 """, $typ, Tuple{Ptr{$typ}}, pointer(x.A, i))
-    @eval Base.setindex!(x::AtomicVector{$typ}, v::$typ, i::Int) =
-        Base.llvmcall($"""
-                 %ptr = inttoptr i$(Base.Threads.WORD_SIZE) %0 to $lt*
-                 store atomic $lt %1, $lt* %ptr release, align $(Base.Threads.gc_alignment(typ))
-                 ret void
-                 """, Cvoid, Tuple{Ptr{$typ}, $typ}, pointer(x.A, i), v)
-end
-
 function unset!(A::Vector, i::Int, row, x)
     finalize(A[i])
     ccall(:jl_arrayunset, Cvoid, (Array, Csize_t), A, i - 1)
