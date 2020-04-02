@@ -2,7 +2,7 @@ struct Header{transpose, O, IO}
     name::String
     names::Vector{Symbol}
     rowsguess::Int64
-    cols::Int64
+    cols::Int
     e::UInt8
     buf::IO
     len::Int
