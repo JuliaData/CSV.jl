@@ -293,7 +293,7 @@ function checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines)
     return pos
 end
 
-function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, cmt, ignoreemptylines, ranges, ncols) where {ignorerepeated}
+function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, ranges, ncols) where {ignorerepeated}
     for i = 2:(length(ranges) - 1)
         pos = ranges[i]
         while pos <= len
