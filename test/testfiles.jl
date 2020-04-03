@@ -3,11 +3,13 @@ function testfile(file, kwargs, expected_sz, expected_sch, testfunc; dir=dir)
     if file isa IO
         seekstart(file)
     end
-    rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
-    actual_sch = Tables.schema(rows)
-    @test Tuple(expected_sch.names) == actual_sch.names
-    if file isa IO
-        seekstart(file)
+    if !haskey(kwargs, :select)
+        rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
+        actual_sch = Tables.schema(rows)
+        @test Tuple(expected_sch.names) == actual_sch.names
+        if file isa IO
+            seekstart(file)
+        end
     end
     t = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
     actual_sch = Tables.schema(t)
@@ -617,6 +619,12 @@ testfiles = [
         (3, 5),
         NamedTuple{(:col1,:col2,:col3,:col4,:col5), Tuple{String, Int64, Int64, Int64, Int64}},
         (col1 = ["A", "B", "C"], col2 = [1, 5, 9], col3 = [2, 6, 10], col4 = [3, 7, 11], col5 = [4, 8, 12])
+    ),
+    # https://github.com/JuliaData/CSV.jl/issues/592
+    ("select.csv", (select = [:state, :dateChecked, :positive, :negative, :pending, :hospitalized, :death],),
+        (1485, 7),
+        NamedTuple{(:state, :positive, :negative, :pending, :hospitalized, :death, :dateChecked), Tuple{String, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, String}},
+        nothing
     )
 ];
 
