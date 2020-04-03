@@ -761,14 +761,16 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, po
                             options.silencewarnings || notenoughcolumns(col, ncols, row)
                             for j = (col + 1):ncols
                                 # put in dummy missing values on the tape for missing columns
-                                @inbounds tape = tapes[j]
-                                T = typebits(typecodes[j])
-                                tape[row] = T == POOL ? 0 : T == INT ? uint64(intsentinels[j]) : sentinelvalue(TYPECODES[T])
-                                if isassigned(poslens, j)
-                                    setposlen!(poslens[j], row, Parsers.SENTINEL, pos, UInt64(0))
-                                end
-                                if T > MISSINGTYPE
-                                    typecodes[j] |= MISSING
+                                if !usermissing(T)
+                                    @inbounds tape = tapes[j]
+                                    T = typebits(typecodes[j])
+                                    tape[row] = T == POOL ? 0 : T == INT ? uint64(intsentinels[j]) : sentinelvalue(TYPECODES[T])
+                                    if isassigned(poslens, j)
+                                        setposlen!(poslens[j], row, Parsers.SENTINEL, pos, UInt64(0))
+                                    end
+                                    if T > MISSINGTYPE
+                                        typecodes[j] |= MISSING
+                                    end
                                 end
                             end
                             break # from for col = 1:ncols
@@ -792,14 +794,16 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, po
                 newtapes = Vector{Vector{UInt64}}(undef, ncols)
                 newposlens = Vector{Vector{UInt64}}(undef, ncols)
                 for i = 1:ncols
-                    newtapes[i] = Mmap.mmap(Vector{UInt64}, newrowsguess)
-                    copyto!(newtapes[i], 1, tapes[i], 1, row)
-                    # safe to finalize, even in multithreaded, each thread has it's own set of tapes/poslens
-                    unset!(tapes, i, row, 5)
-                    if isassigned(poslens, i)
-                        newposlens[i] = Mmap.mmap(Vector{UInt64}, newrowsguess)
-                        copyto!(newposlens[i], 1, poslens[i], 1, row)
-                        unset!(poslens, i, row, 6)
+                    if usermissing(typecodes[i])
+                        newtapes[i] = Mmap.mmap(Vector{UInt64}, newrowsguess)
+                        copyto!(newtapes[i], 1, tapes[i], 1, row)
+                        # safe to finalize, even in multithreaded, each thread has it's own set of tapes/poslens
+                        unset!(tapes, i, row, 5)
+                        if isassigned(poslens, i)
+                            newposlens[i] = Mmap.mmap(Vector{UInt64}, newrowsguess)
+                            copyto!(newposlens[i], 1, poslens[i], 1, row)
+                            unset!(poslens, i, row, 6)
+                        end
                     end
                 end
                 tapes = newtapes
