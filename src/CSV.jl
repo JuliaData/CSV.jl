@@ -795,6 +795,8 @@ function parsetape(::Val{transpose}, ignoreemptylines, ncols, typemap, tapes, po
                 newposlens = Vector{Vector{UInt64}}(undef, ncols)
                 for i = 1:ncols
                     if usermissing(typecodes[i])
+                        newtapes[i] = tapes[i]
+                    else
                         newtapes[i] = Mmap.mmap(Vector{UInt64}, newrowsguess)
                         copyto!(newtapes[i], 1, tapes[i], 1, row)
                         # safe to finalize, even in multithreaded, each thread has it's own set of tapes/poslens
