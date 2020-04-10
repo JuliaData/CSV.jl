@@ -193,6 +193,14 @@ end
     else
         typecodes = TypeCode[T for _ = 1:ncols]
     end
+    if streaming
+        for i = 1:ncols
+            T = typecodes[i]
+            if pooled(T)
+                typecodes[i] = STRING | (T & MISSING)
+            end
+        end
+    end
     # set any unselected columns to typecode USER | MISSING
     todrop = Int[]
     if select !== nothing && drop !== nothing

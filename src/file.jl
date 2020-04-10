@@ -439,73 +439,13 @@ end # @static if VERSION >= v"1.3-DEV"
     return perthreadrows, perthreadtapes, refs, typecodes, intsentinels
 end
 
-function parsetape(::Val{transpose}, ncols, typemap, tapes, poslens, buf, pos, len, limit, positions, pool, refs, lastrefs, rowsguess, typecodes, intsentinels, debug, options::Parsers.Options{ignorerepeated}) where {transpose, ignorerepeated}
+function parsetape(TR::Val{transpose}, ncols, typemap, tapes, poslens, buf, pos, len, limit, positions, pool, refs, lastrefs, rowsguess, typecodes, intsentinels, debug, options::Parsers.Options{ignorerepeated}) where {transpose, ignorerepeated}
     row = 0
     startpos = pos
     if pos <= len && len > 0
         while row < limit
             row += 1
-            for col = 1:ncols
-                if transpose
-                    @inbounds pos = positions[col]
-                end
-                @inbounds T = typecodes[col]
-                @inbounds tape = tapes[col]
-                type = typebits(T)
-                if usermissing(T)
-                    pos, code = parsemissing!(buf, pos, len, options, row, col)
-                elseif type === EMPTY
-                    pos, code = detect(tape, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, intsentinels, debug, typecodes, poslens)
-                elseif type === MISSINGTYPE
-                    pos, code = detect(tape, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, intsentinels, debug, typecodes, poslens)
-                elseif type === INT
-                    pos, code = parseint!(T, tape, buf, pos, len, options, row, col, typecodes, poslens, intsentinels)
-                elseif type === FLOAT
-                    pos, code = parsevalue!(Float64, T, tape, buf, pos, len, options, row, col, typecodes, poslens)
-                elseif type === DATE
-                    pos, code = parsevalue!(Date, T, tape, buf, pos, len, options, row, col, typecodes, poslens)
-                elseif type === DATETIME
-                    pos, code = parsevalue!(DateTime, T, tape, buf, pos, len, options, row, col, typecodes, poslens)
-                elseif type === TIME
-                    pos, code = parsevalue!(Time, T, tape, buf, pos, len, options, row, col, typecodes, poslens)
-                elseif type === BOOL
-                    pos, code = parsevalue!(Bool, T, tape, buf, pos, len, options, row, col, typecodes, poslens)
-                elseif type === POOL
-                    pos, code = parsepooled!(T, tape, buf, pos, len, options, row, col, rowsguess, pool, refs, lastrefs, typecodes, poslens)
-                else # STRING
-                    pos, code = parsestring!(T, tape, buf, pos, len, options, row, col, typecodes)
-                end
-                if transpose
-                    @inbounds positions[col] = pos
-                else
-                    if col < ncols
-                        if Parsers.newline(code) || pos > len
-                            options.silencewarnings || notenoughcolumns(col, ncols, row)
-                            for j = (col + 1):ncols
-                                # put in dummy missing values on the tape for missing columns
-                                if !usermissing(T)
-                                    @inbounds tape = tapes[j]
-                                    T = typebits(typecodes[j])
-                                    tape[row] = T == POOL ? 0 : T == INT ? uint64(intsentinels[j]) : sentinelvalue(TYPECODES[T])
-                                    if isassigned(poslens, j)
-                                        setposlen!(poslens[j], row, Parsers.SENTINEL, pos, UInt64(0))
-                                    end
-                                    if T > MISSINGTYPE
-                                        typecodes[j] |= MISSING
-                                    end
-                                end
-                            end
-                            break # from for col = 1:ncols
-                        end
-                    else
-                        if pos <= len && !Parsers.newline(code)
-                            options.silencewarnings || toomanycolumns(ncols, row)
-                            # ignore the rest of the line
-                            pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, 1, 2)
-                        end
-                    end
-                end
-            end
+            pos = parserow(row, TR, ncols, typemap, tapes, poslens, buf, pos, len, limit, positions, pool, refs, lastrefs, rowsguess, typecodes, intsentinels, debug, options)
             pos > len && break
             # if our initial row estimate was too few, we need to reallocate our tapes/poslens to read the rest of the file
             if row + 1 > rowsguess
@@ -545,6 +485,71 @@ end
 @noinline stricterror(T, buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) error parsing $T on row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))"))
 @noinline warning(T, buf, pos, len, code, row, col) = println("thread = $(Threads.threadid()) warning: error parsing $T on row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))")
 @noinline fatalerror(buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) fatal error, encountered an invalidly quoted field while parsing on row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code)), check your `quotechar` arguments or manually fix the field in the file itself"))
+
+@inline function parserow(row, ::Val{transpose}, ncols, typemap, tapes, poslens, buf, pos, len, limit, positions, pool, refs, lastrefs, rowsguess, typecodes, intsentinels, debug, options::Parsers.Options{ignorerepeated}) where {transpose, ignorerepeated}
+    for col = 1:ncols
+        if transpose
+            @inbounds pos = positions[col]
+        end
+        @inbounds T = typecodes[col]
+        @inbounds tape = tapes[col]
+        type = typebits(T)
+        if usermissing(T)
+            pos, code = parsemissing!(buf, pos, len, options, row, col)
+        elseif type === EMPTY
+            pos, code = detect(tape, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, intsentinels, debug, typecodes, poslens)
+        elseif type === MISSINGTYPE
+            pos, code = detect(tape, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, intsentinels, debug, typecodes, poslens)
+        elseif type === INT
+            pos, code = parseint!(T, tape, buf, pos, len, options, row, col, typecodes, poslens, intsentinels)
+        elseif type === FLOAT
+            pos, code = parsevalue!(Float64, T, tape, buf, pos, len, options, row, col, typecodes, poslens)
+        elseif type === DATE
+            pos, code = parsevalue!(Date, T, tape, buf, pos, len, options, row, col, typecodes, poslens)
+        elseif type === DATETIME
+            pos, code = parsevalue!(DateTime, T, tape, buf, pos, len, options, row, col, typecodes, poslens)
+        elseif type === TIME
+            pos, code = parsevalue!(Time, T, tape, buf, pos, len, options, row, col, typecodes, poslens)
+        elseif type === BOOL
+            pos, code = parsevalue!(Bool, T, tape, buf, pos, len, options, row, col, typecodes, poslens)
+        elseif type === POOL
+            pos, code = parsepooled!(T, tape, buf, pos, len, options, row, col, rowsguess, pool, refs, lastrefs, typecodes, poslens)
+        else # STRING
+            pos, code = parsestring!(T, tape, buf, pos, len, options, row, col, typecodes)
+        end
+        if transpose
+            @inbounds positions[col] = pos
+        else
+            if col < ncols
+                if Parsers.newline(code) || pos > len
+                    options.silencewarnings || notenoughcolumns(col, ncols, row)
+                    for j = (col + 1):ncols
+                        # put in dummy missing values on the tape for missing columns
+                        if !usermissing(T)
+                            @inbounds tape = tapes[j]
+                            T = typebits(typecodes[j])
+                            tape[row] = T == POOL ? 0 : T == INT ? uint64(intsentinels[j]) : sentinelvalue(TYPECODES[T])
+                            if isassigned(poslens, j)
+                                setposlen!(poslens[j], row, Parsers.SENTINEL, pos, UInt64(0))
+                            end
+                            if T > MISSINGTYPE
+                                typecodes[j] |= MISSING
+                            end
+                        end
+                    end
+                    break # from for col = 1:ncols
+                end
+            else
+                if pos <= len && !Parsers.newline(code)
+                    options.silencewarnings || toomanycolumns(ncols, row)
+                    # ignore the rest of the line
+                    pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, 1, 2)
+                end
+            end
+        end
+    end
+    return pos
+end
 
 @inline function setposlen!(tape, row, code, pos, len)
     pos = Core.bitcast(UInt64, pos) << 20
