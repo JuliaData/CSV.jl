@@ -1,6 +1,7 @@
 struct Rows{transpose, O, IO}
     name::String
     names::Vector{Symbol}
+    typecodes::Vector{TypeCode}
     cols::Int64
     e::UInt8
     buf::IO
@@ -9,7 +10,8 @@ struct Rows{transpose, O, IO}
     options::O # Parsers.Options
     positions::Vector{Int64}
     reusebuffer::Bool
-    tape::Vector{UInt64}
+    tapes::Vector{Vector{UInt64}}
+    intsentinels::Vector{Int64}
     lookup::Dict{Symbol, Int}
 end
 
@@ -106,10 +108,12 @@ function Rows(source;
     kw...)
 
     h = Header(source, header, normalizenames, datarow, skipto, footerskip, limit, transpose, comment, use_mmap, ignoreemptylines, false, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, strict, silencewarnings, debug, parsingdebug, true)
+    tapes = [Vector{UInt64}(undef, usermissing(h.typecodes[i]) ? 0 : 1) for i = 1:h.cols]
     lookup = Dict(nm=>i for (i, nm) in enumerate(h.names))
     return Rows{transpose, typeof(h.options), typeof(h.buf)}(
         h.name,
         h.names,
+        h.typecodes,
         h.cols,
         h.e,
         h.buf,
@@ -118,107 +122,116 @@ function Rows(source;
         h.options,
         h.positions,
         reusebuffer,
-        Vector{UInt64}(undef, h.cols),
+        tapes,
+        fill(INT_SENTINEL, h.cols),
         lookup
     )
 end
 
+gettype(x::TypeCode) = TYPECODES[x & ~USER]
 Tables.rowaccess(::Type{<:Rows}) = true
 Tables.rows(r::Rows) = r
-Tables.schema(r::Rows) = Tables.Schema(r.names, fill(Union{String, Missing}, r.cols))
+Tables.schema(r::Rows) = Tables.Schema(r.names, (gettype(x) for x in r.typecodes))
 Base.eltype(r::Rows) = Row2
 Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
 
+const EMPTY_TYPEMAP = Dict{TypeCode, TypeCode}()
+const EMPTY_POSLENS = Vector{Vector{UInt64}}()
+const EMPTY_REFS = Vector{Dict{String, UInt64}}()
+const EMPTY_LASTREFS = UInt64[]
+
 @inline function Base.iterate(r::Rows{transpose}, (pos, len, row)=(r.datapos, length(r.buf), 1)) where {transpose}
     (pos > len || row > r.limit) && return nothing
-    buf, positions, ncols, options = r.buf, r.positions, r.cols, r.options
     pos > len && return nothing
-    tape = r.reusebuffer ? r.tape : Vector{UInt64}(undef, ncols)
-    for col = 1:ncols
-        if transpose
-            @inbounds pos = positions[col]
-        end
-        x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-        setposlen!(tape, col, code, vpos, vlen)
-        if Parsers.invalidquotedfield(code)
-            fatalerror(buf, pos, tlen, code, row, col)
-        end
-        pos += tlen
-        if transpose
-            @inbounds positions[col] = pos
-        else
-            if col < ncols
-                if Parsers.newline(code) || pos > len
-                    options.silencewarnings || notenoughcolumns(col, ncols, row)
-                    for j = (col + 1):ncols
-                        tape[j] = MISSING_BIT
-                    end
-                    break
-                end
-            else
-                if pos <= len && !Parsers.newline(code)
-                    options.silencewarnings || toomanycolumns(ncols, row)
-                    pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, 1, 2)
-                end
-            end
-        end
-    end
-    return Row2(r.names, r.lookup, tape, r.buf, r.e, r.options), (pos, len, row + 1)
+    tapes = r.reusebuffer ? r.tapes : [Vector{UInt64}(undef, usermissing(r.typecodes[i]) ? 0 : 1) for i = 1:r.cols]
+    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, tapes, EMPTY_POSLENS, r.buf, pos, len, r.limit, r.positions, 0.0, EMPTY_REFS, EMPTY_LASTREFS, 0, r.typecodes, r.intsentinels, false, r.options)
+    intsentinels = r.reusebuffer ? r.intsentinels : copy(r.intsentinels)
+    return Row2(r.names, r.typecodes, r.lookup, tapes, r.buf, r.e, r.options, intsentinels), (pos, len, row + 1)
 end
 
 struct Row2{O} <: Tables.AbstractRow
     names::Vector{Symbol}
+    typecodes::Vector{TypeCode}
     lookup::Dict{Symbol, Int}
-    tape::Vector{UInt64}
+    tapes::Vector{Vector{UInt64}}
     buf::Vector{UInt8}
     e::UInt8
     options::O
+    intsentinels::Vector{Int64}
 end
 
 getnames(r::Row2) = getfield(r, :names)
+gettypecodes(r::Row2) = getfield(r, :typecodes)
 getlookup(r::Row2) = getfield(r, :lookup)
-gettape(r::Row2) = getfield(r, :tape)
+gettapes(r::Row2) = getfield(r, :tapes)
 getbuf(r::Row2) = getfield(r, :buf)
 gete(r::Row2) = getfield(r, :e)
 getoptions(r::Row2) = getfield(r, :options)
+getintsentinels(r::Row2) = getfield(r, :intsentinels)
 
 Tables.columnnames(r::Row2) = getnames(r)
 
 Base.checkbounds(r::Row2, i) = 0 < i < length(r)
 
-@inline Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Type{T}, i::Int, nm::Symbol) where {T}
+Tables.getcolumn(r::Row2, i::Int) = Tables.getcolumn(r, gettype(gettypecodes(r)[i]), i, getnames(r)[i])
+Tables.getcolumn(r::Row2, nm::Symbol) = Tables.getcolumn(r, getlookup(r)[nm])
+
+Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Type{Missing}, i::Int, nm::Symbol)
     @boundscheck checkbounds(r, i)
-    @inbounds offlen = gettape(r)[i]
-    missingvalue(offlen) && return missing
-    s = PointerString(pointer(getbuf(r), getpos(offlen)), getlen(offlen))
-    return escapedvalue(offlen) ? unescape(s, gete(r)) : String(s)
+    return missing
 end
 
-@inline Base.@propagate_inbounds function Tables.getcolumn(r::Row2, i::Int)
+Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Type{T}, i::Int, nm::Symbol) where {T}
     @boundscheck checkbounds(r, i)
-    @inbounds offlen = gettape(r)[i]
-    missingvalue(offlen) && return missing
-    s = PointerString(pointer(getbuf(r), getpos(offlen)), getlen(offlen))
-    return escapedvalue(offlen) ? unescape(s, gete(r)) : String(s)
-end
-
-function Tables.getcolumn(r::Row2, nm::Symbol)
-    @inbounds x = r[getlookup(r)[nm]]
+    @inbounds x = reinterp_func(T)(gettapes(r)[i][1])
     return x
 end
 
-@inline Base.@propagate_inbounds function Parsers.parse(::Type{T}, r::Row2, i::Int) where {T}
+Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Type{Union{Missing, T}}, i::Int, nm::Symbol) where {T}
     @boundscheck checkbounds(r, i)
-    @inbounds offlen = gettape(r)[i]
+    @inbounds x = gettapes(r)[i][1]
+    return ifelse(x === sentinelvalue(T), missing, reinterp_func(T)(x))
+end
+
+Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Type{Union{Missing, Int64}}, i::Int, nm::Symbol)
+    @boundscheck checkbounds(r, i)
+    @inbounds x = reinterp_func(Int64)(gettapes(r)[i][1])
+    return ifelse(x === getintsentinels(r)[i], missing, x)
+end
+
+Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Type{String}, i::Int, nm::Symbol)
+    @boundscheck checkbounds(r, i)
+    @inbounds offlen = gettapes(r)[i][1]
+    s = PointerString(pointer(getbuf(r), getpos(offlen)), getlen(offlen))
+    return escapedvalue(offlen) ? unescape(s, gete(r)) : String(s)
+end
+
+Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Type{Union{Missing, String}}, i::Int, nm::Symbol)
+    @boundscheck checkbounds(r, i)
+    @inbounds offlen = gettapes(r)[i][1]
+    missingvalue(offlen) && return missing
+    s = PointerString(pointer(getbuf(r), getpos(offlen)), getlen(offlen))
+    return escapedvalue(offlen) ? unescape(s, gete(r)) : String(s)
+end
+
+@noinline stringsonly() = error("Parsers.parse only allowed on String column types")
+
+Base.@propagate_inbounds function Parsers.parse(::Type{T}, r::Row2, i::Int) where {T}
+    @boundscheck checkbounds(r, i)
+    typecode = gettypecodes(r)[i]
+    (typecode == STRING || typecode == (STRING | MISSING)) || stringsonly()
+    @inbounds offlen = gettapes(r)[i][1]
     missingvalue(offlen) && return missing
     pos = getpos(offlen)
     x, code, vpos, vlen, tlen = Parsers.xparse(T, getbuf(r), pos, pos + getlen(offlen), getoptions(r))
     return Parsers.ok(code) ? x : missing
 end
 
-@inline Base.@propagate_inbounds function detect(r::Row2, i::Int)
+Base.@propagate_inbounds function detect(r::Row2, i::Int)
     @boundscheck checkbounds(r, i)
-    @inbounds offlen = gettape(r)[i]
+    typecode = gettypecodes(r)[i]
+    (typecode == STRING || typecode == (STRING | MISSING)) || stringsonly()
+    @inbounds offlen = gettapes(r)[i][1]
     missingvalue(offlen) && return missing
     pos = getpos(offlen)
     x = detect(getbuf(r), pos, pos + getlen(offlen) - 1, getoptions(r))
