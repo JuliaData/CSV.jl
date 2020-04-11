@@ -3,15 +3,15 @@ function testfile(file, kwargs, expected_sz, expected_sch, testfunc; dir=dir)
     if file isa IO
         seekstart(file)
     end
-    if !haskey(kwargs, :select)
-        rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
-        actual_sch = Tables.schema(rows)
-        @test Tuple(expected_sch.names) == actual_sch.names
-        if file isa IO
-            seekstart(file)
-        end
+    rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
+    actual_sch = Tables.schema(rows)
+    @test Tuple(expected_sch.names) == actual_sch.names
+    @test (length(rows) == 0 ? 0 : length(rows[1]), length(rows)) == expected_sz
+    if file isa IO
+        seekstart(file)
     end
-    t = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
+    f = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...)
+    t = f |> columntable
     actual_sch = Tables.schema(t)
     @test Tuple(expected_sch.types) == actual_sch.types
     @test Tuple(expected_sch.names) == actual_sch.names
@@ -22,6 +22,16 @@ function testfile(file, kwargs, expected_sz, expected_sch, testfunc; dir=dir)
     else
         @test isequal(t, testfunc)
     end
+    if file isa IO
+        seekstart(file)
+    end
+    kwargs = Base.structdiff(kwargs, (types=[],))
+    types = haskey(kwargs, :select) ? Dict(nm=>T for (nm, T) in zip(f.names, f.types)) : f.types
+    rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); types=types, kwargs...) |> columntable
+    actual_sch = Tables.schema(rows)
+    @test Tuple(expected_sch.names) == actual_sch.names
+    @test Tuple(expected_sch.types) == actual_sch.types
+    @test (length(rows) == 0 ? 0 : length(rows[1]), length(rows)) == expected_sz
     return t
 end
 
