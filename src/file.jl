@@ -681,7 +681,7 @@ function detect(tape, buf, pos, len, options, row, col, typemap, pool, refs, las
     return pos + tlen, code
 end
 
-@inline function parseint!(T, tape, buf, pos, len, options, row, col, typecodes, poslens, intsentinels)
+function parseint!(T, tape, buf, pos, len, options, row, col, typecodes, poslens, intsentinels)
     x, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, options)
     if code > 0
         if !Parsers.sentinel(code)
@@ -805,7 +805,7 @@ end
     return pos + tlen, code
 end
 
-@inline function parsemissing!(buf, pos, len, options, row, col)
+function parsemissing!(buf, pos, len, options, row, col)
     x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
     if Parsers.invalidquotedfield(code)
         # this usually means parsing is borked because of an invalidly quoted field, hard error
@@ -814,7 +814,7 @@ end
     return pos + tlen, code
 end
 
-@inline function getref!(x::Dict, key::PointerString, lastrefs, col, code, options)
+function getref!(x::Dict, key::PointerString, lastrefs, col, code, options)
     if Parsers.escapedstring(code)
         key2 = unescape(key, options.e)
         index = Base.ht_keyindex2!(x, key2)
@@ -831,7 +831,7 @@ end
     end
 end
 
-@inline function parsepooled!(T, tape, buf, pos, len, options, row, col, rowsguess, pool, refs, lastrefs, typecodes, poslens)
+function parsepooled!(T, tape, buf, pos, len, options, row, col, rowsguess, pool, refs, lastrefs, typecodes, poslens)
     x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
     if Parsers.invalidquotedfield(code)
         # this usually means parsing is borked because of an invalidly quoted field, hard error
