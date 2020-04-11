@@ -243,10 +243,7 @@ function File(source;
         finalrows = rows
         debug && println("time for initial parsing to tape: $(Base.time() - t)")
     end
-    for i = 1:ncols
-        typecodes[i] &= ~USER
-    end
-    finaltypes = Type[TYPECODES[T] for T in typecodes]
+    finaltypes = Type[gettype(T) for T in typecodes]
     debug && println("types after parsing: $finaltypes, pool = $pool")
     finalrefs = Vector{Union{Vector{String}, Nothing}}(undef, ncols)
     if pool > 0.0
@@ -525,7 +522,7 @@ end
                     options.silencewarnings || notenoughcolumns(col, ncols, row)
                     for j = (col + 1):ncols
                         # put in dummy missing values on the tape for missing columns
-                        if !usermissing(T)
+                        if !usermissing(typecodes[j])
                             @inbounds tape = tapes[j]
                             T = typebits(typecodes[j])
                             tape[row] = T == POOL ? 0 : T == INT ? uint64(intsentinels[j]) : sentinelvalue(TYPECODES[T])

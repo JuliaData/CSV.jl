@@ -42,7 +42,6 @@ end
     # header can be a row number, range of rows, or actual string vector
     header,
     normalizenames,
-    # by default, data starts immediately after header or start of file
     datarow,
     skipto,
     footerskip,
@@ -183,7 +182,7 @@ end
     debug && println("byte position of data computed at: $datapos")
 
     # deduce initial column types for parsing based on whether any user-provided types were provided or not
-    T = type === nothing ? (streaming ? STRING : EMPTY) : (typecode(type) | USER)
+    T = type === nothing ? (streaming ? (STRING | MISSING) : EMPTY) : (typecode(type) | USER)
     if types isa Vector
         typecodes = TypeCode[typecode(T) | USER for T in types]
         categorical = categorical | any(x->x == CategoricalString{UInt32}, types)
@@ -197,6 +196,7 @@ end
         for i = 1:ncols
             T = typecodes[i]
             if pooled(T)
+                @warn "pooled column types not allowed in `CSV.Rows` (column number = $i)"
                 typecodes[i] = STRING | (T & MISSING)
             end
         end

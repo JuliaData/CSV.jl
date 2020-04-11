@@ -95,6 +95,8 @@ const TYPECODES = Dict(
     STRING | MISSING => Union{String, Missing}
 )
 
+gettype(x::TypeCode) = TYPECODES[x & ~USER]
+
 @inline function promote_typecode(T, S)
     if T == EMPTY || T == S || user(T) || (T & ~MISSING) == (S & ~MISSING)
         return T | S
