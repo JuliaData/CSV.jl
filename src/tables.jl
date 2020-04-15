@@ -135,8 +135,8 @@ function Base.copy(col::Union{Column{T, S}, Column2{T, S}}) where {T <: Union{St
     end
     if catg
         pool = CategoricalPool(refs)
-        levels!(pool, sort(levels(pool)))
         A = CategoricalArray{T, 1}(values, pool)
+        levels!(A, sort(levels(A)))
     else
         A = PooledArray(PooledArrays.RefArray(values), refs)
     end

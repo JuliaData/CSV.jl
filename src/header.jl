@@ -83,7 +83,7 @@ end
         throw(ArgumentError("\"$source\" is not a valid file"))
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
     if type !== nothing && typecode(type) == EMPTY
-        throw(ArgumentError("$type isn't supported in the `type` keyword argument; must be one of: `Int64`, `Float64`, `Date`, `DateTime`, `Bool`, `Missing`, `PooledString`, `CategoricalString{UInt32}`, or `String`"))
+        throw(ArgumentError("$type isn't supported in the `type` keyword argument; must be one of: `Int64`, `Float64`, `Date`, `DateTime`, `Bool`, `Missing`, `PooledString`, `CategoricalValue{String, UInt32}`, or `String`"))
     elseif types !== nothing && any(x->typecode(x) == EMPTY, types isa AbstractDict ? values(types) : types)
         T = nothing
         for x in (types isa AbstractDict ? values(types) : types)
@@ -92,7 +92,7 @@ end
                 break
             end
         end
-        throw(ArgumentError("unsupported type $T in the `types` keyword argument; must be one of: `Int64`, `Float64`, `Date`, `DateTime`, `Bool`, `Missing`, `PooledString`, `CategoricalString{UInt32}`, or `String`"))
+        throw(ArgumentError("unsupported type $T in the `types` keyword argument; must be one of: `Int64`, `Float64`, `Date`, `DateTime`, `Bool`, `Missing`, `PooledString`, `CategoricalValue{String, UInt32}`, or `String`"))
     end
     checkvaliddelim(delim)
     ignorerepeated && delim === nothing && throw(ArgumentError("auto-delimiter detection not supported when `ignorerepeated=true`; please provide delimiter like `delim=','`"))
@@ -185,10 +185,10 @@ end
     T = type === nothing ? (streaming ? (STRING | MISSING) : EMPTY) : (typecode(type) | USER)
     if types isa Vector
         typecodes = TypeCode[typecode(T) | USER for T in types]
-        categorical = categorical | any(x->x == CategoricalString{UInt32}, types)
+        categorical = categorical | any(x->x == CategoricalValue{String, UInt32}, types)
     elseif types isa AbstractDict
         typecodes = initialtypes(T, types, names)
-        categorical = categorical | any(x->x == CategoricalString{UInt32}, values(types))
+        categorical = categorical | any(x->x == CategoricalValue{String, UInt32}, values(types))
     else
         typecodes = TypeCode[T for _ = 1:ncols]
     end
