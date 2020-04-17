@@ -163,7 +163,7 @@ const EMPTY_LASTREFS = UInt64[]
     tapes = r.reusebuffer ? r.tapes : [Vector{UInt64}(undef, usermissing(r.typecodes[i]) ? 0 : 1) for i = 1:r.cols]
     pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, tapes, EMPTY_POSLENS, r.buf, pos, len, r.limit, r.positions, 0.0, EMPTY_REFS, EMPTY_LASTREFS, 0, r.typecodes, r.intsentinels, false, r.options, r.coloptions)
     intsentinels = r.reusebuffer ? r.intsentinels : copy(r.intsentinels)
-    return Row2(r.names, r.types, r.columnmap, r.typecodes, r.lookup, tapes, r.buf, r.e, r.options, intsentinels), (pos, len, row + 1)
+    return Row2(r.names, r.types, r.columnmap, r.typecodes, r.lookup, tapes, r.buf, r.e, r.options, r.coloptions, intsentinels), (pos, len, row + 1)
 end
 
 struct Row2{O} <: Tables.AbstractRow
