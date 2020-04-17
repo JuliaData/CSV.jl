@@ -1,3 +1,6 @@
+# when iterating through rows that are views into `Column2`s,
+# it's efficient to keep track of which column chunk we're iterating
+# through, hence ThreadedIterationState
 mutable struct ThreadedIterationState
     row::Int64
     array_index::Int64
@@ -6,6 +9,8 @@ mutable struct ThreadedIterationState
     array_lens::Vector{Int64}
 end
 
+# normal single-threaded Column with a single `tape` that holds
+# our results from parsing
 struct Column{T, P} <: AbstractVector{T}
     tape::Vector{UInt64}
     len::Int
@@ -16,6 +21,8 @@ struct Column{T, P} <: AbstractVector{T}
     sentinel::UInt64
 end
 
+# Column2 holds a `Column` per thread that was parsed
+# each `Column` has a tape for a chunk of the file
 struct Column2{T, P} <: AbstractVector{T}
     columns::Vector{Column{T, P}}
     len::Int
@@ -31,6 +38,7 @@ Base.IndexStyle(::Type{<:Column2}) = Base.IndexLinear()
 
 # getindex definitions in tables.jl
 
+# a Row "view" type for iterating `CSV.File`
 struct Row{threaded} <: Tables.AbstractRow
     names::Vector{Symbol}
     columns::Vector{AbstractVector}
@@ -49,6 +57,7 @@ getarrayi(r::Row) = getfield(r, :array_i)
 
 Tables.columnnames(r::Row) = getnames(r)
 
+# main structure when parsing an entire file and inferring column types
 struct File{threaded} <: AbstractVector{Row{threaded}}
     name::String
     names::Vector{Symbol}
