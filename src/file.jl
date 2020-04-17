@@ -629,7 +629,6 @@ function detect(tape, buf, pos, len, options, row, col, typemap, pool, refs, las
         try
             # use user-provided dateformat
             DT = timetype(options.dateformat)
-            @show DT
             dt, code, vpos, vlen, tlen = Parsers.xparse(DT, buf, pos, len, options)
             if Parsers.ok(code)
                 @inbounds setposlen!(poslens[col], row, code, vpos, vlen)

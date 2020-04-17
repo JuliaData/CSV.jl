@@ -636,13 +636,16 @@ testfiles = [
         NamedTuple{(:state, :positive, :negative, :pending, :hospitalized, :death, :dateChecked), Tuple{String, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, String}},
         nothing
     ),
+];
+
+@static if VERSION >= v"1.3-DEV"
     # https://github.com/JuliaData/CSV.jl/issues/597
-    ("ampm.csv", (dateformat="m/d/yyyy I:M:S p",),
+    push!(testfiles, ("ampm.csv", (dateformat="m/d/yyyy I:M:S p",),
         (2, 16),
         NamedTuple{(:ID, :INTERLOCK_NUMBER, :INTERLOCK_DESCRIPTION, :TYPE, :CREATE_DATE, :MODIFY_DATE, :USERNAME, :UNIT, :AREA, :PURPOSE, :PID, :LOCATION, :FUNC_DATE, :FUNC_BY, :TECHNICAL_DESCRIPTION, :types), Tuple{Int64, Union{Missing, String}, String, Missing, DateTime, DateTime, String, String, String, String, Missing, Missing, DateTime, Missing, String, String}},
         x -> @test x.CREATE_DATE == [DateTime("2012-02-09T00:00:00"), DateTime("1998-07-22T16:37:01")]
-    ),
-];
+    ))
+end
 
 for test in testfiles
     testfile(test...)
