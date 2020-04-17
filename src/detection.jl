@@ -1,3 +1,4 @@
+# figure out at what byte position the header row(s) start and at what byte position the data starts
 function detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, header, datarow)
     headerpos = 0
     datapos = 1
@@ -23,6 +24,10 @@ function detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, h
     return headerpos, datapos
 end
 
+# this function scans a few rows and tracks the # of bytes and characters encountered
+# it tries to guess a file's delimiter by which character showed up w/ the same frequency
+# over all rows scanned; we use the average # of bytes per row w/ total length of the file
+# to guess the total # of rows in the file
 function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, delim, cmt, ignoreemptylines)
     nbytes = 0
     lastbytenewline = false
@@ -148,6 +153,17 @@ function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, delim
     return d, rowsguess
 end
 
+struct ByteValueCounter
+    counts::Vector{Int64}
+    ByteValueCounter() = new(zeros(Int64, 256))
+end
+
+function incr!(c::ByteValueCounter, b::UInt8)
+    @inbounds c.counts[b] += 1
+    return
+end
+
+# given the various header and normalization options, figure out column names for a file
 function detectcolumnnames(buf, headerpos, datapos, len, options, header, normalizenames)
     if header isa Union{AbstractVector{Symbol}, AbstractVector{String}}
         fields, pos = readsplitline(buf, datapos, len, options)
@@ -176,16 +192,7 @@ function detectcolumnnames(buf, headerpos, datapos, len, options, header, normal
     return makeunique([normalizenames ? normalizename(x) : Symbol(x) for x in names])
 end
 
-struct ByteValueCounter
-    counts::Vector{Int64}
-    ByteValueCounter() = new(zeros(Int64, 256))
-end
-
-function incr!(c::ByteValueCounter, b::UInt8)
-    @inbounds c.counts[b] += 1
-    return
-end
-
+# efficiently skip from `cur` to `dest` row
 function skiptorow(buf, pos, len, oq, eq, cq, cur, dest)
     cur >= dest && return pos
     for _ = 1:(dest - cur)
@@ -220,6 +227,7 @@ function skiptorow(buf, pos, len, oq, eq, cq, cur, dest)
     return pos
 end
 
+# read a single row, splitting cells on delimiters; used for parsing column names from header row(s)
 function readsplitline(buf, pos, len, options::Parsers.Options{ignorerepeated}) where {ignorerepeated}
     vals = String[]
     (pos > len || pos == 0) && return vals, pos
@@ -293,6 +301,11 @@ function checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines)
     return pos
 end
 
+# here we try to "chunk" up a file; given the equally spaced out byte positions in `ranges`, we start at each
+# byte position and start parsing until we find the start of the next row; if the next rows all verify w/ the
+# right # of expected columns then we move on to the next file chunk byte position. If we fail, we start over
+# at the byte position, assuming we were in the a quoted field (and encountered a newline inside the quoted
+# field the first time through)
 function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, ranges, ncols) where {ignorerepeated}
     for i = 2:(length(ranges) - 1)
         pos = ranges[i]

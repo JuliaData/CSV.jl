@@ -1,3 +1,7 @@
+# structure for iterating over a csv file
+# no automatic type inference is done, but types are allowed to be passed
+# for as many columns as desired; `CSV.detect(row, i)` can also be used to
+# use the same inference logic used in `CSV.File` for determing a cell's typed value
 struct Rows{transpose, O, IO}
     name::String
     names::Vector{Symbol} # only includes "select"ed columns
