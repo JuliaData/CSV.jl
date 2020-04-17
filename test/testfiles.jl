@@ -26,7 +26,7 @@ function testfile(file, kwargs, expected_sz, expected_sch, testfunc; dir=dir)
         seekstart(file)
     end
     kwargs = Base.structdiff(kwargs, (types=[],))
-    types = haskey(kwargs, :select) ? Dict(nm=>T for (nm, T) in zip(f.names, f.types)) : f.types
+    types = haskey(kwargs, :select) ? Dict(nm=>T for (nm, T) in zip(f.names, getfield(f, :types))) : getfield(f, :types)
     rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); types=types, kwargs...) |> columntable
     actual_sch = Tables.schema(rows)
     @test Tuple(expected_sch.names) == actual_sch.names
@@ -635,7 +635,13 @@ testfiles = [
         (1485, 7),
         NamedTuple{(:state, :positive, :negative, :pending, :hospitalized, :death, :dateChecked), Tuple{String, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, String}},
         nothing
-    )
+    ),
+    # https://github.com/JuliaData/CSV.jl/issues/597
+    ("ampm.csv", (dateformat="m/d/yyyy I:M:S p",),
+        (2, 16),
+        NamedTuple{(:ID, :INTERLOCK_NUMBER, :INTERLOCK_DESCRIPTION, :TYPE, :CREATE_DATE, :MODIFY_DATE, :USERNAME, :UNIT, :AREA, :PURPOSE, :PID, :LOCATION, :FUNC_DATE, :FUNC_BY, :TECHNICAL_DESCRIPTION, :types), Tuple{Int64, Union{Missing, String}, String, Missing, DateTime, DateTime, String, String, String, String, Missing, Missing, DateTime, Missing, String, String}},
+        x -> @test x.CREATE_DATE == [DateTime("2012-02-09T00:00:00"), DateTime("1998-07-22T16:37:01")]
+    ),
 ];
 
 for test in testfiles
