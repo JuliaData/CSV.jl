@@ -193,7 +193,7 @@ end
     elseif dateformats isa AbstractDict{Int}
         coloptions = [haskey(dateformats, i) ? Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformats[i], ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings) : options for i = 1:ncols]
     end
-    debug && println("column options generated as: $coloptions")
+    debug && println("column options generated as: $(something(coloptions, ""))")
 
     # deduce initial column types for parsing based on whether any user-provided types were provided or not
     T = type === nothing ? (streaming ? (STRING | MISSING) : EMPTY) : (typecode(type) | USER)
