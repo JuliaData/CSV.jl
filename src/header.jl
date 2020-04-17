@@ -8,6 +8,7 @@ struct Header{transpose, O, IO}
     len::Int
     datapos::Int64
     options::O # Parsers.Options
+    coloptions::Union{Nothing, Vector{Parsers.Options}}
     positions::Vector{Int64}
     typecodes::Vector{TypeCode}
     todrop::Vector{Int}
@@ -63,6 +64,7 @@ end
     closequotechar,
     escapechar,
     dateformat,
+    dateformats,
     decimal,
     truestrings,
     falsestrings,
@@ -181,6 +183,18 @@ end
     debug && println("column names detected: $names")
     debug && println("byte position of data computed at: $datapos")
 
+    # generate column options if applicable
+    if dateformats === nothing || isempty(dateformats)
+        coloptions = nothing
+    elseif dateformats isa AbstractDict{String}
+        coloptions = [haskey(dateformats, string(nm)) ? Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformats[string(nm)], ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings) : options for nm in names]
+    elseif dateformats isa AbstractDict{Symbol}
+        coloptions = [haskey(dateformats, nm) ? Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformats[nm], ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings) : options for nm in names]
+    elseif dateformats isa AbstractDict{Int}
+        coloptions = [haskey(dateformats, i) ? Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformats[i], ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings) : options for i = 1:ncols]
+    end
+    debug && println("column options generated as: $coloptions")
+
     # deduce initial column types for parsing based on whether any user-provided types were provided or not
     T = type === nothing ? (streaming ? (STRING | MISSING) : EMPTY) : (typecode(type) | USER)
     if types isa Vector
@@ -263,6 +277,7 @@ end
         len,
         datapos,
         options,
+        coloptions,
         positions,
         typecodes,
         todrop,
