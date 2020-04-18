@@ -192,6 +192,7 @@ function File(source;
     closequotechar::Union{UInt8, Char, Nothing}=nothing,
     escapechar::Union{UInt8, Char}='"',
     dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
+    dateformats::Union{AbstractDict, Nothing}=nothing,
     decimal::Union{UInt8, Char}=UInt8('.'),
     truestrings::Union{Vector{String}, Nothing}=nothing,
     falsestrings::Union{Vector{String}, Nothing}=nothing,
@@ -206,8 +207,8 @@ function File(source;
     debug::Bool=false,
     parsingdebug::Bool=false,)
     
-    h = Header(source, header, normalizenames, datarow, skipto, footerskip, limit, transpose, comment, use_mmap, ignoreemptylines, threaded, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, strict, silencewarnings, debug, parsingdebug, false)
-    rowsguess, ncols, buf, len, datapos, options, positions, typecodes, pool, categorical = h.rowsguess, h.cols, h.buf, h.len, h.datapos, h.options, h.positions, h.typecodes, h.pool, h.categorical
+    h = Header(source, header, normalizenames, datarow, skipto, footerskip, limit, transpose, comment, use_mmap, ignoreemptylines, threaded, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, strict, silencewarnings, debug, parsingdebug, false)
+    rowsguess, ncols, buf, len, datapos, options, coloptions, positions, typecodes, pool, categorical = h.rowsguess, h.cols, h.buf, h.len, h.datapos, h.options, h.coloptions, h.positions, h.typecodes, h.pool, h.categorical
     # determine if we can use threads while parsing
     if threaded === nothing && VERSION >= v"1.3-DEV" && Threads.nthreads() > 1 && !transpose && limit == typemax(Int64) && rowsguess > Threads.nthreads() && (rowsguess * ncols) >= 5_000
         threaded = true
@@ -240,7 +241,7 @@ function File(source;
     # if a column type if promoted to string, the values are stored in the corresponding `tape` instead of `poslen`
     if threaded === true
         # multithread
-        rows, tapes, refs, typecodes, intsentinels = multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool, ncols, typemap, limit, debug)
+        rows, tapes, refs, typecodes, intsentinels = multithreadparse(typecodes, buf, datapos, len, options, coloptions, rowsguess, pool, ncols, typemap, limit, debug)
         finalrows = sum(rows)
     else
         intsentinels = fill(INT_SENTINEL, ncols)
@@ -248,7 +249,7 @@ function File(source;
         refs = Vector{Dict{String, UInt64}}(undef, ncols)
         lastrefs = zeros(UInt64, ncols)
         t = Base.time()
-        rows, tapes, poslens = parsetape(Val(transpose), ncols, gettypecodes(typemap), tapes, poslens, buf, datapos, len, limit, positions, pool, refs, lastrefs, rowsguess, typecodes, intsentinels, debug, options)
+        rows, tapes, poslens = parsetape(Val(transpose), ncols, gettypecodes(typemap), tapes, poslens, buf, datapos, len, limit, positions, pool, refs, lastrefs, rowsguess, typecodes, intsentinels, debug, options, coloptions)
         finalrows = rows
         debug && println("time for initial parsing to tape: $(Base.time() - t)")
     end
@@ -283,7 +284,7 @@ function File(source;
     return File{something(threaded, false)}(h.name, h.names, finaltypes, finalrows, ncols, columns, lookup)
 end
 
-function multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool, ncols, typemap, limit, debug)
+function multithreadparse(typecodes, buf, datapos, len, options, coloptions, rowsguess, pool, ncols, typemap, limit, debug)
     N = Threads.nthreads()
     chunksize = div(len - datapos, N)
     ranges = [datapos, (datapos + chunksize * i for i = 1:N)...]
@@ -309,7 +310,7 @@ function multithreadparse(typecodes, buf, datapos, len, options, rowsguess, pool
             tl_intsentinels = fill(INT_SENTINEL, ncols)
             tl_datapos = ranges[i]
             tl_len = ranges[i + 1] - (i != N)
-            tl_rows, tl_tapes, tl_poslens = parsetape(Val(false), ncols, gettypecodes(typemap), tl_tapes, tl_poslens, buf, tl_datapos, tl_len, limit, Int64[], pool, tl_refs, tl_lastrefs, rowchunkguess, perthreadtypecodes[i], tl_intsentinels, debug, options)
+            tl_rows, tl_tapes, tl_poslens = parsetape(Val(false), ncols, gettypecodes(typemap), tl_tapes, tl_poslens, buf, tl_datapos, tl_len, limit, Int64[], pool, tl_refs, tl_lastrefs, rowchunkguess, perthreadtypecodes[i], tl_intsentinels, debug, options, coloptions)
             debug && println("thread = $(Threads.threadid()): time for parsing: $(Base.time() - tt)")
             perthreadrows[i] = tl_rows
             perthreadtapes[i] = tl_tapes
@@ -445,13 +446,13 @@ end # @static if VERSION >= v"1.3-DEV"
     return perthreadrows, perthreadtapes, refs, typecodes, intsentinels
 end
 
-function parsetape(TR::Val{transpose}, ncols, typemap, tapes, poslens, buf, pos, len, limit, positions, pool, refs, lastrefs, rowsguess, typecodes, intsentinels, debug, options::Parsers.Options{ignorerepeated}) where {transpose, ignorerepeated}
+function parsetape(TR::Val{transpose}, ncols, typemap, tapes, poslens, buf, pos, len, limit, positions, pool, refs, lastrefs, rowsguess, typecodes, intsentinels, debug, options::Parsers.Options{ignorerepeated}, coloptions) where {transpose, ignorerepeated}
     row = 0
     startpos = pos
     if pos <= len && len > 0
         while row < limit
             row += 1
-            pos = parserow(row, TR, ncols, typemap, tapes, poslens, buf, pos, len, limit, positions, pool, refs, lastrefs, rowsguess, typecodes, intsentinels, debug, options)
+            pos = parserow(row, TR, ncols, typemap, tapes, poslens, buf, pos, len, limit, positions, pool, refs, lastrefs, rowsguess, typecodes, intsentinels, debug, options, coloptions)
             pos > len && break
             # if our initial row estimate was too few, we need to reallocate our tapes/poslens to read the rest of the file
             if row + 1 > rowsguess
@@ -492,7 +493,7 @@ end
 @noinline warning(T, buf, pos, len, code, row, col) = println("thread = $(Threads.threadid()) warning: error parsing $T on row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))")
 @noinline fatalerror(buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) fatal error, encountered an invalidly quoted field while parsing on row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code)), check your `quotechar` arguments or manually fix the field in the file itself"))
 
-@inline function parserow(row, ::Val{transpose}, ncols, typemap, tapes, poslens, buf, pos, len, limit, positions, pool, refs, lastrefs, rowsguess, typecodes, intsentinels, debug, options::Parsers.Options{ignorerepeated}) where {transpose, ignorerepeated}
+@inline function parserow(row, ::Val{transpose}, ncols, typemap, tapes, poslens, buf, pos, len, limit, positions, pool, refs, lastrefs, rowsguess, typecodes, intsentinels, debug, options::Parsers.Options{ignorerepeated}, coloptions) where {transpose, ignorerepeated}
     for col = 1:ncols
         if transpose
             @inbounds pos = positions[col]
@@ -500,28 +501,29 @@ end
         @inbounds T = typecodes[col]
         @inbounds tape = tapes[col]
         type = typebits(T)
+        opts = coloptions === nothing ? options : coloptions[col]
         if usermissing(T)
-            pos, code = parsemissing!(buf, pos, len, options, row, col)
+            pos, code = parsemissing!(buf, pos, len, opts, row, col)
         elseif type === EMPTY
-            pos, code = detect(tape, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, intsentinels, debug, typecodes, poslens)
+            pos, code = detect(tape, buf, pos, len, opts, row, col, typemap, pool, refs, lastrefs, intsentinels, debug, typecodes, poslens)
         elseif type === MISSINGTYPE
-            pos, code = detect(tape, buf, pos, len, options, row, col, typemap, pool, refs, lastrefs, intsentinels, debug, typecodes, poslens)
+            pos, code = detect(tape, buf, pos, len, opts, row, col, typemap, pool, refs, lastrefs, intsentinels, debug, typecodes, poslens)
         elseif type === INT
-            pos, code = parseint!(T, tape, buf, pos, len, options, row, col, typecodes, poslens, intsentinels)
+            pos, code = parseint!(T, tape, buf, pos, len, opts, row, col, typecodes, poslens, intsentinels)
         elseif type === FLOAT
-            pos, code = parsevalue!(Float64, T, tape, buf, pos, len, options, row, col, typecodes, poslens)
+            pos, code = parsevalue!(Float64, T, tape, buf, pos, len, opts, row, col, typecodes, poslens)
         elseif type === DATE
-            pos, code = parsevalue!(Date, T, tape, buf, pos, len, options, row, col, typecodes, poslens)
+            pos, code = parsevalue!(Date, T, tape, buf, pos, len, opts, row, col, typecodes, poslens)
         elseif type === DATETIME
-            pos, code = parsevalue!(DateTime, T, tape, buf, pos, len, options, row, col, typecodes, poslens)
+            pos, code = parsevalue!(DateTime, T, tape, buf, pos, len, opts, row, col, typecodes, poslens)
         elseif type === TIME
-            pos, code = parsevalue!(Time, T, tape, buf, pos, len, options, row, col, typecodes, poslens)
+            pos, code = parsevalue!(Time, T, tape, buf, pos, len, opts, row, col, typecodes, poslens)
         elseif type === BOOL
-            pos, code = parsevalue!(Bool, T, tape, buf, pos, len, options, row, col, typecodes, poslens)
+            pos, code = parsevalue!(Bool, T, tape, buf, pos, len, opts, row, col, typecodes, poslens)
         elseif type === POOL
-            pos, code = parsepooled!(T, tape, buf, pos, len, options, row, col, rowsguess, pool, refs, lastrefs, typecodes, poslens)
+            pos, code = parsepooled!(T, tape, buf, pos, len, opts, row, col, rowsguess, pool, refs, lastrefs, typecodes, poslens)
         else # STRING
-            pos, code = parsestring!(T, tape, buf, pos, len, options, row, col, typecodes)
+            pos, code = parsestring!(T, tape, buf, pos, len, opts, row, col, typecodes)
         end
         if transpose
             @inbounds positions[col] = pos

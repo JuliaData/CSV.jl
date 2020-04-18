@@ -15,6 +15,7 @@ struct Rows{transpose, O, IO}
     len::Int
     limit::Int64
     options::O # Parsers.Options
+    coloptions::Union{Nothing, Vector{Parsers.Options}}
     positions::Vector{Int64}
     reusebuffer::Bool
     tapes::Vector{Vector{UInt64}}
@@ -98,6 +99,7 @@ function Rows(source;
     closequotechar::Union{UInt8, Char, Nothing}=nothing,
     escapechar::Union{UInt8, Char}='"',
     dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
+    dateformats::Union{AbstractDict, Nothing}=nothing,
     decimal::Union{UInt8, Char}=UInt8('.'),
     truestrings::Union{Vector{String}, Nothing}=nothing,
     falsestrings::Union{Vector{String}, Nothing}=nothing,
@@ -114,7 +116,7 @@ function Rows(source;
     reusebuffer::Bool=false,
     kw...)
 
-    h = Header(source, header, normalizenames, datarow, skipto, footerskip, limit, transpose, comment, use_mmap, ignoreemptylines, false, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, strict, silencewarnings, debug, parsingdebug, true)
+    h = Header(source, header, normalizenames, datarow, skipto, footerskip, limit, transpose, comment, use_mmap, ignoreemptylines, false, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, strict, silencewarnings, debug, parsingdebug, true)
     tapes = [Vector{UInt64}(undef, usermissing(h.typecodes[i]) ? 0 : 1) for i = 1:h.cols]
     types = Type[gettype(T) for T in h.typecodes]
     columnmap = [i for i = 1:h.cols]
@@ -135,6 +137,7 @@ function Rows(source;
         h.len,
         limit,
         h.options,
+        h.coloptions,
         h.positions,
         reusebuffer,
         tapes,
@@ -158,9 +161,9 @@ const EMPTY_LASTREFS = UInt64[]
     (pos > len || row > r.limit) && return nothing
     pos > len && return nothing
     tapes = r.reusebuffer ? r.tapes : [Vector{UInt64}(undef, usermissing(r.typecodes[i]) ? 0 : 1) for i = 1:r.cols]
-    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, tapes, EMPTY_POSLENS, r.buf, pos, len, r.limit, r.positions, 0.0, EMPTY_REFS, EMPTY_LASTREFS, 0, r.typecodes, r.intsentinels, false, r.options)
+    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, tapes, EMPTY_POSLENS, r.buf, pos, len, r.limit, r.positions, 0.0, EMPTY_REFS, EMPTY_LASTREFS, 0, r.typecodes, r.intsentinels, false, r.options, r.coloptions)
     intsentinels = r.reusebuffer ? r.intsentinels : copy(r.intsentinels)
-    return Row2(r.names, r.types, r.columnmap, r.typecodes, r.lookup, tapes, r.buf, r.e, r.options, intsentinels), (pos, len, row + 1)
+    return Row2(r.names, r.types, r.columnmap, r.typecodes, r.lookup, tapes, r.buf, r.e, r.options, r.coloptions, intsentinels), (pos, len, row + 1)
 end
 
 struct Row2{O} <: Tables.AbstractRow
@@ -173,6 +176,7 @@ struct Row2{O} <: Tables.AbstractRow
     buf::Vector{UInt8}
     e::UInt8
     options::O
+    coloptions::Union{Nothing, Vector{Parsers.Options}}
     intsentinels::Vector{Int64}
 end
 
@@ -185,6 +189,7 @@ gettapes(r::Row2) = getfield(r, :tapes)
 getbuf(r::Row2) = getfield(r, :buf)
 gete(r::Row2) = getfield(r, :e)
 getoptions(r::Row2) = getfield(r, :options)
+getcoloptions(r::Row2) = getfield(r, :coloptions)
 getintsentinels(r::Row2) = getfield(r, :intsentinels)
 
 Tables.columnnames(r::Row2) = getnames(r)
@@ -247,7 +252,9 @@ Base.@propagate_inbounds function Parsers.parse(::Type{T}, r::Row2, i::Int) wher
     @inbounds offlen = gettapes(r)[j][1]
     missingvalue(offlen) && return missing
     pos = getpos(offlen)
-    x, code, vpos, vlen, tlen = Parsers.xparse(T, getbuf(r), pos, pos + getlen(offlen), getoptions(r))
+    colopts = getcoloptions(r)
+    opts = colopts === nothing ? getoptions(r) : colopts[j]
+    x, code, vpos, vlen, tlen = Parsers.xparse(T, getbuf(r), pos, pos + getlen(offlen), opts)
     return Parsers.ok(code) ? x : missing
 end
 
@@ -259,7 +266,9 @@ Base.@propagate_inbounds function detect(r::Row2, i::Int)
     @inbounds offlen = gettapes(r)[j][1]
     missingvalue(offlen) && return missing
     pos = getpos(offlen)
-    x = detect(getbuf(r), pos, pos + getlen(offlen) - 1, getoptions(r))
+    colopts = getcoloptions(r)
+    opts = colopts === nothing ? getoptions(r) : colopts[j]
+    x = detect(getbuf(r), pos, pos + getlen(offlen) - 1, opts)
     return x === nothing ? r[i] : x
 end
 
