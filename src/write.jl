@@ -78,7 +78,9 @@ function write(sch::Tables.Schema{names}, rows, file, opts;
     pos = 1
     with(file, append) do io
         Base.@_inline_meta
-        ! append && opts.bom && (pos = writebom(buf, pos, len) )
+        if !append && opts.bom
+            pos = writebom(buf, pos, len)
+        end
         if writeheader
             pos = writenames(buf, pos, len, io, colnames, cols, opts)
         end
@@ -116,7 +118,9 @@ function write(::Nothing, rows, file, opts;
     sch = Tables.Schema(names, nothing)
     cols = length(names)
     with(file, append) do io
-        ! append && opts.bom && (pos = writebom(buf, pos, len) )
+        if !append && opts.bom
+            pos = writebom(buf, pos, len)
+        end
         if writeheader
             pos = writenames(buf, pos, len, io, names, cols, opts)
         end
@@ -164,7 +168,7 @@ function writebom(buf, pos, len)
     @inbounds buf[pos] = 0xEF
     @inbounds buf[pos+1] = 0xBB
     @inbounds buf[pos+2] = 0xBF
-    pos += 3
+    return pos + 3
 end
 
 function writedelimnewline(buf, pos, len, io, x::UInt8)
@@ -250,18 +254,14 @@ function writecell(buf, pos, len, io, x::Bool, opts)
     return pos
 end
 
-function writecell(buf, pos, len, io, y::Integer, opts)
-    neg = false
-    x = y
+function writecell(buf, pos, len, io, x::Integer, opts)
     if x < 0
-        neg = true
         x *= -1
-    end
-    if neg
+        @check 1
         @inbounds buf[pos] = UInt8('-')
         pos += 1
     end
-    n = i = ndigits(x, base=10, pad=1)
+    n = i = ndigits(x)
     @check i
     while i > 0
         @inbounds buf[pos + i - 1] = 48 + rem(x, 10)
