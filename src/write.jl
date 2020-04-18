@@ -41,6 +41,62 @@ tup(x::AbstractString) = Tuple(codeunits(x))
 tlen(::UInt8) = 1
 tlen(::NTuple{N, UInt8}) where {N} = N
 
+struct RowWriter{T, S, O}
+    source::T
+    schema::S
+    options::O
+    buf::Vector{UInt8}
+end
+
+function RowWriter(table;
+    delim::Union{Char, String}=',',
+    quotechar::Char='"',
+    openquotechar::Union{Char, Nothing}=nothing,
+    closequotechar::Union{Char, Nothing}=nothing,
+    escapechar::Char='"',
+    newline::Union{Char, String}='\n',
+    decimal::Char='.',
+    dateformat=nothing,
+    quotestrings::Bool=false,
+    missingstring::AbstractString="",
+    transform::Function=(col,val) -> val,
+    bom::Bool=false,
+    bufsize::Int=2^22)
+    checkvaliddelim(delim)
+    (isascii(something(openquotechar, quotechar)) && isascii(something(closequotechar, quotechar)) && isascii(escapechar)) || throw(ArgumentError("quote and escape characters must be ASCII characters "))
+    oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
+    e = escapechar % UInt8
+    opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring), transform, bom)
+    source = Tables.rows(table)
+    sch = Tables.schema(source)
+    return RowWriter(source, sch, opts, Vector{UInt8}(undef, bufsize))
+end
+
+struct DummyIO <: IO end
+
+# first iteration produces column names
+function Base.iterate(r::RowWriter)
+    state = iterate(r.source)
+    state === nothing && return nothing
+    row, st = state
+    colnames = Tables.columnnames(row)
+    pos = 1
+    if r.options.bom
+        pos = writebom(r.buf, pos, length(r.buf))
+    end
+    cols = length(colnames)
+    pos = writenames(r.buf, 1, length(r.buf), DummyIO(), colnames, cols, r.options)
+    return unsafe_string(pointer(r.buf), pos - 1), (state, cols)
+end
+
+function Base.iterate(r::RowWriter, (state, cols))
+    state === nothing && return nothing
+    row, st = state
+    ref = Ref{Int}(1)
+    writerow(r.buf, ref, length(r.buf), DummyIO(), r.schema, row, cols, r.options)
+    return unsafe_string(pointer(r.buf), ref[] - 1), (iterate(r.source, st), cols)
+end
+
 write(file; kwargs...) = x->write(file, x; kwargs...)
 function write(file, itr;
     delim::Union{Char, String}=',',
