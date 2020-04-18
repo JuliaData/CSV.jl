@@ -253,9 +253,9 @@ function timetype(df::Dates.DateFormat)
     time = false
     for token in df.tokens
         T = typeof(token)
-        if T == Dates.DatePart{'H'}
+        if T in (Dates.DatePart{'H'}, Dates.DatePart{'I'}, Dates.DatePart{'M'}, Dates.DatePart{'S'}, Dates.DatePart{'s'})
             time = true
-        elseif T == Dates.DatePart{'y'} || T == Dates.DatePart{'Y'}
+        elseif T in (Dates.DatePart{'y'}, Dates.DatePart{'Y'}, Dates.DatePart{'m'}, Dates.DatePart{'d'}, Dates.DatePart{'u'}, Dates.DatePart{'U'})
             date = true
         end
     end
