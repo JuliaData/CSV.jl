@@ -88,6 +88,24 @@ Base.IndexStyle(::Type{File}) = Base.IndexLinear()
 Base.eltype(f::File{threaded}) where {threaded} = Row{threaded}
 Base.size(f::File) = (getrows(f),)
 
+chunks(f::File{false}) = [f]
+
+function chunks(f::File{true})
+    columns = getcolumns(f)
+    isempty(columns) && return [f]
+    col = columns[1]
+    N = length(col.columns)
+    return [CSV.File{false}(
+        f.name,
+        f.names,
+        f.types,
+        col.columns[i].len,
+        f.cols,
+        [columns[c].columns[i] for c = 1:f.cols],
+        f.lookup
+    ) for i = 1:N]
+end
+
 function allocate(rowsguess, ncols, typecodes)
     tapes = Vector{UInt64}[Vector{UInt64}(undef, usermissing(typecodes[i]) ? 0 : rowsguess) for i = 1:ncols]
     poslens = Vector{Vector{UInt64}}(undef, ncols)
