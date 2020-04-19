@@ -3,6 +3,7 @@
     table |> CSV.write(file; kwargs...) => file
 
 Write a [Tables.jl interface input](https://github.com/JuliaData/Tables.jl) to a csv file, given as an `IO` argument or `String`/FilePaths.jl type representing the file name to write to.
+Alternatively, `CSV.RowWriter` creates a row iterator, producing a csv-formatted string for each row in an input table.
 
 Supported keyword arguments include:
 * `delim::Union{Char, String}=','`: a character or string to print out as the file's delimiter
@@ -41,6 +42,26 @@ tup(x::AbstractString) = Tuple(codeunits(x))
 tlen(::UInt8) = 1
 tlen(::NTuple{N, UInt8}) where {N} = N
 
+"""
+    CSV.RowWriter(table; kwargs...)
+
+Creates an iterator that produces csv-formatted strings for each row in the input table.
+
+Supported keyword arguments include:
+* `bufsize::Int=2^22`: The length of the buffer to use when writing each csv-formatted row; default 4MB; if a row is larger than the `bufsize` an error is thrown
+* `delim::Union{Char, String}=','`: a character or string to print out as the file's delimiter
+* `quotechar::Char='"'`: ascii character to use for quoting text fields that may contain delimiters or newlines
+* `openquotechar::Char`: instead of `quotechar`, use `openquotechar` and `closequotechar` to support different starting and ending quote characters
+* `escapechar::Char='"'`: ascii character used to escape quote characters in a text field
+* `missingstring::String=""`: string to print for `missing` values
+* `dateformat=Dates.default_format(T)`: the date format string to use for printing out `Date` & `DateTime` columns
+* `header`: pass a list of column names (Symbols or Strings) to use instead of the column names of the input table
+* `newline='\\n'`: character or string to use to separate rows (lines in the csv file)
+* `quotestrings=false`: whether to force all strings to be quoted or not
+* `decimal='.'`: character to use as the decimal point when writing floating point numbers
+* `transform=(col,val)->val`: a function that is applied to every cell e.g. we can transform all `nothing` values to `missing` using `(col, val) -> something(val, missing)`
+* `bom=false`: whether to write a UTF-8 BOM header (0xEF 0xBB 0xBF) or not
+"""
 struct RowWriter{T, S, O}
     source::T
     schema::S
@@ -80,6 +101,7 @@ function RowWriter(table;
 end
 
 struct DummyIO <: IO end
+Base.write(io::DummyIO, a::SubArray{T,N,<:Array}) where {T,N} = error("`bufsize` for `CSV.RowWriter` was too small (default 4MB); try again passing a larger value for `bufsize`")
 
 # first iteration produces column names
 function Base.iterate(r::RowWriter)
