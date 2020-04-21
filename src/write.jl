@@ -3,6 +3,7 @@
     table |> CSV.write(file; kwargs...) => file
 
 Write a [Tables.jl interface input](https://github.com/JuliaData/Tables.jl) to a csv file, given as an `IO` argument or `String`/FilePaths.jl type representing the file name to write to.
+Alternatively, `CSV.RowWriter` creates a row iterator, producing a csv-formatted string for each row in an input table.
 
 Supported keyword arguments include:
 * `delim::Union{Char, String}=','`: a character or string to print out as the file's delimiter
@@ -40,6 +41,93 @@ tup(x::Char) = x % UInt8
 tup(x::AbstractString) = Tuple(codeunits(x))
 tlen(::UInt8) = 1
 tlen(::NTuple{N, UInt8}) where {N} = N
+
+"""
+    CSV.RowWriter(table; kwargs...)
+
+Creates an iterator that produces csv-formatted strings for each row in the input table.
+
+Supported keyword arguments include:
+* `bufsize::Int=2^22`: The length of the buffer to use when writing each csv-formatted row; default 4MB; if a row is larger than the `bufsize` an error is thrown
+* `delim::Union{Char, String}=','`: a character or string to print out as the file's delimiter
+* `quotechar::Char='"'`: ascii character to use for quoting text fields that may contain delimiters or newlines
+* `openquotechar::Char`: instead of `quotechar`, use `openquotechar` and `closequotechar` to support different starting and ending quote characters
+* `escapechar::Char='"'`: ascii character used to escape quote characters in a text field
+* `missingstring::String=""`: string to print for `missing` values
+* `dateformat=Dates.default_format(T)`: the date format string to use for printing out `Date` & `DateTime` columns
+* `header`: pass a list of column names (Symbols or Strings) to use instead of the column names of the input table
+* `newline='\\n'`: character or string to use to separate rows (lines in the csv file)
+* `quotestrings=false`: whether to force all strings to be quoted or not
+* `decimal='.'`: character to use as the decimal point when writing floating point numbers
+* `transform=(col,val)->val`: a function that is applied to every cell e.g. we can transform all `nothing` values to `missing` using `(col, val) -> something(val, missing)`
+* `bom=false`: whether to write a UTF-8 BOM header (0xEF 0xBB 0xBF) or not
+"""
+struct RowWriter{T, S, O}
+    source::T
+    schema::S
+    options::O
+    buf::Vector{UInt8}
+    header::Vector
+    writeheader::Bool
+end
+
+Base.IteratorSize(::Type{RowWriter{T, S, O}}) where {T, S, O} = Base.IteratorSize(T)
+Base.length(r::RowWriter) = length(r.source) + r.writeheader
+Base.size(r::RowWriter) = (length(r.source) + r.writeheader,)
+Base.eltype(r::RowWriter) = String
+
+function RowWriter(table;
+    delim::Union{Char, String}=',',
+    quotechar::Char='"',
+    openquotechar::Union{Char, Nothing}=nothing,
+    closequotechar::Union{Char, Nothing}=nothing,
+    escapechar::Char='"',
+    newline::Union{Char, String}='\n',
+    decimal::Char='.',
+    dateformat=nothing,
+    quotestrings::Bool=false,
+    missingstring::AbstractString="",
+    transform::Function=(col,val) -> val,
+    bom::Bool=false,
+    header::Vector=String[],
+    writeheader::Bool=true,
+    bufsize::Int=2^22)
+    checkvaliddelim(delim)
+    (isascii(something(openquotechar, quotechar)) && isascii(something(closequotechar, quotechar)) && isascii(escapechar)) || throw(ArgumentError("quote and escape characters must be ASCII characters "))
+    oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
+    e = escapechar % UInt8
+    opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring), transform, bom)
+    source = Tables.rows(table)
+    sch = Tables.schema(source)
+    return RowWriter(source, sch, opts, Vector{UInt8}(undef, bufsize), header, writeheader)
+end
+
+struct DummyIO <: IO end
+Base.write(io::DummyIO, a::SubArray{T,N,<:Array}) where {T,N} = error("`bufsize` for `CSV.RowWriter` was too small (default 4MB); try again passing a larger value for `bufsize`")
+
+# first iteration produces column names
+function Base.iterate(r::RowWriter)
+    state = iterate(r.source)
+    state === nothing && return nothing
+    row, st = state
+    colnames = isempty(r.header) ? Tables.columnnames(row) : r.header
+    pos = 1
+    if r.options.bom
+        pos = writebom(r.buf, pos, length(r.buf))
+    end
+    cols = length(colnames)
+    !r.writeheader && return iterate(r, (state, cols))
+    pos = writenames(r.buf, pos, length(r.buf), DummyIO(), colnames, cols, r.options)
+    return unsafe_string(pointer(r.buf), pos - 1), (state, cols)
+end
+
+function Base.iterate(r::RowWriter, (state, cols))
+    state === nothing && return nothing
+    row, st = state
+    ref = Ref{Int}(1)
+    writerow(r.buf, ref, length(r.buf), DummyIO(), r.schema, row, cols, r.options)
+    return unsafe_string(pointer(r.buf), ref[] - 1), (iterate(r.source, st), cols)
+end
 
 write(file; kwargs...) = x->write(file, x; kwargs...)
 function write(file, itr;
@@ -373,7 +461,7 @@ function check(bytes, sz, delim::UInt8, oq, cq, newline::Tuple)
         @inbounds b = bytes[i]
         needtoquote |= b == delim
         needtoescape |= b == cq
-        if b == newline[j]
+        if !isempty(newline) && b == newline[j]
             j += 1
             if j > length(newline)
                 needtoquote = true
@@ -415,7 +503,7 @@ function check(bytes, sz, delim::Tuple, oq, cq, newline::Tuple)
     @simd for i = 1:sz
         @inbounds b = bytes[i]
         needtoescape |= b == cq
-        if b == newline[j]
+        if !isempty(newline) && b == newline[j]
             j += 1
             if j > length(newline)
                 needtoquote = true
