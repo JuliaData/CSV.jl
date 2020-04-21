@@ -2,7 +2,7 @@
 # no automatic type inference is done, but types are allowed to be passed
 # for as many columns as desired; `CSV.detect(row, i)` can also be used to
 # use the same inference logic used in `CSV.File` for determing a cell's typed value
-struct Rows{transpose, O, IO}
+struct Rows{transpose, O, IO, F, F2}
     name::String
     names::Vector{Symbol} # only includes "select"ed columns
     types::Vector{Type} # only includes "select"ed columns
@@ -20,6 +20,8 @@ struct Rows{transpose, O, IO}
     reusebuffer::Bool
     tapes::Vector{Vector{UInt64}}
     intsentinels::Vector{Int64}
+    invalidrow::F
+    invalidcell::F2
     lookup::Dict{Symbol, Int}
 end
 
@@ -111,6 +113,8 @@ function Rows(source;
     pool::Union{Bool, Real}=0.1,
     strict::Bool=false,
     silencewarnings::Bool=false,
+    invalidrow=nothing,
+    invalidcell=nothing,
     debug::Bool=false,
     parsingdebug::Bool=false,
     reusebuffer::Bool=false,
@@ -124,7 +128,7 @@ function Rows(source;
     deleteat!(types, h.todrop)
     deleteat!(columnmap, h.todrop)
     lookup = Dict(nm=>i for (i, nm) in enumerate(h.names))
-    return Rows{transpose, typeof(h.options), typeof(h.buf)}(
+    return Rows{transpose, typeof(h.options), typeof(h.buf), typeof(invalidrow), typeof(invalidcell)}(
         h.name,
         h.names,
         types,
@@ -142,6 +146,8 @@ function Rows(source;
         reusebuffer,
         tapes,
         fill(INT_SENTINEL, h.cols),
+        invalidrow,
+        invalidcell,
         lookup
     )
 end
@@ -161,7 +167,7 @@ const EMPTY_LASTREFS = UInt64[]
     (pos > len || row > r.limit) && return nothing
     pos > len && return nothing
     tapes = r.reusebuffer ? r.tapes : [Vector{UInt64}(undef, usermissing(r.typecodes[i]) ? 0 : 1) for i = 1:r.cols]
-    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, tapes, EMPTY_POSLENS, r.buf, pos, len, r.limit, r.positions, 0.0, EMPTY_REFS, EMPTY_LASTREFS, 0, r.typecodes, r.intsentinels, false, r.options, r.coloptions)
+    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, tapes, EMPTY_POSLENS, r.buf, pos, len, r.limit, r.positions, 0.0, EMPTY_REFS, EMPTY_LASTREFS, 0, r.typecodes, r.intsentinels, r.invalidrow, r.invalidcell, false, r.options, r.coloptions)
     intsentinels = r.reusebuffer ? r.intsentinels : copy(r.intsentinels)
     return Row2(r.names, r.types, r.columnmap, r.typecodes, r.lookup, tapes, r.buf, r.e, r.options, r.coloptions, intsentinels), (pos, len, row + 1)
 end

@@ -403,4 +403,13 @@ f = CSV.File(IOBuffer("time,date,datetime\n10:00:00.0,04/16/2020,2020-04-16 23:1
 @test f[1].date == Dates.Date(2020, 4, 16)
 @test f[1].datetime == Dates.DateTime(2020, 4, 16, 23, 14)
 
+# manual invalid cell and invalid row callbacks
+invalidcells = []
+invalidrows = []
+f = CSV.File(IOBuffer("a,b,c\n1.0,\nhey,2,3\n"), types=Dict(1=>Float64), invalidrow=row->push!(invalidrows, row), invalidcell=(args...)->push!(invalidcells, args))
+@test length(invalidrows) == 1
+@test invalidrows[1] == 1
+@test length(invalidcells) == 1
+@test invalidcells[1] == (Int64, "hey,", -32630, 2, 1)
+
 end
