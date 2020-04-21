@@ -56,6 +56,21 @@ const table_types = (
             "col1,col2,col3,col4,col5,col6,col7,col8,col9\ntrue,4.1,NaN,2017-01-01,2017-01-01T04:05:06.007,hey,hey,hey,b\nfalse,5.2,Inf,2018-01-01,2018-01-01T04:05:06.007,there,hey,hey,a\ntrue,4.0e10,-Inf,2019-01-01,2019-01-01T04:05:06.007,sailor,hey,hey,b\n"
         ),
         (
+            default_table,
+            (writeheader=false,),
+            "1,4,7\n2,5,8\n3,6,9\n"
+        ),
+        (
+            default_table,
+            (writeheader=false,newline=""),
+            "1,4,72,5,83,6,9"
+        ),
+        (
+            default_table,
+            (writeheader=false,newline="",delim="::"),
+            "1::4::72::5::83::6::9"
+        ),
+        (
             (col4=[Date(2017, 1, 1), Date(2018, 1, 1), Date(2019, 1, 1)],
                 col5=[DateTime(2017, 1, 1, 4, 5, 6, 7), DateTime(2018, 1, 1, 4, 5, 6, 7), DateTime(2019, 1, 1, 4, 5, 6, 7)],
             ),

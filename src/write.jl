@@ -68,11 +68,12 @@ struct RowWriter{T, S, O}
     options::O
     buf::Vector{UInt8}
     header::Vector
+    writeheader::Bool
 end
 
 Base.IteratorSize(::Type{RowWriter{T, S, O}}) where {T, S, O} = Base.IteratorSize(T)
-Base.length(r::RowWriter) = length(r.source) + 1
-Base.size(r::RowWriter) = (length(r.source) + 1,)
+Base.length(r::RowWriter) = length(r.source) + r.writeheader
+Base.size(r::RowWriter) = (length(r.source) + r.writeheader,)
 Base.eltype(r::RowWriter) = String
 
 function RowWriter(table;
@@ -89,6 +90,7 @@ function RowWriter(table;
     transform::Function=(col,val) -> val,
     bom::Bool=false,
     header::Vector=String[],
+    writeheader::Bool=true,
     bufsize::Int=2^22)
     checkvaliddelim(delim)
     (isascii(something(openquotechar, quotechar)) && isascii(something(closequotechar, quotechar)) && isascii(escapechar)) || throw(ArgumentError("quote and escape characters must be ASCII characters "))
@@ -97,7 +99,7 @@ function RowWriter(table;
     opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring), transform, bom)
     source = Tables.rows(table)
     sch = Tables.schema(source)
-    return RowWriter(source, sch, opts, Vector{UInt8}(undef, bufsize), header)
+    return RowWriter(source, sch, opts, Vector{UInt8}(undef, bufsize), header, writeheader)
 end
 
 struct DummyIO <: IO end
@@ -114,6 +116,7 @@ function Base.iterate(r::RowWriter)
         pos = writebom(r.buf, pos, length(r.buf))
     end
     cols = length(colnames)
+    !r.writeheader && return iterate(r, (state, cols))
     pos = writenames(r.buf, pos, length(r.buf), DummyIO(), colnames, cols, r.options)
     return unsafe_string(pointer(r.buf), pos - 1), (state, cols)
 end
@@ -458,7 +461,7 @@ function check(bytes, sz, delim::UInt8, oq, cq, newline::Tuple)
         @inbounds b = bytes[i]
         needtoquote |= b == delim
         needtoescape |= b == cq
-        if b == newline[j]
+        if !isempty(newline) && b == newline[j]
             j += 1
             if j > length(newline)
                 needtoquote = true
@@ -500,7 +503,7 @@ function check(bytes, sz, delim::Tuple, oq, cq, newline::Tuple)
     @simd for i = 1:sz
         @inbounds b = bytes[i]
         needtoescape |= b == cq
-        if b == newline[j]
+        if !isempty(newline) && b == newline[j]
             j += 1
             if j > length(newline)
                 needtoquote = true
