@@ -13,6 +13,7 @@ CSV.File
 CSV.read
 CSV.Rows
 CSV.write
+CSV.RowWriter
 ```
 
 ## Examples
