@@ -225,6 +225,11 @@ testfiles = [
         NamedTuple{(:col1, :col2, :col3),Tuple{Bool,Bool,Int64}},
         (col1 = Bool[true, false, true, false], col2 = Bool[false, true, true, false], col3 = [1, 2, 3, 4])
     ),
+    ("boolext.csv", NamedTuple(),
+        (4, 3),
+        NamedTuple{(:col1, :col2, :col3),Tuple{Bool,Bool,Int64}},
+        (col1 = Bool[true, false, true, false], col2 = Bool[false, true, true, false], col3 = [1, 2, 3, 4])
+    ),
     # #64
     # #115 (Int64 -> Union{Int64, Missing} -> Union{String, Missing} promotion)
     ("attenu.csv", (missingstring="NA",),
