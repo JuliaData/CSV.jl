@@ -194,8 +194,8 @@ function File(source;
     dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
     dateformats::Union{AbstractDict, Nothing}=nothing,
     decimal::Union{UInt8, Char}=UInt8('.'),
-    truestrings::Union{Vector{String}, Nothing}=nothing,
-    falsestrings::Union{Vector{String}, Nothing}=nothing,
+    truestrings::Union{Vector{String}, Nothing}=["true", "True", "TRUE"],
+    falsestrings::Union{Vector{String}, Nothing}=["false", "False", "FALSE"],
     # type options
     type=nothing,
     types=nothing,
@@ -206,7 +206,7 @@ function File(source;
     silencewarnings::Bool=false,
     debug::Bool=false,
     parsingdebug::Bool=false,)
-    
+
     h = Header(source, header, normalizenames, datarow, skipto, footerskip, limit, transpose, comment, use_mmap, ignoreemptylines, threaded, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, strict, silencewarnings, debug, parsingdebug, false)
     rowsguess, ncols, buf, len, datapos, options, coloptions, positions, typecodes, pool, categorical = h.rowsguess, h.cols, h.buf, h.len, h.datapos, h.options, h.coloptions, h.positions, h.typecodes, h.pool, h.categorical
     # determine if we can use threads while parsing
