@@ -1,3 +1,7 @@
+# PooledString is an internal-only type for efficiently tracking string data + length
+# all strings indexed from a column/row will always be a full String
+# specifically, it allows avoiding materializing full Strings for pooled string columns while parsing
+# and allows a fastpath for materializing a full String when no escaping is needed
 export PooledString
 struct PooledString <: AbstractString end
 
@@ -24,6 +28,9 @@ Base.ncodeunits(s::PointerString) = s.len
 end
 Base.String(x::PointerString) = unsafe_string(x.ptr, x.len)
 
+# TypeCode is a compact type encoding of types CSV.jl supports parsing from files
+# it allows avoiding the dynamic nature of full Julia `Type` in hot parsing loops
+# and is generally efficient for the limited # of type operations required
 const TypeCode = Int8
 
 # default value to signal that parsing should try to detect a type
@@ -202,6 +209,7 @@ getname(cmd::Cmd) = string(cmd)
 getname(str) = string(str)
 getname(io::I) where {I <: IO} = string("<", I, ">")
 
+# normalizing column name utilities
 const RESERVED = Set(["local", "global", "export", "let",
     "for", "struct", "while", "const", "continue", "import",
     "function", "if", "else", "try", "begin", "break", "catch",
@@ -239,22 +247,22 @@ initialtypes(T, x::AbstractDict{String}, names) = TypeCode[haskey(x, string(nm))
 initialtypes(T, x::AbstractDict{Symbol}, names) = TypeCode[haskey(x, nm) ? typecode(x[nm]) | USER : T for nm in names]
 initialtypes(T, x::AbstractDict{Int}, names)    = TypeCode[haskey(x, i) ? typecode(x[i]) | USER : T for i = 1:length(names)]
 
+# given a DateFormat, is it meant for parsing Date, DateTime, or Time?
 function timetype(df::Dates.DateFormat)
     date = false
     time = false
     for token in df.tokens
         T = typeof(token)
-        if T == Dates.DatePart{'H'}
+        if T in (Dates.DatePart{'H'}, Dates.DatePart{'I'}, Dates.DatePart{'M'}, Dates.DatePart{'S'}, Dates.DatePart{'s'})
             time = true
-        elseif T == Dates.DatePart{'y'} || T == Dates.DatePart{'Y'}
+        elseif T in (Dates.DatePart{'y'}, Dates.DatePart{'Y'}, Dates.DatePart{'m'}, Dates.DatePart{'d'}, Dates.DatePart{'u'}, Dates.DatePart{'U'})
             date = true
         end
     end
     return ifelse(date & time, DateTime, ifelse(time, Time, Date))
 end
 
-roundup(a, n) = (a + (n - 1)) & ~(n - 1)
-
+# if a cell value of a csv file has escape characters, we need to unescape it
 function unescape(s, e)
     n = ncodeunits(s)
     buf = Base.StringVector(n)

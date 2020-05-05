@@ -1,90 +1,204 @@
 using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
 
+const default_table = (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9])
+
+const weakrefs = StringVector{WeakRefString{UInt8}}(["hey", "hey", "hey"])
+const cats = CategoricalVector{String, UInt32}(["b", "a", "b"])
+
+const table_types = (
+    col1=[true, false, true],
+    col2=[4.1,5.2,4e10],
+    col3=[NaN, Inf, -Inf],
+    col4=[Date(2017, 1, 1), Date(2018, 1, 1), Date(2019, 1, 1)],
+    col5=[DateTime(2017, 1, 1, 4, 5, 6, 7), DateTime(2018, 1, 1, 4, 5, 6, 7), DateTime(2019, 1, 1, 4, 5, 6, 7)],
+    col6=["hey", "there", "sailor"],
+    col7=[weakrefs[1], weakrefs[2], weakrefs[3]],
+    col8=weakrefs,
+    col9=cats,
+)
+
 @testset "CSV.write" begin
 
+    testcases = [
+        (
+            default_table,
+            NamedTuple(),
+            "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
+        ),
+        (
+            default_table,
+            (delim='\t',),
+            "col1\tcol2\tcol3\n1\t4\t7\n2\t5\t8\n3\t6\t9\n"
+        ),
+        (
+            (col1=[1,2,3], col2=["hey", "the::re", "::sailor"], col3=[7,8,9]),
+            (delim="::",),
+            "col1::col2::col3\n1::hey::7\n2::\"the::re\"::8\n3::\"::sailor\"::9\n"
+        ),
+        (
+            default_table,
+            (header=[:Col1, :Col2, :Col3],),
+            "Col1,Col2,Col3\n1,4,7\n2,5,8\n3,6,9\n"
+        ),
+        (
+            default_table,
+            (header=["Col1", "Col2", "Col3"],),
+            "Col1,Col2,Col3\n1,4,7\n2,5,8\n3,6,9\n"
+        ),
+        (
+            default_table,
+            (bom=true,),
+            "\xEF\xBB\xBFcol1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
+        ),
+        (
+            table_types,
+            NamedTuple(),
+            "col1,col2,col3,col4,col5,col6,col7,col8,col9\ntrue,4.1,NaN,2017-01-01,2017-01-01T04:05:06.007,hey,hey,hey,b\nfalse,5.2,Inf,2018-01-01,2018-01-01T04:05:06.007,there,hey,hey,a\ntrue,4.0e10,-Inf,2019-01-01,2019-01-01T04:05:06.007,sailor,hey,hey,b\n"
+        ),
+        (
+            default_table,
+            (writeheader=false,),
+            "1,4,7\n2,5,8\n3,6,9\n"
+        ),
+        (
+            default_table,
+            (writeheader=false,newline=""),
+            "1,4,72,5,83,6,9"
+        ),
+        (
+            default_table,
+            (writeheader=false,newline="",delim="::"),
+            "1::4::72::5::83::6::9"
+        ),
+        (
+            (col4=[Date(2017, 1, 1), Date(2018, 1, 1), Date(2019, 1, 1)],
+                col5=[DateTime(2017, 1, 1, 4, 5, 6, 7), DateTime(2018, 1, 1, 4, 5, 6, 7), DateTime(2019, 1, 1, 4, 5, 6, 7)],
+            ),
+            (dateformat="mm/dd/yyyy",),
+            "col4,col5\n01/01/2017,01/01/2017\n01/01/2018,01/01/2018\n01/01/2019,01/01/2019\n"
+        ),
+        (
+            (col1=[1,missing,3], col2=[missing, missing, missing], col3=[7,8,9]),
+            NamedTuple(),
+            "col1,col2,col3\n1,,7\n,,8\n3,,9\n"
+        ),
+        (
+            (col1=[1,missing,3], col2=[missing, missing, missing], col3=[7,8,9]),
+            (missingstring="NA",),
+            "col1,col2,col3\n1,NA,7\nNA,NA,8\n3,NA,9\n"
+        ),
+        (
+            (col1=[1,nothing,3], col2=[nothing, missing, missing], col3=[7,8,9]),
+            (transform=(col, val) -> something(val, missing), missingstring="NA"),
+            "col1,col2,col3\n1,NA,7\nNA,NA,8\n3,NA,9\n"
+        ),
+        (
+            (col1=["hey, there, sailor", "this, also, has, commas", "this\n has\n newlines\n", "no quoting", "just a random \" quote character", ],),
+            (escapechar='\\',),
+            "col1\n\"hey, there, sailor\"\n\"this, also, has, commas\"\n\"this\n has\n newlines\n\"\nno quoting\n\"just a random \\\" quote character\"\n"
+        ),
+        (
+            (col1=["\"hey there sailor\""],),
+            (escapechar='\\',),
+            "col1\n\"\\\"hey there sailor\\\"\"\n"
+        ),
+        (
+            (col1=["{\"key\": \"value\"}", "{\"key\": null}"],),
+            (openquotechar='{', closequotechar='}', escapechar='\\'),
+            "col1\n{\\{\"key\": \"value\"\\}}\n{\\{\"key\": null\\}}\n"
+        ),
+        (
+            default_table,
+            (newline='\r',),
+            "col1,col2,col3\r1,4,7\r2,5,8\r3,6,9\r"
+        ),
+        (
+            default_table,
+            (newline="\r\n",),
+            "col1,col2,col3\r\n1,4,7\r\n2,5,8\r\n3,6,9\r\n"
+        ),
+        (
+            default_table,
+            (delim="::", newline="\r\n"),
+            "col1::col2::col3\r\n1::4::7\r\n2::5::8\r\n3::6::9\r\n"
+        ),
+        (
+            default_table,
+            (delim="::", newline="\r"),
+            "col1::col2::col3\r1::4::7\r2::5::8\r3::6::9\r"
+        ),
+        # quotedstrings: #362
+        (
+            (col1=[1,2,3], col2=["hey", "the::re", "::sailor"], col3=[7,8,9]),
+            (delim="::", quotestrings=true),
+            "\"col1\"::\"col2\"::\"col3\"\n1::\"hey\"::7\n2::\"the::re\"::8\n3::\"::sailor\"::9\n"
+        ),
+        (
+            (col1=[1,2,3], col2=[4,5,6], col3=["hey \r\n there","sailor","ho"]),
+            (delim="::", newline="\r\n"),
+            "col1::col2::col3\r\n1::4::\"hey \r\n there\"\r\n2::5::sailor\r\n3::6::ho\r\n"
+        ),
+        (
+            (col1=[1,2,3], col2=[4,5,6], col3=["hey \r\n there","sailor","ho"]),
+            (delim="::", newline="\r\n", quotestrings=true),
+            "\"col1\"::\"col2\"::\"col3\"\r\n1::4::\"hey \r\n there\"\r\n2::5::\"sailor\"\r\n3::6::\"ho\"\r\n"
+        ),
+        # custom float decimal: #385
+        (
+            (col1=[1.1,2.2,3.3], col2=[4,5,6], col3=[7,8,9]),
+            (delim='\t', decimal=','),
+            "col1\tcol2\tcol3\n1,1\t4\t7\n2,2\t5\t8\n3,3\t6\t9\n"
+        ),
+        # issue 515
+        (
+            (col1=[""],),
+            NamedTuple(),
+            "col1\n\n"
+        ),
+        # issue 540
+        (
+            NamedTuple{(Symbol("col1,col2"),), Tuple{Vector{String}}}((["hey"],)),
+            NamedTuple(),
+            "\"col1,col2\"\nhey\n"
+        ),
+        # 568
+        (
+            [(a=big(1),)],
+            NamedTuple(),
+            "a\n1\n"
+        )
+    ]
+
     io = IOBuffer()
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io)
-    @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
-
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; delim='\t')
-    @test String(take!(io)) == "col1\tcol2\tcol3\n1\t4\t7\n2\t5\t8\n3\t6\t9\n"
-
-    (col1=[1,2,3], col2=["hey", "the::re", "::sailor"], col3=[7,8,9]) |> CSV.write(io; delim="::")
-    @test String(take!(io)) == "col1::col2::col3\n1::hey::7\n2::\"the::re\"::8\n3::\"::sailor\"::9\n"
-
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; header=[:Col1, :Col2, :Col3])
-    @test String(take!(io)) == "Col1,Col2,Col3\n1,4,7\n2,5,8\n3,6,9\n"
-
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; header=["Col1", "Col2", "Col3"])
-    @test String(take!(io)) == "Col1,Col2,Col3\n1,4,7\n2,5,8\n3,6,9\n"
-
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; writeheader=false)
-    @test String(take!(io)) == "1,4,7\n2,5,8\n3,6,9\n"
-
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; writeheader=false, bom=true)
-    @test String(take!(io)) == "\xEF\xBB\xBF1,4,7\n2,5,8\n3,6,9\n"
-
-    # various types
-    weakrefs = StringVector{WeakRefString{UInt8}}(["hey", "hey", "hey"])
-    cats = CategoricalVector{String, UInt32}(["b", "a", "b"])
-
-    (col1=[true, false, true],
-     col2=[4.1,5.2,4e10],
-     col3=[NaN, Inf, -Inf],
-     col4=[Date(2017, 1, 1), Date(2018, 1, 1), Date(2019, 1, 1)],
-     col5=[DateTime(2017, 1, 1, 4, 5, 6, 7), DateTime(2018, 1, 1, 4, 5, 6, 7), DateTime(2019, 1, 1, 4, 5, 6, 7)],
-     col6=["hey", "there", "sailor"],
-     col7=[weakrefs[1], weakrefs[2], weakrefs[3]],
-     col8=weakrefs,
-     col9=cats,
-    ) |> CSV.write(io)
-    @test String(take!(io)) == "col1,col2,col3,col4,col5,col6,col7,col8,col9\ntrue,4.1,NaN,2017-01-01,2017-01-01T04:05:06.007,hey,hey,hey,b\nfalse,5.2,Inf,2018-01-01,2018-01-01T04:05:06.007,there,hey,hey,a\ntrue,4.0e10,-Inf,2019-01-01,2019-01-01T04:05:06.007,sailor,hey,hey,b\n"
-
-    (col4=[Date(2017, 1, 1), Date(2018, 1, 1), Date(2019, 1, 1)],
-     col5=[DateTime(2017, 1, 1, 4, 5, 6, 7), DateTime(2018, 1, 1, 4, 5, 6, 7), DateTime(2019, 1, 1, 4, 5, 6, 7)],
-    ) |> CSV.write(io; dateformat="mm/dd/yyyy")
-    @test String(take!(io)) == "col4,col5\n01/01/2017,01/01/2017\n01/01/2018,01/01/2018\n01/01/2019,01/01/2019\n"
-
-    (col1=[1,missing,3], col2=[missing, missing, missing], col3=[7,8,9]) |> CSV.write(io)
-    @test String(take!(io)) == "col1,col2,col3\n1,,7\n,,8\n3,,9\n"
-
-    (col1=[1,missing,3], col2=[missing, missing, missing], col3=[7,8,9]) |> CSV.write(io; missingstring="NA")
-    @test String(take!(io)) == "col1,col2,col3\n1,NA,7\nNA,NA,8\n3,NA,9\n"
+    for case in testcases
+        global x = case
+        case[1] |> CSV.write(io; case[2]...)
+        @test String(take!(io)) == case[3]
+        @test join(collect(CSV.RowWriter(case[1]; case[2]...))) == case[3]
+    end
 
     @test_throws ErrorException (col1=[1,nothing,3], col2=[nothing, missing, missing], col3=[7,8,9]) |> CSV.write(io)
 
-    (col1=[1,nothing,3], col2=[nothing, missing, missing], col3=[7,8,9]) |> CSV.write(io; transform = (col, val) -> something(val, missing), missingstring="NA")
-    @test String(take!(io)) == "col1,col2,col3\n1,NA,7\nNA,NA,8\n3,NA,9\n"
-
-    (col1=["hey, there, sailor", "this, also, has, commas", "this\n has\n newlines\n", "no quoting", "just a random \" quote character", ],) |> CSV.write(io; escapechar='\\')
-    @test String(take!(io)) == "col1\n\"hey, there, sailor\"\n\"this, also, has, commas\"\n\"this\n has\n newlines\n\"\nno quoting\n\"just a random \\\" quote character\"\n"
-
-    (col1=["\"hey there sailor\""],) |> CSV.write(io; escapechar='\\')
-    @test String(take!(io)) == "col1\n\"\\\"hey there sailor\\\"\"\n"
-
-    (col1=["{\"key\": \"value\"}", "{\"key\": null}"],) |> CSV.write(io; openquotechar='{', closequotechar='}', escapechar='\\')
-    @test String(take!(io)) == "col1\n{\\{\"key\": \"value\"\\}}\n{\\{\"key\": null\\}}\n"
-
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io)
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; append=false) # this is the default
+    default_table |> CSV.write(io)
+    default_table |> CSV.write(io; append=false) # this is the default
     @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
 
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io)
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; append=true)
+    default_table |> CSV.write(io)
+    default_table |> CSV.write(io; append=true)
     @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n1,4,7\n2,5,8\n3,6,9\n"
 
     file = "test.csv"
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(file)
+    default_table |> CSV.write(file)
     @test String(read(file)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
     rm(file)
 
     filepath = Path(file)
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(filepath)
+    default_table |> CSV.write(filepath)
     @test String(read(filepath)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
     rm(filepath)
 
     open(file, "w") do io
-        (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io)
+        default_table |> CSV.write(io)
     end
     @test String(read(file)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
     rm(file)
@@ -105,7 +219,7 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
 
     opts = CSV.Options(UInt8(','), UInt8('"'), UInt8('"'), UInt8('"'), UInt8('\n'), UInt8('.'), nothing, false, (), (col,val)->val, false)
     io = IOBuffer()
-    CSV.write(nothing, Tables.rows((col1=[1,2,3], col2=[4,5,6], col3=[7,8,9])), io, opts)
+    CSV.write(nothing, Tables.rows(default_table), io, opts)
     @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
 
     rt = [(a=1, b=4.0, c=7), (a=2.0, b=missing, c="8"), (a=3, b=6.0, c="9")]
@@ -133,7 +247,7 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
         try
             io = open("$file.gz", "w")
             open(`gzip`, "w", io) do f
-                CSV.write(f, (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]))
+                CSV.write(f, default_table)
             end
             run(`gunzip $file.gz`)
             @test String(read("$file")) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
@@ -157,42 +271,14 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
     f = CSV.File(io; delim='\t')
     @test (f |> columntable) == tbl
 
-    # custom newline: #375
-    io = IOBuffer()
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; newline='\r')
-    @test String(take!(io)) == "col1,col2,col3\r1,4,7\r2,5,8\r3,6,9\r"
-
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; newline="\r\n")
-    @test String(take!(io)) == "col1,col2,col3\r\n1,4,7\r\n2,5,8\r\n3,6,9\r\n"
-
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; delim="::", newline="\r\n")
-    @test String(take!(io)) == "col1::col2::col3\r\n1::4::7\r\n2::5::8\r\n3::6::9\r\n"
-
-    (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; delim="::", newline="\r")
-    @test String(take!(io)) == "col1::col2::col3\r1::4::7\r2::5::8\r3::6::9\r"
-
-    # quotedstrings: #362
-    (col1=[1,2,3], col2=["hey", "the::re", "::sailor"], col3=[7,8,9]) |> CSV.write(io; delim="::", quotestrings=true)
-    @test String(take!(io)) == "\"col1\"::\"col2\"::\"col3\"\n1::\"hey\"::7\n2::\"the::re\"::8\n3::\"::sailor\"::9\n"
-
-    (col1=[1,2,3], col2=[4,5,6], col3=["hey \r\n there","sailor","ho"]) |> CSV.write(io; delim="::", newline="\r\n")
-    @test String(take!(io)) == "col1::col2::col3\r\n1::4::\"hey \r\n there\"\r\n2::5::sailor\r\n3::6::ho\r\n"
-
-    (col1=[1,2,3], col2=[4,5,6], col3=["hey \r\n there","sailor","ho"]) |> CSV.write(io; delim="::", newline="\r\n", quotestrings=true)
-    @test String(take!(io)) == "\"col1\"::\"col2\"::\"col3\"\r\n1::4::\"hey \r\n there\"\r\n2::5::\"sailor\"\r\n3::6::\"ho\"\r\n"
-
     # validate char args: #369
-    @test_throws ArgumentError (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; escapechar='☃')
-
-    # custom float decimal: #385
-    (col1=[1.1,2.2,3.3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(io; delim='\t', decimal=',')
-    @test String(take!(io)) == "col1\tcol2\tcol3\n1,1\t4\t7\n2,2\t5\t8\n3,3\t6\t9\n"
+    @test_throws ArgumentError default_table |> CSV.write(io; escapechar='☃')
 
     # write to stdout: #465
     old_stdout = stdout
     (rd, wr) = redirect_stdout()
     try
-        (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9]) |> CSV.write(stdout)
+        default_table |> CSV.write(stdout)
     finally
         redirect_stdout(old_stdout)
         try
@@ -200,6 +286,7 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
         catch
         end
     end
+    @test read(rd, String) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
 
     df = DataFrame(A=[1,2,3], B=["a", "b", "c"])
     # test control character delimiters
@@ -212,32 +299,15 @@ using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
     # don't allow writing with delimiters we refuse to read
     @test_throws ArgumentError CSV.write(io, df, delim='\r')
 
-    @test read(rd, String) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
-
-    # issue 515
-    io = IOBuffer()
-    (col1=[""],) |> CSV.write(io)
-    @test String(take!(io)) == "col1\n\n"
-
     # test with FilePath
     mktmpdir() do tmp
         CSV.write(tmp / "test.txt", df)
         @test CSV.read(tmp / "test.txt") == df
     end
 
-    # 540
-    io = IOBuffer()
-    CSV.write(io, NamedTuple{(Symbol("col1,col2"),), Tuple{Vector{String}}}((["hey"],)))
-    @test String(take!(io)) == "\"col1,col2\"\nhey\n"
-
     io = Base.BufferStream()
     CSV.write(io, (a=[1,2,3], b=[4.1, 5.2, 6.3]))
     close(io)
     @test read(io, String) == "a,b\n1,4.1\n2,5.2\n3,6.3\n"
-
-    # 568
-    io = IOBuffer()
-    CSV.write(io, [(a=big(1),)])
-    @test String(take!(io)) == "a\n1\n"
 
 end # @testset "CSV.write"

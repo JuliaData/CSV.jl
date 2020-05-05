@@ -2,8 +2,19 @@ module CSV
 
 # stdlib
 using Mmap, Dates, Unicode
-using Parsers, Tables, PooledArrays, FilePathsBase
-using CategoricalArrays, WeakRefStrings, DataFrames
+# Parsers.jl is used for core type parsing from byte buffers
+# and all other parsing options (quoted fields, delimiters, dateformats etc.)
+using Parsers
+# Tables.jl allows integration with all other table/data file formats
+using Tables
+# PooledArrays.jl is used for materializing pooled columns
+using PooledArrays
+# FilePathBase allows passing FilePaths instead of just strings for the file name
+using FilePathsBase
+# WeakRefStrings allows for more efficient materializing of string columns via StringVector
+using WeakRefStrings
+
+using CategoricalArrays, DataFrames
 
 struct Error <: Exception
     msg::String
