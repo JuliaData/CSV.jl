@@ -17,7 +17,7 @@ WeakRefStrings = "ea10d353-3f73-51f8-a26c-33c1cb351aa5"
 
 [compat]
 CategoricalArrays = "0.8"
-DataFrames = "0.18,0.19,0.20"
+DataFrames = "0.21"
 FilePathsBase = "0.6,0.7"
 Parsers = "1"
 PooledArrays = "0.5"
