@@ -210,11 +210,11 @@ df = CSV.read(IOBuffer("x\na\nb\na\nb\na\nb\na\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nn\
 
 # a few corner cases for escape strings
 df = CSV.read(IOBuffer("\"column name with \"\" escape character inside\"\n1\n"))
-@test names(df)[1] == Symbol("column name with \" escape character inside")
+@test names(df)[1] == "column name with \" escape character inside"
 
 df = CSV.read(IOBuffer("\"column name with \"\" escape character inside\",1\n,2"), transpose=true)
-@test names(df)[1] == Symbol("column name with \" escape character inside")
-@test names(df)[2] == :Column2
+@test names(df)[1] == "column name with \" escape character inside"
+@test names(df)[2] == "Column2"
 
 df = CSV.read(IOBuffer("x\na\nb\n\"quoted field with \"\" escape character inside\"\n"), pool=true)
 @test df.x[1] == "a"
@@ -241,19 +241,19 @@ df = CSV.read(IOBuffer("x\nabc\n"), type=Int)
 
 # transpose corner cases
 df = CSV.read(IOBuffer("x,y,1\nx2,y2,2\n"), transpose=true, header=2)
-@test names(df) == [:y, :y2]
+@test names(df) == ["y", "y2"]
 @test size(df) == (1, 2)
 @test df.y[1] == 1
 @test df.y2[1] == 2
 
 df = CSV.read(IOBuffer("x,y,1\nx2,y2,2\n"), transpose=true, header=1, datarow=3)
-@test names(df) == [:x, :x2]
+@test names(df) == ["x", "x2"]
 @test size(df) == (1, 2)
 @test df.x[1] == 1
 @test df.x2[1] == 2
 
 df = CSV.read(IOBuffer("x,y,1\nx2,y2,2\n"), transpose=true, header=false, datarow=3)
-@test names(df) == [:Column1, :Column2]
+@test names(df) == ["Column1", "Column2"]
 @test size(df) == (1, 2)
 @test df.Column1[1] == 1
 @test df.Column2[1] == 2
@@ -266,7 +266,7 @@ df = CSV.read(IOBuffer(""), transpose=true, header=Symbol[])
 
 # providing empty header vector
 df = CSV.read(IOBuffer("x\nabc\n"), header=Symbol[])
-@test names(df) == [:Column1]
+@test names(df) == ["Column1"]
 
 # Union{Bool, Missing}
 df = CSV.read(IOBuffer("x\ntrue\n\n"))
@@ -380,7 +380,7 @@ df = CSV.read(IOBuffer("thistime\n10:00:00.0\n12:00:00.0"))
 
 # 530
 df = CSV.read(IOBuffer(",column2\nNA,2\n2,3"), missingstrings=["NA"])
-@test names(df) == [:Column1, :column2]
+@test names(df) == ["Column1", "column2"]
 
 # reported on slack from Kevin Bonham
 df = CSV.read(IOBuffer("x\n01:02:03\n\n04:05:06\n"), delim=',')

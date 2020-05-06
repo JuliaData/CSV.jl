@@ -23,7 +23,7 @@ end # @testset "CSV.File"
 include("write.jl")
 
 @testset "CategoricalArray levels (including ordering)" begin
-    f = CSV.read(IOBuffer("X\nb\nc\na\nc"), types=[CategoricalString{UInt32}], copycols=true)
+    f = CSV.read(IOBuffer("X\nb\nc\na\nc"), types=[CategoricalValue{String, UInt32}], copycols=true)
     v = f.X[1]
     @test v == "b"
     @test levels(v.pool) == ["a", "b", "c"]
@@ -37,7 +37,7 @@ include("write.jl")
     v = f.X[1]
     @test v == "b"
     @test levels(v.pool) == ["b", "c"]
-    @test typeof(f.X) == CategoricalArray{Union{Missing, String},1,UInt32,String,CategoricalString{UInt32},Missing}
+    @test typeof(f.X) == CategoricalArray{Union{Missing, String},1,UInt32,String,CategoricalValue{String, UInt32},Missing}
 
 end
 
