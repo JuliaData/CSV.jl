@@ -1,4 +1,6 @@
 using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
+using FilePathsBase
+using FilePathsBase: /
 
 const default_table = (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9])
 
