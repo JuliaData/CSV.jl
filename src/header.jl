@@ -10,7 +10,8 @@ struct Header{transpose, O, IO}
     options::O # Parsers.Options
     coloptions::Union{Nothing, Vector{Parsers.Options}}
     positions::Vector{Int64}
-    typecodes::Vector{TypeCode}
+    types::Vector{Type}
+    flags::Vector{UInt8}
     todrop::Vector{Int}
     pool::Float64
     categorical::Bool
@@ -84,12 +85,12 @@ end
     !isa(source, IO) && !isa(source, Vector{UInt8}) && !isa(source, Cmd) && !isfile(source) &&
         throw(ArgumentError("\"$source\" is not a valid file"))
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
-    if type !== nothing && typecode(type) == EMPTY
-        throw(ArgumentError("$type isn't supported in the `type` keyword argument; must be one of: `Int64`, `Float64`, `Date`, `DateTime`, `Bool`, `Missing`, `PooledString`, `CategoricalValue{String, UInt32}`, or `String`"))
-    elseif types !== nothing && any(x->typecode(x) == EMPTY, types isa AbstractDict ? values(types) : types)
+    if type !== nothing && standardize(type) == Union{}
+        throw(ArgumentError("$type isn't supported in the `type` keyword argument; must be one of: `Int64`, `Float64`, `Date`, `DateTime`, `Bool`, `Missing`, `PooledString`, `CategoricalString{UInt32}`, or `String`"))
+    elseif types !== nothing && any(x->standardize(x) == Union{}, types isa AbstractDict ? values(types) : types)
         T = nothing
         for x in (types isa AbstractDict ? values(types) : types)
-            if typecode(x) == EMPTY
+            if standardize(x) == Union{}
                 T = x
                 break
             end
@@ -196,22 +197,26 @@ end
     debug && println("column options generated as: $(something(coloptions, ""))")
 
     # deduce initial column types for parsing based on whether any user-provided types were provided or not
-    T = type === nothing ? (streaming ? (STRING | MISSING) : EMPTY) : (typecode(type) | USER)
+    T = type === nothing ? (streaming ? Union{String, Missing} : Union{}) : standardize(type)
+    F = type === nothing ? (streaming ? (USER | TYPEDETECTED) : 0x00) : (USER | TYPEDETECTED)
     if types isa Vector
-        typecodes = TypeCode[typecode(T) | USER for T in types]
-        categorical = categorical | any(x->x == CategoricalValue{String, UInt32}, types)
+        types = Type[standardize(T) for T in types]
+        flags = [(USER | TYPEDETECTED) for _ = 1:ncols]
+        categorical = categorical | any(x->x == CategoricalString{UInt32}, types)
     elseif types isa AbstractDict
-        typecodes = initialtypes(T, types, names)
-        categorical = categorical | any(x->x == CategoricalValue{String, UInt32}, values(types))
+        flags = initialflags(F, types, names)
+        types = initialtypes(T, types, names)
+        categorical = categorical | any(x->x == CategoricalString{UInt32}, values(types))
     else
-        typecodes = TypeCode[T for _ = 1:ncols]
+        types = Type[T for _ = 1:ncols]
+        flags = [F for _ = 1:ncols]
     end
     if streaming
         for i = 1:ncols
-            T = typecodes[i]
-            if pooled(T)
+            T = types[i]
+            if T === PooledString || T === Union{PooledString, Missing}
                 @warn "pooled column types not allowed in `CSV.Rows` (column number = $i)"
-                typecodes[i] = STRING | (T & MISSING)
+                types[i] = T >: Missing ? Union{String, Missing} : String
             end
         end
     end
@@ -263,9 +268,9 @@ end
         end
     end
     for i in todrop
-        typecodes[i] = USER | MISSING
+        flags[i] = WILLDROP
     end
-    debug && println("computed typecodes are: $typecodes")
+    debug && println("computed types are: $types")
     pool = pool === true ? 1.0 : pool isa Float64 ? pool : 0.0
     return Header{transpose, typeof(options), typeof(buf)}(
         getname(source),
@@ -279,7 +284,8 @@ end
         options,
         coloptions,
         positions,
-        typecodes,
+        types,
+        flags,
         todrop,
         pool,
         categorical
