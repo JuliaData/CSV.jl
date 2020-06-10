@@ -116,8 +116,14 @@ function allocate(rowsguess, ncols, types, flags)
 end
 
 allocate(::Type{Union{}}, len::Int) = MissingVector(len)
-allocate(::Type{T}, len::Int) where {T <: Union{PosLen, String, Union{String, Missing}}} = fill(MISSING_BIT, len)
-allocate(::Type{T}, len::Int) where {T <: Union{PooledString, Union{PooledString, Missing}, CategoricalString{UInt32}, Union{Missing, CategoricalString{UInt32}}}} = fill(UInt32(0), len)
+allocate(::Type{Missing}, len::Int) = MissingVector(len)
+allocate(::Type{PosLen}, len::Int) = fill(MISSING_BIT, len)
+allocate(::Type{String}, len::Int) = fill(MISSING_BIT, len)
+allocate(::Type{Union{String, Missing}}, len::Int) = fill(MISSING_BIT, len)
+allocate(::Type{PooledString}, len::Int) = fill(UInt32(0), len)
+allocate(::Type{Union{PooledString, Missing}}, len::Int) = fill(UInt32(0), len)
+allocate(::Type{CategoricalValue{String, UInt32}}, len::Int) = fill(UInt32(0), len)
+allocate(::Type{Union{CategoricalValue{String, UInt32}, Missing}}, len::Int) = fill(UInt32(0), len)
 allocate(::Union{Type{Union{Bool, Missing}}, Type{Bool}}, len::Int) = SentinelVector{Union{Bool, Missing}}(undef, len, missing, missing)
 allocate(T, len::Int) = SentinelVector{nonmissingtype(T)}(undef, len)
 
@@ -235,7 +241,7 @@ standardize(::Type{T}) where {T <: Real} = Float64
 standardize(::Type{T}) where {T <: Dates.TimeType} = T
 standardize(::Type{Bool}) = Bool
 standardize(::Type{PooledString}) = PooledString
-standardize(::Type{<:CategoricalString}) = CategoricalString{UInt32}
+standardize(::Type{<:CategoricalValue}) = CategoricalValue{String, UInt32}
 standardize(::Type{<:AbstractString}) = String
 standardize(::Type{Union{T, Missing}}) where {T} = Union{Missing, standardize(T)}
 standardize(::Type{Missing}) = Missing

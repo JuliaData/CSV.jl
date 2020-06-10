@@ -440,7 +440,7 @@ end
         @inbounds tape = tapes[col]
         @inbounds opts = coloptions === nothing ? options : coloptions[col]
         # @show typeof(tape)
-        if willdrop(flag)
+        if willdrop(flag) || (user(flag) && tape isa MissingVector)
             pos, code = parsemissing!(buf, pos, len, opts, row, col)
         elseif !typedetected(flag)
             pos, code = detect(tapes, buf, pos, len, opts, row, col, typemap, pool, refs, debug, types, flags, poslens, rowsguess)
