@@ -243,8 +243,26 @@ function File(source;
     for i = 1:ncols
         tape = tapes[i]
         if tape isa Vector{UInt32}
-            r =  isassigned(refs, i) ? (anymissing(flags[i]) ? refs[i].refs : convert(Dict{String, UInt32}, refs[i].refs)) : Dict{String, UInt32}()
-            tapes[i] = PooledArray(PooledArrays.RefArray(tape), r)
+            if categorical
+                colrefs = isassigned(refs, i) ? refs[i].refs : Dict{String, UInt32}()
+                if anymissing(flags[i])
+                    missingref = colrefs[missing]
+                    delete!(colrefs, missing)
+                    colrefs = convert(Dict{String, UInt32}, colrefs)
+                    for j = 1:length(tape)
+                        @inbounds tape[j] = ifelse(tape[j] === missingref, UInt32(0), tape[j])
+                    end
+                else
+                    colrefs = convert(Dict{String, UInt32}, colrefs)
+                end
+                pool = CategoricalPool(colrefs)
+                A = CategoricalArray{anymissing(flags[i]) ? Union{String, Missing} : String, 1}(tape, pool)
+                levels!(A, sort(levels(A)))
+                tapes[i] = A
+            else
+                r =  isassigned(refs, i) ? (anymissing(flags[i]) ? refs[i].refs : convert(Dict{String, UInt32}, refs[i].refs)) : Dict{String, UInt32}()
+                tapes[i] = PooledArray(PooledArrays.RefArray(tape), r)
+            end
         elseif tape isa Vector{PosLen}
             tapes[i] = [str(buf, options.e, x) for x in tape]
         else

@@ -22,24 +22,24 @@ end # @testset "CSV.File"
 
 include("write.jl")
 
-# @testset "CategoricalArray levels (including ordering)" begin
-#     f = CSV.read(IOBuffer("X\nb\nc\na\nc"), types=[CategoricalString{UInt32}], copycols=true)
-#     v = f.X[1]
-#     @test v == "b"
-#     @test levels(v.pool) == ["a", "b", "c"]
+@testset "CategoricalArray levels (including ordering)" begin
+    f = CSV.File(IOBuffer("X\nb\nc\na\nc"), types=[CategoricalString{UInt32}])
+    v = f.X[1]
+    @test v == "b"
+    @test levels(v.pool) == ["a", "b", "c"]
 
-#     f = CSV.read(IOBuffer("X\nb\nc\na\nc"), categorical=true, copycols=true)
-#     v = f.X[1]
-#     @test v == "b"
-#     @test levels(v.pool) == ["a", "b", "c"]
+    f = CSV.File(IOBuffer("X\nb\nc\na\nc"), categorical=true)
+    v = f.X[1]
+    @test v == "b"
+    @test levels(v.pool) == ["a", "b", "c"]
 
-#     f = CSV.read(IOBuffer("X\nb\nc\n\nc"), categorical=true, copycols=true)
-#     v = f.X[1]
-#     @test v == "b"
-#     @test levels(v.pool) == ["b", "c"]
-#     @test typeof(f.X) == CategoricalArray{Union{Missing, String},1,UInt32,String,CategoricalString{UInt32},Missing}
+    f = CSV.File(IOBuffer("X\nb\nc\n\nc"), categorical=true)
+    v = f.X[1]
+    @test v == "b"
+    @test levels(v.pool) == ["b", "c"]
+    @test typeof(f.X) == CategoricalArray{Union{Missing, String},1,UInt32,String,CategoricalString{UInt32},Missing}
 
-# end
+end
 
 @testset "PooledArrays" begin
 
