@@ -39,6 +39,10 @@ function checkvaliddelim(delim)
                             "the following delimiters are invalid: '\\r', '\\n', '\\0'"))
 end
 
+getdf(x::AbstractDict{String}, nm, i) = haskey(x, string(nm)) ? x[string(nm)] : nothing
+getdf(x::AbstractDict{Symbol}, nm, i) = haskey(x, nm) ? x[nm] : nothing
+getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
+
 @inline function Header(source,
     # file options
     # header can be a row number, range of rows, or actual string vector
@@ -187,12 +191,12 @@ end
     # generate column options if applicable
     if dateformats === nothing || isempty(dateformats)
         coloptions = nothing
-    elseif dateformats isa AbstractDict{String}
-        coloptions = [haskey(dateformats, string(nm)) ? Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformats[string(nm)], ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings) : options for nm in names]
-    elseif dateformats isa AbstractDict{Symbol}
-        coloptions = [haskey(dateformats, nm) ? Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformats[nm], ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings) : options for nm in names]
-    elseif dateformats isa AbstractDict{Int}
-        coloptions = [haskey(dateformats, i) ? Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformats[i], ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings) : options for i = 1:ncols]
+    elseif dateformats isa AbstractDict
+        coloptions = Vector{Parsers.Options}(undef, ncols)
+        for i = 1:ncols
+            df = getdf(dateformats, names[i], i)
+            coloptions = df === nothing ? options : Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings)
+        end
     end
     debug && println("column options generated as: $(something(coloptions, ""))")
 

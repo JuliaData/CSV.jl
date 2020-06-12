@@ -264,11 +264,25 @@ function File(source;
                 tapes[i] = PooledArray(PooledArrays.RefArray(tape), r)
             end
         elseif tape isa Vector{PosLen}
-            tapes[i] = [str(buf, options.e, x) for x in tape]
+            if anymissing(flags[i])
+                finaltape = Vector{Union{String, Missing}}(undef, finalrows)
+                e = options.e::UInt8
+                for j = 1:length(tape)
+                    @inbounds finaltape[j] = str(buf, e, tape[j])
+                end
+            else
+                finaltape = Vector{String}(undef, finalrows)
+                e = options.e::UInt8
+                for j = 1:length(tape)
+                    @inbounds finaltape[j] = str(buf, e, tape[j])
+                end
+            end
+        elseif tape isa Vector{String} || tape isa Vector{Union{String, Missing}}
+            # already converted in multithreadparse
         else
             if !anymissing(flags[i])
-                if tapes[i] isa SentinelArray{Union{Missing, Bool},1,Missing,Missing,Array{Union{Missing, Bool},1}}
-                    tapes[i] = convert(Vector{Bool}, parent(tapes[i]))
+                if tapes[i] isa Vector{Union{Missing, Bool}}
+                    tapes[i] = convert(Vector{Bool}, tapes[i])
                 else
                     tapes[i] = parent(tapes[i])
                 end
@@ -382,10 +396,61 @@ end # @static if VERSION >= v"1.3-DEV"
             end
         end
     end
-    for i = 1:ncols
-        _vcat!(rows[], perthreadtapes, i)
+    finalrows = rows[]
+    @sync for col = 1:ncols
+@static if VERSION >= v"1.3-DEV"
+        Threads.@spawn begin
+            tape = perthreadtapes[1][col]
+            orig = length(tape)::Int64
+            if tape isa Vector{PosLen}
+                if anymissing(flags[col])
+                    finaltape = Vector{Union{String, Missing}}(undef, finalrows)
+                    row = 1
+                    for i = 1:Threads.nthreads()
+                        tp = perthreadtapes[i][col]
+                        if tp isa Vector{PosLen}
+                            for x in tp
+                                @inbounds finaltape[row] = str(buf, options.e, x)
+                                row += 1
+                            end
+                        end
+                    end
+                else
+                    finaltape = Vector{String}(undef, finalrows)
+                    row = 1
+                    for i = 1:Threads.nthreads()
+                        tp = perthreadtapes[i][col]
+                        if tp isa Vector{PosLen}
+                            for x in tp
+                                @inbounds finaltape[row] = str(buf, options.e, x)
+                                row += 1
+                            end
+                        end
+                    end
+                end
+                perthreadtapes[1][col] = finaltape
+            else
+                resize!(tape, finalrows)
+                sz = sizeof(eltype(tape))::Int64
+                doff = (orig * sz) + 1
+                if tape isa SentinelArray
+                    SentinelArrays.newsentinel!((perthreadtapes[i][col] for i = 1:Threads.nthreads())...; force=false)
+                end
+                for i = 2:Threads.nthreads()
+                    cx = perthreadtapes[i][col]
+                    n = length(cx)::Int64 * sz
+                    if tape isa MissingVector && cx isa MissingVector
+                        tape.len += cx.len
+                    else
+                        memcpy!(pointer(tape), doff, pointer(cx), 1, n)
+                    end
+                    doff += n
+                end
+            end
+        end
+end # @static if VERSION >= v"1.3-DEV"
     end
-    return rows[], perthreadtapes[1]
+    return finalrows, perthreadtapes[1]
 end
 
 function parsetape!(TR::Val{transpose}, ncols, typemap, tapes, poslens, buf, pos, len, limit, positions, pool, refs, rowsguess, fullrowsguess, types, flags, debug, options::Parsers.Options{ignorerepeated}, coloptions) where {transpose, ignorerepeated}
@@ -403,7 +468,6 @@ function parsetape!(TR::Val{transpose}, ncols, typemap, tapes, poslens, buf, pos
                 newrowsguess = rowsguess + estimated_rows_left
                 debug && reallocatetape(row, rowsguess, newrowsguess)
                 for i = 1:ncols
-                    # TODO: specialize
                     reallocate!(tapes[i], newrowsguess)
                     if isassigned(poslens, i)
                         reallocate!(poslens[i], newrowsguess)
@@ -415,7 +479,7 @@ function parsetape!(TR::Val{transpose}, ncols, typemap, tapes, poslens, buf, pos
     end
     # done parsing (at least this chunk), so resize tapes to final row count
     for i = 1:ncols
-        # TODO: specialize
+        # TODO: specialize?
         resize!(tapes[i], row)
         if isassigned(poslens, i)
             resize!(poslens[i], row)
@@ -454,7 +518,7 @@ end
             pos, code = parsevalue!(DateTime, flag, tape, tapes, buf, pos, len, opts, row, col, types, flags, poslens)
         elseif tape isa SVec{Time}
             pos, code = parsevalue!(Time, flag, tape, tapes, buf, pos, len, opts, row, col, types, flags, poslens)
-        elseif tape isa SentinelArray{Union{Missing, Bool},1,Missing,Missing,Array{Union{Missing, Bool},1}}
+        elseif tape isa Vector{Union{Missing, Bool}}
             pos, code = parsevalue!(Bool, flag, tape, tapes, buf, pos, len, opts, row, col, types, flags, poslens)
         elseif tape isa Vector{UInt32}
             pos, code = parsepooled!(flag, tape, tapes, buf, pos, len, opts, row, col, fullrowsguess, pool, refs, types, flags, poslens)

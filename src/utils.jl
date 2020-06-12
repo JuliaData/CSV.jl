@@ -124,7 +124,8 @@ allocate(::Type{PooledString}, len::Int) = fill(UInt32(0), len)
 allocate(::Type{Union{PooledString, Missing}}, len::Int) = fill(UInt32(0), len)
 allocate(::Type{CategoricalValue{String, UInt32}}, len::Int) = fill(UInt32(0), len)
 allocate(::Type{Union{CategoricalValue{String, UInt32}, Missing}}, len::Int) = fill(UInt32(0), len)
-allocate(::Union{Type{Union{Bool, Missing}}, Type{Bool}}, len::Int) = SentinelVector{Union{Bool, Missing}}(undef, len, missing, missing)
+allocate(::Type{Bool}, len::Int) = Vector{Union{Missing, Bool}}(undef, len)
+allocate(::Type{Union{Missing, Bool}}, len::Int) = Vector{Union{Missing, Bool}}(undef, len)
 allocate(T, len::Int) = SentinelVector{nonmissingtype(T)}(undef, len)
 
 reallocate!(A, len) = resize!(A, len)
@@ -138,25 +139,6 @@ function reallocate!(A::Vector{PosLen}, len)
 end
 
 const SVec{T} = SentinelVector{T, T, Missing, Vector{T}}
-
-function _vcat!(rows, tapes, col)
-    tape = tapes[1][col]
-    orig = length(tape)::Int64
-    resize!(tape, rows)
-    sz = sizeof(eltype(tape))::Int64
-    doff = (orig * sz) + 1
-    for i = 2:Threads.nthreads()
-        cx = tapes[i][col]
-        n = length(cx)::Int64 * sz
-        if tape isa MissingVector && cx isa MissingVector
-            tape.len += cx.len
-        else
-            memcpy!(pointer(tape), doff, pointer(cx), 1, n)
-        end
-        doff += n
-    end
-    return tape
-end
 
 # one-liner suggested from ScottPJones
 consumeBOM(buf) = (length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf) ? 4 : 1
