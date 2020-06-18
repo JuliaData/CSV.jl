@@ -13,6 +13,7 @@ using PooledArrays
 using FilePathsBase
 # WeakRefStrings allows for more efficient materializing of string columns via StringVector
 using WeakRefStrings
+using SentinelArrays
 
 using CategoricalArrays, DataFrames
 
@@ -26,8 +27,6 @@ include("utils.jl")
 include("detection.jl")
 include("header.jl")
 include("file.jl")
-include("iteration.jl")
-include("tables.jl")
 include("rows.jl")
 include("write.jl")
 
