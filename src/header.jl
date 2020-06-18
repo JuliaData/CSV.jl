@@ -79,6 +79,7 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     typemap,
     categorical,
     pool,
+    lazystrings,
     strict,
     silencewarnings,
     debug,
@@ -189,26 +190,26 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     debug && println("byte position of data computed at: $datapos")
 
     # generate column options if applicable
-    if dateformats === nothing || isempty(dateformats)
-        coloptions = nothing
-    elseif dateformats isa AbstractDict
+    if dateformats isa AbstractDict
         coloptions = Vector{Parsers.Options}(undef, ncols)
         for i = 1:ncols
             df = getdf(dateformats, names[i], i)
-            coloptions = df === nothing ? options : Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings)
+            coloptions[i] = df === nothing ? options : Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings)
         end
+    else
+        coloptions = nothing
     end
     debug && println("column options generated as: $(something(coloptions, ""))")
 
     # deduce initial column types for parsing based on whether any user-provided types were provided or not
     T = type === nothing ? (streaming ? Union{String, Missing} : Union{}) : standardize(type)
-    F = type === nothing ? (streaming ? (USER | TYPEDETECTED) : 0x00) : (USER | TYPEDETECTED)
+    F = (type === nothing ? (streaming ? (USER | TYPEDETECTED) : 0x00) : (USER | TYPEDETECTED)) | (lazystrings ? LAZYSTRINGS : 0x00)
     if types isa Vector
         types = Type[standardize(T) for T in types]
-        flags = [(USER | TYPEDETECTED) for _ = 1:ncols]
+        flags = [(USER | TYPEDETECTED | (lazystrings ? LAZYSTRINGS : 0x00)) for _ = 1:ncols]
         categorical = categorical | any(x->x == CategoricalValue{String, UInt32}, types)
     elseif types isa AbstractDict
-        flags = initialflags(F, types, names)
+        flags = initialflags(F, types, names, lazystrings)
         types = initialtypes(T, types, names)
         categorical = categorical | any(x->x == CategoricalValue{String, UInt32}, values(types))
     else

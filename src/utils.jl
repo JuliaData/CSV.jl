@@ -50,7 +50,10 @@ typedetected(flag) = flag & TYPEDETECTED > 0
 const WILLDROP = 0b00001000
 willdrop(flag) = flag & WILLDROP > 0
 
-flag(T) = T === Union{} ? 0x00 : ((USER | TYPEDETECTED) | (hasmissingtype(T) ? ANYMISSING : 0x00))
+const LAZYSTRINGS = 0b00010000
+lazystrings(flag) = flag & LAZYSTRINGS > 0
+
+flag(T, lazystrings) = (T === Union{} ? 0x00 : ((USER | TYPEDETECTED) | (hasmissingtype(T) ? ANYMISSING : 0x00))) | (lazystrings ? LAZYSTRINGS : 0x00)
 
 mutable struct MissingVector <: AbstractVector{Missing}
     len::Int64
@@ -107,7 +110,7 @@ _unsafe_string(p, len) = ccall(:jl_pchar_to_string, Ref{String}, (Ptr{UInt8}, In
 end
 
 function allocate(rowsguess, ncols, types, flags)
-    columns = AbstractVector[allocate(types[i], rowsguess) for i = 1:ncols]
+    columns = AbstractVector[allocate(lazystrings(flags[i]) && types[i] >: String ? PosLen : types[i], rowsguess) for i = 1:ncols]
     poslens = Vector{Vector{PosLen}}(undef, ncols)
     for i = 1:ncols
         if !user(flags[i])
@@ -240,9 +243,9 @@ initialtypes(T, x::AbstractDict{String}, names) = Type[haskey(x, string(nm)) ? s
 initialtypes(T, x::AbstractDict{Symbol}, names) = Type[haskey(x, nm) ? standardize(x[nm]) : T for nm in names]
 initialtypes(T, x::AbstractDict{Int}, names)    = Type[haskey(x, i) ? standardize(x[i]) : T for i = 1:length(names)]
 
-initialflags(T, x::AbstractDict{String}, names) = UInt8[haskey(x, string(nm)) ? flag(x[string(nm)]) : T for nm in names]
-initialflags(T, x::AbstractDict{Symbol}, names) = UInt8[haskey(x, nm) ? flag(x[nm]) : T for nm in names]
-initialflags(T, x::AbstractDict{Int}, names)    = UInt8[haskey(x, i) ? flag(x[i]) : T for i = 1:length(names)]
+initialflags(T, x::AbstractDict{String}, names, lazystrings) = UInt8[haskey(x, string(nm)) ? flag(x[string(nm)], lazystrings) : T for nm in names]
+initialflags(T, x::AbstractDict{Symbol}, names, lazystrings) = UInt8[haskey(x, nm) ? flag(x[nm], lazystrings) : T for nm in names]
+initialflags(T, x::AbstractDict{Int}, names, lazystrings)    = UInt8[haskey(x, i) ? flag(x[i], lazystrings) : T for i = 1:length(names)]
 
 # given a DateFormat, is it meant for parsing Date, DateTime, or Time?
 function timetype(df::Dates.DateFormat)
