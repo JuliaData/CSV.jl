@@ -50,7 +50,7 @@ typedetected(flag) = flag & TYPEDETECTED > 0
 const WILLDROP = 0b00001000
 willdrop(flag) = flag & WILLDROP > 0
 
-flag(T) = T === Union{} ? 0x00 : ((USER | TYPEDETECTED) | (T >: Missing ? ANYMISSING : 0x00))
+flag(T) = T === Union{} ? 0x00 : ((USER | TYPEDETECTED) | (hasmissingtype(T) ? ANYMISSING : 0x00))
 
 mutable struct MissingVector <: AbstractVector{Missing}
     len::Int64
@@ -62,18 +62,20 @@ Base.getindex(x::MissingVector, i::Int) = missing
 Base.setindex!(x::MissingVector, ::Missing, i::Int) = missing
 Base.resize!(x::MissingVector, len) = x.len = len
 
-@inline function promote_types(T, S)
+hasmissingtype(T) = T === Missing || T !== Core.Compiler.typesubtract(T, Missing)
+
+@inline function promote_types(@nospecialize(T), @nospecialize(S))
     if T === Union{} || S === Union{} || T === Missing || S === Missing || T === S || nonmissingtype(T) === nonmissingtype(S)
         return Union{T, S}
     elseif T === Int64
-        return S === Float64 ? S : S === Union{Float64, Missing} ? S : S >: Missing ? Union{String, Missing} : String
+        return S === Float64 ? S : S === Union{Float64, Missing} ? S : hasmissingtype(S) ? Union{String, Missing} : String
     elseif T === Union{Int64, Missing}
         return S === Float64 || S === Union{Float64, Missing} ? Union{Float64, Missing} : Union{String, Missing}
     elseif T === Float64
-        return S === Int64 ? T : S === Union{Int64, Missing} ? Union{Float64, Missing} : S >: Missing ? Union{String, Missing} : String
+        return S === Int64 ? T : S === Union{Int64, Missing} ? Union{Float64, Missing} : hasmissingtype(S) ? Union{String, Missing} : String
     elseif T === Union{Float64, Missing}
         return S === Int64 || S === Union{Int64, Missing} ? Union{Float64, Missing} : Union{String, Missing}
-    elseif T >: Missing || S >: Missing
+    elseif hasmissingtype(T) || hasmissingtype(S)
         return Union{String, Missing}
     else
         return String
@@ -117,9 +119,13 @@ end
 
 allocate(::Type{Union{}}, len::Int) = MissingVector(len)
 allocate(::Type{Missing}, len::Int) = MissingVector(len)
-allocate(::Type{PosLen}, len::Int) = fill(MISSING_BIT, len)
-allocate(::Type{String}, len::Int) = fill(MISSING_BIT, len)
-allocate(::Type{Union{String, Missing}}, len::Int) = fill(MISSING_BIT, len)
+function allocate(::Type{PosLen}, len::Int)
+    A = Vector{PosLen}(undef, len)
+    memset!(pointer(A), typemax(UInt8), sizeof(A))
+    return A
+end
+allocate(::Type{String}, len::Int) = SentinelVector{String}(undef, len)
+allocate(::Type{Union{String, Missing}}, len::Int) = SentinelVector{String}(undef, len)
 allocate(::Type{PooledString}, len::Int) = fill(UInt32(0), len)
 allocate(::Type{Union{PooledString, Missing}}, len::Int) = fill(UInt32(0), len)
 allocate(::Type{CategoricalValue{String, UInt32}}, len::Int) = fill(UInt32(0), len)
@@ -139,6 +145,7 @@ function reallocate!(A::Vector{PosLen}, len)
 end
 
 const SVec{T} = SentinelVector{T, T, Missing, Vector{T}}
+const StringVec = SentinelVector{String, typeof(undef), Missing, Vector{String}}
 
 # one-liner suggested from ScottPJones
 consumeBOM(buf) = (length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf) ? 4 : 1
@@ -347,6 +354,7 @@ function unset!(A::Vector, i::Int, row, x)
 end
 
 memcpy!(d, doff, s, soff, n) = ccall(:memcpy, Cvoid, (Ptr{UInt8}, Ptr{UInt8}, Int), d + doff - 1, s + soff - 1, n)
+memset!(ptr, value, num) = ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), ptr, value, num)
 
 mutable struct RefPool
     lock::Threads.SpinLock

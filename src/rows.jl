@@ -211,7 +211,13 @@ Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Union{Type{Union{M
     @boundscheck checkbounds(r, i)
     j = getcolumnmap(r)[i]
     @inbounds poslen = gettapes(r)[j][1]
-    return str(getbuf(r), gete(r), poslen)
+    if poslen isa Missing
+        return missing
+    elseif poslen isa String
+        return poslen
+    else
+        return str(getbuf(r), gete(r), poslen)
+    end
 end
 
 @noinline stringsonly() = error("Parsers.parse only allowed on String column types")
