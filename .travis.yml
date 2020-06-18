@@ -20,7 +20,7 @@ arch:
 
 julia:
   - 1.0
-  - 1.3
+  - 1
   - nightly
 
 env:
@@ -48,3 +48,14 @@ jobs:
         - julia --project=docs/ -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate(); Pkg.build("CSV")'
         - julia --project=docs/ docs/make.jl
       after_success: skip
+
+branches:
+  only:
+  - master
+  - gh-pages # For building documentation
+  - /^testing-.*$/ # testing branches
+  - /^v[0-9]+\.[0-9]+\.[0-9]+$/ # version tags
+
+cache:
+  directories:
+  - $HOME/.julia/artifacts

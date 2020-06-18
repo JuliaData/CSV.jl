@@ -1,10 +1,10 @@
-# PooledString is an internal-only type for efficiently tracking string data + length
-# all strings indexed from a column/row will always be a full String
-# specifically, it allows avoiding materializing full Strings for pooled string columns while parsing
-# and allows a fastpath for materializing a full String when no escaping is needed
 export PooledString
 struct PooledString <: AbstractString end
 
+# PointerString is an internal-only type for efficiently tracking string data + length
+# all strings indexed from a column/row will always be a full String
+# specifically, it allows avoiding materializing full Strings for pooled string columns while parsing
+# and allows a fastpath for materializing a full String when no escaping is needed
 struct PointerString <: AbstractString
     ptr::Ptr{UInt8}
     len::Int
@@ -19,6 +19,9 @@ import Base: ==
 function ==(x::String, y::PointerString)
     sizeof(x) == y.len && ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t), pointer(x), y.ptr, y.len) == 0
 end
+function ==(x::PointerString, y::PointerString)
+    x.len == y.len && ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t), x.ptr, y.ptr, y.len) == 0
+end
 ==(y::PointerString, x::String) = x == y
 
 Base.ncodeunits(s::PointerString) = s.len
@@ -26,144 +29,126 @@ Base.ncodeunits(s::PointerString) = s.len
     @boundscheck checkbounds(s, i)
     GC.@preserve s unsafe_load(s.ptr + i - 1)
 end
-Base.String(x::PointerString) = unsafe_string(x.ptr, x.len)
 
-# TypeCode is a compact type encoding of types CSV.jl supports parsing from files
-# it allows avoiding the dynamic nature of full Julia `Type` in hot parsing loops
-# and is generally efficient for the limited # of type operations required
-const TypeCode = Int8
+Base.String(x::PointerString) = _unsafe_string(x.ptr, x.len)
 
-# default value to signal that parsing should try to detect a type
-const EMPTY       = 0b00000000 % TypeCode
+# column bit flags
 
-# MISSING is a mask that can be combined w/ any other TypeCode for Union{T, Missing}
-const MISSING     = 0b10000000 % TypeCode
-missingtype(x::TypeCode) = (x & MISSING) == MISSING
-usermissing(x::TypeCode) = x == (MISSING | USER)
+# whether the user provided the type or not
+const USER       = 0b00000001
+user(flag) = flag & USER > 0
 
-# MISSINGTYPE is for a column like `Vector{Missing}`
-# if we're trying to detect a column type and the 1st value of a column is `missing`
-# we basically want to still treat it like EMPTY and try parsing other types on each row
-const MISSINGTYPE = 0b00000001 % TypeCode
+# whether any missing values have been found in this column so far
+const ANYMISSING = 0b00000010
+anymissing(flag) = flag & ANYMISSING > 0
 
-# enum-like type codes for basic supported types
-const INT         = 0b00000010 % TypeCode
-const FLOAT       = 0b00000011 % TypeCode
-const DATE        = 0b00000100 % TypeCode
-const DATETIME    = 0b00000101 % TypeCode
-const TIME        = 0b00000110 % TypeCode
-const BOOL        = 0b00000111 % TypeCode
-const STRING      = 0b00001000 % TypeCode
-stringtype(x::TypeCode) = (x & STRING) == STRING
-const POOL        = 0b00010000 % TypeCode
-pooled(x::TypeCode) = (x & POOL) == POOL
+# whether a column type has been detected yet
+const TYPEDETECTED = 0b00000100
+typedetected(flag) = flag & TYPEDETECTED > 0
 
-# a user-provided type; a mask that can be combined w/ basic types
-const USER     = 0b00100000 % TypeCode
-user(x::TypeCode) = (x & USER) == USER
+# whether a column will be "dropped"
+const WILLDROP = 0b00001000
+willdrop(flag) = flag & WILLDROP > 0
 
-const TYPEBITS = 0b00011111 % TypeCode
-typebits(x::TypeCode) = x & TYPEBITS
+const LAZYSTRINGS = 0b00010000
+lazystrings(flag) = flag & LAZYSTRINGS > 0
 
-typecode(::Type{Missing}) = MISSING
-typecode(::Type{<:Integer}) = INT
-typecode(::Type{<:AbstractFloat}) = FLOAT
-typecode(::Type{Date}) = DATE
-typecode(::Type{DateTime}) = DATETIME
-typecode(::Type{Time}) = TIME
-typecode(::Type{Bool}) = BOOL
-typecode(::Type{<:AbstractString}) = STRING
-typecode(::Type{PooledString}) = POOL
-typecode(::Type{CategoricalValue{String, UInt32}}) = POOL
-typecode(::Type{Union{}}) = EMPTY
-typecode(::Type{Union{T, Missing}}) where {T} = typecode(T) | MISSING
-typecode(::Type{T}) where {T} = EMPTY
-typecode(x::T) where {T} = typecode(T)
+flag(T, lazystrings) = (T === Union{} ? 0x00 : ((USER | TYPEDETECTED) | (hasmissingtype(T) ? ANYMISSING : 0x00))) | (lazystrings ? LAZYSTRINGS : 0x00)
 
-const TYPECODES = Dict(
-    EMPTY => Missing,
-    MISSINGTYPE => Missing,
-    MISSING => Missing,
-    INT => Int64,
-    FLOAT => Float64,
-    DATE => Date,
-    DATETIME => DateTime,
-    TIME => Time,
-    BOOL => Bool,
-    POOL => PooledString,
-    STRING => String,
-    INT | MISSING => Union{Int64, Missing},
-    FLOAT | MISSING => Union{Float64, Missing},
-    DATE | MISSING => Union{Date, Missing},
-    DATETIME | MISSING => Union{DateTime, Missing},
-    TIME | MISSING => Union{Time, Missing},
-    BOOL | MISSING => Union{Bool, Missing},
-    POOL | MISSING => Union{PooledString, Missing},
-    STRING | MISSING => Union{String, Missing}
-)
+mutable struct MissingVector <: AbstractVector{Missing}
+    len::Int64
+end
 
-gettype(x::TypeCode) = TYPECODES[x & ~USER]
+Base.IndexStyle(::Type{MissingVector}) = Base.IndexLinear()
+Base.size(x::MissingVector) = (x.len,)
+Base.getindex(x::MissingVector, i::Int) = missing
+Base.setindex!(x::MissingVector, ::Missing, i::Int) = missing
+Base.resize!(x::MissingVector, len) = x.len = len
 
-@inline function promote_typecode(T, S)
-    if T == EMPTY || T == S || user(T) || (T & ~MISSING) == (S & ~MISSING)
-        return T | S
-    elseif T == MISSINGTYPE
-        return S | MISSING
-    elseif S == MISSINGTYPE
-        return T | MISSING
-    elseif T == INT
-        return S == FLOAT ? S : S == (FLOAT | MISSING) ? S : missingtype(S) ? (STRING | MISSING) : STRING
-    elseif T == (INT | MISSING)
-        return S == FLOAT || S == (FLOAT | MISSING) ? (FLOAT | MISSING) : (STRING | MISSING)
-    elseif T == FLOAT
-        return S == INT ? FLOAT : S == (INT | MISSING) ? T | MISSING : missingtype(S) ? (STRING | MISSING) : STRING
-    elseif T == (FLOAT | MISSING)
-        return S == INT || S == (INT | MISSING) ? (FLOAT | MISSING) : (STRING | MISSING)
-    elseif missingtype(T) || missingtype(S)
-        return STRING | MISSING
+hasmissingtype(T) = T === Missing || T !== Core.Compiler.typesubtract(T, Missing)
+
+@inline function promote_types(@nospecialize(T), @nospecialize(S))
+    if T === Union{} || S === Union{} || T === Missing || S === Missing || T === S || nonmissingtype(T) === nonmissingtype(S)
+        return Union{T, S}
+    elseif T === Int64
+        return S === Float64 ? S : S === Union{Float64, Missing} ? S : hasmissingtype(S) ? Union{String, Missing} : String
+    elseif T === Union{Int64, Missing}
+        return S === Float64 || S === Union{Float64, Missing} ? Union{Float64, Missing} : Union{String, Missing}
+    elseif T === Float64
+        return S === Int64 ? T : S === Union{Int64, Missing} ? Union{Float64, Missing} : hasmissingtype(S) ? Union{String, Missing} : String
+    elseif T === Union{Float64, Missing}
+        return S === Int64 || S === Union{Int64, Missing} ? Union{Float64, Missing} : Union{String, Missing}
+    elseif hasmissingtype(T) || hasmissingtype(S)
+        return Union{String, Missing}
     else
-        return STRING
+        return String
     end
 end
 
-gettypecodes(x::Dict) = Dict(typecode(k)=>typecode(v) for (k, v) in x)
-gettypecodes(x::Dict{TypeCode, TypeCode}) = x
-
 # bit patterns for missing value, int value, escaped string, position and len in tape parsing
+const PosLen = UInt64
+
+# primitive type PosLen 64 end
+# PosLen(x::UInt64) = Core.bitcast(PosLen, x)
+# UInt64(x::PosLen) = Core.bitcast(UInt64, x)
+
 const MISSING_BIT = 0x8000000000000000
-missingvalue(x::UInt64) = (x & MISSING_BIT) == MISSING_BIT
-sentinelvalue(::Type{Float64}) = Core.bitcast(UInt64, NaN) | MISSING_BIT
-sentinelvalue(::Type{T}) where {T} = MISSING_BIT
-const INT_SENTINEL = -8899831978349840752
-sentinelvalue(::Type{Int64}) = rand(typemin(Int64):div(typemin(Int64), 1000)) * ifelse(rand(Bool), 1, -1)
+missingvalue(x) = (UInt64(x) & MISSING_BIT) == MISSING_BIT
 
 const ESCAPE_BIT = 0x4000000000000000
-escapedvalue(x::UInt64) = (x & ESCAPE_BIT) == ESCAPE_BIT
+escapedvalue(x) = (UInt64(x) & ESCAPE_BIT) == ESCAPE_BIT
 
-getpos(x::UInt64) = (x & 0x3ffffffffff00000) >> 20
-getlen(x::UInt64) = x & 0x00000000000fffff
+getpos(x) = (UInt64(x) & 0x3ffffffffff00000) >> 20
+getlen(x) = UInt64(x) & 0x00000000000fffff
 
-# utilities to convert values to raw UInt64 and back for tape writing
-int64(x::UInt64) = Core.bitcast(Int64, x)
-float64(x::UInt64) = Core.bitcast(Float64, x)
-bool(x::UInt64) = x == 0x0000000000000001
-date(x::UInt64) = Date(Dates.UTD(int64(x)))
-datetime(x::UInt64) = DateTime(Dates.UTM(int64(x)))
-time(x::UInt64) = Time(Nanosecond(int64(x)))
-ref(x::UInt64) = unsafe_trunc(UInt32, x)
+_unsafe_string(p, len) = ccall(:jl_pchar_to_string, Ref{String}, (Ptr{UInt8}, Int), p, len)
+@inline function str(buf, e, poslen)
+    missingvalue(poslen) && return missing
+    escapedvalue(poslen) && return unescape(PointerString(pointer(buf, getpos(poslen)), getlen(poslen)), e)
+    pos, len = getpos(poslen), getlen(poslen)
+    return _unsafe_string(pointer(buf, getpos(poslen)), getlen(poslen))
+end
 
-uint64(x::Int64) = Core.bitcast(UInt64, x)
-uint64(x::Float64) = Core.bitcast(UInt64, x)
-uint64(x::Bool) = UInt64(x)
-uint64(x::Union{Date, DateTime, Time}) = uint64(Dates.value(x))
-uint64(x::UInt32) = UInt64(x)
+function allocate(rowsguess, ncols, types, flags)
+    columns = AbstractVector[allocate(lazystrings(flags[i]) && types[i] >: String ? PosLen : types[i], rowsguess) for i = 1:ncols]
+    poslens = Vector{Vector{PosLen}}(undef, ncols)
+    for i = 1:ncols
+        if !user(flags[i])
+            poslens[i] = allocate(PosLen, rowsguess)
+        end
+    end
+    return columns, poslens
+end
 
-reinterp_func(::Type{Int64}) = int64
-reinterp_func(::Type{Float64}) = float64
-reinterp_func(::Type{Date}) = date
-reinterp_func(::Type{DateTime}) = datetime
-reinterp_func(::Type{Time}) = time
-reinterp_func(::Type{Bool}) = bool
+allocate(::Type{Union{}}, len) = MissingVector(len)
+allocate(::Type{Missing}, len) = MissingVector(len)
+function allocate(::Type{PosLen}, len)
+    A = Vector{PosLen}(undef, len)
+    memset!(pointer(A), typemax(UInt8), sizeof(A))
+    return A
+end
+allocate(::Type{String}, len) = SentinelVector{String}(undef, len)
+allocate(::Type{Union{String, Missing}}, len) = SentinelVector{String}(undef, len)
+allocate(::Type{PooledString}, len) = fill(UInt32(0), len)
+allocate(::Type{Union{PooledString, Missing}}, len) = fill(UInt32(0), len)
+allocate(::Type{CategoricalValue{String, UInt32}}, len) = fill(UInt32(0), len)
+allocate(::Type{Union{CategoricalValue{String, UInt32}, Missing}}, len) = fill(UInt32(0), len)
+allocate(::Type{Bool}, len) = Vector{Union{Missing, Bool}}(undef, len)
+allocate(::Type{Union{Missing, Bool}}, len) = Vector{Union{Missing, Bool}}(undef, len)
+allocate(T, len) = SentinelVector{nonmissingtype(T)}(undef, len)
+
+reallocate!(A, len) = resize!(A, len)
+function reallocate!(A::Vector{PosLen}, len)
+    oldlen = length(A)
+    resize!(A, len)
+    for i = (oldlen + 1):len
+        @inbounds A[i] = MISSING_BIT
+    end
+    return
+end
+
+const SVec{T} = SentinelVector{T, T, Missing, Vector{T}}
+const StringVec = SentinelVector{String, typeof(undef), Missing, Vector{String}}
 
 # one-liner suggested from ScottPJones
 consumeBOM(buf) = (length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf) ? 4 : 1
@@ -243,9 +228,24 @@ function makeunique(names)
     return nms
 end
 
-initialtypes(T, x::AbstractDict{String}, names) = TypeCode[haskey(x, string(nm)) ? typecode(x[string(nm)]) | USER : T for nm in names]
-initialtypes(T, x::AbstractDict{Symbol}, names) = TypeCode[haskey(x, nm) ? typecode(x[nm]) | USER : T for nm in names]
-initialtypes(T, x::AbstractDict{Int}, names)    = TypeCode[haskey(x, i) ? typecode(x[i]) | USER : T for i = 1:length(names)]
+standardize(::Type{T}) where {T <: Integer} = Int64
+standardize(::Type{T}) where {T <: Real} = Float64
+standardize(::Type{T}) where {T <: Dates.TimeType} = T
+standardize(::Type{Bool}) = Bool
+standardize(::Type{PooledString}) = PooledString
+standardize(::Type{<:CategoricalValue}) = CategoricalValue{String, UInt32}
+standardize(::Type{<:AbstractString}) = String
+standardize(::Type{Union{T, Missing}}) where {T} = Union{Missing, standardize(T)}
+standardize(::Type{Missing}) = Missing
+standardize(T) = Union{}
+
+initialtypes(T, x::AbstractDict{String}, names) = Type[haskey(x, string(nm)) ? standardize(x[string(nm)]) : T for nm in names]
+initialtypes(T, x::AbstractDict{Symbol}, names) = Type[haskey(x, nm) ? standardize(x[nm]) : T for nm in names]
+initialtypes(T, x::AbstractDict{Int}, names)    = Type[haskey(x, i) ? standardize(x[i]) : T for i = 1:length(names)]
+
+initialflags(T, x::AbstractDict{String}, names, lazystrings) = UInt8[haskey(x, string(nm)) ? flag(x[string(nm)], lazystrings) : T for nm in names]
+initialflags(T, x::AbstractDict{Symbol}, names, lazystrings) = UInt8[haskey(x, nm) ? flag(x[nm], lazystrings) : T for nm in names]
+initialflags(T, x::AbstractDict{Int}, names, lazystrings)    = UInt8[haskey(x, i) ? flag(x[i], lazystrings) : T for i = 1:length(names)]
 
 # given a DateFormat, is it meant for parsing Date, DateTime, or Time?
 function timetype(df::Dates.DateFormat)
@@ -351,10 +351,18 @@ Base.IndexStyle(::Type{ReversedBuf}) = Base.IndexLinear()
 Base.getindex(a::ReversedBuf, i::Int) = a.buf[end + 1 - i]
 
 function unset!(A::Vector, i::Int, row, x)
-    finalize(A[i])
     ccall(:jl_arrayunset, Cvoid, (Array, Csize_t), A, i - 1)
     # println("deleting col = $i on thread = $(Threads.threadid()), row = $row, id = $x")
     return
 end
 
 memcpy!(d, doff, s, soff, n) = ccall(:memcpy, Cvoid, (Ptr{UInt8}, Ptr{UInt8}, Int), d + doff - 1, s + soff - 1, n)
+memset!(ptr, value, num) = ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), ptr, value, num)
+
+mutable struct RefPool
+    lock::Threads.SpinLock
+    refs::Dict{Union{String, Missing}, UInt32}
+    lastref::UInt32
+end
+
+RefPool() = RefPool(Threads.SpinLock(), Dict{Union{String, Missing}, UInt32}(), 0)

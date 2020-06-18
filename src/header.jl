@@ -10,7 +10,8 @@ struct Header{transpose, O, IO}
     options::O # Parsers.Options
     coloptions::Union{Nothing, Vector{Parsers.Options}}
     positions::Vector{Int64}
-    typecodes::Vector{TypeCode}
+    types::Vector{Type}
+    flags::Vector{UInt8}
     todrop::Vector{Int}
     pool::Float64
     categorical::Bool
@@ -37,6 +38,10 @@ function checkvaliddelim(delim)
         throw(ArgumentError("invalid delim argument = '$(escape_string(string(delim)))', "*
                             "the following delimiters are invalid: '\\r', '\\n', '\\0'"))
 end
+
+getdf(x::AbstractDict{String}, nm, i) = haskey(x, string(nm)) ? x[string(nm)] : nothing
+getdf(x::AbstractDict{Symbol}, nm, i) = haskey(x, nm) ? x[nm] : nothing
+getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
 
 @inline function Header(source,
     # file options
@@ -74,6 +79,7 @@ end
     typemap,
     categorical,
     pool,
+    lazystrings,
     strict,
     silencewarnings,
     debug,
@@ -84,12 +90,12 @@ end
     !isa(source, IO) && !isa(source, Vector{UInt8}) && !isa(source, Cmd) && !isfile(source) &&
         throw(ArgumentError("\"$source\" is not a valid file"))
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
-    if type !== nothing && typecode(type) == EMPTY
+    if type !== nothing && standardize(type) == Union{}
         throw(ArgumentError("$type isn't supported in the `type` keyword argument; must be one of: `Int64`, `Float64`, `Date`, `DateTime`, `Bool`, `Missing`, `PooledString`, `CategoricalValue{String, UInt32}`, or `String`"))
-    elseif types !== nothing && any(x->typecode(x) == EMPTY, types isa AbstractDict ? values(types) : types)
+    elseif types !== nothing && any(x->standardize(x) == Union{}, types isa AbstractDict ? values(types) : types)
         T = nothing
         for x in (types isa AbstractDict ? values(types) : types)
-            if typecode(x) == EMPTY
+            if standardize(x) == Union{}
                 T = x
                 break
             end
@@ -184,34 +190,38 @@ end
     debug && println("byte position of data computed at: $datapos")
 
     # generate column options if applicable
-    if dateformats === nothing || isempty(dateformats)
+    if dateformats isa AbstractDict
+        coloptions = Vector{Parsers.Options}(undef, ncols)
+        for i = 1:ncols
+            df = getdf(dateformats, names[i], i)
+            coloptions[i] = df === nothing ? options : Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings)
+        end
+    else
         coloptions = nothing
-    elseif dateformats isa AbstractDict{String}
-        coloptions = [haskey(dateformats, string(nm)) ? Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformats[string(nm)], ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings) : options for nm in names]
-    elseif dateformats isa AbstractDict{Symbol}
-        coloptions = [haskey(dateformats, nm) ? Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformats[nm], ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings) : options for nm in names]
-    elseif dateformats isa AbstractDict{Int}
-        coloptions = [haskey(dateformats, i) ? Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformats[i], ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings) : options for i = 1:ncols]
     end
     debug && println("column options generated as: $(something(coloptions, ""))")
 
     # deduce initial column types for parsing based on whether any user-provided types were provided or not
-    T = type === nothing ? (streaming ? (STRING | MISSING) : EMPTY) : (typecode(type) | USER)
+    T = type === nothing ? (streaming ? Union{String, Missing} : Union{}) : standardize(type)
+    F = (type === nothing ? (streaming ? (USER | TYPEDETECTED) : 0x00) : (USER | TYPEDETECTED)) | (lazystrings ? LAZYSTRINGS : 0x00)
     if types isa Vector
-        typecodes = TypeCode[typecode(T) | USER for T in types]
+        types = Type[standardize(T) for T in types]
+        flags = [(USER | TYPEDETECTED | (lazystrings ? LAZYSTRINGS : 0x00)) for _ = 1:ncols]
         categorical = categorical | any(x->x == CategoricalValue{String, UInt32}, types)
     elseif types isa AbstractDict
-        typecodes = initialtypes(T, types, names)
+        flags = initialflags(F, types, names, lazystrings)
+        types = initialtypes(T, types, names)
         categorical = categorical | any(x->x == CategoricalValue{String, UInt32}, values(types))
     else
-        typecodes = TypeCode[T for _ = 1:ncols]
+        types = Type[T for _ = 1:ncols]
+        flags = [F for _ = 1:ncols]
     end
     if streaming
         for i = 1:ncols
-            T = typecodes[i]
-            if pooled(T)
+            T = types[i]
+            if T === PooledString || T === Union{PooledString, Missing}
                 @warn "pooled column types not allowed in `CSV.Rows` (column number = $i)"
-                typecodes[i] = STRING | (T & MISSING)
+                types[i] = T >: Missing ? Union{String, Missing} : String
             end
         end
     end
@@ -263,9 +273,9 @@ end
         end
     end
     for i in todrop
-        typecodes[i] = USER | MISSING
+        flags[i] = WILLDROP
     end
-    debug && println("computed typecodes are: $typecodes")
+    debug && println("computed types are: $types")
     pool = pool === true ? 1.0 : pool isa Float64 ? pool : 0.0
     return Header{transpose, typeof(options), typeof(buf)}(
         getname(source),
@@ -279,7 +289,8 @@ end
         options,
         coloptions,
         positions,
-        typecodes,
+        types,
+        flags,
         todrop,
         pool,
         categorical
