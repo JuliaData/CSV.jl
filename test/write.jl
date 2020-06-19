@@ -312,4 +312,8 @@ const table_types = (
     close(io)
     @test read(io, String) == "a,b\n1,4.1\n2,5.2\n3,6.3\n"
 
+    # https://github.com/JuliaData/CSV.jl/issues/643
+    s = join(1:1000000);
+    @test_throws ArgumentError CSV.write("out.test.csv", [(a=s,)])
+
 end # @testset "CSV.write"
