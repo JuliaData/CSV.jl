@@ -118,7 +118,7 @@ function Rows(source;
     kw...)
 
     h = Header(source, header, normalizenames, datarow, skipto, footerskip, limit, transpose, comment, use_mmap, ignoreemptylines, false, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, true)
-    tapes, poslens = allocate(1, h.cols, h.types, h.flags)
+    tapes = allocate(1, h.cols, h.types, h.flags)
     finaltypes = copy(h.types)
     columnmap = [i for i = 1:h.cols]
     deleteat!(h.names, h.todrop)
@@ -160,7 +160,7 @@ const EMPTY_REFS = RefPool[]
 @inline function Base.iterate(r::Rows{transpose}, (pos, len, row)=(r.datapos, r.len, 1)) where {transpose}
     (pos > len || row > r.limit) && return nothing
     pos > len && return nothing
-    tapes = r.reusebuffer ? r.tapes : allocate(1, r.cols, r.types, r.flags)[1]
+    tapes = r.reusebuffer ? r.tapes : allocate(1, r.cols, r.types, r.flags)
     pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, tapes, EMPTY_POSLENS, r.buf, pos, len, r.positions, 0.0, EMPTY_REFS, 1, r.types, r.flags, false, r.options, r.coloptions)
     return Row2(r.names, r.finaltypes, r.columnmap, r.types, r.lookup, tapes, r.buf, r.e, r.options, r.coloptions), (pos, len, row + 1)
 end
