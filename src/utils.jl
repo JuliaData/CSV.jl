@@ -55,16 +55,6 @@ lazystrings(flag) = flag & LAZYSTRINGS > 0
 
 flag(T, lazystrings) = (T === Union{} ? 0x00 : ((USER | TYPEDETECTED) | (hasmissingtype(T) ? ANYMISSING : 0x00))) | (lazystrings ? LAZYSTRINGS : 0x00)
 
-mutable struct MissingVector <: AbstractVector{Missing}
-    len::Int64
-end
-
-Base.IndexStyle(::Type{MissingVector}) = Base.IndexLinear()
-Base.size(x::MissingVector) = (x.len,)
-Base.getindex(x::MissingVector, i::Int) = missing
-Base.setindex!(x::MissingVector, ::Missing, i::Int) = missing
-Base.resize!(x::MissingVector, len) = x.len = len
-
 hasmissingtype(T) = T === Missing || T !== Core.Compiler.typesubtract(T, Missing)
 
 @inline function promote_types(@nospecialize(T), @nospecialize(S))

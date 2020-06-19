@@ -305,12 +305,11 @@ function syncrefs!(refs, tl_refs, col, tl_rows, tape)
     return
 end
 
-veceltype(T) = nonmissingtype(eltype(T))
-veceltype(::Type{Vector{Union{Missing, Bool}}}) = Union{Missing, Bool}
-veceltype(::Type{MissingVector}) = Missing
+vectype(::Type{A}) where {A <: SentinelVector{T}} where {T} = Vector{T}
+vectype(T) = T
 
 function makechain(::Type{T}, tape::T, N, col, perthreadtapes) where {T}
-    chain = Vector{Vector{veceltype(T)}}(undef, N)
+    chain = Vector{vectype(T)}(undef, N)
     @inbounds chain[1] = parent(tape)
     for i = 2:N
         @inbounds tp = perthreadtapes[i][col]
