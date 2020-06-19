@@ -55,6 +55,9 @@ lazystrings(flag) = flag & LAZYSTRINGS > 0
 
 flag(T, lazystrings) = (T === Union{} ? 0x00 : ((USER | TYPEDETECTED) | (hasmissingtype(T) ? ANYMISSING : 0x00))) | (lazystrings ? LAZYSTRINGS : 0x00)
 
+const PROMOTE_TO_STRING = 0b0100000000000000 % Int16
+promote_to_string(code) = code & PROMOTE_TO_STRING > 0
+
 hasmissingtype(T) = T === Missing || T !== Core.Compiler.typesubtract(T, Missing)
 
 @inline function promote_types(@nospecialize(T), @nospecialize(S))
@@ -100,14 +103,7 @@ _unsafe_string(p, len) = ccall(:jl_pchar_to_string, Ref{String}, (Ptr{UInt8}, In
 end
 
 function allocate(rowsguess, ncols, types, flags)
-    columns = AbstractVector[allocate(lazystrings(flags[i]) && types[i] >: String ? PosLen : types[i], rowsguess) for i = 1:ncols]
-    poslens = Vector{Vector{PosLen}}(undef, ncols)
-    for i = 1:ncols
-        if !user(flags[i])
-            poslens[i] = allocate(PosLen, rowsguess)
-        end
-    end
-    return columns, poslens
+    return AbstractVector[allocate(lazystrings(flags[i]) && types[i] >: String ? PosLen : types[i], rowsguess) for i = 1:ncols]
 end
 
 allocate(::Type{Union{}}, len) = MissingVector(len)
@@ -131,9 +127,7 @@ reallocate!(A, len) = resize!(A, len)
 function reallocate!(A::Vector{PosLen}, len)
     oldlen = length(A)
     resize!(A, len)
-    for i = (oldlen + 1):len
-        @inbounds A[i] = MISSING_BIT
-    end
+    memset!(pointer(A, oldlen + 1), typemax(UInt8), (len - oldlen) * 8)
     return
 end
 
@@ -350,9 +344,8 @@ memcpy!(d, doff, s, soff, n) = ccall(:memcpy, Cvoid, (Ptr{UInt8}, Ptr{UInt8}, In
 memset!(ptr, value, num) = ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), ptr, value, num)
 
 mutable struct RefPool
-    lock::Threads.SpinLock
     refs::Dict{Union{String, Missing}, UInt32}
     lastref::UInt32
 end
 
-RefPool() = RefPool(Threads.SpinLock(), Dict{Union{String, Missing}, UInt32}(), 0)
+RefPool() = RefPool(Dict{Union{String, Missing}, UInt32}(), 0)
