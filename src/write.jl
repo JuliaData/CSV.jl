@@ -242,8 +242,11 @@ function with(f::Function, file::Union{AbstractString, AbstractPath}, append)
     end
 end
 
+@noinline buffertoosmall(pos, len) = throw(ArgumentError("row size ($pos) too large for writing buffer ($len), pass a larger value to `bufsize` keyword argument"))
+
 macro check(n)
     esc(quote
+        $n > length(buf) && buffertoosmall(pos + $n - 1, length(buf))
         if (pos + $n - 1) > len
             Base.write(io, view(buf, 1:(pos - 1)))
             pos = 1
