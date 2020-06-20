@@ -95,12 +95,41 @@ getpos(x) = (UInt64(x) & 0x3ffffffffff00000) >> 20
 getlen(x) = UInt64(x) & 0x00000000000fffff
 
 _unsafe_string(p, len) = ccall(:jl_pchar_to_string, Ref{String}, (Ptr{UInt8}, Int), p, len)
+
 @inline function str(buf, e, poslen)
     missingvalue(poslen) && return missing
     escapedvalue(poslen) && return unescape(PointerString(pointer(buf, getpos(poslen)), getlen(poslen)), e)
     pos, len = getpos(poslen), getlen(poslen)
     return _unsafe_string(pointer(buf, getpos(poslen)), getlen(poslen))
 end
+
+@inline function strnomiss(buf, e, poslen)
+    escapedvalue(poslen) && return unescape(PointerString(pointer(buf, getpos(poslen)), getlen(poslen)), e)
+    pos, len = getpos(poslen), getlen(poslen)
+    return _unsafe_string(pointer(buf, getpos(poslen)), getlen(poslen))
+end
+
+struct LazyStringVector{T} <: AbstractVector{T}
+    buffer::Vector{UInt8}
+    e::UInt8
+    poslens::Vector{PosLen}
+end
+
+Base.IndexStyle(::Type{LazyStringVector}) = Base.IndexLinear()
+Base.size(x::LazyStringVector) = (length(x.poslens),)
+
+Base.@propagate_inbounds function Base.getindex(x::LazyStringVector{Union{String, Missing}}, i::Int)
+    @boundscheck checkbounds(x, i)
+    @inbounds s = str(x.buffer, x.e, x.poslens[i])
+    return s
+end
+
+Base.@propagate_inbounds function Base.getindex(x::LazyStringVector{String}, i::Int)
+    @boundscheck checkbounds(x, i)
+    @inbounds s = strnomiss(x.buffer, x.e, x.poslens[i])
+    return s
+end
+
 
 function allocate(rowsguess, ncols, types, flags)
     return AbstractVector[allocate(lazystrings(flags[i]) && types[i] >: String ? PosLen : types[i], rowsguess) for i = 1:ncols]

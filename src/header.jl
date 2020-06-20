@@ -155,7 +155,6 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
 
         # step 2: detect delimiter (or use given) and detect number of (estimated) rows and columns
         d, rowsguess = detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, del, cmt, ignoreemptylines)
-        rowsguess = min(limit, rowsguess)
         debug && println("estimated rows: $rowsguess")
         debug && println("detected delimiter: \"$(escape_string(d isa UInt8 ? string(Char(d)) : d))\"")
 

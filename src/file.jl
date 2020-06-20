@@ -235,6 +235,7 @@ function File(source;
         # multithread
         finalrows, tapes = multithreadparse(types, flags, buf, datapos, len, options, coloptions, rowsguess, pool, refs, ncols, typemap, h.categorical, limit, debug)
     else
+        rowsguess = min(limit, rowsguess)
         tapes = allocate(rowsguess, ncols, types, flags)
         t = Base.time()
         finalrows, pos = parsetape!(Val(transpose), ncols, typemap, tapes, buf, datapos, len, limit, positions, pool, refs, rowsguess, types, flags, debug, options, coloptions)
@@ -244,8 +245,12 @@ function File(source;
             if tape isa Vector{UInt32}
                 makeandsetpooled!(tapes, i, tape, refs, flags, h.categorical)
             elseif tape isa Vector{PosLen}
+                if anymissing(flags[i])
+                    tapes[i] = LazyStringVector{Union{String, Missing}}(buf, options.e, tape)
+                else
+                    tapes[i] = LazyStringVector{String}(buf, options.e, tape)
+                end
             elseif tape isa Vector{String} || tape isa Vector{Union{String, Missing}}
-                # already converted in multithreadparse
             else
                 if !anymissing(flags[i])
                     if tape isa Vector{Union{Missing, Bool}}
