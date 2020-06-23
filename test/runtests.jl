@@ -1,4 +1,4 @@
-using Test, CSV, Dates, Tables, DataFrames, CategoricalArrays, PooledArrays, CodecZlib, FilePathsBase
+using Test, CSV, Dates, Tables, DataFrames, CategoricalArrays, PooledArrays, CodecZlib, FilePathsBase, SentinelArrays, Parsers
 
 const dir = joinpath(dirname(pathof(CSV)), "..", "test", "testfiles")
 
@@ -64,6 +64,36 @@ end
     @test typeof(f.X) == PooledArray{Union{Missing, String},UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (9, 1)
     @test isequal(f.X, ["c", "c", missing, "c", "c", "c", "c", "c", "c"])
+
+end
+
+@testset "LazyStringVector" begin
+
+    buffer = b"heytheresailoresc\\\"aped"
+    e = UInt8('\\')
+    poslens = [
+        CSV.poslen(Int16(0), Int64(1), Int64(3)),
+        CSV.poslen(Int16(0), Int64(4), Int64(5)),
+        CSV.poslen(Int16(0), Int64(9), Int64(6)),
+        CSV.poslen(Parsers.ESCAPED_STRING, Int64(15), Int64(8))
+    ]
+    x = CSV.LazyStringVector{String}(buffer, e, poslens)
+    @test x == ["hey", "there", "sailor", "esc\"aped"]
+    push!(poslens, CSV.poslen(Parsers.SENTINEL, Int64(0), Int64(0)))
+    x = CSV.LazyStringVector{Union{Missing, String}}(buffer, e, poslens)
+    @test isequal(x, ["hey", "there", "sailor", "esc\"aped", missing])
+
+    poslens = ChainedVector([
+        [CSV.poslen(Int16(0), Int64(1), Int64(3))],
+        [CSV.poslen(Int16(0), Int64(4), Int64(5))],
+        [CSV.poslen(Int16(0), Int64(9), Int64(6))],
+        [CSV.poslen(Parsers.ESCAPED_STRING, Int64(15), Int64(8))]
+    ])
+    x = CSV.LazyStringVector{String}(buffer, e, poslens)
+    @test x == ["hey", "there", "sailor", "esc\"aped"]
+    push!(poslens, CSV.poslen(Parsers.SENTINEL, Int64(0), Int64(0)))
+    x = CSV.LazyStringVector{Union{Missing, String}}(buffer, e, poslens)
+    @test isequal(x, ["hey", "there", "sailor", "esc\"aped", missing])
 
 end
 
