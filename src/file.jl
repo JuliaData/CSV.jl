@@ -151,6 +151,7 @@ Supported keyword arguments include:
   * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64; if a `Vector` if provided, it must match the # of columns provided or detected in `header`
   * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `String`
   * `pool::Union{Bool, Float64}=0.1`: if `true`, *all* columns detected as `String` will be internally pooled; alternatively, the proportion of unique values below which `String` columns should be pooled (by default 0.1, meaning that if the # of unique strings in a column is under 10%, it will be pooled)
+  * `lazystrings::Bool=false`: avoid allocating full strings in string columns; returns a custom `LazyStringVector` array type that *does not* support mutable operations (e.g. `push!`, `append!`, or even `setindex!`). Calling `copy(x)` will materialize a full `Vector{String}`. Also note that each `LazyStringVector` holds a reference to the full input file buffer, so it won't be closed after parsing and trying to delete or modify the file probably has undefined behavior. Despite all the caveats, this setting can help avoid lots string allocations in large files and lead to faster parsing times.
   * `categorical::Bool=false`: whether pooled columns should be copied as CategoricalArray instead of PooledArray; note that in `CSV.read`, by default, columns are not copied, so pooled columns will have type `CSV.Column{String, PooledString}`; to get `CategoricalArray` columns, also pass `copycols=true`
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
   * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
@@ -235,6 +236,7 @@ function File(source;
         # multithread
         finalrows, tapes = multithreadparse(types, flags, buf, datapos, len, options, coloptions, rowsguess, pool, refs, ncols, typemap, h.categorical, limit, debug)
     else
+        rowsguess = min(limit, rowsguess)
         tapes = allocate(rowsguess, ncols, types, flags)
         t = Base.time()
         finalrows, pos = parsetape!(Val(transpose), ncols, typemap, tapes, buf, datapos, len, limit, positions, pool, refs, rowsguess, types, flags, debug, options, coloptions)
@@ -243,9 +245,13 @@ function File(source;
             tape = tapes[i]
             if tape isa Vector{UInt32}
                 makeandsetpooled!(tapes, i, tape, refs, flags, h.categorical)
-            elseif tape isa Vector{PosLen}
+            elseif tape isa Vector{PosLen} || tape isa ChainedVector{PosLen, Vector{PosLen}}
+                if anymissing(flags[i])
+                    tapes[i] = LazyStringVector{Union{String, Missing}}(buf, options.e, tape)
+                else
+                    tapes[i] = LazyStringVector{String}(buf, options.e, tape)
+                end
             elseif tape isa Vector{String} || tape isa Vector{Union{String, Missing}}
-                # already converted in multithreadparse
             else
                 if !anymissing(flags[i])
                     if tape isa Vector{Union{Missing, Bool}}
@@ -446,7 +452,11 @@ function multithreadparse(types, flags, buf, datapos, len, options, coloptions, 
             makeandsetpooled!(finaltapes, col, chain, refs, flags, categorical)
         elseif tape isa Vector{PosLen}
             chain = makechain(Vector{PosLen}, tape, N, col, perthreadtapes)
-            @inbounds finaltapes[col] = chain
+            if anymissing(flags[col])
+                @inbounds finaltapes[col] = LazyStringVector{Union{String, Missing}}(buf, options.e, chain)
+            else
+                @inbounds finaltapes[col] = LazyStringVector{String}(buf, options.e, chain)
+            end
         elseif tape isa MissingVector
             chain = makechain(MissingVector, tape, N, col, perthreadtapes)
             @inbounds finaltapes[col] = chain
