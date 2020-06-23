@@ -129,7 +129,7 @@ Supported keyword arguments include:
   * `datarow`: an `Int` argument to specify the row where the data starts in the csv file; by default, the next row after the `header` row is used. If `header=0`, then the 1st row is assumed to be the start of data
   * `skipto::Int`: similar to `datarow`, specifies the number of rows to skip before starting to read data
   * `footerskip::Int`: number of rows at the end of a file to skip parsing
-  * `limit`: an `Int` to indicate a limited number of rows to parse in a csv file; use in combination with `skipto` to read a specific, contiguous chunk within a file
+  * `limit`: an `Int` to indicate a limited number of rows to parse in a csv file; use in combination with `skipto` to read a specific, contiguous chunk within a file; note for large files when multiple threads are used for parsing, the `limit` argument may not be exact
   * `transpose::Bool`: read a csv file "transposed", i.e. each column is parsed as a row
   * `comment`: rows that begin with this `String` will be skipped while parsing
   * `use_mmap::Bool=!Sys.iswindows()`: whether the file should be mmapped for reading, which in some cases can be faster
@@ -201,7 +201,7 @@ function File(source;
     h = Header(source, header, normalizenames, datarow, skipto, footerskip, limit, transpose, comment, use_mmap, ignoreemptylines, threaded, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, false)
     rowsguess, ncols, buf, len, datapos, options, coloptions, positions, types, flags, pool, categorical = h.rowsguess, h.cols, h.buf, h.len, h.datapos, h.options, h.coloptions, h.positions, h.types, h.flags, h.pool, h.categorical
     # determine if we can use threads while parsing
-    if threaded === nothing && VERSION >= v"1.3-DEV" && Threads.nthreads() > 1 && !transpose && limit == typemax(Int64) && rowsguess > Threads.nthreads() && (rowsguess * ncols) >= 5_000
+    if threaded === nothing && VERSION >= v"1.3-DEV" && Threads.nthreads() > 1 && !transpose && (limit < rowsguess ? limit : rowsguess) > Threads.nthreads() && ((limit < rowsguess ? limit : rowsguess) * ncols) >= 5_000
         threaded = true
     elseif threaded === true
         if VERSION < v"1.3-DEV"
@@ -209,9 +209,6 @@ function File(source;
             threaded = false
         elseif transpose
             @warn "`threaded=true` not supported on transposed files"
-            threaded = false
-        elseif limit != typemax(Int64)
-            @warn "`threaded=true` not supported when limiting # of rows"
             threaded = false
         end
     end
@@ -235,7 +232,9 @@ function File(source;
         # multithread
         finalrows, tapes = multithreadparse(types, flags, buf, datapos, len, options, coloptions, rowsguess, pool, refs, ncols, typemap, h.categorical, limit, debug)
     else
-        rowsguess = min(limit, rowsguess)
+        if limit < rowsguess
+            rowsguess = limit
+        end
         tapes = allocate(rowsguess, ncols, types, flags)
         t = Base.time()
         finalrows, pos = parsetape!(Val(transpose), ncols, typemap, tapes, buf, datapos, len, limit, positions, pool, refs, rowsguess, types, flags, debug, options, coloptions)
@@ -313,7 +312,7 @@ end
 vectype(::Type{A}) where {A <: SentinelVector{T}} where {T} = Vector{T}
 vectype(T) = T
 
-function makechain(::Type{T}, tape::T, N, col, perthreadtapes) where {T}
+function makechain(::Type{T}, tape::T, N, col, perthreadtapes, limit) where {T}
     chain = Vector{vectype(T)}(undef, N)
     @inbounds chain[1] = parent(tape)
     for i = 2:N
@@ -322,7 +321,11 @@ function makechain(::Type{T}, tape::T, N, col, perthreadtapes) where {T}
             @inbounds chain[i] = parent(tp)
         end
     end
-    return ChainedVector(chain)
+    x = ChainedVector(chain)
+    if limit < length(x)
+        resize!(x, limit)
+    end
+    return x
 end
 
 function makeandsetpooled!(tapes, i, tape, refs, flags, categorical)
@@ -367,6 +370,12 @@ end
 
 function multithreadparse(types, flags, buf, datapos, len, options, coloptions, rowsguess, pool, refs, ncols, typemap, categorical, limit, debug)
     N = Threads.nthreads()
+    if limit < rowsguess
+        newlen = [0, ceil(Int64, (limit / (rowsguess * 0.8)) * len), 0]
+        findrowstarts!(buf, len, options, newlen, ncols)
+        len = newlen[2]
+        debug && println("limiting, adjusting len to $len")
+    end
     chunksize = div(len - datapos, N)
     ranges = [i == 0 ? datapos : (datapos + chunksize * i) for i = 0:N]
     ranges[end] = len
@@ -388,7 +397,6 @@ function multithreadparse(types, flags, buf, datapos, len, options, coloptions, 
         perthreadtapes[i] = tl_tapes
         tl_rows, tl_pos = parsetape!(Val(false), ncols, typemap, tl_tapes, buf, tl_pos, tl_len, typemax(Int64), EMPTY_INT_ARRAY, pool, tl_refs, rowchunkguess, tl_types, tl_flags, debug, options, coloptions)
         rows[i] = tl_rows
-        debug && println("finished parsing $tl_rows rows on thread = $i")
         # promote column types across threads
         for col = 1:ncols
             lock(locks[col]) do
@@ -405,7 +413,7 @@ function multithreadparse(types, flags, buf, datapos, len, options, coloptions, 
                 end
             end
         end
-        debug && println("thread = $(Threads.threadid()): time for parsing: $(Base.time() - tt)")
+        debug && println("finished parsing $tl_rows rows on thread = $(Threads.threadid()): time for parsing: $(Base.time() - tt)")
     end
     finaltapes = Vector{AbstractVector}(undef, ncols)
     Threads.@threads for col = 1:ncols
@@ -426,41 +434,42 @@ function multithreadparse(types, flags, buf, datapos, len, options, coloptions, 
         @inbounds tape = perthreadtapes[1][col]
         if tape isa SVec{Int64}
             sent = tape.sentinel
-            chain = makechain(SVec{Int64}, tape, N, col, perthreadtapes)
+            chain = makechain(SVec{Int64}, tape, N, col, perthreadtapes, limit)
             @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain, sent) : chain
         elseif tape isa SVec{Float64}
-            chain = makechain(SVec{Float64}, tape, N, col, perthreadtapes)
+            chain = makechain(SVec{Float64}, tape, N, col, perthreadtapes, limit)
             @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
         elseif tape isa StringVec
-            chain = makechain(StringVec, tape, N, col, perthreadtapes)
+            chain = makechain(StringVec, tape, N, col, perthreadtapes, limit)
             @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
         elseif tape isa SVec{Date}
-            chain = makechain(SVec{Date}, tape, N, col, perthreadtapes)
+            chain = makechain(SVec{Date}, tape, N, col, perthreadtapes, limit)
             @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
         elseif tape isa SVec{DateTime}
-            chain = makechain(SVec{DateTime}, tape, N, col, perthreadtapes)
+            chain = makechain(SVec{DateTime}, tape, N, col, perthreadtapes, limit)
             @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
         elseif tape isa SVec{Time}
-            chain = makechain(SVec{Time}, tape, N, col, perthreadtapes)
+            chain = makechain(SVec{Time}, tape, N, col, perthreadtapes, limit)
             @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
         elseif tape isa Vector{Union{Missing, Bool}}
-            chain = makechain(Vector{anymissing(flags[col]) ? Bool : Union{Missing, Bool}}, tape, N, col, perthreadtapes)
+            chain = makechain(Vector{anymissing(flags[col]) ? Bool : Union{Missing, Bool}}, tape, N, col, perthreadtapes, limit)
             @inbounds finaltapes[col] = chain
         elseif tape isa Vector{UInt32}
-            chain = makechain(Vector{UInt32}, tape, N, col, perthreadtapes)
+            chain = makechain(Vector{UInt32}, tape, N, col, perthreadtapes, limit)
             makeandsetpooled!(finaltapes, col, chain, refs, flags, categorical)
         elseif tape isa Vector{PosLen}
-            chain = makechain(Vector{PosLen}, tape, N, col, perthreadtapes)
+            chain = makechain(Vector{PosLen}, tape, N, col, perthreadtapes, limit)
             @inbounds finaltapes[col] = chain
         elseif tape isa MissingVector
-            chain = makechain(MissingVector, tape, N, col, perthreadtapes)
+            chain = makechain(MissingVector, tape, N, col, perthreadtapes, limit)
             @inbounds finaltapes[col] = chain
             types[col] = Missing
         else
             error("unhandled column type: $(typeof(tape))")
         end
     end
-    return sum(rows), finaltapes
+    finalrows = sum(rows)
+    return limit < finalrows ? limit : finalrows, finaltapes
 end
 
 function parsetape!(TR::Val{transpose}, ncols, typemap, tapes, buf, pos, len, limit, positions, pool, refs, rowsguess, types, flags, debug, options::Parsers.Options{ignorerepeated}, coloptions) where {transpose, ignorerepeated}
