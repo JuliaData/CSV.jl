@@ -244,7 +244,7 @@ function File(source;
             tape = tapes[i]
             if tape isa Vector{UInt32}
                 makeandsetpooled!(tapes, i, tape, refs, flags, h.categorical)
-            elseif tape isa Vector{PosLen}
+            elseif tape isa Vector{PosLen} || tape isa ChainedVector{PosLen, Vector{PosLen}}
                 if anymissing(flags[i])
                     tapes[i] = LazyStringVector{Union{String, Missing}}(buf, options.e, tape)
                 else
@@ -451,7 +451,11 @@ function multithreadparse(types, flags, buf, datapos, len, options, coloptions, 
             makeandsetpooled!(finaltapes, col, chain, refs, flags, categorical)
         elseif tape isa Vector{PosLen}
             chain = makechain(Vector{PosLen}, tape, N, col, perthreadtapes)
-            @inbounds finaltapes[col] = chain
+            if anymissing(flags[col])
+                @inbounds finaltapes[col] = LazyStringVector{Union{String, Missing}}(buf, options.e, chain)
+            else
+                @inbounds finaltapes[col] = LazyStringVector{String}(buf, options.e, chain)
+            end
         elseif tape isa MissingVector
             chain = makechain(MissingVector, tape, N, col, perthreadtapes)
             @inbounds finaltapes[col] = chain
