@@ -109,11 +109,13 @@ end
     return _unsafe_string(pointer(buf, getpos(poslen)), getlen(poslen))
 end
 
-struct LazyStringVector{T} <: AbstractVector{T}
+struct LazyStringVector{T, A <: AbstractVector{PosLen}} <: AbstractVector{T}
     buffer::Vector{UInt8}
     e::UInt8
-    poslens::Vector{PosLen}
+    poslens::A
 end
+
+LazyStringVector{T}(buffer, e, poslens::A) where {T, A} = LazyStringVector{T, A}(buffer, e, poslens)
 
 Base.IndexStyle(::Type{LazyStringVector}) = Base.IndexLinear()
 Base.size(x::LazyStringVector) = (length(x.poslens),)
@@ -130,6 +132,20 @@ Base.@propagate_inbounds function Base.getindex(x::LazyStringVector{String}, i::
     return s
 end
 
+# optimize iterate for ChainedVector
+@inline function Base.iterate(x::LazyStringVector{T}) where {T}
+    st = iterate(x.poslens)
+    st === nothing && return nothing
+    @inbounds s = T === String ? strnomiss(x.buffer, x.e, st[1]) : str(x.buffer, x.e, st[1])
+    return s, st[2]
+end
+
+@inline function Base.iterate(x::LazyStringVector{T}, state) where {T}
+    st = iterate(x.poslens, state)
+    st === nothing && return nothing
+    @inbounds s = T === String ? strnomiss(x.buffer, x.e, st[1]) : str(x.buffer, x.e, st[1])
+    return s, st[2]
+end
 
 function allocate(rowsguess, ncols, types, flags)
     return AbstractVector[allocate(lazystrings(flags[i]) && types[i] >: String ? PosLen : types[i], rowsguess) for i = 1:ncols]
