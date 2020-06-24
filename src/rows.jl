@@ -13,6 +13,7 @@ struct Rows{transpose, O, IO}
     e::UInt8
     buf::IO
     datapos::Int64
+    datarow::Int
     len::Int
     limit::Int64
     options::O # Parsers.Options
@@ -144,6 +145,7 @@ function Rows(source;
         h.e,
         h.buf,
         h.datapos,
+        h.datarow,
         h.len,
         limit,
         h.options,
@@ -162,14 +164,13 @@ Base.eltype(r::Rows) = Row2
 Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
 
 const EMPTY_TYPEMAP = Dict{Type, Type}()
-const EMPTY_POSLENS = Vector{Vector{UInt64}}()
 const EMPTY_REFS = RefPool[]
 
 @inline function Base.iterate(r::Rows{transpose}, (pos, len, row)=(r.datapos, r.len, 1)) where {transpose}
     (pos > len || row > r.limit) && return nothing
     pos > len && return nothing
     tapes = r.reusebuffer ? r.tapes : allocate(1, r.cols, r.types, r.flags)
-    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, tapes, EMPTY_POSLENS, r.buf, pos, len, r.positions, 0.0, EMPTY_REFS, 1, r.types, r.flags, false, r.options, r.coloptions)
+    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, tapes, r.datapos, r.buf, pos, len, r.positions, 0.0, EMPTY_REFS, 1, r.datarow + row - 2, r.types, r.flags, false, r.options, r.coloptions)
     return Row2(r.names, r.finaltypes, r.columnmap, r.types, r.lookup, tapes, r.buf, r.e, r.options, r.coloptions), (pos, len, row + 1)
 end
 

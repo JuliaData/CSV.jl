@@ -7,6 +7,7 @@ struct Header{transpose, O, IO}
     buf::IO
     len::Int
     datapos::Int64
+    datarow::Int
     options::O # Parsers.Options
     coloptions::Union{Nothing, Vector{Parsers.Options}}
     positions::Vector{Int64}
@@ -286,6 +287,7 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
         buf,
         len,
         datapos,
+        datarow,
         options,
         coloptions,
         positions,
