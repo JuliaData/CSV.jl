@@ -112,9 +112,15 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     elseif categorical === true
         pool = categorical
     end
-    header = (isa(header, Integer) && header == 1 && (datarow == 1 || skipto == 1)) ? -1 : header
+    if skipto !== nothing
+        if datarow != -1
+            @warn "both `skipto` and `datarow` arguments provided, using `skipto`"
+        end
+        datarow = skipto
+    end
+    header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
-    datarow = skipto !== nothing ? skipto : (datarow == -1 ? (isa(header, Vector{Symbol}) || isa(header, Vector{String}) ? 0 : last(header)) + 1 : datarow) # by default, data starts on line after header
+    datarow = datarow == -1 ? (isa(header, Vector{Symbol}) || isa(header, Vector{String}) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
     debug && println("header is: $header, datarow computed as: $datarow")
     # getsource will turn any input into a `Vector{UInt8}`
     buf = getsource(source, use_mmap)
