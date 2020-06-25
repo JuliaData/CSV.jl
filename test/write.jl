@@ -290,13 +290,13 @@ const table_types = (
     end
     @test read(rd, String) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
 
-    df = DataFrame(A=[1,2,3], B=["a", "b", "c"])
+    df = (A=[1,2,3], B=["a", "b", "c"])
     # test control character delimiters
     for char ∈ Char.(UInt8[1,2,3,4])
         io = IOBuffer()
         CSV.write(io, df, delim=char)
         seekstart(io)
-        @test CSV.read(io, delim=char) == df
+        @test columntable(CSV.File(io, delim=char)) == df
     end
     # don't allow writing with delimiters we refuse to read
     @test_throws ArgumentError CSV.write(io, df, delim='\r')
@@ -304,7 +304,7 @@ const table_types = (
     # test with FilePath
     mktmpdir() do tmp
         CSV.write(tmp / "test.txt", df)
-        @test CSV.read(tmp / "test.txt") == df
+        @test columntable(CSV.File(tmp / "test.txt")) == df
     end
 
     io = Base.BufferStream()

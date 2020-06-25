@@ -19,6 +19,7 @@ WeakRefStrings = "ea10d353-3f73-51f8-a26c-33c1cb351aa5"
 [compat]
 CategoricalArrays = "0.8"
 DataFrames = "0.21"
+DecFP = "1"
 FilePathsBase = "0.6,0.7,0.8,0.9"
 Parsers = "1"
 PooledArrays = "0.5"
@@ -28,8 +29,9 @@ julia = "1"
 
 [extras]
 CodecZlib = "944b1d66-785c-5afd-91f1-9de20f533193"
+DecFP = "55939f99-70c6-5e9b-8bb0-5071ed7d61fd"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test", "Random", "CodecZlib"]
+test = ["DecFP", "Test", "Random", "CodecZlib"]

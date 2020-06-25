@@ -147,6 +147,9 @@ end
     return s, st[2]
 end
 
+# column array allocating
+const SmallIntegers = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32}
+
 function allocate(rowsguess, ncols, types, flags)
     return AbstractVector[allocate(lazystrings(flags[i]) && types[i] >: String ? PosLen : types[i], rowsguess) for i = 1:ncols]
 end
@@ -166,6 +169,8 @@ allocate(::Type{CategoricalValue{String, UInt32}}, len) = fill(UInt32(0), len)
 allocate(::Type{Union{CategoricalValue{String, UInt32}, Missing}}, len) = fill(UInt32(0), len)
 allocate(::Type{Bool}, len) = Vector{Union{Missing, Bool}}(undef, len)
 allocate(::Type{Union{Missing, Bool}}, len) = Vector{Union{Missing, Bool}}(undef, len)
+allocate(::Type{T}, len) where {T <: SmallIntegers} = Vector{Union{Missing, T}}(undef, len)
+allocate(::Type{Union{Missing, T}}, len) where {T <: SmallIntegers} = Vector{Union{Missing, T}}(undef, len)
 allocate(T, len) = SentinelVector{nonmissingtype(T)}(undef, len)
 
 reallocate!(A, len) = resize!(A, len)
@@ -184,20 +189,14 @@ function nonstandardtype(T)
     S = ts(ts(ts(ts(ts(ts(ts(ts(ts(T, Int64), Float64), String), PooledString), Bool), Date), DateTime), Time), Missing)
     if S === Union{}
         return S
+    elseif S <: SmallIntegers
+        return Tuple{Vector{Union{Missing, S}}, S}
     elseif isbitstype(S)
         return Tuple{SVec{S}, S}
     else
         return Tuple{SVec2{S}, S}
     end
 end
-
-struct uniontypes
-    type::Type
-end
-Base.IteratorSize(::Type{<:uniontypes}) = Base.SizeUnknown()
-
-Base.iterate(U::uniontypes) = U.type === Union{} ? nothing : U.type isa Union ? (U.type.a, U.type.b) : (U.type, nothing)
-Base.iterate(::uniontypes, st) = st === nothing ? nothing : st isa Union ? (st.a, st.b) : (st, nothing)
 
 # one-liner suggested from ScottPJones
 consumeBOM(buf) = (length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf) ? 4 : 1
