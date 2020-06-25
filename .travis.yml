@@ -25,6 +25,7 @@ julia:
 
 env:
   - JULIA_PROJECT="@."
+  - JULIA_NUM_THREADS=2
 
 matrix:
   exclude:

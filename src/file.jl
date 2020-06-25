@@ -255,6 +255,8 @@ function File(source;
                 if !anymissing(flags[i])
                     if tape isa Vector{Union{Missing, Bool}}
                         tapes[i] = convert(Vector{Bool}, tape)
+                    elseif types[i] !== Union{} && types[i] <: SmallIntegers
+                        tapes[i] = convert(Vector{types[i]}, tape)
                     else
                         tapes[i] = parent(tape)
                     end
@@ -263,6 +265,7 @@ function File(source;
             # if zero rows
             if types[i] === Union{}
                 types[i] = Missing
+                tapes[i] = MissingVector(finalrows)
             end
         end
     end
@@ -313,13 +316,15 @@ end
 vectype(::Type{A}) where {A <: SentinelVector{T}} where {T} = Vector{T}
 vectype(T) = T
 
-function makechain(::Type{T}, tape::T, N, col, perthreadtapes, limit) where {T}
+function makechain(::Type{T}, tape, N, col, perthreadtapes, limit) where {T}
     chain = Vector{vectype(T)}(undef, N)
     @inbounds chain[1] = parent(tape)
     for i = 2:N
         @inbounds tp = perthreadtapes[i][col]
         if tp isa T
             @inbounds chain[i] = parent(tp)
+        else
+            @inbounds chain[i] = convert(T, tp)
         end
     end
     x = ChainedVector(chain)
@@ -469,6 +474,10 @@ function multithreadparse(types, flags, buf, datapos, len, options, coloptions, 
             chain = makechain(MissingVector, tape, N, col, perthreadtapes, limit)
             @inbounds finaltapes[col] = chain
             types[col] = Missing
+        elseif nonmissingtype(types[col]) <: SmallIntegers
+            T = types[col]
+            chain = makechain(Vector{T}, tape, N, col, perthreadtapes, limit)
+            @inbounds finaltapes[col] = anymissing(flags[col]) ? chain : chain
         else
             chain = makechain(typeof(tape), tape, N, col, perthreadtapes, limit)
             @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
@@ -508,7 +517,7 @@ function parsetape!(TR::Val{transpose}, ncols, typemap, tapes, buf, pos, len, li
     return row, pos
 end
 
-@noinline function promotetostring!(col, TR::Val{transpose}, ncols, typemap, tapes, buf, pos, len, limit, positions, pool, refs, rowsguess, rowoffset, types, origflags, debug, options::Parsers.Options{ignorerepeated}, coloptions, customtypes) where {transpose, ignorerepeated}
+@noinline function promotetostring!(col, TR::Val{transpose}, ncols, typemap, tapes, buf, pos, len, limit, positions, pool, refs, rowsguess, rowoffset, types, origflags, debug, options::Parsers.Options{ignorerepeated}, coloptions, ::Type{customtypes}) where {transpose, ignorerepeated, customtypes}
     flags = copy(origflags)
     for i = 1:ncols
         if i == col
@@ -538,7 +547,7 @@ end
 @noinline warning(T, buf, pos, len, code, row, col) = println("thread = $(Threads.threadid()) warning: error parsing $T around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))")
 @noinline fatalerror(buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) fatal error, encountered an invalidly quoted field while parsing around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code)), check your `quotechar` arguments or manually fix the field in the file itself"))
 
-@inline function parsecustom!(::Type{T}, flag, tapes, buf, pos, len, opts, row, col, types, flags) where {T}
+@inline function parsecustom!(::Type{T}, flag, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags) where {T}
     if @generated
         block = Expr(:block)
         push!(block.args, quote
@@ -548,7 +557,7 @@ end
             vec = fieldtype(T, i)
             pushfirst!(block.args, quote
                 if tape isa $(fieldtype(vec, 1))
-                    return parsevalue!($(fieldtype(vec, 2)), flag, tape, tapes, buf, pos, len, opts, row, col, types, flags)
+                    return parsevalue!($(fieldtype(vec, 2)), flag, tape, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags)
                 end
             end)
         end
@@ -561,7 +570,7 @@ end
     else
         # println("generated function failed")
         @inbounds tape = tapes[col]
-        return parsevalue!(eltype(parent(tape)), flag, tape, tapes, buf, pos, len, opts, row, col, types, flags)
+        return parsevalue!(eltype(parent(tape)), flag, tape, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags)
     end
 end
 
@@ -583,7 +592,7 @@ end
         elseif tape isa SVec{Float64}
             pos, code = parsevalue!(Float64, flag, tape, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags)
         elseif tape isa SVec2{String}
-            pos, code = parsestring2!(flag, tape, buf, pos, len, opts, row, col, types, flags)
+            pos, code = parsestring2!(flag, tape, buf, pos, len, opts, row, rowoffset, col, types, flags)
         elseif tape isa SVec{Date}
             pos, code = parsevalue!(Date, flag, tape, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags)
         elseif tape isa SVec{DateTime}
@@ -597,7 +606,7 @@ end
         elseif tape isa Vector{PosLen}
             pos, code = parsestring!(flag, tape, buf, pos, len, opts, row, rowoffset, col, types, flags)
         elseif customtypes !== Tuple{}
-            pos, code = parsecustom!(customtypes, flag, tapes, buf, pos, len, opts, row, col, types, flags)
+            pos, code = parsecustom!(customtypes, flag, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags)
         else
             error("bad array type: $(typeof(tape))")
         end
