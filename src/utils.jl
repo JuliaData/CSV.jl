@@ -147,6 +147,9 @@ end
     return s, st[2]
 end
 
+# column array allocating
+const SmallIntegers = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32}
+
 function allocate(rowsguess, ncols, types, flags)
     return AbstractVector[allocate(lazystrings(flags[i]) && types[i] >: String ? PosLen : types[i], rowsguess) for i = 1:ncols]
 end
@@ -166,6 +169,8 @@ allocate(::Type{CategoricalValue{String, UInt32}}, len) = fill(UInt32(0), len)
 allocate(::Type{Union{CategoricalValue{String, UInt32}, Missing}}, len) = fill(UInt32(0), len)
 allocate(::Type{Bool}, len) = Vector{Union{Missing, Bool}}(undef, len)
 allocate(::Type{Union{Missing, Bool}}, len) = Vector{Union{Missing, Bool}}(undef, len)
+allocate(::Type{T}, len) where {T <: SmallIntegers} = Vector{Union{Missing, T}}(undef, len)
+allocate(::Type{Union{Missing, T}}, len) where {T <: SmallIntegers} = Vector{Union{Missing, T}}(undef, len)
 allocate(T, len) = SentinelVector{nonmissingtype(T)}(undef, len)
 
 reallocate!(A, len) = resize!(A, len)
@@ -177,7 +182,21 @@ function reallocate!(A::Vector{PosLen}, len)
 end
 
 const SVec{T} = SentinelVector{T, T, Missing, Vector{T}}
-const StringVec = SentinelVector{String, typeof(undef), Missing, Vector{String}}
+const SVec2{T} = SentinelVector{T, typeof(undef), Missing, Vector{T}}
+
+ts(T, S) = Core.Compiler.typesubtract(T, S)
+function nonstandardtype(T)
+    S = ts(ts(ts(ts(ts(ts(ts(ts(ts(T, Int64), Float64), String), PooledString), Bool), Date), DateTime), Time), Missing)
+    if S === Union{}
+        return S
+    elseif S <: SmallIntegers
+        return Tuple{Vector{Union{Missing, S}}, S}
+    elseif isbitstype(S)
+        return Tuple{SVec{S}, S}
+    else
+        return Tuple{SVec2{S}, S}
+    end
+end
 
 # one-liner suggested from ScottPJones
 consumeBOM(buf) = (length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf) ? 4 : 1
@@ -257,20 +276,9 @@ function makeunique(names)
     return nms
 end
 
-standardize(::Type{T}) where {T <: Integer} = Int64
-standardize(::Type{T}) where {T <: Real} = Float64
-standardize(::Type{T}) where {T <: Dates.TimeType} = T
-standardize(::Type{Bool}) = Bool
-standardize(::Type{PooledString}) = PooledString
-standardize(::Type{<:CategoricalValue}) = CategoricalValue{String, UInt32}
-standardize(::Type{<:AbstractString}) = String
-standardize(::Type{Union{T, Missing}}) where {T} = Union{Missing, standardize(T)}
-standardize(::Type{Missing}) = Missing
-standardize(T) = Union{}
-
-initialtypes(T, x::AbstractDict{String}, names) = Type[haskey(x, string(nm)) ? standardize(x[string(nm)]) : T for nm in names]
-initialtypes(T, x::AbstractDict{Symbol}, names) = Type[haskey(x, nm) ? standardize(x[nm]) : T for nm in names]
-initialtypes(T, x::AbstractDict{Int}, names)    = Type[haskey(x, i) ? standardize(x[i]) : T for i = 1:length(names)]
+initialtypes(T, x::AbstractDict{String}, names) = Type[haskey(x, string(nm)) ? x[string(nm)] : T for nm in names]
+initialtypes(T, x::AbstractDict{Symbol}, names) = Type[haskey(x, nm) ? x[nm] : T for nm in names]
+initialtypes(T, x::AbstractDict{Int}, names)    = Type[haskey(x, i) ? x[i] : T for i = 1:length(names)]
 
 initialflags(T, x::AbstractDict{String}, names, lazystrings) = UInt8[haskey(x, string(nm)) ? flag(x[string(nm)], lazystrings) : T for nm in names]
 initialflags(T, x::AbstractDict{Symbol}, names, lazystrings) = UInt8[haskey(x, nm) ? flag(x[nm], lazystrings) : T for nm in names]

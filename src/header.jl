@@ -16,6 +16,7 @@ struct Header{transpose, O, IO}
     todrop::Vector{Int}
     pool::Float64
     categorical::Bool
+    customtypes::Type
 end
 
 """
@@ -91,18 +92,6 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     !isa(source, IO) && !isa(source, Vector{UInt8}) && !isa(source, Cmd) && !isfile(source) &&
         throw(ArgumentError("\"$source\" is not a valid file"))
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
-    if type !== nothing && standardize(type) == Union{}
-        throw(ArgumentError("$type isn't supported in the `type` keyword argument; must be one of: `Int64`, `Float64`, `Date`, `DateTime`, `Bool`, `Missing`, `PooledString`, `CategoricalValue{String, UInt32}`, or `String`"))
-    elseif types !== nothing && any(x->standardize(x) == Union{}, types isa AbstractDict ? values(types) : types)
-        T = nothing
-        for x in (types isa AbstractDict ? values(types) : types)
-            if standardize(x) == Union{}
-                T = x
-                break
-            end
-        end
-        throw(ArgumentError("unsupported type $T in the `types` keyword argument; must be one of: `Int64`, `Float64`, `Date`, `DateTime`, `Bool`, `Missing`, `PooledString`, `CategoricalValue{String, UInt32}`, or `String`"))
-    end
     checkvaliddelim(delim)
     ignorerepeated && delim === nothing && throw(ArgumentError("auto-delimiter detection not supported when `ignorerepeated=true`; please provide delimiter like `delim=','`"))
     if !(categorical isa Bool)
@@ -209,10 +198,10 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     debug && println("column options generated as: $(something(coloptions, ""))")
 
     # deduce initial column types for parsing based on whether any user-provided types were provided or not
-    T = type === nothing ? (streaming ? Union{String, Missing} : Union{}) : standardize(type)
+    T = type === nothing ? (streaming ? Union{String, Missing} : Union{}) : type
     F = (type === nothing ? (streaming ? (USER | TYPEDETECTED) : 0x00) : (USER | TYPEDETECTED)) | (lazystrings ? LAZYSTRINGS : 0x00)
     if types isa Vector
-        types = Type[standardize(T) for T in types]
+        types = Type[T for T in types]
         flags = [(USER | TYPEDETECTED | (lazystrings ? LAZYSTRINGS : 0x00)) for _ = 1:ncols]
         categorical = categorical | any(x->x == CategoricalValue{String, UInt32}, types)
     elseif types isa AbstractDict
@@ -232,6 +221,7 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
             end
         end
     end
+    customtypes = Tuple{(nonstandardtype(T) for T in types if nonstandardtype(T) !== Union{})...}
     # set any unselected columns to typecode USER | MISSING
     todrop = Int[]
     if select !== nothing && drop !== nothing
@@ -301,6 +291,7 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
         flags,
         todrop,
         pool,
-        categorical
+        categorical,
+        customtypes
     )
 end

@@ -1,6 +1,20 @@
 struct CSV_Foo
 end
 
+struct CSVString
+    s::String
+end
+
+Base.parse(::Type{CSVString}, s::String) = CSVString(s)
+Base.zero(::Type{CSVString}) = CSVString("")
+
+struct Dec64
+    x::Float64
+end
+
+Base.parse(::Type{Dec64}, s::String) = Dec64(parse(Float64, s))
+Base.zero(::Type{Dec64}) = Dec64(0.0)
+
 @testset "CSV.File basics" begin
 
 #test on non-existent file
@@ -395,5 +409,28 @@ f = CSV.File(IOBuffer("time,date,datetime\n10:00:00.0,04/16/2020,2020-04-16 23:1
 @test f[1].time == Dates.Time(10)
 @test f[1].date == Dates.Date(2020, 4, 16)
 @test f[1].datetime == Dates.DateTime(2020, 4, 16, 23, 14)
+
+# custom types
+f = CSV.File(
+    IOBuffer("int8,uint32,bigint,bigfloat,dec64,csvstring\n1,2,170141183460469231731687303715884105727,3.14,1.02,hey there sailor\n2,,,,,\n");
+    types=[Int8, UInt32, BigInt, BigFloat, Dec64, CSVString]
+)
+@test f.int8 isa Vector{Int8}
+@test f.int8 == Int8[1, 2]
+@test f.uint32 isa Vector{Union{UInt32, Missing}}
+@test isequal(f.uint32, [0x00000002, missing])
+@test f.bigint isa CSV.SVec2{BigInt}
+@test isequal(f.bigint, [BigInt(170141183460469231731687303715884105727), missing])
+@test f.bigfloat isa CSV.SVec2{BigFloat}
+@test isequal(f.bigfloat, [parse(BigFloat, "3.14"), missing])
+@test f.dec64 isa CSV.SVec{Dec64}
+@test isequal(f.dec64, [Dec64(1.02), missing])
+@test f.csvstring isa CSV.SVec2{CSVString}
+@test isequal(f.csvstring, [CSVString("hey there sailor"), missing])
+
+f = CSV.File(GzipDecompressorStream(open(joinpath(dir, "randoms.csv.gz"))); types=[Int32, CSVString, String, Float64, Dec64, Date, DateTime])
+@test f.id isa AbstractVector{Int32}
+@test f.first isa AbstractVector{CSVString}
+@test f.wage isa AbstractVector{Union{Missing, Dec64}}
 
 end
