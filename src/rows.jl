@@ -2,7 +2,7 @@
 # no automatic type inference is done, but types are allowed to be passed
 # for as many columns as desired; `CSV.detect(row, i)` can also be used to
 # use the same inference logic used in `CSV.File` for determing a cell's typed value
-struct Rows{transpose, O, O2, IO, T, V}
+struct Rows{transpose, O, O2, IO, T, V, F}
     name::String
     names::Vector{Symbol} # only includes "select"ed columns
     finaltypes::Vector{Type} # only includes "select"ed columns
@@ -23,6 +23,8 @@ struct Rows{transpose, O, O2, IO, T, V}
     reusebuffer::Bool
     columns::Vector{AbstractVector} # for parsing, allocated once and used for each iteration
     values::Vector{V} # once values are parsed, put in values; allocated on each iteration if reusebuffer=false
+    filter::F
+    codes::Vector{Int16}
     lookup::Dict{Symbol, Int}
 end
 
@@ -111,6 +113,7 @@ function Rows(source;
     ignoreemptylines::Bool=false,
     select=nothing,
     drop=nothing,
+    filter=nothing,
     # parsing options
     missingstrings=String[],
     missingstring="",
@@ -142,13 +145,14 @@ function Rows(source;
     h = Header(source, header, normalizenames, datarow, skipto, footerskip, limit, transpose, comment, use_mmap, ignoreemptylines, false, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, true)
     columns = allocate(1, h.cols, h.types, h.flags)
     values = all(x->x == Union{String, Missing}, h.types) && lazystrings ? Vector{PosLen}(undef, h.cols) : Vector{Any}(undef, h.cols)
+    codes = filter === nothing ? EMPTY_CODES : zeros(Int16, h.cols)
     finaltypes = copy(h.types)
     columnmap = [i for i = 1:h.cols]
     deleteat!(h.names, h.todrop)
     deleteat!(finaltypes, h.todrop)
     deleteat!(columnmap, h.todrop)
     lookup = Dict(nm=>i for (i, nm) in enumerate(h.names))
-    return Rows{transpose, typeof(h.options), typeof(h.coloptions), typeof(h.buf), typeof(h.customtypes), eltype(values)}(
+    return Rows{transpose, typeof(h.options), typeof(h.coloptions), typeof(h.buf), typeof(h.customtypes), eltype(values), typeof(filter)}(
         h.name,
         h.names,
         finaltypes,
@@ -169,6 +173,8 @@ function Rows(source;
         reusebuffer,
         columns,
         values,
+        filter,
+        codes,
         lookup,
     )
 end
@@ -214,7 +220,7 @@ end
 @inline function Base.iterate(r::Rows{transpose, O, O2, IO, T, V}, (pos, len, row)=(r.datapos, r.len, 1)) where {transpose, O, O2, IO, T, V}
     (pos > len || row > r.limit) && return nothing
     pos > len && return nothing
-    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, r.columns, r.datapos, r.buf, pos, len, r.positions, 0.0, EMPTY_REFS, 1, r.datarow + row - 2, r.types, r.flags, false, r.options, r.coloptions, T)
+    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, r.columns, r.datapos, r.buf, pos, len, r.positions, 0.0, EMPTY_REFS, 1, r.datarow + row - 2, r.types, r.flags, r.filter, r.names, r.codes, false, r.options, r.coloptions, T)
     cols = r.cols
     values = r.reusebuffer ? r.values : Vector{V}(undef, cols)
     columns = r.columns
