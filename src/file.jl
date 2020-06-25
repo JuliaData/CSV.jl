@@ -470,15 +470,16 @@ function multithreadparse(types, flags, buf, datapos, len, options, coloptions, 
             @inbounds finaltapes[col] = chain
             types[col] = Missing
         else
-            error("unhandled column type: $(typeof(tape))")
+            chain = makechain(typeof(tape), tape, N, col, perthreadtapes, limit)
+            @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+            # error("unhandled column type: $(typeof(tape))")
         end
     end
     finalrows = sum(rows)
     return limit < finalrows ? limit : finalrows, finaltapes
 end
 
-function parsetape!(TR::Val{transpose}, ncols, typemap, tapes, buf, pos, len, limit, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options::Parsers.Options{ignorerepeated}, coloptions, customtypes) where {transpose, ignorerepeated}
-    @show customtypes
+function parsetape!(TR::Val{transpose}, ncols, typemap, tapes, buf, pos, len, limit, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options::Parsers.Options{ignorerepeated}, coloptions, ::Type{customtypes}) where {transpose, ignorerepeated, customtypes}
     row = 0
     startpos = pos
     if pos <= len && len > 0
@@ -555,7 +556,7 @@ end
             @inbounds tape = tapes[col]
         end)
         pushfirst!(block.args, Expr(:meta, :inline))
-        @show block
+        # @show block
         return block
     else
         # println("generated function failed")
@@ -564,7 +565,7 @@ end
     end
 end
 
-@inline function parserow(row, TR::Val{transpose}, ncols, typemap, tapes, startpos, buf, pos, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options::Parsers.Options{ignorerepeated}, coloptions, customtypes) where {transpose, ignorerepeated}
+@inline function parserow(row, TR::Val{transpose}, ncols, typemap, tapes, startpos, buf, pos, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options::Parsers.Options{ignorerepeated}, coloptions, ::Type{customtypes}) where {transpose, ignorerepeated, customtypes}
     for col = 1:ncols
         if transpose
             @inbounds pos = positions[col]
@@ -599,9 +600,6 @@ end
             pos, code = parsecustom!(customtypes, flag, tapes, buf, pos, len, opts, row, col, types, flags)
         else
             error("bad array type: $(typeof(tape))")
-        # TODO: support all other integer types, float16, float32
-        # in an else clause, we'll parse a string and call
-        # Parsers.parse(T, str)
         end
         if promote_to_string(code)
             # debug && println("promoting col = $col to string")

@@ -221,7 +221,7 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
             end
         end
     end
-    customtypes = Tuple{(Tuple{(nonstandardtype(T), nonmissingtype(eltype(nonstandardtype(T))))...} for T in types if T !== Union{})...}
+    customtypes = Tuple{(nonstandardtype(T) for T in types if nonstandardtype(T) !== Union{})...}
     # set any unselected columns to typecode USER | MISSING
     todrop = Int[]
     if select !== nothing && drop !== nothing
