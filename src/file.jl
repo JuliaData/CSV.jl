@@ -601,7 +601,7 @@ end
 
 @inline function parserow(row, TR::Val{transpose}, ncols, typemap, columns, startpos, buf, pos, len, positions, pool, refs, rowsguess, rowoffset, types, flags, filter, names, codes, debug, options, coloptions, ::Type{customtypes}) where {transpose, customtypes}
     while pos <= len
-        origpos = pos
+        rowstart = pos
         rowcode = None
         for col = 1:ncols
             if transpose
@@ -659,23 +659,31 @@ end
                         break # from for col = 1:ncols
                     end
                 else
-                    if pos <= len && !Parsers.newline(code)
-                        rowcode = TooManyColumns
-                        options.silencewarnings || toomanycolumns(ncols, rowoffset + row)
-                        # ignore the rest of the line
-                        pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, 1, 2)
+                    if col < ncols
+                        if Parsers.newline(code) || pos > len
+                            rowcode = NotEnoughColumns
+                            options.silencewarnings || notenoughcolumns(col, ncols, rowoffset + row)
+                            for j = (col + 1):ncols
+                                @inbounds flags[j] |= ANYMISSING
+                                @inbounds types[j] = Union{Missing, types[j]}
+                            end
+                            break # from for col = 1:ncols
+                        end
+                    else
+                        if pos <= len && !Parsers.newline(code)
+                            rowcode = TooManyColumns
+                            options.silencewarnings || toomanycolumns(ncols, rowoffset + row)
+                            # ignore the rest of the line
+                            pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, 1, 2)
+                        end
                     end
                 end
             end
         end
         if filter === nothing
             break
-        else
-            res = filter(ParsingRow(names, types, flags, rowcode, codes, row, columns, buf, origpos, pos - origpos))
-            @show res
-            if res
-                break
-            end
+        elseif filter(ParsingRow(names, types, flags, rowcode, codes, row, columns, buf, rowstart, pos - rowstart))
+            break
         end
     end
     return pos
