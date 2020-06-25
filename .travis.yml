@@ -24,8 +24,9 @@ julia:
   - nightly
 
 env:
-  - JULIA_PROJECT="@."
-  - JULIA_NUM_THREADS=2
+  global:
+    - JULIA_PROJECT="@."
+    - JULIA_NUM_THREADS=2
 
 matrix:
   exclude:
