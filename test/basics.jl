@@ -404,10 +404,12 @@ f = CSV.File(IOBuffer("time,date,datetime\n10:00:00.0,04/16/2020,2020-04-16 23:1
 @test f[1].datetime == Dates.DateTime(2020, 4, 16, 23, 14)
 
 # custom types
+println("custom type tests")
 f = CSV.File(
     IOBuffer("int8,uint32,bigint,bigfloat,dec64,csvstring\n1,2,170141183460469231731687303715884105727,3.14,1.02,hey there sailor\n2,,,,,\n");
     types=[Int8, UInt32, BigInt, BigFloat, Dec64, CSVString]
 )
+println("parsed")
 @test f.int8 isa Vector{Int8}
 @test f.int8 == Int8[1, 2]
 @test f.uint32 isa Vector{Union{UInt32, Missing}}
@@ -421,9 +423,11 @@ f = CSV.File(
 @test f.csvstring isa CSV.SVec2{CSVString}
 @test isequal(f.csvstring, [CSVString("hey there sailor"), missing])
 
+println("parsing larger file w/ custom types")
 f = CSV.File(GzipDecompressorStream(open(joinpath(dir, "randoms.csv.gz"))); types=[Int32, CSVString, String, Float64, Dec64, Date, DateTime])
 @test f.id isa AbstractVector{Int32}
 @test f.first isa AbstractVector{CSVString}
 @test f.wage isa AbstractVector{Union{Missing, Dec64}}
+println("finished")
 
 end
