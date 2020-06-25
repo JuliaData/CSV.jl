@@ -182,12 +182,12 @@ const SVec2{T} = SentinelVector{T, typeof(undef), Missing, Vector{T}}
 ts(T, S) = Core.Compiler.typesubtract(T, S)
 function nonstandardtype(T)
     S = ts(ts(ts(ts(ts(ts(ts(ts(ts(T, Int64), Float64), String), PooledString), Bool), Date), DateTime), Time), Missing)
-    if S === Union{} || S <: SentinelVector
+    if S === Union{}
         return S
     elseif isbitstype(S)
-        return SVec{S}
+        return Tuple{SVec{S}, S}
     else
-        return SVec2{S}
+        return Tuple{SVec2{S}, S}
     end
 end
 

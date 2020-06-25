@@ -2,7 +2,7 @@
 # no automatic type inference is done, but types are allowed to be passed
 # for as many columns as desired; `CSV.detect(row, i)` can also be used to
 # use the same inference logic used in `CSV.File` for determing a cell's typed value
-struct Rows{transpose, O, IO}
+struct Rows{transpose, O, IO, T}
     name::String
     names::Vector{Symbol} # only includes "select"ed columns
     finaltypes::Vector{Type} # only includes "select"ed columns
@@ -18,6 +18,7 @@ struct Rows{transpose, O, IO}
     limit::Int64
     options::O # Parsers.Options
     coloptions::Union{Nothing, Vector{Parsers.Options}}
+    customtypes::T
     positions::Vector{Int64}
     reusebuffer::Bool
     tapes::Vector{AbstractVector}
@@ -134,7 +135,7 @@ function Rows(source;
     deleteat!(finaltypes, h.todrop)
     deleteat!(columnmap, h.todrop)
     lookup = Dict(nm=>i for (i, nm) in enumerate(h.names))
-    return Rows{transpose, typeof(h.options), typeof(h.buf)}(
+    return Rows{transpose, typeof(h.options), typeof(h.buf), typeof(h.customtypes)}(
         h.name,
         h.names,
         finaltypes,
@@ -150,10 +151,11 @@ function Rows(source;
         limit,
         h.options,
         h.coloptions,
+        h.customtypes,
         h.positions,
         reusebuffer,
         tapes,
-        lookup
+        lookup,
     )
 end
 
@@ -170,7 +172,7 @@ const EMPTY_REFS = RefPool[]
     (pos > len || row > r.limit) && return nothing
     pos > len && return nothing
     tapes = r.reusebuffer ? r.tapes : allocate(1, r.cols, r.types, r.flags)
-    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, tapes, r.datapos, r.buf, pos, len, r.positions, 0.0, EMPTY_REFS, 1, r.datarow + row - 2, r.types, r.flags, false, r.options, r.coloptions)
+    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, tapes, r.datapos, r.buf, pos, len, r.positions, 0.0, EMPTY_REFS, 1, r.datarow + row - 2, r.types, r.flags, false, r.options, r.coloptions, r.customtypes)
     return Row2(r.names, r.finaltypes, r.columnmap, r.types, r.lookup, tapes, r.buf, r.e, r.options, r.coloptions), (pos, len, row + 1)
 end
 
