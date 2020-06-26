@@ -176,7 +176,7 @@ function write(sch::Tables.Schema{names}, rows, file, opts;
         if !append && opts.bom
             pos = writebom(buf, pos, len)
         end
-        if writeheader
+        if header === true || (header isa Vector && !append)
             pos = writenames(buf, pos, len, io, colnames, cols, opts)
         end
         ref = Ref{Int}(pos)
@@ -191,15 +191,14 @@ end
 # handle unknown schema case
 function write(::Nothing, rows, file, opts;
         append::Bool=false,
-        writeheader::Bool=!append,
-        header::Vector=String[],
+        header::Union{Bool, Vector}=String[],
     )
     len = 2^22
     buf = Vector{UInt8}(undef, len)
     pos = 1
     state = iterate(rows)
     if state === nothing
-        if writeheader && !isempty(header)
+        if header isa Vector && !isempty(header)
             with(file, append) do io
                 ! append && opts.bom && (pos = writebom(buf, pos, len) )
                 pos = writenames(buf, pos, len, io, header, length(header), opts)
@@ -216,7 +215,7 @@ function write(::Nothing, rows, file, opts;
         if !append && opts.bom
             pos = writebom(buf, pos, len)
         end
-        if writeheader
+        if header === true || (header isa Vector && !append)
             pos = writenames(buf, pos, len, io, names, cols, opts)
         end
         ref = Ref{Int}(pos)
