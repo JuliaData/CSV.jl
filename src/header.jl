@@ -97,12 +97,17 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     if use_mmap !== nothing
         @warn "`use_mmap` keyword argument is deprecated and will be removed in the next release"
     end
-    if !(categorical isa Bool)
+    if categorical !== nothing
+        @warn "the `categorical` keyword argument is deprecated; in the next release, you'll need to do `using CategoricalArrays; catg = categorical(f.pooled_column)`, where `pooled_column` is the column of a `CSV.File` you want as a `CategoricalArray`"
+    end
+    if categorical isa Real
         @warn "categorical=$categorical is deprecated in favor of `pool=$categorical`; categorical is only used to determine CategoricalArray vs. PooledArrays"
         pool = categorical
         categorical = categorical > 0.0
     elseif categorical === true
         pool = categorical
+    else
+        categorical = false
     end
     if skipto !== nothing
         if datarow != -1
