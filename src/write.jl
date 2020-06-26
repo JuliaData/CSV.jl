@@ -143,23 +143,30 @@ function write(file, itr;
     missingstring::AbstractString="",
     transform::Function=(col,val) -> val,
     bom::Bool=false,
+    append::Bool=false,
+    writeheader=nothing,
     kwargs...)
     checkvaliddelim(delim)
+    if writeheader !== nothing
+        @warn "`writeheader=$writeheader` is deprecated in favor of `header=$writeheader`"
+        header = writeheader
+    else
+        header = !append
+    end
     (isascii(something(openquotechar, quotechar)) && isascii(something(closequotechar, quotechar)) && isascii(escapechar)) || throw(ArgumentError("quote and escape characters must be ASCII characters "))
     oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
     e = escapechar % UInt8
     opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring), transform, bom)
     rows = Tables.rows(itr)
     sch = Tables.schema(rows)
-    return write(sch, rows, file, opts; kwargs...)
+    return write(sch, rows, file, opts; append=append, header=header, kwargs...)
 end
 
 function write(sch::Tables.Schema{names}, rows, file, opts;
         append::Bool=false,
-        writeheader::Bool=!append,
-        header::Vector=String[],
+        header::Union{Bool, Vector}=String[],
     ) where {names}
-    colnames = isempty(header) ? names : header
+    colnames = !(header isa Vector) || isempty(header) ? names : header
     cols = length(colnames)
     len = 2^22
     buf = Vector{UInt8}(undef, len)
@@ -169,7 +176,7 @@ function write(sch::Tables.Schema{names}, rows, file, opts;
         if !append && opts.bom
             pos = writebom(buf, pos, len)
         end
-        if writeheader
+        if header === true || (header isa Vector && !append)
             pos = writenames(buf, pos, len, io, colnames, cols, opts)
         end
         ref = Ref{Int}(pos)
@@ -184,15 +191,14 @@ end
 # handle unknown schema case
 function write(::Nothing, rows, file, opts;
         append::Bool=false,
-        writeheader::Bool=!append,
-        header::Vector=String[],
+        header::Union{Bool, Vector}=String[],
     )
     len = 2^22
     buf = Vector{UInt8}(undef, len)
     pos = 1
     state = iterate(rows)
     if state === nothing
-        if writeheader && !isempty(header)
+        if header isa Vector && !isempty(header)
             with(file, append) do io
                 ! append && opts.bom && (pos = writebom(buf, pos, len) )
                 pos = writenames(buf, pos, len, io, header, length(header), opts)
@@ -209,7 +215,7 @@ function write(::Nothing, rows, file, opts;
         if !append && opts.bom
             pos = writebom(buf, pos, len)
         end
-        if writeheader
+        if header === true || (header isa Vector && !append)
             pos = writenames(buf, pos, len, io, names, cols, opts)
         end
         ref = Ref{Int}(pos)
