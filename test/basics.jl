@@ -242,19 +242,19 @@ f = CSV.File(IOBuffer("x\na\nb\n\"quoted field with \"\" escape character inside
 @test f.x[3] == "quoted field with \" escape character inside"
 
 # invalid quoted field is fatal error
-@test_throws CSV.Error CSV.read(IOBuffer("x\n\"quoted field that never ends"))
-@test_throws CSV.Error CSV.read(IOBuffer("x\nhey\n\"quoted field that never ends"))
-@test_throws CSV.Error CSV.read(IOBuffer("x\n\n\"quoted field that never ends"))
-@test_throws CSV.Error CSV.read(IOBuffer("x\n1\n\"quoted field that never ends"))
-@test_throws CSV.Error CSV.read(IOBuffer("x\n1.0\n\"quoted field that never ends"))
-@test_throws CSV.Error CSV.read(IOBuffer("x\na\n\"quoted field that never ends"), pool=true)
+@test_throws CSV.Error CSV.File(IOBuffer("x\n\"quoted field that never ends"))
+@test_throws CSV.Error CSV.File(IOBuffer("x\nhey\n\"quoted field that never ends"))
+@test_throws CSV.Error CSV.File(IOBuffer("x\n\n\"quoted field that never ends"))
+@test_throws CSV.Error CSV.File(IOBuffer("x\n1\n\"quoted field that never ends"))
+@test_throws CSV.Error CSV.File(IOBuffer("x\n1.0\n\"quoted field that never ends"))
+@test_throws CSV.Error CSV.File(IOBuffer("x\na\n\"quoted field that never ends"), pool=true)
 
 # invalid integer
 f = CSV.File(IOBuffer("x\nabc\n"), type=Int)
 @test (length(f), length(f.names)) == (1, 1)
 @test f.x[1] === missing
 
-@test_throws CSV.Error CSV.read(IOBuffer("x\nabc\n"), type=Int, strict=true)
+@test_throws CSV.Error CSV.File(IOBuffer("x\nabc\n"), type=Int, strict=true)
 
 # transpose corner cases
 f = CSV.File(IOBuffer("x,y,1\nx2,y2,2\n"), transpose=true, header=2)
@@ -372,7 +372,7 @@ if Sys.iswindows()
         catcmd = `$busybox cat`
     end
 end
-@test CSV.read(`$(catcmd) $(joinpath(dir, "test_basic.csv"))`) == CSV.read(joinpath(dir, "test_basic.csv"))
+@test columntable(CSV.File(`$(catcmd) $(joinpath(dir, "test_basic.csv"))`)) == columntable(CSV.File(joinpath(dir, "test_basic.csv")))
 
 #476
 f = CSV.File(GzipDecompressorStream(open(joinpath(dir, "randoms.csv.gz"))))
