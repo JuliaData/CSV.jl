@@ -2,7 +2,7 @@
 # no automatic type inference is done, but types are allowed to be passed
 # for as many columns as desired; `CSV.detect(row, i)` can also be used to
 # use the same inference logic used in `CSV.File` for determing a cell's typed value
-struct Rows{transpose, O, IO, T}
+struct Rows{transpose, O, O2, IO, T, V}
     name::String
     names::Vector{Symbol} # only includes "select"ed columns
     finaltypes::Vector{Type} # only includes "select"ed columns
@@ -17,11 +17,12 @@ struct Rows{transpose, O, IO, T}
     len::Int
     limit::Int64
     options::O # Parsers.Options
-    coloptions::Union{Nothing, Vector{Parsers.Options}}
+    coloptions::O2 # Union{Nothing, Vector{Parsers.Options}}
     customtypes::T
     positions::Vector{Int64}
     reusebuffer::Bool
-    tapes::Vector{AbstractVector}
+    tapes::Vector{AbstractVector} # for parsing, allocated once and used for each iteration
+    values::Vector{V} # once values are parsed, put in values; allocated on each iteration if reusebuffer=false
     lookup::Dict{Symbol, Int}
 end
 
@@ -140,13 +141,14 @@ function Rows(source;
 
     h = Header(source, header, normalizenames, datarow, skipto, footerskip, limit, transpose, comment, use_mmap, ignoreemptylines, false, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, true)
     tapes = allocate(1, h.cols, h.types, h.flags)
+    values = all(x->x == Union{String, Missing}, h.types) && lazystrings ? Vector{PosLen}(undef, h.cols) : Vector{Any}(undef, h.cols)
     finaltypes = copy(h.types)
     columnmap = [i for i = 1:h.cols]
     deleteat!(h.names, h.todrop)
     deleteat!(finaltypes, h.todrop)
     deleteat!(columnmap, h.todrop)
     lookup = Dict(nm=>i for (i, nm) in enumerate(h.names))
-    return Rows{transpose, typeof(h.options), typeof(h.buf), typeof(h.customtypes)}(
+    return Rows{transpose, typeof(h.options), typeof(h.coloptions), typeof(h.buf), typeof(h.customtypes), eltype(values)}(
         h.name,
         h.names,
         finaltypes,
@@ -166,6 +168,7 @@ function Rows(source;
         h.positions,
         reusebuffer,
         tapes,
+        values,
         lookup,
     )
 end
@@ -179,25 +182,82 @@ Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
 const EMPTY_TYPEMAP = Dict{Type, Type}()
 const EMPTY_REFS = RefPool[]
 
-@inline function Base.iterate(r::Rows{transpose}, (pos, len, row)=(r.datapos, r.len, 1)) where {transpose}
-    (pos > len || row > r.limit) && return nothing
-    pos > len && return nothing
-    tapes = r.reusebuffer ? r.tapes : allocate(1, r.cols, r.types, r.flags)
-    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, tapes, r.datapos, r.buf, pos, len, r.positions, 0.0, EMPTY_REFS, 1, r.datarow + row - 2, r.types, r.flags, false, r.options, r.coloptions, r.customtypes)
-    return Row2(r.names, r.finaltypes, r.columnmap, r.types, r.lookup, tapes, r.buf, r.e, r.options, r.coloptions), (pos, len, row + 1)
+@inline function setcustom!(::Type{T}, values, tapes, i) where {T}
+    if @generated
+        block = Expr(:block)
+        push!(block.args, quote
+            error("CSV.jl code-generation error, unexpected column type: $(typeof(tape))")
+        end)
+        for i = 1:fieldcount(T)
+            vec = fieldtype(T, i)
+            pushfirst!(block.args, quote
+                if tape isa $(fieldtype(vec, 1))
+                    @inbounds values[i] = tape[1]
+                    return
+                end
+            end)
+        end
+        pushfirst!(block.args, quote
+            @inbounds tape = tapes[col]
+        end)
+        pushfirst!(block.args, Expr(:meta, :inline))
+        # @show block
+        return block
+    else
+        # println("generated function failed")
+        @inbounds tape = tapes[i]
+        @inbounds values[i] = tape[1]
+        return
+    end
 end
 
-struct Row2{O} <: Tables.AbstractRow
+@inline function Base.iterate(r::Rows{transpose, O, O2, IO, T, V}, (pos, len, row)=(r.datapos, r.len, 1)) where {transpose, O, O2, IO, T, V}
+    (pos > len || row > r.limit) && return nothing
+    pos > len && return nothing
+    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, r.tapes, r.datapos, r.buf, pos, len, r.positions, 0.0, EMPTY_REFS, 1, r.datarow + row - 2, r.types, r.flags, false, r.options, r.coloptions, T)
+    cols = r.cols
+    values = r.reusebuffer ? r.values : Vector{V}(undef, cols)
+    tapes = r.tapes
+    for i = 1:cols
+        @inbounds tape = tapes[i]
+        if tape isa Vector{PosLen}
+            @inbounds values[i] = tape[1]
+        elseif tape isa SVec{Int64}
+            @inbounds values[i] = tape[1]
+        elseif tape isa SVec{Float64}
+            @inbounds values[i] = tape[1]
+        elseif tape isa SVec2{String}
+            @inbounds values[i] = tape[1]
+        elseif tape isa SVec{Date}
+            @inbounds values[i] = tape[1]
+        elseif tape isa SVec{DateTime}
+            @inbounds values[i] = tape[1]
+        elseif tape isa SVec{Time}
+            @inbounds values[i] = tape[1]
+        elseif tape isa Vector{Union{Missing, Bool}}
+            @inbounds values[i] = tape[1]
+        elseif tape isa Vector{UInt32}
+            @inbounds values[i] = tape[1]
+        elseif T !== Tuple{}
+            setcustom!(T, values, tapes, i)
+        else
+            error("bad array type: $(typeof(tape))")
+        end
+    end
+    return Row2{O, O2, V}(r.names, r.finaltypes, r.columnmap, r.types, r.lookup, values, r.buf, r.e, r.options, r.coloptions), (pos, len, row + 1)
+end
+
+struct Row2{O, O2, V} <: Tables.AbstractRow
     names::Vector{Symbol}
     finaltypes::Vector{Type}
     columnmap::Vector{Int}
     types::Vector{Type}
     lookup::Dict{Symbol, Int}
-    tapes::Vector{AbstractVector}
+    values::Vector{V}
     buf::Vector{UInt8}
     e::UInt8
     options::O
-    coloptions::Union{Nothing, Vector{Parsers.Options}}
+    coloptions::O2
 end
 
 getnames(r::Row2) = getfield(r, :names)
@@ -205,7 +265,7 @@ getfinaltypes(r::Row2) = getfield(r, :finaltypes)
 getcolumnmap(r::Row2) = getfield(r, :columnmap)
 gettypes(r::Row2) = getfield(r, :types)
 getlookup(r::Row2) = getfield(r, :lookup)
-gettapes(r::Row2) = getfield(r, :tapes)
+getvalues(r::Row2) = getfield(r, :values)
 getbuf(r::Row2) = getfield(r, :buf)
 gete(r::Row2) = getfield(r, :e)
 getoptions(r::Row2) = getfield(r, :options)
@@ -226,14 +286,14 @@ end
 Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Type{T}, i::Int, nm::Symbol) where {T}
     @boundscheck checkbounds(r, i)
     j = getcolumnmap(r)[i]
-    @inbounds x = gettapes(r)[j][1]
+    @inbounds x = getvalues(r)[j]
     return x
 end
 
 Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Union{Type{Union{Missing, String}}, Type{String}}, i::Int, nm::Symbol)
     @boundscheck checkbounds(r, i)
     j = getcolumnmap(r)[i]
-    @inbounds poslen = gettapes(r)[j][1]
+    @inbounds poslen = getvalues(r)[j]
     if poslen isa Missing
         return missing
     elseif poslen isa String
@@ -250,7 +310,7 @@ Base.@propagate_inbounds function Parsers.parse(::Type{T}, r::Row2, i::Int) wher
     j = getcolumnmap(r)[i]
     type = gettypes(r)[j]
     (type == String || type == Union{String, Missing}) || stringsonly()
-    @inbounds poslen = gettapes(r)[j][1]
+    @inbounds poslen = getvalues(r)[j]
     missingvalue(poslen) && return missing
     pos = getpos(poslen)
     colopts = getcoloptions(r)
@@ -264,7 +324,7 @@ Base.@propagate_inbounds function detect(r::Row2, i::Int)
     j = getcolumnmap(r)[i]
     T = gettypes(r)[j]
     (T == String || T == Union{String, Missing}) || stringsonly()
-    @inbounds offlen = gettapes(r)[j][1]
+    @inbounds offlen = getvalues(r)[j]
     missingvalue(offlen) && return missing
     pos = getpos(offlen)
     colopts = getcoloptions(r)

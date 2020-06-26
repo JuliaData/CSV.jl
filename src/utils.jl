@@ -151,7 +151,7 @@ end
 const SmallIntegers = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32}
 
 function allocate(rowsguess, ncols, types, flags)
-    return AbstractVector[allocate(lazystrings(flags[i]) && types[i] >: String ? PosLen : types[i], rowsguess) for i = 1:ncols]
+    return AbstractVector[allocate(lazystrings(flags[i]) && (types[i] === String || types[i] === Union{String, Missing}) ? PosLen : types[i], rowsguess) for i = 1:ncols]
 end
 
 allocate(::Type{Union{}}, len) = MissingVector(len)
