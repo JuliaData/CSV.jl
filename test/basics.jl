@@ -372,7 +372,7 @@ if Sys.iswindows()
         catcmd = `$busybox cat`
     end
 end
-@test CSV.File(`$(catcmd) $(joinpath(dir, "test_basic.csv"))`) == CSV.File(joinpath(dir, "test_basic.csv"))
+@test columntable(CSV.File(`$(catcmd) $(joinpath(dir, "test_basic.csv"))`)) == columntable(CSV.File(joinpath(dir, "test_basic.csv")))
 
 #476
 f = CSV.File(GzipDecompressorStream(open(joinpath(dir, "randoms.csv.gz"))))
