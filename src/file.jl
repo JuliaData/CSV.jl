@@ -92,11 +92,23 @@ end
 """
     CSV.File(source; kwargs...) => CSV.File
 
-Read a UTF-8 CSV input (a filename given as a String or FilePaths.jl type, or any other IO source), returning a `CSV.File` object.
+Read a UTF-8 CSV input and return a `CSV.File` object.
+
+The `source` argument can be one of:
+  * filename given as a string or FilePaths.jl type
+  * an `AbstractVector{UInt8}` like a byte buffer or `codeunits(string)`
+  * an `IOBuffer`
+
+To read a csv file from a url, use the HTTP.jl package, where the `HTTP.Response` body can be passed like:
+```julia
+f = CSV.File(HTTP.get(url).body)
+```
+
+For other `IO` or `Cmd` inputs, you can pass them like: `f = CSV.File(read(obj))`.
 
 Opens the file and uses passed arguments to detect the number of columns and column types, unless column types are provided
-manually via the `types` keyword argument. Note that passing column types manually can increase performance and reduce the
-memory use for each column type provided (column types can be given as a `Vector` for all columns, or specified per column via
+manually via the `types` keyword argument. Note that passing column types manually can slightly increase performance
+for each column type provided (column types can be given as a `Vector` for all columns, or specified per column via
 name or index in a `Dict`). For text encodings other than UTF-8, see the [StringEncodings.jl](https://github.com/JuliaStrings/StringEncodings.jl)
 package for re-encoding a file or IO stream.
 The returned `CSV.File` object supports the [Tables.jl](https://github.com/JuliaData/Tables.jl) interface
@@ -114,7 +126,7 @@ end
 By supporting the Tables.jl interface, a `CSV.File` can also be a table input to any other table sink function. Like:
 
 ```julia
-# materialize a csv file as a DataFrame, without copying columns from CSV.File; these columns are read-only
+# materialize a csv file as a DataFrame, without copying columns from CSV.File
 df = CSV.File(file) |> DataFrame!
 
 # load a csv file directly into an sqlite database table
@@ -132,7 +144,6 @@ Supported keyword arguments include:
   * `limit`: an `Int` to indicate a limited number of rows to parse in a csv file; use in combination with `skipto` to read a specific, contiguous chunk within a file; note for large files when multiple threads are used for parsing, the `limit` argument may not be exact
   * `transpose::Bool`: read a csv file "transposed", i.e. each column is parsed as a row
   * `comment`: rows that begin with this `String` will be skipped while parsing
-  * `use_mmap::Bool=!Sys.iswindows()`: whether the file should be mmapped for reading, which in some cases can be faster
   * `ignoreemptylines::Bool=false`: whether empty rows/lines in a file should be ignored (if `false`, each column will be assigned `missing` for that empty row)
   * `threaded::Bool`: whether parsing should utilize multiple threads; by default threads are used on large enough files, but isn't allowed when `transpose=true` or when `limit` is used; only available in Julia 1.3+
   * `select`: an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a "selector" function of the form `(i, name) -> keep::Bool`; only columns in the collection or for which the selector function returns `true` will be parsed and accessible in the resulting `CSV.File`. Invalid values in `select` are ignored.
@@ -168,7 +179,7 @@ function File(source;
     limit::Integer=typemax(Int64),
     transpose::Bool=false,
     comment::Union{String, Nothing}=nothing,
-    use_mmap::Bool=!Sys.iswindows(),
+    use_mmap=nothing,
     ignoreemptylines::Bool=false,
     threaded::Union{Bool, Nothing}=nothing,
     select=nothing,
