@@ -33,11 +33,14 @@ include("write.jl")
 """
 `CSV.read(source; copycols::Bool=false, kwargs...)` => `DataFrame`
 
-Parses a delimited file into a `DataFrame`. `copycols` determines whether a copy of columns should be made when creating the DataFrame; by default, no copy is made, and the DataFrame is built with immutable, read-only `CSV.Column` vectors. If mutable operations are needed on the DataFrame columns, set `copycols=true`.
+Parses a delimited file into a `DataFrame`. `copycols` determines whether a copy of columns should be made when creating the DataFrame; by default, no copy is made.
 
 `CSV.read` supports the same keyword arguments as [`CSV.File`](@ref).
 """
-read(source; copycols::Bool=false, kwargs...) = DataFrame(CSV.File(source; kwargs...), copycols=copycols)
+function read(source; copycols::Bool=false, kwargs...)
+    @warn "`CSV.read(input; kw...)` is deprecated in favor of `DataFrame!(CSV.File(input; kw...))`"
+    DataFrame(CSV.File(source; kwargs...), copycols=copycols)
+end
 
 DataFrames.DataFrame(f::CSV.File; copycols::Bool=true) = DataFrame(getcolumns(f), getnames(f); copycols=copycols)
 
