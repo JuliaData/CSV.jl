@@ -29,7 +29,7 @@ col1,col2,col3,col4,col5,col6,col7,col8
 ```julia
 CSV.File(file)
 ```
-By default, `CSV.File` will automatically detect this file's delimiter `','`, and the type of each column. By default, it treats "empty fields" as `missing` (the entire first column in this example). It also automatically handles promoting types, like the 4th column, where the first two values are `Int`, but the 3rd row has a `Float64` value (`3.14`). The resulting column's type will be `Float64`. Parsing can detect `Int64`, `Float64`, `Date`, `DateTime`, and `Bool` types, with `String` as the fallback type for any column.
+By default, `CSV.File` will automatically detect this file's delimiter `','`, and the type of each column. By default, it treats "empty fields" as `missing` (the entire first column in this example). It also automatically handles promoting types, like the 4th column, where the first two values are `Int`, but the 3rd row has a `Float64` value (`3.14`). The resulting column's type will be `Float64`. Parsing can detect `Int64`, `Float64`, `Date`, `DateTime`, `Time` and `Bool` types, with `String` as the fallback type for any column.
 
 ### Auto-Delimiter Detection
 #### File
@@ -70,7 +70,7 @@ CSV.File(file; header=false)
 CSV.File(file; header=["col1", "col2", "col3"])
 CSV.File(file; header=[:col1, :col2, :col3])
 ```
-In this file, there is no header row that contains column names. In the first option, we pass `header=false`, and column names will be generated like `[:Column1, :Column2, :Column3]`. In the two latter examples, we pass our own explicit column names, either as strings or symbols.
+In this file, there is no header row that contains column names. In the first option, we pass `header=false`, and column names will be generated like `[:Column1, :Column2, :Column3]`. In the two latter examples, we pass our own explicit column names, either as `String`s or `Symbol`s.
 
 ### Normalize Column Names
 #### File
@@ -329,16 +329,14 @@ For this file, we have columns `a`, `b`, and `c`; we might only be interested in
 
 #### Example: reading from a gzip (.gz) file
 ```julia
-using CSV, DataFrames, CodecZlib
+using CSV, DataFrames, CodecZlib, Mmap
 a = DataFrame(a = 1:3)
 CSV.write("a.csv", a)
 
 # Windows users who do not have gzip available on the PATH should manually gzip the CSV
 ;gzip a.csv
 
-a_copy = open("a.csv.gz") do io
-    CSV.read(GzipDecompressorStream(io))
-end
+a_copy = CSV.File(transcode(GzipDecompressor, Mmap.mmap("a.csv.gz"))) |> DataFrame!
 
 a == a_copy # true; restored successfully
 
@@ -359,7 +357,7 @@ z = ZipFile.Reader("a.zip")
 # identify the right file in zip
 a_file_in_zip = filter(x->x.name == "a.csv", z.files)[1]
 
-a_copy = CSV.read(a_file_in_zip)
+a_copy = CSV.File(a_file_in_zip) |> DataFrame!
 
 a == a_copy
 ```

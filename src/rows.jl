@@ -34,14 +34,26 @@ end
 """
     CSV.Rows(source; kwargs...) => CSV.Rows
 
-Read a csv input (a filename given as a String or FilePaths.jl type, or any other IO source), returning a `CSV.Rows` object.
+Read a csv input returning a `CSV.Rows` object.
+
+The `source` argument can be one of:
+  * filename given as a string or FilePaths.jl type
+  * an `AbstractVector{UInt8}` like a byte buffer or `codeunits(string)`
+  * an `IOBuffer`
+
+To read a csv file from a url, use the HTTP.jl package, where the `HTTP.Response` body can be passed like:
+```julia
+f = CSV.Rows(HTTP.get(url).body)
+```
+
+For other `IO` or `Cmd` inputs, you can pass them like: `f = CSV.Rows(read(obj))`.
 
 While similar to [`CSV.File`](@ref), `CSV.Rows` provides a slightly different interface, the tradeoffs including:
   * Very minimal memory footprint; while iterating, only the current row values are buffered
   * Only provides row access via iteration; to access columns, one can stream the rows into a table type
-  * Performs no type inference; each column/cell is essentially treated as `Union{String, Missing}`, users can utilize the performant `Parsers.parse(T, str)` to convert values to a  more specific type if needed
+  * Performs no type inference; each column/cell is essentially treated as `Union{String, Missing}`, users can utilize the performant `Parsers.parse(T, str)` to convert values to a more specific type if needed, or pass types upon construction using the `type` or `types` keyword arguments
 
-Opens the file and uses passed arguments to detect the number of columns, ***but not*** column types.
+Opens the file and uses passed arguments to detect the number of columns, ***but not*** column types (column types default to `String` unless otherwise manually provided).
 The returned `CSV.Rows` object supports the [Tables.jl](https://github.com/JuliaData/Tables.jl) interface
 and can iterate rows. Each row object supports `propertynames`, `getproperty`, and `getindex` to access individual row values.
 Note that duplicate column names will be detected and adjusted to ensure uniqueness (duplicate column name `a` will become `a_1`).
@@ -62,7 +74,6 @@ Supported keyword arguments include:
   * `limit`: an `Int` to indicate a limited number of rows to parse in a csv file; use in combination with `skipto` to read a specific, contiguous chunk within a file
   * `transpose::Bool`: read a csv file "transposed", i.e. each column is parsed as a row
   * `comment`: rows that begin with this `String` will be skipped while parsing
-  * `use_mmap::Bool=!Sys.iswindows()`: whether the file should be mmapped for reading, which in some cases can be faster
   * `ignoreemptylines::Bool=false`: whether empty rows/lines in a file should be ignored (if `false`, each column will be assigned `missing` for that empty row)
 * Parsing options:
   * `missingstrings`, `missingstring`: either a `String`, or `Vector{String}` to use as sentinel values that will be parsed as `missing`; by default, only an empty field (two consecutive delimiters) is considered `missing`
@@ -95,7 +106,7 @@ function Rows(source;
     limit::Integer=typemax(Int64),
     transpose::Bool=false,
     comment::Union{String, Nothing}=nothing,
-    use_mmap::Bool=!Sys.iswindows(),
+    use_mmap=nothing,
     ignoreemptylines::Bool=false,
     select=nothing,
     drop=nothing,
