@@ -392,97 +392,105 @@ function multithreadparse(types, flags, buf, datapos, len, options, coloptions, 
     perthreadtapes = Vector{Vector{AbstractVector}}(undef, N)
     rows = zeros(Int64, N)
     locks = [ReentrantLock() for i = 1:ncols]
-    Threads.@threads for i = 1:N
-        tt = Base.time()
-        tl_flags = copy(flags)
-        tl_refs = Vector{RefPool}(undef, ncols)
-        tl_len = ranges[i + 1] - (i != N)
-        tl_pos = ranges[i]
-        tl_types = copy(types)
-        tl_tapes = allocate(rowchunkguess, ncols, tl_types, tl_flags)
-        perthreadtapes[i] = tl_tapes
-        tl_rows, tl_pos = parsetape!(Val(false), ncols, typemap, tl_tapes, buf, tl_pos, tl_len, typemax(Int64), EMPTY_INT_ARRAY, pool, tl_refs, rowchunkguess, datarow + (rowchunkguess * (i - 1)), tl_types, tl_flags, debug, options, coloptions, customtypes)
-        rows[i] = tl_rows
-        # promote column types across threads
-        for col = 1:ncols
-            lock(locks[col]) do
-                @inbounds T = types[col]
-                @inbounds types[col] = promote_types(T, tl_types[col])
-                # if T !== types[col]
-                #     debug && println("promoting col = $col from $T to $(types[col]), thread chunk was type = $(tl_types[col])")
-                # end
-                @inbounds flags[col] |= tl_flags[col]
-                # synchronize refs if needed
-                @inbounds tape = tl_tapes[col]
-                if tape isa Vector{UInt32}
-                    syncrefs!(refs, tl_refs, col, tl_rows, tape)
+    @sync for i = 1:N
+@static if VERSION >= v"1.3-DEV"
+        Threads.@spawn begin
+            tt = Base.time()
+            tl_flags = copy(flags)
+            tl_refs = Vector{RefPool}(undef, ncols)
+            tl_len = ranges[i + 1] - (i != N)
+            tl_pos = ranges[i]
+            tl_types = copy(types)
+            tl_tapes = allocate(rowchunkguess, ncols, tl_types, tl_flags)
+            perthreadtapes[i] = tl_tapes
+            tl_rows, tl_pos = parsetape!(Val(false), ncols, typemap, tl_tapes, buf, tl_pos, tl_len, typemax(Int64), EMPTY_INT_ARRAY, pool, tl_refs, rowchunkguess, datarow + (rowchunkguess * (i - 1)), tl_types, tl_flags, debug, options, coloptions, customtypes)
+            rows[i] = tl_rows
+            # promote column types across threads
+            for col = 1:ncols
+                lock(locks[col]) do
+                    @inbounds T = types[col]
+                    @inbounds types[col] = promote_types(T, tl_types[col])
+                    # if T !== types[col]
+                    #     debug && println("promoting col = $col from $T to $(types[col]), thread chunk was type = $(tl_types[col])")
+                    # end
+                    @inbounds flags[col] |= tl_flags[col]
+                    # synchronize refs if needed
+                    @inbounds tape = tl_tapes[col]
+                    if tape isa Vector{UInt32}
+                        syncrefs!(refs, tl_refs, col, tl_rows, tape)
+                    end
                 end
             end
+            debug && println("finished parsing $tl_rows rows on thread = $(Threads.threadid()): time for parsing: $(Base.time() - tt)")
         end
-        debug && println("finished parsing $tl_rows rows on thread = $(Threads.threadid()): time for parsing: $(Base.time() - tt)")
+end # @static if VERSION >= v"1.3-DEV"
     end
     finaltapes = Vector{AbstractVector}(undef, ncols)
-    Threads.@threads for col = 1:ncols
-        for i = 1:N
-            tl_tapes = perthreadtapes[i]
-            tl_rows = rows[i]
-            # check if we need to promote a thread-local column based on what other threads parsed
-            @inbounds T = types[col]
-            if (T === String || T === Union{String, Missing}) && !(tl_tapes[col] isa Vector{PosLen}) && !(tl_tapes[col] isa SVec2{String})
-                # promoting non-string to string column
-                promotetostring!(col, Val(false), ncols, typemap, tl_tapes, buf, ranges[i], ranges[i + 1] - (i != N), tl_rows, EMPTY_INT_ARRAY, pool, refs, tl_rows, 0, types, flags, debug, options, coloptions, customtypes)
-            elseif (T === Float64 || T === Union{Float64, Missing}) && tl_tapes[col] isa SVec{Int64}
-                tl_tapes[col] = convert(SentinelVector{Float64}, tl_tapes[col])
-            elseif T !== Union{} && T !== Missing && tl_tapes[col] isa MissingVector
-                tl_tapes[col] = allocate(T, tl_rows)
+    @sync for col = 1:ncols
+@static if VERSION >= v"1.3-DEV"
+        Threads.@spawn begin
+            for i = 1:N
+                tl_tapes = perthreadtapes[i]
+                tl_rows = rows[i]
+                # check if we need to promote a thread-local column based on what other threads parsed
+                @inbounds T = types[col]
+                if (T === String || T === Union{String, Missing}) && !(tl_tapes[col] isa Vector{PosLen}) && !(tl_tapes[col] isa SVec2{String})
+                    # promoting non-string to string column
+                    promotetostring!(col, Val(false), ncols, typemap, tl_tapes, buf, ranges[i], ranges[i + 1] - (i != N), tl_rows, EMPTY_INT_ARRAY, pool, refs, tl_rows, 0, types, flags, debug, options, coloptions, customtypes)
+                elseif (T === Float64 || T === Union{Float64, Missing}) && tl_tapes[col] isa SVec{Int64}
+                    tl_tapes[col] = convert(SentinelVector{Float64}, tl_tapes[col])
+                elseif T !== Union{} && T !== Missing && tl_tapes[col] isa MissingVector
+                    tl_tapes[col] = allocate(T, tl_rows)
+                end
             end
-        end
-        @inbounds tape = perthreadtapes[1][col]
-        if tape isa SVec{Int64}
-            sent = tape.sentinel
-            chain = makechain(SVec{Int64}, tape, N, col, perthreadtapes, limit)
-            @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain, sent) : chain
-        elseif tape isa SVec{Float64}
-            chain = makechain(SVec{Float64}, tape, N, col, perthreadtapes, limit)
-            @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
-        elseif tape isa SVec2{String}
-            chain = makechain(SVec2{String}, tape, N, col, perthreadtapes, limit)
-            @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
-        elseif tape isa SVec{Date}
-            chain = makechain(SVec{Date}, tape, N, col, perthreadtapes, limit)
-            @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
-        elseif tape isa SVec{DateTime}
-            chain = makechain(SVec{DateTime}, tape, N, col, perthreadtapes, limit)
-            @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
-        elseif tape isa SVec{Time}
-            chain = makechain(SVec{Time}, tape, N, col, perthreadtapes, limit)
-            @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
-        elseif tape isa Vector{Union{Missing, Bool}}
-            chain = makechain(Vector{anymissing(flags[col]) ? Bool : Union{Missing, Bool}}, tape, N, col, perthreadtapes, limit)
-            @inbounds finaltapes[col] = chain
-        elseif tape isa Vector{UInt32}
-            chain = makechain(Vector{UInt32}, tape, N, col, perthreadtapes, limit)
-            makeandsetpooled!(finaltapes, col, chain, refs, flags, categorical)
-        elseif tape isa Vector{PosLen}
-            chain = makechain(Vector{PosLen}, tape, N, col, perthreadtapes, limit)
-            if anymissing(flags[col])
-                @inbounds finaltapes[col] = LazyStringVector{Union{String, Missing}}(buf, options.e, chain)
+            @inbounds tape = perthreadtapes[1][col]
+            if tape isa SVec{Int64}
+                sent = tape.sentinel
+                chain = makechain(SVec{Int64}, tape, N, col, perthreadtapes, limit)
+                @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain, sent) : chain
+            elseif tape isa SVec{Float64}
+                chain = makechain(SVec{Float64}, tape, N, col, perthreadtapes, limit)
+                @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+            elseif tape isa SVec2{String}
+                chain = makechain(SVec2{String}, tape, N, col, perthreadtapes, limit)
+                @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+            elseif tape isa SVec{Date}
+                chain = makechain(SVec{Date}, tape, N, col, perthreadtapes, limit)
+                @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+            elseif tape isa SVec{DateTime}
+                chain = makechain(SVec{DateTime}, tape, N, col, perthreadtapes, limit)
+                @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+            elseif tape isa SVec{Time}
+                chain = makechain(SVec{Time}, tape, N, col, perthreadtapes, limit)
+                @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+            elseif tape isa Vector{Union{Missing, Bool}}
+                chain = makechain(Vector{anymissing(flags[col]) ? Bool : Union{Missing, Bool}}, tape, N, col, perthreadtapes, limit)
+                @inbounds finaltapes[col] = chain
+            elseif tape isa Vector{UInt32}
+                chain = makechain(Vector{UInt32}, tape, N, col, perthreadtapes, limit)
+                makeandsetpooled!(finaltapes, col, chain, refs, flags, categorical)
+            elseif tape isa Vector{PosLen}
+                chain = makechain(Vector{PosLen}, tape, N, col, perthreadtapes, limit)
+                if anymissing(flags[col])
+                    @inbounds finaltapes[col] = LazyStringVector{Union{String, Missing}}(buf, options.e, chain)
+                else
+                    @inbounds finaltapes[col] = LazyStringVector{String}(buf, options.e, chain)
+                end
+            elseif tape isa MissingVector
+                chain = makechain(MissingVector, tape, N, col, perthreadtapes, limit)
+                @inbounds finaltapes[col] = chain
+                types[col] = Missing
+            elseif nonmissingtype(types[col]) <: SmallIntegers
+                T = types[col]
+                chain = makechain(Vector{T}, tape, N, col, perthreadtapes, limit)
+                @inbounds finaltapes[col] = anymissing(flags[col]) ? chain : chain
             else
-                @inbounds finaltapes[col] = LazyStringVector{String}(buf, options.e, chain)
+                chain = makechain(typeof(tape), tape, N, col, perthreadtapes, limit)
+                @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+                # error("unhandled column type: $(typeof(tape))")
             end
-        elseif tape isa MissingVector
-            chain = makechain(MissingVector, tape, N, col, perthreadtapes, limit)
-            @inbounds finaltapes[col] = chain
-            types[col] = Missing
-        elseif nonmissingtype(types[col]) <: SmallIntegers
-            T = types[col]
-            chain = makechain(Vector{T}, tape, N, col, perthreadtapes, limit)
-            @inbounds finaltapes[col] = anymissing(flags[col]) ? chain : chain
-        else
-            chain = makechain(typeof(tape), tape, N, col, perthreadtapes, limit)
-            @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
-            # error("unhandled column type: $(typeof(tape))")
         end
+end # @static if VERSION >= v"1.3-DEV"
     end
     finalrows = sum(rows)
     return limit < finalrows ? limit : finalrows, finaltapes
