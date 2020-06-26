@@ -199,42 +199,21 @@ function nonstandardtype(T)
 end
 
 # one-liner suggested from ScottPJones
-consumeBOM(buf) = (length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf) ? 4 : 1
+consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 0xbb && buf[pos + 2] == 0xbf) ? pos + 3 : pos
 
-function slurp(source)
-    N = 2^22 # 4 mb increments
-    ms = Tuple{Vector{UInt8}, Int}[]
-    tot = 0
-    while true
-        m = Mmap.mmap(Vector{UInt8}, N)
-        n = readbytes!(source, m, N)
-        tot += n
-        push!(ms, (m, n))
-        n < N && break
+function getsource(x)
+    if x isa AbstractVector{UInt8}
+        return x, 1, length(x)
+    elseif x isa IOBuffer
+        return x.data, x.ptr, x.size
+    elseif x isa Cmd || x isa IO
+        @warn "`CSV.File` or `CSV.Rows` with `$(typeof(x))` object is deprecated; pass a filename, `IOBuffer`, or byte buffer directly (via `read(x)`)"
+        buf = Base.read(x)
+        return buf, 1, length(buf)
+    else
+        buf = Mmap.mmap(string(x))
+        return buf, 1, length(buf)
     end
-    final = Mmap.mmap(Vector{UInt8}, tot)
-    pos = 1
-    for (m, n) in ms
-        copyto!(final, pos, m, 1, n)
-        pos += n
-    end
-    return final
-end
-
-getsource(source::Vector{UInt8}, ::Any) = source
-getsource(source::Cmd, ::Any) = Base.read(source)
-getsource(source::AbstractPath, ::Any) = Base.read(open(source))
-getsource(source::IO, ::Any) = slurp(source)
-getsource(source::SystemPath, use_mmap) = getsource(string(source), use_mmap)
-function getsource(source, use_mmap)
-    m = Mmap.mmap(source)
-    if use_mmap
-        return m
-    end
-    m2 = Mmap.mmap(Vector{UInt8}, length(m))
-    copyto!(m2, 1, m, 1, length(m))
-    finalize(m)
-    return m2
 end
 
 getname(buf::Vector{UInt8}) = "<raw buffer>"

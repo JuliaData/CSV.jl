@@ -242,7 +242,7 @@ function with(f::Function, io::Union{Base.TTY, Base.Pipe, Base.PipeEndpoint, Bas
     f(io)
 end
 
-function with(f::Function, file::Union{AbstractString, AbstractPath}, append)
+function with(f::Function, file, append)
     open(file, append ? "a" : "w") do io
         f(io)
     end
