@@ -596,7 +596,7 @@ end
     end
 end
 
-@inline function parserow(row, TR::Val{transpose}, ncols, typemap, tapes, startpos, buf, pos, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options::Parsers.Options{ignorerepeated}, coloptions, ::Type{customtypes}) where {transpose, ignorerepeated, customtypes}
+@inline function parserow(row, TR::Val{transpose}, ncols, typemap, tapes, startpos, buf, pos::A, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options::B, coloptions::C, ::Type{customtypes}) where {transpose, A, B, C, customtypes}
     for col = 1:ncols
         if transpose
             @inbounds pos = positions[col]
@@ -782,7 +782,7 @@ function detect(tapes, buf, pos, len, options, row, rowoffset, col, typemap, poo
     return pos + tlen, code
 end
 
-function parseint!(flag, tape, tapes, buf, pos, len, options, row, rowoffset, col, types, flags)
+function parseint!(flag, tape, tapes, buf, pos, len, options, row, rowoffset, col, types, flags)::Tuple{Int64, Int16}
     x, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, options)
     if code > 0
         if !Parsers.sentinel(code)
@@ -822,7 +822,7 @@ function parseint!(flag, tape, tapes, buf, pos, len, options, row, rowoffset, co
     return pos + tlen, code
 end
 
-function parsevalue!(::Type{type}, flag, tape, tapes, buf, pos, len, options, row, rowoffset, col, types, flags) where {type}
+function parsevalue!(::Type{type}, flag, tape, tapes, buf, pos, len, options, row, rowoffset, col, types, flags)::Tuple{Int64, Int16} where {type}
     x, code, vpos, vlen, tlen = Parsers.xparse(type, buf, pos, len, options)
     if code > 0
         if !Parsers.sentinel(code)
@@ -853,7 +853,7 @@ function parsevalue!(::Type{type}, flag, tape, tapes, buf, pos, len, options, ro
     return pos + tlen, code
 end
 
-function parsestring!(flag, tape, buf, pos, len, options, row, rowoffset, col, types, flags)
+function parsestring!(flag, tape, buf, pos, len, options, row, rowoffset, col, types, flags)::Tuple{Int64, Int16}
     x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
     setposlen!(tape, row, code, vpos, vlen)
     if Parsers.invalidquotedfield(code)
@@ -869,7 +869,7 @@ function parsestring!(flag, tape, buf, pos, len, options, row, rowoffset, col, t
     return pos + tlen, code
 end
 
-function parsestring2!(flag, tape, buf, pos, len, options, row, rowoffset, col, types, flags)
+function parsestring2!(flag, tape, buf, pos, len, options, row, rowoffset, col, types, flags)::Tuple{Int64, Int16}
     x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
     if Parsers.invalidquotedfield(code)
         # this usually means parsing is borked because of an invalidly quoted field, hard error
@@ -886,7 +886,7 @@ function parsestring2!(flag, tape, buf, pos, len, options, row, rowoffset, col, 
     return pos + tlen, code
 end
 
-function parsemissing!(buf, pos, len, options, row, rowoffset, col)
+function parsemissing!(buf, pos, len, options, row, rowoffset, col)::Tuple{Int64, Int16}
     x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
     if Parsers.invalidquotedfield(code)
         # this usually means parsing is borked because of an invalidly quoted field, hard error
@@ -920,7 +920,7 @@ end
     return ret
 end
 
-function parsepooled!(flag, tape, tapes, buf, pos, len, options, row, rowoffset, col, rowsguess, pool, refs, types, flags)
+function parsepooled!(flag, tape, tapes, buf, pos, len, options, row, rowoffset, col, rowsguess, pool, refs, types, flags)::Tuple{Int64, Int16}
     x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
     if Parsers.invalidquotedfield(code)
         # this usually means parsing is borked because of an invalidly quoted field, hard error
