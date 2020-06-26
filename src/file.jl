@@ -287,6 +287,9 @@ function File(source;
     ncols -= length(h.todrop)
     deleteat!(columns, h.todrop)
     lookup = Dict(k => v for (k, v) in zip(h.names, columns))
+    if Sys.iswindows() && !lazystrings
+        finalize(buf)
+    end
     return File{something(threaded, false)}(h.name, h.names, types, finalrows, ncols, columns, lookup)
 end
 
