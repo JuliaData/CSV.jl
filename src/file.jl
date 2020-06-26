@@ -202,7 +202,7 @@ function File(source;
     type=nothing,
     types=nothing,
     typemap::Dict=Dict{Type, Type}(),
-    categorical::Union{Bool, Real}=false,
+    categorical=nothing,
     pool::Union{Bool, Real}=0.1,
     lazystrings::Bool=false,
     strict::Bool=false,
