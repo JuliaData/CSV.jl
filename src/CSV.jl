@@ -9,8 +9,6 @@ using Parsers
 using Tables
 # PooledArrays.jl is used for materializing pooled columns
 using PooledArrays
-# FilePathBase allows passing FilePaths instead of just strings for the file name
-using FilePathsBase
 # WeakRefStrings allows for more efficient materializing of string columns via StringVector
 using WeakRefStrings
 using SentinelArrays

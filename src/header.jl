@@ -94,6 +94,9 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
     checkvaliddelim(delim)
     ignorerepeated && delim === nothing && throw(ArgumentError("auto-delimiter detection not supported when `ignorerepeated=true`; please provide delimiter like `delim=','`"))
+    if use_mmap !== nothing
+        @warn "`use_mmap` keyword argument is deprecated and will be removed in the next release"
+    end
     if !(categorical isa Bool)
         @warn "categorical=$categorical is deprecated in favor of `pool=$categorical`; categorical is only used to determine CategoricalArray vs. PooledArrays"
         pool = categorical
@@ -112,10 +115,9 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     datarow = datarow == -1 ? (isa(header, Vector{Symbol}) || isa(header, Vector{String}) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
     debug && println("header is: $header, datarow computed as: $datarow")
     # getsource will turn any input into a `Vector{UInt8}`
-    buf = getsource(source, use_mmap)
-    len = length(buf)
+    buf, pos, len = getsource(source)
     # skip over initial BOM character, if present
-    pos = consumeBOM(buf)
+    pos = consumeBOM(buf, pos)
 
     oq = something(openquotechar, quotechar) % UInt8
     eq = escapechar % UInt8
