@@ -15,6 +15,7 @@ CSV.jl provides a number of utilities for working with delimited files. `CSV.Fil
 ## Key Functions
 ```@docs
 CSV.File
+CSV.Chunks
 CSV.Rows
 CSV.write
 CSV.RowWriter
