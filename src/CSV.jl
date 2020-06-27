@@ -25,6 +25,7 @@ include("utils.jl")
 include("detection.jl")
 include("header.jl")
 include("file.jl")
+include("chunks.jl")
 include("rows.jl")
 include("write.jl")
 

@@ -179,13 +179,10 @@ function File(source;
     datarow::Integer=-1,
     skipto::Union{Nothing, Integer}=nothing,
     footerskip::Integer=0,
-    limit::Integer=typemax(Int64),
     transpose::Bool=false,
     comment::Union{String, Nothing}=nothing,
     use_mmap=nothing,
     ignoreemptylines::Bool=false,
-    threaded::Union{Bool, Nothing}=nothing,
-    tasks::Integer=Threads.nthreads(),
     select=nothing,
     drop=nothing,
     # parsing options
@@ -205,17 +202,36 @@ function File(source;
     # type options
     type=nothing,
     types=nothing,
-    typemap::Dict=Dict{Type, Type}(),
     categorical=nothing,
     pool::Union{Bool, Real}=0.1,
     lazystrings::Bool=false,
     strict::Bool=false,
     silencewarnings::Bool=false,
     debug::Bool=false,
-    parsingdebug::Bool=false,)
+    parsingdebug::Bool=false,
+    kw...)
 
-    h = Header(source, header, normalizenames, datarow, skipto, footerskip, limit, transpose, comment, use_mmap, ignoreemptylines, threaded, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, false)
+    h = Header(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, use_mmap, ignoreemptylines, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, false)
+    return File(h; debug=debug, kw...)
+end
+
+function File(h::Header;
+    startingbyteposition=nothing,
+    endingbyteposition=nothing,
+    limit::Integer=typemax(Int64),
+    threaded::Union{Bool, Nothing}=nothing,
+    typemap::Dict=Dict{Type, Type}(),
+    tasks::Integer=Threads.nthreads(),
+    debug::Bool=false,
+    )
     rowsguess, ncols, buf, len, datapos, datarow, options, coloptions, positions, types, flags, pool, categorical, customtypes = h.rowsguess, h.cols, h.buf, h.len, h.datapos, h.datarow, h.options, h.coloptions, h.positions, h.types, h.flags, h.pool, h.categorical, h.customtypes
+    if startingbyteposition !== nothing
+        datapos = startingbyteposition
+    end
+    if endingbyteposition !== nothing
+        len = endingbyteposition
+    end
+    transpose = gettranspose(h)
     # determine if we can use threads while parsing
     if threaded === nothing && VERSION >= v"1.3-DEV" && Threads.nthreads() > 1 && !transpose && (limit < rowsguess ? limit : rowsguess) > Threads.nthreads() && ((limit < rowsguess ? limit : rowsguess) * ncols) >= 5_000
         threaded = true
