@@ -79,6 +79,7 @@ end
     ]
     x = CSV.LazyStringVector{String}(buffer, e, poslens)
     @test x == ["hey", "there", "sailor", "esc\"aped"]
+    @test x[1] == "hey"
     push!(poslens, CSV.poslen(Parsers.SENTINEL, Int64(0), Int64(0)))
     x = CSV.LazyStringVector{Union{Missing, String}}(buffer, e, poslens)
     @test isequal(x, ["hey", "there", "sailor", "esc\"aped", missing])
@@ -91,9 +92,11 @@ end
     ])
     x = CSV.LazyStringVector{String}(buffer, e, poslens)
     @test x == ["hey", "there", "sailor", "esc\"aped"]
+    @test x[end] == "esc\"aped"
     push!(poslens, CSV.poslen(Parsers.SENTINEL, Int64(0), Int64(0)))
     x = CSV.LazyStringVector{Union{Missing, String}}(buffer, e, poslens)
     @test isequal(x, ["hey", "there", "sailor", "esc\"aped", missing])
+    @test x[end] === missing
 
 end
 
@@ -187,22 +190,22 @@ end
 @testset "CSV.findrowstarts!" begin
 
 rngs = [1, 1, 1]
-buf = b"normal cell,next cell\nnormal cell2,next cell2\nhey"
+buf = b"normal cell,next cell\nnormal cell2,next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
 CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, rngs, 2)
 @test rngs[2] == 23
 
 rngs = [1, 1, 1]
-buf = b"quoted, cell\",next cell\n\"normal cell2\",next cell2\nhey"
+buf = b"quoted, cell\",next cell\n\"normal cell2\",next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
 CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, rngs, 2)
 @test rngs[2] == 25
 
 rngs = [1, 2, 1]
-buf = b"\"\"quoted, cell\",next cell\n\"normal cell2\",next cell2\nhey"
+buf = b"\"\"quoted, cell\",next cell\n\"normal cell2\",next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
 CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, rngs, 2)
 @test rngs[2] == 27
 
 rngs = [1, 2, 1]
-buf = b"quoted,\"\" cell\",next cell\n\"normal cell2\",next cell2\nhey"
+buf = b"quoted,\"\" cell\",next cell\n\"normal cell2\",next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
 CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, rngs, 2)
 @test rngs[2] == 27
 

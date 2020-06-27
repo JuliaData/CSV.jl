@@ -433,4 +433,44 @@ f = CSV.File(GzipDecompressorStream(open(joinpath(dir, "randoms.csv.gz"))); type
 @test f.first isa AbstractVector{CSVString}
 @test f.wage isa AbstractVector{Union{Missing, Dec64}}
 
+f = CSV.File(joinpath(dir, "promotions.csv"); lazystrings=true)
+@test eltype.(f.columns) == [Float64, Union{Missing, Int64}, Union{Missing, Float64}, String, Union{Missing, String}, String, String, Union{Missing, Int64}]
+@test f.int_string isa CSV.LazyStringVector
+
+f = CSV.File(joinpath(dir, "promotions.csv"); limit=7500, threaded=true)
+@test length(f) == 7500
+
+f = CSV.File(IOBuffer("1,2\r\n3,4\r\n\r\n5,6\r\n"); header=["col1", "col2"], ignoreemptylines=true)
+@test f.col1 == [1, 3, 5]
+
+f = CSV.File(joinpath(dir, "escape_row_starts.csv"); tasks=2)
+@test length(f) == 10000
+@test eltype(f.col1) == String
+@test eltype(f.col2) == Int64
+
+f = CSV.File(IOBuffer("col1\nhey\nthere\nsailor"); lazystrings=true)
+@test f.col1 isa CSV.LazyStringVector
+@test Tables.columnnames(f) == [:col1]
+@test propertynames(f) == [:col1]
+@test CSV.getname(f) == "<Base.GenericIOBuffer{Array{UInt8,1}}>"
+@test CSV.getcols(f) == 1
+@test Base.IndexStyle(f) == Base.IndexLinear()
+@test f.col1 === Tables.getcolumn(f, 1)
+@test columntable(f) == columntable(collect(f))
+show(f)
+
+f = CSV.File(joinpath(dir, "big_types.csv"); lazystrings=true, pool=false)
+@test eltype(f.time) == Dates.Time
+@test eltype(f.bool) == Bool
+@test f.lazy isa CSV.LazyStringVector
+@test eltype(f.lazy) == String
+@test eltype(f.lazy_missing) == Union{String, Missing}
+
+r = CSV.Rows(joinpath(dir, "big_types.csv"); lazystrings=false, types=[Dates.Time, Bool, String, Union{String, Missing}])
+row = first(r)
+@test row.time == Dates.Time(12)
+@test row.bool
+@test row.lazy == "hey"
+@test row.lazy_missing === missing
+
 end

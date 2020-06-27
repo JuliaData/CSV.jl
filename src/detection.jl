@@ -322,13 +322,17 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
                     break
                 end
             end
-            # now we read the next row and see if we get the right # of columns
-            for _ = 1:ncols
-                _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
-                pos += tlen
-                pos > len && break
+            # now we read the next 5 rows and see if we get the right # of columns
+            correct = true
+            for j = 1:5
+                for _ = 1:ncols
+                    _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
+                    pos += tlen
+                    pos > len && break
+                end
+                correct &= Parsers.newline(code)
             end
-            if Parsers.newline(code)
+            if correct
                 # boom, we read a whole row and got correct # of columns
                 break
             end

@@ -58,7 +58,7 @@ function Base.show(io::IO, f::File)
     show(io, Tables.schema(f))
 end
 
-Base.IndexStyle(::Type{File}) = Base.IndexLinear()
+Base.IndexStyle(::Type{<:File}) = Base.IndexLinear()
 Base.eltype(f::File) = Row
 Base.size(f::File) = (getrows(f),)
 
@@ -109,8 +109,11 @@ For other `IO` or `Cmd` inputs, you can pass them like: `f = CSV.File(read(obj))
 Opens the file and uses passed arguments to detect the number of columns and column types, unless column types are provided
 manually via the `types` keyword argument. Note that passing column types manually can slightly increase performance
 for each column type provided (column types can be given as a `Vector` for all columns, or specified per column via
-name or index in a `Dict`). For text encodings other than UTF-8, see the [StringEncodings.jl](https://github.com/JuliaStrings/StringEncodings.jl)
+name or index in a `Dict`).
+
+For text encodings other than UTF-8, see the [StringEncodings.jl](https://github.com/JuliaStrings/StringEncodings.jl)
 package for re-encoding a file or IO stream.
+
 The returned `CSV.File` object supports the [Tables.jl](https://github.com/JuliaData/Tables.jl) interface
 and can iterate `CSV.Row`s. `CSV.Row` supports `propertynames` and `getproperty` to access individual row values. `CSV.File`
 also supports entire column access like a `DataFrame` via direct property access on the file object, like `f = CSV.File(file); f.col1`.
@@ -139,13 +142,14 @@ Supported keyword arguments include:
   * `header=1`: the `header` argument can be an `Int`, indicating the row to parse for column names; or a `Range`, indicating a span of rows to be concatenated together as column names; or an entire `Vector{Symbol}` or `Vector{String}` to use as column names; if a file doesn't have column names, either provide them as a `Vector`, or set `header=0` or `header=false` and column names will be auto-generated (`Column1`, `Column2`, etc.)
   * `normalizenames=false`: whether column names should be "normalized" into valid Julia identifier symbols; useful when iterating rows and accessing column values of a row via `getproperty` (e.g. `row.col1`)
   * `datarow`: an `Int` argument to specify the row where the data starts in the csv file; by default, the next row after the `header` row is used. If `header=0`, then the 1st row is assumed to be the start of data; providing a `datarow` or `skipto` argument does _not_ affect the `header` argument
-  * `skipto::Int`: similar to `datarow`, specifies the number of rows to skip before starting to read data
+  * `skipto::Int`: identical to `datarow`, specifies the number of rows to skip before starting to read data
   * `footerskip::Int`: number of rows at the end of a file to skip parsing
-  * `limit`: an `Int` to indicate a limited number of rows to parse in a csv file; use in combination with `skipto` to read a specific, contiguous chunk within a file; note for large files when multiple threads are used for parsing, the `limit` argument may not be exact
+  * `limit`: an `Int` to indicate a limited number of rows to parse in a csv file; use in combination with `skipto` to read a specific, contiguous chunk within a file; note for large files when multiple threads are used for parsing, the `limit` argument may not result in exact an exact # of rows parsed; use `threaded=false` to ensure an exact limit if necessary
   * `transpose::Bool`: read a csv file "transposed", i.e. each column is parsed as a row
   * `comment`: rows that begin with this `String` will be skipped while parsing
   * `ignoreemptylines::Bool=false`: whether empty rows/lines in a file should be ignored (if `false`, each column will be assigned `missing` for that empty row)
-  * `threaded::Bool`: whether parsing should utilize multiple threads; by default threads are used on large enough files, but isn't allowed when `transpose=true` or when `limit` is used; only available in Julia 1.3+
+  * `threaded::Bool`: whether parsing should utilize multiple threads; by default threads are used on large enough files, but isn't allowed when `transpose=true`; only available in Julia 1.3+
+  * `tasks::Integer=Threads.nthreads()`: for multithreaded parsing, this controls the number of tasks spawned to read a file in chunks concurrently; defaults to the # of threads Julia was started with (i.e. `JULIA_NUM_THREADS` environment variable)
   * `select`: an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a "selector" function of the form `(i, name) -> keep::Bool`; only columns in the collection or for which the selector function returns `true` will be parsed and accessible in the resulting `CSV.File`. Invalid values in `select` are ignored.
   * `drop`: inverse of `select`; an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a "drop" function of the form `(i, name) -> drop::Bool`; columns in the collection or for which the drop function returns `true` will ignored in the resulting `CSV.File`. Invalid values in `drop` are ignored.
 * Parsing options:
@@ -162,8 +166,7 @@ Supported keyword arguments include:
   * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64; if a `Vector` if provided, it must match the # of columns provided or detected in `header`
   * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `String`
   * `pool::Union{Bool, Float64}=0.1`: if `true`, *all* columns detected as `String` will be internally pooled; alternatively, the proportion of unique values below which `String` columns should be pooled (by default 0.1, meaning that if the # of unique strings in a column is under 10%, it will be pooled)
-  * `lazystrings::Bool=false`: avoid allocating full strings in string columns; returns a custom `LazyStringVector` array type that *does not* support mutable operations (e.g. `push!`, `append!`, or even `setindex!`). Calling `copy(x)` will materialize a full `Vector{String}`. Also note that each `LazyStringVector` holds a reference to the full input file buffer, so it won't be closed after parsing and trying to delete or modify the file probably has undefined behavior. Despite all the caveats, this setting can help avoid lots string allocations in large files and lead to faster parsing times.
-  * `categorical::Bool=false`: whether pooled columns should be materialized as CategoricalArray instead of PooledArray
+  * `lazystrings::Bool=false`: avoid allocating full strings in string columns; returns a custom `LazyStringVector` array type that *does not* support mutable operations (e.g. `push!`, `append!`, or even `setindex!`). Calling `copy(x)` will materialize a full `Vector{String}`. Also note that each `LazyStringVector` holds a reference to the full input file buffer, so it won't be closed after parsing and trying to delete or modify the file may result in errors (particularly on windows) and generally has undefined behavior. Given these caveats, this setting can help avoid lots of string allocations in large files and lead to faster parsing times.
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
   * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
 """
@@ -182,6 +185,7 @@ function File(source;
     use_mmap=nothing,
     ignoreemptylines::Bool=false,
     threaded::Union{Bool, Nothing}=nothing,
+    tasks::Integer=Threads.nthreads(),
     select=nothing,
     drop=nothing,
     # parsing options
@@ -226,67 +230,60 @@ function File(source;
     end
 
     # we now do our parsing pass over the file, starting at datapos
-    # `tapes` are Vector{UInt64} for each column, with length == # of estimated rows
-    # all types are treated as UInt64 for type stability while looping over columns and for making "recoding" more convenient
-    # (e.g. when we "promote" a column type from Int => Float64)
-    # we have a sentinel value for each value to signal a `missing` value; this sentinel value is tracked internally and adjusted
-    # automatically if an actual value of the sentinel value is parsed
-    # for strings, we have the following encoding of a single UInt64:
-        # leftmost bit indicates a sentinel value (`missing`) was detected while parsing
-        # 2nd leftmost bit indicates if a field was quoted and included escape chararacters (will have to be unescaped later)
-        # 42 bits for position (allows for maximum file size of ~4TB)
-        # 20 bits for field length (allows for maximum field size of ~1M)
-    # the `poslens` are also Vector{UInt64} allocated for each column where the type must be detected; it stores the "string value" UInt64
-    # of the cell, which allows promoting any column to a string later if needed
-    # if a column type if promoted to string, the values are stored in the corresponding `tape` instead of `poslen`
     refs = Vector{RefPool}(undef, ncols)
     if threaded === true
-        # multithread
-        finalrows, tapes = multithreadparse(types, flags, buf, datapos, len, options, coloptions, rowsguess, datarow - 1, pool, refs, ncols, typemap, h.categorical, customtypes, limit, debug)
+        # multithreaded
+        finalrows, columns = multithreadparse(types, flags, buf, datapos, len, options, coloptions, rowsguess, datarow - 1, pool, refs, ncols, typemap, h.categorical, customtypes, limit, tasks, debug)
     else
         if limit < rowsguess
             rowsguess = limit
         end
-        tapes = allocate(rowsguess, ncols, types, flags)
+        columns = allocate(rowsguess, ncols, types, flags)
         t = Base.time()
-        finalrows, pos = parsetape!(Val(transpose), ncols, typemap, tapes, buf, datapos, len, limit, positions, pool, refs, rowsguess, datarow - 1, types, flags, debug, options, coloptions, customtypes)
-        debug && println("time for initial parsing to tape: $(Base.time() - t)")
+        finalrows, pos = parsefilechunk!(Val(transpose), ncols, typemap, columns, buf, datapos, len, limit, positions, pool, refs, rowsguess, datarow - 1, types, flags, debug, options, coloptions, customtypes)
+        debug && println("time for initial parsing: $(Base.time() - t)")
+        # cleanup our columns if needed
         for i = 1:ncols
-            tape = tapes[i]
-            if tape isa Vector{UInt32}
-                makeandsetpooled!(tapes, i, tape, refs, flags, h.categorical)
-            elseif tape isa Vector{PosLen} || tape isa ChainedVector{PosLen, Vector{PosLen}}
+            column = columns[i]
+            if column isa Vector{UInt32}
+                # make a PooledArray given a columns' values (Vector{UInt32}) and refs (RefPool)
+                makeandsetpooled!(columns, i, column, refs, flags, h.categorical)
+            elseif column isa Vector{PosLen} || column isa ChainedVector{PosLen, Vector{PosLen}}
+                # string column parsed lazily; return a LazyStringVector
                 if anymissing(flags[i])
-                    tapes[i] = LazyStringVector{Union{String, Missing}}(buf, options.e, tape)
+                    columns[i] = LazyStringVector{Union{String, Missing}}(buf, options.e, column)
                 else
-                    tapes[i] = LazyStringVector{String}(buf, options.e, tape)
+                    columns[i] = LazyStringVector{String}(buf, options.e, column)
                 end
-            elseif tape isa Vector{String} || tape isa Vector{Union{String, Missing}}
             else
+                # if no missing values were parsed for a column, we want to "unwrap" it to a plain Vector{T}
                 if !anymissing(flags[i])
-                    if tape isa Vector{Union{Missing, Bool}}
-                        tapes[i] = convert(Vector{Bool}, tape)
+                    if column isa Vector{Union{Missing, Bool}}
+                        columns[i] = convert(Vector{Bool}, column)
                     elseif types[i] !== Union{} && types[i] <: SmallIntegers
-                        tapes[i] = convert(Vector{types[i]}, tape)
+                        columns[i] = convert(Vector{types[i]}, column)
                     else
-                        tapes[i] = parent(tape)
+                        columns[i] = parent(column)
                     end
                 end
             end
             # if zero rows
             if types[i] === Union{}
                 types[i] = Missing
-                tapes[i] = MissingVector(finalrows)
+                columns[i] = MissingVector(finalrows)
             end
         end
     end
     debug && println("types after parsing: $types, pool = $pool")
-    columns = tapes
+    columns = columns
+    # delete any dropped columns from names, types, columns
     deleteat!(h.names, h.todrop)
     deleteat!(types, h.todrop)
     ncols -= length(h.todrop)
     deleteat!(columns, h.todrop)
     lookup = Dict(k => v for (k, v) in zip(h.names, columns))
+    # for windows, it's particularly finicky about throwing errors when you try to modify an mmapped file
+    # so we just want to make sure we finalize the input buffer so users don't run into surprises
     if Sys.iswindows() && !lazystrings
         finalize(buf)
     end
@@ -296,12 +293,14 @@ end
 const EMPTY_INT_ARRAY = Int64[]
 const EMPTY_REFRECODE = UInt32[]
 
-function syncrefs!(refs, tl_refs, col, tl_rows, tape)
+# after multithreaded parsing, we need to synchronize pooled refs from different chunks of the file
+# we pick one chunk as "source of truth", then adjust other chunks as needed
+function syncrefs!(refs, task_refs, col, task_rows, column)
     if !isassigned(refs, col)
-        @inbounds refs[col] = tl_refs[col]
+        @inbounds refs[col] = task_refs[col]
     else
         @inbounds colrefs = refs[col]
-        @inbounds tlcolrefs = tl_refs[col]
+        @inbounds tlcolrefs = task_refs[col]
         refrecodes = EMPTY_REFRECODE
         recode = false
         for (k, v) in tlcolrefs.refs
@@ -312,6 +311,7 @@ function syncrefs!(refs, tl_refs, col, tl_rows, tape)
                     refrecodes = [UInt32(i) for i = 1:tlcolrefs.lastref]
                 end
                 if refvalue == 0
+                    # "source of truth" chunk didn't know about this ref, so we add it to source of truth
                     refvalue = (colrefs.lastref += UInt32(1))
                 end
                 @inbounds colrefs.refs[k] = refvalue
@@ -319,8 +319,8 @@ function syncrefs!(refs, tl_refs, col, tl_rows, tape)
             end
         end
         if recode
-            for j = 1:tl_rows
-                @inbounds tape[j] = refrecodes[tape[j]]
+            for j = 1:task_rows
+                @inbounds column[j] = refrecodes[column[j]]
             end
         end
     end
@@ -330,11 +330,18 @@ end
 vectype(::Type{A}) where {A <: SentinelVector{T}} where {T} = Vector{T}
 vectype(T) = T
 
-function makechain(::Type{T}, tape, N, col, perthreadtapes, limit) where {T}
+# while each chunk parses values into a SentinelVector, we invert after parsing is done
+# so the final array type is SentinelVector wrapping a ChainedVector of the raw chunk vectors
+function makechain(::Type{T}, column, N, col, pertaskcolumns, limit, sentref=nothing) where {T}
+    if T === SVec{Int64}
+        # synchronize int sentinels if necessary
+        SentinelArrays.newsentinel!((pertaskcolumns[i][col]::SVec{Int64} for i = 1:N)...; force=false)
+        sentref[] = column.sentinel
+    end
     chain = Vector{vectype(T)}(undef, N)
-    @inbounds chain[1] = parent(tape)
+    @inbounds chain[1] = parent(column)
     for i = 2:N
-        @inbounds tp = perthreadtapes[i][col]
+        @inbounds tp = pertaskcolumns[i][col]
         if tp isa T
             @inbounds chain[i] = parent(tp)
         else
@@ -348,52 +355,39 @@ function makechain(::Type{T}, tape, N, col, perthreadtapes, limit) where {T}
     return x
 end
 
-function makeandsetpooled!(tapes, i, tape, refs, flags, categorical)
+function makeandsetpooled!(columns, i, column, refs, flags, categorical)
     if categorical
         colrefs = isassigned(refs, i) ? refs[i].refs : Dict{String, UInt32}()
         if anymissing(flags[i])
             missingref = colrefs[missing]
             delete!(colrefs, missing)
             colrefs = convert(Dict{String, UInt32}, colrefs)
-            for j = 1:length(tape)
-                @inbounds tape[j] = ifelse(tape[j] === missingref, UInt32(0), tape[j])
+            for j = 1:length(column)
+                @inbounds column[j] = ifelse(column[j] === missingref, UInt32(0), column[j])
             end
         else
             colrefs = convert(Dict{String, UInt32}, colrefs)
         end
         pool = CategoricalPool(colrefs)
-        A = CategoricalArray{anymissing(flags[i]) ? Union{String, Missing} : String, 1}(tape, pool)
+        A = CategoricalArray{anymissing(flags[i]) ? Union{String, Missing} : String, 1}(column, pool)
         levels!(A, sort(levels(A)))
-        tapes[i] = A
+        columns[i] = A
     else
         r = isassigned(refs, i) ? (anymissing(flags[i]) ? refs[i].refs : convert(Dict{String, UInt32}, refs[i].refs)) : Dict{String, UInt32}()
-        tapes[i] = PooledArray(PooledArrays.RefArray(tape), r)
+        columns[i] = PooledArray(PooledArrays.RefArray(column), r)
     end
     return
 end
 
-function promotetostring!(tapes, poslens, flags, col, rows, fullrows, options, buf)
-    if lazystrings(flags[col])
-        tapes[col] = poslens[col]
-    else
-        tape = allocate(String, fullrows)
-        colposlens = poslens[col]
-        e = options.e::UInt8
-        for row = 1:rows
-            @inbounds tape[row] = str(buf, e, colposlens[row])
-        end
-        tapes[col] = tape
-    end
-    unset!(poslens, col, 0, 0)
-    return
-end
-
-function multithreadparse(types, flags, buf, datapos, len, options, coloptions, rowsguess, datarow, pool, refs, ncols, typemap, categorical, customtypes, limit, debug)
-    N = Threads.nthreads()
+function multithreadparse(types, flags, buf, datapos, len, options, coloptions, rowsguess, datarow, pool, refs, ncols, typemap, categorical, customtypes, limit, N, debug)
+    # when limiting w/ multithreaded parsing, we try to guess about where in the file the limit row # will be
+    # then adjust our final file len to the end of that row
+    # we add some cushion so we hopefully get the limit row correctly w/o shooting past too far and needing to resize! down
+    # but we also don't guarantee limit will be exact w/ multithreaded parsing
     if limit < rowsguess
         newlen = [0, ceil(Int64, (limit / (rowsguess * 0.8)) * len), 0]
         findrowstarts!(buf, len, options, newlen, ncols)
-        len = newlen[2]
+        len = newlen[2] - 1
         debug && println("limiting, adjusting len to $len")
     end
     chunksize = div(len - datapos, N)
@@ -402,149 +396,153 @@ function multithreadparse(types, flags, buf, datapos, len, options, coloptions, 
     debug && println("initial byte positions before adjusting for start of rows: $ranges")
     findrowstarts!(buf, len, options, ranges, ncols)
     rowchunkguess = cld(rowsguess, N)
-    debug && println("parsing using $N threads: $rowchunkguess rows chunked at positions: $ranges")
-    perthreadtapes = Vector{Vector{AbstractVector}}(undef, N)
+    debug && println("parsing using $N tasks: $rowchunkguess rows chunked at positions: $ranges")
+    pertaskcolumns = Vector{Vector{AbstractVector}}(undef, N)
     rows = zeros(Int64, N)
     locks = [ReentrantLock() for i = 1:ncols]
     @sync for i = 1:N
 @static if VERSION >= v"1.3-DEV"
         Threads.@spawn begin
             tt = Base.time()
-            tl_flags = copy(flags)
-            tl_refs = Vector{RefPool}(undef, ncols)
-            tl_len = ranges[i + 1] - (i != N)
-            tl_pos = ranges[i]
-            tl_types = copy(types)
-            tl_tapes = allocate(rowchunkguess, ncols, tl_types, tl_flags)
-            perthreadtapes[i] = tl_tapes
-            tl_rows, tl_pos = parsetape!(Val(false), ncols, typemap, tl_tapes, buf, tl_pos, tl_len, typemax(Int64), EMPTY_INT_ARRAY, pool, tl_refs, rowchunkguess, datarow + (rowchunkguess * (i - 1)), tl_types, tl_flags, debug, options, coloptions, customtypes)
-            rows[i] = tl_rows
-            # promote column types across threads
+            task_flags = copy(flags)
+            task_refs = Vector{RefPool}(undef, ncols)
+            task_len = ranges[i + 1] - (i != N)
+            task_pos = ranges[i]
+            task_types = copy(types)
+            task_columns = allocate(rowchunkguess, ncols, task_types, task_flags)
+            pertaskcolumns[i] = task_columns
+            task_rows, task_pos = parsefilechunk!(Val(false), ncols, typemap, task_columns, buf, task_pos, task_len, typemax(Int64), EMPTY_INT_ARRAY, pool, task_refs, rowchunkguess, datarow + (rowchunkguess * (i - 1)), task_types, task_flags, debug, options, coloptions, customtypes)
+            rows[i] = task_rows
+            # promote column types/flags across task chunks
             for col = 1:ncols
                 lock(locks[col]) do
                     @inbounds T = types[col]
-                    @inbounds types[col] = promote_types(T, tl_types[col])
+                    @inbounds types[col] = promote_types(T, task_types[col])
                     # if T !== types[col]
-                    #     debug && println("promoting col = $col from $T to $(types[col]), thread chunk was type = $(tl_types[col])")
+                    #     debug && println("promoting col = $col from $T to $(types[col]), task chunk was type = $(task_types[col])")
                     # end
-                    @inbounds flags[col] |= tl_flags[col]
+                    @inbounds flags[col] |= task_flags[col]
                     # synchronize refs if needed
-                    @inbounds tape = tl_tapes[col]
-                    if tape isa Vector{UInt32}
-                        syncrefs!(refs, tl_refs, col, tl_rows, tape)
+                    @inbounds column = task_columns[col]
+                    if column isa Vector{UInt32}
+                        syncrefs!(refs, task_refs, col, task_rows, column)
                     end
                 end
             end
-            debug && println("finished parsing $tl_rows rows on thread = $(Threads.threadid()): time for parsing: $(Base.time() - tt)")
+            debug && println("finished parsing $task_rows rows on task = $i: time for parsing: $(Base.time() - tt)")
         end
 end # @static if VERSION >= v"1.3-DEV"
     end
-    finaltapes = Vector{AbstractVector}(undef, ncols)
+    finalcolumns = Vector{AbstractVector}(undef, ncols)
     @sync for col = 1:ncols
 @static if VERSION >= v"1.3-DEV"
         Threads.@spawn begin
             for i = 1:N
-                tl_tapes = perthreadtapes[i]
-                tl_rows = rows[i]
-                # check if we need to promote a thread-local column based on what other threads parsed
+                task_columns = pertaskcolumns[i]
+                task_rows = rows[i]
+                # check if we need to promote a task-local column based on what other threads parsed
                 @inbounds T = types[col]
-                if (T === String || T === Union{String, Missing}) && !(tl_tapes[col] isa Vector{PosLen}) && !(tl_tapes[col] isa SVec2{String})
+                if (T === String || T === Union{String, Missing}) && !(task_columns[col] isa Vector{PosLen}) && !(task_columns[col] isa SVec2{String})
                     # promoting non-string to string column
-                    promotetostring!(col, Val(false), ncols, typemap, tl_tapes, buf, ranges[i], ranges[i + 1] - (i != N), tl_rows, EMPTY_INT_ARRAY, pool, refs, tl_rows, 0, types, flags, debug, options, coloptions, customtypes)
-                elseif (T === Float64 || T === Union{Float64, Missing}) && tl_tapes[col] isa SVec{Int64}
-                    tl_tapes[col] = convert(SentinelVector{Float64}, tl_tapes[col])
-                elseif T !== Union{} && T !== Missing && tl_tapes[col] isa MissingVector
-                    tl_tapes[col] = allocate(T, tl_rows)
+                    debug && println("multithreaded promoting column $col to string")
+                    promotetostring!(col, Val(false), ncols, typemap, task_columns, buf, ranges[i], ranges[i + 1] - (i != N), task_rows, EMPTY_INT_ARRAY, pool, refs, task_rows, 0, types, flags, debug, options, coloptions, customtypes)
+                elseif (T === Float64 || T === Union{Float64, Missing}) && task_columns[col] isa SVec{Int64}
+                    # one chunk parsed as Int, another as Float64, promote to Float64
+                    debug && println("multithreaded promoting column $col to float")
+                    task_columns[col] = convert(SentinelVector{Float64}, task_columns[col])
+                elseif T !== Union{} && T !== Missing && task_columns[col] isa MissingVector
+                    # one chunk parsed all missing values, but another chunk had a typed value, promote to that
+                    debug && println("multithreaded promoting column $col from missing")
+                    task_columns[col] = allocate(T, task_rows)
                 end
             end
-            @inbounds tape = perthreadtapes[1][col]
-            if tape isa SVec{Int64}
-                sent = tape.sentinel
-                chain = makechain(SVec{Int64}, tape, N, col, perthreadtapes, limit)
-                @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain, sent) : chain
-            elseif tape isa SVec{Float64}
-                chain = makechain(SVec{Float64}, tape, N, col, perthreadtapes, limit)
-                @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
-            elseif tape isa SVec2{String}
-                chain = makechain(SVec2{String}, tape, N, col, perthreadtapes, limit)
-                @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
-            elseif tape isa SVec{Date}
-                chain = makechain(SVec{Date}, tape, N, col, perthreadtapes, limit)
-                @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
-            elseif tape isa SVec{DateTime}
-                chain = makechain(SVec{DateTime}, tape, N, col, perthreadtapes, limit)
-                @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
-            elseif tape isa SVec{Time}
-                chain = makechain(SVec{Time}, tape, N, col, perthreadtapes, limit)
-                @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
-            elseif tape isa Vector{Union{Missing, Bool}}
-                chain = makechain(Vector{anymissing(flags[col]) ? Bool : Union{Missing, Bool}}, tape, N, col, perthreadtapes, limit)
-                @inbounds finaltapes[col] = chain
-            elseif tape isa Vector{UInt32}
-                chain = makechain(Vector{UInt32}, tape, N, col, perthreadtapes, limit)
-                makeandsetpooled!(finaltapes, col, chain, refs, flags, categorical)
-            elseif tape isa Vector{PosLen}
-                chain = makechain(Vector{PosLen}, tape, N, col, perthreadtapes, limit)
+            @inbounds column = pertaskcolumns[1][col]
+            if column isa SVec{Int64}
+                sentref = Ref(column.sentinel)
+                chain = makechain(SVec{Int64}, column, N, col, pertaskcolumns, limit, sentref)
+                @inbounds finalcolumns[col] = anymissing(flags[col]) ? SentinelArray(chain, sentref[]) : chain
+            elseif column isa SVec{Float64}
+                chain = makechain(SVec{Float64}, column, N, col, pertaskcolumns, limit)
+                @inbounds finalcolumns[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+            elseif column isa SVec2{String}
+                chain = makechain(SVec2{String}, column, N, col, pertaskcolumns, limit)
+                @inbounds finalcolumns[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+            elseif column isa SVec{Date}
+                chain = makechain(SVec{Date}, column, N, col, pertaskcolumns, limit)
+                @inbounds finalcolumns[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+            elseif column isa SVec{DateTime}
+                chain = makechain(SVec{DateTime}, column, N, col, pertaskcolumns, limit)
+                @inbounds finalcolumns[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+            elseif column isa SVec{Time}
+                chain = makechain(SVec{Time}, column, N, col, pertaskcolumns, limit)
+                @inbounds finalcolumns[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+            elseif column isa Vector{Union{Missing, Bool}}
+                chain = makechain(Vector{anymissing(flags[col]) ? Union{Missing, Bool} : Bool}, column, N, col, pertaskcolumns, limit)
+                @inbounds finalcolumns[col] = chain
+            elseif column isa Vector{UInt32}
+                chain = makechain(Vector{UInt32}, column, N, col, pertaskcolumns, limit)
+                makeandsetpooled!(finalcolumns, col, chain, refs, flags, categorical)
+            elseif column isa Vector{PosLen}
+                chain = makechain(Vector{PosLen}, column, N, col, pertaskcolumns, limit)
                 if anymissing(flags[col])
-                    @inbounds finaltapes[col] = LazyStringVector{Union{String, Missing}}(buf, options.e, chain)
+                    @inbounds finalcolumns[col] = LazyStringVector{Union{String, Missing}}(buf, options.e, chain)
                 else
-                    @inbounds finaltapes[col] = LazyStringVector{String}(buf, options.e, chain)
+                    @inbounds finalcolumns[col] = LazyStringVector{String}(buf, options.e, chain)
                 end
-            elseif tape isa MissingVector
-                chain = makechain(MissingVector, tape, N, col, perthreadtapes, limit)
-                @inbounds finaltapes[col] = chain
+            elseif column isa MissingVector
+                chain = makechain(MissingVector, column, N, col, pertaskcolumns, limit)
+                @inbounds finalcolumns[col] = chain
                 types[col] = Missing
             elseif nonmissingtype(types[col]) <: SmallIntegers
                 T = types[col]
-                chain = makechain(Vector{T}, tape, N, col, perthreadtapes, limit)
-                @inbounds finaltapes[col] = anymissing(flags[col]) ? chain : chain
+                chain = makechain(Vector{T}, column, N, col, pertaskcolumns, limit)
+                @inbounds finalcolumns[col] = anymissing(flags[col]) ? chain : chain
             else
-                chain = makechain(typeof(tape), tape, N, col, perthreadtapes, limit)
-                @inbounds finaltapes[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
-                # error("unhandled column type: $(typeof(tape))")
+                chain = makechain(typeof(column), column, N, col, pertaskcolumns, limit)
+                @inbounds finalcolumns[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+                # error("unhandled column type: $(typeof(column))")
             end
         end
 end # @static if VERSION >= v"1.3-DEV"
     end
     finalrows = sum(rows)
-    return limit < finalrows ? limit : finalrows, finaltapes
+    return limit < finalrows ? limit : finalrows, finalcolumns
 end
 
-function parsetape!(TR::Val{transpose}, ncols, typemap, tapes, buf, pos, len, limit, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options::Parsers.Options{ignorerepeated}, coloptions, ::Type{customtypes}) where {transpose, ignorerepeated, customtypes}
+function parsefilechunk!(TR::Val{transpose}, ncols, typemap, columns, buf, pos, len, limit, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options::Parsers.Options{ignorerepeated}, coloptions, ::Type{customtypes}) where {transpose, ignorerepeated, customtypes}
     row = 0
     startpos = pos
     if pos <= len && len > 0
         while row < limit
             row += 1
-            pos = parserow(row, TR, ncols, typemap, tapes, startpos, buf, pos, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options, coloptions, customtypes)
+            pos = parserow(row, TR, ncols, typemap, columns, startpos, buf, pos, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options, coloptions, customtypes)
             (pos > len || row == limit) && break
-            # if our initial row estimate was too few, we need to reallocate our tapes/poslens to read the rest of the file
+            # if our initial row estimate was too few, we need to reallocate our columsn to read the rest of the file
             if row + 1 > rowsguess
                 # (bytes left in file) / (avg bytes per row) == estimated rows left in file (+ 10 for kicks)
                 estimated_rows_left = ceil(Int64, (len - pos) / ((pos - startpos) / row) + 10.0)
                 newrowsguess = rowsguess + estimated_rows_left
                 debug && reallocatetape(rowoffset + row, rowsguess, newrowsguess)
                 for i = 1:ncols
-                    reallocate!(tapes[i], newrowsguess)
+                    reallocate!(columns[i], newrowsguess)
                 end
                 rowsguess = newrowsguess
             end
         end
     end
-    # done parsing (at least this chunk), so resize tapes to final row count
+    # done parsing (at least this chunk), so resize columns to final row count
     for i = 1:ncols
-        # TODO: specialize?
-        resize!(tapes[i], row)
+        resize!(columns[i], row)
     end
     return row, pos
 end
 
-@noinline function promotetostring!(col, TR::Val{transpose}, ncols, typemap, tapes, buf, pos, len, limit, positions, pool, refs, rowsguess, rowoffset, types, origflags, debug, options::Parsers.Options{ignorerepeated}, coloptions, ::Type{customtypes}) where {transpose, ignorerepeated, customtypes}
+@noinline function promotetostring!(col, TR::Val{transpose}, ncols, typemap, columns, buf, pos, len, limit, positions, pool, refs, rowsguess, rowoffset, types, origflags, debug, options::Parsers.Options{ignorerepeated}, coloptions, ::Type{customtypes}) where {transpose, ignorerepeated, customtypes}
     flags = copy(origflags)
     for i = 1:ncols
         if i == col
             flags[i] |= TYPEDETECTED
-            tapes[i] = allocate(lazystrings(flags[i]) ? PosLen : String, rowsguess)
+            columns[i] = allocate(lazystrings(flags[i]) ? PosLen : String, rowsguess)
             types[i] = Union{String, anymissing(flags[i]) ? Missing : Union{}}
         else
             flags[i] |= WILLDROP
@@ -555,86 +553,86 @@ end
     if pos <= len && len > 0
         while row < limit
             row += 1
-            pos = parserow(row, TR, ncols, typemap, tapes, startpos, buf, pos, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options, coloptions, customtypes)
+            pos = parserow(row, TR, ncols, typemap, columns, startpos, buf, pos, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options, coloptions, customtypes)
             pos > len && break
         end
     end
     return
 end
 
-@noinline reallocatetape(row, old, new) = println("thread = $(Threads.threadid()) warning: didn't pre-allocate enough tape while parsing around row $row, re-allocating from $old to $new...")
+@noinline reallocatetape(row, old, new) = println("thread = $(Threads.threadid()) warning: didn't pre-allocate enough column while parsing around row $row, re-allocating from $old to $new...")
 @noinline notenoughcolumns(cols, ncols, row) = println("thread = $(Threads.threadid()) warning: only found $cols / $ncols columns around data row: $row. Filling remaining columns with `missing`")
 @noinline toomanycolumns(cols, row) = println("thread = $(Threads.threadid()) warning: parsed expected $cols columns, but didn't reach end of line around data row: $row. Ignoring any extra columns on this row")
 @noinline stricterror(T, buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) error parsing $T around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))"))
 @noinline warning(T, buf, pos, len, code, row, col) = println("thread = $(Threads.threadid()) warning: error parsing $T around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))")
 @noinline fatalerror(buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) fatal error, encountered an invalidly quoted field while parsing around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code)), check your `quotechar` arguments or manually fix the field in the file itself"))
 
-@inline function parsecustom!(::Type{T}, flag, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags) where {T}
+@inline function parsecustom!(::Type{T}, flag, columns, buf, pos, len, opts, row, rowoffset, col, types, flags) where {T}
     if @generated
         block = Expr(:block)
         push!(block.args, quote
-            error("CSV.jl code-generation error, unexpected column type: $(typeof(tape))")
+            error("CSV.jl code-generation error, unexpected column type: $(typeof(column))")
         end)
         for i = 1:fieldcount(T)
             vec = fieldtype(T, i)
             pushfirst!(block.args, quote
-                if tape isa $(fieldtype(vec, 1))
-                    return parsevalue!($(fieldtype(vec, 2)), flag, tape, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags)
+                if column isa $(fieldtype(vec, 1))
+                    return parsevalue!($(fieldtype(vec, 2)), flag, column, columns, buf, pos, len, opts, row, rowoffset, col, types, flags)
                 end
             end)
         end
         pushfirst!(block.args, quote
-            @inbounds tape = tapes[col]
+            @inbounds column = columns[col]
         end)
         pushfirst!(block.args, Expr(:meta, :inline))
         # @show block
         return block
     else
         # println("generated function failed")
-        @inbounds tape = tapes[col]
-        return parsevalue!(eltype(parent(tape)), flag, tape, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags)
+        @inbounds column = columns[col]
+        return parsevalue!(eltype(parent(column)), flag, column, columns, buf, pos, len, opts, row, rowoffset, col, types, flags)
     end
 end
 
-@inline function parserow(row, TR::Val{transpose}, ncols, typemap, tapes, startpos, buf, pos::A, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options::B, coloptions::C, ::Type{customtypes}) where {transpose, A, B, C, customtypes}
+@inline function parserow(row, TR::Val{transpose}, ncols, typemap, columns, startpos, buf, pos::A, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options::B, coloptions::C, ::Type{customtypes}) where {transpose, A, B, C, customtypes}
     for col = 1:ncols
         if transpose
             @inbounds pos = positions[col]
         end
         @inbounds flag = flags[col]
-        @inbounds tape = tapes[col]
+        @inbounds column = columns[col]
         @inbounds opts = coloptions === nothing ? options : coloptions[col]
-        # @show typeof(tape)
-        if willdrop(flag) || (user(flag) && tape isa MissingVector)
+        # @show typeof(column)
+        if willdrop(flag) || (user(flag) && column isa MissingVector)
             pos, code = parsemissing!(buf, pos, len, opts, row, rowoffset, col)
         elseif !typedetected(flag)
-            pos, code = detect(tapes, buf, pos, len, opts, row, rowoffset, col, typemap, pool, refs, debug, types, flags, rowsguess)
-        elseif tape isa SVec{Int64}
-            pos, code = parseint!(flag, tape, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags)
-        elseif tape isa SVec{Float64}
-            pos, code = parsevalue!(Float64, flag, tape, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags)
-        elseif tape isa SVec2{String}
-            pos, code = parsestring2!(flag, tape, buf, pos, len, opts, row, rowoffset, col, types, flags)
-        elseif tape isa SVec{Date}
-            pos, code = parsevalue!(Date, flag, tape, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags)
-        elseif tape isa SVec{DateTime}
-            pos, code = parsevalue!(DateTime, flag, tape, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags)
-        elseif tape isa SVec{Time}
-            pos, code = parsevalue!(Time, flag, tape, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags)
-        elseif tape isa Vector{Union{Missing, Bool}}
-            pos, code = parsevalue!(Bool, flag, tape, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags)
-        elseif tape isa Vector{UInt32}
-            pos, code = parsepooled!(flag, tape, tapes, buf, pos, len, opts, row, rowoffset, col, rowsguess, pool, refs, types, flags)
-        elseif tape isa Vector{PosLen}
-            pos, code = parsestring!(flag, tape, buf, pos, len, opts, row, rowoffset, col, types, flags)
+            pos, code = detect(columns, buf, pos, len, opts, row, rowoffset, col, typemap, pool, refs, debug, types, flags, rowsguess)
+        elseif column isa SVec{Int64}
+            pos, code = parseint!(flag, column, columns, buf, pos, len, opts, row, rowoffset, col, types, flags)
+        elseif column isa SVec{Float64}
+            pos, code = parsevalue!(Float64, flag, column, columns, buf, pos, len, opts, row, rowoffset, col, types, flags)
+        elseif column isa SVec2{String}
+            pos, code = parsestring2!(flag, column, buf, pos, len, opts, row, rowoffset, col, types, flags)
+        elseif column isa SVec{Date}
+            pos, code = parsevalue!(Date, flag, column, columns, buf, pos, len, opts, row, rowoffset, col, types, flags)
+        elseif column isa SVec{DateTime}
+            pos, code = parsevalue!(DateTime, flag, column, columns, buf, pos, len, opts, row, rowoffset, col, types, flags)
+        elseif column isa SVec{Time}
+            pos, code = parsevalue!(Time, flag, column, columns, buf, pos, len, opts, row, rowoffset, col, types, flags)
+        elseif column isa Vector{Union{Missing, Bool}}
+            pos, code = parsevalue!(Bool, flag, column, columns, buf, pos, len, opts, row, rowoffset, col, types, flags)
+        elseif column isa Vector{UInt32}
+            pos, code = parsepooled!(flag, column, columns, buf, pos, len, opts, row, rowoffset, col, rowsguess, pool, refs, types, flags)
+        elseif column isa Vector{PosLen}
+            pos, code = parsestring!(flag, column, buf, pos, len, opts, row, rowoffset, col, types, flags)
         elseif customtypes !== Tuple{}
-            pos, code = parsecustom!(customtypes, flag, tapes, buf, pos, len, opts, row, rowoffset, col, types, flags)
+            pos, code = parsecustom!(customtypes, flag, columns, buf, pos, len, opts, row, rowoffset, col, types, flags)
         else
-            error("bad array type: $(typeof(tape))")
+            error("bad array type: $(typeof(column))")
         end
         if promote_to_string(code)
             # debug && println("promoting col = $col to string")
-            promotetostring!(col, TR, ncols, typemap, tapes, buf, startpos, len, row, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options, coloptions, customtypes)
+            promotetostring!(col, TR, ncols, typemap, columns, buf, startpos, len, row, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options, coloptions, customtypes)
         end
         if transpose
             @inbounds positions[col] = pos
@@ -667,13 +665,13 @@ end
     return pos | Core.bitcast(UInt64, len)
 end
 
-@inline function setposlen!(tape, row, code, pos, len)
-    @inbounds tape[row] = poslen(code, pos, len)
+@inline function setposlen!(column, row, code, pos, len)
+    @inbounds column[row] = poslen(code, pos, len)
     return
 end
 
-function detect(tapes, buf, pos, len, options, row, rowoffset, col, typemap, pool, refs, debug, types, flags, rowsguess)
-    # debug && println("detecting on thread $(Threads.threadid())")
+function detect(columns, buf, pos, len, options, row, rowoffset, col, typemap, pool, refs, debug, types, flags, rowsguess)
+    # debug && println("detecting on task $(Threads.threadid())")
     int, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, options)
     if Parsers.invalidquotedfield(code)
         fatalerror(buf, pos, tlen, code, rowoffset + row, col)
@@ -684,17 +682,17 @@ function detect(tapes, buf, pos, len, options, row, rowoffset, col, typemap, poo
         @goto finaldone
     end
     if Parsers.ok(code) && !haskey(typemap, Int64)
-        # debug && println("detecting Int64 for column = $col on thread = $(Threads.threadid())")
-        tape = allocate(Int64, rowsguess)
-        tape[row] = int
+        # debug && println("detecting Int64 for column = $col on task = $(Threads.threadid())")
+        column = allocate(Int64, rowsguess)
+        column[row] = int
         newT = Int64
         @goto done
     end
     float, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, options)
     if Parsers.ok(code) && !haskey(typemap, Float64)
-        # debug && println("detecting Float64 for column = $col on thread = $(Threads.threadid())")
-        tape = allocate(Float64, rowsguess)
-        tape[row] = float
+        # debug && println("detecting Float64 for column = $col on task = $(Threads.threadid())")
+        column = allocate(Float64, rowsguess)
+        column[row] = float
         newT = Float64
         @goto done
     end
@@ -702,8 +700,8 @@ function detect(tapes, buf, pos, len, options, row, rowoffset, col, typemap, poo
         try
             date, code, vpos, vlen, tlen = Parsers.xparse(Date, buf, pos, len, options)
             if Parsers.ok(code) && !haskey(typemap, Date)
-                tape = allocate(Date, rowsguess)
-                tape[row] = date
+                column = allocate(Date, rowsguess)
+                column[row] = date
                 newT = Date
                 @goto done
             end
@@ -712,8 +710,8 @@ function detect(tapes, buf, pos, len, options, row, rowoffset, col, typemap, poo
         try
             datetime, code, vpos, vlen, tlen = Parsers.xparse(DateTime, buf, pos, len, options)
             if Parsers.ok(code) && !haskey(typemap, DateTime)
-                tape = allocate(DateTime, rowsguess)
-                tape[row] = datetime
+                column = allocate(DateTime, rowsguess)
+                column[row] = datetime
                 newT = DateTime
                 @goto done
             end
@@ -722,8 +720,8 @@ function detect(tapes, buf, pos, len, options, row, rowoffset, col, typemap, poo
         try
             time, code, vpos, vlen, tlen = Parsers.xparse(Time, buf, pos, len, options)
             if Parsers.ok(code) && !haskey(typemap, Time)
-                tape = allocate(Time, rowsguess)
-                tape[row] = time
+                column = allocate(Time, rowsguess)
+                column[row] = time
                 newT = Time
                 @goto done
             end
@@ -735,8 +733,8 @@ function detect(tapes, buf, pos, len, options, row, rowoffset, col, typemap, poo
             DT = timetype(options.dateformat)
             dt, code, vpos, vlen, tlen = Parsers.xparse(DT, buf, pos, len, options)
             if Parsers.ok(code)
-                tape = allocate(DT, rowsguess)
-                tape[row] = dt
+                column = allocate(DT, rowsguess)
+                column[row] = dt
                 newT = DT
                 @goto done
             end
@@ -745,8 +743,8 @@ function detect(tapes, buf, pos, len, options, row, rowoffset, col, typemap, poo
     end
     bool, code, vpos, vlen, tlen = Parsers.xparse(Bool, buf, pos, len, options)
     if Parsers.ok(code) && !haskey(typemap, Bool)
-        tape = allocate(Bool, rowsguess)
-        tape[row] = bool
+        column = allocate(Bool, rowsguess)
+        column[row] = bool
         newT = Bool
         @goto done
     end
@@ -754,39 +752,39 @@ function detect(tapes, buf, pos, len, options, row, rowoffset, col, typemap, poo
     if pool > 0.0
         r = RefPool()
         @inbounds refs[col] = r
-        tape = allocate(PooledString, rowsguess)
+        column = allocate(PooledString, rowsguess)
         if anymissing(flags[col])
             ref = getref!(r, missing, code, options)
-            fill!(tape, ref)
+            fill!(column, ref)
         end
         ref = getref!(r, PointerString(pointer(buf, vpos), vlen), code, options)
-        @inbounds tape[row] = ref
+        @inbounds column[row] = ref
         newT = PooledString
     else
-        # debug && println("detecting String for column = $col on thread = $(Threads.threadid())")
+        # debug && println("detecting String for column = $col on task = $(Threads.threadid())")
         if lazystrings(flags[col])
-            tape = allocate(PosLen, rowsguess)
-            @inbounds setposlen!(tape, row, code, vpos, vlen)
+            column = allocate(PosLen, rowsguess)
+            @inbounds setposlen!(column, row, code, vpos, vlen)
         else
-            tape = allocate(String, rowsguess)
-            @inbounds tape[row] = str(buf, options.e, poslen(code, vpos, vlen))
+            column = allocate(String, rowsguess)
+            @inbounds column[row] = str(buf, options.e, poslen(code, vpos, vlen))
         end
         newT = String
     end
 @label done
-    # if we're here, that means we found a non-missing value, so we need to update tapes
-    tapes[col] = tape
+    # if we're here, that means we found a non-missing value, so we need to update columns
+    columns[col] = column
     flags[col] |= TYPEDETECTED
     types[col] = Union{newT, anymissing(flags[col]) ? Missing : Union{}}
 @label finaldone
     return pos + tlen, code
 end
 
-function parseint!(flag, tape, tapes, buf, pos, len, options, row, rowoffset, col, types, flags)::Tuple{Int64, Int16}
+function parseint!(flag, column, columns, buf, pos, len, options, row, rowoffset, col, types, flags)::Tuple{Int64, Int16}
     x, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, options)
     if code > 0
         if !Parsers.sentinel(code)
-            @inbounds tape[row] = x
+            @inbounds column[row] = x
         else
             if !anymissing(flag)
                 @inbounds flags[col] = flag | ANYMISSING
@@ -810,8 +808,8 @@ function parseint!(flag, tape, tapes, buf, pos, len, options, row, rowoffset, co
             # println("encountered an error parsing an Intger in auto-detect mode for column = $col, so let's try Float64")
             y, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, options)
             if code > 0
-                @inbounds tapes[col] = convert(SentinelVector{Float64}, tape)
-                @inbounds tapes[col][row] = y
+                @inbounds columns[col] = convert(SentinelVector{Float64}, column)
+                @inbounds columns[col][row] = y
                 @inbounds types[col] = Union{Float64, anymissing(flag) ? Missing : Union{}}
             else
                 # println("promoting to String instead")
@@ -822,11 +820,11 @@ function parseint!(flag, tape, tapes, buf, pos, len, options, row, rowoffset, co
     return pos + tlen, code
 end
 
-function parsevalue!(::Type{type}, flag, tape, tapes, buf, pos, len, options, row, rowoffset, col, types, flags)::Tuple{Int64, Int16} where {type}
+function parsevalue!(::Type{type}, flag, column, columns, buf, pos, len, options, row, rowoffset, col, types, flags)::Tuple{Int64, Int16} where {type}
     x, code, vpos, vlen, tlen = Parsers.xparse(type, buf, pos, len, options)
     if code > 0
         if !Parsers.sentinel(code)
-            @inbounds tape[row] = x
+            @inbounds column[row] = x
         else
             if !anymissing(flag)
                 @inbounds flags[col] = flag | ANYMISSING
@@ -853,9 +851,9 @@ function parsevalue!(::Type{type}, flag, tape, tapes, buf, pos, len, options, ro
     return pos + tlen, code
 end
 
-function parsestring!(flag, tape, buf, pos, len, options, row, rowoffset, col, types, flags)::Tuple{Int64, Int16}
+function parsestring!(flag, column, buf, pos, len, options, row, rowoffset, col, types, flags)::Tuple{Int64, Int16}
     x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-    setposlen!(tape, row, code, vpos, vlen)
+    setposlen!(column, row, code, vpos, vlen)
     if Parsers.invalidquotedfield(code)
         # this usually means parsing is borked because of an invalidly quoted field, hard error
         fatalerror(buf, pos, tlen, code, rowoffset + row, col)
@@ -869,7 +867,7 @@ function parsestring!(flag, tape, buf, pos, len, options, row, rowoffset, col, t
     return pos + tlen, code
 end
 
-function parsestring2!(flag, tape, buf, pos, len, options, row, rowoffset, col, types, flags)::Tuple{Int64, Int16}
+function parsestring2!(flag, column, buf, pos, len, options, row, rowoffset, col, types, flags)::Tuple{Int64, Int16}
     x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
     if Parsers.invalidquotedfield(code)
         # this usually means parsing is borked because of an invalidly quoted field, hard error
@@ -881,7 +879,7 @@ function parsestring2!(flag, tape, buf, pos, len, options, row, rowoffset, col, 
             @inbounds types[col] = Union{String, Missing}
         end
     else
-        @inbounds tape[row] = str(buf, options.e, poslen(code, vpos, vlen))
+        @inbounds column[row] = str(buf, options.e, poslen(code, vpos, vlen))
     end
     return pos + tlen, code
 end
@@ -920,7 +918,7 @@ end
     return ret
 end
 
-function parsepooled!(flag, tape, tapes, buf, pos, len, options, row, rowoffset, col, rowsguess, pool, refs, types, flags)::Tuple{Int64, Int16}
+function parsepooled!(flag, column, columns, buf, pos, len, options, row, rowoffset, col, rowsguess, pool, refs, types, flags)::Tuple{Int64, Int16}
     x, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
     if Parsers.invalidquotedfield(code)
         # this usually means parsing is borked because of an invalidly quoted field, hard error
@@ -942,7 +940,7 @@ function parsepooled!(flag, tape, tapes, buf, pos, len, options, row, rowoffset,
     if !user(flag) && ((length(r.refs) - anymissing(flags[col])) / rowsguess) > pool
         code |= PROMOTE_TO_STRING
     else
-        @inbounds tape[row] = ref
+        @inbounds column[row] = ref
     end
     return pos + tlen, code
 end
