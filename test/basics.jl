@@ -475,4 +475,11 @@ row = first(r)
 
 @test CSV.File(IOBuffer("col1\n1")).col1 == [1]
 
+rows = 0
+chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); lazystrings=true)
+for chunk in chunks
+    rows += length(chunk)
+end
+@test rows == 10000
+
 end
