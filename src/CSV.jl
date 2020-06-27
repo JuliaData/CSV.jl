@@ -9,8 +9,8 @@ using Parsers
 using Tables
 # PooledArrays.jl is used for materializing pooled columns
 using PooledArrays
-# WeakRefStrings allows for more efficient materializing of string columns via StringVector
-using WeakRefStrings
+# SentinelArrays.jl allow efficient conversion from Vector{Union{T, Missing}} to Vector{T}
+# it also provides the MissingVector and ChainedVector array types
 using SentinelArrays
 
 using CategoricalArrays, DataFrames

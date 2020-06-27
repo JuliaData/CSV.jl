@@ -7,6 +7,11 @@ CSV.jl is built to be a fast and flexible pure-Julia library for handling delimi
 Depth = 3
 ```
 
+## Getting Started
+
+CSV.jl provides a number of utilities for working with delimited files. `CSV.File` provides a way to read files into columns of data, detecting column types.
+`CSV.Rows` provides a row iterator for looping over rows in a file. Inputs to either should be filenames as `String`s, or byte vectors (`AbstractVector{UInt8}`). To read other `IO` inputs, just call `read(io)` and pass the bytes directly to `CSV.File` or `CSV.Rows`.
+
 ## Key Functions
 ```@docs
 CSV.File

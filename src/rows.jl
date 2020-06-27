@@ -21,7 +21,7 @@ struct Rows{transpose, O, O2, IO, T, V}
     customtypes::T
     positions::Vector{Int64}
     reusebuffer::Bool
-    tapes::Vector{AbstractVector} # for parsing, allocated once and used for each iteration
+    columns::Vector{AbstractVector} # for parsing, allocated once and used for each iteration
     values::Vector{V} # once values are parsed, put in values; allocated on each iteration if reusebuffer=false
     lookup::Dict{Symbol, Int}
 end
@@ -140,7 +140,7 @@ function Rows(source;
     kw...)
 
     h = Header(source, header, normalizenames, datarow, skipto, footerskip, limit, transpose, comment, use_mmap, ignoreemptylines, false, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, true)
-    tapes = allocate(1, h.cols, h.types, h.flags)
+    columns = allocate(1, h.cols, h.types, h.flags)
     values = all(x->x == Union{String, Missing}, h.types) && lazystrings ? Vector{PosLen}(undef, h.cols) : Vector{Any}(undef, h.cols)
     finaltypes = copy(h.types)
     columnmap = [i for i = 1:h.cols]
@@ -167,7 +167,7 @@ function Rows(source;
         h.customtypes,
         h.positions,
         reusebuffer,
-        tapes,
+        columns,
         values,
         lookup,
     )
@@ -182,31 +182,31 @@ Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
 const EMPTY_TYPEMAP = Dict{Type, Type}()
 const EMPTY_REFS = RefPool[]
 
-@inline function setcustom!(::Type{T}, values, tapes, i) where {T}
+@inline function setcustom!(::Type{T}, values, columns, i) where {T}
     if @generated
         block = Expr(:block)
         push!(block.args, quote
-            error("CSV.jl code-generation error, unexpected column type: $(typeof(tape))")
+            error("CSV.jl code-generation error, unexpected column type: $(typeof(column))")
         end)
         for i = 1:fieldcount(T)
             vec = fieldtype(T, i)
             pushfirst!(block.args, quote
-                if tape isa $(fieldtype(vec, 1))
-                    @inbounds values[i] = tape[1]
+                if column isa $(fieldtype(vec, 1))
+                    @inbounds values[i] = column[1]
                     return
                 end
             end)
         end
         pushfirst!(block.args, quote
-            @inbounds tape = tapes[col]
+            @inbounds column = columns[col]
         end)
         pushfirst!(block.args, Expr(:meta, :inline))
         # @show block
         return block
     else
         # println("generated function failed")
-        @inbounds tape = tapes[i]
-        @inbounds values[i] = tape[1]
+        @inbounds column = columns[i]
+        @inbounds values[i] = column[1]
         return
     end
 end
@@ -214,34 +214,34 @@ end
 @inline function Base.iterate(r::Rows{transpose, O, O2, IO, T, V}, (pos, len, row)=(r.datapos, r.len, 1)) where {transpose, O, O2, IO, T, V}
     (pos > len || row > r.limit) && return nothing
     pos > len && return nothing
-    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, r.tapes, r.datapos, r.buf, pos, len, r.positions, 0.0, EMPTY_REFS, 1, r.datarow + row - 2, r.types, r.flags, false, r.options, r.coloptions, T)
+    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, r.columns, r.datapos, r.buf, pos, len, r.positions, 0.0, EMPTY_REFS, 1, r.datarow + row - 2, r.types, r.flags, false, r.options, r.coloptions, T)
     cols = r.cols
     values = r.reusebuffer ? r.values : Vector{V}(undef, cols)
-    tapes = r.tapes
+    columns = r.columns
     for i = 1:cols
-        @inbounds tape = tapes[i]
-        if tape isa Vector{PosLen}
-            @inbounds values[i] = tape[1]
-        elseif tape isa SVec{Int64}
-            @inbounds values[i] = tape[1]
-        elseif tape isa SVec{Float64}
-            @inbounds values[i] = tape[1]
-        elseif tape isa SVec2{String}
-            @inbounds values[i] = tape[1]
-        elseif tape isa SVec{Date}
-            @inbounds values[i] = tape[1]
-        elseif tape isa SVec{DateTime}
-            @inbounds values[i] = tape[1]
-        elseif tape isa SVec{Time}
-            @inbounds values[i] = tape[1]
-        elseif tape isa Vector{Union{Missing, Bool}}
-            @inbounds values[i] = tape[1]
-        elseif tape isa Vector{UInt32}
-            @inbounds values[i] = tape[1]
+        @inbounds column = columns[i]
+        if column isa Vector{PosLen}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{Int64}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{Float64}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec2{String}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{Date}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{DateTime}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{Time}
+            @inbounds values[i] = column[1]
+        elseif column isa Vector{Union{Missing, Bool}}
+            @inbounds values[i] = column[1]
+        elseif column isa Vector{UInt32}
+            @inbounds values[i] = column[1]
         elseif T !== Tuple{}
-            setcustom!(T, values, tapes, i)
+            setcustom!(T, values, columns, i)
         else
-            error("bad array type: $(typeof(tape))")
+            error("bad array type: $(typeof(column))")
         end
     end
     return Row2{O, O2, V}(r.names, r.finaltypes, r.columnmap, r.types, r.lookup, values, r.buf, r.e, r.options, r.coloptions), (pos, len, row + 1)
