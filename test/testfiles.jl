@@ -317,7 +317,7 @@ testfiles = [
     ("latest (1).csv", (header=0, missingstring="\\N", pool=true),
         (1000, 25),
         NamedTuple{(:Column1, :Column2, :Column3, :Column4, :Column5, :Column6, :Column7, :Column8, :Column9, :Column10, :Column11, :Column12, :Column13, :Column14, :Column15, :Column16, :Column17, :Column18, :Column19, :Column20, :Column21, :Column22, :Column23, :Column24, :Column25),Tuple{String,String,Int64,Int64,String,Int64,String,Int64,Date,Date,Int64,String,Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Int64},Union{Missing, Float64},Float64,Union{Missing, Float64},Union{Missing, Float64},Union{Missing, Int64},Float64,Union{Missing, Float64},Union{Missing, Float64}}},
-        nothing
+        t -> @test(t.Column17[end-2] === missing)
     ),
     # #217
     (IOBuffer("aa,bb\n1,\"1,b,c\"\n"), (pool=false,),

@@ -1,4 +1,10 @@
 export PooledString
+"""
+    PooledString
+
+A singleton type that can be used for signaling that a column of a csv file should be pooled,
+with the output array type being a `PooledArray`.
+"""
 struct PooledString <: AbstractString end
 
 # PointerString is an internal-only type for efficiently tracking string data + length
@@ -32,7 +38,7 @@ end
 
 Base.String(x::PointerString) = _unsafe_string(x.ptr, x.len)
 
-# column bit flags
+# column bit flags; useful so we don't have to pass a bunch of arguments/state around manually
 
 # whether the user provided the type or not
 const USER       = 0b00000001
@@ -46,15 +52,18 @@ anymissing(flag) = flag & ANYMISSING > 0
 const TYPEDETECTED = 0b00000100
 typedetected(flag) = flag & TYPEDETECTED > 0
 
-# whether a column will be "dropped"
+# whether a column will be "dropped" from the select/drop keyword arguments
 const WILLDROP = 0b00001000
 willdrop(flag) = flag & WILLDROP > 0
 
+# whether strings should be lazy; results in LazyStringVectors
+# this setting isn't per column, but we store it on the column bit flags anyway for convenience
 const LAZYSTRINGS = 0b00010000
 lazystrings(flag) = flag & LAZYSTRINGS > 0
 
 flag(T, lazystrings) = (T === Union{} ? 0x00 : ((USER | TYPEDETECTED) | (hasmissingtype(T) ? ANYMISSING : 0x00))) | (lazystrings ? LAZYSTRINGS : 0x00)
 
+# we define our own bit flag on a Parsers.ReturnCode to signal if a column needs to promote to string
 const PROMOTE_TO_STRING = 0b0100000000000000 % Int16
 promote_to_string(code) = code & PROMOTE_TO_STRING > 0
 
@@ -78,7 +87,8 @@ hasmissingtype(T) = T === Missing || T !== Core.Compiler.typesubtract(T, Missing
     end
 end
 
-# bit patterns for missing value, int value, escaped string, position and len in tape parsing
+## lazy strings
+# bit patterns for missing value, int value, escaped string, position and len in lazy string parsing
 const PosLen = UInt64
 
 # primitive type PosLen 64 end
@@ -147,13 +157,17 @@ end
     return s, st[2]
 end
 
-# column array allocating
+## column array allocating
+# we don't want to use SentinelVector for small integer types due to the higher risk of
+# sentinel value collision, so we just use Vector{Union{T, Missing}} and convert to Vector{T} if no missings were found
 const SmallIntegers = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32}
 
+# allocate columns for a full file
 function allocate(rowsguess, ncols, types, flags)
     return AbstractVector[allocate(lazystrings(flags[i]) && (types[i] === String || types[i] === Union{String, Missing}) ? PosLen : types[i], rowsguess) for i = 1:ncols]
 end
 
+# MissingVector is an efficient representation in SentinelArrays.jl package
 allocate(::Type{Union{}}, len) = MissingVector(len)
 allocate(::Type{Missing}, len) = MissingVector(len)
 function allocate(::Type{PosLen}, len)
@@ -174,6 +188,7 @@ allocate(::Type{Union{Missing, T}}, len) where {T <: SmallIntegers} = Vector{Uni
 allocate(T, len) = SentinelVector{nonmissingtype(T)}(undef, len)
 
 reallocate!(A, len) = resize!(A, len)
+# when reallocating, we just need to make sure the missing bit is set for lazy string PosLen
 function reallocate!(A::Vector{PosLen}, len)
     oldlen = length(A)
     resize!(A, len)
@@ -185,6 +200,7 @@ const SVec{T} = SentinelVector{T, T, Missing, Vector{T}}
 const SVec2{T} = SentinelVector{T, typeof(undef), Missing, Vector{T}}
 
 ts(T, S) = Core.Compiler.typesubtract(T, S)
+# when users pass non-standard types, we need to keep track of them in a Tuple{...} to generate efficient custom parsing kernel codes
 function nonstandardtype(T)
     S = ts(ts(ts(ts(ts(ts(ts(ts(ts(T, Int64), Float64), String), PooledString), Bool), Date), DateTime), Time), Missing)
     if S === Union{}
@@ -201,6 +217,7 @@ end
 # one-liner suggested from ScottPJones
 consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 0xbb && buf[pos + 2] == 0xbf) ? pos + 3 : pos
 
+# whatever input is given, turn it into an AbstractVector{UInt8} we can parse with
 function getsource(x)
     if x isa AbstractVector{UInt8}
         return x, 1, length(x)
@@ -211,8 +228,14 @@ function getsource(x)
         buf = Base.read(x)
         return buf, 1, length(buf)
     else
-        buf = Mmap.mmap(string(x))
-        return buf, 1, length(buf)
+        try
+            buf = Mmap.mmap(string(x))
+            return buf, 1, length(buf)
+        catch e
+            # if we can't mmap, try just `read`ing the whole thing into a byte vector
+            buf = read(x)
+            return buf, 1, length(buf)
+        end
     end
 end
 
@@ -358,6 +381,9 @@ function detect(buf, pos, len, options)
     return nothing
 end
 
+# a ReversedBuf takes a byte vector and indexes backwards;
+# used for the footerskip keyword argument, which starts at the bottom of the file
+# and skips lines backwards
 struct ReversedBuf <: AbstractVector{UInt8}
     buf::Vector{UInt8}
 end
@@ -366,15 +392,9 @@ Base.size(a::ReversedBuf) = size(a.buf)
 Base.IndexStyle(::Type{ReversedBuf}) = Base.IndexLinear()
 Base.getindex(a::ReversedBuf, i::Int) = a.buf[end + 1 - i]
 
-function unset!(A::Vector, i::Int, row, x)
-    ccall(:jl_arrayunset, Cvoid, (Array, Csize_t), A, i - 1)
-    # println("deleting col = $i on thread = $(Threads.threadid()), row = $row, id = $x")
-    return
-end
-
-memcpy!(d, doff, s, soff, n) = ccall(:memcpy, Cvoid, (Ptr{UInt8}, Ptr{UInt8}, Int), d + doff - 1, s + soff - 1, n)
 memset!(ptr, value, num) = ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), ptr, value, num)
 
+# a RefPool holds our refs as a Dict, along with a lastref field which is incremented when a new ref is found while parsing pooled columns
 mutable struct RefPool
     refs::Dict{Union{String, Missing}, UInt32}
     lastref::UInt32
