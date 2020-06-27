@@ -19,6 +19,8 @@ struct Header{transpose, O, IO}
     customtypes::Type
 end
 
+gettranspose(h::Header{transpose}) where {transpose} = transpose
+
 """
     isvaliddelim(delim)
 
@@ -53,12 +55,10 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     datarow,
     skipto,
     footerskip,
-    limit,
     transpose,
     comment,
     use_mmap,
     ignoreemptylines,
-    threaded,
     select,
     drop,
     # parsing options
@@ -78,7 +78,6 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     # type options
     type,
     types,
-    typemap,
     categorical,
     pool,
     lazystrings,
