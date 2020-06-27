@@ -2,11 +2,30 @@ struct Chunks{H}
     h::H # Header
     threaded::Union{Bool, Nothing}
     typemap::Dict{Type, Type}
-    tasks::Int64
+    tasks::Int
     debug::Bool
     ranges::Vector{Int64}
 end
 
+"""
+    CSV.Chunks(source; tasks::Integer=Threads.nthreads(), kwargs...) => CSV.Chunks
+
+Returns a file "chunk" iterator. Accepts all the same inputs and keyword arguments as [`CSV.File`](@ref),
+see those docs for explanations of each keyword argument.
+
+The `tasks` keyword argument specifies how many chunks a file should be split up into, defaulting to 
+the # of threads available to Julia (i.e. `JULIA_NUM_THREADS` environment variable) or 8 if Julia is
+run single-threaded.
+
+Each iteration of `CSV.Chunks` produces the next chunk of a file as a `CSV.File`. While initial file
+metadata detection is done only once (to determine # of columns, column names, etc), each iteration
+does independent type inference on columns. This is significant as different chunks may end up with
+different column types than previous chunks as new values are encountered in the file. Note that, as
+with `CSV.File`, types may be passed manually via the `type` or `types` keyword arguments.
+
+This functionality is new and thus considered experimental; please
+[open an issue](https://github.com/JuliaData/CSV.jl/issues/new) if you run into any problems/bugs.
+"""
 function Chunks(source;
     # file options
     # header can be a row number, range of rows, or actual string vector
