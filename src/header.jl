@@ -228,8 +228,9 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
             end
         end
     end
+    # generate a customtypes Tuple{...} we'll need to generate code for during parsing
     customtypes = Tuple{(nonstandardtype(T) for T in types if nonstandardtype(T) !== Union{})...}
-    # set any unselected columns to typecode USER | MISSING
+    # figure out if we'll drop any columns while parsing
     todrop = Int[]
     if select !== nothing && drop !== nothing
         error("`select` and `drop` keywords were both provided; only one or the other is allowed")
