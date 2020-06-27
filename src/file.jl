@@ -300,7 +300,7 @@ function File(h::Header;
     lookup = Dict(k => v for (k, v) in zip(h.names, columns))
     # for windows, it's particularly finicky about throwing errors when you try to modify an mmapped file
     # so we just want to make sure we finalize the input buffer so users don't run into surprises
-    if Sys.iswindows() && !lazystrings
+    if Sys.iswindows() && ncols > 0 && !lazystrings(flags[1])
         finalize(buf)
     end
     return File{something(threaded, false)}(h.name, h.names, types, finalrows, ncols, columns, lookup)
