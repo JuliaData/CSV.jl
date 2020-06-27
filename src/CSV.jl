@@ -43,4 +43,7 @@ end
 
 DataFrames.DataFrame(f::CSV.File; copycols::Bool=true) = DataFrame(getcolumns(f), getnames(f); copycols=copycols)
 
+include("precompile.jl")
+_precompile_()
+
 end # module
