@@ -473,4 +473,6 @@ row = first(r)
 @test row.lazy == "hey"
 @test row.lazy_missing === missing
 
+@test CSV.File(IOBuffer("col1\n1")).col1 == [1]
+
 end

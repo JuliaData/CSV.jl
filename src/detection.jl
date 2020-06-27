@@ -150,7 +150,7 @@ function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, delim
     end
     guess = ((len - datapos) / (nbytes / nlines))
     rowsguess = isfinite(guess) ? ceil(Int, guess) : 0
-    return d, rowsguess
+    return d, max(1, rowsguess)
 end
 
 struct ByteValueCounter
