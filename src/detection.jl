@@ -16,7 +16,7 @@ function detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, h
         headerpos = checkcommentandemptyline(buf, headerpos, len, cmt, ignoreemptylines)
         datapos = skiptorow(buf, headerpos, len, oq, eq, cq, header[1], datarow)
     elseif header isa Union{AbstractVector{Symbol}, AbstractVector{String}}
-        datapos = skiptorow(buf, 1, len, oq, eq, cq, 1, datarow)
+        datapos = skiptorow(buf, pos, len, oq, eq, cq, 1, datarow)
     else
         throw(ArgumentError("unsupported header argument: $header"))
     end
