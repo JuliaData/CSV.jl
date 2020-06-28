@@ -482,4 +482,16 @@ for chunk in chunks
 end
 @test rows == 10000
 
+# 668
+buf = IOBuffer("""
+       garbage
+       a,b
+       1,2
+       """)
+readline(buf)
+f = CSV.File(buf, header=["A", "B"])
+@test length(f) == 2
+@test f.names == [:A, :B]
+@test (f[1].A, f[1].B) == ("a", "b")
+@test (f[2].A, f[2].B) == ("1", "2")
 end
