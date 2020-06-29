@@ -67,6 +67,8 @@ flag(T, lazystrings) = (T === Union{} ? 0x00 : ((USER | TYPEDETECTED) | (hasmiss
 const PROMOTE_TO_STRING = 0b0100000000000000 % Int16
 promote_to_string(code) = code & PROMOTE_TO_STRING > 0
 
+@enum RowErrorCode None NotEnoughColumns TooManyColumns
+
 hasmissingtype(T) = T === Missing || T !== Core.Compiler.typesubtract(T, Missing)
 
 @inline function promote_types(@nospecialize(T), @nospecialize(S))
