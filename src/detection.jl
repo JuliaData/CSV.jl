@@ -307,6 +307,8 @@ end
 # at the byte position, assuming we were in the a quoted field (and encountered a newline inside the quoted
 # field the first time through)
 function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, ranges, ncols) where {ignorerepeated}
+    totalbytes = 0
+    totalrows = 0
     for i = 2:(length(ranges) - 1)
         pos = ranges[i]
         while pos <= len
@@ -323,6 +325,7 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
                 end
             end
             # now we read the next 5 rows and see if we get the right # of columns
+            rowstartpos = pos
             correct = true
             for j = 1:5
                 for _ = 1:ncols
@@ -334,6 +337,8 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
             end
             if correct
                 # boom, we read a whole row and got correct # of columns
+                totalbytes += pos - rowstartpos
+                totalrows += 5
                 break
             end
             # else, assume we were inside a quoted field:
@@ -378,7 +383,7 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
             end
         end
     end
-    return
+    return totalbytes / totalrows
 end
 
 function detecttranspose(buf, pos, len, options, header, datarow, normalizenames)
