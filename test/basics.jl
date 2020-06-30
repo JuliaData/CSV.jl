@@ -108,7 +108,7 @@ rows = collect(CSV.File(joinpath(dir, "time.csv"); dateformat="H:M:S"))
 @test rows[2].time == Time(0, 10)
 
 # 388
-f = CSV.File(joinpath(dir, "GSM2230757_human1_umifm_counts.csv"))
+f = CSV.File(joinpath(dir, "GSM2230757_human1_umifm_counts.csv"); threaded=false)
 @test length(f.names) == 20128
 @test length(f) == 3
 
