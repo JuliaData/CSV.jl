@@ -395,7 +395,16 @@ function makeandsetpooled!(columns, i, column, refs, flags, categorical)
     return
 end
 
-function multithreadparse(types, flags, buf, datapos, len, options, coloptions, rowsguess, datarow, pool, refs, ncols, typemap, categorical, customtypes, limit, N, debug)
+function multithreadparse(types, flags, buf, datapos, len, options, coloptions, origrowsguess, datarow, pool, refs, ncols, typemap, categorical, customtypes, limit, N, debug)
+    chunksize = div(len - datapos, N)
+    ranges = [i == 0 ? datapos : (datapos + chunksize * i) for i = 0:N]
+    ranges[end] = len
+    debug && println("initial byte positions before adjusting for start of rows: $ranges")
+    avgbytesperrow = findrowstarts!(buf, len, options, ranges, ncols)
+    origbytesperrow = ((len - datapos) / origrowsguess)
+    weightedavgbytesperrow = ceil(Int64, (avgbytesperrow * (N - 1) + origbytesperrow) / N)
+    rowsguess = ceil(Int64, (len - datapos) / weightedavgbytesperrow)
+    debug && println("single-threaded estimated rows = $origrowsguess, multi-threaded estimated rows = $rowsguess")
     # when limiting w/ multithreaded parsing, we try to guess about where in the file the limit row # will be
     # then adjust our final file len to the end of that row
     # we add some cushion so we hopefully get the limit row correctly w/o shooting past too far and needing to resize! down
@@ -406,11 +415,6 @@ function multithreadparse(types, flags, buf, datapos, len, options, coloptions, 
         len = newlen[2] - 1
         debug && println("limiting, adjusting len to $len")
     end
-    chunksize = div(len - datapos, N)
-    ranges = [i == 0 ? datapos : (datapos + chunksize * i) for i = 0:N]
-    ranges[end] = len
-    debug && println("initial byte positions before adjusting for start of rows: $ranges")
-    findrowstarts!(buf, len, options, ranges, ncols)
     rowchunkguess = cld(rowsguess, N)
     debug && println("parsing using $N tasks: $rowchunkguess rows chunked at positions: $ranges")
     pertaskcolumns = Vector{Vector{AbstractVector}}(undef, N)
