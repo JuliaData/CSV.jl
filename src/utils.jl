@@ -61,6 +61,11 @@ willdrop(flag) = flag & WILLDROP > 0
 const LAZYSTRINGS = 0b00010000
 lazystrings(flag) = flag & LAZYSTRINGS > 0
 
+const MAYBEPOOLED = 0b00100000
+maybepooled(flag) = flag & MAYBEPOOLED > 0
+# ~95% z-score, 10% MoE
+const POOLSAMPLESIZE = 100
+
 flag(T, lazystrings) = (T === Union{} ? 0x00 : ((USER | TYPEDETECTED) | (hasmissingtype(T) ? ANYMISSING : 0x00))) | (lazystrings ? LAZYSTRINGS : 0x00)
 
 # we define our own bit flag on a Parsers.ReturnCode to signal if a column needs to promote to string
@@ -163,8 +168,15 @@ end
 const SmallIntegers = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32}
 
 # allocate columns for a full file
-function allocate(rowsguess, ncols, types, flags)
-    return AbstractVector[allocate(lazystrings(flags[i]) && (types[i] === String || types[i] === Union{String, Missing}) ? PosLen : types[i], rowsguess) for i = 1:ncols]
+function allocate(rowsguess, ncols, types, flags, refs)
+    columns = Vector{AbstractVector}(undef, ncols)
+    for i = 1:ncols
+        @inbounds columns[i] = allocate(lazystrings(flags[i]) && (types[i] === String || types[i] === Union{String, Missing}) ? PosLen : types[i], rowsguess)
+        if types[i] === PooledString || types[i] ===  Union{PooledString, Missing} || types[i] === CategoricalValue{String, UInt32} || types[i] ===  Union{CategoricalValue{String, UInt32}, Missing}
+            refs[i] = RefPool()
+        end
+    end
+    return columns
 end
 
 # MissingVector is an efficient representation in SentinelArrays.jl package
@@ -177,10 +189,10 @@ function allocate(::Type{PosLen}, len)
 end
 allocate(::Type{String}, len) = SentinelVector{String}(undef, len)
 allocate(::Type{Union{String, Missing}}, len) = SentinelVector{String}(undef, len)
-allocate(::Type{PooledString}, len) = fill(UInt32(0), len)
-allocate(::Type{Union{PooledString, Missing}}, len) = fill(UInt32(0), len)
-allocate(::Type{CategoricalValue{String, UInt32}}, len) = fill(UInt32(0), len)
-allocate(::Type{Union{CategoricalValue{String, UInt32}, Missing}}, len) = fill(UInt32(0), len)
+allocate(::Type{PooledString}, len) = Vector{UInt32}(undef, len)
+allocate(::Type{Union{PooledString, Missing}}, len) = Vector{UInt32}(undef, len)
+allocate(::Type{CategoricalValue{String, UInt32}}, len) = Vector{UInt32}(undef, len)
+allocate(::Type{Union{CategoricalValue{String, UInt32}, Missing}}, len) = Vector{UInt32}(undef, len)
 allocate(::Type{Bool}, len) = Vector{Union{Missing, Bool}}(undef, len)
 allocate(::Type{Union{Missing, Bool}}, len) = Vector{Union{Missing, Bool}}(undef, len)
 allocate(::Type{T}, len) where {T <: SmallIntegers} = Vector{Union{Missing, T}}(undef, len)
