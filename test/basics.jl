@@ -452,7 +452,7 @@ f = CSV.File(IOBuffer("col1\nhey\nthere\nsailor"); lazystrings=true)
 @test f.col1 isa CSV.LazyStringVector
 @test Tables.columnnames(f) == [:col1]
 @test propertynames(f) == [:col1]
-@test CSV.getname(f) == "<Base.GenericIOBuffer{Array{UInt8,1}}>"
+@test occursin("IOBuffer", CSV.getname(f))
 @test CSV.getcols(f) == 1
 @test Base.IndexStyle(f) == Base.IndexLinear()
 @test f.col1 === Tables.getcolumn(f, 1)

@@ -254,7 +254,7 @@ function File(h::Header;
         if limit < rowsguess
             rowsguess = limit
         end
-        columns = allocate(rowsguess, ncols, types, flags)
+        columns = allocate(rowsguess, ncols, types, flags, refs)
         t = Base.time()
         finalrows, pos = parsefilechunk!(Val(transpose), ncols, typemap, columns, buf, datapos, len, limit, positions, pool, refs, rowsguess, datarow - 1, types, flags, debug, options, coloptions, customtypes)
         debug && println("time for initial parsing: $(Base.time() - t)")
@@ -429,7 +429,7 @@ function multithreadparse(types, flags, buf, datapos, len, options, coloptions, 
             task_len = ranges[i + 1] - (i != N)
             task_pos = ranges[i]
             task_types = copy(types)
-            task_columns = allocate(rowchunkguess, ncols, task_types, task_flags)
+            task_columns = allocate(rowchunkguess, ncols, task_types, task_flags, task_refs)
             pertaskcolumns[i] = task_columns
             task_rows, task_pos = parsefilechunk!(Val(false), ncols, typemap, task_columns, buf, task_pos, task_len, typemax(Int64), EMPTY_INT_ARRAY, pool, task_refs, rowchunkguess, datarow + (rowchunkguess * (i - 1)), task_types, task_flags, debug, options, coloptions, customtypes)
             rows[i] = task_rows
@@ -472,8 +472,16 @@ end # @static if VERSION >= v"1.3-DEV"
                     task_columns[col] = convert(SentinelVector{Float64}, task_columns[col])
                 elseif T !== Union{} && T !== Missing && task_columns[col] isa MissingVector
                     # one chunk parsed all missing values, but another chunk had a typed value, promote to that
-                    debug && println("multithreaded promoting column $col from missing")
+                    debug && println("multithreaded promoting column $col from missing on task $i")
                     task_columns[col] = allocate(T, task_rows)
+                    if T == Union{PooledString, Missing}
+                        colrefs = refs[col]
+                        ref = getref!(colrefs, missing, Int16(0), options)
+                        column = task_columns[col]
+                        for j = 1:task_rows
+                            @inbounds column[j] = ref
+                        end
+                    end
                 end
             end
             @inbounds column = pertaskcolumns[1][col]
@@ -769,13 +777,18 @@ function detect(columns, buf, pos, len, options, row, rowoffset, col, typemap, p
         @goto done
     end
     _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-    if pool > 0.0
+    if pool > 0.0 && (row / POOLSAMPLESIZE < pool)
         r = RefPool()
         @inbounds refs[col] = r
-        column = allocate(PooledString, rowsguess)
+        column = allocate(PooledString, pool < 1.0 ? min(rowsguess, POOLSAMPLESIZE) : rowsguess)
+        if pool < 1.0
+            flags[col] |= MAYBEPOOLED
+        end
         if anymissing(flags[col])
             ref = getref!(r, missing, code, options)
-            fill!(column, ref)
+            for i = 1:(row - 1)
+                @inbounds column[i] = ref
+            end
         end
         ref = getref!(r, PointerString(pointer(buf, vpos), vlen), code, options)
         @inbounds column[row] = ref
@@ -944,23 +957,26 @@ function parsepooled!(flag, column, columns, buf, pos, len, options, row, rowoff
         # this usually means parsing is borked because of an invalidly quoted field, hard error
         fatalerror(buf, pos, tlen, code, rowoffset + row, col)
     end
-    if !isassigned(refs, col)
-        r = RefPool()
-        @inbounds refs[col] = r
-    else
-        @inbounds r = refs[col]
-    end
+    @inbounds colrefs = refs[col]
     if Parsers.sentinel(code)
         @inbounds flags[col] = flag | ANYMISSING
         @inbounds types[col] = Union{PooledString, Missing}
-        ref = getref!(r, missing, code, options)
+        ref = getref!(colrefs, missing, code, options)
     else
-        ref = getref!(r, PointerString(pointer(buf, vpos), vlen), code, options)
+        ref = getref!(colrefs, PointerString(pointer(buf, vpos), vlen), code, options)
     end
-    if !user(flag) && ((length(r.refs) - anymissing(flags[col])) / rowsguess) > pool
-        code |= PROMOTE_TO_STRING
-    else
-        @inbounds column[row] = ref
+    @inbounds column[row] = ref
+    if !user(flag) && maybepooled(flag)
+        if rowsguess <= POOLSAMPLESIZE && ((length(colrefs.refs) - anymissing(flags[col])) / rowsguess) > pool
+            code |= PROMOTE_TO_STRING
+        elseif row == POOLSAMPLESIZE
+            if ((length(colrefs.refs) - anymissing(flags[col])) / min(rowsguess, POOLSAMPLESIZE)) > pool
+                code |= PROMOTE_TO_STRING
+            else
+                resize!(column, rowsguess)
+            end
+            flags[col] &= ~MAYBEPOOLED
+        end
     end
     return pos + tlen, code
 end
