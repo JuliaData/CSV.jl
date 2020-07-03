@@ -473,9 +473,6 @@ end # @static if VERSION >= v"1.3-DEV"
                 elseif T !== Union{} && T !== Missing && task_columns[col] isa MissingVector
                     # one chunk parsed all missing values, but another chunk had a typed value, promote to that
                     debug && println("multithreaded promoting column $col from missing on task $i")
-                    if col == 25
-                        @show T
-                    end
                     task_columns[col] = allocate(T, task_rows)
                     if T == Union{PooledString, Missing}
                         colrefs = refs[col]
