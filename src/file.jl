@@ -671,6 +671,10 @@ end
                     for j = (col + 1):ncols
                         @inbounds flags[j] |= ANYMISSING
                         @inbounds types[j] = Union{Missing, types[j]}
+                        if columns[j] isa Vector{UInt32}
+                            ref = getref!(refs[j], missing, code, options)
+                            columns[j][row] = ref
+                        end
                     end
                     break # from for col = 1:ncols
                 end
