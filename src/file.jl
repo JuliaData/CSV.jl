@@ -273,7 +273,7 @@ function File(h::Header;
                 end
             else
                 # if no missing values were parsed for a column, we want to "unwrap" it to a plain Vector{T}
-                if !anymissing(flags[i])
+                if !anymissing(flags[i]) & (i ∉ h.todrop)
                     if column isa Vector{Union{Missing, Bool}}
                         columns[i] = convert(Vector{Bool}, column)
                     elseif types[i] !== Union{} && types[i] <: SmallIntegers
