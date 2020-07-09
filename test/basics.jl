@@ -495,6 +495,12 @@ f = CSV.File(buf, header=["A", "B"])
 @test (f[1].A, f[1].B) == ("a", "b")
 @test (f[2].A, f[2].B) == ("1", "2")
 
+# 680: ensure typemap works with custom types
+f = CSV.File(IOBuffer("a\n1\n2\n3"); typemap=Dict(Int64=>Int32))
+@test f.a isa Vector{Int32}
+f = CSV.File(IOBuffer("a\n1\n2\n3"); typemap=Dict(Int64=>String))
+@test f.a isa Vector{String}
+
 # 678
 f = CSV.File(IOBuffer("""x,y
                                        a,b

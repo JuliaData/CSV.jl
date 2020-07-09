@@ -78,6 +78,7 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     # type options
     type,
     types,
+    typemap,
     categorical,
     pool,
     lazystrings,
@@ -228,7 +229,7 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
         end
     end
     # generate a customtypes Tuple{...} we'll need to generate code for during parsing
-    customtypes = Tuple{(nonstandardtype(T) for T in types if nonstandardtype(T) !== Union{})...}
+    customtypes = Tuple{(nonstandardtype(T) for T in vcat(types, values(typemap)...) if nonstandardtype(T) !== Union{})...}
     # figure out if we'll drop any columns while parsing
     todrop = Int[]
     if select !== nothing && drop !== nothing
