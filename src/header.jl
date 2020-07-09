@@ -277,7 +277,7 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
         end
     end
     for i in todrop
-        flags[i] |= WILLDROP
+        flags[i] |= WILLDROP | ANYMISSING
     end
     debug && println("computed types are: $types")
     pool = pool === true ? 1.0 : pool isa Float64 ? pool : 0.0
