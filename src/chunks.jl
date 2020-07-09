@@ -70,7 +70,7 @@ function Chunks(source;
     parsingdebug::Bool=false)
 
     limit=typemax(Int64)
-    h = Header(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, use_mmap, ignoreemptylines, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, false)
+    h = Header(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, use_mmap, ignoreemptylines, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, false)
     rowsguess, ncols, buf, len, datapos, options = h.rowsguess, h.cols, h.buf, h.len, h.datapos, h.options
     N = tasks > rowsguess || rowsguess < 100 ? 1 : tasks == 1 ? 8 : tasks
     chunksize = div(len - datapos, N)
