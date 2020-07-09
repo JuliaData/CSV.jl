@@ -111,8 +111,8 @@ manually via the `types` keyword argument. Note that passing column types manual
 for each column type provided (column types can be given as a `Vector` for all columns, or specified per column via
 name or index in a `Dict`).
 
-For text encodings other than UTF-8, see the [StringEncodings.jl](https://github.com/JuliaStrings/StringEncodings.jl)
-package for re-encoding a file or IO stream.
+For text encodings other than UTF-8, load the [StringEncodings.jl](https://github.com/JuliaStrings/StringEncodings.jl)
+package and call e.g. `CSV.File(open(read, source, enc"ISO-8859-1"))`.
 
 The returned `CSV.File` object supports the [Tables.jl](https://github.com/JuliaData/Tables.jl) interface
 and can iterate `CSV.Row`s. `CSV.Row` supports `propertynames` and `getproperty` to access individual row values. `CSV.File`
