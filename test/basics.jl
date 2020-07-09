@@ -511,4 +511,8 @@ f = CSV.File(IOBuffer("""x,y
 @test f.x[end] === missing
 @test f.y[end] === missing
 
+# 679
+f = CSV.File(IOBuffer("a,b,c\n1,2,3\n4,5,6\n"); select=["a"], types=Dict(2=>Int8))
+@test f.a == [1, 4]
+
 end
