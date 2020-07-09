@@ -165,7 +165,7 @@ Supported keyword arguments include:
 * Column Type Options:
   * `type`: a single type to use for parsing an entire file; i.e. all columns will be treated as the same type; useful for matrix-like data files
   * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64; if a `Vector` if provided, it must match the # of columns provided or detected in `header`
-  * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `String`
+  * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `String`; only "standard" types are allowed to be mapped to another type, i.e. `Int64`, `Float64`, `Date`, `DateTime`, `Time`, and `Bool`. If a column of one of those types is "detected", it will be mapped to the specified type.
   * `pool::Union{Bool, Float64}=0.1`: if `true`, *all* columns detected as `String` will be internally pooled; alternatively, the proportion of unique values below which `String` columns should be pooled (by default 0.1, meaning that if the # of unique strings in a column is under 10%, it will be pooled)
   * `lazystrings::Bool=false`: avoid allocating full strings in string columns; returns a custom `LazyStringVector` array type that *does not* support mutable operations (e.g. `push!`, `append!`, or even `setindex!`). Calling `copy(x)` will materialize a full `Vector{String}`. Also note that each `LazyStringVector` holds a reference to the full input file buffer, so it won't be closed after parsing and trying to delete or modify the file may result in errors (particularly on windows) and generally has undefined behavior. Given these caveats, this setting can help avoid lots of string allocations in large files and lead to faster parsing times.
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
@@ -203,6 +203,7 @@ function File(source;
     # type options
     type=nothing,
     types=nothing,
+    typemap::Dict=Dict{Type, Type}(),
     categorical=nothing,
     pool::Union{Bool, Real}=0.1,
     lazystrings::Bool=false,
@@ -212,8 +213,8 @@ function File(source;
     parsingdebug::Bool=false,
     kw...)
 
-    h = Header(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, use_mmap, ignoreemptylines, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, false)
-    return File(h; debug=debug, kw...)
+    h = Header(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, use_mmap, ignoreemptylines, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, false)
+    return File(h; debug=debug, typemap=typemap, kw...)
 end
 
 function File(h::Header;
@@ -714,49 +715,74 @@ function detect(columns, buf, pos, len, options, row, rowoffset, col, typemap, p
         # return; parsing will continue to detect until a non-missing value is parsed
         @goto finaldone
     end
-    if Parsers.ok(code) && !haskey(typemap, Int64)
-        # debug && println("detecting Int64 for column = $col on task = $(Threads.threadid())")
-        column = allocate(Int64, rowsguess)
-        column[row] = int
-        newT = Int64
-        @goto done
+    if Parsers.ok(code)
+        intT = get(typemap, Int64, Int64)
+        if intT <: Integer
+            # debug && println("detecting Int64 for column = $col on task = $(Threads.threadid())")
+            column = allocate(intT, rowsguess)
+            column[row] = int
+            newT = intT
+            @goto done
+        elseif intT === String
+            @goto stringdetect
+        end
     end
     float, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, options)
-    if Parsers.ok(code) && !haskey(typemap, Float64)
-        # debug && println("detecting Float64 for column = $col on task = $(Threads.threadid())")
-        column = allocate(Float64, rowsguess)
-        column[row] = float
-        newT = Float64
-        @goto done
+    if Parsers.ok(code)
+        floatT = get(typemap, Float64, Float64)
+        if floatT <: AbstractFloat
+            # debug && println("detecting Float64 for column = $col on task = $(Threads.threadid())")
+            column = allocate(floatT, rowsguess)
+            column[row] = float
+            newT = floatT
+            @goto done
+        elseif floatT === String
+            @goto stringdetect
+        end
     end
     if options.dateformat === nothing
         try
             date, code, vpos, vlen, tlen = Parsers.xparse(Date, buf, pos, len, options)
-            if Parsers.ok(code) && !haskey(typemap, Date)
-                column = allocate(Date, rowsguess)
-                column[row] = date
-                newT = Date
-                @goto done
+            if Parsers.ok(code)
+                dtT = get(typemap, Date, Date)
+                if dtT === Date
+                    column = allocate(Date, rowsguess)
+                    column[row] = date
+                    newT = Date
+                    @goto done
+                elseif dtT === String
+                    @goto stringdetect
+                end
             end
         catch
         end
         try
             datetime, code, vpos, vlen, tlen = Parsers.xparse(DateTime, buf, pos, len, options)
-            if Parsers.ok(code) && !haskey(typemap, DateTime)
-                column = allocate(DateTime, rowsguess)
-                column[row] = datetime
-                newT = DateTime
-                @goto done
+            if Parsers.ok(code)
+                dtmT = get(typemap, DateTime, DateTime)
+                if dtmT === DateTime
+                    column = allocate(DateTime, rowsguess)
+                    column[row] = datetime
+                    newT = DateTime
+                    @goto done
+                elseif dtmT === String
+                    @goto stringdetect
+                end
             end
         catch
         end
         try
             time, code, vpos, vlen, tlen = Parsers.xparse(Time, buf, pos, len, options)
-            if Parsers.ok(code) && !haskey(typemap, Time)
-                column = allocate(Time, rowsguess)
-                column[row] = time
-                newT = Time
-                @goto done
+            if Parsers.ok(code)
+                tT = get(typemap, Time, Time)
+                if tT === Time
+                    column = allocate(Time, rowsguess)
+                    column[row] = time
+                    newT = Time
+                    @goto done
+                elseif tT === String
+                    @goto stringdetect
+                end
             end
         catch
         end
@@ -775,12 +801,13 @@ function detect(columns, buf, pos, len, options, row, rowoffset, col, typemap, p
         end
     end
     bool, code, vpos, vlen, tlen = Parsers.xparse(Bool, buf, pos, len, options)
-    if Parsers.ok(code) && !haskey(typemap, Bool)
+    if Parsers.ok(code) && get(typemap, Bool, Bool) === Bool
         column = allocate(Bool, rowsguess)
         column[row] = bool
         newT = Bool
         @goto done
     end
+@label stringdetect
     _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
     if pool > 0.0 && (row / POOLSAMPLESIZE < pool)
         r = RefPool()
