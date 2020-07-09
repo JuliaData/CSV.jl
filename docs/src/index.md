@@ -330,6 +330,32 @@ CSV.File(file; drop=(i, nm) -> i == 2)
 ```
 For this file, we have columns `a`, `b`, and `c`; we might only be interested in the data in columns `a` and `c`. Using the `select` or `drop` keyword arguments can allow efficiently choosing of columns from a file; columns not selected or dropped will be efficiently skipped while parsing, allowing for performance boosts. The arguments to `select` or `drop` can be one of: `AbstractVector{Int}` a collection of column indices; `AbstractVector{Symbol}` or `AbstractVector{String}` a collection of column names as `Symbol` or `String`; `AbstractVector{Bool}` a collection of `Bool` equal in length to the # of columns signaling whether a column should be selected or dropped; or a selector/drop function of the form `(i, name) -> keep_or_drop::Bool`, i.e. it takes a column index `i` and column name `name` and returns a `Bool` signaling whether a column should be selected or dropped.
 
+### Non-UTF-8 character encodings
+
+Like Julia in general, CSV.jl interprets strings as being encoded in UTF-8. The [StringEncodings](https://github.com/JuliaStrings/StringEncodings.jl) package has to be used to read or write CSV files in other character encodings.
+
+#### Example: writing to and reading from a file encoded in ISO-8859-1
+```julia
+using CSV, DataFrames, StringEncodings
+
+# writing to ISO-8859-1 file
+a = DataFrame(a = ["café", "noël"])
+open("a.csv", enc"ISO-8859-1", "w") do io
+    CSV.write(io, a)
+end
+
+# reading from ISO-8859-1 file
+CSV.File(open(read, "a.csv", enc"ISO-8859-1")) |> DataFrame!
+
+# alternative: reencode data to UTF-8 in a new file and read from it
+open("a2.csv", "w") do io
+    foreach(x -> println(io, x), eachline("a.csv", enc"ISO-8859-1"))
+end
+CSV.File("a2.csv") |> DataFrame!
+```
+
+Reencoding to a new file as in the last example above avoids storing an additional copy of the data in memory, which may be useful for large files that do not fit in RAM.
+
 ### Reading CSV from gzip (.gz) and zip files
 
 #### Example: reading from a gzip (.gz) file
