@@ -375,7 +375,7 @@ end
 @test columntable(CSV.File(`$(catcmd) $(joinpath(dir, "test_basic.csv"))`)) == columntable(CSV.File(joinpath(dir, "test_basic.csv")))
 
 #476
-f = CSV.File(GzipDecompressorStream(open(joinpath(dir, "randoms.csv.gz"))))
+f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz"))))
 @test (length(f), length(f.names)) == (70000, 7)
 
 f = CSV.File(IOBuffer("thistime\n10:00:00.0\n12:00:00.0"))
@@ -428,7 +428,7 @@ f = CSV.File(
 @test f.csvstring isa CSV.SVec2{CSVString}
 @test isequal(f.csvstring, [CSVString("hey there sailor"), missing])
 
-f = CSV.File(GzipDecompressorStream(open(joinpath(dir, "randoms.csv.gz"))); types=[Int32, CSVString, String, Float64, Dec64, Date, DateTime])
+f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz"))); types=[Int32, CSVString, String, Float64, Dec64, Date, DateTime])
 @test f.id isa AbstractVector{Int32}
 @test f.first isa AbstractVector{CSVString}
 @test f.wage isa AbstractVector{Union{Missing, Dec64}}
@@ -520,5 +520,9 @@ f = CSV.File(IOBuffer("""x,y
 # 679
 f = CSV.File(IOBuffer("a,b,c\n1,2,3\n4,5,6\n"); select=["a"], types=Dict(2=>Int8))
 @test f.a == [1, 4]
+
+f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz"))); types=Dict(:id=>Int32), select=["first"])
+@test length(f) == 70000
+@test eltype(f.first) == String
 
 end
