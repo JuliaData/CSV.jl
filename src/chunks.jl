@@ -76,7 +76,7 @@ function Chunks(source;
     chunksize = div(len - datapos, N)
     ranges = [i == 0 ? datapos : (datapos + chunksize * i) for i = 0:N]
     ranges[end] = len
-    findrowstarts!(buf, len, options, ranges, ncols)
+    findrowstarts!(buf, len, options, ranges, ncols, h.types, h.flags)
     return Chunks(h, threaded, typemap, tasks, debug, ranges)
 end
 

@@ -306,9 +306,10 @@ end
 # right # of expected columns then we move on to the next file chunk byte position. If we fail, we start over
 # at the byte position, assuming we were in the a quoted field (and encountered a newline inside the quoted
 # field the first time through)
-function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, ranges, ncols) where {ignorerepeated}
+function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, ranges, ncols, types, flags) where {ignorerepeated}
     totalbytes = 0
     totalrows = 0
+    detectedtypes = copy(types)
     for i = 2:(length(ranges) - 1)
         pos = ranges[i]
         while pos <= len
@@ -328,8 +329,19 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
             rowstartpos = pos
             correct = true
             for j = 1:5
-                for _ = 1:ncols
-                    _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
+                for col = 1:ncols
+                    _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
+                    if !typedetected(flags[col])
+                        D = detectedtypes[col]
+                        det = detect(buf, vpos, vpos + vlen - 1, options)
+                        T = typeof(something(det, ""))
+                        # if T !== String
+                        #     detectedtypes[col] = promote_types(D, T)
+                        #     if detectedtypes[col] !== D
+                        #         println("promoted column type from $D to $(detectedtypes[col]) for task chunk = $i")
+                        #     end
+                        # end
+                    end
                     pos += tlen
                     pos > len && break
                 end
@@ -339,6 +351,9 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
                 # boom, we read a whole row and got correct # of columns
                 totalbytes += pos - rowstartpos
                 totalrows += 5
+                for col = 1:ncols
+                    types[col] = detectedtypes[col]
+                end
                 break
             end
             # else, assume we were inside a quoted field:
@@ -364,9 +379,17 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
                     break
                 end
             end
+            col = 1
             while pos <= len
                 _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
+                if !typedetected(flags[col])
+                    T = typeof(something(detect(buf, pos, len, options), ""))
+                    if T !== String
+                        types[col] = promote_types(types[col], T)
+                    end
+                end
                 pos += tlen
+                col += 1
                 if Parsers.newline(code)
                     # assume we found the correct start of the next row
                     ranges[i] = pos
@@ -379,8 +402,13 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
             # with unquoted delimiters in string cells, or misquoted cells.
             # but if there's an actual bug here somehow, let's ask the user to tell us about it for now
             if pos > len
-                @warn "$i; something went wrong trying to determine row positions for multithreading; often it's a mismatch in the # of columns expected in the file vs. actual; pass `threaded=false` to avoid using multithreaded parsing; if you think you're seeing this error incorrectly, it'd be very helpful if you could open an issue at https://github.com/JuliaData/CSV.jl/issues so package authors can investigate"
+                error("$i; something went wrong trying to determine row positions for multithreading; often it's a mismatch in the # of columns expected in the file vs. actual; pass `threaded=false` to avoid using multithreaded parsing; if you think you're seeing this error incorrectly, it'd be very helpful if you could open an issue at https://github.com/JuliaData/CSV.jl/issues so package authors can investigate")
             end
+        end
+    end
+    for col = 1:ncols
+        if types[col] !== Union{} && types[col] !== Missing && types[col] !== String && types[col] !== Union{Missing, String}
+            flags[col] |= TYPEDETECTED
         end
     end
     return totalbytes / totalrows
