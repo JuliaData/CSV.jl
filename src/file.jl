@@ -402,18 +402,19 @@ function multithreadparse(types, flags, buf, datapos, len, options, coloptions, 
     ranges = [i == 0 ? datapos : (datapos + chunksize * i) for i = 0:N]
     ranges[end] = len
     debug && println("initial byte positions before adjusting for start of rows: $ranges")
-    avgbytesperrow = findrowstarts!(buf, len, options, ranges, ncols)
+    avgbytesperrow = findrowstarts!(buf, len, options, ranges, ncols, types, flags)
     origbytesperrow = ((len - datapos) / origrowsguess)
     weightedavgbytesperrow = ceil(Int64, (avgbytesperrow * (N - 1) + origbytesperrow) / N)
     rowsguess = ceil(Int64, (len - datapos) / weightedavgbytesperrow)
     debug && println("single-threaded estimated rows = $origrowsguess, multi-threaded estimated rows = $rowsguess")
+    debug && println("multi-threaded column types sampled as: $types")
     # when limiting w/ multithreaded parsing, we try to guess about where in the file the limit row # will be
     # then adjust our final file len to the end of that row
     # we add some cushion so we hopefully get the limit row correctly w/o shooting past too far and needing to resize! down
     # but we also don't guarantee limit will be exact w/ multithreaded parsing
     if limit < rowsguess
         newlen = [0, ceil(Int64, (limit / (rowsguess * 0.8)) * len), 0]
-        findrowstarts!(buf, len, options, newlen, ncols)
+        findrowstarts!(buf, len, options, newlen, ncols, types, flags)
         len = newlen[2] - 1
         debug && println("limiting, adjusting len to $len")
     end
@@ -437,18 +438,21 @@ function multithreadparse(types, flags, buf, datapos, len, options, coloptions, 
             rows[i] = task_rows
             # promote column types/flags across task chunks
             for col = 1:ncols
-                lock(locks[col]) do
+                lock(locks[col])
+                try
                     @inbounds T = types[col]
                     @inbounds types[col] = promote_types(T, task_types[col])
-                    # if T !== types[col]
-                    #     debug && println("promoting col = $col from $T to $(types[col]), task chunk was type = $(task_types[col])")
-                    # end
+                    if T !== types[col]
+                        debug && println("promoting col = $col from $T to $(types[col]), task chunk ($i) was type = $(task_types[col])")
+                    end
                     @inbounds flags[col] |= task_flags[col]
                     # synchronize refs if needed
                     @inbounds column = task_columns[col]
                     if column isa Vector{UInt32}
                         syncrefs!(refs, task_refs, col, task_rows, column)
                     end
+                finally
+                    unlock(locks[col])
                 end
             end
             debug && println("finished parsing $task_rows rows on task = $i: time for parsing: $(Base.time() - tt)")
@@ -466,7 +470,7 @@ end # @static if VERSION >= v"1.3-DEV"
                 @inbounds T = types[col]
                 if (T === String || T === Union{String, Missing}) && !(task_columns[col] isa Vector{PosLen}) && !(task_columns[col] isa SVec2{String})
                     # promoting non-string to string column
-                    debug && println("multithreaded promoting column $col to string")
+                    debug && println("multithreaded promoting column $col to string from $(typeof(task_columns[col]))")
                     promotetostring!(col, Val(false), ncols, typemap, task_columns, buf, ranges[i], ranges[i + 1] - (i != N), task_rows, EMPTY_INT_ARRAY, pool, refs, task_rows, 0, types, flags, debug, options, coloptions, customtypes)
                 elseif (T === Float64 || T === Union{Float64, Missing}) && task_columns[col] isa SVec{Int64}
                     # one chunk parsed as Int, another as Float64, promote to Float64
@@ -568,6 +572,21 @@ function parsefilechunk!(TR::Val{transpose}, ncols, typemap, columns, buf, pos, 
 end
 
 @noinline function promotetostring!(col, TR::Val{transpose}, ncols, typemap, columns, buf, pos, len, limit, positions, pool, refs, rowsguess, rowoffset, types, origflags, debug, options::Parsers.Options{ignorerepeated}, coloptions, ::Type{customtypes}) where {transpose, ignorerepeated, customtypes}
+    if columns[col] isa Vector{UInt32} && !lazystrings(origflags[col])
+        # optimize conversion from PooledString => String w/o reparsing
+        types[col] = Union{String, anymissing(origflags[col]) ? Missing : Union{}}
+        pooledvalues = columns[col]
+        columns[col] = column = allocate(lazystrings(origflags[col]) ? PosLen : String, rowsguess)
+        colrefs = refs[col].refs
+        refvalues = anymissing(origflags[col]) ? Vector{Union{String, Missing}}(undef, length(colrefs)) : Vector{String}(undef, length(colrefs))
+        for (k, v) in colrefs
+            @inbounds refvalues[v] = k
+        end
+        for row = 1:limit
+            @inbounds column[row] = refvalues[pooledvalues[row]]
+        end
+        return
+    end
     flags = copy(origflags)
     for i = 1:ncols
         if i == col
@@ -809,11 +828,12 @@ function detect(columns, buf, pos, len, options, row, rowoffset, col, typemap, p
     end
 @label stringdetect
     _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-    if pool > 0.0 && (row / POOLSAMPLESIZE < pool)
+    if pool > 0.0
+        # debug && println("detecting PooledString for column = $col on task = $(Threads.threadid()); pool = $pool, row = $row, POOLSAMPLESIZE = $POOLSAMPLESIZE")
         r = RefPool()
         @inbounds refs[col] = r
-        column = allocate(PooledString, pool < 1.0 ? min(rowsguess, POOLSAMPLESIZE) : rowsguess)
-        if pool < 1.0
+        column = allocate(PooledString, pool < 1.0 && row < POOLSAMPLESIZE ? min(rowsguess, POOLSAMPLESIZE) : rowsguess)
+        if pool < 1.0 && row < POOLSAMPLESIZE
             flags[col] |= MAYBEPOOLED
         end
         if anymissing(flags[col])
@@ -826,7 +846,7 @@ function detect(columns, buf, pos, len, options, row, rowoffset, col, typemap, p
         @inbounds column[row] = ref
         newT = PooledString
     else
-        # debug && println("detecting String for column = $col on task = $(Threads.threadid())")
+        # debug && println("detecting String for column = $col on task = $(Threads.threadid()); pool = $pool, row = $row, POOLSAMPLESIZE = $POOLSAMPLESIZE")
         if lazystrings(flags[col])
             column = allocate(PosLen, rowsguess)
             @inbounds setposlen!(column, row, code, vpos, vlen)
@@ -1000,11 +1020,16 @@ function parsepooled!(flag, column, columns, buf, pos, len, options, row, rowoff
     @inbounds column[row] = ref
     if !user(flag) && maybepooled(flag)
         if rowsguess <= POOLSAMPLESIZE && ((length(colrefs.refs) - anymissing(flags[col])) / rowsguess) > pool
+            # println("promoting col = $col to string from pooled on task = $(Threads.threadid())")
             code |= PROMOTE_TO_STRING
         elseif row == POOLSAMPLESIZE
             if ((length(colrefs.refs) - anymissing(flags[col])) / min(rowsguess, POOLSAMPLESIZE)) > pool
+                numrefs = length(colrefs.refs) - anymissing(flags[col])
+                # println("promoting col = $col to string from pooled on task = $(Threads.threadid()); numrefs = $numrefs, POOLSAMPLESIZE = $POOLSAMPLESIZE")
                 code |= PROMOTE_TO_STRING
             else
+                numrefs = length(colrefs.refs) - anymissing(flags[col])
+                # println("confirming col = $col is pooled on task = $(Threads.threadid()); numrefs = $numrefs")
                 resize!(column, rowsguess)
             end
             flags[col] &= ~MAYBEPOOLED
