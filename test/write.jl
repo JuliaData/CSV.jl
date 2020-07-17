@@ -316,4 +316,9 @@ const table_types = (
     s = join(1:1000000);
     @test_throws ArgumentError CSV.write("out.test.csv", [(a=s,)])
 
+    # https://github.com/JuliaData/CSV.jl/issues/691
+    io = IOBuffer()
+    CSV.write(io, Tuple[(1,), (2,)], header=false)
+    @test String(take!(io)) == "1\n2\n"
+
 end # @testset "CSV.write"
