@@ -380,10 +380,18 @@ using ZipFile, CSV, DataFrames
 a = DataFrame(a = 1:3)
 CSV.write("a.csv", a)
 
-# zip the file; Windows users who do not have zip available on the PATH can manual zip the CSV
+# zip the file; Windows users who do not have zip available on the PATH can manually zip the CSV
+# or write directly into the zip archive as shown below
 ;zip a.zip a.csv
 
-z = ZipFile.Reader("a.zip")
+# alternatively, write directly into the zip archive (without creating an unzipped csv file first)
+z = ZipFile.Writer("a2.zip")
+f = ZipFile.addfile(z, "a.csv", method=ZipFile.Deflate)
+a |> CSV.write(f)
+close(z)
+
+# read file from zip archive
+z = ZipFile.Reader("a.zip") # or "a2.zip"
 
 # identify the right file in zip
 a_file_in_zip = filter(x->x.name == "a.csv", z.files)[1]
