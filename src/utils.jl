@@ -233,7 +233,7 @@ consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 
 function getsource(x)
     if x isa AbstractVector{UInt8}
         return x, 1, length(x)
-    elseif x isa IOBuffer
+    elseif x isa Base.GenericIOBuffer
         return x.data, x.ptr, x.size
     elseif x isa Cmd || x isa IO
         @warn "`CSV.File` or `CSV.Rows` with `$(typeof(x))` object is deprecated; pass a filename, `IOBuffer`, or byte buffer directly (via `read(x)`)"
