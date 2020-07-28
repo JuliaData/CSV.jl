@@ -309,6 +309,7 @@ end
 function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, ranges, ncols, types, flags) where {ignorerepeated}
     totalbytes = 0
     totalrows = 0
+    totalmissing = 0
     detectedtypes = copy(types)
     for i = 2:(length(ranges) - 1)
         pos = ranges[i]
@@ -335,12 +336,14 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
                         D = detectedtypes[col]
                         det = detect(buf, vpos, vpos + vlen - 1, options)
                         T = typeof(something(det, ""))
-                        # if T !== String
-                        #     detectedtypes[col] = promote_types(D, T)
-                        #     if detectedtypes[col] !== D
-                        #         println("promoted column type from $D to $(detectedtypes[col]) for task chunk = $i")
-                        #     end
-                        # end
+                        if T === Missing
+                            totalmissing += 1
+                        elseif T !== String
+                            detectedtypes[col] = promote_types(D, T)
+                            # if detectedtypes[col] !== D
+                            #     println("promoted column type from $D to $(detectedtypes[col]) for task chunk = $i")
+                            # end
+                        end
                     end
                     pos += tlen
                     pos > len && break
@@ -384,7 +387,9 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
                 _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
                 if !typedetected(flags[col])
                     T = typeof(something(detect(buf, pos, len, options), ""))
-                    if T !== String
+                    if T === Missing
+                        totalmissing += 1
+                    elseif T !== String
                         types[col] = promote_types(types[col], T)
                     end
                 end
