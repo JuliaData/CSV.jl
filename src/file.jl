@@ -220,7 +220,7 @@ end
 function File(h::Header;
     startingbyteposition=nothing,
     endingbyteposition=nothing,
-    limit::Integer=typemax(Int64),
+    limit::Union{Integer, Nothing}=nothing,
     threaded::Union{Bool, Nothing}=nothing,
     typemap::Dict=Dict{Type, Type}(),
     tasks::Integer=Threads.nthreads(),
@@ -235,7 +235,8 @@ function File(h::Header;
     end
     transpose = gettranspose(h)
     # determine if we can use threads while parsing
-    if threaded === nothing && VERSION >= v"1.3-DEV" && Threads.nthreads() > 1 && !transpose && (limit < rowsguess ? limit : rowsguess) > Threads.nthreads() && ((limit < rowsguess ? limit : rowsguess) * ncols) >= 5_000
+    minrows = min(something(limit, typemax(Int64)), rowsguess)
+    if threaded === nothing && VERSION >= v"1.3-DEV" && Threads.nthreads() > 1 && !transpose && minrows > (Threads.nthreads() * 5) && (minrows * ncols) >= 5_000
         threaded = true
     elseif threaded === true
         if VERSION < v"1.3-DEV"
@@ -253,12 +254,12 @@ function File(h::Header;
         # multithreaded
         finalrows, columns = multithreadparse(types, flags, buf, datapos, len, options, coloptions, rowsguess, datarow - 1, pool, refs, ncols, typemap, h.categorical, customtypes, limit, tasks, debug)
     else
-        if limit < rowsguess
+        if limit !== nothing
             rowsguess = limit
         end
         columns = allocate(rowsguess, ncols, types, flags, refs)
         t = Base.time()
-        finalrows, pos = parsefilechunk!(Val(transpose), ncols, typemap, columns, buf, datapos, len, limit, positions, pool, refs, rowsguess, datarow - 1, types, flags, debug, options, coloptions, customtypes)
+        finalrows, pos = parsefilechunk!(Val(transpose), ncols, typemap, columns, buf, datapos, len, something(limit, typemax(Int64)), positions, pool, refs, rowsguess, datarow - 1, types, flags, debug, options, coloptions, customtypes)
         debug && println("time for initial parsing: $(Base.time() - t)")
         # cleanup our columns if needed
         for i = 1:ncols
@@ -367,7 +368,7 @@ function makechain(::Type{T}, column, N, col, pertaskcolumns, limit, sentref=not
         end
     end
     x = ChainedVector(chain)
-    if limit < length(x)
+    if limit !== nothing && limit < length(x)
         resize!(x, limit)
     end
     return x
@@ -398,26 +399,27 @@ function makeandsetpooled!(columns, i, column, refs, flags, categorical)
 end
 
 function multithreadparse(types, flags, buf, datapos, len, options, coloptions, origrowsguess, datarow, pool, refs, ncols, typemap, categorical, customtypes, limit, N, debug)
+    # when limiting w/ multithreaded parsing, we try to guess about where in the file the limit row # will be
+    # then adjust our final file len to the end of that row
+    # we add some cushion so we hopefully get the limit row correctly w/o shooting past too far and needing to resize! down
+    # but we also don't guarantee limit will be exact w/ multithreaded parsing
+    if limit !== nothing
+        newlen = [0, ceil(Int64, (limit / (origrowsguess * 0.8)) * len), 0]
+        findrowstarts!(buf, len, options, newlen, ncols, types, flags)
+        len = newlen[2] - 1
+        origrowsguess = limit
+        debug && println("limiting, adjusting len to $len")
+    end
     chunksize = div(len - datapos, N)
     ranges = [i == 0 ? datapos : (datapos + chunksize * i) for i = 0:N]
     ranges[end] = len
     debug && println("initial byte positions before adjusting for start of rows: $ranges")
     avgbytesperrow = findrowstarts!(buf, len, options, ranges, ncols, types, flags)
     origbytesperrow = ((len - datapos) / origrowsguess)
-    weightedavgbytesperrow = ceil(Int64, (avgbytesperrow * (N - 1) + origbytesperrow) / N)
+    weightedavgbytesperrow = ceil(Int64, avgbytesperrow * ((N - 2) / N) + origbytesperrow * (2 / N))
     rowsguess = ceil(Int64, (len - datapos) / weightedavgbytesperrow)
     debug && println("single-threaded estimated rows = $origrowsguess, multi-threaded estimated rows = $rowsguess")
     debug && println("multi-threaded column types sampled as: $types")
-    # when limiting w/ multithreaded parsing, we try to guess about where in the file the limit row # will be
-    # then adjust our final file len to the end of that row
-    # we add some cushion so we hopefully get the limit row correctly w/o shooting past too far and needing to resize! down
-    # but we also don't guarantee limit will be exact w/ multithreaded parsing
-    if limit < rowsguess
-        newlen = [0, ceil(Int64, (limit / (rowsguess * 0.8)) * len), 0]
-        findrowstarts!(buf, len, options, newlen, ncols, types, flags)
-        len = newlen[2] - 1
-        debug && println("limiting, adjusting len to $len")
-    end
     rowchunkguess = cld(rowsguess, N)
     debug && println("parsing using $N tasks: $rowchunkguess rows chunked at positions: $ranges")
     pertaskcolumns = Vector{Vector{AbstractVector}}(undef, N)
@@ -540,7 +542,7 @@ end # @static if VERSION >= v"1.3-DEV"
 end # @static if VERSION >= v"1.3-DEV"
     end
     finalrows = sum(rows)
-    return limit < finalrows ? limit : finalrows, finalcolumns
+    return limit !== nothing && limit < finalrows ? limit : finalrows, finalcolumns
 end
 
 function parsefilechunk!(TR::Val{transpose}, ncols, typemap, columns, buf, pos, len, limit, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options::Parsers.Options{ignorerepeated}, coloptions, ::Type{customtypes}) where {transpose, ignorerepeated, customtypes}
@@ -680,7 +682,7 @@ end
             error("bad array type: $(typeof(column))")
         end
         if promote_to_string(code)
-            # debug && println("promoting col = $col to string")
+            debug && println("promoting col = $col to string from $(typeof(column)) on chunk = $(Threads.threadid())")
             promotetostring!(col, TR, ncols, typemap, columns, buf, startpos, len, row, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options, coloptions, customtypes)
         end
         if transpose
