@@ -30,18 +30,19 @@ include("rows.jl")
 include("write.jl")
 
 """
-`CSV.read(source; copycols::Bool=false, kwargs...)` => `DataFrame`
+`CSV.read(source, sink::T; kwargs...)` => T
 
-Parses a delimited file into a `DataFrame`. `copycols` determines whether a copy of columns should be made when creating the DataFrame; by default, no copy is made.
+Read and parses a delimited file, materializing directly using the `sink` function.
 
-`CSV.read` supports the same keyword arguments as [`CSV.File`](@ref).
+`CSV.read` supports all the same keyword arguments as [`CSV.File`](@ref).
 """
-function read(source; copycols::Bool=false, kwargs...)
-    @warn "`CSV.read(input; kw...)` is deprecated in favor of `DataFrame!(CSV.File(input; kw...))`"
-    DataFrame(CSV.File(source; kwargs...), copycols=copycols)
+function read(source, sink=nothing; copycols::Bool=false, kwargs...)
+    if sink === nothing
+        @warn "`CSV.read(input; kw...)` is deprecated in favor of `CSV.read(input, DataFrame; kw...)"
+        sink = DataFrame
+    end
+    Tables.CopiedColumns(CSV.File(source; kwargs...)) |> sink
 end
-
-DataFrames.DataFrame(f::CSV.File; copycols::Bool=true) = DataFrame(getcolumns(f), getnames(f); copycols=copycols)
 
 include("precompile.jl")
 _precompile_()
