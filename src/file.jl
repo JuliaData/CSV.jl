@@ -130,7 +130,7 @@ By supporting the Tables.jl interface, a `CSV.File` can also be a table input to
 
 ```julia
 # materialize a csv file as a DataFrame, without copying columns from CSV.File
-df = CSV.File(file) |> DataFrame!
+df = CSV.File(file) |> DataFrame
 
 # load a csv file directly into an sqlite database table
 db = SQLite.DB()

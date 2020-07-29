@@ -345,13 +345,13 @@ open("a.csv", enc"ISO-8859-1", "w") do io
 end
 
 # reading from ISO-8859-1 file
-CSV.File(open(read, "a.csv", enc"ISO-8859-1")) |> DataFrame!
+CSV.File(open(read, "a.csv", enc"ISO-8859-1")) |> DataFrame
 
 # alternative: reencode data to UTF-8 in a new file and read from it
 open("a2.csv", "w") do io
     foreach(x -> println(io, x), eachline("a.csv", enc"ISO-8859-1"))
 end
-CSV.File("a2.csv") |> DataFrame!
+CSV.File("a2.csv") |> DataFrame
 ```
 
 Reencoding to a new file as in the last example above avoids storing an additional copy of the data in memory, which may be useful for large files that do not fit in RAM.
@@ -367,7 +367,7 @@ CSV.write("a.csv", a)
 # Windows users who do not have gzip available on the PATH should manually gzip the CSV
 ;gzip a.csv
 
-a_copy = CSV.File(transcode(GzipDecompressor, Mmap.mmap("a.csv.gz"))) |> DataFrame!
+a_copy = CSV.File(transcode(GzipDecompressor, Mmap.mmap("a.csv.gz"))) |> DataFrame
 
 a == a_copy # true; restored successfully
 
@@ -396,7 +396,7 @@ z = ZipFile.Reader("a.zip") # or "a2.zip"
 # identify the right file in zip
 a_file_in_zip = filter(x->x.name == "a.csv", z.files)[1]
 
-a_copy = CSV.File(a_file_in_zip) |> DataFrame!
+a_copy = CSV.File(a_file_in_zip) |> DataFrame
 
 a == a_copy
 ```
