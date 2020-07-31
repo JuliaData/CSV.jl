@@ -1,4 +1,4 @@
-using Test, CSV, Mmap, Dates, Tables, CategoricalArrays, PooledArrays, CodecZlib, FilePathsBase, SentinelArrays, Parsers
+using Test, CSV, Mmap, DataFrames, Dates, Tables, CategoricalArrays, PooledArrays, CodecZlib, FilePathsBase, SentinelArrays, Parsers
 
 const dir = joinpath(dirname(pathof(CSV)), "..", "test", "testfiles")
 

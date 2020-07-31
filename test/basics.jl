@@ -534,4 +534,10 @@ f = CSV.File(IOBuffer("a,b\n1,2"); types = Dict{Symbol,Type}(
 @test f.a[1] == "1"
 @test f.b[1] == "2"
 
+# 702
+f = CSV.File(IOBuffer("a,b,c"))
+df = DataFrame(f)
+@test names(df) == ["a", "b", "c"]
+@test size(df, 1) == 0
+
 end

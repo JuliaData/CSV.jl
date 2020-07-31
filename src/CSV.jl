@@ -44,6 +44,8 @@ function read(source, sink=nothing; copycols::Bool=false, kwargs...)
     Tables.CopiedColumns(CSV.File(source; kwargs...)) |> sink
 end
 
+DataFrames.DataFrame(f::CSV.File; copycols::Bool=true) = DataFrame(getcolumns(f), getnames(f); copycols=copycols)
+
 include("precompile.jl")
 _precompile_()
 
