@@ -95,13 +95,13 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     checkvaliddelim(delim)
     ignorerepeated && delim === nothing && throw(ArgumentError("auto-delimiter detection not supported when `ignorerepeated=true`; please provide delimiter like `delim=','`"))
     if use_mmap !== nothing
-        @warn "`use_mmap` keyword argument is deprecated and will be removed in the next release"
+        Base.depwarn("`use_mmap` keyword argument is deprecated and will be removed in the next release", :Header)
     end
     if categorical !== nothing
-        @warn "the `categorical` keyword argument is deprecated; in the next release, you'll need to do `using CategoricalArrays; catg = categorical(f.pooled_column)`, where `pooled_column` is the column of a `CSV.File` you want as a `CategoricalArray`"
+        Base.depwarn("The `categorical` keyword argument is deprecated; in the next release, you'll need to do `using CategoricalArrays; catg = categorical(f.pooled_column)`, where `pooled_column` is the column of a `CSV.File` you want as a `CategoricalArray`", :Header)
     end
     if categorical isa Real
-        @warn "categorical=$categorical is deprecated in favor of `pool=$categorical`; categorical is only used to determine CategoricalArray vs. PooledArrays"
+        Base.depwarn("`categorical=$categorical` is deprecated in favor of `pool=$categorical`; categorical is only used to determine CategoricalArray vs. PooledArrays", :Header)
         pool = categorical
         categorical = categorical > 0.0
     elseif categorical === true

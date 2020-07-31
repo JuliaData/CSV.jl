@@ -298,7 +298,7 @@ f = CSV.File(IOBuffer("x\n2019-01-01\n\n"))
 @test f.x[2] === missing
 
 # use_mmap=false
-f = CSV.File(IOBuffer("x\n2019-01-01\n\n"), use_mmap=false)
+f = @test_deprecated CSV.File(IOBuffer("x\n2019-01-01\n\n"), use_mmap=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] === Date(2019, 1, 1)
 @test f.x[2] === missing
@@ -372,7 +372,8 @@ if Sys.iswindows()
         catcmd = `$busybox cat`
     end
 end
-@test columntable(CSV.File(`$(catcmd) $(joinpath(dir, "test_basic.csv"))`)) == columntable(CSV.File(joinpath(dir, "test_basic.csv")))
+f = @test_deprecated CSV.File(`$(catcmd) $(joinpath(dir, "test_basic.csv"))`)
+@test columntable(f) == columntable(CSV.File(joinpath(dir, "test_basic.csv")))
 
 #476
 f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz"))))

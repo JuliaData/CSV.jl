@@ -28,12 +28,12 @@ include("write.jl")
     @test v == "b"
     @test levels(v.pool) == ["a", "b", "c"]
 
-    f = CSV.File(IOBuffer("X\nb\nc\na\nc"), categorical=true)
+    f = @test_deprecated CSV.File(IOBuffer("X\nb\nc\na\nc"), categorical=true)
     v = f.X[1]
     @test v == "b"
     @test levels(v.pool) == ["a", "b", "c"]
 
-    f = CSV.File(IOBuffer("X\nb\nc\n\nc"), categorical=true)
+    f = @test_deprecated CSV.File(IOBuffer("X\nb\nc\n\nc"), categorical=true)
     v = f.X[1]
     @test v == "b"
     @test levels(v.pool) == ["b", "c"]
