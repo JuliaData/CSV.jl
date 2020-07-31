@@ -38,7 +38,7 @@ Read and parses a delimited file, materializing directly using the `sink` functi
 """
 function read(source, sink=nothing; copycols::Bool=false, kwargs...)
     if sink === nothing
-        @warn "`CSV.read(input; kw...)` is deprecated in favor of `using DataFrames; CSV.read(input, DataFrame; kw...)"
+        Base.depwarn("`CSV.read(input; kw...)` is deprecated in favor of `using DataFrames; CSV.read(input, DataFrame; kw...)", :read)
         sink = DataFrame
     end
     Tables.CopiedColumns(CSV.File(source; kwargs...)) |> sink

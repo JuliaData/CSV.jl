@@ -148,7 +148,7 @@ function write(file, itr;
     kwargs...)
     checkvaliddelim(delim)
     if writeheader !== nothing
-        @warn "`writeheader=$writeheader` is deprecated in favor of `header=$writeheader`"
+        Base.depwarn("`writeheader=$writeheader` is deprecated in favor of `header=$writeheader`", :write)
         header = writeheader
     else
         header = !append
@@ -294,7 +294,7 @@ end
 
 @noinline nothingerror(col) = error(
     """
-    A `nothing` value was found in column $col and it is not a printable value. 
+    A `nothing` value was found in column $col and it is not a printable value.
     There are several ways to handle this situation:
     1) fix the data, perhaps replace `nothing` with `missing`,
     2) use `transform` option with a funciton to replace `nothing` with whatever value (including `missing`), or
