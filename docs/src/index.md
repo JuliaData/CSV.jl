@@ -396,7 +396,7 @@ z = ZipFile.Reader("a.zip") # or "a2.zip"
 # identify the right file in zip
 a_file_in_zip = filter(x->x.name == "a.csv", z.files)[1]
 
-a_copy = CSV.File(a_file_in_zip) |> DataFrame
+a_copy = CSV.File(read(a_file_in_zip)) |> DataFrame
 
 a == a_copy
 ```
