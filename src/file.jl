@@ -236,7 +236,7 @@ function File(h::Header;
     transpose = gettranspose(h)
     # determine if we can use threads while parsing
     minrows = min(something(limit, typemax(Int64)), rowsguess)
-    if threaded === nothing && VERSION >= v"1.3-DEV" && Threads.nthreads() > 1 && !transpose && minrows > (Threads.nthreads() * 5) && (minrows * ncols) >= 5_000
+    if threaded === nothing && VERSION >= v"1.3-DEV" && tasks > 1 && !transpose && minrows > (tasks * 5) && (minrows * ncols) >= 5_000
         threaded = true
     elseif threaded === true
         if VERSION < v"1.3-DEV"
@@ -244,6 +244,9 @@ function File(h::Header;
             threaded = false
         elseif transpose
             @warn "`threaded=true` not supported on transposed files"
+            threaded = false
+        elseif tasks == 1
+            @warn "`threaded=true` but `tasks=1`; to support threaded parsing, pass `tasks=N` where `N > 1`; `tasks` defaults to `Threads.nthreads()`, so you may consider starting Julia with multiple threads"
             threaded = false
         end
     end
