@@ -236,7 +236,7 @@ function getsource(x)
     elseif x isa Base.GenericIOBuffer
         return x.data, x.ptr, x.size
     elseif x isa Cmd || x isa IO
-        @warn "`CSV.File` or `CSV.Rows` with `$(typeof(x))` object is deprecated; pass a filename, `IOBuffer`, or byte buffer directly (via `read(x)`)"
+        Base.depwarn("`CSV.File` or `CSV.Rows` with `$(typeof(x))` object is deprecated; pass a filename, `IOBuffer`, or byte buffer directly (via `read(x)`)", :getsource)
         buf = Base.read(x)
         return buf, 1, length(buf)
     else

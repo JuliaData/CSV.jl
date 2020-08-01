@@ -174,7 +174,11 @@ const table_types = (
     io = IOBuffer()
     for case in testcases
         global x = case
-        case[1] |> CSV.write(io; case[2]...)
+        if :writeheader in keys(case[2])
+            @test_deprecated case[1] |> CSV.write(io; case[2]...)
+        else
+            case[1] |> CSV.write(io; case[2]...)
+        end
         @test String(take!(io)) == case[3]
         @test join(collect(CSV.RowWriter(case[1]; case[2]...))) == case[3]
     end
@@ -208,7 +212,7 @@ const table_types = (
     # #247
     open(file, "w") do io
         write(io, "or5a2ztZo\n")
-        (A=1:3, B=[17, 17, 19], C=["Wg5", "SJ4", "w48"]) |> CSV.write(io; append=true, writeheader=true)
+        @test_deprecated (A=1:3, B=[17, 17, 19], C=["Wg5", "SJ4", "w48"]) |> CSV.write(io; append=true, writeheader=true)
     end
     @test String(read(file)) == "or5a2ztZo\nA,B,C\n1,17,Wg5\n2,17,SJ4\n3,19,w48\n"
     rm(file)
