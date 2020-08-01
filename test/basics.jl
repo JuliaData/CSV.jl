@@ -525,4 +525,12 @@ f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz
 @test length(f) == 70000
 @test eltype(f.first) == String
 
+# 706
+f = CSV.File(IOBuffer("a,b\n1,2"); types = Dict{Symbol,Type}(
+               :a => CategoricalValue{String,UInt32},
+               :b => Union{Missing, CategoricalValue{String,UInt32}},
+       ))
+@test f.a[1] == "1"
+@test f.b[1] == "2"
+
 end

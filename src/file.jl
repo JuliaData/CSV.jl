@@ -377,7 +377,7 @@ end
 function makeandsetpooled!(columns, i, column, refs, flags, categorical)
     if categorical
         colrefs = isassigned(refs, i) ? refs[i].refs : Dict{String, UInt32}()
-        if anymissing(flags[i])
+        if anymissing(flags[i]) && haskey(colrefs, missing)
             missingref = colrefs[missing]
             delete!(colrefs, missing)
             colrefs = convert(Dict{String, UInt32}, colrefs)
