@@ -38,7 +38,7 @@ function Chunks(source;
     transpose::Bool=false,
     comment::Union{String, Nothing}=nothing,
     use_mmap=nothing,
-    ignoreemptylines::Bool=false,
+    ignoreemptylines::Bool=true,
     threaded::Union{Bool, Nothing}=nothing,
     tasks::Integer=Threads.nthreads(),
     select=nothing,

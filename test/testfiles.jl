@@ -1,4 +1,10 @@
 function testfile(file, kwargs, expected_sz, expected_sch, testfunc; dir=dir)
+    kwargs = if :ignoreemptylines ∉ kwargs
+        (ignoreemptylines=false, kwargs...)
+    else
+        kwargs
+    end
+
     println("testing $file")
     if file isa IO
         seekstart(file)
