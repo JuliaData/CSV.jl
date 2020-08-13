@@ -297,7 +297,7 @@ end
     A `nothing` value was found in column $col and it is not a printable value.
     There are several ways to handle this situation:
     1) fix the data, perhaps replace `nothing` with `missing`,
-    2) use `transform` option with a funciton to replace `nothing` with whatever value (including `missing`), or
+    2) use `transform` option with a function to replace `nothing` with whatever value (including `missing`), or
     3) use `Tables.transform` option to transform specific columns
     """)
 
