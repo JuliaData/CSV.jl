@@ -1,10 +1,4 @@
 function testfile(file, kwargs, expected_sz, expected_sch, testfunc; dir=dir)
-    kwargs = if :ignoreemptylines ∉ kwargs
-        (ignoreemptylines=false, kwargs...)
-    else
-        kwargs
-    end
-
     println("testing $file")
     if file isa IO
         seekstart(file)
@@ -68,7 +62,7 @@ testfiles = [
         NamedTuple{(), Tuple{}},
         NamedTuple()
     ),
-    ("test_empty_file_newlines.csv", (normalizenames=true,),
+    ("test_empty_file_newlines.csv", (normalizenames=true, ignoreemptylines=false),
         (9, 1),
         NamedTuple{(:Column1,), Tuple{Missing}},
         (Column1 = Missing[missing, missing, missing, missing, missing, missing, missing, missing, missing],)
@@ -160,7 +154,7 @@ testfiles = [
         (col1_sub1_part1 = [1, 4, 7], col2_sub2_part2 = [2, 5, 8], col3_sub3_part3 = [3, 6, 9])
     ),
     # 343
-    ("test_header_int_list.csv", (header=[1, 3, 5],),
+    ("test_header_int_list.csv", (header=[1, 3, 5], ignoreemptylines=false),
         (3, 3),
         NamedTuple{(:col1_sub1_part1, :col2_sub2_part2, :col3_sub3_part3),Tuple{Int64,Int64,Int64}},
         (col1_sub1_part1 = [1, 4, 7], col2_sub2_part2 = [2, 5, 8], col3_sub3_part3 = [3, 6, 9])
