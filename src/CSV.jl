@@ -1,7 +1,7 @@
 module CSV
 
 # stdlib
-using Mmap, Dates, Unicode
+using Mmap, Dates, Unicode, Logging
 # Parsers.jl is used for core type parsing from byte buffers
 # and all other parsing options (quoted fields, delimiters, dateformats etc.)
 using Parsers
