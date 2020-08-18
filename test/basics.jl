@@ -526,6 +526,11 @@ f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz
 @test length(f) == 70000
 @test eltype(f.first) == String
 
+# 723
+f = CSV.File(IOBuffer("col1,col2,col3\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n"); threaded=true)
+@test length(f) == 4
+@test f isa CSV.File{false}
+
 # 706
 f = CSV.File(IOBuffer("a,b\n1,2"); types = Dict{Symbol,Type}(
                :a => CategoricalValue{String,UInt32},

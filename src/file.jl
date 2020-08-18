@@ -248,6 +248,9 @@ function File(h::Header;
         elseif tasks == 1
             @warn "`threaded=true` but `tasks=1`; to support threaded parsing, pass `tasks=N` where `N > 1`; `tasks` defaults to `Threads.nthreads()`, so you may consider starting Julia with multiple threads"
             threaded = false
+        elseif minrows < (tasks * 5)
+            @warn "`threaded=true` but there were not enough estimated rows ($minrows) to justify multithreaded parsing"
+            threaded = false
         end
     end
 
