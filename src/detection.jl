@@ -407,7 +407,7 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
             # with unquoted delimiters in string cells, or misquoted cells.
             # but if there's an actual bug here somehow, let's ask the user to tell us about it for now
             if pos > len
-                error("$i; something went wrong trying to determine row positions for multithreading; often it's a mismatch in the # of columns expected in the file vs. actual; pass `threaded=false` to avoid using multithreaded parsing; if you think you're seeing this error incorrectly, it'd be very helpful if you could open an issue at https://github.com/JuliaData/CSV.jl/issues so package authors can investigate")
+                error("$i; something went wrong trying to determine row positions for multithreading; often it's a mismatch in the # of columns expected in the file (in this case, $ncols columns were expected, probably from the `header` keyword argument, which tries to auto-detect from the 1st row of the file) vs. actual; pass `threaded=false` to avoid using multithreaded parsing; if you think you're seeing this error incorrectly, it'd be very helpful if you could open an issue at https://github.com/JuliaData/CSV.jl/issues so package authors can investigate")
             end
         end
     end
