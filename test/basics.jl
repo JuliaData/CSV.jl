@@ -534,4 +534,8 @@ f = CSV.File(IOBuffer("a,b\n1,2"); types = Dict{Symbol,Type}(
 @test f.a[1] == "1"
 @test f.b[1] == "2"
 
+# 726
+f = CSV.File(IOBuffer("col1,col2,col3,col4,col5\na,b,c,d,e\n" * "a,b,c,d\n"^101))
+@test length(f) == 102
+
 end

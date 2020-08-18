@@ -700,6 +700,10 @@ end
                         if columns[j] isa Vector{UInt32}
                             ref = getref!(refs[j], missing, code, options)
                             columns[j][row] = ref
+                            @inbounds flag = flags[j]
+                            if !user(flag) && maybepooled(flag) && row == POOLSAMPLESIZE
+                                resize!(columns[j], rowsguess)
+                            end
                         end
                     end
                     break # from for col = 1:ncols
