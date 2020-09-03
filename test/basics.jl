@@ -150,33 +150,33 @@ f = CSV.File(IOBuffer("x\n1\n3.14"))
 @test f.x[2] === 3.14
 
 # int => missing
-f = CSV.File(IOBuffer("x\n1\n\n"))
+f = CSV.File(IOBuffer("x\n1\n\n"), ignoreemptylines=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] == 1
 @test f.x[2] === missing
 
 # missing => int
-f = CSV.File(IOBuffer("x\n\n1\n"))
+f = CSV.File(IOBuffer("x\n\n1\n"), ignoreemptylines=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] === missing
 @test f.x[2] == 1
 
 # missing => int => float
-f = CSV.File(IOBuffer("x\n\n1\n3.14\n"))
+f = CSV.File(IOBuffer("x\n\n1\n3.14\n"), ignoreemptylines=false)
 @test (length(f), length(f.names)) == (3, 1)
 @test f.x[1] === missing
 @test f.x[2] === 1.0
 @test f.x[3] === 3.14
 
 # int => missing => float
-f = CSV.File(IOBuffer("x\n1\n\n3.14\n"))
+f = CSV.File(IOBuffer("x\n1\n\n3.14\n"), ignoreemptylines=false)
 @test (length(f), length(f.names)) == (3, 1)
 @test f.x[1] === 1.0
 @test f.x[2] === missing
 @test f.x[3] === 3.14
 
 # int => float => missing
-f = CSV.File(IOBuffer("x\n1\n3.14\n\n"))
+f = CSV.File(IOBuffer("x\n1\n3.14\n\n"), ignoreemptylines=false)
 @test (length(f), length(f.names)) == (3, 1)
 @test f.x[1] === 1.0
 @test f.x[2] === 3.14
@@ -202,7 +202,7 @@ f = CSV.File(IOBuffer("x\n1\n3.14\nabc"))
 @test f.x[3] == "abc"
 
 # missing => int => float => string
-f = CSV.File(IOBuffer("x\n\n1\n3.14\nabc"))
+f = CSV.File(IOBuffer("x\n\n1\n3.14\nabc"), ignoreemptylines=false)
 @test (length(f), length(f.names)) == (4, 1)
 @test f.x[1] === missing
 @test f.x[2] == "1"
@@ -210,13 +210,13 @@ f = CSV.File(IOBuffer("x\n\n1\n3.14\nabc"))
 @test f.x[4] == "abc"
 
 # missing => catg
-f = CSV.File(IOBuffer("x\n\na\n"), pool=true)
+f = CSV.File(IOBuffer("x\n\na\n"), pool=true, ignoreemptylines=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] === missing
 @test f.x[2] == "a"
 
 # catg => missing
-f = CSV.File(IOBuffer("x\na\n\n"), pool=true)
+f = CSV.File(IOBuffer("x\na\n\n"), pool=true, ignoreemptylines=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] == "a"
 @test f.x[2] === missing
@@ -286,25 +286,25 @@ f = CSV.File(IOBuffer("x\nabc\n"), header=Symbol[])
 @test f.names == [:Column1]
 
 # Union{Bool, Missing}
-f = CSV.File(IOBuffer("x\ntrue\n\n"))
+f = CSV.File(IOBuffer("x\ntrue\n\n"), ignoreemptylines=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] === true
 @test f.x[2] === missing
 
 # Union{Date, Missing}
-f = CSV.File(IOBuffer("x\n2019-01-01\n\n"))
+f = CSV.File(IOBuffer("x\n2019-01-01\n\n"), ignoreemptylines=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] === Date(2019, 1, 1)
 @test f.x[2] === missing
 
 # use_mmap=false
-f = @test_deprecated CSV.File(IOBuffer("x\n2019-01-01\n\n"), use_mmap=false)
+f = @test_deprecated CSV.File(IOBuffer("x\n2019-01-01\n\n"), ignoreemptylines=false, use_mmap=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] === Date(2019, 1, 1)
 @test f.x[2] === missing
 
 # types is Dict{String, Type}
-f = CSV.File(IOBuffer("x\n2019-01-01\n\n"), types=Dict("x"=>Date))
+f = CSV.File(IOBuffer("x\n2019-01-01\n\n"), types=Dict("x"=>Date), ignoreemptylines=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] === Date(2019, 1, 1)
 @test f.x[2] === missing
@@ -333,7 +333,7 @@ row = iterate(f, 2)[1]
 @test row.int_float === 3.14
 
 # 448
-@test_throws ArgumentError CSV.File(IOBuffer("x\n1\n2\n3\n#4"), ignorerepeated=true)
+@test_throws ArgumentError CSV.File(IOBuffer("x\n1\n2\n3\n#4"); ignorerepeated=true)
 
 # reported by oxinabox on slack; issue w/ manually specified pool column type and 0 rows
 f = CSV.File(IOBuffer("x\n"), types=[CSV.PooledString])
@@ -351,7 +351,7 @@ f = CSV.File(IOBuffer("x\n1\n2\n3\n#4"), comment="#")
 @test_throws ArgumentError CSV.File(IOBuffer("x\n1\n2\n3\n#4"), types=Dict(:x=>CSV_Foo))
 
 # 447
-f = CSV.File(IOBuffer("a,b,c\n1,2,3\n\n"), ignoreemptylines=true)
+f = CSV.File(IOBuffer("a,b,c\n1,2,3\n\n"))
 @test (length(f), length(f.names)) == (1, 3)
 
 f = CSV.File(IOBuffer("zip\n11111-1111\n"), dateformat = "y-m-dTH:M:S.s")
@@ -388,7 +388,7 @@ f = CSV.File(IOBuffer(",column2\nNA,2\n2,3"), missingstrings=["NA"])
 @test f.names == [:Column1, :column2]
 
 # reported on slack from Kevin Bonham
-f = CSV.File(IOBuffer("x\n01:02:03\n\n04:05:06\n"), delim=',')
+f = CSV.File(IOBuffer("x\n01:02:03\n\n04:05:06\n"), delim=',', ignoreemptylines=false)
 @test isequal(f.x, [Dates.Time(1,2,3), missing, Dates.Time(4,5,6)])
 
 # 566
@@ -514,7 +514,7 @@ f = CSV.File(IOBuffer("""x,y
                                        a,b
                                        a,b
 
-                                       """))
+                                       """), ignoreemptylines=false)
 @test f.x[end] === missing
 @test f.y[end] === missing
 
