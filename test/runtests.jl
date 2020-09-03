@@ -33,7 +33,7 @@ include("write.jl")
     @test v == "b"
     @test levels(v.pool) == ["a", "b", "c"]
 
-    f = @test_deprecated CSV.File(IOBuffer("X\nb\nc\n\nc"), categorical=true)
+    f = @test_deprecated CSV.File(IOBuffer("X\nb\nc\n\nc"), categorical=true, ignoreemptylines=false)
     v = f.X[1]
     @test v == "b"
     @test levels(v.pool) == ["b", "c"]
@@ -55,12 +55,12 @@ end
     @test f.X == ["b", "c", "a", "c"]
     @test f.X.refs[2] == f.X.refs[4]
 
-    f = CSV.File(IOBuffer("X\nb\nc\n\nc"), pool=true)
+    f = CSV.File(IOBuffer("X\nb\nc\n\nc"), pool=true, ignoreemptylines=false)
     @test typeof(f.X) == PooledArray{Union{Missing, String},UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (4, 1)
     @test f.X[3] === missing
 
-    f = CSV.File(IOBuffer("X\nc\nc\n\nc\nc\nc\nc\nc\nc"))
+    f = CSV.File(IOBuffer("X\nc\nc\n\nc\nc\nc\nc\nc\nc"), ignoreemptylines=false)
     @test typeof(f.X) == PooledArray{Union{Missing, String},UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (9, 1)
     @test isequal(f.X, ["c", "c", missing, "c", "c", "c", "c", "c", "c"])
@@ -136,7 +136,7 @@ end
     @test_throws ArgumentError CSV.Rows(IOBuffer("x\n1\n2\n3\n#4"), ignorerepeated=true)
 
     # 447
-    rows = collect(CSV.Rows(IOBuffer("a,b,c\n1,2,3\n\n"), ignoreemptylines=true))
+    rows = collect(CSV.Rows(IOBuffer("a,b,c\n1,2,3\n\n")))
     @test length(rows) == 1
     @test all(rows[1] .== ["1", "2", "3"])
 
