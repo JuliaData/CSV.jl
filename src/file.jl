@@ -147,7 +147,7 @@ Supported keyword arguments include:
   * `limit`: an `Int` to indicate a limited number of rows to parse in a csv file; use in combination with `skipto` to read a specific, contiguous chunk within a file; note for large files when multiple threads are used for parsing, the `limit` argument may not result in exact an exact # of rows parsed; use `threaded=false` to ensure an exact limit if necessary
   * `transpose::Bool`: read a csv file "transposed", i.e. each column is parsed as a row
   * `comment`: rows that begin with this `String` will be skipped while parsing
-  * `ignoreemptylines::Bool=false`: whether empty rows/lines in a file should be ignored (if `false`, each column will be assigned `missing` for that empty row)
+  * `ignoreemptylines::Bool=true`: whether empty rows/lines in a file should be ignored (if `false`, each column will be assigned `missing` for that empty row)
   * `threaded::Bool`: whether parsing should utilize multiple threads; by default threads are used on large enough files, but isn't allowed when `transpose=true`; only available in Julia 1.3+
   * `tasks::Integer=Threads.nthreads()`: for multithreaded parsing, this controls the number of tasks spawned to read a file in chunks concurrently; defaults to the # of threads Julia was started with (i.e. `JULIA_NUM_THREADS` environment variable)
   * `select`: an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a "selector" function of the form `(i, name) -> keep::Bool`; only columns in the collection or for which the selector function returns `true` will be parsed and accessible in the resulting `CSV.File`. Invalid values in `select` are ignored.
@@ -183,7 +183,7 @@ function File(source;
     transpose::Bool=false,
     comment::Union{String, Nothing}=nothing,
     use_mmap=nothing,
-    ignoreemptylines::Bool=false,
+    ignoreemptylines::Bool=true,
     select=nothing,
     drop=nothing,
     # parsing options
