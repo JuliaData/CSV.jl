@@ -333,7 +333,7 @@ row = iterate(f, 2)[1]
 @test row.int_float === 3.14
 
 # 448
-@test_throws ArgumentError CSV.File(IOBuffer("x\n1\n2\n3\n#4"))
+@test_throws ArgumentError CSV.File(IOBuffer("x\n1\n2\n3\n#4"); ignorerepeated=true)
 
 # reported by oxinabox on slack; issue w/ manually specified pool column type and 0 rows
 f = CSV.File(IOBuffer("x\n"), types=[CSV.PooledString])
