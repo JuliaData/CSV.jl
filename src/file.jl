@@ -150,6 +150,7 @@ Supported keyword arguments include:
   * `ignoreemptylines::Bool=true`: whether empty rows/lines in a file should be ignored (if `false`, each column will be assigned `missing` for that empty row)
   * `threaded::Bool`: whether parsing should utilize multiple threads; by default threads are used on large enough files, but isn't allowed when `transpose=true`; only available in Julia 1.3+
   * `tasks::Integer=Threads.nthreads()`: for multithreaded parsing, this controls the number of tasks spawned to read a file in chunks concurrently; defaults to the # of threads Julia was started with (i.e. `JULIA_NUM_THREADS` environment variable)
+  * `lines_to_check::Integer=5`: for multithreaded parsing, a file is split up into `tasks` # of equal chunks, then `lines_to_check` # of lines are checked to ensure parsing correctly found valid rows; for certain files with very large quoted text fields, `lines_to_check` may need to be higher (10, 30, etc.) to ensure parsing correctly finds these rows
   * `select`: an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a "selector" function of the form `(i, name) -> keep::Bool`; only columns in the collection or for which the selector function returns `true` will be parsed and accessible in the resulting `CSV.File`. Invalid values in `select` are ignored.
   * `drop`: inverse of `select`; an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a "drop" function of the form `(i, name) -> drop::Bool`; columns in the collection or for which the drop function returns `true` will ignored in the resulting `CSV.File`. Invalid values in `drop` are ignored.
 * Parsing options:
@@ -224,6 +225,7 @@ function File(h::Header;
     threaded::Union{Bool, Nothing}=nothing,
     typemap::Dict=Dict{Type, Type}(),
     tasks::Integer=Threads.nthreads(),
+    lines_to_check::Integer=5,
     debug::Bool=false,
     )
     rowsguess, ncols, buf, len, datapos, datarow, options, coloptions, positions, types, flags, pool, categorical, customtypes = h.rowsguess, h.cols, h.buf, h.len, h.datapos, h.datarow, h.options, h.coloptions, h.positions, h.types, h.flags, h.pool, h.categorical, h.customtypes
@@ -258,7 +260,7 @@ function File(h::Header;
     refs = Vector{RefPool}(undef, ncols)
     if threaded === true
         # multithreaded
-        finalrows, columns = multithreadparse(types, flags, buf, datapos, len, options, coloptions, rowsguess, datarow - 1, pool, refs, ncols, typemap, h.categorical, customtypes, limit, tasks, debug)
+        finalrows, columns = multithreadparse(types, flags, buf, datapos, len, options, coloptions, rowsguess, datarow - 1, pool, refs, ncols, typemap, h.categorical, customtypes, limit, tasks, lines_to_check, debug)
     else
         if limit !== nothing
             rowsguess = limit
@@ -404,14 +406,14 @@ function makeandsetpooled!(columns, i, column, refs, flags, categorical)
     return
 end
 
-function multithreadparse(types, flags, buf, datapos, len, options, coloptions, origrowsguess, datarow, pool, refs, ncols, typemap, categorical, customtypes, limit, N, debug)
+function multithreadparse(types, flags, buf, datapos, len, options, coloptions, origrowsguess, datarow, pool, refs, ncols, typemap, categorical, customtypes, limit, N, lines_to_check, debug)
     # when limiting w/ multithreaded parsing, we try to guess about where in the file the limit row # will be
     # then adjust our final file len to the end of that row
     # we add some cushion so we hopefully get the limit row correctly w/o shooting past too far and needing to resize! down
     # but we also don't guarantee limit will be exact w/ multithreaded parsing
     if limit !== nothing
         newlen = [0, ceil(Int64, (limit / (origrowsguess * 0.8)) * len), 0]
-        findrowstarts!(buf, len, options, newlen, ncols, types, flags)
+        findrowstarts!(buf, len, options, newlen, ncols, types, flags, lines_to_check)
         len = newlen[2] - 1
         origrowsguess = limit
         debug && println("limiting, adjusting len to $len")
@@ -420,7 +422,7 @@ function multithreadparse(types, flags, buf, datapos, len, options, coloptions, 
     ranges = [i == 0 ? datapos : (datapos + chunksize * i) for i = 0:N]
     ranges[end] = len
     debug && println("initial byte positions before adjusting for start of rows: $ranges")
-    avgbytesperrow = findrowstarts!(buf, len, options, ranges, ncols, types, flags)
+    avgbytesperrow = findrowstarts!(buf, len, options, ranges, ncols, types, flags, lines_to_check)
     origbytesperrow = ((len - datapos) / origrowsguess)
     weightedavgbytesperrow = ceil(Int64, avgbytesperrow * ((N - 2) / N) + origbytesperrow * (2 / N))
     rowsguess = ceil(Int64, (len - datapos) / weightedavgbytesperrow)

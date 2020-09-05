@@ -10,7 +10,13 @@ Depth = 3
 ## Getting Started
 
 CSV.jl provides a number of utilities for working with delimited files. `CSV.File` provides a way to read files into columns of data, detecting column types.
-`CSV.Rows` provides a row iterator for looping over rows in a file. Inputs to either should be filenames as `String`s, or byte vectors (`AbstractVector{UInt8}`). To read other `IO` inputs, just call `read(io)` and pass the bytes directly to `CSV.File` or `CSV.Rows`.
+`CSV.Rows` provides a row iterator for looping over rows in a file. Inputs to either should be filenames as `String`s or `FilePath`s, or byte vectors (`AbstractVector{UInt8}`). To read other `IO` inputs, just call `read(io)` and pass the bytes directly to `CSV.File` or `CSV.Rows`.
+
+If `julia` is started with multiple threads (i.e. `julia -t 4`, or with `JULIA_NUM_THREADS` environment variable set), `CSV.File` will use those threads
+by default to parse large enough files. There are a few keyword arguments to control multithreaded parsing, including:
+  * `threaded=false`: turn off multithreaded parsing, the file will be read sequentially using a single thread
+  * `tasks=N`: control how many tasks/chunks are used to break up a file; by default, `Threads.nthreads()` will be used
+  * `lines_to_check=M`: when a file is split into chunks, the parser must then find valid starts/ends to rows; this keyword argument controls how many lines are checked to ensure valid rows are found; for files with very large quoted text fields, it may be required to use a higher number here (10, 30, etc.)
 
 ## Key Functions
 ```@docs
