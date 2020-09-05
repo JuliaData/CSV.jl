@@ -306,7 +306,7 @@ end
 # right # of expected columns then we move on to the next file chunk byte position. If we fail, we start over
 # at the byte position, assuming we were in the a quoted field (and encountered a newline inside the quoted
 # field the first time through)
-function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, ranges, ncols, types, flags) where {ignorerepeated}
+function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, ranges, ncols, types, flags, lines_to_check=5) where {ignorerepeated}
     totalbytes = 0
     totalrows = 0
     totalmissing = 0
@@ -329,7 +329,7 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
             # now we read the next 5 rows and see if we get the right # of columns
             rowstartpos = pos
             correct = true
-            for j = 1:5
+            for j = 1:lines_to_check
                 for col = 1:ncols
                     _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
                     if !typedetected(flags[col])
@@ -353,7 +353,7 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
             if correct
                 # boom, we read a whole row and got correct # of columns
                 totalbytes += pos - rowstartpos
-                totalrows += 5
+                totalrows += lines_to_check
                 for col = 1:ncols
                     types[col] = detectedtypes[col]
                 end
