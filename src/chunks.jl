@@ -41,6 +41,7 @@ function Chunks(source;
     ignoreemptylines::Bool=true,
     threaded::Union{Bool, Nothing}=nothing,
     tasks::Integer=Threads.nthreads(),
+    lines_to_check::Integer=5,
     select=nothing,
     drop=nothing,
     # parsing options
@@ -76,7 +77,7 @@ function Chunks(source;
     chunksize = div(len - datapos, N)
     ranges = [i == 0 ? datapos : (datapos + chunksize * i) for i = 0:N]
     ranges[end] = len
-    findrowstarts!(buf, len, options, ranges, ncols, h.types, h.flags)
+    findrowstarts!(buf, len, options, ranges, ncols, h.types, h.flags, lines_to_check)
     return Chunks(h, threaded, typemap, tasks, debug, ranges)
 end
 
