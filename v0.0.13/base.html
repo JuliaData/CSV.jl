@@ -18,9 +18,7 @@
       {% if page_description %}
         <meta name="description" content="{{ page_description }}">
       {% endif %}
-      {% if canonical_url %}
-        <link rel="canonical" href="{{ canonical_url }}">
-      {% endif %}
+      <link rel="canonical" href="https://juliadata.github.io/CSV.jl/stable/index.html"/>
       {% if site_author %}
         <meta name="author" content="{{ site_author }}">
       {% endif %}
@@ -31,6 +29,7 @@
     <meta name="apple-mobile-web-app-title" content="{{ site_name }}">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
     {% if config.extra.logo %}
       <link rel="apple-touch-icon" href="{{ base_url }}/{{ config.extra.logo }}">
     {% endif %}
