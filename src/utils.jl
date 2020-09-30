@@ -72,7 +72,7 @@ flag(T, lazystrings) = (T === Union{} ? 0x00 : ((USER | TYPEDETECTED) | (hasmiss
 const PROMOTE_TO_STRING = 0b0100000000000000 % Int16
 promote_to_string(code) = code & PROMOTE_TO_STRING > 0
 
-hasmissingtype(T) = T === Missing || T !== Core.Compiler.typesubtract(T, Missing)
+hasmissingtype(T) = T === Missing || T !== ts(T, Missing)
 
 @inline function promote_types(@nospecialize(T), @nospecialize(S))
     if T === Union{} || S === Union{} || T === Missing || S === Missing || T === S || nonmissingtype(T) === nonmissingtype(S)
@@ -211,9 +211,17 @@ end
 const SVec{T} = SentinelVector{T, T, Missing, Vector{T}}
 const SVec2{T} = SentinelVector{T, typeof(undef), Missing, Vector{T}}
 
+if applicable(Core.Compiler.typesubtract, Union{Int, Missing}, Missing)
 ts(T, S) = Core.Compiler.typesubtract(T, S)
+else
+ts(T, S) = Core.Compiler.typesubtract(T, S, 16)
+end
+
 # when users pass non-standard types, we need to keep track of them in a Tuple{...} to generate efficient custom parsing kernel codes
 function nonstandardtype(T)
+    if T === Union{}
+        return T
+    end
     S = ts(ts(ts(ts(ts(ts(ts(ts(ts(T, Int64), Float64), String), PooledString), Bool), Date), DateTime), Time), Missing)
     if S === Union{}
         return S
