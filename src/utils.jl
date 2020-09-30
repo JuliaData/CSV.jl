@@ -214,6 +214,9 @@ const SVec2{T} = SentinelVector{T, typeof(undef), Missing, Vector{T}}
 ts(T, S) = Core.Compiler.typesubtract(T, S)
 # when users pass non-standard types, we need to keep track of them in a Tuple{...} to generate efficient custom parsing kernel codes
 function nonstandardtype(T)
+    if T === Union{}
+        return T
+    end
     S = ts(ts(ts(ts(ts(ts(ts(ts(ts(T, Int64), Float64), String), PooledString), Bool), Date), DateTime), Time), Missing)
     if S === Union{}
         return S
