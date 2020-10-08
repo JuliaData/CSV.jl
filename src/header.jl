@@ -164,6 +164,16 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
         # step 3: build Parsers.Options w/ parsing arguments
         wh1 = d == UInt(' ') ? 0x00 : UInt8(' ')
         wh2 = d == UInt8('\t') ? 0x00 : UInt8('\t')
+        if sentinel isa Vector
+            for sent in sentinel
+                if contains(sent, " ")
+                    wh1 = 0x00
+                end
+                if contains(sent, "\t")
+                    wh2 = 0x00
+                end
+            end
+        end
         options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformat, ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings)
 
         # step 4a: if we're ignoring repeated delimiters, then we ignore any
