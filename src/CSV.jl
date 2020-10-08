@@ -1,5 +1,9 @@
 module CSV
 
+if !isdefined(Base, :contains)
+    contains(haystack, needle) = occursin(needle, haystack)
+end
+
 # stdlib
 using Mmap, Dates, Unicode
 # Parsers.jl is used for core type parsing from byte buffers
