@@ -278,6 +278,8 @@ Base.checkbounds(r::Row2, i) = 0 < i < length(r)
 Tables.getcolumn(r::Row2, nm::Symbol) = Tables.getcolumn(r, getlookup(r)[nm])
 Tables.getcolumn(r::Row2, i::Int) = Tables.getcolumn(r, gettypes(r)[i], i, getnames(r)[i])
 
+Tables.getcolumn(r::Row2{O, O2, PosLen}, nm::Symbol) where {O, O2} = @inbounds Tables.getcolumn(r, getlookup(r)[nm])
+
 Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Type{Missing}, i::Int, nm::Symbol)
     @boundscheck checkbounds(r, i)
     return missing
@@ -290,6 +292,8 @@ Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Type{T}, i::Int, n
     return x
 end
 
+Base.@propagate_inbounds Tables.getcolumn(r::Row2{O, O2, PosLen}, ::Type{T}, i::Int, nm::Symbol) where {T, O, O2} = error("row values are string only; requested type $T not supported; see `Parsers.parse(row, $T, $i)`")
+
 Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Union{Type{Union{Missing, String}}, Type{String}}, i::Int, nm::Symbol)
     @boundscheck checkbounds(r, i)
     j = getcolumnmap(r)[i]
@@ -300,6 +304,18 @@ Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Union{Type{Union{M
         return poslen
     else
         return str(getbuf(r), gete(r), poslen)
+    end
+end
+
+Tables.getcolumn(r::Row2{O, O2, PosLen}, ::Union{Type{Union{Missing, String}}, Type{String}}, i::Int, nm::Symbol) where {O, O2} = Tables.getcolumn(r, i)
+Base.@propagate_inbounds function Tables.getcolumn(r::Row2{O, O2, PosLen}, i::Int) where {O, O2}
+    @boundscheck checkbounds(r, i)
+    @inbounds j = getcolumnmap(r)[i]
+    @inbounds poslen = getvalues(r)[j]
+    if poslen isa Missing
+        return missing
+    else
+        return @inbounds str(getbuf(r), gete(r), poslen)
     end
 end
 
