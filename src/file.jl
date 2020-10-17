@@ -171,6 +171,7 @@ Supported keyword arguments include:
   * `lazystrings::Bool=false`: avoid allocating full strings in string columns; returns a custom `LazyStringVector` array type that *does not* support mutable operations (e.g. `push!`, `append!`, or even `setindex!`). Calling `copy(x)` will materialize a full `Vector{String}`. Also note that each `LazyStringVector` holds a reference to the full input file buffer, so it won't be closed after parsing and trying to delete or modify the file may result in errors (particularly on windows) and generally has undefined behavior. Given these caveats, this setting can help avoid lots of string allocations in large files and lead to faster parsing times.
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
   * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
+  * `maxwarnings::Int=100`: if more than `maxwarnings` number of warnings are printed while parsing, further warnings will be silenced by default; for multithreaded parsing, each parsing task will print up to `maxwarnings`
 """
 function File(source;
     # file options
@@ -226,6 +227,7 @@ function File(h::Header;
     typemap::Dict=Dict{Type, Type}(),
     tasks::Integer=Threads.nthreads(),
     lines_to_check::Integer=5,
+    maxwarnings::Int=100,
     debug::Bool=false,
     )
     rowsguess, ncols, buf, len, datapos, datarow, options, coloptions, positions, types, flags, pool, categorical, customtypes = h.rowsguess, h.cols, h.buf, h.len, h.datapos, h.datarow, h.options, h.coloptions, h.positions, h.types, h.flags, h.pool, h.categorical, h.customtypes
@@ -260,14 +262,14 @@ function File(h::Header;
     refs = Vector{RefPool}(undef, ncols)
     if threaded === true
         # multithreaded
-        finalrows, columns = multithreadparse(types, flags, buf, datapos, len, options, coloptions, rowsguess, datarow - 1, pool, refs, ncols, typemap, h.categorical, customtypes, limit, tasks, lines_to_check, debug)
+        finalrows, columns = multithreadparse(types, flags, buf, datapos, len, options, coloptions, rowsguess, datarow - 1, pool, refs, ncols, typemap, h.categorical, customtypes, limit, tasks, lines_to_check, maxwarnings, debug)
     else
         if limit !== nothing
             rowsguess = limit
         end
         columns = allocate(rowsguess, ncols, types, flags, refs)
         t = Base.time()
-        finalrows, pos = parsefilechunk!(Val(transpose), ncols, typemap, columns, buf, datapos, len, something(limit, typemax(Int64)), positions, pool, refs, rowsguess, datarow - 1, types, flags, debug, options, coloptions, customtypes)
+        finalrows, pos = parsefilechunk!(Val(transpose), ncols, typemap, columns, buf, datapos, len, something(limit, typemax(Int64)), positions, pool, refs, rowsguess, datarow - 1, types, flags, debug, options, coloptions, customtypes, maxwarnings)
         debug && println("time for initial parsing: $(Base.time() - t)")
         # cleanup our columns if needed
         for i = 1:ncols
@@ -406,7 +408,7 @@ function makeandsetpooled!(columns, i, column, refs, flags, categorical)
     return
 end
 
-function multithreadparse(types, flags, buf, datapos, len, options, coloptions, origrowsguess, datarow, pool, refs, ncols, typemap, categorical, customtypes, limit, N, lines_to_check, debug)
+function multithreadparse(types, flags, buf, datapos, len, options, coloptions, origrowsguess, datarow, pool, refs, ncols, typemap, categorical, customtypes, limit, N, lines_to_check, maxwarnings, debug)
     # when limiting w/ multithreaded parsing, we try to guess about where in the file the limit row # will be
     # then adjust our final file len to the end of that row
     # we add some cushion so we hopefully get the limit row correctly w/o shooting past too far and needing to resize! down
@@ -444,7 +446,7 @@ function multithreadparse(types, flags, buf, datapos, len, options, coloptions, 
             task_types = copy(types)
             task_columns = allocate(rowchunkguess, ncols, task_types, task_flags, task_refs)
             pertaskcolumns[i] = task_columns
-            task_rows, task_pos = parsefilechunk!(Val(false), ncols, typemap, task_columns, buf, task_pos, task_len, typemax(Int64), EMPTY_INT_ARRAY, pool, task_refs, rowchunkguess, datarow + (rowchunkguess * (i - 1)), task_types, task_flags, debug, options, coloptions, customtypes)
+            task_rows, task_pos = parsefilechunk!(Val(false), ncols, typemap, task_columns, buf, task_pos, task_len, typemax(Int64), EMPTY_INT_ARRAY, pool, task_refs, rowchunkguess, datarow + (rowchunkguess * (i - 1)), task_types, task_flags, debug, options, coloptions, customtypes, maxwarnings)
             rows[i] = task_rows
             # promote column types/flags across task chunks
             for col = 1:ncols
@@ -553,13 +555,14 @@ end # @static if VERSION >= v"1.3-DEV"
     return limit !== nothing && limit < finalrows ? limit : finalrows, finalcolumns
 end
 
-function parsefilechunk!(TR::Val{transpose}, ncols, typemap, columns, buf, pos, len, limit, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options::Parsers.Options{ignorerepeated}, coloptions, ::Type{customtypes}) where {transpose, ignorerepeated, customtypes}
+function parsefilechunk!(TR::Val{transpose}, ncols, typemap, columns, buf, pos, len, limit, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options::Parsers.Options{ignorerepeated}, coloptions, ::Type{customtypes}, maxwarnings) where {transpose, ignorerepeated, customtypes}
     row = 0
     startpos = pos
     if pos <= len && len > 0
+        numwarnings = Ref(0)
         while row < limit
             row += 1
-            pos = parserow(row, TR, ncols, typemap, columns, startpos, buf, pos, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options, coloptions, customtypes)
+            pos = parserow(row, TR, ncols, typemap, columns, startpos, buf, pos, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options, coloptions, customtypes, numwarnings, maxwarnings)
             (pos > len || row == limit) && break
             # if our initial row estimate was too few, we need to reallocate our columsn to read the rest of the file
             if row + 1 > rowsguess
@@ -610,9 +613,10 @@ end
     row = 0
     startpos = pos
     if pos <= len && len > 0
+        numwarnings = Ref(1)
         while row < limit
             row += 1
-            pos = parserow(row, TR, ncols, typemap, columns, startpos, buf, pos, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options, coloptions, customtypes)
+            pos = parserow(row, TR, ncols, typemap, columns, startpos, buf, pos, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options, coloptions, customtypes, numwarnings, 0)
             pos > len && break
         end
     end
@@ -625,6 +629,7 @@ end
 @noinline stricterror(T, buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) error parsing $T around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))"))
 @noinline warning(T, buf, pos, len, code, row, col) = @warn("thread = $(Threads.threadid()) warning: error parsing $T around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))")
 @noinline fatalerror(buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) fatal error, encountered an invalidly quoted field while parsing around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code)), check your `quotechar` arguments or manually fix the field in the file itself"))
+@noinline toomanywwarnings() = @warn("thread = $(Threads.threadid()): too many warnings, silencing any further warnings")
 
 @inline function parsecustom!(::Type{T}, flag, columns, buf, pos, len, opts, row, rowoffset, col, types, flags) where {T}
     if @generated
@@ -653,7 +658,7 @@ end
     end
 end
 
-@inline function parserow(row, TR::Val{transpose}, ncols, typemap, columns, startpos, buf, pos::A, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options::B, coloptions::C, ::Type{customtypes}) where {transpose, A, B, C, customtypes}
+@inline function parserow(row, TR::Val{transpose}, ncols, typemap, columns, startpos, buf, pos::A, len, positions, pool, refs, rowsguess, rowoffset, types, flags, debug, options::B, coloptions::C, ::Type{customtypes}, numwarnings, maxwarnings) where {transpose, A, B, C, customtypes}
     for col = 1:ncols
         if transpose
             @inbounds pos = positions[col]
@@ -698,7 +703,9 @@ end
         else
             if col < ncols
                 if Parsers.newline(code) || pos > len
-                    options.silencewarnings || notenoughcolumns(col, ncols, rowoffset + row)
+                    options.silencewarnings || numwarnings[] > maxwarnings || notenoughcolumns(col, ncols, rowoffset + row)
+                    !options.silencewarnings && numwarnings[] == maxwarnings && toomanywwarnings()
+                    numwarnings[] += 1
                     for j = (col + 1):ncols
                         @inbounds flags[j] |= ANYMISSING
                         @inbounds types[j] = Union{Missing, types[j]}
@@ -715,7 +722,8 @@ end
                 end
             else
                 if pos <= len && !Parsers.newline(code)
-                    options.silencewarnings || toomanycolumns(ncols, rowoffset + row)
+                    options.silencewarnings || numwarnings[] > maxwarnings || toomanycolumns(ncols, rowoffset + row)
+                    numwarnings[] += 1
                     # ignore the rest of the line
                     pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, 1, 2)
                 end
