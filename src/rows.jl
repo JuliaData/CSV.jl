@@ -24,6 +24,8 @@ struct Rows{transpose, O, O2, IO, T, V}
     columns::Vector{AbstractVector} # for parsing, allocated once and used for each iteration
     values::Vector{V} # once values are parsed, put in values; allocated on each iteration if reusebuffer=false
     lookup::Dict{Symbol, Int}
+    numwarnings::Base.RefValue{Int}
+    maxwarnings::Int
 end
 
 function Base.show(io::IO, r::Rows)
@@ -92,6 +94,7 @@ Supported keyword arguments include:
   * `lazystrings::Bool=true`: avoid allocating full strings while parsing; accessing a string column will materialize the full `String`
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
   * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
+  * `maxwarnings::Int=100`: if more than `maxwarnings` number of warnings are printed while parsing, further warnings will be silenced by default
 * Iteration options:
   * `reusebuffer=false`: while iterating, whether a single row buffer should be allocated and reused on each iteration; only use if each row will be iterated once and not re-used (e.g. it's not safe to use this option if doing `collect(CSV.Rows(file))` because only current iterated row is "valid")
 """
@@ -137,6 +140,7 @@ function Rows(source;
     debug::Bool=false,
     parsingdebug::Bool=false,
     reusebuffer::Bool=false,
+    maxwarnings::Int=100,
     kw...)
 
     h = Header(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, use_mmap, ignoreemptylines, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, true)
@@ -170,6 +174,8 @@ function Rows(source;
         columns,
         values,
         lookup,
+        Ref(0),
+        maxwarnings
     )
 end
 
@@ -214,7 +220,7 @@ end
 @inline function Base.iterate(r::Rows{transpose, O, O2, IO, T, V}, (pos, len, row)=(r.datapos, r.len, 1)) where {transpose, O, O2, IO, T, V}
     (pos > len || row > r.limit) && return nothing
     pos > len && return nothing
-    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, r.columns, r.datapos, r.buf, pos, len, r.positions, 0.0, EMPTY_REFS, 1, r.datarow + row - 2, r.types, r.flags, false, r.options, r.coloptions, T)
+    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, r.columns, r.datapos, r.buf, pos, len, r.positions, 0.0, EMPTY_REFS, 1, r.datarow + row - 2, r.types, r.flags, false, r.options, r.coloptions, T, r.numwarnings, r.maxwarnings)
     cols = r.cols
     values = r.reusebuffer ? r.values : Vector{V}(undef, cols)
     columns = r.columns
