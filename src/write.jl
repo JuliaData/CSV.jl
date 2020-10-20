@@ -301,6 +301,9 @@ end
     3) use `Tables.transform` option to transform specific columns
     """)
 
+writerow(buf, pos, len, io, ::Nothing, row, cols, opts) =
+    writerow(buf, pos, len, io, Tables.Schema(Tables.columnnames(row), nothing), row, cols, opts)
+
 function writerow(buf, pos, len, io, sch, row, cols, opts)
     # ref = Ref{Int}(pos)
     n, d = opts.newline, opts.delim
