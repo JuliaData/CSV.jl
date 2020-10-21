@@ -168,6 +168,12 @@ const table_types = (
             [(a=big(1),)],
             NamedTuple(),
             "a\n1\n"
+        ),
+        # 756
+        (
+            Any[(a=1,)],
+            NamedTuple(),
+            "a\n1\n"
         )
     ]
 
