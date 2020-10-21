@@ -208,7 +208,7 @@ function write(::Nothing, rows, file, opts;
         return file
     end
     row, st = state
-    names = header === false || isempty(header) ? propertynames(row) : header
+    names = header isa Bool || isempty(header) ? propertynames(row) : header
     sch = Tables.Schema(names, nothing)
     cols = length(names)
     with(file, append) do io
@@ -300,6 +300,9 @@ end
     2) use `transform` option with a function to replace `nothing` with whatever value (including `missing`), or
     3) use `Tables.transform` option to transform specific columns
     """)
+
+writerow(buf, pos, len, io, ::Nothing, row, cols, opts) =
+    writerow(buf, pos, len, io, Tables.Schema(Tables.columnnames(row), nothing), row, cols, opts)
 
 function writerow(buf, pos, len, io, sch, row, cols, opts)
     # ref = Ref{Int}(pos)
