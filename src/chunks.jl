@@ -70,13 +70,11 @@ function Chunks(source;
     debug::Bool=false,
     parsingdebug::Bool=false)
 
-    limit=typemax(Int64)
     h = Header(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, use_mmap, ignoreemptylines, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, false)
     rowsguess, ncols, buf, len, datapos, options = h.rowsguess, h.cols, h.buf, h.len, h.datapos, h.options
     N = tasks > rowsguess || rowsguess < 100 ? 1 : tasks == 1 ? 8 : tasks
     chunksize = div(len - datapos, N)
-    ranges = [i == 0 ? datapos : (datapos + chunksize * i) for i = 0:N]
-    ranges[end] = len
+    ranges = [i == 0 ? datapos : i == N ? len : (datapos + chunksize * i) for i = 0:N]
     findrowstarts!(buf, len, options, ranges, ncols, h.types, h.flags, lines_to_check)
     return Chunks(h, threaded, typemap, tasks, debug, ranges)
 end
