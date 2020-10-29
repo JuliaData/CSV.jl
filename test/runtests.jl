@@ -189,23 +189,23 @@ end
 
 @testset "CSV.findrowstarts!" begin
 
-rngs = [1, 1, 1]
 buf = b"normal cell,next cell\nnormal cell2,next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
+rngs = [1, 1, length(buf)]
 CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, rngs, 2, [Union{}, Union{}], [0x00, 0x00])
 @test rngs[2] == 23
 
-rngs = [1, 1, 1]
 buf = b"quoted, cell\",next cell\n\"normal cell2\",next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
+rngs = [1, 1, length(buf)]
 CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, rngs, 2, [Union{}, Union{}], [0x00, 0x00])
 @test rngs[2] == 25
 
-rngs = [1, 2, 1]
 buf = b"\"\"quoted, cell\",next cell\n\"normal cell2\",next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
+rngs = [1, 2, length(buf)]
 CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, rngs, 2, [Union{}, Union{}], [0x00, 0x00])
 @test rngs[2] == 27
 
-rngs = [1, 2, 1]
 buf = b"quoted,\"\" cell\",next cell\n\"normal cell2\",next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
+rngs = [1, 2, length(buf)]
 CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, rngs, 2, [Union{}, Union{}], [0x00, 0x00])
 @test rngs[2] == 27
 

@@ -309,10 +309,10 @@ end
 function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, ranges, ncols, types, flags, lines_to_check=5) where {ignorerepeated}
     totalbytes = 0
     totalrows = 0
-    totalmissing = 0
     detectedtypes = copy(types)
     for i = 2:(length(ranges) - 1)
         pos = ranges[i]
+        len = ranges[i + 1]
         while pos <= len
             startpos = pos
             code = Parsers.ReturnCode(0)
@@ -336,9 +336,7 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
                         D = detectedtypes[col]
                         det = detect(buf, vpos, vpos + vlen - 1, options)
                         T = typeof(something(det, ""))
-                        if T === Missing
-                            totalmissing += 1
-                        elseif T !== String
+                        if T !== Missing && T !== String
                             detectedtypes[col] = promote_types(D, T)
                             # if detectedtypes[col] !== D
                             #     println("promoted column type from $D to $(detectedtypes[col]) for task chunk = $i")
@@ -387,9 +385,7 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
                 _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
                 if !typedetected(flags[col])
                     T = typeof(something(detect(buf, pos, len, options), ""))
-                    if T === Missing
-                        totalmissing += 1
-                    elseif T !== String
+                    if T !== Missing && T !== String
                         types[col] = promote_types(types[col], T)
                     end
                 end
@@ -407,7 +403,7 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
             # with unquoted delimiters in string cells, or misquoted cells.
             # but if there's an actual bug here somehow, let's ask the user to tell us about it for now
             if pos > len
-                error("$i; something went wrong trying to determine row positions for multithreading; often it's a mismatch in the # of columns expected in the file (in this case, $ncols columns were expected, probably from the `header` keyword argument, which tries to auto-detect from the 1st row of the file) vs. actual; pass `threaded=false` to avoid using multithreaded parsing; if you think you're seeing this error incorrectly, it'd be very helpful if you could open an issue at https://github.com/JuliaData/CSV.jl/issues so package authors can investigate")
+                return 0.0, false
             end
         end
     end
@@ -416,7 +412,7 @@ function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, rang
             flags[col] |= TYPEDETECTED
         end
     end
-    return totalbytes / totalrows
+    return totalbytes / totalrows, true
 end
 
 function detecttranspose(buf, pos, len, options, header, datarow, normalizenames)

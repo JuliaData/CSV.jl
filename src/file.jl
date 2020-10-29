@@ -257,12 +257,43 @@ function File(h::Header;
             threaded = false
         end
     end
+    # attempt to chunk up a file for multithreaded parsing; there's chance we can't figure out how to accurately chunk
+    # due to quoted fields, so threaded might get set to false
+    if threaded === true
+        # when limiting w/ multithreaded parsing, we try to guess about where in the file the limit row # will be
+        # then adjust our final file len to the end of that row
+        # we add some cushion so we hopefully get the limit row correctly w/o shooting past too far and needing to resize! down
+        # but we also don't guarantee limit will be exact w/ multithreaded parsing
+        origrowsguess = rowsguess
+        if limit !== nothing
+            limitposguess = ceil(Int64, (limit / (origrowsguess * 0.8)) * len)
+            newlen = [0, limitposguess, min(limitposguess * 2, len)]
+            findrowstarts!(buf, len, options, newlen, ncols, types, flags, lines_to_check)
+            len = newlen[2] - 1
+            origrowsguess = limit
+            debug && println("limiting, adjusting len to $len")
+        end
+        chunksize = div(len - datapos, tasks)
+        ranges = [i == 0 ? datapos : i == tasks ? len : (datapos + chunksize * i) for i = 0:tasks]
+        debug && println("initial byte positions before adjusting for start of rows: $ranges")
+        avgbytesperrow, successfullychunked = findrowstarts!(buf, len, options, ranges, ncols, types, flags, lines_to_check)
+        if successfullychunked
+            origbytesperrow = ((len - datapos) / origrowsguess)
+            weightedavgbytesperrow = ceil(Int64, avgbytesperrow * ((tasks - 1) / tasks) + origbytesperrow * (1 / tasks))
+            rowsguess = ceil(Int64, (len - datapos) / weightedavgbytesperrow)
+            debug && println("single-threaded estimated rows = $origrowsguess, multi-threaded estimated rows = $rowsguess")
+            debug && println("multi-threaded column types sampled as: $types")
+        else
+            debug && println("something went wrong chunking up a file for multithreaded parsing, falling back to single-threaded parsing")
+            threaded = false
+        end
+    end
 
     # we now do our parsing pass over the file, starting at datapos
     refs = Vector{RefPool}(undef, ncols)
     if threaded === true
         # multithreaded
-        finalrows, columns = multithreadparse(types, flags, buf, datapos, len, options, coloptions, rowsguess, datarow - 1, pool, refs, ncols, typemap, h.categorical, customtypes, limit, tasks, lines_to_check, maxwarnings, debug)
+        finalrows, columns = multithreadparse(types, flags, buf, options, coloptions, rowsguess, datarow - 1, pool, refs, ncols, typemap, h.categorical, customtypes, limit, tasks, ranges, maxwarnings, debug)
     else
         if limit !== nothing
             rowsguess = limit
@@ -408,28 +439,7 @@ function makeandsetpooled!(columns, i, column, refs, flags, categorical)
     return
 end
 
-function multithreadparse(types, flags, buf, datapos, len, options, coloptions, origrowsguess, datarow, pool, refs, ncols, typemap, categorical, customtypes, limit, N, lines_to_check, maxwarnings, debug)
-    # when limiting w/ multithreaded parsing, we try to guess about where in the file the limit row # will be
-    # then adjust our final file len to the end of that row
-    # we add some cushion so we hopefully get the limit row correctly w/o shooting past too far and needing to resize! down
-    # but we also don't guarantee limit will be exact w/ multithreaded parsing
-    if limit !== nothing
-        newlen = [0, ceil(Int64, (limit / (origrowsguess * 0.8)) * len), 0]
-        findrowstarts!(buf, len, options, newlen, ncols, types, flags, lines_to_check)
-        len = newlen[2] - 1
-        origrowsguess = limit
-        debug && println("limiting, adjusting len to $len")
-    end
-    chunksize = div(len - datapos, N)
-    ranges = [i == 0 ? datapos : (datapos + chunksize * i) for i = 0:N]
-    ranges[end] = len
-    debug && println("initial byte positions before adjusting for start of rows: $ranges")
-    avgbytesperrow = findrowstarts!(buf, len, options, ranges, ncols, types, flags, lines_to_check)
-    origbytesperrow = ((len - datapos) / origrowsguess)
-    weightedavgbytesperrow = ceil(Int64, avgbytesperrow * ((N - 2) / N) + origbytesperrow * (2 / N))
-    rowsguess = ceil(Int64, (len - datapos) / weightedavgbytesperrow)
-    debug && println("single-threaded estimated rows = $origrowsguess, multi-threaded estimated rows = $rowsguess")
-    debug && println("multi-threaded column types sampled as: $types")
+function multithreadparse(types, flags, buf, options, coloptions, rowsguess, datarow, pool, refs, ncols, typemap, categorical, customtypes, limit, N, ranges, maxwarnings, debug)
     rowchunkguess = cld(rowsguess, N)
     debug && println("parsing using $N tasks: $rowchunkguess rows chunked at positions: $ranges")
     pertaskcolumns = Vector{Vector{AbstractVector}}(undef, N)
