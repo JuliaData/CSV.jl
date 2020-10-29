@@ -392,23 +392,28 @@ vectype(T) = T
 
 # while each chunk parses values into a SentinelVector, we invert after parsing is done
 # so the final array type is SentinelVector wrapping a ChainedVector of the raw chunk vectors
-function makechain(::Type{T}, column, N, col, pertaskcolumns, limit, sentref=nothing) where {T}
+function makechain(::Type{T}, column, N, col, pertaskcolumns, limit, anymissing, sentref=nothing) where {T}
     if T === SVec{Int64}
         # synchronize int sentinels if necessary
         SentinelArrays.newsentinel!((pertaskcolumns[i][col]::SVec{Int64} for i = 1:N)...; force=false)
         sentref[] = column.sentinel
     end
-    chain = Vector{vectype(T)}(undef, N)
-    @inbounds chain[1] = parent(column)
-    for i = 2:N
-        @inbounds tp = pertaskcolumns[i][col]
-        if tp isa T
-            @inbounds chain[i] = parent(tp)
-        else
-            @inbounds chain[i] = convert(T, tp)
-        end
+    if anymissing
+        x = ChainedVector([pertaskcolumns[i][col] for i = 1:N])
+    else
+        x = ChainedVector([convert(vectype(T), parent(pertaskcolumns[i][col])) for i = 1:N])
     end
-    x = ChainedVector(chain)
+    # chain = Vector{anymissing ? T : vectype(T)}(undef, N)
+    # @inbounds chain[1] = parent(column)
+    # for i = 2:N
+    #     @inbounds tp = pertaskcolumns[i][col]
+    #     if tp isa T
+    #         @inbounds chain[i] = parent(tp)
+    #     else
+    #         @inbounds chain[i] = convert(T, tp)
+    #     end
+    # end
+    # x = ChainedVector(chain)
     if limit !== nothing && limit < length(x)
         resize!(x, limit)
     end
@@ -515,47 +520,37 @@ end # @static if VERSION >= v"1.3-DEV"
             @inbounds column = pertaskcolumns[1][col]
             if column isa SVec{Int64}
                 sentref = Ref(column.sentinel)
-                chain = makechain(SVec{Int64}, column, N, col, pertaskcolumns, limit, sentref)
-                @inbounds finalcolumns[col] = anymissing(flags[col]) ? SentinelArray(chain, sentref[]) : chain
+                @inbounds finalcolumns[col] = makechain(SVec{Int64}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]), sentref)
             elseif column isa SVec{Float64}
-                chain = makechain(SVec{Float64}, column, N, col, pertaskcolumns, limit)
-                @inbounds finalcolumns[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+                @inbounds finalcolumns[col] = makechain(SVec{Float64}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
             elseif column isa SVec2{String}
-                chain = makechain(SVec2{String}, column, N, col, pertaskcolumns, limit)
-                @inbounds finalcolumns[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+                @inbounds finalcolumns[col] = makechain(SVec2{String}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
             elseif column isa SVec{Date}
-                chain = makechain(SVec{Date}, column, N, col, pertaskcolumns, limit)
-                @inbounds finalcolumns[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+                @inbounds finalcolumns[col] = makechain(SVec{Date}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
             elseif column isa SVec{DateTime}
-                chain = makechain(SVec{DateTime}, column, N, col, pertaskcolumns, limit)
-                @inbounds finalcolumns[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+                @inbounds finalcolumns[col] = makechain(SVec{DateTime}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
             elseif column isa SVec{Time}
-                chain = makechain(SVec{Time}, column, N, col, pertaskcolumns, limit)
-                @inbounds finalcolumns[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+                @inbounds finalcolumns[col] = makechain(SVec{Time}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
             elseif column isa Vector{Union{Missing, Bool}}
-                chain = makechain(Vector{anymissing(flags[col]) ? Union{Missing, Bool} : Bool}, column, N, col, pertaskcolumns, limit)
-                @inbounds finalcolumns[col] = chain
+                @inbounds finalcolumns[col] = makechain(Vector{anymissing(flags[col]) ? Union{Missing, Bool} : Bool}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
             elseif column isa Vector{UInt32}
-                chain = makechain(Vector{UInt32}, column, N, col, pertaskcolumns, limit)
+                chain = makechain(Vector{UInt32}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
                 makeandsetpooled!(finalcolumns, col, chain, refs, flags, categorical)
             elseif column isa Vector{PosLen}
-                chain = makechain(Vector{PosLen}, column, N, col, pertaskcolumns, limit)
+                chain = makechain(Vector{PosLen}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
                 if anymissing(flags[col])
                     @inbounds finalcolumns[col] = LazyStringVector{Union{String, Missing}}(buf, options.e, chain)
                 else
                     @inbounds finalcolumns[col] = LazyStringVector{String}(buf, options.e, chain)
                 end
             elseif column isa MissingVector
-                chain = makechain(MissingVector, column, N, col, pertaskcolumns, limit)
-                @inbounds finalcolumns[col] = chain
+                @inbounds finalcolumns[col] = makechain(MissingVector, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
                 types[col] = Missing
             elseif nonmissingtype(types[col]) <: SmallIntegers
                 T = types[col]
-                chain = makechain(Vector{T}, column, N, col, pertaskcolumns, limit)
-                @inbounds finalcolumns[col] = anymissing(flags[col]) ? chain : chain
+                @inbounds finalcolumns[col] = makechain(Vector{T}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
             else
-                chain = makechain(typeof(column), column, N, col, pertaskcolumns, limit)
-                @inbounds finalcolumns[col] = anymissing(flags[col]) ? SentinelArray(chain) : chain
+                @inbounds finalcolumns[col] = makechain(typeof(column), column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
                 # error("unhandled column type: $(typeof(column))")
             end
         end
