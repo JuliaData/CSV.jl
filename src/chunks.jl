@@ -81,7 +81,7 @@ end
 
 function Base.iterate(x::Chunks, i=1)
     i >= length(x.ranges) && return nothing
-    f = File(x.h; startingbyteposition=x.ranges[i], endingbyteposition=(x.ranges[i + 1] - (i != length(x.ranges))), threaded=x.threaded, typemap=x.typemap, tasks=x.tasks, debug=x.debug)
+    f = File(x.h; finalizebuffer=false, startingbyteposition=x.ranges[i], endingbyteposition=(x.ranges[i + 1] - (i != length(x.ranges))), threaded=x.threaded, typemap=x.typemap, tasks=x.tasks, debug=x.debug)
     return f, i + 1
 end
 
