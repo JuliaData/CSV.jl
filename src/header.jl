@@ -38,7 +38,7 @@ Checks whether a character or string is valid for use as a delimiter.  If
 Throws an error if `delim` is invalid.
 """
 function checkvaliddelim(delim)
-    delim != nothing && !isvaliddelim(delim) &&
+    delim !== nothing && !isvaliddelim(delim) &&
         throw(ArgumentError("invalid delim argument = '$(escape_string(string(delim)))', "*
                             "the following delimiters are invalid: '\\r', '\\n', '\\0'"))
 end
