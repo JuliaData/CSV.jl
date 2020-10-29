@@ -74,7 +74,7 @@ function Chunks(source;
     rowsguess, ncols, buf, len, datapos, options = h.rowsguess, h.cols, h.buf, h.len, h.datapos, h.options
     N = tasks > rowsguess || rowsguess < 100 ? 1 : tasks == 1 ? 8 : tasks
     chunksize = div(len - datapos, N)
-    ranges = [i == 0 ? datapos : i == N ? len : (datapos + chunksize * i) for i = 0:N]
+    ranges = Int64[i == 0 ? datapos : i == N ? len : (datapos + chunksize * i) for i = 0:N]
     findrowstarts!(buf, len, options, ranges, ncols, h.types, h.flags, lines_to_check)
     return Chunks(h, threaded, typemap, tasks, debug, ranges)
 end
