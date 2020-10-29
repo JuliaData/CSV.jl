@@ -482,6 +482,7 @@ for chunk in chunks
     rows += length(chunk)
 end
 @test rows == 10000
+@test Tables.partitions(chunks) === chunks
 
 # 668
 buf = IOBuffer("""
