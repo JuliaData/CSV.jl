@@ -84,3 +84,5 @@ function Base.iterate(x::Chunks, i=1)
     f = File(x.h; startingbyteposition=x.ranges[i], endingbyteposition=(x.ranges[i + 1] - (i != length(x.ranges))), threaded=x.threaded, typemap=x.typemap, tasks=x.tasks, debug=x.debug)
     return f, i + 1
 end
+
+Tables.partitions(x::Chunks) = x
