@@ -39,6 +39,9 @@ Read and parses a delimited file, materializing directly using the `sink` functi
 `CSV.read` supports all the same keyword arguments as [`CSV.File`](@ref).
 """
 function read(source, sink=nothing; copycols::Bool=false, kwargs...)
+    if sink === nothing
+        throw(ArgumentError("provide a valid sink argument, like `CSV.read(source, DataFrame)`"))
+    end
     Tables.CopiedColumns(CSV.File(source; kwargs...)) |> sink
 end
 
