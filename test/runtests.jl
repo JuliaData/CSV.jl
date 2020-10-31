@@ -1,4 +1,4 @@
-using Test, CSV, Mmap, Dates, Tables, CategoricalArrays, PooledArrays, CodecZlib, FilePathsBase, SentinelArrays, Parsers
+using Test, CSV, Mmap, Dates, Tables, PooledArrays, CodecZlib, FilePathsBase, SentinelArrays, Parsers
 
 const dir = joinpath(dirname(pathof(CSV)), "..", "test", "testfiles")
 
@@ -21,25 +21,6 @@ include("iteration.jl")
 end # @testset "CSV.File"
 
 include("write.jl")
-
-@testset "CategoricalArray levels (including ordering)" begin
-    f = CSV.File(IOBuffer("X\nb\nc\na\nc"), types=[CategoricalValue{String, UInt32}])
-    v = f.X[1]
-    @test v == "b"
-    @test levels(v.pool) == ["a", "b", "c"]
-
-    f = @test_deprecated CSV.File(IOBuffer("X\nb\nc\na\nc"), categorical=true)
-    v = f.X[1]
-    @test v == "b"
-    @test levels(v.pool) == ["a", "b", "c"]
-
-    f = @test_deprecated CSV.File(IOBuffer("X\nb\nc\n\nc"), categorical=true, ignoreemptylines=false)
-    v = f.X[1]
-    @test v == "b"
-    @test levels(v.pool) == ["b", "c"]
-    @test typeof(f.X) == CategoricalArray{Union{Missing, String},1,UInt32,String,CategoricalValue{String, UInt32},Missing}
-
-end
 
 @testset "PooledArrays" begin
 

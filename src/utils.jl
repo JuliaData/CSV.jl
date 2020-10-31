@@ -172,7 +172,7 @@ function allocate(rowsguess, ncols, types, flags, refs)
     columns = Vector{AbstractVector}(undef, ncols)
     for i = 1:ncols
         @inbounds columns[i] = allocate(lazystrings(flags[i]) && (types[i] === String || types[i] === Union{String, Missing}) ? PosLen : types[i], rowsguess)
-        if types[i] === PooledString || types[i] ===  Union{PooledString, Missing} || types[i] === CategoricalValue{String, UInt32} || types[i] ===  Union{CategoricalValue{String, UInt32}, Missing}
+        if types[i] === PooledString || types[i] ===  Union{PooledString, Missing}
             refs[i] = RefPool()
         end
     end
@@ -191,8 +191,6 @@ allocate(::Type{String}, len) = SentinelVector{String}(undef, len)
 allocate(::Type{Union{String, Missing}}, len) = SentinelVector{String}(undef, len)
 allocate(::Type{PooledString}, len) = Vector{UInt32}(undef, len)
 allocate(::Type{Union{PooledString, Missing}}, len) = Vector{UInt32}(undef, len)
-allocate(::Type{CategoricalValue{String, UInt32}}, len) = Vector{UInt32}(undef, len)
-allocate(::Type{Union{CategoricalValue{String, UInt32}, Missing}}, len) = Vector{UInt32}(undef, len)
 allocate(::Type{Bool}, len) = Vector{Union{Missing, Bool}}(undef, len)
 allocate(::Type{Union{Missing, Bool}}, len) = Vector{Union{Missing, Bool}}(undef, len)
 allocate(::Type{T}, len) where {T <: SmallIntegers} = Vector{Union{Missing, T}}(undef, len)

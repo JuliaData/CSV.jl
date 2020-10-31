@@ -206,7 +206,6 @@ function File(source;
     type=nothing,
     types=nothing,
     typemap::Dict=Dict{Type, Type}(),
-    categorical=nothing,
     pool::Union{Bool, Real}=0.1,
     lazystrings::Bool=false,
     strict::Bool=false,
@@ -215,7 +214,7 @@ function File(source;
     parsingdebug::Bool=false,
     kw...)
 
-    h = Header(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, use_mmap, ignoreemptylines, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, false)
+    h = Header(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, use_mmap, ignoreemptylines, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, false)
     return File(h; debug=debug, typemap=typemap, kw...)
 end
 
@@ -231,7 +230,7 @@ function File(h::Header;
     maxwarnings::Int=100,
     debug::Bool=false,
     )
-    rowsguess, ncols, buf, len, datapos, datarow, options, coloptions, positions, types, flags, pool, categorical, customtypes = h.rowsguess, h.cols, h.buf, h.len, h.datapos, h.datarow, h.options, h.coloptions, h.positions, h.types, h.flags, h.pool, h.categorical, h.customtypes
+    rowsguess, ncols, buf, len, datapos, datarow, options, coloptions, positions, types, flags, pool, customtypes = h.rowsguess, h.cols, h.buf, h.len, h.datapos, h.datarow, h.options, h.coloptions, h.positions, h.types, h.flags, h.pool, h.customtypes
     if startingbyteposition !== nothing
         datapos = startingbyteposition
     end
@@ -294,7 +293,7 @@ function File(h::Header;
     refs = Vector{RefPool}(undef, ncols)
     if threaded === true
         # multithreaded
-        finalrows, columns = multithreadparse(types, flags, buf, options, coloptions, rowsguess, datarow - 1, pool, refs, ncols, typemap, h.categorical, customtypes, limit, tasks, ranges, maxwarnings, debug)
+        finalrows, columns = multithreadparse(types, flags, buf, options, coloptions, rowsguess, datarow - 1, pool, refs, ncols, typemap, customtypes, limit, tasks, ranges, maxwarnings, debug)
     else
         if limit !== nothing
             rowsguess = limit
@@ -308,7 +307,7 @@ function File(h::Header;
             column = columns[i]
             if column isa Vector{UInt32}
                 # make a PooledArray given a columns' values (Vector{UInt32}) and refs (RefPool)
-                makeandsetpooled!(columns, i, column, refs, flags, h.categorical)
+                makeandsetpooled!(columns, i, column, refs, flags)
             elseif column isa Vector{PosLen} || column isa ChainedVector{PosLen, Vector{PosLen}}
                 # string column parsed lazily; return a LazyStringVector
                 if anymissing(flags[i])
@@ -404,48 +403,19 @@ function makechain(::Type{T}, column, N, col, pertaskcolumns, limit, anymissing,
     else
         x = ChainedVector([convert(vectype(T), parent(pertaskcolumns[i][col])) for i = 1:N])
     end
-    # chain = Vector{anymissing ? T : vectype(T)}(undef, N)
-    # @inbounds chain[1] = parent(column)
-    # for i = 2:N
-    #     @inbounds tp = pertaskcolumns[i][col]
-    #     if tp isa T
-    #         @inbounds chain[i] = parent(tp)
-    #     else
-    #         @inbounds chain[i] = convert(T, tp)
-    #     end
-    # end
-    # x = ChainedVector(chain)
     if limit !== nothing && limit < length(x)
         resize!(x, limit)
     end
     return x
 end
 
-function makeandsetpooled!(columns, i, column, refs, flags, categorical)
-    if categorical
-        colrefs = isassigned(refs, i) ? refs[i].refs : Dict{String, UInt32}()
-        if anymissing(flags[i]) && haskey(colrefs, missing)
-            missingref = colrefs[missing]
-            delete!(colrefs, missing)
-            colrefs = convert(Dict{String, UInt32}, colrefs)
-            for j = 1:length(column)
-                @inbounds column[j] = ifelse(column[j] === missingref, UInt32(0), column[j])
-            end
-        else
-            colrefs = convert(Dict{String, UInt32}, colrefs)
-        end
-        pool = CategoricalPool(colrefs)
-        A = CategoricalArray{anymissing(flags[i]) ? Union{String, Missing} : String, 1}(column, pool)
-        levels!(A, sort(levels(A)))
-        columns[i] = A
-    else
-        r = isassigned(refs, i) ? (anymissing(flags[i]) ? refs[i].refs : convert(Dict{String, UInt32}, refs[i].refs)) : Dict{String, UInt32}()
-        columns[i] = PooledArray(PooledArrays.RefArray(column), r)
-    end
+function makeandsetpooled!(columns, i, column, refs, flags)
+    r = isassigned(refs, i) ? (anymissing(flags[i]) ? refs[i].refs : convert(Dict{String, UInt32}, refs[i].refs)) : Dict{String, UInt32}()
+    columns[i] = PooledArray(PooledArrays.RefArray(column), r)
     return
 end
 
-function multithreadparse(types, flags, buf, options, coloptions, rowsguess, datarow, pool, refs, ncols, typemap, categorical, customtypes, limit, N, ranges, maxwarnings, debug)
+function multithreadparse(types, flags, buf, options, coloptions, rowsguess, datarow, pool, refs, ncols, typemap, customtypes, limit, N, ranges, maxwarnings, debug)
     rowchunkguess = cld(rowsguess, N)
     debug && println("parsing using $N tasks: $rowchunkguess rows chunked at positions: $ranges")
     pertaskcolumns = Vector{Vector{AbstractVector}}(undef, N)
@@ -536,7 +506,7 @@ end # @static if VERSION >= v"1.3-DEV"
                 @inbounds finalcolumns[col] = makechain(Vector{anymissing(flags[col]) ? Union{Missing, Bool} : Bool}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
             elseif column isa Vector{UInt32}
                 chain = makechain(Vector{UInt32}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
-                makeandsetpooled!(finalcolumns, col, chain, refs, flags, categorical)
+                makeandsetpooled!(finalcolumns, col, chain, refs, flags)
             elseif column isa Vector{PosLen}
                 chain = makechain(Vector{PosLen}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
                 if anymissing(flags[col])

@@ -1,11 +1,10 @@
-using CSV, Dates, WeakRefStrings, CategoricalArrays, Tables
+using CSV, Dates, WeakRefStrings, Tables
 using FilePathsBase
 using FilePathsBase: /
 
 const default_table = (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9])
 
 const weakrefs = StringVector{WeakRefString{UInt8}}(["hey", "hey", "hey"])
-const cats = CategoricalVector{String, UInt32}(["b", "a", "b"])
 
 const table_types = (
     col1=[true, false, true],
@@ -16,7 +15,6 @@ const table_types = (
     col6=["hey", "there", "sailor"],
     col7=[weakrefs[1], weakrefs[2], weakrefs[3]],
     col8=weakrefs,
-    col9=cats,
 )
 
 @testset "CSV.write" begin
@@ -55,7 +53,7 @@ const table_types = (
         (
             table_types,
             NamedTuple(),
-            "col1,col2,col3,col4,col5,col6,col7,col8,col9\ntrue,4.1,NaN,2017-01-01,2017-01-01T04:05:06.007,hey,hey,hey,b\nfalse,5.2,Inf,2018-01-01,2018-01-01T04:05:06.007,there,hey,hey,a\ntrue,4.0e10,-Inf,2019-01-01,2019-01-01T04:05:06.007,sailor,hey,hey,b\n"
+            "col1,col2,col3,col4,col5,col6,col7,col8\ntrue,4.1,NaN,2017-01-01,2017-01-01T04:05:06.007,hey,hey,hey\nfalse,5.2,Inf,2018-01-01,2018-01-01T04:05:06.007,there,hey,hey\ntrue,4.0e10,-Inf,2019-01-01,2019-01-01T04:05:06.007,sailor,hey,hey\n"
         ),
         (
             default_table,
