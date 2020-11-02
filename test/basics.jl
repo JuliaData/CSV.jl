@@ -532,14 +532,6 @@ f = CSV.File(IOBuffer("col1,col2,col3\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.
 @test length(f) == 4
 @test f isa CSV.File{false}
 
-# 706
-f = CSV.File(IOBuffer("a,b\n1,2"); types = Dict{Symbol,Type}(
-               :a => CategoricalValue{String,UInt32},
-               :b => Union{Missing, CategoricalValue{String,UInt32}},
-       ))
-@test f.a[1] == "1"
-@test f.b[1] == "2"
-
 # 726
 f = CSV.File(IOBuffer("col1,col2,col3,col4,col5\na,b,c,d,e\n" * "a,b,c,d\n"^101))
 @test length(f) == 102

@@ -62,7 +62,6 @@ function Chunks(source;
     type=nothing,
     types=nothing,
     typemap::Dict=Dict{Type, Type}(),
-    categorical=nothing,
     pool::Union{Bool, Real}=0.1,
     lazystrings::Bool=false,
     strict::Bool=false,
@@ -70,7 +69,7 @@ function Chunks(source;
     debug::Bool=false,
     parsingdebug::Bool=false)
 
-    h = Header(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, use_mmap, ignoreemptylines, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, false)
+    h = Header(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, use_mmap, ignoreemptylines, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, false)
     rowsguess, ncols, buf, len, datapos, options = h.rowsguess, h.cols, h.buf, h.len, h.datapos, h.options
     N = tasks > rowsguess || rowsguess < 100 ? 1 : tasks == 1 ? 8 : tasks
     chunksize = div(len - datapos, N)

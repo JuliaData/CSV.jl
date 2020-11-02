@@ -17,8 +17,6 @@ using PooledArrays
 # it also provides the MissingVector and ChainedVector array types
 using SentinelArrays
 
-using CategoricalArrays, DataFrames
-
 struct Error <: Exception
     msg::String
 end
@@ -42,8 +40,7 @@ Read and parses a delimited file, materializing directly using the `sink` functi
 """
 function read(source, sink=nothing; copycols::Bool=false, kwargs...)
     if sink === nothing
-        Base.depwarn("`CSV.read(input; kw...)` is deprecated in favor of `using DataFrames; CSV.read(input, DataFrame; kw...)", :read)
-        sink = DataFrame
+        throw(ArgumentError("provide a valid sink argument, like `CSV.read(source, DataFrame)`"))
     end
     Tables.CopiedColumns(CSV.File(source; kwargs...)) |> sink
 end
