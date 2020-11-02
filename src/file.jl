@@ -517,7 +517,7 @@ end # @static if VERSION >= v"1.3-DEV"
             elseif column isa MissingVector
                 @inbounds finalcolumns[col] = makechain(MissingVector, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
                 types[col] = Missing
-            elseif nonmissingtype(types[col]) <: SmallIntegers
+            elseif Base.nonmissingtype(types[col]) <: SmallIntegers
                 T = types[col]
                 @inbounds finalcolumns[col] = makechain(Vector{T}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
             else
