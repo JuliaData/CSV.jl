@@ -132,7 +132,6 @@ function Rows(source;
     type=nothing,
     types=nothing,
     typemap::Dict=Dict{Type, Type}(),
-    categorical=nothing,
     pool::Union{Bool, Real}=0.1,
     lazystrings::Bool=true,
     strict::Bool=false,
@@ -143,7 +142,7 @@ function Rows(source;
     maxwarnings::Int=100,
     kw...)
 
-    h = Header(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, use_mmap, ignoreemptylines, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, categorical, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, true)
+    h = Header(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, use_mmap, ignoreemptylines, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, true)
     columns = allocate(1, h.cols, h.types, h.flags, nothing)
     values = all(x->x == Union{String, Missing}, h.types) && lazystrings ? Vector{PosLen}(undef, h.cols) : Vector{Any}(undef, h.cols)
     finaltypes = copy(h.types)
