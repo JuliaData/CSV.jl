@@ -6,6 +6,7 @@ Write a [Tables.jl interface input](https://github.com/JuliaData/Tables.jl) to a
 Alternatively, `CSV.RowWriter` creates a row iterator, producing a csv-formatted string for each row in an input table.
 
 Supported keyword arguments include:
+* `bufsize::Int=2^22`: The length of the buffer to use when writing each csv-formatted row; default 4MB; if a row is larger than the `bufsize` an error is thrown
 * `delim::Union{Char, String}=','`: a character or string to print out as the file's delimiter
 * `quotechar::Char='"'`: ascii character to use for quoting text fields that may contain delimiters or newlines
 * `openquotechar::Char`: instead of `quotechar`, use `openquotechar` and `closequotechar` to support different starting and ending quote characters
@@ -165,10 +166,11 @@ end
 function write(sch::Tables.Schema{names}, rows, file, opts;
         append::Bool=false,
         header::Union{Bool, Vector}=String[],
+        bufsize::Int=2^22
     ) where {names}
     colnames = !(header isa Vector) || isempty(header) ? names : header
     cols = length(colnames)
-    len = 2^22
+    len = bufsize
     buf = Vector{UInt8}(undef, len)
     pos = 1
     with(file, append) do io
@@ -192,8 +194,9 @@ end
 function write(::Nothing, rows, file, opts;
         append::Bool=false,
         header::Union{Bool, Vector}=String[],
+        bufsize::Int=2^22
     )
-    len = 2^22
+    len = bufsize
     buf = Vector{UInt8}(undef, len)
     pos = 1
     state = iterate(rows)
