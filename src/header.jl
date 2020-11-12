@@ -87,7 +87,7 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     streaming)
 
     # initial argument validation and adjustment
-    !isa(source, IO) && !isa(source, Vector{UInt8}) && !isa(source, Cmd) && !isfile(source) &&
+    !isa(source, IO) && !isa(source, AbstractVector{UInt8}) && !isa(source, Cmd) && !isfile(source) &&
         throw(ArgumentError("\"$source\" is not a valid file"))
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
     checkvaliddelim(delim)
@@ -105,7 +105,7 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
     datarow = datarow == -1 ? (isa(header, Vector{Symbol}) || isa(header, Vector{String}) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
     debug && println("header is: $header, datarow computed as: $datarow")
-    # getsource will turn any input into a `Vector{UInt8}`
+    # getsource will turn any input into a `AbstractVector{UInt8}`
     buf, pos, len = getsource(source)
     # skip over initial BOM character, if present
     pos = consumeBOM(buf, pos)
