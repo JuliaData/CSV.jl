@@ -541,4 +541,8 @@ f = CSV.File(IOBuffer("col1\n\n \n  \n1\n2\n3"), missingstrings=["", " ", "  "],
 @test length(f) == 6
 @test isequal(f.col1, [missing, missing, missing, 1, 2, 3])
 
+f = CSV.File(codeunits("a\n1"))
+@test length(f) == 1
+@test f.a == [1]
+
 end
