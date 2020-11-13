@@ -329,4 +329,12 @@ const table_types = (
     CSV.write(io, Tuple[(1,), (2,)], header=false)
     @test String(take!(io)) == "1\n2\n"
 
+    # parition writing
+    io = IOBuffer()
+    io2 = IOBuffer()
+    CSV.write([io, io2], Tables.partitioner((default_table, default_table)); partition=true)
+    @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
+    @test String(take!(io2)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
+
+
 end # @testset "CSV.write"

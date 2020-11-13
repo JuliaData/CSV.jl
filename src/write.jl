@@ -21,6 +21,7 @@ Supported keyword arguments include:
 * `decimal='.'`: character to use as the decimal point when writing floating point numbers
 * `transform=(col,val)->val`: a function that is applied to every cell e.g. we can transform all `nothing` values to `missing` using `(col, val) -> something(val, missing)`
 * `bom=false`: whether to write a UTF-8 BOM header (0xEF 0xBB 0xBF) or not
+* `partition::Bool=false`: by passing `true`, the `table` argument is expected to implement `Tables.partitions` and the `file` argument can either be an indexable collection of `IO`, file `String`s, or a single file `String` that will have an index appended to the name
 """
 function write end
 
@@ -146,6 +147,7 @@ function write(file, itr;
     bom::Bool=false,
     append::Bool=false,
     writeheader=nothing,
+    partition::Bool=false,
     kwargs...)
     checkvaliddelim(delim)
     if writeheader !== nothing
@@ -158,9 +160,36 @@ function write(file, itr;
     oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
     e = escapechar % UInt8
     opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring), transform, bom)
-    rows = Tables.rows(itr)
-    sch = Tables.schema(rows)
-    return write(sch, rows, file, opts; append=append, header=header, kwargs...)
+    if partition
+        if file isa IO
+            throw(ArgumentError("must pass single file name as a String, or iterable of filenames or IO arguments"))
+        end
+        outfiles = file isa String ? String[] : file
+        @sync for (i, part) in enumerate(Tables.partitions(itr))
+            @static if VERSION >= v"1.3-DEV"
+                Threads.@spawn begin
+                    if file isa String
+                        push!(outfiles, string(file, "_$i"))
+                    end
+                    write(outfiles[i], part; delim=delim, quotechar=quotechar, openquotechar=openquotechar, closequotechar=closequotechar, escapechar=escapechar, newline=newline,
+                        decimal=decimal, dateformat=dateformat, quotestrings=quotestrings, missingstring=missingstring, transform=transform, bom=bom, append=append,
+                        writeheader=writeheader, partition=false, kwargs...)
+                end
+            else
+                if file isa String
+                    push!(outfiles, string(file, "_$i"))
+                end
+                write(outfiles[i], part; delim=delim, quotechar=quotechar, openquotechar=openquotechar, closequotechar=closequotechar, escapechar=escapechar, newline=newline,
+                    decimal=decimal, dateformat=dateformat, quotestrings=quotestrings, missingstring=missingstring, transform=transform, bom=bom, append=append,
+                    writeheader=writeheader, partition=false, kwargs...)
+            end
+        end
+        return outfiles
+    else
+        rows = Tables.rows(itr)
+        sch = Tables.schema(rows)
+        return write(sch, rows, file, opts; append=append, header=header, kwargs...)
+    end
 end
 
 function write(sch::Tables.Schema{names}, rows, file, opts;
