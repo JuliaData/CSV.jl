@@ -40,7 +40,7 @@ Read and parses a delimited file, materializing directly using the `sink` functi
 """
 function read(source, sink=nothing; copycols::Bool=false, kwargs...)
     if sink === nothing
-        throw(ArgumentError("provide a valid sink argument, like `CSV.read(source, DataFrame)`"))
+        throw(ArgumentError("provide a valid sink argument, like `using DataFrames; CSV.read(source, DataFrame)`"))
     end
     Tables.CopiedColumns(CSV.File(source; kwargs...)) |> sink
 end
