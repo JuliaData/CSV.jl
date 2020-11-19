@@ -545,4 +545,9 @@ f = CSV.File(codeunits("a\n1"))
 @test length(f) == 1
 @test f.a == [1]
 
+# #780
+missing_strings = ["-999", "NA"]
+f = CSV.File(IOBuffer("col1,col2,col3\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n"), missingstrings=missing_strings)
+@test length(missing_strings) == 2
+
 end

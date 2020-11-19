@@ -115,7 +115,7 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     cq = something(closequotechar, quotechar) % UInt8
     trues = truestrings === nothing ? nothing : truestrings
     falses = falsestrings === nothing ? nothing : falsestrings
-    sentinel = ((isempty(missingstrings) && missingstring == "") || (length(missingstrings) == 1 && missingstrings[1] == "")) ? missing : isempty(missingstrings) ? [missingstring] : missingstrings
+    sentinel = ((isempty(missingstrings) && missingstring == "") || (length(missingstrings) == 1 && missingstrings[1] == "")) ? missing : isempty(missingstrings) ? [missingstring] : copy(missingstrings)
 
     if delim === nothing
         del = isa(source, AbstractString) && endswith(source, ".tsv") ? UInt8('\t') :
