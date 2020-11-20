@@ -95,13 +95,13 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
     checkvaliddelim(delim)
     ignorerepeated && delim === nothing && throw(ArgumentError("auto-delimiter detection not supported when `ignorerepeated=true`; please provide delimiter like `delim=','`"))
     if use_mmap !== nothing
-        Base.depwarn("`use_mmap` keyword argument is deprecated and will be removed in the next release", :Header)
+        Base.depwarn("`use_mmap` keyword argument is deprecated and will be removed in the next release", :Header; force=true)
     end
     if categorical !== nothing
-        Base.depwarn("The `categorical` keyword argument is deprecated; in the next release, you'll need to do `using CategoricalArrays; catg = categorical(f.pooled_column)`, where `pooled_column` is the column of a `CSV.File` you want as a `CategoricalArray`", :Header)
+        Base.depwarn("The `categorical` keyword argument is deprecated; in the next release, you'll need to do `using CategoricalArrays; catg = categorical(f.pooled_column)`, where `pooled_column` is the column of a `CSV.File` you want as a `CategoricalArray`", :Header; force=true)
     end
     if categorical isa Real
-        Base.depwarn("`categorical=$categorical` is deprecated in favor of `pool=$categorical`; categorical is only used to determine CategoricalArray vs. PooledArrays", :Header)
+        Base.depwarn("`categorical=$categorical` is deprecated in favor of `pool=$categorical`; categorical is only used to determine CategoricalArray vs. PooledArrays", :Header; force=true)
         pool = categorical
         categorical = categorical > 0.0
     elseif categorical === true
