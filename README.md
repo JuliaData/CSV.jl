@@ -32,7 +32,7 @@ Contributions are very welcome, as are feature requests and suggestions. Please 
 [docs-stable-img]: https://img.shields.io/badge/docs-stable-blue.svg
 [docs-stable-url]: https://JuliaData.github.io/CSV.jl/stable
 
-[ci-img]: ![CI](https://github.com/JuliaData/CSV.jl/workflows/CI/badge.svg)
+[ci-img]: https://github.com/JuliaData/CSV.jl/workflows/CI/badge.svg
 [ci-url]: https://github.com/JuliaData/CSV.jl/actions?query=workflow%3ACI+branch%3Amaster
 
 [codecov-img]: https://codecov.io/gh/JuliaData/CSV.jl/branch/master/graph/badge.svg
