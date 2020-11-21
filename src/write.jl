@@ -148,7 +148,7 @@ function write(file, itr;
     kwargs...)
     checkvaliddelim(delim)
     if writeheader !== nothing
-        Base.depwarn("`writeheader=$writeheader` is deprecated in favor of `header=$writeheader`", :write; force=true)
+        depwarn("`writeheader=$writeheader` is deprecated in favor of `header=$writeheader`", :write; force=true)
         header = writeheader
     else
         header = !append

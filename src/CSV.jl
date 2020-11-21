@@ -1,5 +1,11 @@
 module CSV
 
+if VERSION < v"1.5"
+    depwarn(x, y; force=false) = Base.depwarn(x, y)
+else
+    depwarn = Base.depwarn
+end
+
 # stdlib
 using Mmap, Dates, Unicode
 # Parsers.jl is used for core type parsing from byte buffers
@@ -38,7 +44,7 @@ Read and parses a delimited file, materializing directly using the `sink` functi
 """
 function read(source, sink=nothing; copycols::Bool=false, kwargs...)
     if sink === nothing
-        Base.depwarn("`CSV.read(input; kw...)` is deprecated in favor of `using DataFrames; CSV.read(input, DataFrame; kw...)", :read; force=true)
+        depwarn("`CSV.read(input; kw...)` is deprecated in favor of `using DataFrames; CSV.read(input, DataFrame; kw...)", :read; force=true)
         sink = DataFrame
     end
     Tables.CopiedColumns(CSV.File(source; kwargs...)) |> sink
