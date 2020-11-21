@@ -29,6 +29,7 @@ jobs:
             version: '1'
             arch: x86
     steps:
+      - run: git config --global core.autocrlf false
       - uses: actions/checkout@v2
       - uses: julia-actions/setup-julia@v1
         with:
