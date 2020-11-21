@@ -545,4 +545,11 @@ f = CSV.File(codeunits("a\n1"))
 @test length(f) == 1
 @test f.a == [1]
 
+# 785
+csv = """1,1,1,1,1,1
+2,2,2,2,2,2
+3,3,3,3,3,3"""
+f = CSV.File(IOBuffer(csv); header=0, types=[UInt64,Int64,UInt128,Int128,UInt32,Int32])
+@test eltype(f.Column1) == UInt64
+
 end

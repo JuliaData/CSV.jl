@@ -171,7 +171,8 @@ const SmallIntegers = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32}
 function allocate(rowsguess, ncols, types, flags, refs)
     columns = Vector{AbstractVector}(undef, ncols)
     for i = 1:ncols
-        @inbounds columns[i] = allocate(lazystrings(flags[i]) && (types[i] === String || types[i] === Union{String, Missing}) ? PosLen : types[i], rowsguess)
+        poslen = lazystrings(flags[i]) && (types[i] === String || types[i] === Union{String, Missing})
+        @inbounds columns[i] = poslen ? allocateposlen(rowsguess) : allocate(types[i], rowsguess)
         if types[i] === PooledString || types[i] ===  Union{PooledString, Missing}
             refs[i] = RefPool()
         end
@@ -182,7 +183,7 @@ end
 # MissingVector is an efficient representation in SentinelArrays.jl package
 allocate(::Type{Union{}}, len) = MissingVector(len)
 allocate(::Type{Missing}, len) = MissingVector(len)
-function allocate(::Type{PosLen}, len)
+function allocateposlen(len)
     A = Vector{PosLen}(undef, len)
     memset!(pointer(A), typemax(UInt8), sizeof(A))
     return A
