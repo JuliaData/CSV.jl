@@ -94,11 +94,13 @@ end
 
 ## lazy strings
 # bit patterns for missing value, int value, escaped string, position and len in lazy string parsing
-const PosLen = UInt64
 
-# primitive type PosLen 64 end
-# PosLen(x::UInt64) = Core.bitcast(PosLen, x)
-# UInt64(x::PosLen) = Core.bitcast(UInt64, x)
+primitive type PosLen 64 end
+PosLen(x::UInt64) = Core.bitcast(PosLen, x)
+UInt64(x::PosLen) = Core.bitcast(UInt64, x)
+
+Base.convert(::Type{PosLen}, x::UInt64) = PosLen(x)
+Base.convert(::Type{UInt64}, x::PosLen) = UInt64(x)
 
 const MISSING_BIT = 0x8000000000000000
 missingvalue(x) = (UInt64(x) & MISSING_BIT) == MISSING_BIT
