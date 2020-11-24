@@ -545,4 +545,23 @@ f = CSV.File(codeunits("a\n1"))
 @test length(f) == 1
 @test f.a == [1]
 
+# 788
+f = CSV.File(IOBuffer("""
+# 1'2
+name
+junk
+1
+"""), comment="#", header=2, datarow=4)
+@test length(f) == 1
+@test f[1].name == 1
+
+f = CSV.File(IOBuffer("""
+# 1'2"
+name
+junk
+1
+"""), comment="#", header=2, datarow=4)
+@test length(f) == 1
+@test f[1].name == 1
+
 end
