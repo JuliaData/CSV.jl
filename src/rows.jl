@@ -70,13 +70,13 @@ end
 
 Supported keyword arguments include:
 * File layout options:
-  * `header=1`: the `header` argument can be an `Int`, indicating the row to parse for column names; or a `Range`, indicating a span of rows to be concatenated together as column names; or an entire `Vector{Symbol}` or `Vector{String}` to use as column names; if a file doesn't have column names, either provide them as a `Vector`, or set `header=0` or `header=false` and column names will be auto-generated (`Column1`, `Column2`, etc.)
+* `header=1`: the `header` argument can be an `Int`, indicating the row to parse for column names; or a `Range`, indicating a span of rows to be concatenated together as column names; or an entire `Vector{Symbol}` or `Vector{String}` to use as column names; if a file doesn't have column names, either provide them as a `Vector`, or set `header=0` or `header=false` and column names will be auto-generated (`Column1`, `Column2`, etc.). Do note that commented rows (see the `comment` keyword argument) *do not* count towards the row number provided for `header`, they are completely ignored by the parser
   * `normalizenames=false`: whether column names should be "normalized" into valid Julia identifier symbols; useful when iterating rows and accessing column values of a row via `getproperty` (e.g. `row.col1`)
-  * `datarow`: an `Int` argument to specify the row where the data starts in the csv file; by default, the next row after the `header` row is used. If `header=0`, then the 1st row is assumed to be the start of data
+  * `datarow`: an `Int` argument to specify the row where the data starts in the csv file; by default, the next row after the `header` row is used. If `header=0`, then the 1st row is assumed to be the start of data; providing a `datarow` or `skipto` argument does _not_ affect the `header` argument.  Do note that commented rows (see the `comment` keyword argument) *do not* count towards the row number provided for `datarow`, they are completely ignored by the parser
   * `skipto::Int`: similar to `datarow`, specifies the number of rows to skip before starting to read data
   * `limit`: an `Int` to indicate a limited number of rows to parse in a csv file; use in combination with `skipto` to read a specific, contiguous chunk within a file
   * `transpose::Bool`: read a csv file "transposed", i.e. each column is parsed as a row
-  * `comment`: rows that begin with this `String` will be skipped while parsing
+  * `comment`: rows that begin with this `String` will be skipped while parsing. Do note that commented rows (see the `comment` keyword argument) *do not* count towards the row number provided for `header` or `datarow` arguments, they are completely ignored by the parser
   * `ignoreemptylines::Bool=true`: whether empty rows/lines in a file should be ignored (if `false`, each column will be assigned `missing` for that empty row)
 * Parsing options:
   * `missingstrings`, `missingstring`: either a `String`, or `Vector{String}` to use as sentinel values that will be parsed as `missing`; by default, only an empty field (two consecutive delimiters) is considered `missing`
