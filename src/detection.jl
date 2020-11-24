@@ -10,7 +10,6 @@ function detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, h
             headerpos = skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, 1, header)
             headerpos = checkcommentandemptyline(buf, headerpos, len, cmt, ignoreemptylines)
             datapos = skiptorow(buf, headerpos, len, oq, eq, cq, cmt, ignoreemptylines, header, datarow)
-            @show headerpos, datapos
         end
     elseif header isa AbstractVector{<:Integer}
         headerpos = skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, 1, header[1])
