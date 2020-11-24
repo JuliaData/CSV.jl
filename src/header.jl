@@ -131,7 +131,7 @@ getdf(x::AbstractDict{Int}, nm, i) = haskey(x, i) ? x[i] : nothing
         lastbyte = buf[end]
         endpos = (lastbyte == UInt8('\r') || lastbyte == UInt8('\n')) +
             (lastbyte == UInt8('\n') && buf[end - 1] == UInt8('\r'))
-        revlen = skiptorow(ReversedBuf(buf), 1 + endpos, len, oq, eq, cq, 0, footerskip) - 2
+        revlen = skiptorow(ReversedBuf(buf), 1 + endpos, len, oq, eq, cq, cmt, ignoreemptylines, 0, footerskip) - 2
         len -= revlen
         debug && println("adjusted for footerskip, len = $(len + revlen - 1) => $len")
     end

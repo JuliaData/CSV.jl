@@ -5,22 +5,19 @@ function detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, h
     if header isa Integer
         if header <= 0
             # no header row in dataset; skip to data
-            datapos = skiptorow(buf, pos, len, oq, eq, cq, 1, datarow)
+            datapos = skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, 1, datarow)
         else
-            headerpos = skiptorow(buf, pos, len, oq, eq, cq, 1, header)
-            headerpos = checkcommentandemptyline(buf, headerpos, len, cmt, ignoreemptylines)
-            datapos = skiptorow(buf, headerpos, len, oq, eq, cq, header, datarow)
+            headerpos = skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, 1, header)
+            datapos = skiptorow(buf, headerpos, len, oq, eq, cq, cmt, ignoreemptylines, header, datarow)
         end
     elseif header isa AbstractVector{<:Integer}
-        headerpos = skiptorow(buf, pos, len, oq, eq, cq, 1, header[1])
-        headerpos = checkcommentandemptyline(buf, headerpos, len, cmt, ignoreemptylines)
-        datapos = skiptorow(buf, headerpos, len, oq, eq, cq, header[1], datarow)
+        headerpos = skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, 1, header[1])
+        datapos = skiptorow(buf, headerpos, len, oq, eq, cq, cmt, ignoreemptylines, header[1], datarow)
     elseif header isa Union{AbstractVector{Symbol}, AbstractVector{String}}
-        datapos = skiptorow(buf, pos, len, oq, eq, cq, 1, datarow)
+        datapos = skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, 1, datarow)
     else
         throw(ArgumentError("unsupported header argument: $header"))
     end
-    datapos = max(1, checkcommentandemptyline(buf, datapos, len, cmt, ignoreemptylines))
     return headerpos, datapos
 end
 
@@ -163,6 +160,8 @@ function incr!(c::ByteValueCounter, b::UInt8)
     return
 end
 
+ignoreemptylines(opts::Parsers.Options{ir, iel}) where {ir, iel} = iel
+
 # given the various header and normalization options, figure out column names for a file
 function detectcolumnnames(buf, headerpos, datapos, len, options, header, normalizenames)
     if header isa Union{AbstractVector{Symbol}, AbstractVector{String}}
@@ -182,7 +181,7 @@ function detectcolumnnames(buf, headerpos, datapos, len, options, header, normal
     elseif header isa AbstractVector{<:Integer}
         names, pos = readsplitline(buf, headerpos, len, options)
         for row = 2:length(header)
-            pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, 1, header[row] - header[row - 1])
+            pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, options.cmt, ignoreemptylines(options), 1, header[row] - header[row - 1])
             fields, pos = readsplitline(buf, pos, len, options)
             for (i, x) in enumerate(fields)
                 names[i] *= "_" * x
@@ -193,9 +192,12 @@ function detectcolumnnames(buf, headerpos, datapos, len, options, header, normal
 end
 
 # efficiently skip from `cur` to `dest` row
-function skiptorow(buf, pos, len, oq, eq, cq, cur, dest)
-    cur >= dest && return pos
-    for _ = 1:(dest - cur)
+function skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, cur, dest)
+    nlines = Ref{Int}(0)
+    pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines, nlines)
+    cur += nlines[]
+    nlines[] = 0
+    while cur < dest && pos < len
         while pos <= len
             @inbounds b = buf[pos]
             pos += 1
@@ -217,12 +219,17 @@ function skiptorow(buf, pos, len, oq, eq, cq, cur, dest)
                 end
             elseif b == UInt8('\n')
                 typeof(buf) == ReversedBuf && pos <= len && buf[pos] == UInt8('\r') && (pos += 1)
+                cur += 1
                 break
             elseif b == UInt8('\r')
                 pos <= len && buf[pos] == UInt8('\n') && (pos += 1)
+                cur += 1
                 break
             end
         end
+        pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines, nlines)
+        cur += nlines[]
+        nlines[] = 0
     end
     return pos
 end
@@ -268,7 +275,9 @@ end
     return pos
 end
 
-function checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines)
+const NLINES = Ref{Int}(0)
+
+function checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines, nlines=NLINES)
     cmtptr, cmtlen = cmt === nothing ? (C_NULL, 0) : cmt
     ptr = pointer(buf, pos)
     while pos <= len
@@ -278,6 +287,7 @@ function checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines)
             if newpos > pos
                 pos = newpos
                 skipped = true
+                nlines[] += 1
             end
         end
         if cmtlen > 0 && (pos + cmtlen - 1) <= len
@@ -293,6 +303,7 @@ function checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines)
                 end
                 b == UInt8('\r') && pos <= len && buf[pos + 1] == UInt8('\n') && (pos += 1)
                 pos += 1
+                nlines[] += 1
             end
         end
         (skipped | matched) || break
