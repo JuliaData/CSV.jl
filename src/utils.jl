@@ -411,6 +411,7 @@ end
 Base.size(a::ReversedBuf) = size(a.buf)
 Base.IndexStyle(::Type{ReversedBuf}) = Base.IndexLinear()
 Base.getindex(a::ReversedBuf, i::Int) = a.buf[end + 1 - i]
+Base.pointer(a::ReversedBuf, pos::Integer=1) = pointer(a.buf, length(a.buf) + 1 - pos)
 
 memset!(ptr, value, num) = ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), ptr, value, num)
 
