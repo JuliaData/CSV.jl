@@ -102,7 +102,7 @@ testfiles = [
         NamedTuple{(:Column1, :Column2, :Column3), Tuple{Float64, Float64, Float64}},
         (Column1 = [1.0, 4.0, 7.0], Column2 = [2.0, 5.0, 8.0], Column3 = [3.0, 6.0, 9.0])
     ),
-    ("test_2_footer_rows.csv", (header=1, footerskip=2),
+    ("test_2_footer_rows.csv", (header=4, footerskip=2),
         (3, 3),
         NamedTuple{(:col1, :col2, :col3), Tuple{Int64, Int64, Int64}},
         (col1 = [1, 4, 7], col2 = [2, 5, 8], col3 = [3, 6, 9])
@@ -532,7 +532,7 @@ testfiles = [
         NamedTuple{(:a, :b, :c), Tuple{Int64, Int64, Int64}},
         (a=[1,7], b=[2,8], c=[3,9])
     ),
-    ("test_comment_first_row.csv", (comment="#", header=1),
+    ("test_comment_first_row.csv", (comment="#", header=2),
         (2, 3),
         NamedTuple{(:a, :b, :c), Tuple{Int64, Int64, Int64}},
         (a=[1,7], b=[2,8], c=[3,9])
