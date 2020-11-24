@@ -701,7 +701,7 @@ end
                     options.silencewarnings || numwarnings[] > maxwarnings || toomanycolumns(ncols, rowoffset + row)
                     numwarnings[] += 1
                     # ignore the rest of the line
-                    pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, 1, 2)
+                    pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, options.cmt, ignoreemptylines(options), 1, 2)
                 end
             end
         end
