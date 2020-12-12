@@ -1,12 +1,13 @@
 
 # CSV
 
+[![CI](https://github.com/JuliaData/CSV.jl/workflows/CI/badge.svg)](https://github.com/JuliaData/CSV.jl/actions?query=workflow%3ACI)
+[![codecov](https://codecov.io/gh/JuliaData/CSV.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/JuliaData/CSV.jl)
+[![deps](https://juliahub.com/docs/CSV/deps.svg)](https://juliahub.com/ui/Packages/CSV/HHBkp?t=2)
+[![version](https://juliahub.com/docs/CSV/version.svg)](https://juliahub.com/ui/Packages/CSV/HHBkp)
+[![pkgeval](https://juliahub.com/docs/CSV/pkgeval.svg)](https://juliahub.com/ui/Packages/CSV/HHBkp)
+
 *A fast, flexible delimited file reader/writer for Julia.*
-
-| **Documentation**                                                               | **Build Status**                                                                                |
-|:-------------------------------------------------------------------------------:|:-----------------------------------------------------------------------------------------------:|
-| [![][docs-stable-img]][docs-stable-url] [![][docs-latest-img]][docs-latest-url] | [![][ci-img]][ci-url] [![][codecov-img]][codecov-url] |
-
 
 ## Installation
 
