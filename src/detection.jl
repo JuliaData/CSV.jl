@@ -128,8 +128,9 @@ function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, delim
             end
             if d == UInt8('\n')
                 maxcnt = 0
-                for attempted_delim in (UInt8(','), UInt8('\t'), UInt8(' '), UInt8('|'), UInt8(';'), UInt8(':'))
+                for attempted_delim in (UInt8(','), UInt8('\t'), UInt8('|'), UInt8(';'), UInt8(':'))
                     cnt = headerbvc.counts[Int(attempted_delim)]
+                    # @show Char(attempted_delim), cnt, maxcnt
                     if cnt > maxcnt
                         d = attempted_delim
                         maxcnt = cnt
