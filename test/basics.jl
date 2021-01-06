@@ -564,4 +564,9 @@ junk
 @test length(f) == 1
 @test f[1].name == 1
 
+# 799
+f = CSV.File(IOBuffer("Created Date\nToday\n"))
+@test length(f) == length(f.names)
+@test f[1][Symbol("Created Date")] == "Today"
+
 end
