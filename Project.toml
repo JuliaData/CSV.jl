@@ -15,7 +15,7 @@ Unicode = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
 [compat]
 FilePathsBase = "0.6,0.7,0.8,0.9"
 Parsers = "1"
-PooledArrays = "0.5"
+PooledArrays = "0.5, 1.0"
 SentinelArrays = "1.2"
 Tables = "1.1"
 WeakRefStrings = "0.5,0.6"
