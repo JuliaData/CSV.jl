@@ -331,6 +331,8 @@ function File(h::Header;
             if types[i] === Union{}
                 types[i] = Missing
                 columns[i] = MissingVector(finalrows)
+            elseif schematype(types[i]) !== types[i]
+                types[i] = schematype(types[i])
             end
         end
     end
