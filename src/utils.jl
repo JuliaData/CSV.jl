@@ -7,6 +7,10 @@ with the output array type being a `PooledArray`.
 """
 struct PooledString <: AbstractString end
 
+schematype(::Type{T}) where {T} = T
+schematype(::Type{PooledString}) = String
+schematype(::Type{Union{Missing, PooledString}}) = Union{Missing, String}
+
 # PointerString is an internal-only type for efficiently tracking string data + length
 # all strings indexed from a column/row will always be a full String
 # specifically, it allows avoiding materializing full Strings for pooled string columns while parsing
