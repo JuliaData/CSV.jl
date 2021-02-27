@@ -569,4 +569,17 @@ f = CSV.File(IOBuffer("Created Date\nToday\n"))
 @test length(f) == length(f.names)
 @test f[1][Symbol("Created Date")] == "Today"
 
+# 796
+csv = "1, a\n2, b\n3, c\n4, d\n\n"
+f = CSV.File(IOBuffer(csv); skipto=1, footerskip=1)
+@test length(f) == 4
+f = CSV.File(IOBuffer(csv); skipto=1, footerskip=2)
+@test length(f) == 3
+
+csv = "1, a\r\n2, b\r\n3, c\r\n4, d\r\n\r\n"
+f = CSV.File(IOBuffer(csv); skipto=1, footerskip=1)
+@test length(f) == 4
+f = CSV.File(IOBuffer(csv); skipto=1, footerskip=2)
+@test length(f) == 3
+
 end
