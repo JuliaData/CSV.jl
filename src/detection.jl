@@ -265,7 +265,7 @@ end
 @inline function skipemptyrow(buf, pos, len)
     @inbounds b = buf[pos]
     if b == UInt8('\n')
-        return pos + 1
+        return pos + 1 + (typeof(buf) == ReversedBuf && (pos + 1) <= len && buf[pos + 1] == UInt8('\r'))
     elseif b == UInt8('\r')
         if pos + 1 < len && buf[pos + 1] == UInt8('\n')
             return pos + 2
