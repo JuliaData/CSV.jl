@@ -582,4 +582,10 @@ f = CSV.File(IOBuffer(csv); skipto=1, footerskip=1)
 f = CSV.File(IOBuffer(csv); skipto=1, footerskip=2)
 @test length(f) == 3
 
+csv = "1, a\r2, b\r3, c\r4, d\r\r"
+f = CSV.File(IOBuffer(csv); skipto=1, footerskip=1)
+@test length(f) == 4
+f = CSV.File(IOBuffer(csv); skipto=1, footerskip=2)
+@test length(f) == 3
+
 end
