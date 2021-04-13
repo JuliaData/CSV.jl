@@ -15,7 +15,9 @@ schematype(::Type{Union{Missing, PooledString}}) = Union{Missing, String}
 # all strings indexed from a column/row will always be a full String
 # specifically, it allows avoiding materializing full Strings for pooled string columns while parsing
 # and allows a fastpath for materializing a full String when no escaping is needed
-struct PointerString <: AbstractString
+# Since the string type is internal-only, we avoid subtyping AbstractString to avoid
+# invalidating base string methods.
+struct PointerString
     ptr::Ptr{UInt8}
     len::Int
 end
