@@ -515,6 +515,7 @@ end # @static if VERSION >= v"1.3-DEV"
             elseif column isa Vector{UInt32}
                 chain = makechain(Vector{UInt32}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
                 makeandsetpooled!(finalcolumns, col, chain, refs, flags)
+                types[col] = anymissing(flags[col]) ? Union{String, Missing} : String
             elseif column isa Vector{PosLen}
                 chain = makechain(Vector{PosLen}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
                 if anymissing(flags[col])
