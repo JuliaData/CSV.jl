@@ -588,6 +588,9 @@ f = CSV.File(IOBuffer(csv); skipto=1, footerskip=1)
 f = CSV.File(IOBuffer(csv); skipto=1, footerskip=2)
 @test length(f) == 3
 
-f = CSV.File(IOBuffer(join(rand(("a", "b", "c"), 500), "\n")); header=false, threaded=true)
+f = CSV.File(IOBuffer(join(rand(["a", "b", "c"], 500), "\n")); header=false, threaded=true)
+rt = Tables.rowtable(f)
+@test length(rt) == 500
+@test eltype(rt) == NamedTuple{(:Column1,), Tuple{String}}
 
 end
