@@ -78,6 +78,8 @@ Base.length(r::RowWriter) = length(r.source) + r.writeheader
 Base.size(r::RowWriter) = (length(r.source) + r.writeheader,)
 Base.eltype(r::RowWriter) = String
 
+_identity(col, val) = val
+
 function RowWriter(table;
     delim::Union{Char, String}=',',
     quotechar::Char='"',
@@ -89,7 +91,7 @@ function RowWriter(table;
     dateformat=nothing,
     quotestrings::Bool=false,
     missingstring::AbstractString="",
-    transform::Function=(col,val) -> val,
+    transform::Function=_identity,
     bom::Bool=false,
     header::Vector=String[],
     writeheader::Bool=true,
@@ -143,7 +145,7 @@ function write(file, itr;
     dateformat=nothing,
     quotestrings::Bool=false,
     missingstring::AbstractString="",
-    transform::Function=(col,val) -> val,
+    transform::Function=_identity,
     bom::Bool=false,
     append::Bool=false,
     writeheader=nothing,
@@ -337,10 +339,11 @@ writerow(buf, pos, len, io, ::Nothing, row, cols, opts) =
     writerow(buf, pos, len, io, Tables.Schema(Tables.columnnames(row), nothing), row, cols, opts)
 
 function writerow(buf, pos, len, io, sch, row, cols, opts)
-    # ref = Ref{Int}(pos)
     n, d = opts.newline, opts.delim
+    @show sch
     Tables.eachcolumn(sch, row) do val, col, nm
         Base.@_inline_meta
+        @show val
         val = opts.transform(col, val)
         val === nothing && nothingerror(col)
         posx = writecell(buf, pos[], len, io, val, opts)

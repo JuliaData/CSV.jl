@@ -48,39 +48,6 @@ include("write.jl")
 
 end
 
-@testset "LazyStringVector" begin
-
-    buffer = b"heytheresailoresc\\\"aped"
-    e = UInt8('\\')
-    poslens = CSV.PosLen[
-        CSV.poslen(Int16(0), Int64(1), Int64(3)),
-        CSV.poslen(Int16(0), Int64(4), Int64(5)),
-        CSV.poslen(Int16(0), Int64(9), Int64(6)),
-        CSV.poslen(Parsers.ESCAPED_STRING, Int64(15), Int64(8))
-    ]
-    x = CSV.LazyStringVector{String}(buffer, e, poslens)
-    @test x == ["hey", "there", "sailor", "esc\"aped"]
-    @test x[1] == "hey"
-    push!(poslens, CSV.poslen(Parsers.SENTINEL, Int64(0), Int64(0)))
-    x = CSV.LazyStringVector{Union{Missing, String}}(buffer, e, poslens)
-    @test isequal(x, ["hey", "there", "sailor", "esc\"aped", missing])
-
-    poslens = ChainedVector([
-        CSV.PosLen[CSV.poslen(Int16(0), Int64(1), Int64(3))],
-        CSV.PosLen[CSV.poslen(Int16(0), Int64(4), Int64(5))],
-        CSV.PosLen[CSV.poslen(Int16(0), Int64(9), Int64(6))],
-        CSV.PosLen[CSV.poslen(Parsers.ESCAPED_STRING, Int64(15), Int64(8))]
-    ])
-    x = CSV.LazyStringVector{String}(buffer, e, poslens)
-    @test x == ["hey", "there", "sailor", "esc\"aped"]
-    @test x[end] == "esc\"aped"
-    push!(poslens, CSV.poslen(Parsers.SENTINEL, Int64(0), Int64(0)))
-    x = CSV.LazyStringVector{Union{Missing, String}}(buffer, e, poslens)
-    @test isequal(x, ["hey", "there", "sailor", "esc\"aped", missing])
-    @test x[end] === missing
-
-end
-
 @testset "CSV.Rows" begin
 
     rows = CSV.Rows(IOBuffer("X\nb\nc\na\nc"))

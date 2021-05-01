@@ -16,6 +16,7 @@ using PooledArrays
 # SentinelArrays.jl allow efficient conversion from Vector{Union{T, Missing}} to Vector{T}
 # it also provides the MissingVector and ChainedVector array types
 using SentinelArrays
+using WeakRefStrings
 
 struct Error <: Exception
     msg::String

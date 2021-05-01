@@ -436,7 +436,7 @@ f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz
 
 f = CSV.File(joinpath(dir, "promotions.csv"); lazystrings=true)
 @test eltype.(f.columns) == [Float64, Union{Missing, Int64}, Union{Missing, Float64}, String, Union{Missing, String}, String, String, Union{Missing, Int64}]
-@test f.int_string isa CSV.LazyStringVector
+@test f.int_string isa PosLenStringVector
 
 f = CSV.File(joinpath(dir, "promotions.csv"); limit=7500, threaded=true)
 @test length(f) == 7500
@@ -450,7 +450,7 @@ f = CSV.File(joinpath(dir, "escape_row_starts.csv"); tasks=2)
 @test eltype(f.col2) == Int64
 
 f = CSV.File(IOBuffer("col1\nhey\nthere\nsailor"); lazystrings=true)
-@test f.col1 isa CSV.LazyStringVector
+@test f.col1 isa PosLenStringVector
 @test Tables.columnnames(f) == [:col1]
 @test propertynames(f) == [:col1]
 @test occursin("IOBuffer", CSV.getname(f))
@@ -463,7 +463,7 @@ show(f)
 f = CSV.File(joinpath(dir, "big_types.csv"); lazystrings=true, pool=false)
 @test eltype(f.time) == Dates.Time
 @test eltype(f.bool) == Bool
-@test f.lazy isa CSV.LazyStringVector
+@test f.lazy isa PosLenStringVector
 @test eltype(f.lazy) == String
 @test eltype(f.lazy_missing) == Union{String, Missing}
 

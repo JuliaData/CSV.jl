@@ -174,7 +174,7 @@ Supported keyword arguments include:
   * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64; if a `Vector` if provided, it must match the # of columns provided or detected in `header`
   * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `String`; only "standard" types are allowed to be mapped to another type, i.e. `Int64`, `Float64`, `Date`, `DateTime`, `Time`, and `Bool`. If a column of one of those types is "detected", it will be mapped to the specified type.
   * `pool::Union{Bool, Float64}=0.1`: if `true`, *all* columns detected as `String` will be internally pooled; alternatively, the proportion of unique values below which `String` columns should be pooled (by default 0.1, meaning that if the # of unique strings in a column is under 10%, it will be pooled)
-  * `lazystrings::Bool=false`: avoid allocating full strings in string columns; returns a custom `LazyStringVector` array type that *does not* support mutable operations (e.g. `push!`, `append!`, or even `setindex!`). Calling `copy(x)` will materialize a full `Vector{String}`. Also note that each `LazyStringVector` holds a reference to the full input file buffer, so it won't be closed after parsing and trying to delete or modify the file may result in errors (particularly on windows) and generally has undefined behavior. Given these caveats, this setting can help avoid lots of string allocations in large files and lead to faster parsing times.
+  * `lazystrings::Bool=false`: avoid allocating full strings in string columns; returns a custom `PosLenStringVector` array type that *does not* support mutable operations (e.g. `push!`, `append!`, or even `setindex!`). Calling `copy(x)` will materialize a full `Vector{String}`. Also note that each `PosLenStringVector` holds a reference to the full input file buffer, so it won't be closed after parsing and trying to delete or modify the file may result in errors (particularly on windows) and generally has undefined behavior. Given these caveats, this setting can help avoid lots of string allocations in large files and lead to faster parsing times.
   * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
   * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
   * `maxwarnings::Int=100`: if more than `maxwarnings` number of warnings are printed while parsing, further warnings will be silenced by default; for multithreaded parsing, each parsing task will print up to `maxwarnings`
@@ -315,11 +315,11 @@ function File(h::Header;
                 # make a PooledArray given a columns' values (Vector{UInt32}) and refs (RefPool)
                 makeandsetpooled!(columns, i, column, refs, flags)
             elseif column isa Vector{PosLen} || column isa ChainedVector{PosLen, Vector{PosLen}}
-                # string column parsed lazily; return a LazyStringVector
+                # string column parsed lazily; return a PosLenStringVector
                 if anymissing(flags[i])
-                    columns[i] = LazyStringVector{Union{String, Missing}}(buf, options.e, column)
+                    columns[i] = PosLenStringVector{Union{PosLenString, Missing}}(buf, column, options.e)
                 else
-                    columns[i] = LazyStringVector{String}(buf, options.e, column)
+                    columns[i] = PosLenStringVector{PosLenString}(buf, column, options.e)
                 end
             else
                 # if no missing values were parsed for a column, we want to "unwrap" it to a plain Vector{T}
@@ -400,16 +400,24 @@ vectype(T) = T
 
 # while each chunk parses values into a SentinelVector, we invert after parsing is done
 # so the final array type is SentinelVector wrapping a ChainedVector of the raw chunk vectors
-function makechain(::Type{T}, column, N, col, pertaskcolumns, limit, anymissing, sentref=nothing) where {T}
+function makechain(::Type{T}, column, N, col, pertaskcolumns, limit, buf, e, anymissing, sentref=nothing) where {T}
     if T === SVec{Int64}
         # synchronize int sentinels if necessary
         SentinelArrays.newsentinel!((pertaskcolumns[i][col]::SVec{Int64} for i = 1:N)...; force=false)
         sentref[] = column.sentinel
     end
-    if anymissing
-        x = ChainedVector([pertaskcolumns[i][col] for i = 1:N])
+    if T == Vector{PosLen}
+        if anymissing
+            x = ChainedVector([PosLenStringVector{Union{PosLenString, Missing}}(buf, pertaskcolumns[i][col], e) for i = 1:N])
+        else
+            x = ChainedVector([PosLenStringVector{PosLenString}(buf, pertaskcolumns[i][col], e) for i = 1:N])
+        end
     else
-        x = ChainedVector([convert(vectype(T), parent(pertaskcolumns[i][col])) for i = 1:N])
+        if anymissing
+            x = ChainedVector([pertaskcolumns[i][col] for i = 1:N])
+        else
+            x = ChainedVector([convert(vectype(T), parent(pertaskcolumns[i][col])) for i = 1:N])
+        end
     end
     if limit !== nothing && limit < length(x)
         resize!(x, limit)
@@ -499,37 +507,34 @@ end # @static if VERSION >= v"1.3-DEV"
             @inbounds column = pertaskcolumns[1][col]
             if column isa SVec{Int64}
                 sentref = Ref(column.sentinel)
-                @inbounds finalcolumns[col] = makechain(SVec{Int64}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]), sentref)
+                @inbounds finalcolumns[col] = makechain(SVec{Int64}, column, N, col, pertaskcolumns, limit, buf, options.e, anymissing(flags[col]), sentref)
             elseif column isa SVec{Float64}
-                @inbounds finalcolumns[col] = makechain(SVec{Float64}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
+                @inbounds finalcolumns[col] = makechain(SVec{Float64}, column, N, col, pertaskcolumns, limit, buf, options.e, anymissing(flags[col]))
             elseif column isa SVec2{String}
-                @inbounds finalcolumns[col] = makechain(SVec2{String}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
+                @inbounds finalcolumns[col] = makechain(SVec2{String}, column, N, col, pertaskcolumns, limit, buf, options.e, anymissing(flags[col]))
             elseif column isa SVec{Date}
-                @inbounds finalcolumns[col] = makechain(SVec{Date}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
+                @inbounds finalcolumns[col] = makechain(SVec{Date}, column, N, col, pertaskcolumns, limit, buf, options.e, anymissing(flags[col]))
             elseif column isa SVec{DateTime}
-                @inbounds finalcolumns[col] = makechain(SVec{DateTime}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
+                @inbounds finalcolumns[col] = makechain(SVec{DateTime}, column, N, col, pertaskcolumns, limit, buf, options.e, anymissing(flags[col]))
             elseif column isa SVec{Time}
-                @inbounds finalcolumns[col] = makechain(SVec{Time}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
+                @inbounds finalcolumns[col] = makechain(SVec{Time}, column, N, col, pertaskcolumns, limit, buf, options.e, anymissing(flags[col]))
             elseif column isa Vector{Union{Missing, Bool}}
-                @inbounds finalcolumns[col] = makechain(Vector{anymissing(flags[col]) ? Union{Missing, Bool} : Bool}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
+                @inbounds finalcolumns[col] = makechain(Vector{anymissing(flags[col]) ? Union{Missing, Bool} : Bool}, column, N, col, pertaskcolumns, limit, buf, options.e, anymissing(flags[col]))
             elseif column isa Vector{UInt32}
-                chain = makechain(Vector{UInt32}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
+                chain = makechain(Vector{UInt32}, column, N, col, pertaskcolumns, limit, buf, options.e, anymissing(flags[col]))
                 makeandsetpooled!(finalcolumns, col, chain, refs, flags)
             elseif column isa Vector{PosLen}
-                chain = makechain(Vector{PosLen}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
-                if anymissing(flags[col])
-                    @inbounds finalcolumns[col] = LazyStringVector{Union{String, Missing}}(buf, options.e, chain)
-                else
-                    @inbounds finalcolumns[col] = LazyStringVector{String}(buf, options.e, chain)
-                end
+                chain = makechain(Vector{PosLen}, column, N, col, pertaskcolumns, limit, buf, options.e, anymissing(flags[col]))
+                @inbounds finalcolumns[col] = chain
+                types[col] = anymissing(flags[col]) ? Union{PosLenString, Missing} : PosLenString
             elseif column isa MissingVector
-                @inbounds finalcolumns[col] = makechain(MissingVector, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
+                @inbounds finalcolumns[col] = makechain(MissingVector, column, N, col, pertaskcolumns, limit, buf, options.e, anymissing(flags[col]))
                 types[col] = Missing
             elseif Base.nonmissingtype(types[col]) <: SmallIntegers
                 T = types[col]
-                @inbounds finalcolumns[col] = makechain(Vector{T}, column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
+                @inbounds finalcolumns[col] = makechain(Vector{T}, column, N, col, pertaskcolumns, limit, buf, options.e, anymissing(flags[col]))
             else
-                @inbounds finalcolumns[col] = makechain(typeof(column), column, N, col, pertaskcolumns, limit, anymissing(flags[col]))
+                @inbounds finalcolumns[col] = makechain(typeof(column), column, N, col, pertaskcolumns, limit, buf, options.e, anymissing(flags[col]))
                 # error("unhandled column type: $(typeof(column))")
             end
         end
@@ -717,15 +722,15 @@ end
     return pos
 end
 
-@inline function poslen(code, pos, len)
-    pos = Core.bitcast(UInt64, pos) << 20
-    pos |= ifelse(Parsers.sentinel(code), MISSING_BIT, UInt64(0))
-    pos |= ifelse(Parsers.escapedstring(code), ESCAPE_BIT, UInt64(0))
-    return pos | Core.bitcast(UInt64, len)
-end
+# @inline function poslen(code, pos, len)
+#     pos = Core.bitcast(UInt64, pos) << 20
+#     pos |= ifelse(Parsers.sentinel(code), MISSING_BIT, UInt64(0))
+#     pos |= ifelse(Parsers.escapedstring(code), ESCAPE_BIT, UInt64(0))
+#     return pos | Core.bitcast(UInt64, len)
+# end
 
 @inline function setposlen!(column, row, code, pos, len)
-    @inbounds column[row] = poslen(code, pos, len)
+    @inbounds column[row] = PosLen(pos, len, Parsers.sentinel(code), Parsers.escapedstring(code))
     return
 end
 
@@ -858,7 +863,8 @@ function detect(columns, buf, pos, len, options, row, rowoffset, col, typemap, p
             @inbounds setposlen!(column, row, code, vpos, vlen)
         else
             column = allocate(String, rowsguess)
-            @inbounds column[row] = str(buf, options.e, poslen(code, vpos, vlen))
+            poslen = PosLen(vpos, vlen, Parsers.sentinel(code), Parsers.escapedstring(code))
+            @inbounds column[row] = str(buf, options.e, poslen)
         end
         newT = String
     end
@@ -970,7 +976,8 @@ function parsestring2!(flag, column, buf, pos, len, options, row, rowoffset, col
             @inbounds types[col] = Union{String, Missing}
         end
     else
-        @inbounds column[row] = str(buf, options.e, poslen(code, vpos, vlen))
+        poslen = PosLen(vpos, vlen, Parsers.sentinel(code), Parsers.escapedstring(code))
+        @inbounds column[row] = str(buf, options.e, poslen)
     end
     return pos + tlen, code
 end

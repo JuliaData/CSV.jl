@@ -98,24 +98,7 @@ hasmissingtype(T) = T === Missing || T !== ts(T, Missing)
     end
 end
 
-## lazy strings
-# bit patterns for missing value, int value, escaped string, position and len in lazy string parsing
-
-primitive type PosLen 64 end
-PosLen(x::UInt64) = Core.bitcast(PosLen, x)
-UInt64(x::PosLen) = Core.bitcast(UInt64, x)
-
-Base.convert(::Type{PosLen}, x::UInt64) = PosLen(x)
-Base.convert(::Type{UInt64}, x::PosLen) = UInt64(x)
-
-const MISSING_BIT = 0x8000000000000000
-missingvalue(x) = (UInt64(x) & MISSING_BIT) == MISSING_BIT
-
-const ESCAPE_BIT = 0x4000000000000000
-escapedvalue(x) = (UInt64(x) & ESCAPE_BIT) == ESCAPE_BIT
-
-getpos(x) = (UInt64(x) & 0x3ffffffffff00000) >> 20
-getlen(x) = UInt64(x) & 0x00000000000fffff
+import WeakRefStrings: missingvalue, escapedvalue, getpos, getlen
 
 _unsafe_string(p, len) = ccall(:jl_pchar_to_string, Ref{String}, (Ptr{UInt8}, Int), p, len)
 
@@ -130,44 +113,6 @@ end
     escapedvalue(poslen) && return unescape(PointerString(pointer(buf, getpos(poslen)), getlen(poslen)), e)
     pos, len = getpos(poslen), getlen(poslen)
     return _unsafe_string(pointer(buf, getpos(poslen)), getlen(poslen))
-end
-
-struct LazyStringVector{T, A <: AbstractVector{PosLen}} <: AbstractVector{T}
-    buffer::Vector{UInt8}
-    e::UInt8
-    poslens::A
-end
-
-LazyStringVector{T}(buffer, e, poslens::A) where {T, A} = LazyStringVector{T, A}(buffer, e, poslens)
-
-Base.IndexStyle(::Type{LazyStringVector}) = Base.IndexLinear()
-Base.size(x::LazyStringVector) = (length(x.poslens),)
-
-Base.@propagate_inbounds function Base.getindex(x::LazyStringVector{Union{String, Missing}}, i::Int)
-    @boundscheck checkbounds(x, i)
-    @inbounds s = str(x.buffer, x.e, x.poslens[i])
-    return s
-end
-
-Base.@propagate_inbounds function Base.getindex(x::LazyStringVector{String}, i::Int)
-    @boundscheck checkbounds(x, i)
-    @inbounds s = strnomiss(x.buffer, x.e, x.poslens[i])
-    return s
-end
-
-# optimize iterate for ChainedVector
-@inline function Base.iterate(x::LazyStringVector{T}) where {T}
-    st = iterate(x.poslens)
-    st === nothing && return nothing
-    @inbounds s = T === String ? strnomiss(x.buffer, x.e, st[1]) : str(x.buffer, x.e, st[1])
-    return s, st[2]
-end
-
-@inline function Base.iterate(x::LazyStringVector{T}, state) where {T}
-    st = iterate(x.poslens, state)
-    st === nothing && return nothing
-    @inbounds s = T === String ? strnomiss(x.buffer, x.e, st[1]) : str(x.buffer, x.e, st[1])
-    return s, st[2]
 end
 
 ## column array allocating
