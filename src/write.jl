@@ -340,10 +340,8 @@ writerow(buf, pos, len, io, ::Nothing, row, cols, opts) =
 
 function writerow(buf, pos, len, io, sch, row, cols, opts)
     n, d = opts.newline, opts.delim
-    @show sch
     Tables.eachcolumn(sch, row) do val, col, nm
         Base.@_inline_meta
-        @show val
         val = opts.transform(col, val)
         val === nothing && nothingerror(col)
         posx = writecell(buf, pos[], len, io, val, opts)
