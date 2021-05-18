@@ -108,7 +108,7 @@ rows = collect(CSV.File(joinpath(dir, "time.csv"); dateformat="H:M:S"))
 @test rows[2].time == Time(0, 10)
 
 # 388
-f = CSV.File(joinpath(dir, "GSM2230757_human1_umifm_counts.csv"); threaded=false)
+f = CSV.File(joinpath(dir, "GSM2230757_human1_umifm_counts.csv"); threaded=false);
 @test length(f.names) == 20128
 @test length(f) == 3
 
@@ -297,12 +297,6 @@ f = CSV.File(IOBuffer("x\n2019-01-01\n\n"), ignoreemptylines=false)
 @test f.x[1] === Date(2019, 1, 1)
 @test f.x[2] === missing
 
-# use_mmap=false
-f = @test_deprecated CSV.File(IOBuffer("x\n2019-01-01\n\n"), ignoreemptylines=false, use_mmap=false)
-@test (length(f), length(f.names)) == (2, 1)
-@test f.x[1] === Date(2019, 1, 1)
-@test f.x[2] === missing
-
 # types is Dict{String, Type}
 f = CSV.File(IOBuffer("x\n2019-01-01\n\n"), types=Dict("x"=>Date), ignoreemptylines=false)
 @test (length(f), length(f.names)) == (2, 1)
@@ -336,10 +330,7 @@ row = iterate(f, 2)[1]
 @test_throws ArgumentError CSV.File(IOBuffer("x\n1\n2\n3\n#4"); ignorerepeated=true)
 
 # reported by oxinabox on slack; issue w/ manually specified pool column type and 0 rows
-f = CSV.File(IOBuffer("x\n"), types=[CSV.PooledString])
-@test (length(f), length(f.names)) == (0, 1)
-
-f = CSV.File(IOBuffer("x\n"), types=[Union{CSV.PooledString, Missing}])
+f = CSV.File(IOBuffer("x\n"), pool=true)
 @test (length(f), length(f.names)) == (0, 1)
 
 f = CSV.File(IOBuffer("x\n1\n2\n3\n#4"), comment="#")
@@ -399,7 +390,7 @@ f = CSV.File(IOBuffer("x\r\n1\r\n2\r\n3\r\n4\r\n5\r\n"), footerskip=3)
 # 578
 f = CSV.File(IOBuffer("h1234567890123456\t"^2262 * "lasthdr\r\n" *"dummy dummy dummy\r\n"* ("1.23\t"^2262 * "2.46\r\n")^10), datarow=3, threaded=false)
 @test (length(f), length(f.names)) == (10, 2263)
-@test all(x -> eltype(x) == Float64, f.columns)
+@test all(x -> eltype(x) == Float64, Tables.Columns(f))
 
 # Date constructor throws which breaks CSV parsing error handling flow
 f = CSV.File(IOBuffer("date\n2020-05-05\n2020-05-32"))
@@ -435,8 +426,7 @@ f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz
 @test f.wage isa AbstractVector{Union{Missing, Dec64}}
 
 f = CSV.File(joinpath(dir, "promotions.csv"); lazystrings=true)
-@test eltype.(f.columns) == [Float64, Union{Missing, Int64}, Union{Missing, Float64}, String, Union{Missing, String}, String, String, Union{Missing, Int64}]
-@test f.int_string isa PosLenStringVector
+@test eltype.(Tables.Columns(f)) == [Float64, Union{Missing, Int64}, Union{Missing, Float64}, PosLenString, Union{Missing, PosLenString}, PosLenString, PosLenString, Union{Missing, Int64}]
 
 f = CSV.File(joinpath(dir, "promotions.csv"); limit=7500, threaded=true)
 @test length(f) == 7500
@@ -463,26 +453,25 @@ show(f)
 f = CSV.File(joinpath(dir, "big_types.csv"); lazystrings=true, pool=false)
 @test eltype(f.time) == Dates.Time
 @test eltype(f.bool) == Bool
-@test f.lazy isa PosLenStringVector
-@test eltype(f.lazy) == String
-@test eltype(f.lazy_missing) == Union{String, Missing}
+@test eltype(f.lazy) == PosLenString
+@test eltype(f.lazy_missing) == Union{PosLenString, Missing}
 
-r = CSV.Rows(joinpath(dir, "big_types.csv"); lazystrings=false, types=[Dates.Time, Bool, String, Union{String, Missing}])
-row = first(r)
-@test row.time == Dates.Time(12)
-@test row.bool
-@test row.lazy == "hey"
-@test row.lazy_missing === missing
+# r = CSV.Rows(joinpath(dir, "big_types.csv"); lazystrings=false, types=[Dates.Time, Bool, String, Union{String, Missing}])
+# row = first(r)
+# @test row.time == Dates.Time(12)
+# @test row.bool
+# @test row.lazy == "hey"
+# @test row.lazy_missing === missing
 
 @test CSV.File(IOBuffer("col1\n1")).col1 == [1]
 
-rows = 0
-chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); lazystrings=true)
-for chunk in chunks
-    rows += length(chunk)
-end
-@test rows == 10000
-@test Tables.partitions(chunks) === chunks
+# rows = 0
+# chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); lazystrings=true)
+# for chunk in chunks
+#     rows += length(chunk)
+# end
+# @test rows == 10000
+# @test Tables.partitions(chunks) === chunks
 
 # 668
 buf = IOBuffer("""
@@ -587,5 +576,10 @@ f = CSV.File(IOBuffer(csv); skipto=1, footerskip=1)
 @test length(f) == 4
 f = CSV.File(IOBuffer(csv); skipto=1, footerskip=2)
 @test length(f) == 3
+
+f = CSV.File(IOBuffer("a, 0.1, 0.2, 0.3\nb, 0.4"); transpose=true)
+@test length(f) == 3
+@test f.a == [0.1, 0.2, 0.3]
+@test isequal(f.b, [0.4, missing, missing])
 
 end

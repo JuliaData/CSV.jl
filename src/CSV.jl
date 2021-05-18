@@ -4,6 +4,12 @@ if !isdefined(Base, :contains)
     contains(haystack, needle) = occursin(needle, haystack)
 end
 
+if applicable(Core.Compiler.typesubtract, Union{Int, Missing}, Missing)
+    ts(T, S) = Core.Compiler.typesubtract(T, S)
+else
+    ts(T, S) = Core.Compiler.typesubtract(T, S, 16)
+end
+
 # stdlib
 using Mmap, Dates, Unicode
 # Parsers.jl is used for core type parsing from byte buffers
@@ -24,9 +30,13 @@ end
 
 Base.showerror(io::IO, e::Error) = println(io, e.msg)
 
+# constants
+const SINGLE_THREADED_POOL_DEFAULT = 0.75
+const MULTI_THREADED_POOL_DEFAULT = 0.25
+
 include("utils.jl")
 include("detection.jl")
-include("header.jl")
+include("context.jl")
 include("file.jl")
 include("chunks.jl")
 include("rows.jl")

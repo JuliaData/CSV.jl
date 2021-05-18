@@ -256,7 +256,7 @@ function columnname(buf, vpos, vlen, code, options, i)
     if Parsers.sentinel(code) || vlen == 0
         return "Column$i"
     elseif Parsers.escapedstring(code)
-        return unescape(PointerString(pointer(buf, vpos), vlen), options.e)
+        return String(buf, PosLen(vpos, vlen, false, true), options.e)
     else
         return unsafe_string(pointer(buf, vpos), vlen)
     end
@@ -316,115 +316,166 @@ end
 # here we try to "chunk" up a file; given the equally spaced out byte positions in `ranges`, we start at each
 # byte position and start parsing until we find the start of the next row; if the next rows all verify w/ the
 # right # of expected columns then we move on to the next file chunk byte position. If we fail, we start over
-# at the byte position, assuming we were in the a quoted field (and encountered a newline inside the quoted
+# at the byte position, assuming we were in a quoted field (and encountered a newline inside the quoted
 # field the first time through)
-function findrowstarts!(buf, len, options::Parsers.Options{ignorerepeated}, ranges, ncols, types, flags, lines_to_check=5) where {ignorerepeated}
-    totalbytes = 0
-    totalrows = 0
-    detectedtypes = copy(types)
-    for i = 2:(length(ranges) - 1)
-        pos = ranges[i]
-        len = ranges[i + 1]
-        while pos <= len
-            startpos = pos
-            code = Parsers.ReturnCode(0)
-            # assume not in quoted field; start parsing, count ncols + newline and if things match, return
+function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, lines_to_check=5)
+    totalbytes = Threads.Atomic{Int}(0)
+    totalrows = Threads.Atomic{Int}(0)
+    succeeded = Threads.Atomic{Bool}(true)
+    M = lines_to_check * (length(ranges) - 2)
+    samples = Matrix{Any}(undef, M, ncols)
+    @sync for i = 2:(length(ranges) - 1)
+        Threads.@spawn begin
+            pos = ranges[i]
+            len = ranges[i + 1]
             while pos <= len
-                _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
-                pos += tlen
-                if Parsers.newline(code)
-                    # assume we found the correct start of the next row
-                    ranges[i] = pos
+                startpos = pos
+                code = Parsers.ReturnCode(0)
+                attempted_quoted = false
+@label findnextnewline
+                # assume not in quoted field; start parsing, count ncols + newline and if things match, return
+                while pos <= len
+                    _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, opts)
+                    pos += tlen
+                    if Parsers.newline(code)
+                        # assume we found the correct start of the next row
+                        ranges[i] = pos
+                        break
+                    end
+                end
+                # now we read the next `lines_to_check` rows and see if we get the roughly the right # of columns
+                rowstartpos = pos
+                parsedncols = rowsparsed = 0
+                for j = 1:lines_to_check
+                    m = (i - 2) * lines_to_check
+                    n = 1
+                    while pos <= len
+                        _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, opts)
+                        if n <= ncols
+                            col = columns[n]
+                            if missingcol(col.flag)
+
+                            elseif typedetected(col.flag)
+                                T = col.type
+                                y, _code, _vpos, _vlen, _tlen = _parse(T, buf, vpos, vpos + vlen - 1, opts, col)
+                                if Parsers.sentinel(_code)
+                                    val = missing
+                                elseif T === String || T === PosLenString
+                                    val = T(buf, PosLen(vpos, vlen, Parsers.sentinel(_code), Parsers.escapedstring(_code)), opts.e)
+                                else
+                                    val = y
+                                end
+                                if val !== nothing
+                                    samples[m + j, n] = val
+                                end
+                            elseif !typedetected(col.flag) || pooled(col.flag) || maybepooled(col.flag)
+                                x, _, _ = detect(buf, vpos, vpos + vlen - 1, opts)
+                                samples[m + j, n] = x !== nothing ? x : PosLenString(buf, PosLen(vpos, vlen, Parsers.sentinel(code), Parsers.escapedstring(code)), opts.e)
+                            end
+                        end
+                        pos += tlen
+                        if Parsers.newline(code)
+                            rowsparsed += 1
+                            break
+                        end
+                        n += 1
+                        parsedncols += 1
+                    end
+                end
+                f40 = ncols * 0.4
+                if (ncols - f40) <= (parsedncols / rowsparsed) <= (ncols + f40)
+                    # ok, seems like we figured out the right start for parsing on this chunk
+                    Threads.atomic_add!(totalbytes, pos - rowstartpos)
+                    Threads.atomic_add!(totalrows, lines_to_check)
                     break
                 end
-            end
-            # now we read the next 5 rows and see if we get the right # of columns
-            rowstartpos = pos
-            correct = true
-            for j = 1:lines_to_check
-                for col = 1:ncols
-                    _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
-                    if !typedetected(flags[col])
-                        D = detectedtypes[col]
-                        det = detect(buf, vpos, vpos + vlen - 1, options)
-                        T = typeof(something(det, ""))
-                        if T !== Missing && T !== String
-                            detectedtypes[col] = promote_types(D, T)
-                            # if detectedtypes[col] !== D
-                            #     println("promoted column type from $D to $(detectedtypes[col]) for task chunk = $i")
-                            # end
-                        end
-                    end
-                    pos += tlen
-                    pos > len && break
+                if attempted_quoted
+                    # wah, wah, waaaah. we tried starting outside a quoted field
+                    # we started assuming we were _inside_, but can't seem to parse
+                    # anything that matches roughly what we're expecting, bail on
+                    # multithreaded parsing
+                    succeeded[] = false
+                    break
                 end
-                correct &= Parsers.newline(code)
-            end
-            if correct
-                # boom, we read a whole row and got correct # of columns
-                totalbytes += pos - rowstartpos
-                totalrows += lines_to_check
-                for col = 1:ncols
-                    types[col] = detectedtypes[col]
+                # else, assume we were inside a quoted field:
+                pos = startpos
+                # if first byte is quotechar, need to check previous char for escapechar and if so, skip forward
+                if buf[pos] == opts.cq && buf[pos - 1] == opts.e
+                    pos += 1
                 end
-                break
-            end
-            # else, assume we were inside a quoted field:
-            pos = startpos
-            # if first byte is quotechar, need to check previous char for escapechar and if so, skip forward
-            if buf[pos] == options.cq && buf[pos - 1] == options.e
-                pos += 1
-            end
-            # start parsing until we find quotechar (ignoring escaped quote chars)
-            cq, eq = options.cq, options.e
-            while pos <= len
-                b = buf[pos]
-                pos += 1
-                if b == eq
-                    if pos > len
-                        break
-                    elseif eq == cq && buf[pos] != cq
-                        break
-                    end
+                # start parsing until we find quotechar (ignoring escaped quote chars)
+                cq, eq = opts.cq, opts.e
+                while pos <= len
                     b = buf[pos]
                     pos += 1
-                elseif b == cq
-                    break
-                end
-            end
-            col = 1
-            while pos <= len
-                _, code, _, _, tlen = Parsers.xparse(String, buf, pos, len, options)
-                if !typedetected(flags[col])
-                    T = typeof(something(detect(buf, pos, len, options), ""))
-                    if T !== Missing && T !== String
-                        types[col] = promote_types(types[col], T)
+                    if b == eq
+                        if pos > len
+                            break
+                        elseif eq == cq && buf[pos] != cq
+                            break
+                        end
+                        b = buf[pos]
+                        pos += 1
+                    elseif b == cq
+                        break
                     end
                 end
-                pos += tlen
-                col += 1
-                if Parsers.newline(code)
-                    # assume we found the correct start of the next row
-                    ranges[i] = pos
-                    break
+                # ok, we made it out of a quoted field
+                attempted_quoted = true
+                @goto findnextnewline
+            end
+        end
+    end
+    finalrows = totalrows[]
+    !succeeded[] && return totalbytes[] / finalrows, false
+    # alright, we successfully identified the starting byte positions for each chunk
+    # now let's take a look at our samples we parsed, and juice up our column types/flags
+    for n = 1:ncols
+        col = columns[n]
+        flag = col.flag
+        type = col.type
+        mss = 0
+        for m = 1:M
+            if isassigned(samples, m, n)
+                val = samples[m, n]
+                if val === missing
+                    flag |= ANYMISSING
+                elseif val isa PosLenString
+                    mss = max(mss, ncodeunits(val))
+                    type = Union{type, stringtype}
+                else
+                    type = something(promote_types(type, typeof(val)), stringtype)
+                end
+            elseif !typedetected(flag)
+                # if we didn't sample a value that means there weren't enough rows in the chunk
+                # or the row was too short and this column didn't have a value, in which case
+                # we want to treat the cell as `missing`; we can check if enough rows were parsed
+                if M == finalrows
+                    flag |= ANYMISSING
                 end
             end
-            # in the worse case, we read to the end of the file; this shouldn't happen
-            # because we're only identifying the starting byte positions of rows
-            # in the middle of the file; if we hit this, it's most likely a corrupt file
-            # with unquoted delimiters in string cells, or misquoted cells.
-            # but if there's an actual bug here somehow, let's ask the user to tell us about it for now
-            if pos > len
-                return 0.0, false
+        end
+        refpool = nothing
+        if pooled(flag) || maybepooled(flag) || (isnan(col.pool) && type isa StringTypes)
+            refpool = RefPool(type)
+            for m = 1:M
+                if isassigned(samples, m, n)
+                    getref!(refpool, type, samples[m, n])
+                end
+            end
+            if (length(refpool.refs) / finalrows) > MULTI_THREADED_POOL_DEFAULT
+                refpool = nothing
             end
         end
-    end
-    for col = 1:ncols
-        if types[col] !== Union{} && types[col] !== Missing && types[col] !== String && types[col] !== Union{Missing, String}
-            flags[col] |= TYPEDETECTED
+        if refpool !== nothing
+            col.refpool = refpool
+            flag |= POOLED
         end
+        col.flag = flag | (type !== Union{} && type !== Missing ? TYPEDETECTED : 0x00) & ~MAYBEPOOLED
+        col.type = type
+        col.maxstringsize = mss
     end
-    return totalbytes / totalrows, true
+    return totalbytes[] / finalrows, true
 end
 
 function detecttranspose(buf, pos, len, options, header, datarow, normalizenames)
@@ -439,7 +490,7 @@ function detecttranspose(buf, pos, len, options, header, datarow, normalizenames
         columnpositions = Int64[pos]
         datapos = pos
         rows, pos = countfields(buf, pos, len, options)
-        
+        endpositions = Int64[pos]
         # we're now done w/ column 1, if EOF we're done, otherwise, parse column 2's column name
         cols = 1
         while pos <= len
@@ -452,16 +503,16 @@ function detecttranspose(buf, pos, len, options, header, datarow, normalizenames
             row, pos = skiptofield!(buf, pos, len, options, header+1, datarow)
             push!(columnpositions, pos)
             _, pos = countfields(buf, pos, len, options)
+            push!(endpositions, pos)
         end
     elseif isa(header, AbstractRange)
         # column names span several columns
-        columnpositions = Int64[]
-        columnnames = String[]
         throw(ArgumentError("not implemented for transposed csv files"))
     elseif pos > len
         # emtpy file, use column names if provided
         datapos = pos
         columnpositions = Int64[]
+        endpositions = Int64[]
         columnnames = header isa Vector && !isempty(header) ? String[string(x) for x in header] : []
         rows = 0
     else
@@ -473,6 +524,7 @@ function detecttranspose(buf, pos, len, options, header, datarow, normalizenames
         columnpositions = Int64[pos]
         datapos = pos
         rows, pos = countfields(buf, pos, len, options)
+        endpositions = Int64[pos]
         # we're now done w/ column 1, if EOF we're done, otherwise, parse column 2's column name
         cols = 1
         while pos <= len
@@ -482,9 +534,10 @@ function detecttranspose(buf, pos, len, options, header, datarow, normalizenames
             push!(columnnames, isa(header, Integer) || isempty(header) ? "Column$cols" : string(header[cols]))
             push!(columnpositions, pos)
             _, pos = countfields(buf, pos, len, options)
+            push!(endpositions, pos)
         end
     end
-    return rows, makeunique(map(x->normalizenames ? normalizename(x) : Symbol(x), columnnames))::Vector{Symbol}, columnpositions
+    return rows, makeunique(map(x -> normalizenames ? normalizename(x) : Symbol(x), columnnames))::Vector{Symbol}, columnpositions, endpositions
 end
 
 function skiptofield!(buf, pos, len, options, row, header)

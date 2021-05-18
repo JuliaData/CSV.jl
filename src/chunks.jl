@@ -41,7 +41,7 @@ function Chunks(source;
     ignoreemptylines::Bool=true,
     threaded::Union{Bool, Nothing}=nothing,
     tasks::Integer=Threads.nthreads(),
-    lines_to_check::Integer=5,
+    lines_to_check::Integer=30,
     select=nothing,
     drop=nothing,
     # parsing options

@@ -193,7 +193,6 @@ Base.eltype(r::Rows) = Row2
 Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
 
 const EMPTY_TYPEMAP = Dict{Type, Type}()
-const EMPTY_REFS = RefPool[]
 
 @inline function setcustom!(::Type{T}, values, columns, i) where {T}
     if @generated
