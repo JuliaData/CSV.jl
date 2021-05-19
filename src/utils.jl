@@ -66,6 +66,7 @@ tupcat(::Type{Tuple{T, T2, T3, T4}}, S) where {T, T2, T3, T4} = Tuple{T, T2, T3,
 tupcat(::Type{T}, S) where {T <: Tuple} = Tuple{Any[(fieldtype(T, i) for i = 1:fieldcount(T))..., S]...}
 
 const StringTypes = Union{Type{String}, Type{PosLenString}, #=Type{<:InlineString}=#}
+const StringMissingTypes = Union{Type{Union{Missing, String}}, Type{Union{Missing, PosLenString}}, #=Type{Union{Missing, <:InlineString}}=#}
 
 # we define our own bit flag on a Parsers.ReturnCode to signal if a column needs to promote to string
 const PROMOTE_TO_STRING = 0b0100000000000000 % Int16
@@ -337,3 +338,30 @@ Base.getindex(a::ReversedBuf, i::Int) = a.buf[end + 1 - i]
 Base.pointer(a::ReversedBuf, pos::Integer=1) = pointer(a.buf, length(a.buf) + 1 - pos)
 
 memset!(ptr, value, num) = ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), ptr, value, num)
+
+function promoteunion(T, S)
+    new = promote_type(T, S)
+    return isabstracttype(new) ? Union{T, S} : new
+end
+
+# lazily treat array with abstract eltype as having eltype of Union of all concrete elements
+struct ConcreteEltype{T, A} <: AbstractVector{T}
+    data::A
+end
+
+concrete_or_concreteunion(T) = isconcretetype(T) ||
+    (T isa Union && concrete_or_concreteunion(T.a) && concrete_or_concreteunion(T.b))
+
+function ConcreteEltype(x::A) where {A}
+    (isempty(x) || concrete_or_concreteunion(eltype(x))) && return x
+    T = typeof(x[1])
+    for i = 2:length(x)
+        T = promoteunion(T, typeof(x[i]))
+    end
+    return ConcreteEltype{T, A}(x)
+end
+
+Base.IndexStyle(::Type{<:ConcreteEltype}) = Base.IndexLinear()
+Base.size(x::ConcreteEltype) = (length(x.data),)
+Base.eltype(::ConcreteEltype{T, A}) where {T, A} = T
+Base.getindex(x::ConcreteEltype{T}, i::Int) where {T} = getindex(x.data, i)

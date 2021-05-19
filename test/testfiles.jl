@@ -600,7 +600,7 @@ testfiles = [
         (time = [Time(0), Time(0, 10)], value = [1, 2])
     ),
     # https://github.com/JuliaData/DataFrames.jl/issues/1880
-    ("escaped_pooled.csv", (header=[:a, :b, :c], types=Dict(1=>CSV.PooledString)),
+    ("escaped_pooled.csv", (header=[:a, :b, :c], pool=Dict(1=>true)),
         (2, 3),
         NamedTuple{(:a, :b, :c), Tuple{String, String, Float64}},
         (a = ["\\孕晚期下午和晚上血压高\"", "\\孕晚期下午和晚上血压高\""], b = ["为什么中老年人血压不高也要定期测量血压", "晚上睡眠不好会导致血压升高吗"], c = [0.744359, 0.714016])
@@ -650,6 +650,7 @@ testfiles = [
         NamedTuple{(:ID, :INTERLOCK_NUMBER, :INTERLOCK_DESCRIPTION, :TYPE, :CREATE_DATE, :MODIFY_DATE, :USERNAME, :UNIT, :AREA, :PURPOSE, :PID, :LOCATION, :FUNC_DATE, :FUNC_BY, :TECHNICAL_DESCRIPTION, :types), Tuple{Int64, Union{Missing, String}, String, Missing, DateTime, DateTime, String, String, String, String, Missing, Missing, DateTime, Missing, String, String}},
         x -> @test x.CREATE_DATE == [DateTime("2012-02-09T00:00:00"), DateTime("1998-07-22T16:37:01")]
     ))
+    nothing
 end
 
 for test in testfiles

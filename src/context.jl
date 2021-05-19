@@ -258,7 +258,7 @@ end
             end
         end
     else
-        S = type === nothing ? (streaming ? String : Union{}) : type
+        S = type === nothing ? (streaming ? Union{stringtype, Missing} : Union{}) : type
         T = nonmissingtypeunlessmissingtype(S)
         F = flag(S)
         columns = [Column(T, F) for i = 1:ncols]
@@ -301,8 +301,11 @@ end
             # e.g. per-column sentinel, decimal, trues, falses, openquotechar, closequotechar, escapechar, etc.
             if df !== nothing
                 coloptions[i] = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings)
+            else
+                coloptions[i] = options
             end
         end
+        coloptions = ConcreteEltype(coloptions)
     else
         coloptions = nothing
     end
