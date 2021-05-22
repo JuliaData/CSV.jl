@@ -145,13 +145,13 @@ function Rows(source;
     )
     ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptylines, select, drop, limit, false, 1, 0, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, true)
     allocate!(ctx.columns, 1)
-    values = all(x->x.type === stringtype && anymissing(x.flag), ctx.columns) && lazystrings ? Vector{PosLen}(undef, ctx.cols) : Vector{Any}(undef, ctx.cols)
+    values = all(x->x.type === stringtype && x.anymissing, ctx.columns) && lazystrings ? Vector{PosLen}(undef, ctx.cols) : Vector{Any}(undef, ctx.cols)
     columnmap = collect(1:ctx.cols)
-    for i = 1:ctx.cols
+    for i = ctx.cols:-1:1
         col = ctx.columns[i]
-        if willdrop(col.flag)
+        if col.willdrop
             deleteat!(ctx.names, i)
-            deleteat!(ctx.columnmap, i)
+            deleteat!(columnmap, i)
         end
     end
     lookup = Dict(nm=>i for (i, nm) in enumerate(ctx.names))
@@ -209,12 +209,27 @@ Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
     end
 end
 
+function checkwidencolumns!(r::Rows{t, o, o2, ct, V}, cols) where {t, o, o2, ct, V}
+    if cols > length(r.names)
+        # we widened while parsing this row, need to widen other supporting objects
+        for i = (length(r.names) + 1):cols
+            push!(r.values, V === Any ? missing : WeakRefStrings.MISSING_BIT)
+            nm = Symbol(:Column, i)
+            push!(r.names, nm)
+            r.lookup[nm] = length(r.names)
+            push!(r.columnmap, i)
+        end
+    end
+    return
+end
+
 @inline function Base.iterate(r::Rows{transpose, O, O2, IO, customtypes, V, stringtype}, (pos, len, row)=(r.datapos, r.len, 1)) where {transpose, O, O2, IO, customtypes, V, stringtype}
     (pos > len || row > r.limit) && return nothing
-    pos = parserow(1, row, r.numwarnings, r.ctx, r.buf, pos, len, 1, r.datarow + row - 2, r.columns, Val(transpose), r.options, r.coloptions, customtypes)
-    cols = length(r.columns)
-    values = r.reusebuffer ? r.values : Vector{V}(undef, cols)
+    pos = parserow(1, 1, r.numwarnings, r.ctx, r.buf, pos, len, 1, r.datarow + row - 2, r.columns, Val(transpose), r.options, r.coloptions, customtypes)
     columns = r.columns
+    cols = length(columns)
+    checkwidencolumns!(r, cols)
+    values = r.reusebuffer ? r.values : Vector{V}(undef, cols)
     for i = 1:cols
         @inbounds column = columns[i].column
         if column isa MissingVector
@@ -278,8 +293,9 @@ Tables.getcolumn(r::Row2, i::Int) = Tables.getcolumn(r, coltype(getcolumns(r)[i]
 Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Type{T}, i::Int, nm::Symbol) where {T}
     @boundscheck checkbounds(r, i)
     j = getcolumnmap(r)[i]
-    @inbounds val = getvalues(r)[j]
+    values = getvalues(r)
     V = getV(r)
+    @inbounds val = j > length(values) ? (V === PosLen ? WeakRefStrings.MISSING_BIT : missing) : values[j]
     stringtype = getstringtype(r)
     if V === PosLen
         # column type must be stringtype
@@ -315,7 +331,7 @@ Base.@propagate_inbounds function Parsers.parse(::Type{T}, r::Row2, i::Int) wher
         col = getcolumns(r)[i]
         col.type isa StringTypes || stringsonly()
         poslen = getvalues(r)[j]
-        missingvalue(poslen) && return missing
+        WeakRefStrings.missingvalue(poslen) && return missing
         pos = WeakRefStrings.pos(poslen)
         colopts = getcoloptions(r)
         opts = colopts === nothing ? getoptions(r) : colopts[j]
@@ -331,11 +347,11 @@ Base.@propagate_inbounds function detect(r::Row2, i::Int)
         col = getcolumns(r)[i]
         col.type isa StringTypes || stringsonly()
         poslen = getvalues(r)[j]
-        missingvalue(poslen) && return missing
+        WeakRefStrings.missingvalue(poslen) && return missing
         pos = WeakRefStrings.pos(poslen)
         colopts = getcoloptions(r)
         opts = colopts === nothing ? getoptions(r) : colopts[j]
-        x = detect(getbuf(r), pos, pos + WeakRefStrings.len(poslen) - 1, opts)
+        x, _, _ = detect(getbuf(r), pos, pos + WeakRefStrings.len(poslen) - 1, opts)
         return x === nothing ? r[i] : x
     end
 end

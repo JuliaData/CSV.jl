@@ -1,62 +1,32 @@
-# column bit flags; useful so we don't have to pass a bunch of arguments/state around manually
-
-# whether the user provided the type or not; implies TYPEDETECTED
-const USER = 0b00000001
-user(flag) = flag & USER > 0
-
-# whether a column type has been detected yet
-const TYPEDETECTED = 0b00000010
-typedetected(flag) = flag & TYPEDETECTED > 0
-
-# whether any missing values have been found in this column so far
-const ANYMISSING = 0b00000100
-anymissing(flag) = flag & ANYMISSING > 0
-
-nonmissingtypeunlessmissingtype(::Type{T}) where {T} = ifelse(T === Missing, Missing, nonmissingtype(T))
-coltype(col) = ifelse(anymissing(col.flag), Union{col.type, Missing}, col.type)
+# custom types to represent some special parsing states a column might be in
 
 # not just that a column type is Missing, but that we'll end up dropping the column
-# eventually (WILLDROP) or the user specifically set the column type to MISSING
+# eventually (i.e. implies col.willdrop) or the user specifically set the column
+# type to Missing (i.e. col.userprovided && col.type === Missing)
 # a column type may be Missing and we still want to try and detect a proper column type
-# but in MISSING case, we don't; we know the column will *always* be Missing
-const MISSING = 0b00001000
-missingcol(flag) = flag & MISSING > 0
+# but in HardMissing case, we don't; we know the column will *always* be Missing
+struct HardMissing end
 
-# whether a column will be "dropped" from the select/drop keyword arguments
-const WILLDROP = 0b00010000
-willdrop(flag) = flag & WILLDROP > 0
-function willdrop!(columns, i)
-    @inbounds col = columns[i]
-    col.type = Missing
-    col.flag |= WILLDROP | MISSING | TYPEDETECTED
-    return
-end
+willdrop!(columns, i) = setfield!(@inbounds(columns[i]), :willdrop, true)
 
-# when parsing and we think a column might be pooled, but need to check final cardinality
-const MAYBEPOOLED = 0b00100000
-maybepooled(flag) = flag & MAYBEPOOLED > 0
+struct NeedsTypeDetection end
 
-# once we've confirmed a column will be pooled
-const POOLED = 0b01000000
-pooled(flag) = flag & POOLED > 0
-function pooled!(columns, i, p::Float64)
-    @inbounds col = columns[i]
-    col.pool = p
-    if p == 1.0
-        col.flag |= POOLED
-    elseif !isnan(p) && p > 0.0
-        col.flag |= MAYBEPOOLED
-    end
-    return
-end
+nonmissingtypeunlessmissingtype(::Type{T}) where {T} = ifelse(T === Missing, Missing, nonmissingtype(T))
+pooltype(col) = nonmissingtype(keytype(col.refpool.refs))
+finaltype(T) = T
+finaltype(::Type{HardMissing}) = Missing
+finaltype(::Type{NeedsTypeDetection}) = Missing
+coltype(col) = ifelse(col.anymissing, Union{finaltype(col.type), Missing}, finaltype(col.type))
+
+pooled(col) = col.pool == 1.0
+maybepooled(col) = 0.0 < col.pool < 1.0
+
 getpool(x::Bool) = x ? 1.0 : 0.0
-getpool(x::Real) = Float64(x)
-
-flag(T) = T === Union{} ? 0x00 :
-    ((USER | TYPEDETECTED) |
-     (T !== nonmissingtype(T) ? ANYMISSING : 0x00) |
-     (T === Missing ? MISSING | ANYMISSING : 0x00)
-    )
+function getpool(x::Real)
+    y = Float64(x)
+    (isnan(y) || 0.0 <= y <= 1.0) || throw(ArgumentError("pool argument must be in the range: 0.0 <= x <= 1.0"))
+    return y
+end
 
 tupcat(::Type{Tuple{}}, S) = Tuple{S}
 tupcat(::Type{Tuple{T}}, S) where {T} = Tuple{T, S}
@@ -74,8 +44,8 @@ promote_to_string(code) = code & PROMOTE_TO_STRING > 0
 
 @inline function promote_types(@nospecialize(T), @nospecialize(S))
     T === S && return T
-    T === Union{} && return S
-    S === Union{} && return T
+    T === NeedsTypeDetection && return S
+    S === NeedsTypeDetection && return T
     T === Missing && return S
     S === Missing && return T
     T === Int64 && S === Float64 && return S
@@ -110,10 +80,12 @@ function allocate!(columns, rowsguess)
         @inbounds col = columns[i]
         # if the type hasn't been detected yet, then column will get allocated
         # in the detect method while parsing
-        if typedetected(col.flag)
-            if pooled(col.flag) || maybepooled(col.flag)
+        if col.type !== NeedsTypeDetection
+            if pooled(col) || maybepooled(col)
                 col.column = allocate(Pooled, rowsguess)
-                col.refpool = RefPool(col.type)
+                if !isdefined(col, :refpool)
+                    col.refpool = RefPool(col.type)
+                end
             else
                 col.column = allocate(col.type, rowsguess)
             end
@@ -123,7 +95,8 @@ function allocate!(columns, rowsguess)
 end
 
 # MissingVector is an efficient representation in SentinelArrays.jl package
-allocate(::Type{Union{}}, len) = MissingVector(len)
+allocate(::Type{NeedsTypeDetection}, len) = MissingVector(len)
+allocate(::Type{HardMissing}, len) = MissingVector(len)
 allocate(::Type{Missing}, len) = MissingVector(len)
 function allocate(::Type{PosLenString}, len)
     A = Vector{PosLen}(undef, len)
@@ -131,15 +104,20 @@ function allocate(::Type{PosLenString}, len)
     return A
 end
 allocate(::Type{String}, len) = SentinelVector{String}(undef, len)
-allocate(::Type{Union{String, Missing}}, len) = SentinelVector{String}(undef, len)
 allocate(::Type{Pooled}, len) = fill(UInt32(1), len) # initialize w/ all missing values
 allocate(::Type{Bool}, len) = Vector{Union{Missing, Bool}}(undef, len)
-allocate(::Type{Union{Missing, Bool}}, len) = Vector{Union{Missing, Bool}}(undef, len)
 allocate(::Type{T}, len) where {T <: SmallIntegers} = Vector{Union{Missing, T}}(undef, len)
-allocate(::Type{Union{Missing, T}}, len) where {T <: SmallIntegers} = Vector{Union{Missing, T}}(undef, len)
-allocate(T, len) = SentinelVector{Base.nonmissingtype(T)}(undef, len)
+allocate(T, len) = SentinelVector{T}(undef, len)
 
 reallocate!(A, len) = resize!(A, len)
+function reallocate!(A::Vector{UInt32}, len)
+    oldlen = length(A)
+    resize!(A, len)
+    for i = (oldlen + 1):len
+        @inbounds A[i] = UInt32(1)
+    end
+    return
+end
 # when reallocating, we just need to make sure the missing bit is set for lazy string PosLen
 function reallocate!(A::Vector{PosLen}, len)
     oldlen = length(A)

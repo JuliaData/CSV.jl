@@ -15,8 +15,10 @@ RefPool(::Type{T}=String) where {T} = RefPool(Dict{Union{T, Missing}, UInt32}(mi
 
 mutable struct Column
     # fields that are copied per task when parsing
-    type::Type # always a single, concrete type; no Union{T, Missing}; missingness is tracked in ANYMISSING flag
-    flag::UInt8
+    type::Type # always a single, concrete type; no Union{T, Missing}; missingness is tracked in anymissing field
+    anymissing::Bool # whether any missing values have been encountered while parsing
+    userprovidedtype::Bool # whether the column type was provided by the user or not
+    willdrop::Bool # whether we'll drop this column from the final columnset; computed from select/drop arguments
     maxstringsize::UInt8
     pool::Float64
     # lazily/manually initialized fields
@@ -28,20 +30,29 @@ mutable struct Column
     endposition::Int # transpose column ending position
     # options::Parsers.Options
 
-    Column(type::Type, flag::UInt8, mss::UInt8=0x00, pool=0.0) = new(type, flag, mss, pool)
+    Column(type::Type, anymissing::Bool, userprovidedtype::Bool, willdrop::Bool, maxstringsize::UInt8, pool::Float64) =
+        new(type, anymissing, userprovidedtype, willdrop, maxstringsize, pool)
+end
+
+function Column(type::Type)
+    T = nonmissingtypeunlessmissingtype(type)
+    return Column(type === Missing ? HardMissing : T,
+        type >: Missing,
+        type !== NeedsTypeDetection,
+        false, 0x00, 0.0)
 end
 
 # creating a per-task column from top-level column
 function Column(x::Column)
     @assert isdefined(x, :lock)
-    y = Column(x.type, x.flag, x.maxstringsize, x.pool)
+    y = Column(x.type, x.anymissing, x.userprovidedtype, x.willdrop, x.maxstringsize, x.pool)
     y.lock = x.lock # parent and child columns _share_ the same lock
     if isdefined(x, :options)
         y.options = x.options
     end
     if isdefined(x, :refpool)
         # if parent has refpool from sampling, make a copy
-        y.refpool = copy(x.refpool)
+        y.refpool = RefPool(copy(x.refpool.refs), x.refpool.lastref)
     end
     # specifically _don't_ copy/re-use x.column; that needs to be allocated fresh per parsing task
     return y
@@ -70,6 +81,7 @@ struct Context
     chunkpositions::Vector{Int}
     maxwarnings::Int
     debug::Bool
+    streaming::Bool
 end
 
 """
@@ -147,7 +159,7 @@ end
     (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
     checkvaliddelim(delim)
     ignorerepeated && delim === nothing && throw(ArgumentError("auto-delimiter detection not supported when `ignorerepeated=true`; please provide delimiter like `delim=','`"))
-    if lazystrings
+    if lazystrings && !streaming
         Base.depwarn("`lazystrings` keyword argument is deprecated; use `stringtype=PosLenString` instead", :Context)
         stringtype = PosLenString
     end
@@ -250,31 +262,26 @@ end
         length(types) == ncols || throw(ArgumentError("provided `types::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(types)) != $ncols`"))
         columns = Vector{Column}(undef, ncols)
         for i = 1:ncols
-            S = types[i]
-            T = nonmissingtypeunlessmissingtype(S)
-            columns[i] = Column(T, flag(S))
-            if nonstandardtype(T) !== Union{}
-                customtypes = tupcat(customtypes, nonstandardtype(T))
+            col = Column(types[i])
+            columns[i] = col
+            if nonstandardtype(col.type) !== Union{}
+                customtypes = tupcat(customtypes, nonstandardtype(col.type))
             end
         end
     else
-        S = type === nothing ? (streaming ? Union{stringtype, Missing} : Union{}) : type
-        T = nonmissingtypeunlessmissingtype(S)
-        F = flag(S)
-        columns = [Column(T, F) for i = 1:ncols]
+        T = type === nothing ? (streaming ? Union{stringtype, Missing} : NeedsTypeDetection) : type
+        columns = Vector{Column}(undef, ncols)
         if types isa AbstractDict
             for i = 1:ncols
-                S2 = getordefault(types, names[i], i, S)
-                typ = nonmissingtypeunlessmissingtype(S2)
-                if typ !== Union{}
-                    col = columns[i]
-                    col.type = typ
-                    col.flag = flag(S2)
-                    if nonstandardtype(typ) !== Union{}
-                        customtypes = tupcat(customtypes, nonstandardtype(typ))
-                    end
+                S = getordefault(types, names[i], i, T)
+                col = Column(S)
+                columns[i] = col
+                if nonstandardtype(col.type) !== Union{}
+                    customtypes = tupcat(customtypes, nonstandardtype(col.type))
                 end
             end
+        else
+            foreach(i -> columns[i] = Column(T), 1:ncols)
         end
     end
     if transpose
@@ -312,19 +319,21 @@ end
 
     # pool keyword
     finalpool = 0.0
-    if pool isa AbstractVector
-        length(pool) == ncols || throw(ArgumentError("provided `pool::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(pool)) != $ncols`"))
-        for i = 1:ncols
-            pooled!(columns, i, getpool(pool[i]))
-        end
-    elseif pool isa AbstractDict
-        for i = 1:ncols
-            pooled!(columns, i, getpool(getordefault(pool, names[i], i, NaN)))
-        end
-    else
-        finalpool = getpool(pool)
-        for i = 1:ncols
-            pooled!(columns, i, finalpool)
+    if !streaming
+        if pool isa AbstractVector
+            length(pool) == ncols || throw(ArgumentError("provided `pool::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(pool)) != $ncols`"))
+            for i = 1:ncols
+                columns[i].pool = getpool(pool[i])
+            end
+        elseif pool isa AbstractDict
+            for i = 1:ncols
+                columns[i].pool = getpool(getordefault(pool, names[i], i, NaN))
+            end
+        else
+            finalpool = getpool(pool)
+            for i = 1:ncols
+                columns[i].pool = finalpool
+            end
         end
     end
 
@@ -379,7 +388,7 @@ end
     # determine if we can use threads while parsing
     limit = something(limit, typemax(Int64))
     minrows = min(limit, rowsguess)
-    if threaded === nothing && tasks > 1 && !transpose && minrows > (tasks * 5) && (minrows * ncols) >= 5_000
+    if threaded === nothing && !streaming && tasks > 1 && !transpose && minrows > (tasks * 5) && (minrows * ncols) >= 5_000
         threaded = true
     elseif threaded === true
         if transpose
@@ -455,6 +464,7 @@ end
         tasks,
         chunkpositions,
         maxwarnings,
-        debug
+        debug,
+        streaming
     )
 end

@@ -167,11 +167,7 @@ ignoreemptylines(opts::Parsers.Options{ir, iel}) where {ir, iel} = iel
 function detectcolumnnames(buf, headerpos, datapos, len, options, header, normalizenames)
     if header isa Union{AbstractVector{Symbol}, AbstractVector{String}}
         fields, pos = readsplitline(buf, datapos, len, options)
-        if isempty(header)
-            return [Symbol(:Column, i) for i = 1:length(fields)]
-        elseif headerpos > 0
-            length(header) == length(fields) || throw(ArgumentError("The length of provided header ($(length(header))) doesn't match the number of columns in data ($(length(fields)))"))
-        end
+        isempty(header) && return [Symbol(:Column, i) for i = 1:length(fields)]
         names = header
     elseif headerpos == 0
         fields, pos = readsplitline(buf, datapos, len, options)
@@ -353,24 +349,24 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, lines_to_
                         _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, opts)
                         if n <= ncols
                             col = columns[n]
-                            if missingcol(col.flag)
-
-                            elseif typedetected(col.flag)
-                                T = col.type
-                                y, _code, _vpos, _vlen, _tlen = _parse(T, buf, vpos, vpos + vlen - 1, opts, col)
-                                if Parsers.sentinel(_code)
-                                    val = missing
-                                elseif T === String || T === PosLenString
-                                    val = T(buf, PosLen(vpos, vlen, Parsers.sentinel(_code), Parsers.escapedstring(_code)), opts.e)
-                                else
-                                    val = y
-                                end
-                                if val !== nothing
-                                    samples[m + j, n] = val
-                                end
-                            elseif !typedetected(col.flag) || pooled(col.flag) || maybepooled(col.flag)
+                            T = col.type
+                            if T === NeedsTypeDetection
                                 x, _, _ = detect(buf, vpos, vpos + vlen - 1, opts)
                                 samples[m + j, n] = x !== nothing ? x : PosLenString(buf, PosLen(vpos, vlen, Parsers.sentinel(code), Parsers.escapedstring(code)), opts.e)
+                            elseif pooled(col) || maybepooled(col)
+                                # if the user provided a column type, we'll trust/respect that
+                                # but if it's also going to be pooled, we might as well try to
+                                # build up a decent refpool during sampling to provide the individual
+                                # parsing tasks so they hopefully stay in sync as much as possible
+                                T = col.type
+                                y, _code, _vpos, _vlen, _tlen = Parsers.xparse(T, buf, vpos, vpos + vlen - 1, opts)
+                                if Parsers.sentinel(_code)
+                                    samples[m + j, n] = missing
+                                elseif T === String || T === PosLenString
+                                    samples[m + j, n] = T(buf, PosLen(vpos, vlen, Parsers.sentinel(_code), Parsers.escapedstring(_code)), opts.e)
+                                else
+                                    samples[m + j, n] = y
+                                end
                             end
                         end
                         pos += tlen
@@ -432,48 +428,59 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, lines_to_
     # now let's take a look at our samples we parsed, and juice up our column types/flags
     for n = 1:ncols
         col = columns[n]
-        flag = col.flag
         type = col.type
         mss = 0
+        # scan through sampled values
         for m = 1:M
             if isassigned(samples, m, n)
+                # we really only care about cases where we sampled something, which is when
+                # a column type was originally NeedsTypeDetection or userprovidedtype && pooled or maybepooled
                 val = samples[m, n]
                 if val === missing
-                    flag |= ANYMISSING
+                    col.anymissing = true
                 elseif val isa PosLenString
                     mss = max(mss, ncodeunits(val))
-                    type = Union{type, stringtype}
+                    type = stringtype
                 else
                     type = something(promote_types(type, typeof(val)), stringtype)
                 end
-            elseif !typedetected(flag)
-                # if we didn't sample a value that means there weren't enough rows in the chunk
-                # or the row was too short and this column didn't have a value, in which case
-                # we want to treat the cell as `missing`; we can check if enough rows were parsed
-                if M == finalrows
-                    flag |= ANYMISSING
+            end
+        end
+        # build up a refpool of initial values if applicable
+        # if not, or cardinality is too high, we'll set the column to non-pooled at this stage
+        if type === NeedsTypeDetection
+            # if the type is still NeedsTypeDetection, that means we only sampled `missing` values
+            # in that case, the type will stay NeedsTypeDetection and may be detected while parsing
+            # by individual chunks over the whole file
+            # as for pooling, we'll only pool in this case if user explicitly asked for pooling
+            # so maybepooled(col) or isnan(col.pool) won't turn into PooledArray for multithreading
+            # unless we sample something other than `missing` during this stage
+            if !pooled(col)
+                col.pool = 0.0
+            end
+        else
+            if (pooled(col) || maybepooled(col) || (isnan(col.pool) && type isa StringTypes))
+                refpool = RefPool(type)
+                for m = 1:M
+                    if isassigned(samples, m, n)
+                        val = samples[m, n]
+                        if val === missing || val isa type || (val isa PosLenString && type isa StringTypes)
+                            getref!(refpool, type, val)
+                        end
+                    end
                 end
-            end
-        end
-        refpool = nothing
-        if pooled(flag) || maybepooled(flag) || (isnan(col.pool) && type isa StringTypes)
-            refpool = RefPool(type)
-            for m = 1:M
-                if isassigned(samples, m, n)
-                    getref!(refpool, type, samples[m, n])
+                if pooled(col) || ((length(refpool.refs) - 1) / finalrows) <= ifelse(isnan(col.pool), MULTI_THREADED_POOL_DEFAULT, col.pool)
+                   col.refpool = refpool 
+                   col.pool = 1.0
+                else
+                    col.pool = 0.0
                 end
-            end
-            if (length(refpool.refs) / finalrows) > MULTI_THREADED_POOL_DEFAULT
-                refpool = nothing
+            else
+                col.pool = 0.0
             end
         end
-        if refpool !== nothing
-            col.refpool = refpool
-            flag |= POOLED
-        end
-        col.flag = flag | (type !== Union{} && type !== Missing ? TYPEDETECTED : 0x00) & ~MAYBEPOOLED
         col.type = type
-        col.maxstringsize = mss
+        col.maxstringsize = min(typemax(UInt8), mss % UInt8)
     end
     return totalbytes[] / finalrows, true
 end

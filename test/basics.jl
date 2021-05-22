@@ -425,8 +425,8 @@ f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz
 @test f.first isa AbstractVector{CSVString}
 @test f.wage isa AbstractVector{Union{Missing, Dec64}}
 
-f = CSV.File(joinpath(dir, "promotions.csv"); lazystrings=true)
-@test eltype.(Tables.Columns(f)) == [Float64, Union{Missing, Int64}, Union{Missing, Float64}, PosLenString, Union{Missing, PosLenString}, PosLenString, PosLenString, Union{Missing, Int64}]
+f = CSV.File(joinpath(dir, "promotions.csv"); stringtype=PosLenString)
+@test Tables.schema(f).types == (Float64, Union{Missing, Int64}, Union{Missing, Float64}, PosLenString, Union{Missing, PosLenString}, PosLenString, PosLenString, Union{Missing, Int64})
 
 f = CSV.File(joinpath(dir, "promotions.csv"); limit=7500, threaded=true)
 @test length(f) == 7500
@@ -439,7 +439,7 @@ f = CSV.File(joinpath(dir, "escape_row_starts.csv"); tasks=2)
 @test eltype(f.col1) == String
 @test eltype(f.col2) == Int64
 
-f = CSV.File(IOBuffer("col1\nhey\nthere\nsailor"); lazystrings=true)
+f = CSV.File(IOBuffer("col1\nhey\nthere\nsailor"); stringtype=PosLenString)
 @test f.col1 isa PosLenStringVector
 @test Tables.columnnames(f) == [:col1]
 @test propertynames(f) == [:col1]
@@ -450,23 +450,23 @@ f = CSV.File(IOBuffer("col1\nhey\nthere\nsailor"); lazystrings=true)
 @test columntable(f) == columntable(collect(f))
 show(f)
 
-f = CSV.File(joinpath(dir, "big_types.csv"); lazystrings=true, pool=false)
+f = CSV.File(joinpath(dir, "big_types.csv"); stringtype=PosLenString, pool=false)
 @test eltype(f.time) == Dates.Time
 @test eltype(f.bool) == Bool
 @test eltype(f.lazy) == PosLenString
 @test eltype(f.lazy_missing) == Union{PosLenString, Missing}
 
-# r = CSV.Rows(joinpath(dir, "big_types.csv"); lazystrings=false, types=[Dates.Time, Bool, String, Union{String, Missing}])
-# row = first(r)
-# @test row.time == Dates.Time(12)
-# @test row.bool
-# @test row.lazy == "hey"
-# @test row.lazy_missing === missing
+r = CSV.Rows(joinpath(dir, "big_types.csv"); types=[Dates.Time, Bool, String, Union{String, Missing}])
+row = first(r)
+@test row.time == Dates.Time(12)
+@test row.bool
+@test row.lazy == "hey"
+@test row.lazy_missing === missing
 
 @test CSV.File(IOBuffer("col1\n1")).col1 == [1]
 
 # rows = 0
-# chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); lazystrings=true)
+# chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString)
 # for chunk in chunks
 #     rows += length(chunk)
 # end
