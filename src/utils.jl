@@ -194,6 +194,7 @@ end
 getordefault(x::AbstractDict{String}, nm, i, def) = haskey(x, string(nm)) ? x[string(nm)] : def
 getordefault(x::AbstractDict{Symbol}, nm, i, def) = haskey(x, nm) ? x[nm] : def
 getordefault(x::AbstractDict{Int}, nm, i, def) = haskey(x, i) ? x[i] : def
+getordefault(x::AbstractDict, nm, i, def) = haskey(x, i) ? x[i] : haskey(x, nm) ? x[nm] : haskey(x, string(nm)) ? x[string(nm)] : def
 
 # given a DateFormat, is it meant for parsing Date, DateTime, or Time?
 function timetype(df::Dates.DateFormat)
