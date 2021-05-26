@@ -189,7 +189,7 @@ function File(source;
     limit::Union{Integer, Nothing}=nothing,
     threaded::Union{Bool, Nothing}=nothing,
     tasks::Integer=Threads.nthreads(),
-    lines_to_check::Integer=30,
+    lines_to_check::Integer=DEFAULT_LINES_TO_CHECK,
     # parsing options
     missingstrings=String[],
     missingstring="",
@@ -202,8 +202,8 @@ function File(source;
     dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
     dateformats::Union{AbstractDict, Nothing}=nothing,
     decimal::Union{UInt8, Char}=UInt8('.'),
-    truestrings::Union{Vector{String}, Nothing}=["true", "True", "TRUE", "1"],
-    falsestrings::Union{Vector{String}, Nothing}=["false", "False", "FALSE", "0"],
+    truestrings::Union{Vector{String}, Nothing}=TRUE_STRINGS,
+    falsestrings::Union{Vector{String}, Nothing}=FALSE_STRINGS,
     # type options
     type=nothing,
     types=nothing,
@@ -213,7 +213,7 @@ function File(source;
     stringtype::StringTypes=String,
     strict::Bool=false,
     silencewarnings::Bool=false,
-    maxwarnings::Int=100,
+    maxwarnings::Int=DEFAULT_MAX_WARNINGS,
     debug::Bool=false,
     parsingdebug::Bool=false
     )
@@ -226,7 +226,7 @@ function File(source;
     return File(ctx)
 end
 
-function File(ctx::Context)
+function File(ctx::Context, chunking::Bool=false)
     @inbounds begin
     # we now do our parsing pass over the file, starting at datapos
     if ctx.threaded
@@ -434,7 +434,7 @@ function File(ctx::Context)
     ctx.debug && println("types after parsing: $types, pool = $(ctx.pool)")
     # for windows, it's particularly finicky about throwing errors when you try to modify an mmapped file
     # so we just want to make sure we finalize the input buffer so users don't run into surprises
-    if Sys.iswindows() && ctx.stringtype !== PosLenString
+    if !chunking && Sys.iswindows() && ctx.stringtype !== PosLenString
         finalize(ctx.buf)
     end
     end # @inbounds begin
@@ -639,7 +639,7 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
                 T = ctx.streaming ? Union{ctx.stringtype, Missing} : NeedsTypeDetection
                 while pos <= len && !Parsers.newline(code)
                     col = Column(T)
-                    col.anymissing = true # 
+                    col.anymissing = true # assume all previous rows were missing
                     col.pool = ctx.pool
                     if T === NeedsTypeDetection
                         pos, code = detect(buf, pos, len, opts, row, rowoffset, j, col, ctx, rowsguess)
@@ -650,6 +650,9 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
                     end
                     j += 1
                     push!(columns, col)
+                    if coloptions !== nothing
+                        push!(coloptions, ctx.options)
+                    end
                 end
             end
         end

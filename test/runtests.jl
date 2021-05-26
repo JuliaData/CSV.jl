@@ -129,6 +129,7 @@ end
 @test CSV.detect("1.1") == 1.1
 @test CSV.detect("2015-01-01") == Date(2015)
 @test CSV.detect("2015-01-01T03:04:05") == DateTime(2015, 1, 1, 3, 4, 5)
+@test CSV.detect("03:04:05") == Time(3, 4, 5)
 @test CSV.detect("true") === true
 @test CSV.detect("false") === false
 @test CSV.detect("abc") === "abc"
@@ -247,6 +248,19 @@ f = CSV.File(IOBuffer(csv), drop=Int[])
 f = CSV.File(IOBuffer(csv), drop=[1, 2, 3, 4, 5])
 @test length(f) == 2
 @test length(f[1]) == 0
+
+end
+
+@testset "CSV.Chunks" begin
+
+chunks = CSV.Chunks(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz"))); tasks=2)
+@test length(chunks) == 2
+state = iterate(chunks)
+f, st = state
+@test length(f) == 35086
+state = iterate(chunks, st)
+f, st = state
+@test length(f) == 34914
 
 end
 

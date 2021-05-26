@@ -34,6 +34,10 @@ Base.showerror(io::IO, e::Error) = println(io, e.msg)
 # constants
 const SINGLE_THREADED_POOL_DEFAULT = 0.75
 const MULTI_THREADED_POOL_DEFAULT = 0.25
+const DEFAULT_LINES_TO_CHECK = 30
+const DEFAULT_MAX_WARNINGS = 100
+const TRUE_STRINGS = ["true", "True", "TRUE", "T", "1"]
+const FALSE_STRINGS = ["false", "False", "FALSE", "F", "0"]
 
 include("utils.jl")
 include("detection.jl")
