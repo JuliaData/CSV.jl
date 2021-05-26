@@ -175,6 +175,9 @@ end
     debug && println("header is: $header, datarow computed as: $datarow")
     # getsource will turn any input into a `AbstractVector{UInt8}`
     buf, pos, len = getsource(source)
+    if len > 2^42
+        throw(ArgumentError("delimited source to parse too large; must be < $(2^42) bytes"))
+    end
     # skip over initial BOM character, if present
     pos = consumeBOM(buf, pos)
 
