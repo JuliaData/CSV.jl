@@ -555,7 +555,7 @@ function parsefilechunk!(ctx::Context, buf, pos, len, rowsguess, rowoffset, colu
                 estimated_rows_left = ceil(Int64, ((len - pos) / ((pos - startpos) / row)) * 1.05)
                 newrowsguess = rowsguess + estimated_rows_left
                 newrowsguess = max(rowsguess + 1, newrowsguess)
-                reallocatecolumns(rowoffset + row, rowsguess, newrowsguess)
+                ctx.debug && reallocatecolumns(rowoffset + row, rowsguess, newrowsguess)
                 for col in columns
                     isdefined(col, :column) && reallocate!(col.column, newrowsguess)
                 end
