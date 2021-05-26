@@ -11,7 +11,8 @@ mutable struct RefPool
 end
 
 # start lastref at 1, since it's reserved for `missing`, so first ref value will be 2
-RefPool(::Type{T}=String) where {T} = RefPool(Dict{Union{T, Missing}, UInt32}(missing => 1), 1)
+const Refs{T} = Dict{Union{T, Missing}, UInt32}
+RefPool(::Type{T}=String) where {T} = RefPool(Refs{T}(missing => 1), 1)
 
 mutable struct Column
     # fields that are copied per task when parsing
@@ -430,7 +431,7 @@ end
         if successfullychunked
             origbytesperrow = ((len - datapos) / origrowsguess)
             weightedavgbytesperrow = ceil(Int64, avgbytesperrow * ((tasks - 1) / tasks) + origbytesperrow * (1 / tasks))
-            rowsguess = ceil(Int64, (len - datapos) / weightedavgbytesperrow)
+            rowsguess = ceil(Int64, ((len - datapos) / weightedavgbytesperrow) * 1.01)
             debug && println("single-threaded estimated rows = $origrowsguess, multi-threaded estimated rows = $rowsguess")
             debug && println("multi-threaded column types sampled as: $columns")
         else

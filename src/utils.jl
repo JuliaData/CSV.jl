@@ -249,7 +249,9 @@ function detect(str::String; opts=Parsers.OPTIONS)
     return something(x, str)
 end
 
-function detect(buf, pos, len, opts, ensure_full_buf_consumed=true, row=0, col=0)
+const DetectTypes = Union{Missing, Int64, Float64, Date, DateTime, Time, Bool, Nothing}
+
+@inline function detect(buf, pos, len, opts, ensure_full_buf_consumed=true, row=0, col=0)::Tuple{DetectTypes, Int16, Int64}
     int, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, opts)
     if Parsers.invalidquotedfield(code)
         fatalerror(buf, pos, tlen, code, row, col)
@@ -301,7 +303,7 @@ function detect(buf, pos, len, opts, ensure_full_buf_consumed=true, row=0, col=0
     if Parsers.ok(code) && (ensure_full_buf_consumed == ((vpos + vlen - 1) == len))
         return bool, code, tlen
     end
-    return nothing, code, 0
+    return nothing, code, Int64(0)
 end
 
 # a ReversedBuf takes a byte vector and indexes backwards;
@@ -344,3 +346,32 @@ Base.IndexStyle(::Type{<:ConcreteEltype}) = Base.IndexLinear()
 Base.size(x::ConcreteEltype) = (length(x.data),)
 Base.eltype(::ConcreteEltype{T, A}) where {T, A} = T
 Base.getindex(x::ConcreteEltype{T}, i::Int) where {T} = getindex(x.data, i)
+
+struct PointerString
+    ptr::Ptr{UInt8}
+    len::Int
+end
+
+function Base.hash(s::PointerString, h::UInt)
+    h += Base.memhash_seed
+    ccall(Base.memhash, UInt, (Ptr{UInt8}, Csize_t, UInt32), s.ptr, s.len, h % UInt32) + h
+end
+
+import Base: ==
+function ==(x::AbstractString, y::PointerString)
+    sizeof(x) == y.len && ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t), pointer(x), y.ptr, y.len) == 0
+end
+function ==(x::PointerString, y::PointerString)
+    x.len == y.len && ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t), x.ptr, y.ptr, y.len) == 0
+end
+==(y::PointerString, x::AbstractString) = x == y
+
+Base.ncodeunits(s::PointerString) = s.len
+@inline function Base.codeunit(s::PointerString, i::Integer)
+    @boundscheck checkbounds(s, i)
+    GC.@preserve s unsafe_load(s.ptr + i - 1)
+end
+
+_unsafe_string(p, len) = ccall(:jl_pchar_to_string, Ref{String}, (Ptr{UInt8}, Int), p, len)
+Base.String(x::PointerString) = _unsafe_string(x.ptr, x.len)
+WeakRefStrings.PosLenString(x::PointerString) = PosLenString(unsafe_wrap(Array, x.ptr, x.len), PosLen(1, x.len), 0x00)

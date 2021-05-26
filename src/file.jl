@@ -317,7 +317,7 @@ function File(ctx::Context)
                         # one chunk parsed as Int, another as Float64, promote to Float64
                         ctx.debug && println("multithreaded promoting column $j to float")
                         if pooled(col)
-                            task_col.refpool.refs = convert(Dict{Union{Float64, Missing}, UInt32}, task_col.refpool.refs)
+                            task_col.refpool.refs = convert(Refs{Float64}, task_col.refpool.refs)
                         else
                             task_col.column = convert(SentinelVector{Float64}, task_col.column)
                         end
@@ -339,7 +339,7 @@ function File(ctx::Context)
                             col.refpool = task_col.refpool
                         elseif isdefined(task_col, :refpool)
                             # @show j, i, col.type, task_col.type, typeof(col.refpool.refs), typeof(task_col.refpool.refs)
-                            syncrefs!(col, task_col, task_rows)
+                            syncrefs!(col.type, col, task_col, task_rows)
                         end
                     end
                 end
@@ -446,15 +446,16 @@ const EMPTY_REFRECODE = UInt32[]
 
 # after multithreaded parsing, we need to synchronize pooled refs from different chunks of the file
 # we pick one chunk as "source of truth", then adjust other chunks as needed
-function syncrefs!(col, task_col, task_rows)
+function syncrefs!(::Type{T}, col, task_col, task_rows) where {T}
     @assert task_col.column isa Vector{UInt32}
     # @inbounds begin
     colrefpool = col.refpool
-    colrefs = colrefpool.refs
+    colrefs = colrefpool.refs::Refs{T}
     taskrefpool = task_col.refpool
+    taskrefs = taskrefpool.refs::Refs{T}
     refrecodes = EMPTY_REFRECODE
     recode = false
-    for (k, v) in taskrefpool.refs
+    for (k, v) in taskrefs
         # `k` is our task-specific parsed value
         # `v` is our task-specific UInt32 ref code
         # for each task-specific ref, check if it matches parent column ref
@@ -476,7 +477,7 @@ function syncrefs!(col, task_col, task_rows)
         end
     end
     if recode
-        column = task_col.column
+        column = task_col.column::Vector{UInt32}
         for j = 1:task_rows
             # here we recode by replacing task column ref code w/ parent column ref code
             column[j] = refrecodes[column[j]]
@@ -508,7 +509,7 @@ default(::Type{Union{}}) = nothing
 
 function makepooled!(col)
     T = col.type
-    r = isdefined(col, :refpool) ? col.refpool.refs : Dict{Union{T === Union{} ? Missing : T, Missing}, UInt32}()
+    r = isdefined(col, :refpool) ? col.refpool.refs : Refs{T === NeedsTypeDetection ? Missing : T}()
     column = isdefined(col, :column) ? col.column : UInt32[]
     col.column = PooledArray{coltype(col)}(PooledArrays.RefArray(column), r)
     return
@@ -553,7 +554,8 @@ function parsefilechunk!(ctx::Context, buf, pos, len, rowsguess, rowoffset, colu
                 # (bytes left in file/chunk) / (avg bytes per row) == estimated rows left in file (+ 5% to try and avoid reallocating)
                 estimated_rows_left = ceil(Int64, ((len - pos) / ((pos - startpos) / row)) * 1.05)
                 newrowsguess = rowsguess + estimated_rows_left
-                ctx.debug && reallocatecolumns(rowoffset + row, rowsguess, newrowsguess)
+                newrowsguess = max(rowsguess + 1, newrowsguess)
+                reallocatecolumns(rowoffset + row, rowsguess, newrowsguess)
                 for col in columns
                     isdefined(col, :column) && reallocate!(col.column, newrowsguess)
                 end
@@ -655,6 +657,10 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
     return pos
 end
 
+@noinline function _parseany(T, buf, pos, len, opts)::Tuple{Any, Int16, Int64, Int64, Int64}
+    return Parsers.xparse(T, buf, pos, len, opts)
+end
+
 function detect(buf, pos, len, opts, row, rowoffset, i, col, ctx, rowsguess)::Tuple{Int64, Int16}
     # debug && println("detecting on task $(Threads.threadid())")
     x, code, tlen = detect(buf, pos, len, opts, false, rowoffset + row, i)
@@ -667,8 +673,10 @@ function detect(buf, pos, len, opts, row, rowoffset, i, col, ctx, rowsguess)::Tu
         newT = get(ctx.typemap, typeof(x), typeof(x))
         if !(newT isa StringTypes)
             if newT !== typeof(x)
-                # type-mapping
-                y, code, vpos, vlen, tlen = Parsers.xparse(newT, buf, pos, len, opts)
+                # type-mapping typeof(x) => newT
+                # this ultimate call to Parsers.xparse has no hope in inference (because of the typeof(x) => newT mapping)
+                # so we "outline" the call and assert the types of everything but `y` to make sure `code` and `tlen` stay type stable
+                y, code, vpos, vlen, tlen = _parseany(newT, buf, pos, len, opts)
                 if Parsers.ok(code)
                     val = y
                     @goto done
@@ -715,8 +723,12 @@ function parsevalue!(::Type{type}, buf, pos, len, opts, row, rowoffset, i, col):
                 column = col.column
                 if column isa Vector{UInt32}
                     if type === String || type === PosLenString
-                        poslen = PosLen(vpos, vlen, Parsers.sentinel(code), Parsers.escapedstring(code))
-                        ref = getref!(col.refpool, type, PosLenString(buf, poslen, opts.e))
+                        if Parsers.escapedstring(code)
+                            poslen = PosLen(vpos, vlen, Parsers.sentinel(code), Parsers.escapedstring(code))
+                            ref = getref!(col.refpool, type, String(buf, poslen, opts.e))
+                        else
+                            ref = getref!(col.refpool, type, PointerString(pointer(buf, vpos), vlen))
+                        end
                     else
                         ref = getref!(col.refpool, type, x)
                     end
@@ -753,7 +765,7 @@ function parsevalue!(::Type{type}, buf, pos, len, opts, row, rowoffset, i, col):
                         col.type = Float64
                         column = col.column
                         if column isa Vector{UInt32}
-                            col.refpool.refs = convert(Dict{Union{Float64, Missing}, UInt32}, col.refpool.refs)
+                            col.refpool.refs = convert(Refs{Float64}, col.refpool.refs)
                             ref = getref!(col.refpool, Float64, y)
                             @inbounds column[row] = ref
                         elseif column isa SVec{Int64}
@@ -773,14 +785,14 @@ function parsevalue!(::Type{type}, buf, pos, len, opts, row, rowoffset, i, col):
 end
 
 @inline function getref!(refpool, ::Type{T}, key) where {T}
-    x = refpool.refs::Dict{Union{T, Missing}, UInt32}
+    x = refpool.refs::Refs{T}
     get!(x, key) do
         refpool.lastref += UInt32(1)
     end
 end
 
-@inline function getref!(refpool, ::Type{T}, key::PosLenString) where {T}
-    x = refpool.refs::Dict{Union{T, Missing}, UInt32}
+@inline function getref!(refpool, ::Type{T}, key::PointerString) where {T}
+    x = refpool.refs::Refs{T}
     index = Base.ht_keyindex2!(x, key)
     if index > 0
         @inbounds found_key = x.vals[index]
