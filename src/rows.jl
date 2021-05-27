@@ -127,7 +127,7 @@ function Rows(source;
     dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
     dateformats::Union{AbstractDict, Nothing}=nothing,
     decimal::Union{UInt8, Char}=UInt8('.'),
-    truestrings::Union{Vector{String}, Nothing}=TRUE,
+    truestrings::Union{Vector{String}, Nothing}=TRUE_STRINGS,
     falsestrings::Union{Vector{String}, Nothing}=FALSE_STRINGS,
     # type options
     type=nothing,

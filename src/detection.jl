@@ -314,7 +314,7 @@ end
 # right # of expected columns then we move on to the next file chunk byte position. If we fail, we start over
 # at the byte position, assuming we were in a quoted field (and encountered a newline inside the quoted
 # field the first time through)
-function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, lines_to_check=5)
+function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, pool, lines_to_check=5)
     totalbytes = Threads.Atomic{Int}(0)
     totalrows = Threads.Atomic{Int}(0)
     succeeded = Threads.Atomic{Bool}(true)
@@ -459,7 +459,7 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, lines_to_
                 col.pool = 0.0
             end
         else
-            if (pooled(col) || maybepooled(col) || (isnan(col.pool) && type isa StringTypes))
+            if (pooled(col) || maybepooled(col) || (type isa StringTypes && pool != 0.0))
                 refpool = RefPool(type)
                 for m = 1:M
                     if isassigned(samples, m, n)
@@ -469,7 +469,8 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, lines_to_
                         end
                     end
                 end
-                if pooled(col) || ((length(refpool.refs) - 1) / finalrows) <= ifelse(isnan(col.pool), MULTI_THREADED_POOL_DEFAULT, col.pool)
+                poolval = !isnan(col.pool) ? col.pool : !isnan(pool) ? pool : MULTI_THREADED_POOL_DEFAULT
+                if pooled(col) || ((length(refpool.refs) - 1) / finalrows) <= poolval
                    col.refpool = refpool 
                    col.pool = 1.0
                 else

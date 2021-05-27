@@ -394,7 +394,8 @@ function File(ctx::Context, chunking::Bool=false)
                 makepooled!(col)
             elseif col.column isa Vector{UInt32}
                 # check if final column should be PooledArray or not
-                if ((length(col.refpool.refs) - 1) / finalrows) <= ifelse(isnan(col.pool), SINGLE_THREADED_POOL_DEFAULT, col.pool)
+                poolval = !isnan(col.pool) ? col.pool : !isnan(ctx.pool) ? ctx.pool : SINGLE_THREADED_POOL_DEFAULT
+                if ((length(col.refpool.refs) - 1) / finalrows) <= poolval
                     makepooled!(col)
                 else
                     # cardinality too high, so unpool

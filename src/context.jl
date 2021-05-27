@@ -40,7 +40,7 @@ function Column(type::Type)
     return Column(type === Missing ? HardMissing : T,
         type >: Missing,
         type !== NeedsTypeDetection,
-        false, 0x00, 0.0)
+        false, 0x00, NaN)
 end
 
 # creating a per-task column from top-level column
@@ -331,13 +331,10 @@ end
             end
         elseif pool isa AbstractDict
             for i = 1:ncols
-                columns[i].pool = getpool(getordefault(pool, names[i], i, NaN))
+                columns[i].pool = getpool(getordefault(pool, names[i], i, 0.0))
             end
         else
             finalpool = getpool(pool)
-            for i = 1:ncols
-                columns[i].pool = finalpool
-            end
         end
     end
 
@@ -419,7 +416,7 @@ end
         if limit !== typemax(Int64)
             limitposguess = ceil(Int64, (limit / (origrowsguess * 0.8)) * len)
             newlen = [0, limitposguess, min(limitposguess * 2, len)]
-            findrowstarts!(buf, options, newlen, ncols, columns, stringtype, 5)
+            findrowstarts!(buf, options, newlen, ncols, columns, stringtype, finalpool, 5)
             len = newlen[2] - 1
             origrowsguess = limit
             debug && println("limiting, adjusting len to $len")
@@ -427,7 +424,7 @@ end
         chunksize = div(len - datapos, tasks)
         chunkpositions = [i == 0 ? datapos : i == tasks ? len : (datapos + chunksize * i) for i = 0:tasks]
         debug && println("initial byte positions before adjusting for start of rows: $chunkpositions")
-        avgbytesperrow, successfullychunked = findrowstarts!(buf, options, chunkpositions, ncols, columns, stringtype, lines_to_check)
+        avgbytesperrow, successfullychunked = findrowstarts!(buf, options, chunkpositions, ncols, columns, stringtype, finalpool, lines_to_check)
         if successfullychunked
             origbytesperrow = ((len - datapos) / origrowsguess)
             weightedavgbytesperrow = ceil(Int64, avgbytesperrow * ((tasks - 1) / tasks) + origbytesperrow * (1 / tasks))
