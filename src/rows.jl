@@ -240,6 +240,22 @@ end
             @inbounds values[i] = column[1]
         elseif column isa SVec{Float64}
             @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString1}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString3}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString7}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString15}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString31}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString63}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString127}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString255}
+            @inbounds values[i] = column[1]
         elseif column isa SVec2{String}
             @inbounds values[i] = column[1]
         elseif column isa SVec{Date}

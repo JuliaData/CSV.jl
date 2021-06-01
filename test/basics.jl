@@ -223,7 +223,7 @@ f = CSV.File(IOBuffer("x\na\n\n"), pool=true, ignoreemptylines=false)
 
 # catg => string
 f = CSV.File(IOBuffer("x\na\nb\na\nb\na\nb\na\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nn\nm\no\np\nq\nr\n"), pool=0.5)
-@test typeof(f.x) == Vector{String}
+@test typeof(f.x) == Vector{InlineString1}
 
 # a few corner cases for escape strings
 f = CSV.File(IOBuffer("\"column name with \"\" escape character inside\"\n1\n"))
@@ -308,7 +308,7 @@ f = CSV.File(IOBuffer("int,float,date,datetime,bool,null,str,catg,int_float\n1,3
 @test Tables.istable(f)
 @test Tables.rowaccess(typeof(f))
 @test Tables.columnaccess(typeof(f))
-@test Tables.schema(f) == Tables.Schema([:int, :float, :date, :datetime, :bool, :null, :str, :catg, :int_float], [Int64, Float64, Date, DateTime, Bool, Missing, String, String, Float64])
+@test Tables.schema(f) == Tables.Schema([:int, :float, :date, :datetime, :bool, :null, :str, :catg, :int_float], [Int64, Float64, Date, DateTime, Bool, Missing, InlineString7, InlineString3, Float64])
 @test Tables.rows(f) === f
 @test eltype(f) <: CSV.Row
 row = first(f)
@@ -321,7 +321,7 @@ row = first(f)
 @test row.null === missing
 @test row.str == "hey"
 @test row.catg == "abc"
-@test typeof(row.catg) == String
+@test typeof(row.catg) == InlineString3
 @test row.int_float === 2.0
 row = iterate(f, 2)[1]
 @test row.int_float === 3.14
@@ -388,7 +388,7 @@ f = CSV.File(IOBuffer("x\r\n1\r\n2\r\n3\r\n4\r\n5\r\n"), footerskip=3)
 @test f[1][1] == 1
 
 # 578
-f = CSV.File(IOBuffer("h1234567890123456\t"^2262 * "lasthdr\r\n" *"dummy dummy dummy\r\n"* ("1.23\t"^2262 * "2.46\r\n")^10), datarow=3, threaded=false)
+f = CSV.File(IOBuffer("h1234567890123456\t"^2262 * "lasthdr\r\n" *"dummy dummy dummy\r\n"* ("1.23\t"^2262 * "2.46\r\n")^10), datarow=3, threaded=false);
 @test (length(f), length(f.names)) == (10, 2263)
 @test all(x -> eltype(x) == Float64, Tables.Columns(f))
 
@@ -436,7 +436,7 @@ f = CSV.File(IOBuffer("1,2\r\n3,4\r\n\r\n5,6\r\n"); header=["col1", "col2"], ign
 
 f = CSV.File(joinpath(dir, "escape_row_starts.csv"); tasks=2)
 @test length(f) == 10000
-@test eltype(f.col1) == String
+@test eltype(f.col1) == InlineString63
 @test eltype(f.col2) == Int64
 
 f = CSV.File(IOBuffer("col1\nhey\nthere\nsailor"); stringtype=PosLenString)
@@ -465,13 +465,13 @@ row = first(r)
 
 @test CSV.File(IOBuffer("col1\n1")).col1 == [1]
 
-# rows = 0
-# chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString)
-# for chunk in chunks
-#     rows += length(chunk)
-# end
-# @test rows == 10000
-# @test Tables.partitions(chunks) === chunks
+rows = 0
+chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString)
+for chunk in chunks
+    rows += length(chunk)
+end
+@test rows == 10000
+@test Tables.partitions(chunks) === chunks
 
 # 668
 buf = IOBuffer("""
@@ -514,7 +514,7 @@ f = CSV.File(IOBuffer("a,b,c\n1,2,3\n4,5,6\n"); select=["a"], types=Dict(2=>Int8
 
 f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz"))); types=Dict(:id=>Int32), select=["first"])
 @test length(f) == 70000
-@test eltype(f.first) == String
+@test eltype(f.first) == InlineString15
 
 # 723
 f = CSV.File(IOBuffer("col1,col2,col3\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n"); threaded=true)
@@ -580,7 +580,7 @@ f = CSV.File(IOBuffer(csv); skipto=1, footerskip=2)
 f = CSV.File(IOBuffer(join(rand(["a", "b", "c"], 500), "\n")); header=false, threaded=true)
 rt = Tables.rowtable(f)
 @test length(rt) == 500
-@test eltype(rt) == NamedTuple{(:Column1,), Tuple{String}}
+@test eltype(rt) == NamedTuple{(:Column1,), Tuple{InlineString1}}
 
 f = CSV.File(IOBuffer("a, 0.1, 0.2, 0.3\nb, 0.4"); transpose=true)
 @test length(f) == 3

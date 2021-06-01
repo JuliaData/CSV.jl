@@ -25,24 +25,24 @@ include("write.jl")
 @testset "PooledArrays" begin
 
     f = CSV.File(IOBuffer("X\nb\nc\na\nc"), pool=true)
-    @test typeof(f.X) == PooledArrays.PooledArray{String,UInt32,1,Array{UInt32,1}}
+    @test typeof(f.X) == PooledArrays.PooledArray{InlineString1,UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (4, 1)
     @test f.X == ["b", "c", "a", "c"]
     @test f.X.refs[2] == f.X.refs[4]
 
     f = CSV.File(IOBuffer("X\nb\nc\na\nc"), pool=0.75)
-    @test typeof(f.X) == PooledArrays.PooledArray{String,UInt32,1,Array{UInt32,1}}
+    @test typeof(f.X) == PooledArrays.PooledArray{InlineString1,UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (4, 1)
     @test f.X == ["b", "c", "a", "c"]
     @test f.X.refs[2] == f.X.refs[4]
 
     f = CSV.File(IOBuffer("X\nb\nc\n\nc"), pool=true, ignoreemptylines=false)
-    @test typeof(f.X) == PooledArray{Union{Missing, String},UInt32,1,Array{UInt32,1}}
+    @test typeof(f.X) == PooledArray{Union{Missing, InlineString1},UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (4, 1)
     @test f.X[3] === missing
 
     f = CSV.File(IOBuffer("X\nc\nc\n\nc\nc\nc\nc\nc\nc"), ignoreemptylines=false)
-    @test typeof(f.X) == PooledArray{Union{Missing, String},UInt32,1,Array{UInt32,1}}
+    @test typeof(f.X) == PooledArray{Union{Missing, InlineString1},UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (9, 1)
     @test isequal(f.X, ["c", "c", missing, "c", "c", "c", "c", "c", "c"])
 
@@ -171,7 +171,7 @@ end
 @test CSV.promote_types(CSV.NeedsTypeDetection, Float64) == Float64
 @test CSV.promote_types(Float64, CSV.NeedsTypeDetection) == Float64
 @test CSV.promote_types(Float64, Missing) == Float64
-@test CSV.promote_types(Float64, String) === nothing
+@test CSV.promote_types(Float64, String) === String
 
 end
 

@@ -446,6 +446,9 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, pool, lin
                 end
             end
         end
+        if type === stringtype
+            type = pickstringtype(type, mss)
+        end
         # build up a refpool of initial values if applicable
         # if not, or cardinality is too high, we'll set the column to non-pooled at this stage
         if type === NeedsTypeDetection
@@ -469,7 +472,7 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, pool, lin
                         end
                     end
                 end
-                poolval = !isnan(col.pool) ? col.pool : !isnan(pool) ? pool : MULTI_THREADED_POOL_DEFAULT
+                poolval = !isnan(col.pool) ? col.pool : !isnan(pool) ? pool : DEFAULT_POOL
                 if pooled(col) || ((length(refpool.refs) - 1) / finalrows) <= poolval
                    col.refpool = refpool 
                    col.pool = 1.0

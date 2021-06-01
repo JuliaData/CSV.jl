@@ -35,8 +35,8 @@ tupcat(::Type{Tuple{T, T2, T3}}, S) where {T, T2, T3} = Tuple{T, T2, T3, S}
 tupcat(::Type{Tuple{T, T2, T3, T4}}, S) where {T, T2, T3, T4} = Tuple{T, T2, T3, T4, S}
 tupcat(::Type{T}, S) where {T <: Tuple} = Tuple{Any[(fieldtype(T, i) for i = 1:fieldcount(T))..., S]...}
 
-const StringTypes = Union{Type{String}, Type{PosLenString}, #=Type{<:InlineString}=#}
-const StringMissingTypes = Union{Type{Union{Missing, String}}, Type{Union{Missing, PosLenString}}, #=Type{Union{Missing, <:InlineString}}=#}
+const StringTypes = Union{Type{String}, Type{PosLenString}, Type{<:InlineString}}
+pickstringtype(T, maxstringsize) = T === InlineString ? (maxstringsize < 256 ? InlineStringType(maxstringsize) : String) : T
 
 # we define our own bit flag on a Parsers.ReturnCode to signal if a column needs to promote to string
 const PROMOTE_TO_STRING = 0b0100000000000000 % Int16
@@ -50,15 +50,27 @@ promote_to_string(code) = code & PROMOTE_TO_STRING > 0
     S === Missing && return T
     T === Int64 && S === Float64 && return S
     T === Float64 && S === Int64 && return T
+    T <: InlineString && S <: InlineString && return promote_type(T, S)
+    (T === String || S === String) && return String
+    T <: InlineString && return T
+    S <: InlineString && return S
     return nothing
 end
 
 # when users pass non-standard types, we need to keep track of them in a Tuple{...} to generate efficient custom parsing kernel codes
 function nonstandardtype(T)
-    if T === Union{}
-        return T
+    T = nonmissingtype(T)
+    if T === Union{} ||
+       T isa StringTypes ||
+       T === Int64 ||
+       T === Float64 ||
+       T === Bool ||
+       T === Date ||
+       T === DateTime ||
+       T === Time
+        return Union{}
     end
-    return ts(ts(ts(ts(ts(ts(ts(ts(ts(T, Int64), Float64), String), PosLenString), Bool), Date), DateTime), Time), Missing)
+    return T
 end
 
 ## column array allocating
