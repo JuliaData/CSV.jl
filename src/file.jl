@@ -534,7 +534,7 @@ function unpool!(col)
     if col.anymissing
         r[missing] = UInt32(1)
     end
-    pool = Vector{keytype(r)}(undef, length(r))
+    pool = Vector{keytype(r)}(undef, length(r) + 1)
     for (k, v) in r
         @inbounds pool[v] = k
     end
@@ -728,13 +728,13 @@ function detect(buf, pos, len, opts, row, rowoffset, i, col, ctx, rowsguess)::Tu
     end
 @label stringdetect
     _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, opts)
-    if newT === InlineString && vlen < 256
+    if newT === InlineString && vlen < DEFAULT_MAX_INLINE_STRING_LENGTH
         newT = InlineStringType(vlen)
         val, _, _, _, _ = _parseany(newT, buf, pos, len, opts)
     elseif newT === PosLenString
         newT = PosLenString
         val = PosLen(vpos, vlen, Parsers.sentinel(code), Parsers.escapedstring(code))
-    elseif newT === String
+    else
         newT = String
         poslen = PosLen(vpos, vlen, Parsers.sentinel(code), Parsers.escapedstring(code))
         val = String(buf, poslen, opts.e)

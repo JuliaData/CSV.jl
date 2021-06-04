@@ -30,6 +30,7 @@ const DEFAULT_STRINGTYPE = InlineString
 const DEFAULT_POOL = 0.25
 const DEFAULT_LINES_TO_CHECK = 30
 const DEFAULT_MAX_WARNINGS = 100
+const DEFAULT_MAX_INLINE_STRING_LENGTH = 32
 const TRUE_STRINGS = ["true", "True", "TRUE", "T", "1"]
 const FALSE_STRINGS = ["false", "False", "FALSE", "F", "0"]
 

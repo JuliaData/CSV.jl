@@ -36,7 +36,7 @@ tupcat(::Type{Tuple{T, T2, T3, T4}}, S) where {T, T2, T3, T4} = Tuple{T, T2, T3,
 tupcat(::Type{T}, S) where {T <: Tuple} = Tuple{Any[(fieldtype(T, i) for i = 1:fieldcount(T))..., S]...}
 
 const StringTypes = Union{Type{String}, Type{PosLenString}, Type{<:InlineString}}
-pickstringtype(T, maxstringsize) = T === InlineString ? (maxstringsize < 256 ? InlineStringType(maxstringsize) : String) : T
+pickstringtype(T, maxstringsize) = T === InlineString ? (maxstringsize < DEFAULT_MAX_INLINE_STRING_LENGTH ? InlineStringType(maxstringsize) : String) : T
 
 # we define our own bit flag on a Parsers.ReturnCode to signal if a column needs to promote to string
 const PROMOTE_TO_STRING = 0b0100000000000000 % Int16

@@ -270,7 +270,7 @@ testfiles = [
     # other various files from around the interwebs
     ("baseball.csv", (pool=true, normalizenames=true),
         (35, 15),
-        NamedTuple{(:Rk, :Year, :Age, :Tm, :Lg, :Column6, :W, :L, :W_L_, :G, :Finish, :Wpost, :Lpost, :W_L_post, :Column15), Tuple{Union{Int64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{InlineString31, Missing},Union{InlineString3, Missing},Union{InlineString15, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{InlineString63, Missing}}},
+        NamedTuple{(:Rk, :Year, :Age, :Tm, :Lg, :Column6, :W, :L, :W_L_, :G, :Finish, :Wpost, :Lpost, :W_L_post, :Column15), Tuple{Union{Int64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{InlineString31, Missing},Union{InlineString3, Missing},Union{InlineString15, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{String, Missing}}},
         nothing
     ),
     ("FL_insurance_sample.csv", (pool=true,),
@@ -280,27 +280,27 @@ testfiles = [
     ),
     ("SacramentocrimeJanuary2006.csv", (pool=true,),
         (7584, 9),
-        NamedTuple{(:cdatetime, :address, :district, :beat, :grid, :crimedescr, :ucr_ncic_code, :latitude, :longitude),Tuple{InlineString15,InlineString63,Int64,InlineString15,Int64,InlineString31,Int64,Float64,Float64}},
+        NamedTuple{(:cdatetime, :address, :district, :beat, :grid, :crimedescr, :ucr_ncic_code, :latitude, :longitude),Tuple{InlineString15,String,Int64,InlineString15,Int64,InlineString31,Int64,Float64,Float64}},
         nothing
     ),
     ("Sacramentorealestatetransactions.csv", (pool=true, normalizenames=false),
         (985, 12),
-        NamedTuple{(:street, :city, :zip, :state, :beds, :baths, :sq__ft, :type, :sale_date, :price, :latitude, :longitude),Tuple{InlineString63,InlineString15,Int64,InlineString3,Int64,Int64,Int64,InlineString15,InlineString31,Int64,Float64,Float64}},
+        NamedTuple{(:street, :city, :zip, :state, :beds, :baths, :sq__ft, :type, :sale_date, :price, :latitude, :longitude),Tuple{String,InlineString15,Int64,InlineString3,Int64,Int64,Int64,InlineString15,InlineString31,Int64,Float64,Float64}},
         nothing
     ),
     ("SalesJan2009.csv", (pool=true,),
         (998, 12),
-        NamedTuple{(:Transaction_date, :Product, :Price, :Payment_Type, :Name, :City, :State, :Country, :Account_Created, :Last_Login, :Latitude, :Longitude),Tuple{InlineString15,InlineString15,InlineString7,InlineString15,InlineString31,InlineString63,Union{Missing, InlineString31},InlineString31,InlineString15,InlineString15,Float64,Float64}},
+        NamedTuple{(:Transaction_date, :Product, :Price, :Payment_Type, :Name, :City, :State, :Country, :Account_Created, :Last_Login, :Latitude, :Longitude),Tuple{InlineString15,InlineString15,InlineString7,InlineString15,InlineString31,String,Union{Missing, InlineString31},InlineString31,InlineString15,InlineString15,Float64,Float64}},
         nothing
     ),
     ("stocks.csv", (normalizenames=true,),
         (30, 2),
-        NamedTuple{(:Stock_Name, :Company_Name), Tuple{InlineString7, InlineString63}},
+        NamedTuple{(:Stock_Name, :Company_Name), Tuple{InlineString7, String}},
         nothing
     ),
     ("TechCrunchcontinentalUSA.csv", (pool=true,),
         (1460, 10),
-        NamedTuple{(:permalink, :company, :numEmps, :category, :city, :state, :fundedDate, :raisedAmt, :raisedCurrency, :round),Tuple{InlineString63,InlineString63,Union{Missing, Int64},Union{Missing, InlineString15},Union{Missing, InlineString31},InlineString3,InlineString15,Int64,InlineString3,InlineString15}},
+        NamedTuple{(:permalink, :company, :numEmps, :category, :city, :state, :fundedDate, :raisedAmt, :raisedCurrency, :round),Tuple{String,String,Union{Missing, Int64},Union{Missing, InlineString15},Union{Missing, InlineString31},InlineString3,InlineString15,Int64,InlineString3,InlineString15}},
         nothing
     ),
     ("Fielding.csv", (pool=false,),
@@ -310,7 +310,7 @@ testfiles = [
     ),
     ("latest (1).csv", (header=0, missingstring="\\N", pool=true),
         (1000, 25),
-        NamedTuple{(:Column1, :Column2, :Column3, :Column4, :Column5, :Column6, :Column7, :Column8, :Column9, :Column10, :Column11, :Column12, :Column13, :Column14, :Column15, :Column16, :Column17, :Column18, :Column19, :Column20, :Column21, :Column22, :Column23, :Column24, :Column25),Tuple{InlineString7, InlineString63, Int64, Int64, InlineString31, Int64, InlineString31, Int64, Date, Date, Int64, InlineString3, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Int64}, Union{Missing, Float64}, Float64, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Int64}, Float64, Union{Missing, Float64}, Union{Missing, Float64}}},
+        NamedTuple{(:Column1, :Column2, :Column3, :Column4, :Column5, :Column6, :Column7, :Column8, :Column9, :Column10, :Column11, :Column12, :Column13, :Column14, :Column15, :Column16, :Column17, :Column18, :Column19, :Column20, :Column21, :Column22, :Column23, :Column24, :Column25),Tuple{InlineString7, String, Int64, Int64, InlineString31, Int64, InlineString31, Int64, Date, Date, Int64, InlineString3, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Int64}, Union{Missing, Float64}, Float64, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Int64}, Float64, Union{Missing, Float64}, Union{Missing, Float64}}},
         t -> @test(t.Column17[end-2] === missing)
     ),
     # #217
@@ -478,7 +478,7 @@ testfiles = [
     ),
     ("norwegian_data.csv", (delim=';', decimal=',', missingstring="NULL", dateformat="yyyy-mm-dd HH:MM:SS.s", pool=false),
         (1230, 83),
-        NamedTuple{(:regine_area, :main_no, :point_no, :param_key, :version_no_end, :station_name, :station_status_name, :dt_start_date, :dt_end_date, :percent_missing_days, :first_year_regulation, :start_year, :end_year, :aktuell_avrenningskart, :excluded_years, :tilgang, :latitude, :longitude, :utm_east_z33, :utm_north_z33, :regulation_part_area, :regulation_part_reservoirs, :transfer_area_in, :transfer_area_out, :drainage_basin_key, :area_norway, :area_total, :comment, :drainage_dens, :dt_registration_date, :dt_regul_date, :gradient_1085, :gradient_basin, :gradient_river, :height_minimum, :height_hypso_10, :height_hypso_20, :height_hypso_30, :height_hypso_40, :height_hypso_50, :height_hypso_60, :height_hypso_70, :height_hypso_80, :height_hypso_90, :height_maximum, :length_km_basin, :length_km_river, :ocean_polar_angle, :ocean_polar_distance, :perc_agricul, :perc_bog, :perc_eff_bog, :perc_eff_lake, :perc_forest, :perc_glacier, :perc_lake, :perc_mountain, :perc_urban, :prec_intens_max, :utm_zone_gravi, :utm_east_gravi, :utm_north_gravi, :utm_zone_inlet, :utm_east_inlet, :utm_north_inlet, :br1_middelavrenning_1930_1960, :br2_Tilsigsberegning, :br3_Regional_flomfrekvensanalyse, :br5_Regional_lavvannsanalyse, :br6_Klimastudier, :br7_Klimascenarier, :br9_Flomvarsling, :br11_FRIEND, :br12_GRDC, :br23_HBV, :br24_middelavrenning_1961_1990, :br26_TotalAvlop, :br31_FlomserierPrim, :br32_FlomserierSekundar, :br33_Flomkart_aktive_ureg, :br34_Hydrologisk_referanseserier_klimastudier, :br38_Flomkart_aktive_ureg_periode, :br39_Flomkart_nedlagt_stasjon),Tuple{Int64, Int64, Int64, Int64, Int64, InlineString63, InlineString15, DateTime, Union{Missing, DateTime}, Union{Missing, Float64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, InlineString15}, Union{Missing, String}, InlineString7, Float64, Float64, Int64, Int64, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Int64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, String}, Missing, Union{Missing, DateTime}, Union{Missing, DateTime}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Missing, Union{Missing, Float64}, Union{Missing, Float64}, Missing, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Missing, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Missing, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}}},
+        NamedTuple{(:regine_area, :main_no, :point_no, :param_key, :version_no_end, :station_name, :station_status_name, :dt_start_date, :dt_end_date, :percent_missing_days, :first_year_regulation, :start_year, :end_year, :aktuell_avrenningskart, :excluded_years, :tilgang, :latitude, :longitude, :utm_east_z33, :utm_north_z33, :regulation_part_area, :regulation_part_reservoirs, :transfer_area_in, :transfer_area_out, :drainage_basin_key, :area_norway, :area_total, :comment, :drainage_dens, :dt_registration_date, :dt_regul_date, :gradient_1085, :gradient_basin, :gradient_river, :height_minimum, :height_hypso_10, :height_hypso_20, :height_hypso_30, :height_hypso_40, :height_hypso_50, :height_hypso_60, :height_hypso_70, :height_hypso_80, :height_hypso_90, :height_maximum, :length_km_basin, :length_km_river, :ocean_polar_angle, :ocean_polar_distance, :perc_agricul, :perc_bog, :perc_eff_bog, :perc_eff_lake, :perc_forest, :perc_glacier, :perc_lake, :perc_mountain, :perc_urban, :prec_intens_max, :utm_zone_gravi, :utm_east_gravi, :utm_north_gravi, :utm_zone_inlet, :utm_east_inlet, :utm_north_inlet, :br1_middelavrenning_1930_1960, :br2_Tilsigsberegning, :br3_Regional_flomfrekvensanalyse, :br5_Regional_lavvannsanalyse, :br6_Klimastudier, :br7_Klimascenarier, :br9_Flomvarsling, :br11_FRIEND, :br12_GRDC, :br23_HBV, :br24_middelavrenning_1961_1990, :br26_TotalAvlop, :br31_FlomserierPrim, :br32_FlomserierSekundar, :br33_Flomkart_aktive_ureg, :br34_Hydrologisk_referanseserier_klimastudier, :br38_Flomkart_aktive_ureg_periode, :br39_Flomkart_nedlagt_stasjon),Tuple{Int64, Int64, Int64, Int64, Int64, String, InlineString15, DateTime, Union{Missing, DateTime}, Union{Missing, Float64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, InlineString15}, Union{Missing, String}, InlineString7, Float64, Float64, Int64, Int64, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Int64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, String}, Missing, Union{Missing, DateTime}, Union{Missing, DateTime}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Missing, Union{Missing, Float64}, Union{Missing, Float64}, Missing, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Missing, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, Int64}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Missing, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}}},
         nothing
     ),
     # #276
@@ -584,7 +584,7 @@ testfiles = [
     # tape re-allocation
     ("fecal_samples.csv", (debug=true, normalizenames=true),
         (1079, 39),
-        NamedTuple{(:SampleID, :Mother_Child, :SubjectID, :MaternalID, :TimePoint, :Fecal_EtOH, :CollectionRep, :DOC, :RAInitials_DOC, :DOF, :RAInitials_DOF, :Date_Brought_In, :RAInitials_Brought, :Date_Shipped, :RAInitials_Shipped, :Date_Aliquoted, :Number_Replicates, :RAInitials_Aliquot, :StorageBox, :DOE, :Extract_number, :AliquotRep, :DNABox, :KitUsed, :RAInitials_Extract, :DNAConc, :DOM, :Mgx_processed, :Mgx_batch, :DO16S, :_16S_processed, :_16S_batch, :_16S_plate, :Notes, :Discrepancies, :Batch_1_Mapping, :Mgx_batch_Mapping, :_16S_batch_Mapping, :Mother_Child_Dyads), Tuple{InlineString15, InlineString1, Int64, InlineString7, Int64, InlineString1, Int64, Date, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString3}, Union{Missing, Date}, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString3}, Union{Missing, Date}, Union{Missing, InlineString7}, Union{Missing, InlineString3}, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString7}, Union{Missing, InlineString1}, Union{Missing, InlineString7}, Union{Missing, InlineString31}, Union{Missing, InlineString3}, Union{Missing, Float64}, Union{Missing, Date}, Union{Missing, InlineString15}, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString15}, Union{Missing, InlineString7}, Union{Missing, InlineString7}, Union{Missing, InlineString127}, Union{Missing, InlineString63}, Union{Missing, InlineString31}, Union{Missing, InlineString15}, Union{Missing, InlineString15}, Union{Missing, Int64}}},
+        NamedTuple{(:SampleID, :Mother_Child, :SubjectID, :MaternalID, :TimePoint, :Fecal_EtOH, :CollectionRep, :DOC, :RAInitials_DOC, :DOF, :RAInitials_DOF, :Date_Brought_In, :RAInitials_Brought, :Date_Shipped, :RAInitials_Shipped, :Date_Aliquoted, :Number_Replicates, :RAInitials_Aliquot, :StorageBox, :DOE, :Extract_number, :AliquotRep, :DNABox, :KitUsed, :RAInitials_Extract, :DNAConc, :DOM, :Mgx_processed, :Mgx_batch, :DO16S, :_16S_processed, :_16S_batch, :_16S_plate, :Notes, :Discrepancies, :Batch_1_Mapping, :Mgx_batch_Mapping, :_16S_batch_Mapping, :Mother_Child_Dyads), Tuple{InlineString15, InlineString1, Int64, InlineString7, Int64, InlineString1, Int64, Date, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString3}, Union{Missing, Date}, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString3}, Union{Missing, Date}, Union{Missing, InlineString7}, Union{Missing, InlineString3}, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString7}, Union{Missing, InlineString1}, Union{Missing, InlineString7}, Union{Missing, InlineString31}, Union{Missing, InlineString3}, Union{Missing, Float64}, Union{Missing, Date}, Union{Missing, InlineString15}, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString15}, Union{Missing, InlineString7}, Union{Missing, InlineString7}, Union{Missing, InlineString127}, Union{Missing, String}, Union{Missing, InlineString31}, Union{Missing, InlineString15}, Union{Missing, InlineString15}, Union{Missing, Int64}}},
         nothing
     ),
     # 459, support parsing Time
@@ -596,7 +596,7 @@ testfiles = [
     # https://github.com/JuliaData/DataFrames.jl/issues/1880
     ("escaped_pooled.csv", (header=[:a, :b, :c], pool=Dict(1=>true)),
         (2, 3),
-        NamedTuple{(:a, :b, :c), Tuple{InlineString63, InlineString63, Float64}},
+        NamedTuple{(:a, :b, :c), Tuple{String, String, Float64}},
         (a = ["\\孕晚期下午和晚上血压高\"", "\\孕晚期下午和晚上血压高\""], b = ["为什么中老年人血压不高也要定期测量血压", "晚上睡眠不好会导致血压升高吗"], c = [0.744359, 0.714016])
     ),
     # https://github.com/JuliaData/CSV.jl/issues/478
@@ -620,7 +620,7 @@ testfiles = [
     # https://github.com/JuliaData/CSV.jl/issues/577
     ("csv_segfault.txt", (delim="\t", ignoreemptylines=true),
         (468, 9),
-        NamedTuple{(Symbol("Time (CEST)"), :Latitude, :Longitude, :Course, :kts, :mph, :feet, :Rate, Symbol("Reporting Facility")),Tuple{InlineString63, Union{Missing, InlineString15}, Union{Missing, InlineString15}, Union{Missing, InlineString31}, Union{Missing, InlineString3}, Union{Missing, InlineString3}, Union{Missing, InlineString7}, Union{Missing, InlineString31}, Union{Missing, InlineString31}}},
+        NamedTuple{(Symbol("Time (CEST)"), :Latitude, :Longitude, :Course, :kts, :mph, :feet, :Rate, Symbol("Reporting Facility")),Tuple{String, Union{Missing, InlineString15}, Union{Missing, InlineString15}, Union{Missing, InlineString31}, Union{Missing, InlineString3}, Union{Missing, InlineString3}, Union{Missing, InlineString7}, Union{Missing, InlineString31}, Union{Missing, InlineString31}}},
         nothing
     ),
     # https://github.com/JuliaData/CSV.jl/issues/575
@@ -641,7 +641,7 @@ testfiles = [
     # https://github.com/JuliaData/CSV.jl/issues/597
     push!(testfiles, ("ampm.csv", (dateformat="m/d/yyyy I:M:S p",),
         (2, 16),
-        NamedTuple{(:ID, :INTERLOCK_NUMBER, :INTERLOCK_DESCRIPTION, :TYPE, :CREATE_DATE, :MODIFY_DATE, :USERNAME, :UNIT, :AREA, :PURPOSE, :PID, :LOCATION, :FUNC_DATE, :FUNC_BY, :TECHNICAL_DESCRIPTION, :types), Tuple{Int64, Union{Missing, InlineString15}, InlineString63, Missing, DateTime, DateTime, InlineString15, InlineString15, InlineString15, InlineString31, Missing, Missing, DateTime, Missing, InlineString63, InlineString3}},
+        NamedTuple{(:ID, :INTERLOCK_NUMBER, :INTERLOCK_DESCRIPTION, :TYPE, :CREATE_DATE, :MODIFY_DATE, :USERNAME, :UNIT, :AREA, :PURPOSE, :PID, :LOCATION, :FUNC_DATE, :FUNC_BY, :TECHNICAL_DESCRIPTION, :types), Tuple{Int64, Union{Missing, InlineString15}, String, Missing, DateTime, DateTime, InlineString15, InlineString15, InlineString15, InlineString31, Missing, Missing, DateTime, Missing, String, InlineString3}},
         x -> @test x.CREATE_DATE == [DateTime("2012-02-09T00:00:00"), DateTime("1998-07-22T16:37:01")]
     ))
     nothing
