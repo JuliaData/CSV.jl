@@ -12,7 +12,7 @@ end
 
 # start lastref at 1, since it's reserved for `missing`, so first ref value will be 2
 const Refs{T} = Dict{Union{T, Missing}, UInt32}
-RefPool(::Type{T}=String) where {T} = RefPool(Refs{T}(missing => 1), 1)
+RefPool(::Type{T}=String) where {T} = RefPool(Refs{T}(), 1)
 
 mutable struct Column
     # fields that are copied per task when parsing

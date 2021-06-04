@@ -467,7 +467,7 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, pool, lin
                 for m = 1:M
                     if isassigned(samples, m, n)
                         val = samples[m, n]
-                        if val === missing || val isa type || (val isa PosLenString && type isa StringTypes)
+                        if val isa type || (val isa PosLenString && type isa StringTypes)
                             getref!(refpool, type, val)
                         end
                     end

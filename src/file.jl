@@ -512,12 +512,28 @@ function makepooled!(col)
     T = col.type
     r = isdefined(col, :refpool) ? col.refpool.refs : Refs{T === NeedsTypeDetection ? Missing : T}()
     column = isdefined(col, :column) ? col.column : UInt32[]
-    col.column = PooledArray{coltype(col)}(PooledArrays.RefArray(column), r)
+    if col.anymissing
+        r[missing] = UInt32(1)
+    else
+        # need to recode pool and refs
+        for (k, v) in r
+            @inbounds r[k] = v - 1
+        end
+        r = convert(Dict{T, UInt32}, r)
+        # recode refs
+        for i = 1:length(column)
+            @inbounds column[i] -= 1
+        end
+    end
+    col.column = PooledArray(PooledArrays.RefArray(column), r)
     return
 end
 
 function unpool!(col)
     r = col.refpool.refs
+    if col.anymissing
+        r[missing] = UInt32(1)
+    end
     pool = Vector{keytype(r)}(undef, length(r))
     for (k, v) in r
         @inbounds pool[v] = k
