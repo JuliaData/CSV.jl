@@ -270,7 +270,7 @@ testfiles = [
     # other various files from around the interwebs
     ("baseball.csv", (pool=true, normalizenames=true),
         (35, 15),
-        NamedTuple{(:Rk, :Year, :Age, :Tm, :Lg, :Column6, :W, :L, :W_L_, :G, :Finish, :Wpost, :Lpost, :W_L_post, :Column15), Tuple{Union{Int64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{InlineString31, Missing},Union{InlineString3, Missing},Union{InlineString15, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{String, Missing}}},
+        NamedTuple{(:Rk, :Year, :Age, :Tm, :Lg, :Column6, :W, :L, :W_L_, :G, :Finish, :Wpost, :Lpost, :W_L_post, :Column15), Tuple{Union{Int64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{InlineString31, Missing},Union{InlineString3, Missing},Union{InlineString15, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{Int64, Missing},Union{Int64, Missing},Union{Float64, Missing},Union{InlineString63, Missing}}},
         nothing
     ),
     ("FL_insurance_sample.csv", (pool=true,),
@@ -290,12 +290,12 @@ testfiles = [
     ),
     ("SalesJan2009.csv", (pool=true,),
         (998, 12),
-        NamedTuple{(:Transaction_date, :Product, :Price, :Payment_Type, :Name, :City, :State, :Country, :Account_Created, :Last_Login, :Latitude, :Longitude),Tuple{InlineString15,InlineString15,InlineString7,InlineString15,InlineString31,String,Union{Missing, InlineString31},InlineString31,InlineString15,InlineString15,Float64,Float64}},
+        NamedTuple{(:Transaction_date, :Product, :Price, :Payment_Type, :Name, :City, :State, :Country, :Account_Created, :Last_Login, :Latitude, :Longitude),Tuple{InlineString15,InlineString15,InlineString7,InlineString15,InlineString31,InlineString63,Union{Missing, InlineString31},InlineString31,InlineString15,InlineString15,Float64,Float64}},
         nothing
     ),
     ("stocks.csv", (normalizenames=true,),
         (30, 2),
-        NamedTuple{(:Stock_Name, :Company_Name), Tuple{InlineString7, String}},
+        NamedTuple{(:Stock_Name, :Company_Name), Tuple{InlineString7, InlineString63}},
         nothing
     ),
     ("TechCrunchcontinentalUSA.csv", (pool=true,),
@@ -490,7 +490,7 @@ testfiles = [
     # #310
     ("test_bad_datetime.csv", NamedTuple(),
         (2, 3),
-        NamedTuple{(:event,:time,:typ), Tuple{InlineString15, InlineString31, InlineString7}},
+        NamedTuple{(:event,:time,:typ), Tuple{InlineString15, String, InlineString7}},
         (event = ["StartMovie", "Type"], time = ["2018-09-20T18:00:30.12345+00:00", "2018-09-20T18:02:13.67188+00:00"], typ = ["Event", "Event"])
     ),
     ("test_types.csv", (pool=false,),
@@ -584,7 +584,7 @@ testfiles = [
     # tape re-allocation
     ("fecal_samples.csv", (debug=true, normalizenames=true),
         (1079, 39),
-        NamedTuple{(:SampleID, :Mother_Child, :SubjectID, :MaternalID, :TimePoint, :Fecal_EtOH, :CollectionRep, :DOC, :RAInitials_DOC, :DOF, :RAInitials_DOF, :Date_Brought_In, :RAInitials_Brought, :Date_Shipped, :RAInitials_Shipped, :Date_Aliquoted, :Number_Replicates, :RAInitials_Aliquot, :StorageBox, :DOE, :Extract_number, :AliquotRep, :DNABox, :KitUsed, :RAInitials_Extract, :DNAConc, :DOM, :Mgx_processed, :Mgx_batch, :DO16S, :_16S_processed, :_16S_batch, :_16S_plate, :Notes, :Discrepancies, :Batch_1_Mapping, :Mgx_batch_Mapping, :_16S_batch_Mapping, :Mother_Child_Dyads), Tuple{InlineString15, InlineString1, Int64, InlineString7, Int64, InlineString1, Int64, Date, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString3}, Union{Missing, Date}, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString3}, Union{Missing, Date}, Union{Missing, InlineString7}, Union{Missing, InlineString3}, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString7}, Union{Missing, InlineString1}, Union{Missing, InlineString7}, Union{Missing, InlineString31}, Union{Missing, InlineString3}, Union{Missing, Float64}, Union{Missing, Date}, Union{Missing, InlineString15}, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString15}, Union{Missing, InlineString7}, Union{Missing, InlineString7}, Union{Missing, InlineString127}, Union{Missing, String}, Union{Missing, InlineString31}, Union{Missing, InlineString15}, Union{Missing, InlineString15}, Union{Missing, Int64}}},
+        NamedTuple{(:SampleID, :Mother_Child, :SubjectID, :MaternalID, :TimePoint, :Fecal_EtOH, :CollectionRep, :DOC, :RAInitials_DOC, :DOF, :RAInitials_DOF, :Date_Brought_In, :RAInitials_Brought, :Date_Shipped, :RAInitials_Shipped, :Date_Aliquoted, :Number_Replicates, :RAInitials_Aliquot, :StorageBox, :DOE, :Extract_number, :AliquotRep, :DNABox, :KitUsed, :RAInitials_Extract, :DNAConc, :DOM, :Mgx_processed, :Mgx_batch, :DO16S, :_16S_processed, :_16S_batch, :_16S_plate, :Notes, :Discrepancies, :Batch_1_Mapping, :Mgx_batch_Mapping, :_16S_batch_Mapping, :Mother_Child_Dyads), Tuple{InlineString15, InlineString1, Int64, InlineString7, Int64, InlineString1, Int64, Date, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString3}, Union{Missing, Date}, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString3}, Union{Missing, Date}, Union{Missing, InlineString7}, Union{Missing, InlineString3}, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString7}, Union{Missing, InlineString1}, Union{Missing, InlineString7}, Union{Missing, InlineString31}, Union{Missing, InlineString3}, Union{Missing, Float64}, Union{Missing, Date}, Union{Missing, InlineString15}, Union{Missing, InlineString7}, Union{Missing, Date}, Union{Missing, InlineString15}, Union{Missing, InlineString7}, Union{Missing, InlineString7}, Union{Missing, String}, Union{Missing, String}, Union{Missing, InlineString31}, Union{Missing, InlineString15}, Union{Missing, InlineString15}, Union{Missing, Int64}}},
         nothing
     ),
     # 459, support parsing Time
@@ -620,7 +620,7 @@ testfiles = [
     # https://github.com/JuliaData/CSV.jl/issues/577
     ("csv_segfault.txt", (delim="\t", ignoreemptylines=true),
         (468, 9),
-        NamedTuple{(Symbol("Time (CEST)"), :Latitude, :Longitude, :Course, :kts, :mph, :feet, :Rate, Symbol("Reporting Facility")),Tuple{String, Union{Missing, InlineString15}, Union{Missing, InlineString15}, Union{Missing, InlineString31}, Union{Missing, InlineString3}, Union{Missing, InlineString3}, Union{Missing, InlineString7}, Union{Missing, InlineString31}, Union{Missing, InlineString31}}},
+        NamedTuple{(Symbol("Time (CEST)"), :Latitude, :Longitude, :Course, :kts, :mph, :feet, :Rate, Symbol("Reporting Facility")),Tuple{InlineString63, Union{Missing, InlineString15}, Union{Missing, InlineString15}, Union{Missing, InlineString31}, Union{Missing, InlineString3}, Union{Missing, InlineString3}, Union{Missing, InlineString7}, Union{Missing, InlineString31}, Union{Missing, InlineString31}}},
         nothing
     ),
     # https://github.com/JuliaData/CSV.jl/issues/575
@@ -641,7 +641,7 @@ testfiles = [
     # https://github.com/JuliaData/CSV.jl/issues/597
     push!(testfiles, ("ampm.csv", (dateformat="m/d/yyyy I:M:S p",),
         (2, 16),
-        NamedTuple{(:ID, :INTERLOCK_NUMBER, :INTERLOCK_DESCRIPTION, :TYPE, :CREATE_DATE, :MODIFY_DATE, :USERNAME, :UNIT, :AREA, :PURPOSE, :PID, :LOCATION, :FUNC_DATE, :FUNC_BY, :TECHNICAL_DESCRIPTION, :types), Tuple{Int64, Union{Missing, InlineString15}, String, Missing, DateTime, DateTime, InlineString15, InlineString15, InlineString15, InlineString31, Missing, Missing, DateTime, Missing, String, InlineString3}},
+        NamedTuple{(:ID, :INTERLOCK_NUMBER, :INTERLOCK_DESCRIPTION, :TYPE, :CREATE_DATE, :MODIFY_DATE, :USERNAME, :UNIT, :AREA, :PURPOSE, :PID, :LOCATION, :FUNC_DATE, :FUNC_BY, :TECHNICAL_DESCRIPTION, :types), Tuple{Int64, Union{Missing, InlineString15}, InlineString63, Missing, DateTime, DateTime, InlineString15, InlineString15, InlineString15, InlineString31, Missing, Missing, DateTime, Missing, InlineString63, InlineString3}},
         x -> @test x.CREATE_DATE == [DateTime("2012-02-09T00:00:00"), DateTime("1998-07-22T16:37:01")]
     ))
     nothing
