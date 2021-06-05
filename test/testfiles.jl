@@ -280,12 +280,12 @@ testfiles = [
     ),
     ("SacramentocrimeJanuary2006.csv", (pool=true,),
         (7584, 9),
-        NamedTuple{(:cdatetime, :address, :district, :beat, :grid, :crimedescr, :ucr_ncic_code, :latitude, :longitude),Tuple{InlineString15,String,Int64,InlineString15,Int64,InlineString31,Int64,Float64,Float64}},
+        NamedTuple{(:cdatetime, :address, :district, :beat, :grid, :crimedescr, :ucr_ncic_code, :latitude, :longitude),Tuple{InlineString15, InlineString63, Int64, InlineString15, Int64, InlineString31, Int64, Float64, Float64}},
         nothing
     ),
     ("Sacramentorealestatetransactions.csv", (pool=true, normalizenames=false),
         (985, 12),
-        NamedTuple{(:street, :city, :zip, :state, :beds, :baths, :sq__ft, :type, :sale_date, :price, :latitude, :longitude),Tuple{String,InlineString15,Int64,InlineString3,Int64,Int64,Int64,InlineString15,InlineString31,Int64,Float64,Float64}},
+        NamedTuple{(:street, :city, :zip, :state, :beds, :baths, :sq__ft, :type, :sale_date, :price, :latitude, :longitude),Tuple{InlineString63, InlineString15, Int64, InlineString3, Int64, Int64, Int64, InlineString15, InlineString31, Int64, Float64, Float64}},
         nothing
     ),
     ("SalesJan2009.csv", (pool=true,),
@@ -300,7 +300,7 @@ testfiles = [
     ),
     ("TechCrunchcontinentalUSA.csv", (pool=true,),
         (1460, 10),
-        NamedTuple{(:permalink, :company, :numEmps, :category, :city, :state, :fundedDate, :raisedAmt, :raisedCurrency, :round),Tuple{String,String,Union{Missing, Int64},Union{Missing, InlineString15},Union{Missing, InlineString31},InlineString3,InlineString15,Int64,InlineString3,InlineString15}},
+        NamedTuple{(:permalink, :company, :numEmps, :category, :city, :state, :fundedDate, :raisedAmt, :raisedCurrency, :round),Tuple{InlineString63, InlineString63, Union{Missing, Int64}, Union{Missing, InlineString15}, Union{Missing, InlineString31}, InlineString3, InlineString15, Int64, InlineString3, InlineString15}},
         nothing
     ),
     ("Fielding.csv", (pool=false,),
@@ -490,7 +490,7 @@ testfiles = [
     # #310
     ("test_bad_datetime.csv", NamedTuple(),
         (2, 3),
-        NamedTuple{(:event,:time,:typ), Tuple{InlineString15, String, InlineString7}},
+        NamedTuple{(:event,:time,:typ), Tuple{InlineString15, InlineString31, InlineString7}},
         (event = ["StartMovie", "Type"], time = ["2018-09-20T18:00:30.12345+00:00", "2018-09-20T18:02:13.67188+00:00"], typ = ["Event", "Event"])
     ),
     ("test_types.csv", (pool=false,),
