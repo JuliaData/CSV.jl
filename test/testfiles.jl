@@ -278,14 +278,14 @@ testfiles = [
         NamedTuple{(:policyID, :statecode, :county, :eq_site_limit, :hu_site_limit, :fl_site_limit, :fr_site_limit, :tiv_2011, :tiv_2012, :eq_site_deductible, :hu_site_deductible, :fl_site_deductible, :fr_site_deductible, :point_latitude, :point_longitude, :line, :construction, :point_granularity),Tuple{Int64,InlineString3,InlineString31,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int64,Float64,Float64,InlineString15,InlineString31,Int64}},
         nothing
     ),
-    ("SacramentocrimeJanuary2006.csv", (pool=true,),
+    ("SacramentocrimeJanuary2006.csv", (pool=true, stringtype=String),
         (7584, 9),
-        NamedTuple{(:cdatetime, :address, :district, :beat, :grid, :crimedescr, :ucr_ncic_code, :latitude, :longitude),Tuple{InlineString15, InlineString63, Int64, InlineString15, Int64, InlineString31, Int64, Float64, Float64}},
+        NamedTuple{(:cdatetime, :address, :district, :beat, :grid, :crimedescr, :ucr_ncic_code, :latitude, :longitude),Tuple{String, String, Int64, String, Int64, String, Int64, Float64, Float64}},
         nothing
     ),
-    ("Sacramentorealestatetransactions.csv", (pool=true, normalizenames=false),
+    ("Sacramentorealestatetransactions.csv", (pool=true, normalizenames=false, stringtype=String),
         (985, 12),
-        NamedTuple{(:street, :city, :zip, :state, :beds, :baths, :sq__ft, :type, :sale_date, :price, :latitude, :longitude),Tuple{InlineString63, InlineString15, Int64, InlineString3, Int64, Int64, Int64, InlineString15, InlineString31, Int64, Float64, Float64}},
+        NamedTuple{(:street, :city, :zip, :state, :beds, :baths, :sq__ft, :type, :sale_date, :price, :latitude, :longitude),Tuple{String, String, Int64, String, Int64, Int64, Int64, String, String, Int64, Float64, Float64}},
         nothing
     ),
     ("SalesJan2009.csv", (pool=true,),
@@ -298,9 +298,9 @@ testfiles = [
         NamedTuple{(:Stock_Name, :Company_Name), Tuple{InlineString7, InlineString63}},
         nothing
     ),
-    ("TechCrunchcontinentalUSA.csv", (pool=true,),
+    ("TechCrunchcontinentalUSA.csv", (pool=true, stringtype=String),
         (1460, 10),
-        NamedTuple{(:permalink, :company, :numEmps, :category, :city, :state, :fundedDate, :raisedAmt, :raisedCurrency, :round),Tuple{InlineString63, InlineString63, Union{Missing, Int64}, Union{Missing, InlineString15}, Union{Missing, InlineString31}, InlineString3, InlineString15, Int64, InlineString3, InlineString15}},
+        NamedTuple{(:permalink, :company, :numEmps, :category, :city, :state, :fundedDate, :raisedAmt, :raisedCurrency, :round),Tuple{String, String, Union{Missing, Int64}, Union{Missing, String}, Union{Missing, String}, String, String, Int64, String, String}},
         nothing
     ),
     ("Fielding.csv", (pool=false,),
@@ -560,7 +560,7 @@ testfiles = [
     ),
     (IOBuffer("""a b c d e\n1 2  3 4 5\n1 2 3  4 5\n1  2 3  4 5"""), (delim=' ',),
         (3, 7),
-        NamedTuple{(:a, :b, :c, :d, :e, :Column6, :Column7), Tuple{Int64, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}}},
+        NamedTuple{(:a, :b, :c, :d, :e, :Column6, :Column7), Tuple{Int64, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Union{Int64, Missing}, Int64, Union{Int64, Missing}}},
         (a = [1, 1, 1], b = [2, 2, missing], c = [missing, 3, 2], d = [3, missing, 3], e = [4, 4, missing], Column6 = [5, 5, 4], Column7 = [missing, missing, 5])
     ),
     # 323

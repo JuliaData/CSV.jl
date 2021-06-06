@@ -57,7 +57,7 @@ function Chunks(source;
     type=nothing,
     types=nothing,
     typemap::Dict=Dict{Type, Type}(),
-    pool::Union{Bool, Real, AbstractVector, AbstractDict}=NaN,
+    pool::Union{Bool, Real, AbstractVector, AbstractDict}=DEFAULT_POOL,
     lazystrings::Bool=false,
     stringtype::StringTypes=DEFAULT_STRINGTYPE,
     strict::Bool=false,

@@ -208,7 +208,7 @@ function File(source;
     type=nothing,
     types=nothing,
     typemap::Dict=Dict{Type, Type}(),
-    pool::Union{Bool, Real, AbstractVector, AbstractDict}=NaN,
+    pool::Union{Bool, Real, AbstractVector, AbstractDict}=DEFAULT_POOL,
     lazystrings::Bool=false,
     stringtype::StringTypes=DEFAULT_STRINGTYPE,
     strict::Bool=false,
@@ -674,7 +674,7 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
                 T = ctx.streaming ? Union{ctx.stringtype, Missing} : NeedsTypeDetection
                 while pos <= len && !Parsers.newline(code)
                     col = Column(T)
-                    col.anymissing = true # assume all previous rows were missing
+                    col.anymissing = ctx.streaming || rowoffset == 0 && row > 1 # assume all previous rows were missing
                     col.pool = ctx.pool
                     if T === NeedsTypeDetection
                         pos, code = detect(buf, pos, len, opts, row, rowoffset, j, col, ctx, rowsguess)

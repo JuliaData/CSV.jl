@@ -27,7 +27,6 @@ jobs:
         include:
           - os: windows-latest
             version: '1'
-            arch: x86
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v2
