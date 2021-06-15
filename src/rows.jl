@@ -236,6 +236,8 @@ end
             @inbounds values[i] = missing
         elseif column isa Vector{PosLen}
             @inbounds values[i] = column[1]
+        elseif column isa Vector{Union{Missing, Int32}}
+            @inbounds values[i] = column[1]
         elseif column isa SVec{Int64}
             @inbounds values[i] = column[1]
         elseif column isa SVec{Float64}

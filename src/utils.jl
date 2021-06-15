@@ -48,6 +48,10 @@ promote_to_string(code) = code & PROMOTE_TO_STRING > 0
     S === NeedsTypeDetection && return T
     T === Missing && return S
     S === Missing && return T
+    T === Int32 && S === Int64 && return S
+    T === Int64 && S === Int32 && return T
+    T === Int32 && S === Float64 && return S
+    T === Float64 && S === Int32 && return T
     T === Int64 && S === Float64 && return S
     T === Float64 && S === Int64 && return T
     T <: InlineString && S <: InlineString && return promote_type(T, S)
@@ -62,6 +66,7 @@ function nonstandardtype(T)
     T = nonmissingtype(T)
     if T === Union{} ||
        T isa StringTypes ||
+       T === Int32 ||
        T === Int64 ||
        T === Float64 ||
        T === Bool ||
@@ -261,7 +266,7 @@ function detect(str::String; opts=Parsers.OPTIONS)
     return something(x, str)
 end
 
-const DetectTypes = Union{Missing, Int64, Float64, Date, DateTime, Time, Bool, Nothing}
+const DetectTypes = Union{Missing, Int32, Int64, Float64, Date, DateTime, Time, Bool, Nothing}
 
 @inline function detect(buf, pos, len, opts, ensure_full_buf_consumed=true, row=0, col=0)::Tuple{DetectTypes, Int16, Int64}
     int, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, opts)
@@ -272,7 +277,7 @@ const DetectTypes = Union{Missing, Int64, Float64, Date, DateTime, Time, Bool, N
         return missing, code, tlen
     end
     if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))
-        return int, code, tlen
+        return int < typemax(Int32) ? Int32(int) : int, code, tlen
     end
     float, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, opts)
     if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))

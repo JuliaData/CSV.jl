@@ -4,8 +4,8 @@ mutable struct RefPool
     # it might be Dict{Union{String, Missing}, UInt32}, but it might be some other string type
     # or it might not allow `missing`; in short, there are too many options to try and type
     # the field concretely; luckily, working with the `refs` field here is limited to
-    # a very few specific methods, where we're inspecting the ctx.stringtype and can assert
-    # the expected refs type here to help the compiler
+    # a very few specific methods, and we'll always have the column type, so we just need
+    # to make sure we assert the concrete type before using refs
     refs::Any
     lastref::UInt32
 end
@@ -14,25 +14,39 @@ end
 const Refs{T} = Dict{Union{T, Missing}, UInt32}
 RefPool(::Type{T}=String) where {T} = RefPool(Refs{T}(), 1)
 
+"""
+Internal structure used to track information for a single column in a delimited file.
+
+Fields:
+  * `type`: always a single, concrete type; no Union{T, Missing}; missingness is tracked in anymissing field; this field is mutable; it may start as one type and get "promoted" to another while parsing; two special types exist: `NeedsTypeDetection`, which specifies that we need to try and detect what type this column's values are and `HardMissing` which means the column type is definitely `Missing` and we don't need to detect anything; to get the "final type" of a column after parsing, call `CSV.coltype(col)`, which takes into account `anymissing`
+  * `anymissing`: whether any missing values have been encountered while parsing; if a user provided a type like `Union{Int, Missing}`, we'll set this to `true`, or when `missing` values are encountered while parsing
+  * `userprovidedtype`: whether the column type was provided by the user or not; this affects whether we'll promote a column's type while parsing, or emit a warning/error depending on `strict` keyword arg
+  * `willdrop`: whether we'll drop this column from the final columnset; computed from select/drop keyword arguments; this will result in a column type of `HardMissing` while parsing, where an efficient parser is used to "skip" a field w/o allocating any parsed value
+  * `pool`: computed from `pool` keyword argument; `true` is `1.0`, `false` is `0.0`, everything else is `Float64(pool)`; once computed, this field isn't mutated at all while parsing; it's used in type detection to determine whether a column will be pooled or not once a type is detected; 
+  * `column`: the actual column vector to hold parsed values; field is typed as `AbstractVector` and while parsing, we do switches on `col.type` to assert the column type to make code concretely typed
+  * `refpool`: if the column is pooled (or might be pooled in single-threaded case), this is the column-specific `RefPool` used to track unique parsed values and their `UInt32` ref codes
+  * `lock`: in multithreaded parsing, we have a top-level set of `Vector{Column}`, then each threaded parsing task makes its own copy to parse its own chunk; when synchronizing column types/pooled refs, the task-local `Column` will `lock(col.lock)` to make changes to the parent `Column`; each task-local `Column` shares the same `lock` of the top-level `Column`
+  * `position`: for transposed reading, the current column position
+  * `endposition`: for transposed reading, the expected ending position for this column
+"""
 mutable struct Column
     # fields that are copied per task when parsing
-    type::Type # always a single, concrete type; no Union{T, Missing}; missingness is tracked in anymissing field
-    anymissing::Bool # whether any missing values have been encountered while parsing
-    userprovidedtype::Bool # whether the column type was provided by the user or not
-    willdrop::Bool # whether we'll drop this column from the final columnset; computed from select/drop arguments
-    maxstringsize::UInt8
+    type::Type
+    anymissing::Bool
+    userprovidedtype::Bool
+    willdrop::Bool
     pool::Float64
     # lazily/manually initialized fields
     column::AbstractVector
     refpool::RefPool
     # per top-level column fields (don't need to copy per task when parsing)
     lock::ReentrantLock
-    position::Int # transpose column position
-    endposition::Int # transpose column ending position
+    position::Int
+    endposition::Int
     # options::Parsers.Options
 
-    Column(type::Type, anymissing::Bool, userprovidedtype::Bool, willdrop::Bool, maxstringsize::UInt8, pool::Float64) =
-        new(type, anymissing, userprovidedtype, willdrop, maxstringsize, pool)
+    Column(type::Type, anymissing::Bool, userprovidedtype::Bool, willdrop::Bool, pool::Float64) =
+        new(type, anymissing, userprovidedtype, willdrop, pool)
 end
 
 function Column(type::Type)
@@ -40,13 +54,13 @@ function Column(type::Type)
     return Column(type === Missing ? HardMissing : T,
         type >: Missing,
         type !== NeedsTypeDetection,
-        false, 0x00, NaN)
+        false, NaN)
 end
 
 # creating a per-task column from top-level column
 function Column(x::Column)
     @assert isdefined(x, :lock)
-    y = Column(x.type, x.anymissing, x.userprovidedtype, x.willdrop, x.maxstringsize, x.pool)
+    y = Column(x.type, x.anymissing, x.userprovidedtype, x.willdrop, x.pool)
     y.lock = x.lock # parent and child columns _share_ the same lock
     if isdefined(x, :options)
         y.options = x.options

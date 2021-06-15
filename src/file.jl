@@ -610,6 +610,8 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
             pos, code = parsevalue!(Missing, buf, pos, len, opts, row, rowoffset, i, col)
         elseif type === NeedsTypeDetection
             pos, code = detect(buf, pos, len, opts, row, rowoffset, i, col, ctx, rowsguess)
+        elseif type === Int32
+            pos, code = parsevalue!(Int32, buf, pos, len, opts, row, rowoffset, i, col)
         elseif type === Int64
             pos, code = parsevalue!(Int64, buf, pos, len, opts, row, rowoffset, i, col)
         elseif type === Float64
@@ -757,7 +759,7 @@ end
 
 function parsevalue!(::Type{type}, buf, pos, len, opts, row, rowoffset, i, col)::Tuple{Int64, Int16} where {type}
     x, code, vpos, vlen, tlen = Parsers.xparse(type === Missing ? String : type, buf, pos, len, opts)
-    if code > 0
+    if !Parsers.invalid(code)
         if type !== Missing
             if Parsers.sentinel(code)
                 col.anymissing = true
@@ -801,22 +803,15 @@ function parsevalue!(::Type{type}, buf, pos, len, opts, row, rowoffset, i, col):
                     stricterror(type, buf, pos, tlen, code, rowoffset + row, i)
                 end
             else
-                if type === Int64
-                    y, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, opts)
-                    if code > 0
-                        col.type = Float64
-                        column = col.column
-                        if column isa Vector{UInt32}
-                            col.refpool.refs = convert(Refs{Float64}, col.refpool.refs)
-                            ref = getref!(col.refpool, Float64, y)
-                            @inbounds column[row] = ref
-                        elseif column isa SVec{Int64}
-                            col.column = convert(SentinelVector{Float64}, column)
-                            @inbounds col.column[row] = y
-                        end
-                    else
-                        code |= PROMOTE_TO_STRING
+                if type === Int32
+                    if Parsers.overflow(code)
+                        code = trytopromote!(Int32, Int64, buf, pos, len, opts, col, row)
                     end
+                    if !Parsers.ok(code)
+                        code = trytopromote!(Int32, Float64, buf, pos, len, opts, col, row)
+                    end
+                elseif type === Int64
+                    code = trytopromote!(Int64, Float64, buf, pos, len, opts, col, row)
                 elseif type === InlineString1 || type === InlineString3 || type === InlineString7 || type === InlineString15 || type === InlineString31 || type === InlineString63 || type === InlineString127
                     newT = widen(type)
                     while newT !== InlineString127
@@ -843,6 +838,25 @@ function parsevalue!(::Type{type}, buf, pos, len, opts, row, rowoffset, i, col):
         end
     end
     return pos + tlen, code
+end
+
+@noinline function trytopromote!(::Type{from}, ::Type{to}, buf, pos, len, opts, col, row) where {from, to}
+    y, code, vpos, vlen, tlen = Parsers.xparse(to, buf, pos, len, opts)
+    if !Parsers.invalid(code)
+        col.type = to
+        column = col.column
+        if column isa Vector{UInt32}
+            col.refpool.refs = convert(Refs{to}, col.refpool.refs)
+            ref = getref!(col.refpool, to, y)
+            @inbounds column[row] = ref
+        elseif column isa vectype(from)
+            col.column = convert(SentinelVector{to}, column)
+            @inbounds col.column[row] = y
+        end
+    else
+        code |= PROMOTE_TO_STRING
+    end
+    return code
 end
 
 @inline function getref!(refpool, ::Type{T}, key)::UInt32 where {T}

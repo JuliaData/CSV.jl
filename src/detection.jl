@@ -484,7 +484,6 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, pool, lin
             end
         end
         col.type = type
-        col.maxstringsize = min(typemax(UInt8), mss % UInt8)
     end
     return totalbytes[] / finalrows, true
 end
