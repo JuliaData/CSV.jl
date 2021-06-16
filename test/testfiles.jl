@@ -64,7 +64,7 @@ testfiles = [
         NamedTuple{(), Tuple{}},
         NamedTuple()
     ),
-    ("test_empty_file_newlines.csv", (normalizenames=true, ignoreemptylines=false),
+    ("test_empty_file_newlines.csv", (normalizenames=true, ignoreemptyrows=false),
         (9, 1),
         NamedTuple{(:Column1,), Tuple{Missing}},
         (Column1 = Missing[missing, missing, missing, missing, missing, missing, missing, missing, missing],)
@@ -156,7 +156,7 @@ testfiles = [
         (col1_sub1_part1 = [1, 4, 7], col2_sub2_part2 = [2, 5, 8], col3_sub3_part3 = [3, 6, 9])
     ),
     # 343
-    ("test_header_int_list.csv", (header=[1, 3, 5], ignoreemptylines=false),
+    ("test_header_int_list.csv", (header=[1, 3, 5], ignoreemptyrows=false),
         (3, 3),
         NamedTuple{(:col1_sub1_part1, :col2_sub2_part2, :col3_sub3_part3),Tuple{Int64,Int64,Int64}},
         (col1_sub1_part1 = [1, 4, 7], col2_sub2_part2 = [2, 5, 8], col3_sub3_part3 = [3, 6, 9])
@@ -245,7 +245,7 @@ testfiles = [
         (col1 = ["123", "abc", "123abc"], col2 = Missing[missing, missing, missing])
     ),
     # #107
-    (IOBuffer("1,a,i\n2,b,ii\n3,c,iii"), (datarow=1,),
+    (IOBuffer("1,a,i\n2,b,ii\n3,c,iii"), (skipto=1,),
         (3, 3),
         NamedTuple{(:Column1, :Column2, :Column3),Tuple{Int64,InlineString1,InlineString3}},
         (Column1 = [1, 2, 3], Column2 = ["a", "b", "c"], Column3 = ["i", "ii", "iii"])
@@ -323,7 +323,7 @@ testfiles = [
         (aa = [1], bb = ["1,b,c"])
     ),
     # #198
-    ("issue_198.csv", (decimal=',', delim=';', missingstring="-", datarow = 2, header = ["Date", "EONIA", "1m", "12m", "3m", "6m", "9m"], normalizenames=false),
+    ("issue_198.csv", (decimal=',', delim=';', missingstring="-", skipto = 2, header = ["Date", "EONIA", "1m", "12m", "3m", "6m", "9m"], normalizenames=false),
         (6, 7),
         NamedTuple{(:Date, :EONIA, Symbol("1m"), Symbol("12m"), Symbol("3m"), Symbol("6m"), Symbol("9m")),Tuple{InlineString15, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}}},
         NamedTuple{(:Date, :EONIA, Symbol("1m"), Symbol("12m"), Symbol("3m"), Symbol("6m"), Symbol("9m"))}((String["18/04/2018", "17/04/2018", "16/04/2018", "15/04/2018", "14/04/2018", "13/04/2018"], Union{Missing, Float64}[-0.368, -0.368, -0.367, missing, missing, -0.364], Union{Missing, Float64}[-0.371, -0.371, -0.371, missing, missing, -0.371], Union{Missing, Float64}[-0.189, -0.189, -0.189, missing, missing, -0.19], Union{Missing, Float64}[-0.328, -0.328, -0.329, missing, missing, -0.329], Union{Missing, Float64}[-0.271, -0.27, -0.27, missing, missing, -0.271], Union{Missing, Float64}[-0.219, -0.219, -0.219, missing, missing, -0.219]))
@@ -396,12 +396,12 @@ testfiles = [
         NamedTuple{(:col1, :col2, :col3),Tuple{Float64,Float64,Float64}},
         (col1 = Union{Missing, Float64}[1.0, 4.0, 7.0], col2 = Union{Missing, Float64}[2.0, 5.0, 8.0], col3 = Union{Missing, Float64}[3.0, 6.0, 9.0])
     ),
-    ("test_multiple_missing.csv", (missingstrings=["NA", "NULL", "\\N"],),
+    ("test_multiple_missing.csv", (missingstring=["NA", "NULL", "\\N"],),
         (4, 3),
         NamedTuple{(:col1, :col2, :col3), Tuple{Float64, Union{Missing, Float64}, Float64}},
         (col1 = [1.0, 4.0, 7.0, 7.0], col2 = Union{Missing, Float64}[2.0, missing, missing, missing], col3 = [3.0, 6.0, 9.0, 9.0])
     ),
-    ("test_openclosequotes.csv", (missingstrings=["NA", "NULL"], openquotechar='{', closequotechar='}'),
+    ("test_openclosequotes.csv", (missingstring=["NA", "NULL"], openquotechar='{', closequotechar='}'),
         (3, 3),
         NamedTuple{(:col1, :col2, :col3), Tuple{Float64, Union{Missing, Float64}, Float64}},
         (col1 = [1.0, 4.0, 7.0], col2 = Union{Missing, Float64}[2.0, missing, missing], col3 = [3.0, 6.0, 9.0])
@@ -567,13 +567,13 @@ testfiles = [
         (a = [1, 1, 1], b = [2, 2, missing], c = [missing, 3, 2], d = [3, missing, 3], e = [4, 4, missing], Column6 = [5, 5, 4], Column7 = [missing, missing, 5])
     ),
     # 323
-    (IOBuffer("a0001000\na0001000"), (datarow=1, pool=true),
+    (IOBuffer("a0001000\na0001000"), (skipto=1, pool=true),
         (2, 1),
         NamedTuple{(:Column1,), Tuple{InlineString15}},
         (Column1 = ["a0001000", "a0001000"],)
     ),
     # 396
-    ("heat_flux.dat", (delim=' ', ignorerepeated=true, datarow=2, header=[:t, :heat_flux]),
+    ("heat_flux.dat", (delim=' ', ignorerepeated=true, skipto=2, header=[:t, :heat_flux]),
         (16001, 2),
         NamedTuple{(:t, :heat_flux), Tuple{Float64, Float64}},
         nothing
@@ -621,13 +621,13 @@ testfiles = [
         (RESULTAT = ["A0", "B0", "C0"], NOM_CHAM = ["A1", "B1", "C1"], INST = [0.0, 0.0, 0.0], NUME_ORDRE = [0, 0, 0], NOEUD = ["N1", "N2", "N3"], COOR_X = [0.0, 2.3, 2.5], COOR_Y = [2.27374e-15, 0.0, 0.0], COOR_Z = [0.0, 0.0, 0.0], TEMP = [0.0931399, 0.311013, 0.424537])
     ),
     # https://github.com/JuliaData/CSV.jl/issues/577
-    ("csv_segfault.txt", (delim="\t", ignoreemptylines=true),
+    ("csv_segfault.txt", (delim="\t", ignoreemptyrows=true),
         (468, 9),
         NamedTuple{(Symbol("Time (CEST)"), :Latitude, :Longitude, :Course, :kts, :mph, :feet, :Rate, Symbol("Reporting Facility")),Tuple{InlineString63, Union{Missing, InlineString15}, Union{Missing, InlineString15}, Union{Missing, InlineString31}, Union{Missing, InlineString3}, Union{Missing, InlineString3}, Union{Missing, InlineString7}, Union{Missing, InlineString31}, Union{Missing, InlineString31}}},
         nothing
     ),
     # https://github.com/JuliaData/CSV.jl/issues/575
-    ("types_override.csv", (type=Int64, types=Dict(:col1 => String)),
+    ("types_override.csv", (types=[String, Int64, Int64, Int64, Int64],),
         (3, 5),
         NamedTuple{(:col1,:col2,:col3,:col4,:col5), Tuple{String, Int64, Int64, Int64, Int64}},
         (col1 = ["A", "B", "C"], col2 = [1, 5, 9], col3 = [2, 6, 10], col4 = [3, 7, 11], col5 = [4, 8, 12])

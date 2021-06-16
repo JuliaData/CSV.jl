@@ -133,12 +133,15 @@ function Context(source,
     footerskip,
     transpose,
     comment,
+    ignoreemptyrows,
     ignoreemptylines,
     select,
     drop,
     limit,
     threaded,
+    ntasks,
     tasks,
+    rows_to_check,
     lines_to_check,
     # parsing options
     missingstrings,
@@ -174,23 +177,51 @@ function Context(source,
     @inbounds begin
     !isa(source, IO) && !isa(source, AbstractVector{UInt8}) && !isa(source, Cmd) && !isfile(source) &&
         throw(ArgumentError("\"$source\" is not a valid file"))
-    (types !== nothing && any(x->!isconcretetype(x) && !(x isa Union), types isa AbstractDict ? values(types) : types)) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
+    if types !== nothing
+        if types isa AbstractVector || types isa AbstractDict
+            any(x->!concrete_or_concreteunion(x), types isa AbstractDict ? values(types) : types) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
+        else
+            concrete_or_concreteunion(types) || throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
+        end
+    end
     checkvaliddelim(delim)
     ignorerepeated && delim === nothing && throw(ArgumentError("auto-delimiter detection not supported when `ignorerepeated=true`; please provide delimiter like `delim=','`"))
     if lazystrings && !streaming
         Base.depwarn("`lazystrings` keyword argument is deprecated; use `stringtype=PosLenString` instead", :Context)
         stringtype = PosLenString
     end
-    if skipto !== nothing
-        if datarow != -1
-            @warn "both `skipto` and `datarow` arguments provided, using `skipto`"
-        end
-        datarow = skipto
+    if tasks !== nothing
+        Base.depwarn("`tasks` keyword argument is deprecated; use `ntasks` instead", :Context)
+        ntasks = tasks
     end
-    header = (isa(header, Integer) && header == 1 && datarow == 1) ? -1 : header
-    isa(header, Integer) && datarow != -1 && (datarow > header || throw(ArgumentError("data row ($datarow) must come after header row ($header)")))
-    datarow = datarow == -1 ? (isa(header, Vector{Symbol}) || isa(header, Vector{String}) ? 0 : last(header)) + 1 : datarow # by default, data starts on line after header
-    debug && println("header is: $header, datarow computed as: $datarow")
+    if ignoreemptylines !== nothing
+        Base.depwarn("`ignoreemptylines` keyword argument is deprecated; use `ignoreemptyrows` instead", :Context)
+        ignoreemptyrows = ignoreemptylines
+    end
+    if lines_to_check !== nothing
+        Base.depwarn("`lines_to_check` keyword argument is deprecated; use `rows_to_check` instead", :Context)
+        rows_to_check = lines_to_check
+    end
+    if !isempty(missingstrings)
+        Base.depwarn("`missingstrings` keyword argument is deprecated; pass a `Vector{String}` to `missingstring` instead", :Context)
+        missingstring = missingstrings
+    end
+    if dateformats !== nothing
+        Base.depwarn("`dateformats` keyword argument is deprecated; pass column date formats to `dateformat` keyword argument instead", :Context)
+        dateformat = dateformats
+    end
+    if datarow != -1
+        Base.depwarn("`datarow` keyword argument is deprecated; use `skipto` instead", :Context)
+        skipto = datarow
+    end
+    if type !== nothing
+        Base.depwarn("`type` keyword argument is deprecated; a single type can be passed to `types` instead", :Context)
+        types = type
+    end
+    header = (isa(header, Integer) && header == 1 && skipto == 1) ? -1 : header
+    isa(header, Integer) && skipto != -1 && (skipto > header || throw(ArgumentError("data row ($skipto) must come after header row ($header)")))
+    skipto = skipto == -1 ? (isa(header, Vector{Symbol}) || isa(header, Vector{String}) ? 0 : last(header)) + 1 : skipto # by default, data starts on line after header
+    debug && println("header is: $header, skipto computed as: $skipto")
     # getsource will turn any input into a `AbstractVector{UInt8}`
     buf, pos, len = getsource(source)
     if len > Int64(2)^42
@@ -204,7 +235,7 @@ function Context(source,
     cq = something(closequotechar, quotechar) % UInt8
     trues = truestrings === nothing ? nothing : truestrings
     falses = falsestrings === nothing ? nothing : falsestrings
-    sentinel = ((isempty(missingstrings) && missingstring == "") || (length(missingstrings) == 1 && missingstrings[1] == "")) ? missing : isempty(missingstrings) ? [missingstring] : missingstrings
+    sentinel = (isempty(missingstring) || (missingstring isa Vector && length(missingstring) == 1 && missingstring[1] == "")) ? missing : missingstring isa String ? [missingstring] : missingstring
 
     if delim === nothing
         del = isa(source, AbstractString) && endswith(source, ".tsv") ? UInt8('\t') :
@@ -220,19 +251,20 @@ function Context(source,
         lastbyte = buf[end]
         endpos = (lastbyte == UInt8('\r') || lastbyte == UInt8('\n')) +
             (lastbyte == UInt8('\n') && buf[end - 1] == UInt8('\r'))
-        revlen = skiptorow(ReversedBuf(buf), 1 + endpos, len, oq, eq, cq, cmt, ignoreemptylines, 0, footerskip) - 2
+        revlen = skiptorow(ReversedBuf(buf), 1 + endpos, len, oq, eq, cq, cmt, ignoreemptyrows, 0, footerskip) - 2
         len -= revlen
         debug && println("adjusted for footerskip, len = $(len + revlen - 1) => $len")
     end
 
+    df = dateformat isa AbstractVector || dateformat isa AbstractDict ? nothing : dateformat
     if !transpose
         # step 1: detect the byte position where the column names start (headerpos)
         # and where the first data row starts (datapos)
-        headerpos, datapos = detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, header, datarow)
+        headerpos, datapos = detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptyrows, header, skipto)
         debug && println("headerpos = $headerpos, datapos = $datapos")
 
         # step 2: detect delimiter (or use given) and detect number of (estimated) rows and columns
-        d, rowsguess = detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, del, cmt, ignoreemptylines)
+        d, rowsguess = detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, del, cmt, ignoreemptyrows)
         debug && println("estimated rows: $rowsguess")
         debug && println("detected delimiter: \"$(escape_string(d isa UInt8 ? string(Char(d)) : d))\"")
 
@@ -249,7 +281,7 @@ function Context(source,
                 end
             end
         end
-        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformat, ignorerepeated, ignoreemptylines, comment, quoted, parsingdebug, strict, silencewarnings)
+        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, quoted, parsingdebug, strict, silencewarnings)
 
         # step 4a: if we're ignoring repeated delimiters, then we ignore any
         # that start a row, so we need to check if we need to adjust our headerpos/datapos
@@ -265,11 +297,11 @@ function Context(source,
         ncols = length(names)
     else
         # transpose
-        d, rowsguess = detectdelimandguessrows(buf, pos, pos, len, oq, eq, cq, del, cmt, ignoreemptylines)
+        d, rowsguess = detectdelimandguessrows(buf, pos, pos, len, oq, eq, cq, del, cmt, ignoreemptyrows)
         wh1 = d == UInt(' ') ? 0x00 : UInt8(' ')
         wh2 = d == UInt8('\t') ? 0x00 : UInt8('\t')
-        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformat, ignorerepeated, ignoreemptylines, comment, quoted, parsingdebug, strict, silencewarnings)
-        rowsguess, names, positions, endpositions = detecttranspose(buf, pos, len, options, header, datarow, normalizenames)
+        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, quoted, parsingdebug, strict, silencewarnings)
+        rowsguess, names, positions, endpositions = detecttranspose(buf, pos, len, options, header, skipto, normalizenames)
         ncols = length(names)
         datapos = isempty(positions) ? 0 : positions[1]
     end
@@ -289,21 +321,21 @@ function Context(source,
                 customtypes = tupcat(customtypes, nonstandardtype(col.type))
             end
         end
-    else
-        T = type === nothing ? (streaming ? Union{stringtype, Missing} : NeedsTypeDetection) : type
+    elseif types isa AbstractDict
+        T = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
         columns = Vector{Column}(undef, ncols)
-        if types isa AbstractDict
-            for i = 1:ncols
-                S = getordefault(types, names[i], i, T)
-                col = Column(S)
-                columns[i] = col
-                if nonstandardtype(col.type) !== Union{}
-                    customtypes = tupcat(customtypes, nonstandardtype(col.type))
-                end
+        for i = 1:ncols
+            S = getordefault(types, names[i], i, T)
+            col = Column(S)
+            columns[i] = col
+            if nonstandardtype(col.type) !== Union{}
+                customtypes = tupcat(customtypes, nonstandardtype(col.type))
             end
-        else
-            foreach(i -> columns[i] = Column(T), 1:ncols)
         end
+    else
+        T = types === nothing ? (streaming ? Union{stringtype, Missing} : NeedsTypeDetection) : types
+        columns = Vector{Column}(undef, ncols)
+        foreach(i -> columns[i] = Column(T), 1:ncols)
     end
     if transpose
         # set column positions
@@ -321,14 +353,14 @@ function Context(source,
     end
 
     # generate column options if applicable
-    if dateformats isa AbstractDict
+    if dateformat isa AbstractDict
         coloptions = Vector{Parsers.Options}(undef, ncols)
         for i = 1:ncols
-            df = getordefault(dateformats, names[i], i, nothing)
+            df = getordefault(dateformat, names[i], i, nothing)
             # devdoc: if we want to add any other column-specific parsing options, this is where we'd at the logic
             # e.g. per-column sentinel, decimal, trues, falses, openquotechar, closequotechar, escapechar, etc.
             if df !== nothing
-                coloptions[i] = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings)
+                coloptions[i] = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, true, parsingdebug, strict, silencewarnings)
             else
                 coloptions[i] = options
             end
@@ -359,7 +391,11 @@ function Context(source,
     if select !== nothing && drop !== nothing
         throw(ArgumentError("`select` and `drop` keywords were both provided; only one or the other is allowed"))
     elseif select !== nothing
-        if select isa AbstractVector{Int}
+        if select isa AbstractVector{Bool}
+            for i = 1:ncols
+                select[i] || willdrop!(columns, i)
+            end
+        elseif select isa AbstractVector{<:Integer}
             for i = 1:ncols
                 i in select || willdrop!(columns, i)
             end
@@ -367,10 +403,6 @@ function Context(source,
             select = map(Symbol, select)
             for i = 1:ncols
                 names[i] in select || willdrop!(columns, i)
-            end
-        elseif select isa AbstractVector{Bool}
-            for i = 1:ncols
-                select[i] || willdrop!(columns, i)
             end
         elseif select isa Base.Callable
             for i = 1:ncols
@@ -380,7 +412,11 @@ function Context(source,
             throw(ArgumentError("`select` keyword argument must be an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a selector function of the form `(i, name) -> keep::Bool`"))
         end
     elseif drop !== nothing
-        if drop isa AbstractVector{Int}
+        if drop isa AbstractVector{Bool}
+            for i = 1:ncols
+                drop[i] && willdrop!(columns, i)
+            end
+        elseif drop isa AbstractVector{<:Integer}
             for i = 1:ncols
                 i in drop && willdrop!(columns, i)
             end
@@ -388,10 +424,6 @@ function Context(source,
             drop = map(Symbol, drop)
             for i = 1:ncols
                 names[i] in drop && willdrop!(columns, i)
-            end
-        elseif drop isa AbstractVector{Bool}
-            for i = 1:ncols
-                drop[i] && willdrop!(columns, i)
             end
         elseif drop isa Base.Callable
             for i = 1:ncols
@@ -406,16 +438,16 @@ function Context(source,
     # determine if we can use threads while parsing
     limit = something(limit, typemax(Int64))
     minrows = min(limit, rowsguess)
-    if threaded === nothing && !streaming && tasks > 1 && !transpose && minrows > (tasks * 5) && (minrows * ncols) >= 5_000
+    if threaded === nothing && !streaming && ntasks > 1 && !transpose && minrows > (ntasks * 5) && (minrows * ncols) >= 5_000
         threaded = true
     elseif threaded === true
         if transpose
             @warn "`threaded=true` not supported on transposed files"
             threaded = false
-        elseif tasks == 1
-            @warn "`threaded=true` but `tasks=1`; to support threaded parsing, pass `tasks=N` where `N > 1`; `tasks` defaults to `Threads.nthreads()`, so you may consider starting Julia with multiple threads"
+        elseif ntasks == 1
+            @warn "`threaded=true` but `ntasks=1`; to support threaded parsing, pass `ntasks=N` where `N > 1`; `ntasks` defaults to `Threads.nthreads()`, so you may consider starting Julia with multiple threads"
             threaded = false
-        elseif minrows < (tasks * 5)
+        elseif minrows < (ntasks * 5)
             @warn "`threaded=true` but there were not enough estimated rows ($minrows) to justify multithreaded parsing"
             threaded = false
         end
@@ -438,13 +470,13 @@ function Context(source,
             origrowsguess = limit
             debug && println("limiting, adjusting len to $len")
         end
-        chunksize = div(len - datapos, tasks)
-        chunkpositions = [i == 0 ? datapos : i == tasks ? len : (datapos + chunksize * i) for i = 0:tasks]
+        chunksize = div(len - datapos, ntasks)
+        chunkpositions = [i == 0 ? datapos : i == ntasks ? len : (datapos + chunksize * i) for i = 0:ntasks]
         debug && println("initial byte positions before adjusting for start of rows: $chunkpositions")
-        avgbytesperrow, successfullychunked = findrowstarts!(buf, options, chunkpositions, ncols, columns, stringtype, finalpool, downcast, lines_to_check)
+        avgbytesperrow, successfullychunked = findrowstarts!(buf, options, chunkpositions, ncols, columns, stringtype, finalpool, downcast, rows_to_check)
         if successfullychunked
             origbytesperrow = ((len - datapos) / origrowsguess)
-            weightedavgbytesperrow = ceil(Int64, avgbytesperrow * ((tasks - 1) / tasks) + origbytesperrow * (1 / tasks))
+            weightedavgbytesperrow = ceil(Int64, avgbytesperrow * ((ntasks - 1) / ntasks) + origbytesperrow * (1 / ntasks))
             rowsguess = ceil(Int64, ((len - datapos) / weightedavgbytesperrow) * 1.01)
             debug && println("single-threaded estimated rows = $origrowsguess, multi-threaded estimated rows = $rowsguess")
             debug && println("multi-threaded column types sampled as: $columns")
@@ -469,7 +501,7 @@ function Context(source,
         buf,
         datapos,
         len,
-        datarow,
+        skipto,
         options,
         coloptions,
         columns,
@@ -480,7 +512,7 @@ function Context(source,
         stringtype,
         limit,
         threaded,
-        tasks,
+        ntasks,
         chunkpositions,
         maxwarnings,
         debug,

@@ -28,12 +28,13 @@ Base.showerror(io::IO, e::Error) = println(io, e.msg)
 # constants
 const DEFAULT_STRINGTYPE = InlineString
 const DEFAULT_POOL = 0.25
-const DEFAULT_LINES_TO_CHECK = 30
+const DEFAULT_ROWS_TO_CHECK = 30
 const DEFAULT_MAX_WARNINGS = 100
 const DEFAULT_MAX_INLINE_STRING_LENGTH = 32
 const TRUE_STRINGS = ["true", "True", "TRUE", "T", "1"]
 const FALSE_STRINGS = ["false", "False", "FALSE", "F", "0"]
 
+include("keyworddocs.jl")
 include("utils.jl")
 include("detection.jl")
 include("context.jl")
@@ -47,7 +48,7 @@ include("write.jl")
 
 Read and parses a delimited file, materializing directly using the `sink` function.
 
-`CSV.read` supports all the same keyword arguments as [`CSV.File`](@ref).
+$KEYWORD_DOCS
 """
 function read(source, sink=nothing; copycols::Bool=false, kwargs...)
     if sink === nothing

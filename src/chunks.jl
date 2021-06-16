@@ -4,12 +4,12 @@ struct Chunks
 end
 
 """
-    CSV.Chunks(source; tasks::Integer=Threads.nthreads(), kwargs...) => CSV.Chunks
+    CSV.Chunks(source; ntasks::Integer=Threads.nthreads(), kwargs...) => CSV.Chunks
 
 Returns a file "chunk" iterator. Accepts all the same inputs and keyword arguments as [`CSV.File`](@ref),
 see those docs for explanations of each keyword argument.
 
-The `tasks` keyword argument specifies how many chunks a file should be split up into, defaulting to 
+The `ntasks` keyword argument specifies how many chunks a file should be split up into, defaulting to 
 the # of threads available to Julia (i.e. `JULIA_NUM_THREADS` environment variable) or 8 if Julia is
 run single-threaded.
 
@@ -21,6 +21,8 @@ with `CSV.File`, types may be passed manually via the `type` or `types` keyword 
 
 This functionality is new and thus considered experimental; please
 [open an issue](https://github.com/JuliaData/CSV.jl/issues/new) if you run into any problems/bugs.
+
+$KEYWORD_DOCS
 """
 function Chunks(source;
     # file options
@@ -29,16 +31,19 @@ function Chunks(source;
     normalizenames::Bool=false,
     # by default, data starts immediately after header or start of file
     datarow::Integer=-1,
-    skipto::Union{Nothing, Integer}=nothing,
+    skipto::Integer=-1,
     footerskip::Integer=0,
     transpose::Bool=false,
     comment::Union{String, Nothing}=nothing,
-    ignoreemptylines::Bool=true,
+    ignoreemptyrows::Bool=true,
+    ignoreemptylines=nothing,
     select=nothing,
     drop=nothing,
     limit::Union{Integer, Nothing}=nothing,
-    tasks::Integer=Threads.nthreads(),
-    lines_to_check::Integer=DEFAULT_LINES_TO_CHECK,
+    ntasks::Integer=Threads.nthreads(),
+    tasks::Union{Nothing, Integer}=nothing,
+    rows_to_check::Integer=DEFAULT_ROWS_TO_CHECK,
+    lines_to_check=nothing,
     # parsing options
     missingstrings=String[],
     missingstring="",
@@ -49,8 +54,8 @@ function Chunks(source;
     openquotechar::Union{UInt8, Char, Nothing}=nothing,
     closequotechar::Union{UInt8, Char, Nothing}=nothing,
     escapechar::Union{UInt8, Char}='"',
-    dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
-    dateformats::Union{AbstractDict, Nothing}=nothing,
+    dateformat::Union{String, Dates.DateFormat, Nothing, AbstractDict}=nothing,
+    dateformats=nothing,
     decimal::Union{UInt8, Char}=UInt8('.'),
     truestrings::Union{Vector{String}, Nothing}=TRUE_STRINGS,
     falsestrings::Union{Vector{String}, Nothing}=FALSE_STRINGS,
@@ -68,7 +73,7 @@ function Chunks(source;
     debug::Bool=false,
     parsingdebug::Bool=false)
 
-    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptylines, select, drop, limit, true, tasks, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
+    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, true, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
     !ctx.threaded && throw(ArgumentError("unable to iterate chunks from input file source"))
     foreach(col -> col.lock = ReentrantLock(), ctx.columns)
     return Chunks(ctx)
