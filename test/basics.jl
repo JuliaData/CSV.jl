@@ -209,6 +209,46 @@ f = CSV.File(IOBuffer("x\n\n1\n3.14\nabc"), ignoreemptylines=false)
 @test f.x[3] == "3.14"
 @test f.x[4] == "abc"
 
+# downcast
+f = CSV.File(IOBuffer("x\n1"), downcast=true, ignoreemptylines=true)
+@test eltype(f.x) === Int8
+
+f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))"), downcast=true, ignoreemptylines=true)
+@test eltype(f.x) === Int16
+
+f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))"), downcast=true, ignoreemptylines=true)
+@test eltype(f.x) === Int32
+
+f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))"), downcast=true, ignoreemptylines=true)
+@test eltype(f.x) === Int64
+
+f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))"), downcast=true, ignoreemptylines=true)
+@test eltype(f.x) === Int128
+
+f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))\n3.14"), downcast=true, ignoreemptylines=true)
+@test eltype(f.x) === Float64
+
+f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))\n3.14\nabc"), downcast=true, ignoreemptylines=true)
+@test eltype(f.x) === InlineString63
+
+f = CSV.File(IOBuffer("x\n\n1"), downcast=true, ignoreemptylines=false)
+@test eltype(f.x) === Union{Missing, Int8}
+
+f = CSV.File(IOBuffer("x\n\n1\n$(typemax(Int16))"), downcast=true, ignoreemptylines=false)
+@test eltype(f.x) === Union{Missing, Int16}
+
+f = CSV.File(IOBuffer("x\n\n1\n$(typemax(Int16))\n$(typemax(Int32))"), downcast=true, ignoreemptylines=false)
+@test eltype(f.x) === Union{Missing, Int32}
+
+f = CSV.File(IOBuffer("x\n\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))"), downcast=true, ignoreemptylines=false)
+@test eltype(f.x) === Union{Missing, Int64}
+
+f = CSV.File(IOBuffer("x\n\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))"), downcast=true, ignoreemptylines=false)
+@test eltype(f.x) === Union{Missing, Int128}
+
+f = CSV.File(IOBuffer("x\n\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))\n3.14"), downcast=true, ignoreemptylines=false)
+@test eltype(f.x) === Union{Missing, Float64}
+
 # missing => catg
 f = CSV.File(IOBuffer("x\n\na\n"), pool=true, ignoreemptylines=false)
 @test (length(f), length(f.names)) == (2, 1)

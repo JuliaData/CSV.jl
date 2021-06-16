@@ -858,7 +858,7 @@ end
             ref = getref!(col.refpool, to, y)
             @inbounds column[row] = ref
         elseif column isa vectype(from)
-            col.column = convert(SentinelVector{to}, column)
+            col.column = convert(promotevectype(to), column)
             @inbounds col.column[row] = y
         end
     else

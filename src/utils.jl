@@ -87,6 +87,8 @@ const SVec2{T} = SentinelVector{T, typeof(undef), Missing, Vector{T}}
 
 vectype(::Type{T}) where {T <: Union{Bool, SmallIntegers}} = Vector{Union{T, Missing}}
 vectype(::Type{T}) where {T} = isbitstype(T) ? SVec{T} : SVec2{T}
+promotevectype(::Type{T}) where {T <: Union{Bool, SmallIntegers}} = vectype(T)
+promotevectype(::Type{T}) where {T} = SentinelVector{T}
 
 struct Pooled end
 
