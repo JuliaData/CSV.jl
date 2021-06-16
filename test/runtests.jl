@@ -1,4 +1,4 @@
-using Test, CSV, Mmap, Dates, Tables, PooledArrays, CodecZlib, FilePathsBase, SentinelArrays, Parsers
+using Test, CSV, Mmap, Dates, Tables, PooledArrays, CodecZlib, FilePathsBase, SentinelArrays, Parsers, WeakRefStrings
 
 const dir = joinpath(dirname(pathof(CSV)), "..", "test", "testfiles")
 
@@ -25,59 +25,26 @@ include("write.jl")
 @testset "PooledArrays" begin
 
     f = CSV.File(IOBuffer("X\nb\nc\na\nc"), pool=true)
-    @test typeof(f.X) == PooledArrays.PooledArray{String,UInt32,1,Array{UInt32,1}}
+    @test typeof(f.X) == PooledArrays.PooledArray{InlineString1,UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (4, 1)
     @test f.X == ["b", "c", "a", "c"]
     @test f.X.refs[2] == f.X.refs[4]
 
-    f = CSV.File(IOBuffer("X\nb\nc\na\nc"), pool=0.6)
-    @test typeof(f.X) == PooledArrays.PooledArray{String,UInt32,1,Array{UInt32,1}}
+    f = CSV.File(IOBuffer("X\nb\nc\na\nc"), pool=0.75)
+    @test typeof(f.X) == PooledArrays.PooledArray{InlineString1,UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (4, 1)
     @test f.X == ["b", "c", "a", "c"]
     @test f.X.refs[2] == f.X.refs[4]
 
     f = CSV.File(IOBuffer("X\nb\nc\n\nc"), pool=true, ignoreemptylines=false)
-    @test typeof(f.X) == PooledArray{Union{Missing, String},UInt32,1,Array{UInt32,1}}
+    @test typeof(f.X) == PooledArray{Union{Missing, InlineString1},UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (4, 1)
     @test f.X[3] === missing
 
     f = CSV.File(IOBuffer("X\nc\nc\n\nc\nc\nc\nc\nc\nc"), ignoreemptylines=false)
-    @test typeof(f.X) == PooledArray{Union{Missing, String},UInt32,1,Array{UInt32,1}}
+    @test typeof(f.X) == PooledArray{Union{Missing, InlineString1},UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (9, 1)
     @test isequal(f.X, ["c", "c", missing, "c", "c", "c", "c", "c", "c"])
-
-end
-
-@testset "LazyStringVector" begin
-
-    buffer = b"heytheresailoresc\\\"aped"
-    e = UInt8('\\')
-    poslens = CSV.PosLen[
-        CSV.poslen(Int16(0), Int64(1), Int64(3)),
-        CSV.poslen(Int16(0), Int64(4), Int64(5)),
-        CSV.poslen(Int16(0), Int64(9), Int64(6)),
-        CSV.poslen(Parsers.ESCAPED_STRING, Int64(15), Int64(8))
-    ]
-    x = CSV.LazyStringVector{String}(buffer, e, poslens)
-    @test x == ["hey", "there", "sailor", "esc\"aped"]
-    @test x[1] == "hey"
-    push!(poslens, CSV.poslen(Parsers.SENTINEL, Int64(0), Int64(0)))
-    x = CSV.LazyStringVector{Union{Missing, String}}(buffer, e, poslens)
-    @test isequal(x, ["hey", "there", "sailor", "esc\"aped", missing])
-
-    poslens = ChainedVector([
-        CSV.PosLen[CSV.poslen(Int16(0), Int64(1), Int64(3))],
-        CSV.PosLen[CSV.poslen(Int16(0), Int64(4), Int64(5))],
-        CSV.PosLen[CSV.poslen(Int16(0), Int64(9), Int64(6))],
-        CSV.PosLen[CSV.poslen(Parsers.ESCAPED_STRING, Int64(15), Int64(8))]
-    ])
-    x = CSV.LazyStringVector{String}(buffer, e, poslens)
-    @test x == ["hey", "there", "sailor", "esc\"aped"]
-    @test x[end] == "esc\"aped"
-    push!(poslens, CSV.poslen(Parsers.SENTINEL, Int64(0), Int64(0)))
-    x = CSV.LazyStringVector{Union{Missing, String}}(buffer, e, poslens)
-    @test isequal(x, ["hey", "there", "sailor", "esc\"aped", missing])
-    @test x[end] === missing
 
 end
 
@@ -131,8 +98,8 @@ end
     # too many columns
     rows = collect(CSV.Rows(IOBuffer("x,y,z\n1,2,3\n4,5,6,7,8,")))
     @test length(rows) == 2
-    @test all(rows[1] .== ["1", "2", "3"])
-    @test all(rows[2] .== ["4", "5", "6"])
+    @test isequal(values(rows[1]), ["1", "2", "3", missing, missing])
+    @test isequal(values(rows[2]), ["4", "5", "6", "7", "8"])
 
     # fatal
     @test_throws CSV.Error collect(CSV.Rows(IOBuffer("x\n\"invalid quoted field")))
@@ -162,40 +129,21 @@ end
 @test CSV.detect("1.1") == 1.1
 @test CSV.detect("2015-01-01") == Date(2015)
 @test CSV.detect("2015-01-01T03:04:05") == DateTime(2015, 1, 1, 3, 4, 5)
+@test CSV.detect("03:04:05") == Time(3, 4, 5)
 @test CSV.detect("true") === true
 @test CSV.detect("false") === false
 @test CSV.detect("abc") === "abc"
 
 end
 
-@testset "CSV.findrowstarts!" begin
+@testset "CSV.promote_types" begin
 
-buf = b"normal cell,next cell\nnormal cell2,next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
-rngs = [1, 1, length(buf)]
-CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, rngs, 2, [Union{}, Union{}], [0x00, 0x00])
-@test rngs[2] == 23
-
-buf = b"quoted, cell\",next cell\n\"normal cell2\",next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
-rngs = [1, 1, length(buf)]
-CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, rngs, 2, [Union{}, Union{}], [0x00, 0x00])
-@test rngs[2] == 25
-
-buf = b"\"\"quoted, cell\",next cell\n\"normal cell2\",next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
-rngs = [1, 2, length(buf)]
-CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, rngs, 2, [Union{}, Union{}], [0x00, 0x00])
-@test rngs[2] == 27
-
-buf = b"quoted,\"\" cell\",next cell\n\"normal cell2\",next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
-rngs = [1, 2, length(buf)]
-CSV.findrowstarts!(buf, length(buf), CSV.Parsers.XOPTIONS, rngs, 2, [Union{}, Union{}], [0x00, 0x00])
-@test rngs[2] == 27
-
-end
-
-@testset "CSV.promote_typecode" begin
-
-@test CSV.promote_types(Union{Int64, Missing}, Float64) == Union{Float64, Missing}
-@test CSV.promote_types(Union{Int64, Missing}, Union{Float64, Missing}) == Union{Float64, Missing}
+@test CSV.promote_types(Int64, Float64) == Float64
+@test CSV.promote_types(Int64, Int64) == Int64
+@test CSV.promote_types(CSV.NeedsTypeDetection, Float64) == Float64
+@test CSV.promote_types(Float64, CSV.NeedsTypeDetection) == Float64
+@test CSV.promote_types(Float64, Missing) == Float64
+@test CSV.promote_types(Float64, String) === String
 
 end
 
@@ -272,6 +220,19 @@ f = CSV.File(IOBuffer(csv), drop=Int[])
 f = CSV.File(IOBuffer(csv), drop=[1, 2, 3, 4, 5])
 @test length(f) == 2
 @test length(f[1]) == 0
+
+end
+
+@testset "CSV.Chunks" begin
+
+chunks = CSV.Chunks(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz"))); tasks=2)
+@test length(chunks) == 2
+state = iterate(chunks)
+f, st = state
+@test length(f) == 35086
+state = iterate(chunks, st)
+f, st = state
+@test length(f) == 34914
 
 end
 
