@@ -94,6 +94,7 @@ The `source` argument can be one of:
 
 To read a csv file from a url, use the HTTP.jl package, where the `HTTP.Response` body can be passed like:
 ```julia
+using HTTP, CSV
 f = CSV.File(HTTP.get(url).body)
 ```
 
@@ -122,8 +123,11 @@ end
 By supporting the Tables.jl interface, a `CSV.File` can also be a table input to any other table sink function. Like:
 
 ```julia
-# materialize a csv file as a DataFrame, without copying columns from CSV.File
+# materialize a csv file as a DataFrame, copying columns from CSV.File
 df = CSV.File(file) |> DataFrame
+
+# to avoid making a copy of parsed columns, use CSV.read
+df = CSV.read(file, DataFrame)
 
 # load a csv file directly into an sqlite database table
 db = SQLite.DB()
@@ -209,6 +213,7 @@ function File(source;
     types=nothing,
     typemap::Dict=Dict{Type, Type}(),
     pool::Union{Bool, Real, AbstractVector, AbstractDict}=DEFAULT_POOL,
+    downcast::Bool=false,
     lazystrings::Bool=false,
     stringtype::StringTypes=DEFAULT_STRINGTYPE,
     strict::Bool=false,
@@ -221,8 +226,8 @@ function File(source;
     # select=nothing;drop=nothing;limit=nothing;threaded=nothing;tasks=8;lines_to_check=30;missingstrings=String[];missingstring="";
     # delim=nothing;ignorerepeated=false;quotechar='"';openquotechar=nothing;closequotechar=nothing;escapechar='"';dateformat=nothing;
     # dateformats=nothing;decimal=UInt8('.');truestrings=nothing;falsestrings=nothing;type=nothing;types=nothing;typemap=Dict{Type,Type}();
-    # pool=NaN;lazystrings=false;stringtype=String;strict=false;silencewarnings=false;maxwarnings=100;debug=true;parsingdebug=false;
-    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptylines, select, drop, limit, threaded, tasks, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
+    # pool=DEFAULT_POOL;downcast=false;lazystrings=false;stringtype=String;strict=false;silencewarnings=false;maxwarnings=100;debug=true;parsingdebug=false;
+    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptylines, select, drop, limit, threaded, tasks, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
     return File(ctx)
 end
 
@@ -610,10 +615,16 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
             pos, code = parsevalue!(Missing, buf, pos, len, opts, row, rowoffset, i, col)
         elseif type === NeedsTypeDetection
             pos, code = detect(buf, pos, len, opts, row, rowoffset, i, col, ctx, rowsguess)
+        elseif type === Int8
+            pos, code = parsevalue!(Int8, buf, pos, len, opts, row, rowoffset, i, col)
+        elseif type === Int16
+            pos, code = parsevalue!(Int16, buf, pos, len, opts, row, rowoffset, i, col)
         elseif type === Int32
             pos, code = parsevalue!(Int32, buf, pos, len, opts, row, rowoffset, i, col)
         elseif type === Int64
             pos, code = parsevalue!(Int64, buf, pos, len, opts, row, rowoffset, i, col)
+        elseif type === Int128
+            pos, code = parsevalue!(Int128, buf, pos, len, opts, row, rowoffset, i, col)
         elseif type === Float64
             pos, code = parsevalue!(Float64, buf, pos, len, opts, row, rowoffset, i, col)
         elseif type === InlineString1
@@ -703,7 +714,7 @@ end
 
 function detect(buf, pos, len, opts, row, rowoffset, i, col, ctx, rowsguess)::Tuple{Int64, Int16}
     # debug && println("detecting on task $(Threads.threadid())")
-    x, code, tlen = detect(buf, pos, len, opts, false, rowoffset + row, i)
+    x, code, tlen = detect(buf, pos, len, opts, false, ctx.downcast, rowoffset + row, i)
     if x === missing
         col.anymissing = true
         @goto finaldone
@@ -803,15 +814,12 @@ function parsevalue!(::Type{type}, buf, pos, len, opts, row, rowoffset, i, col):
                     stricterror(type, buf, pos, tlen, code, rowoffset + row, i)
                 end
             else
-                if type === Int32
-                    if Parsers.overflow(code)
-                        code = trytopromote!(Int32, Int64, buf, pos, len, opts, col, row)
+                if type === Int8 || type === Int16 || type === Int32 || type === Int64 || type === Int128
+                    newT = _widen(type)
+                    while newT !== nothing && !Parsers.ok(code)
+                        code = trytopromote!(type, newT, buf, pos, len, opts, col, row)
+                        newT = _widen(newT)
                     end
-                    if !Parsers.ok(code)
-                        code = trytopromote!(Int32, Float64, buf, pos, len, opts, col, row)
-                    end
-                elseif type === Int64
-                    code = trytopromote!(Int64, Float64, buf, pos, len, opts, col, row)
                 elseif type === InlineString1 || type === InlineString3 || type === InlineString7 || type === InlineString15 || type === InlineString31 || type === InlineString63 || type === InlineString127
                     newT = widen(type)
                     while newT !== InlineString127

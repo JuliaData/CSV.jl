@@ -87,6 +87,7 @@ struct Context
     coloptions::Any # nothing or Parsers.Options []
     columns::Vector{Column}
     pool::Float64
+    downcast::Bool
     customtypes::Type
     typemap::Dict{Type, Type}
     stringtype::StringTypes
@@ -122,7 +123,7 @@ function checkvaliddelim(delim)
 end
 
 
-@inline function Context(source,
+function Context(source,
     # file options
     # header can be a row number, range of rows, or actual string vector
     header,
@@ -158,6 +159,7 @@ end
     types,
     typemap,
     pool,
+    downcast,
     lazystrings,
     stringtype,
     strict,
@@ -430,7 +432,7 @@ end
         if limit !== typemax(Int64)
             limitposguess = ceil(Int64, (limit / (origrowsguess * 0.8)) * len)
             newlen = [0, limitposguess, min(limitposguess * 2, len)]
-            findrowstarts!(buf, options, newlen, ncols, columns, stringtype, finalpool, 5)
+            findrowstarts!(buf, options, newlen, ncols, columns, stringtype, finalpool, downcast, 5)
             len = newlen[2] - 1
             origrowsguess = limit
             debug && println("limiting, adjusting len to $len")
@@ -438,7 +440,7 @@ end
         chunksize = div(len - datapos, tasks)
         chunkpositions = [i == 0 ? datapos : i == tasks ? len : (datapos + chunksize * i) for i = 0:tasks]
         debug && println("initial byte positions before adjusting for start of rows: $chunkpositions")
-        avgbytesperrow, successfullychunked = findrowstarts!(buf, options, chunkpositions, ncols, columns, stringtype, finalpool, lines_to_check)
+        avgbytesperrow, successfullychunked = findrowstarts!(buf, options, chunkpositions, ncols, columns, stringtype, finalpool, downcast, lines_to_check)
         if successfullychunked
             origbytesperrow = ((len - datapos) / origrowsguess)
             weightedavgbytesperrow = ceil(Int64, avgbytesperrow * ((tasks - 1) / tasks) + origbytesperrow * (1 / tasks))
@@ -471,6 +473,7 @@ end
         coloptions,
         columns,
         finalpool,
+        downcast,
         customtypes,
         typemap,
         stringtype,

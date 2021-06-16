@@ -136,34 +136,6 @@ end
 
 end
 
-# @testset "CSV.findrowstarts!" begin
-
-# buf = b"normal cell,next cell\nnormal cell2,next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
-# rngs = [1, 1, length(buf)]
-# columns = [CSV.Column(Union{}, CSV.typeflag(Union{})), CSV.Column(Union{}, CSV.typeflag(Union{}))]
-# CSV.findrowstarts!(buf, CSV.Parsers.XOPTIONS, rngs, 2, columns, String)
-# @test rngs[2] == 23
-
-# buf = b"quoted, cell\",next cell\n\"normal cell2\",next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
-# rngs = [1, 1, length(buf)]
-# columns = [CSV.Column(Union{}, CSV.typeflag(Union{})), CSV.Column(Union{}, CSV.typeflag(Union{}))]
-# CSV.findrowstarts!(buf, CSV.Parsers.XOPTIONS, rngs, 2, columns, String)
-# @test rngs[2] == 25
-
-# buf = b"\"\"quoted, cell\",next cell\n\"normal cell2\",next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
-# rngs = [1, 2, length(buf)]
-# columns = [CSV.Column(Union{}, CSV.typeflag(Union{})), CSV.Column(Union{}, CSV.typeflag(Union{}))]
-# CSV.findrowstarts!(buf, CSV.Parsers.XOPTIONS, rngs, 2, columns, String)
-# @test rngs[2] == 27
-
-# buf = b"quoted,\"\" cell\",next cell\n\"normal cell2\",next cell2\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho\nhey,ho"
-# rngs = [1, 2, length(buf)]
-# columns = [CSV.Column(Union{}, CSV.typeflag(Union{})), CSV.Column(Union{}, CSV.typeflag(Union{}))]
-# CSV.findrowstarts!(buf, CSV.Parsers.XOPTIONS, rngs, 2, columns, String)
-# @test rngs[2] == 27
-
-# end
-
 @testset "CSV.promote_types" begin
 
 @test CSV.promote_types(Int64, Float64) == Float64

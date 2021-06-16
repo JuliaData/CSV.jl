@@ -314,7 +314,7 @@ end
 # right # of expected columns then we move on to the next file chunk byte position. If we fail, we start over
 # at the byte position, assuming we were in a quoted field (and encountered a newline inside the quoted
 # field the first time through)
-function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, pool, lines_to_check=5)
+function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, pool, downcast, lines_to_check=5)
     totalbytes = Threads.Atomic{Int}(0)
     totalrows = Threads.Atomic{Int}(0)
     succeeded = Threads.Atomic{Bool}(true)
@@ -351,7 +351,7 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, pool, lin
                             col = columns[n]
                             T = col.type
                             if T === NeedsTypeDetection
-                                x, _, _ = detect(buf, vpos, vpos + vlen - 1, opts)
+                                x, _, _ = detect(buf, vpos, vpos + vlen - 1, opts, true, downcast)
                                 samples[m + j, n] = x !== nothing ? x : PosLenString(buf, PosLen(vpos, vlen, Parsers.sentinel(code), Parsers.escapedstring(code)), opts.e)
                             elseif pooled(col) || maybepooled(col)
                                 # if the user provided a column type, we'll trust/respect that

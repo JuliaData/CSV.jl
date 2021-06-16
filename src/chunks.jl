@@ -58,6 +58,7 @@ function Chunks(source;
     types=nothing,
     typemap::Dict=Dict{Type, Type}(),
     pool::Union{Bool, Real, AbstractVector, AbstractDict}=DEFAULT_POOL,
+    downcast::Bool=false,
     lazystrings::Bool=false,
     stringtype::StringTypes=DEFAULT_STRINGTYPE,
     strict::Bool=false,
@@ -66,7 +67,7 @@ function Chunks(source;
     debug::Bool=false,
     parsingdebug::Bool=false)
 
-    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptylines, select, drop, limit, true, tasks, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
+    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptylines, select, drop, limit, true, tasks, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
     !ctx.threaded && throw(ArgumentError("unable to iterate chunks from input file source"))
     foreach(col -> col.lock = ReentrantLock(), ctx.columns)
     return Chunks(ctx)
@@ -86,7 +87,7 @@ function Base.iterate(x::Chunks, i=1)
     threaded = false
     ntasks = 1
     limit = typemax(Int64)
-    ctx = Context(x.ctx.transpose, x.ctx.name, names, rowsguess, x.ctx.cols, x.ctx.buf, datapos, len, 1, x.ctx.options, x.ctx.coloptions, columns, x.ctx.pool, x.ctx.customtypes, x.ctx.typemap, x.ctx.stringtype, limit, threaded, ntasks, x.ctx.chunkpositions, x.ctx.maxwarnings, x.ctx.debug, x.ctx.streaming)
+    ctx = Context(x.ctx.transpose, x.ctx.name, names, rowsguess, x.ctx.cols, x.ctx.buf, datapos, len, 1, x.ctx.options, x.ctx.coloptions, columns, x.ctx.pool, x.ctx.downcast, x.ctx.customtypes, x.ctx.typemap, x.ctx.stringtype, limit, threaded, ntasks, x.ctx.chunkpositions, x.ctx.maxwarnings, x.ctx.debug, x.ctx.streaming)
     f = File(ctx, true)
     return f, i + 1
 end

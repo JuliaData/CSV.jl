@@ -42,18 +42,17 @@ pickstringtype(T, maxstringsize) = T === InlineString ? (maxstringsize < DEFAULT
 const PROMOTE_TO_STRING = 0b0100000000000000 % Int16
 promote_to_string(code) = code & PROMOTE_TO_STRING > 0
 
+isinttype(T) = T === Int8 || T === Int16 || T === Int32 || T === Int64 || T === Int128
+
 @inline function promote_types(@nospecialize(T), @nospecialize(S))
     T === S && return T
     T === NeedsTypeDetection && return S
     S === NeedsTypeDetection && return T
     T === Missing && return S
     S === Missing && return T
-    T === Int32 && S === Int64 && return S
-    T === Int64 && S === Int32 && return T
-    T === Int32 && S === Float64 && return S
-    T === Float64 && S === Int32 && return T
-    T === Int64 && S === Float64 && return S
-    T === Float64 && S === Int64 && return T
+    isinttype(T) && isinttype(S) && return promote_type(T, S)
+    isinttype(T) && S === Float64 && return S
+    T === Float64 && isinttype(S) && return T
     T <: InlineString && S <: InlineString && return promote_type(T, S)
     (T === String || S === String) && return String
     T <: InlineString && return T
@@ -266,9 +265,14 @@ function detect(str::String; opts=Parsers.OPTIONS)
     return something(x, str)
 end
 
-const DetectTypes = Union{Missing, Int32, Int64, Float64, Date, DateTime, Time, Bool, Nothing}
+const DetectTypes = Union{Missing, Int8, Int16, Int32, Int64, Float64, Date, DateTime, Time, Bool, Nothing}
 
-@inline function detect(buf, pos, len, opts, ensure_full_buf_consumed=true, row=0, col=0)::Tuple{DetectTypes, Int16, Int64}
+smallestint(x) = x < typemax(Int8) ? Int8(x) : x < typemax(Int16) ? Int16(x) : x < typemax(Int32) ? Int32(x) : x
+_widen(T) = widen(T)
+_widen(::Type{Int128}) = Float64
+_widen(::Type{Float64}) = nothing
+
+@inline function detect(buf, pos, len, opts, ensure_full_buf_consumed=true, downcast=false, row=0, col=0)::Tuple{DetectTypes, Int16, Int64}
     int, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, opts)
     if Parsers.invalidquotedfield(code)
         fatalerror(buf, pos, tlen, code, row, col)
@@ -277,7 +281,7 @@ const DetectTypes = Union{Missing, Int32, Int64, Float64, Date, DateTime, Time, 
         return missing, code, tlen
     end
     if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))
-        return int < typemax(Int32) ? Int32(int) : int, code, tlen
+        return downcast ? smallestint(int) : int, code, tlen
     end
     float, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, opts)
     if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))

@@ -134,6 +134,7 @@ function Rows(source;
     types=nothing,
     typemap::Dict=Dict{Type, Type}(),
     pool::Union{Bool, Real, AbstractVector, AbstractDict}=NaN,
+    downcast::Bool=false,
     stringtype::StringTypes=PosLenString,
     lazystrings::Bool=stringtype === PosLenString,
     strict::Bool=false,
@@ -143,7 +144,7 @@ function Rows(source;
     parsingdebug::Bool=false,
     reusebuffer::Bool=false,
     )
-    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptylines, select, drop, limit, false, 1, 0, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, true)
+    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptylines, select, drop, limit, false, 1, 0, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, true)
     allocate!(ctx.columns, 1)
     values = all(x->x.type === stringtype && x.anymissing, ctx.columns) && lazystrings ? Vector{PosLen}(undef, ctx.cols) : Vector{Any}(undef, ctx.cols)
     columnmap = collect(1:ctx.cols)
@@ -236,9 +237,15 @@ end
             @inbounds values[i] = missing
         elseif column isa Vector{PosLen}
             @inbounds values[i] = column[1]
+        elseif column isa Vector{Union{Missing, Int8}}
+            @inbounds values[i] = column[1]
+        elseif column isa Vector{Union{Missing, Int16}}
+            @inbounds values[i] = column[1]
         elseif column isa Vector{Union{Missing, Int32}}
             @inbounds values[i] = column[1]
         elseif column isa SVec{Int64}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{Int128}
             @inbounds values[i] = column[1]
         elseif column isa SVec{Float64}
             @inbounds values[i] = column[1]
