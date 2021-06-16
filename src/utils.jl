@@ -1,173 +1,80 @@
-export PooledString
-"""
-    PooledString
+# custom types to represent some special parsing states a column might be in
 
-A singleton type that can be used for signaling that a column of a csv file should be pooled,
-with the output array type being a `PooledArray`.
-"""
-struct PooledString <: AbstractString end
+# not just that a column type is Missing, but that we'll end up dropping the column
+# eventually (i.e. implies col.willdrop) or the user specifically set the column
+# type to Missing (i.e. col.userprovided && col.type === Missing)
+# a column type may be Missing and we still want to try and detect a proper column type
+# but in HardMissing case, we don't; we know the column will *always* be Missing
+struct HardMissing end
 
-schematype(::Type{T}) where {T} = T
-schematype(::Type{PooledString}) = String
-schematype(::Type{Union{Missing, PooledString}}) = Union{Missing, String}
+willdrop!(columns, i) = setfield!(@inbounds(columns[i]), :willdrop, true)
 
-# PointerString is an internal-only type for efficiently tracking string data + length
-# all strings indexed from a column/row will always be a full String
-# specifically, it allows avoiding materializing full Strings for pooled string columns while parsing
-# and allows a fastpath for materializing a full String when no escaping is needed
-# Since the string type is internal-only, we avoid subtyping AbstractString to avoid
-# invalidating base string methods.
-struct PointerString
-    ptr::Ptr{UInt8}
-    len::Int
+struct NeedsTypeDetection end
+
+nonmissingtypeunlessmissingtype(::Type{T}) where {T} = ifelse(T === Missing, Missing, nonmissingtype(T))
+pooltype(col) = nonmissingtype(keytype(col.refpool.refs))
+finaltype(T) = T
+finaltype(::Type{HardMissing}) = Missing
+finaltype(::Type{NeedsTypeDetection}) = Missing
+coltype(col) = ifelse(col.anymissing, Union{finaltype(col.type), Missing}, finaltype(col.type))
+
+pooled(col) = col.pool == 1.0
+maybepooled(col) = 0.0 < col.pool < 1.0
+
+getpool(x::Bool) = x ? 1.0 : 0.0
+function getpool(x::Real)
+    y = Float64(x)
+    (isnan(y) || 0.0 <= y <= 1.0) || throw(ArgumentError("pool argument must be in the range: 0.0 <= x <= 1.0"))
+    return y
 end
 
-function Base.hash(s::PointerString, h::UInt)
-    h += Base.memhash_seed
-    ccall(Base.memhash, UInt, (Ptr{UInt8}, Csize_t, UInt32), s.ptr, s.len, h % UInt32) + h
-end
+tupcat(::Type{Tuple{}}, S) = Tuple{S}
+tupcat(::Type{Tuple{T}}, S) where {T} = Tuple{T, S}
+tupcat(::Type{Tuple{T, T2}}, S) where {T, T2} = Tuple{T, T2, S}
+tupcat(::Type{Tuple{T, T2, T3}}, S) where {T, T2, T3} = Tuple{T, T2, T3, S}
+tupcat(::Type{Tuple{T, T2, T3, T4}}, S) where {T, T2, T3, T4} = Tuple{T, T2, T3, T4, S}
+tupcat(::Type{T}, S) where {T <: Tuple} = Tuple{Any[(fieldtype(T, i) for i = 1:fieldcount(T))..., S]...}
 
-import Base: ==
-function ==(x::String, y::PointerString)
-    sizeof(x) == y.len && ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t), pointer(x), y.ptr, y.len) == 0
-end
-function ==(x::PointerString, y::PointerString)
-    x.len == y.len && ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t), x.ptr, y.ptr, y.len) == 0
-end
-==(y::PointerString, x::String) = x == y
-
-Base.ncodeunits(s::PointerString) = s.len
-@inline function Base.codeunit(s::PointerString, i::Integer)
-    @boundscheck checkbounds(s, i)
-    GC.@preserve s unsafe_load(s.ptr + i - 1)
-end
-
-Base.String(x::PointerString) = _unsafe_string(x.ptr, x.len)
-
-# column bit flags; useful so we don't have to pass a bunch of arguments/state around manually
-
-# whether the user provided the type or not
-const USER       = 0b00000001
-user(flag) = flag & USER > 0
-
-# whether any missing values have been found in this column so far
-const ANYMISSING = 0b00000010
-anymissing(flag) = flag & ANYMISSING > 0
-
-# whether a column type has been detected yet
-const TYPEDETECTED = 0b00000100
-typedetected(flag) = flag & TYPEDETECTED > 0
-
-# whether a column will be "dropped" from the select/drop keyword arguments
-const WILLDROP = 0b00001000
-willdrop(flag) = flag & WILLDROP > 0
-
-# whether strings should be lazy; results in LazyStringVectors
-# this setting isn't per column, but we store it on the column bit flags anyway for convenience
-const LAZYSTRINGS = 0b00010000
-lazystrings(flag) = flag & LAZYSTRINGS > 0
-
-const MAYBEPOOLED = 0b00100000
-maybepooled(flag) = flag & MAYBEPOOLED > 0
-# ~95% z-score, 10% MoE
-const POOLSAMPLESIZE = 100
-
-flag(T, lazystrings) = (T === Union{} ? 0x00 : ((USER | TYPEDETECTED) | (hasmissingtype(T) ? ANYMISSING : 0x00))) | (lazystrings ? LAZYSTRINGS : 0x00)
+const StringTypes = Union{Type{String}, Type{PosLenString}, Type{<:InlineString}}
+pickstringtype(T, maxstringsize) = T === InlineString ? (maxstringsize < DEFAULT_MAX_INLINE_STRING_LENGTH ? InlineStringType(maxstringsize) : String) : T
 
 # we define our own bit flag on a Parsers.ReturnCode to signal if a column needs to promote to string
 const PROMOTE_TO_STRING = 0b0100000000000000 % Int16
 promote_to_string(code) = code & PROMOTE_TO_STRING > 0
 
-hasmissingtype(T) = T === Missing || T !== ts(T, Missing)
+isinttype(T) = T === Int8 || T === Int16 || T === Int32 || T === Int64 || T === Int128
 
 @inline function promote_types(@nospecialize(T), @nospecialize(S))
-    if T === Union{} || S === Union{} || T === Missing || S === Missing || T === S || Base.nonmissingtype(T) === Base.nonmissingtype(S)
-        return Union{T, S}
-    elseif T === Int64
-        return S === Float64 ? S : S === Union{Float64, Missing} ? S : hasmissingtype(S) ? Union{String, Missing} : String
-    elseif T === Union{Int64, Missing}
-        return S === Float64 || S === Union{Float64, Missing} ? Union{Float64, Missing} : Union{String, Missing}
-    elseif T === Float64
-        return S === Int64 ? T : S === Union{Int64, Missing} ? Union{Float64, Missing} : hasmissingtype(S) ? Union{String, Missing} : String
-    elseif T === Union{Float64, Missing}
-        return S === Int64 || S === Union{Int64, Missing} ? Union{Float64, Missing} : Union{String, Missing}
-    elseif hasmissingtype(T) || hasmissingtype(S)
-        return Union{String, Missing}
-    else
-        return String
+    T === S && return T
+    T === NeedsTypeDetection && return S
+    S === NeedsTypeDetection && return T
+    T === Missing && return S
+    S === Missing && return T
+    isinttype(T) && isinttype(S) && return promote_type(T, S)
+    isinttype(T) && S === Float64 && return S
+    T === Float64 && isinttype(S) && return T
+    T <: InlineString && S <: InlineString && return promote_type(T, S)
+    (T === String || S === String) && return String
+    T <: InlineString && return T
+    S <: InlineString && return S
+    return nothing
+end
+
+# when users pass non-standard types, we need to keep track of them in a Tuple{...} to generate efficient custom parsing kernel codes
+function nonstandardtype(T)
+    T = nonmissingtype(T)
+    if T === Union{} ||
+       T isa StringTypes ||
+       T === Int32 ||
+       T === Int64 ||
+       T === Float64 ||
+       T === Bool ||
+       T === Date ||
+       T === DateTime ||
+       T === Time
+        return Union{}
     end
-end
-
-## lazy strings
-# bit patterns for missing value, int value, escaped string, position and len in lazy string parsing
-
-primitive type PosLen 64 end
-PosLen(x::UInt64) = Core.bitcast(PosLen, x)
-UInt64(x::PosLen) = Core.bitcast(UInt64, x)
-
-Base.convert(::Type{PosLen}, x::UInt64) = PosLen(x)
-Base.convert(::Type{UInt64}, x::PosLen) = UInt64(x)
-
-const MISSING_BIT = 0x8000000000000000
-missingvalue(x) = (UInt64(x) & MISSING_BIT) == MISSING_BIT
-
-const ESCAPE_BIT = 0x4000000000000000
-escapedvalue(x) = (UInt64(x) & ESCAPE_BIT) == ESCAPE_BIT
-
-getpos(x) = (UInt64(x) & 0x3ffffffffff00000) >> 20
-getlen(x) = UInt64(x) & 0x00000000000fffff
-
-_unsafe_string(p, len) = ccall(:jl_pchar_to_string, Ref{String}, (Ptr{UInt8}, Int), p, len)
-
-@inline function str(buf, e, poslen)
-    missingvalue(poslen) && return missing
-    escapedvalue(poslen) && return unescape(PointerString(pointer(buf, getpos(poslen)), getlen(poslen)), e)
-    pos, len = getpos(poslen), getlen(poslen)
-    return _unsafe_string(pointer(buf, getpos(poslen)), getlen(poslen))
-end
-
-@inline function strnomiss(buf, e, poslen)
-    escapedvalue(poslen) && return unescape(PointerString(pointer(buf, getpos(poslen)), getlen(poslen)), e)
-    pos, len = getpos(poslen), getlen(poslen)
-    return _unsafe_string(pointer(buf, getpos(poslen)), getlen(poslen))
-end
-
-struct LazyStringVector{T, A <: AbstractVector{PosLen}} <: AbstractVector{T}
-    buffer::Vector{UInt8}
-    e::UInt8
-    poslens::A
-end
-
-LazyStringVector{T}(buffer, e, poslens::A) where {T, A} = LazyStringVector{T, A}(buffer, e, poslens)
-
-Base.IndexStyle(::Type{LazyStringVector}) = Base.IndexLinear()
-Base.size(x::LazyStringVector) = (length(x.poslens),)
-
-Base.@propagate_inbounds function Base.getindex(x::LazyStringVector{Union{String, Missing}}, i::Int)
-    @boundscheck checkbounds(x, i)
-    @inbounds s = str(x.buffer, x.e, x.poslens[i])
-    return s
-end
-
-Base.@propagate_inbounds function Base.getindex(x::LazyStringVector{String}, i::Int)
-    @boundscheck checkbounds(x, i)
-    @inbounds s = strnomiss(x.buffer, x.e, x.poslens[i])
-    return s
-end
-
-# optimize iterate for ChainedVector
-@inline function Base.iterate(x::LazyStringVector{T}) where {T}
-    st = iterate(x.poslens)
-    st === nothing && return nothing
-    @inbounds s = T === String ? strnomiss(x.buffer, x.e, st[1]) : str(x.buffer, x.e, st[1])
-    return s, st[2]
-end
-
-@inline function Base.iterate(x::LazyStringVector{T}, state) where {T}
-    st = iterate(x.poslens, state)
-    st === nothing && return nothing
-    @inbounds s = T === String ? strnomiss(x.buffer, x.e, st[1]) : str(x.buffer, x.e, st[1])
-    return s, st[2]
+    return T
 end
 
 ## column array allocating
@@ -175,69 +82,66 @@ end
 # sentinel value collision, so we just use Vector{Union{T, Missing}} and convert to Vector{T} if no missings were found
 const SmallIntegers = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32}
 
+const SVec{T} = SentinelVector{T, T, Missing, Vector{T}}
+const SVec2{T} = SentinelVector{T, typeof(undef), Missing, Vector{T}}
+
+vectype(::Type{T}) where {T <: Union{Bool, SmallIntegers}} = Vector{Union{T, Missing}}
+vectype(::Type{T}) where {T} = isbitstype(T) ? SVec{T} : SVec2{T}
+promotevectype(::Type{T}) where {T <: Union{Bool, SmallIntegers}} = vectype(T)
+promotevectype(::Type{T}) where {T} = SentinelVector{T}
+
+struct Pooled end
+
 # allocate columns for a full file
-function allocate(rowsguess, ncols, types, flags, refs)
-    columns = Vector{AbstractVector}(undef, ncols)
-    for i = 1:ncols
-        @inbounds columns[i] = allocate(lazystrings(flags[i]) && (types[i] === String || types[i] === Union{String, Missing}) ? PosLen : types[i], rowsguess)
-        if types[i] === PooledString || types[i] ===  Union{PooledString, Missing}
-            refs[i] = RefPool()
+function allocate!(columns, rowsguess)
+    for i = 1:length(columns)
+        @inbounds col = columns[i]
+        # if the type hasn't been detected yet, then column will get allocated
+        # in the detect method while parsing
+        if col.type !== NeedsTypeDetection
+            if pooled(col) || maybepooled(col)
+                col.column = allocate(Pooled, rowsguess)
+                if !isdefined(col, :refpool)
+                    col.refpool = RefPool(col.type)
+                end
+            else
+                col.column = allocate(col.type, rowsguess)
+            end
         end
     end
-    return columns
+    return
 end
 
 # MissingVector is an efficient representation in SentinelArrays.jl package
-allocate(::Type{Union{}}, len) = MissingVector(len)
+allocate(::Type{NeedsTypeDetection}, len) = MissingVector(len)
+allocate(::Type{HardMissing}, len) = MissingVector(len)
 allocate(::Type{Missing}, len) = MissingVector(len)
-function allocate(::Type{PosLen}, len)
+function allocate(::Type{PosLenString}, len)
     A = Vector{PosLen}(undef, len)
     memset!(pointer(A), typemax(UInt8), sizeof(A))
     return A
 end
 allocate(::Type{String}, len) = SentinelVector{String}(undef, len)
-allocate(::Type{Union{String, Missing}}, len) = SentinelVector{String}(undef, len)
-allocate(::Type{PooledString}, len) = Vector{UInt32}(undef, len)
-allocate(::Type{Union{PooledString, Missing}}, len) = Vector{UInt32}(undef, len)
+allocate(::Type{Pooled}, len) = fill(UInt32(1), len) # initialize w/ all missing values
 allocate(::Type{Bool}, len) = Vector{Union{Missing, Bool}}(undef, len)
-allocate(::Type{Union{Missing, Bool}}, len) = Vector{Union{Missing, Bool}}(undef, len)
 allocate(::Type{T}, len) where {T <: SmallIntegers} = Vector{Union{Missing, T}}(undef, len)
-allocate(::Type{Union{Missing, T}}, len) where {T <: SmallIntegers} = Vector{Union{Missing, T}}(undef, len)
-allocate(T, len) = SentinelVector{Base.nonmissingtype(T)}(undef, len)
+allocate(T, len) = SentinelVector{T}(undef, len)
 
 reallocate!(A, len) = resize!(A, len)
+function reallocate!(A::Vector{UInt32}, len)
+    oldlen = length(A)
+    resize!(A, len)
+    for i = (oldlen + 1):len
+        @inbounds A[i] = UInt32(1)
+    end
+    return
+end
 # when reallocating, we just need to make sure the missing bit is set for lazy string PosLen
 function reallocate!(A::Vector{PosLen}, len)
     oldlen = length(A)
     resize!(A, len)
     memset!(pointer(A, oldlen + 1), typemax(UInt8), (len - oldlen) * 8)
     return
-end
-
-const SVec{T} = SentinelVector{T, T, Missing, Vector{T}}
-const SVec2{T} = SentinelVector{T, typeof(undef), Missing, Vector{T}}
-
-if applicable(Core.Compiler.typesubtract, Union{Int, Missing}, Missing)
-ts(T, S) = Core.Compiler.typesubtract(T, S)
-else
-ts(T, S) = Core.Compiler.typesubtract(T, S, 16)
-end
-
-# when users pass non-standard types, we need to keep track of them in a Tuple{...} to generate efficient custom parsing kernel codes
-function nonstandardtype(T)
-    if T === Union{}
-        return T
-    end
-    S = ts(ts(ts(ts(ts(ts(ts(ts(ts(T, Int64), Float64), String), PooledString), Bool), Date), DateTime), Time), Missing)
-    if S === Union{}
-        return S
-    elseif S <: SmallIntegers
-        return Tuple{Vector{Union{Missing, S}}, S}
-    elseif isbitstype(S)
-        return Tuple{SVec{S}, S}
-    else
-        return Tuple{SVec2{S}, S}
-    end
 end
 
 # one-liner suggested from ScottPJones
@@ -259,7 +163,7 @@ function getsource(x)
             return buf, 1, length(buf)
         catch e
             # if we can't mmap, try just `read`ing the whole thing into a byte vector
-            buf = read(x)
+            buf = Base.read(x)
             return buf, 1, length(buf)
         end
     end
@@ -301,16 +205,14 @@ function makeunique(names)
         end
         push!(nms, nm)
     end
+    @assert length(names) == length(nms)
     return nms
 end
 
-initialtypes(T, x::AbstractDict{String}, names) = Type[haskey(x, string(nm)) ? x[string(nm)] : T for nm in names]
-initialtypes(T, x::AbstractDict{Symbol}, names) = Type[haskey(x, nm) ? x[nm] : T for nm in names]
-initialtypes(T, x::AbstractDict{Int}, names)    = Type[haskey(x, i) ? x[i] : T for i = 1:length(names)]
-
-initialflags(T, x::AbstractDict{String}, names, lazystrings) = UInt8[haskey(x, string(nm)) ? flag(x[string(nm)], lazystrings) : T for nm in names]
-initialflags(T, x::AbstractDict{Symbol}, names, lazystrings) = UInt8[haskey(x, nm) ? flag(x[nm], lazystrings) : T for nm in names]
-initialflags(T, x::AbstractDict{Int}, names, lazystrings)    = UInt8[haskey(x, i) ? flag(x[i], lazystrings) : T for i = 1:length(names)]
+getordefault(x::AbstractDict{String}, nm, i, def) = haskey(x, string(nm)) ? x[string(nm)] : def
+getordefault(x::AbstractDict{Symbol}, nm, i, def) = haskey(x, nm) ? x[nm] : def
+getordefault(x::AbstractDict{Int}, nm, i, def) = haskey(x, i) ? x[i] : def
+getordefault(x::AbstractDict, nm, i, def) = haskey(x, i) ? x[i] : haskey(x, nm) ? x[nm] : haskey(x, string(nm)) ? x[string(nm)] : def
 
 # given a DateFormat, is it meant for parsing Date, DateTime, or Time?
 function timetype(df::Dates.DateFormat)
@@ -360,51 +262,71 @@ For advanced usage, you can pass your own `Parsers.Options` type as a keyword ar
 """
 function detect end
 
-detect(str::String; options=Parsers.OPTIONS) = something(detect(codeunits(str), 1, sizeof(str), options), str)
+function detect(str::String; opts=Parsers.OPTIONS)
+    x, code, tlen = detect(codeunits(str), 1, sizeof(str), opts, true)
+    return something(x, str)
+end
 
-function detect(buf, pos, len, options)
-    int, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, options)
+const DetectTypes = Union{Missing, Int8, Int16, Int32, Int64, Float64, Date, DateTime, Time, Bool, Nothing}
+
+smallestint(x) = x < typemax(Int8) ? Int8(x) : x < typemax(Int16) ? Int16(x) : x < typemax(Int32) ? Int32(x) : x
+_widen(T) = widen(T)
+_widen(::Type{Int128}) = Float64
+_widen(::Type{Float64}) = nothing
+
+@inline function detect(buf, pos, len, opts, ensure_full_buf_consumed=true, downcast=false, row=0, col=0)::Tuple{DetectTypes, Int16, Int64}
+    int, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, opts)
+    if Parsers.invalidquotedfield(code)
+        fatalerror(buf, pos, tlen, code, row, col)
+    end
     if Parsers.sentinel(code) && code > 0
-        return missing
+        return missing, code, tlen
     end
-    if Parsers.ok(code) && vpos + vlen - 1 == len
-        return int
+    if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))
+        return downcast ? smallestint(int) : int, code, tlen
     end
-    float, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, options)
-    if Parsers.ok(code) && vpos + vlen - 1 == len
-        return float
+    float, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, opts)
+    if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))
+        return float, code, tlen
     end
-    if options.dateformat === nothing
+    if opts.dateformat === nothing
         try
-            date, code, vpos, vlen, tlen = Parsers.xparse(Date, buf, pos, len, options)
-            if Parsers.ok(code) && vpos + vlen - 1 == len
-                return date
+            date, code, vpos, vlen, tlen = Parsers.xparse(Date, buf, pos, len, opts)
+            if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))
+                return date, code, tlen
             end
         catch e
         end
         try
-            datetime, code, vpos, vlen, tlen = Parsers.xparse(DateTime, buf, pos, len, options)
-            if Parsers.ok(code) && vpos + vlen - 1 == len
-                return datetime
+            datetime, code, vpos, vlen, tlen = Parsers.xparse(DateTime, buf, pos, len, opts)
+            if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))
+                return datetime, code, tlen
+            end
+        catch e
+        end
+        try
+            time, code, vpos, vlen, tlen = Parsers.xparse(Time, buf, pos, len, opts)
+            if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))
+                return time, code, tlen
             end
         catch e
         end
     else
         try
             # use user-provided dateformat
-            DT = timetype(options.dateformat)
-            dt, code, vpos, vlen, tlen = Parsers.xparse(DT, buf, pos, len, options)
-            if Parsers.ok(code) && vpos + vlen - 1 == len
-                return dt
+            DT = timetype(opts.dateformat)
+            dt, code, vpos, vlen, tlen = Parsers.xparse(DT, buf, pos, len, opts)
+            if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))
+                return dt, code, tlen
             end
         catch e
         end
     end
-    bool, code, vpos, vlen, tlen = Parsers.xparse(Bool, buf, pos, len, options)
-    if Parsers.ok(code) && vpos + vlen - 1 == len
-        return bool
+    bool, code, vpos, vlen, tlen = Parsers.xparse(Bool, buf, pos, len, opts)
+    if Parsers.ok(code) && (ensure_full_buf_consumed == ((vpos + vlen - 1) == len))
+        return bool, code, tlen
     end
-    return nothing
+    return nothing, code, Int64(0)
 end
 
 # a ReversedBuf takes a byte vector and indexes backwards;
@@ -421,10 +343,58 @@ Base.pointer(a::ReversedBuf, pos::Integer=1) = pointer(a.buf, length(a.buf) + 1 
 
 memset!(ptr, value, num) = ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), ptr, value, num)
 
-# a RefPool holds our refs as a Dict, along with a lastref field which is incremented when a new ref is found while parsing pooled columns
-mutable struct RefPool
-    refs::Dict{Union{String, Missing}, UInt32}
-    lastref::UInt32
+function promoteunion(T, S)
+    new = promote_type(T, S)
+    return isabstracttype(new) ? Union{T, S} : new
 end
 
-RefPool() = RefPool(Dict{Union{String, Missing}, UInt32}(), 0)
+# lazily treat array with abstract eltype as having eltype of Union of all concrete elements
+struct ConcreteEltype{T, A} <: AbstractVector{T}
+    data::A
+end
+
+concrete_or_concreteunion(T) = isconcretetype(T) ||
+    (T isa Union && concrete_or_concreteunion(T.a) && concrete_or_concreteunion(T.b))
+
+function ConcreteEltype(x::A) where {A}
+    (isempty(x) || concrete_or_concreteunion(eltype(x))) && return x
+    T = typeof(x[1])
+    for i = 2:length(x)
+        T = promoteunion(T, typeof(x[i]))
+    end
+    return ConcreteEltype{T, A}(x)
+end
+
+Base.IndexStyle(::Type{<:ConcreteEltype}) = Base.IndexLinear()
+Base.size(x::ConcreteEltype) = (length(x.data),)
+Base.eltype(::ConcreteEltype{T, A}) where {T, A} = T
+Base.getindex(x::ConcreteEltype{T}, i::Int) where {T} = getindex(x.data, i)
+
+struct PointerString
+    ptr::Ptr{UInt8}
+    len::Int
+end
+
+function Base.hash(s::PointerString, h::UInt)
+    h += Base.memhash_seed
+    ccall(Base.memhash, UInt, (Ptr{UInt8}, Csize_t, UInt32), s.ptr, s.len, h % UInt32) + h
+end
+
+import Base: ==
+function ==(x::AbstractString, y::PointerString)
+    sizeof(x) == y.len && ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t), pointer(x), y.ptr, y.len) == 0
+end
+function ==(x::PointerString, y::PointerString)
+    x.len == y.len && ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t), x.ptr, y.ptr, y.len) == 0
+end
+==(y::PointerString, x::AbstractString) = x == y
+
+Base.ncodeunits(s::PointerString) = s.len
+@inline function Base.codeunit(s::PointerString, i::Integer)
+    @boundscheck checkbounds(s, i)
+    GC.@preserve s unsafe_load(s.ptr + i - 1)
+end
+
+_unsafe_string(p, len) = ccall(:jl_pchar_to_string, Ref{String}, (Ptr{UInt8}, Int), p, len)
+Base.String(x::PointerString) = _unsafe_string(x.ptr, x.len)
+WeakRefStrings.PosLenString(x::PointerString) = PosLenString(unsafe_wrap(Array, x.ptr, x.len), PosLen(1, x.len), 0x00)

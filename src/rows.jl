@@ -2,15 +2,11 @@
 # no automatic type inference is done, but types are allowed to be passed
 # for as many columns as desired; `CSV.detect(row, i)` can also be used to
 # use the same inference logic used in `CSV.File` for determing a cell's typed value
-struct Rows{transpose, O, O2, IO, T, V}
+struct Rows{transpose, O, O2, IO, customtypes, V, stringtype}
     name::String
     names::Vector{Symbol} # only includes "select"ed columns
-    finaltypes::Vector{Type} # only includes "select"ed columns
+    columns::Vector{Column}
     columnmap::Vector{Int} # maps "select"ed column index to actual file column index
-    types::Vector{Type} # includes *all* columns (whether or not selected)
-    flags::Vector{UInt8}
-    cols::Int64
-    e::UInt8
     buf::IO
     datapos::Int64
     datarow::Int
@@ -18,19 +14,17 @@ struct Rows{transpose, O, O2, IO, T, V}
     limit::Int64
     options::O # Parsers.Options
     coloptions::O2 # Union{Nothing, Vector{Parsers.Options}}
-    customtypes::T
-    positions::Vector{Int64}
     reusebuffer::Bool
-    columns::Vector{AbstractVector} # for parsing, allocated once and used for each iteration
     values::Vector{V} # once values are parsed, put in values; allocated on each iteration if reusebuffer=false
     lookup::Dict{Symbol, Int}
     numwarnings::Base.RefValue{Int}
     maxwarnings::Int
+    ctx::Context
 end
 
 function Base.show(io::IO, r::Rows)
     println(io, "CSV.Rows(\"$(r.name)\"):")
-    println(io, "Size: $(r.cols)")
+    println(io, "Size: $(length(r.columns))")
     show(io, Tables.schema(r))
 end
 
@@ -115,13 +109,12 @@ function Rows(source;
     datarow::Integer=-1,
     skipto::Union{Nothing, Integer}=nothing,
     footerskip::Integer=0,
-    limit::Integer=typemax(Int64),
     transpose::Bool=false,
     comment::Union{String, Nothing}=nothing,
-    use_mmap=nothing,
     ignoreemptylines::Bool=true,
     select=nothing,
     drop=nothing,
+    limit::Union{Integer, Nothing}=nothing,
     # parsing options
     missingstrings=String[],
     missingstring="",
@@ -134,110 +127,143 @@ function Rows(source;
     dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
     dateformats::Union{AbstractDict, Nothing}=nothing,
     decimal::Union{UInt8, Char}=UInt8('.'),
-    truestrings::Union{Vector{String}, Nothing}=["true", "True", "TRUE"],
-    falsestrings::Union{Vector{String}, Nothing}=["false", "False", "FALSE"],
+    truestrings::Union{Vector{String}, Nothing}=TRUE_STRINGS,
+    falsestrings::Union{Vector{String}, Nothing}=FALSE_STRINGS,
     # type options
     type=nothing,
     types=nothing,
     typemap::Dict=Dict{Type, Type}(),
-    pool::Union{Bool, Real}=0.1,
-    lazystrings::Bool=true,
+    pool::Union{Bool, Real, AbstractVector, AbstractDict}=NaN,
+    downcast::Bool=false,
+    stringtype::StringTypes=PosLenString,
+    lazystrings::Bool=stringtype === PosLenString,
     strict::Bool=false,
     silencewarnings::Bool=false,
+    maxwarnings::Int=100,
     debug::Bool=false,
     parsingdebug::Bool=false,
     reusebuffer::Bool=false,
-    maxwarnings::Int=100,
-    kw...)
-
-    h = Header(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, use_mmap, ignoreemptylines, select, drop, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, lazystrings, strict, silencewarnings, debug, parsingdebug, true)
-    columns = allocate(1, h.cols, h.types, h.flags, nothing)
-    values = all(x->x == Union{String, Missing}, h.types) && lazystrings ? Vector{PosLen}(undef, h.cols) : Vector{Any}(undef, h.cols)
-    finaltypes = copy(h.types)
-    columnmap = [i for i = 1:h.cols]
-    deleteat!(h.names, h.todrop)
-    deleteat!(finaltypes, h.todrop)
-    deleteat!(columnmap, h.todrop)
-    lookup = Dict(nm=>i for (i, nm) in enumerate(h.names))
-    return Rows{transpose, typeof(h.options), typeof(h.coloptions), typeof(h.buf), typeof(h.customtypes), eltype(values)}(
-        h.name,
-        h.names,
-        finaltypes,
+    )
+    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptylines, select, drop, limit, false, 1, 0, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, true)
+    allocate!(ctx.columns, 1)
+    values = all(x->x.type === stringtype && x.anymissing, ctx.columns) && lazystrings ? Vector{PosLen}(undef, ctx.cols) : Vector{Any}(undef, ctx.cols)
+    columnmap = collect(1:ctx.cols)
+    for i = ctx.cols:-1:1
+        col = ctx.columns[i]
+        if col.willdrop
+            deleteat!(ctx.names, i)
+            deleteat!(columnmap, i)
+        end
+    end
+    lookup = Dict(nm=>i for (i, nm) in enumerate(ctx.names))
+    return Rows{transpose, typeof(ctx.options), typeof(ctx.coloptions), typeof(ctx.buf), ctx.customtypes, eltype(values), stringtype}(
+        ctx.name,
+        ctx.names,
+        ctx.columns,
         columnmap,
-        h.types,
-        h.flags,
-        h.cols,
-        h.e,
-        h.buf,
-        h.datapos,
-        h.datarow,
-        h.len,
-        limit,
-        h.options,
-        h.coloptions,
-        h.customtypes,
-        h.positions,
+        ctx.buf,
+        ctx.datapos,
+        ctx.datarow,
+        ctx.len,
+        ctx.limit,
+        ctx.options,
+        ctx.coloptions,
         reusebuffer,
-        columns,
         values,
         lookup,
         Ref(0),
-        maxwarnings
+        maxwarnings,
+        ctx
     )
 end
 
 Tables.rowtable(::Type{<:Rows}) = true
 Tables.rows(r::Rows) = r
-Tables.schema(r::Rows) = Tables.Schema(r.names, r.finaltypes)
-Base.eltype(r::Rows) = Row2
+Tables.schema(r::Rows) = Tables.Schema(r.names, [coltype(x) for x in view(r.columns, r.columnmap)])
+Base.eltype(::Rows) = Row2
 Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
 
-const EMPTY_TYPEMAP = Dict{Type, Type}()
-const EMPTY_REFS = RefPool[]
-
-@inline function setcustom!(::Type{T}, values, columns, i) where {T}
+@inline function setcustom!(::Type{customtypes}, values, columns, i) where {customtypes}
     if @generated
         block = Expr(:block)
         push!(block.args, quote
             error("CSV.jl code-generation error, unexpected column type: $(typeof(column))")
         end)
-        for i = 1:fieldcount(T)
-            vec = fieldtype(T, i)
+        for i = 1:fieldcount(customtypes)
+            T = fieldtype(customtypes, i)
+            vT = vectype(T)
             pushfirst!(block.args, quote
-                if column isa $(fieldtype(vec, 1))
+                column = columns[i].column
+                if column isa $vT
                     @inbounds values[i] = column[1]
                     return
                 end
             end)
         end
-        pushfirst!(block.args, quote
-            @inbounds column = columns[col]
-        end)
         pushfirst!(block.args, Expr(:meta, :inline))
         # @show block
         return block
     else
         # println("generated function failed")
-        @inbounds column = columns[i]
-        @inbounds values[i] = column[1]
+        @inbounds values[i] = columns[i].column[1]
         return
     end
 end
 
-@inline function Base.iterate(r::Rows{transpose, O, O2, IO, T, V}, (pos, len, row)=(r.datapos, r.len, 1)) where {transpose, O, O2, IO, T, V}
+function checkwidencolumns!(r::Rows{t, o, o2, ct, V}, cols) where {t, o, o2, ct, V}
+    if cols > length(r.names)
+        # we widened while parsing this row, need to widen other supporting objects
+        for i = (length(r.names) + 1):cols
+            push!(r.values, V === Any ? missing : WeakRefStrings.MISSING_BIT)
+            nm = Symbol(:Column, i)
+            push!(r.names, nm)
+            r.lookup[nm] = length(r.names)
+            push!(r.columnmap, i)
+        end
+    end
+    return
+end
+
+@inline function Base.iterate(r::Rows{transpose, O, O2, IO, customtypes, V, stringtype}, (pos, len, row)=(r.datapos, r.len, 1)) where {transpose, O, O2, IO, customtypes, V, stringtype}
     (pos > len || row > r.limit) && return nothing
-    pos > len && return nothing
-    pos = parserow(1, Val(transpose), r.cols, EMPTY_TYPEMAP, r.columns, r.datapos, r.buf, pos, len, r.positions, 0.0, EMPTY_REFS, 1, r.datarow + row - 2, r.types, r.flags, false, r.options, r.coloptions, T, r.numwarnings, r.maxwarnings)
-    cols = r.cols
-    values = r.reusebuffer ? r.values : Vector{V}(undef, cols)
+    pos = parserow(1, 1, r.numwarnings, r.ctx, r.buf, pos, len, 1, r.datarow + row - 2, r.columns, Val(transpose), r.options, r.coloptions, customtypes)
     columns = r.columns
+    cols = length(columns)
+    checkwidencolumns!(r, cols)
+    values = r.reusebuffer ? r.values : Vector{V}(undef, cols)
     for i = 1:cols
-        @inbounds column = columns[i]
-        if column isa Vector{PosLen}
+        @inbounds column = columns[i].column
+        if column isa MissingVector
+            @inbounds values[i] = missing
+        elseif column isa Vector{PosLen}
+            @inbounds values[i] = column[1]
+        elseif column isa Vector{Union{Missing, Int8}}
+            @inbounds values[i] = column[1]
+        elseif column isa Vector{Union{Missing, Int16}}
+            @inbounds values[i] = column[1]
+        elseif column isa Vector{Union{Missing, Int32}}
             @inbounds values[i] = column[1]
         elseif column isa SVec{Int64}
             @inbounds values[i] = column[1]
+        elseif column isa SVec{Int128}
+            @inbounds values[i] = column[1]
         elseif column isa SVec{Float64}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString1}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString3}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString7}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString15}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString31}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString63}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString127}
+            @inbounds values[i] = column[1]
+        elseif column isa SVec{InlineString255}
             @inbounds values[i] = column[1]
         elseif column isa SVec2{String}
             @inbounds values[i] = column[1]
@@ -251,84 +277,73 @@ end
             @inbounds values[i] = column[1]
         elseif column isa Vector{UInt32}
             @inbounds values[i] = column[1]
-        elseif T !== Tuple{}
-            setcustom!(T, values, columns, i)
+        elseif customtypes !== Tuple{}
+            setcustom!(customtypes, values, columns, i)
         else
             error("bad array type: $(typeof(column))")
         end
     end
-    return Row2{O, O2, V}(r.names, r.finaltypes, r.columnmap, r.types, r.lookup, values, r.buf, r.e, r.options, r.coloptions), (pos, len, row + 1)
+    return Row2{O, O2, V, stringtype}(r.names, r.columns, r.columnmap, r.lookup, values, r.buf, r.options, r.coloptions), (pos, len, row + 1)
 end
 
-struct Row2{O, O2, V} <: Tables.AbstractRow
+struct Row2{O, O2, V, stringtype} <: Tables.AbstractRow
     names::Vector{Symbol}
-    finaltypes::Vector{Type}
+    columns::Vector{Column}
     columnmap::Vector{Int}
-    types::Vector{Type}
     lookup::Dict{Symbol, Int}
     values::Vector{V}
     buf::Vector{UInt8}
-    e::UInt8
     options::O
     coloptions::O2
 end
 
 getnames(r::Row2) = getfield(r, :names)
-getfinaltypes(r::Row2) = getfield(r, :finaltypes)
+getcolumns(r::Row2) = getfield(r, :columns)
 getcolumnmap(r::Row2) = getfield(r, :columnmap)
-gettypes(r::Row2) = getfield(r, :types)
 getlookup(r::Row2) = getfield(r, :lookup)
 getvalues(r::Row2) = getfield(r, :values)
 getbuf(r::Row2) = getfield(r, :buf)
-gete(r::Row2) = getfield(r, :e)
 getoptions(r::Row2) = getfield(r, :options)
 getcoloptions(r::Row2) = getfield(r, :coloptions)
+getV(::Row2{O, O2, V}) where {O, O2, V} = V
+getstringtype(::Row2{O, O2, V, stringtype}) where {O, O2, V, stringtype} = stringtype
 
 Tables.columnnames(r::Row2) = getnames(r)
 
 Base.checkbounds(r::Row2, i) = 0 < i < length(r)
 
 Tables.getcolumn(r::Row2, nm::Symbol) = Tables.getcolumn(r, getlookup(r)[nm])
-Tables.getcolumn(r::Row2, i::Int) = Tables.getcolumn(r, gettypes(r)[i], i, getnames(r)[i])
-
-Tables.getcolumn(r::Row2{O, O2, PosLen}, nm::Symbol) where {O, O2} = @inbounds Tables.getcolumn(r, getlookup(r)[nm])
-
-Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Type{Missing}, i::Int, nm::Symbol)
-    @boundscheck checkbounds(r, i)
-    return missing
-end
+Tables.getcolumn(r::Row2, i::Int) = Tables.getcolumn(r, coltype(getcolumns(r)[i]), i, getnames(r)[i])
 
 Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Type{T}, i::Int, nm::Symbol) where {T}
     @boundscheck checkbounds(r, i)
     j = getcolumnmap(r)[i]
-    @inbounds x = getvalues(r)[j]
-    return x
-end
-
-Base.@propagate_inbounds Tables.getcolumn(r::Row2{O, O2, PosLen}, ::Type{T}, i::Int, nm::Symbol) where {T, O, O2} = error("row values are string only; requested type $T not supported; see `Parsers.parse(row, $T, $i)`")
-
-Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Union{Type{Union{Missing, String}}, Type{String}}, i::Int, nm::Symbol)
-    @boundscheck checkbounds(r, i)
-    j = getcolumnmap(r)[i]
-    @inbounds poslen = getvalues(r)[j]
-    if poslen isa Missing
-        return missing
-    elseif poslen isa String
-        return poslen
+    values = getvalues(r)
+    V = getV(r)
+    @inbounds val = j > length(values) ? (V === PosLen ? WeakRefStrings.MISSING_BIT : missing) : values[j]
+    stringtype = getstringtype(r)
+    if V === PosLen
+        # column type must be stringtype
+        # @show T, stringtype
+        @assert T === Union{stringtype, Missing}
+        if WeakRefStrings.missingvalue(val)
+            return missing
+        elseif stringtype === PosLenString
+            return PosLenString(getbuf(r), val, getoptions(r).e)
+        elseif stringtype === String
+            return String(getbuf(r), val, getoptions(r).e)
+        end
     else
-        return str(getbuf(r), gete(r), poslen)
-    end
-end
-
-Tables.getcolumn(r::Row2{O, O2, PosLen}, ::Union{Type{Union{Missing, String}}, Type{String}}, i::Int, nm::Symbol) where {O, O2} = Tables.getcolumn(r, i)
-Base.@propagate_inbounds function Tables.getcolumn(r::Row2{O, O2, PosLen}, i::Int) where {O, O2}
-    @boundscheck checkbounds(r, i)
-    @inbounds j = getcolumnmap(r)[i]
-    @inbounds poslen = getvalues(r)[j]
-    if poslen isa Missing
-        return missing
-    else
-        return @inbounds str(getbuf(r), gete(r), poslen)
+        # at least some column types were manually provided
+        if val isa PosLen
+            if WeakRefStrings.missingvalue(val)
+                return missing
+            else
+                return PosLenString(getbuf(r), val, getoptions(r).e)
+            end
+        else
+            return val
+        end
     end
 end
 
@@ -336,30 +351,34 @@ end
 
 Base.@propagate_inbounds function Parsers.parse(::Type{T}, r::Row2, i::Int) where {T}
     @boundscheck checkbounds(r, i)
-    j = getcolumnmap(r)[i]
-    type = gettypes(r)[j]
-    (type == String || type == Union{String, Missing}) || stringsonly()
-    @inbounds poslen = getvalues(r)[j]
-    missingvalue(poslen) && return missing
-    pos = getpos(poslen)
-    colopts = getcoloptions(r)
-    opts = colopts === nothing ? getoptions(r) : colopts[j]
-    x, code, vpos, vlen, tlen = Parsers.xparse(T, getbuf(r), pos, pos + getlen(poslen), opts)
+    @inbounds begin
+        j = getcolumnmap(r)[i]
+        col = getcolumns(r)[i]
+        col.type isa StringTypes || stringsonly()
+        poslen = getvalues(r)[j]
+        WeakRefStrings.missingvalue(poslen) && return missing
+        pos = WeakRefStrings.pos(poslen)
+        colopts = getcoloptions(r)
+        opts = colopts === nothing ? getoptions(r) : colopts[j]
+        x, code, vpos, vlen, tlen = Parsers.xparse(T, getbuf(r), pos, pos + WeakRefStrings.len(poslen), opts)
+    end
     return Parsers.ok(code) ? x : missing
 end
 
 Base.@propagate_inbounds function detect(r::Row2, i::Int)
     @boundscheck checkbounds(r, i)
-    j = getcolumnmap(r)[i]
-    T = gettypes(r)[j]
-    (T == String || T == Union{String, Missing}) || stringsonly()
-    @inbounds offlen = getvalues(r)[j]
-    missingvalue(offlen) && return missing
-    pos = getpos(offlen)
-    colopts = getcoloptions(r)
-    opts = colopts === nothing ? getoptions(r) : colopts[j]
-    x = detect(getbuf(r), pos, pos + getlen(offlen) - 1, opts)
-    return x === nothing ? r[i] : x
+    @inbounds begin
+        j = getcolumnmap(r)[i]
+        col = getcolumns(r)[i]
+        col.type isa StringTypes || stringsonly()
+        poslen = getvalues(r)[j]
+        WeakRefStrings.missingvalue(poslen) && return missing
+        pos = WeakRefStrings.pos(poslen)
+        colopts = getcoloptions(r)
+        opts = colopts === nothing ? getoptions(r) : colopts[j]
+        x, _, _ = detect(getbuf(r), pos, pos + WeakRefStrings.len(poslen) - 1, opts)
+        return x === nothing ? r[i] : x
+    end
 end
 
 function Parsers.parse(::Type{T}, r::Row2, nm::Symbol) where {T}
