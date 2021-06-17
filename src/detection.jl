@@ -119,7 +119,7 @@ function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, delim
         if nlines > 0
             d = UInt8('\n')
             for attempted_delim in (UInt8(','), UInt8('\t'), UInt8(' '), UInt8('|'), UInt8(';'), UInt8(':'))
-                cnt = bvc.counts[Int(attempted_delim)]
+                cnt = bvc.counts[Int(attempted_delim) + 1]
                 # @show Char(attempted_delim), cnt, nlines
                 if cnt > 0 && cnt % nlines == 0
                     d = attempted_delim
@@ -129,7 +129,7 @@ function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, delim
             if d == UInt8('\n')
                 maxcnt = 0
                 for attempted_delim in (UInt8(','), UInt8('\t'), UInt8('|'), UInt8(';'), UInt8(':'))
-                    cnt = headerbvc.counts[Int(attempted_delim)]
+                    cnt = headerbvc.counts[Int(attempted_delim) + 1]
                     # @show Char(attempted_delim), cnt, maxcnt
                     if cnt > maxcnt
                         d = attempted_delim
@@ -157,7 +157,7 @@ struct ByteValueCounter
 end
 
 function incr!(c::ByteValueCounter, b::UInt8)
-    @inbounds c.counts[b] += 1
+    @inbounds c.counts[b + 1] += 1
     return
 end
 
