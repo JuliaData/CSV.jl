@@ -627,4 +627,9 @@ f = CSV.File(IOBuffer("a, 0.1, 0.2, 0.3\nb, 0.4"); transpose=true)
 @test f.a == [0.1, 0.2, 0.3]
 @test isequal(f.b, [0.4, missing, missing])
 
+# 845
+f = CSV.File(IOBuffer("x\n\0\n"))
+@test length(f) == 1
+@test f.x[1] == "\0"
+
 end
