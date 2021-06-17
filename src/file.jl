@@ -199,6 +199,7 @@ function File(source;
     missingstring="",
     delim::Union{Nothing, Char, String}=nothing,
     ignorerepeated::Bool=false,
+    quoted::Bool=true,
     quotechar::Union{UInt8, Char}='"',
     openquotechar::Union{UInt8, Char, Nothing}=nothing,
     closequotechar::Union{UInt8, Char, Nothing}=nothing,
@@ -227,7 +228,7 @@ function File(source;
     # delim=nothing;ignorerepeated=false;quotechar='"';openquotechar=nothing;closequotechar=nothing;escapechar='"';dateformat=nothing;
     # dateformats=nothing;decimal=UInt8('.');truestrings=nothing;falsestrings=nothing;type=nothing;types=nothing;typemap=Dict{Type,Type}();
     # pool=DEFAULT_POOL;downcast=false;lazystrings=false;stringtype=String;strict=false;silencewarnings=false;maxwarnings=100;debug=true;parsingdebug=false;
-    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptylines, select, drop, limit, threaded, tasks, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
+    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptylines, select, drop, limit, threaded, tasks, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
     return File(ctx)
 end
 

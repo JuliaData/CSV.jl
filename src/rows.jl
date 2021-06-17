@@ -120,6 +120,7 @@ function Rows(source;
     missingstring="",
     delim::Union{Nothing, Char, String}=nothing,
     ignorerepeated::Bool=false,
+    quoted::Bool=true,
     quotechar::Union{UInt8, Char}='"',
     openquotechar::Union{UInt8, Char, Nothing}=nothing,
     closequotechar::Union{UInt8, Char, Nothing}=nothing,
@@ -144,7 +145,7 @@ function Rows(source;
     parsingdebug::Bool=false,
     reusebuffer::Bool=false,
     )
-    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptylines, select, drop, limit, false, 1, 0, missingstrings, missingstring, delim, ignorerepeated, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, true)
+    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptylines, select, drop, limit, false, 1, 0, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, true)
     allocate!(ctx.columns, 1)
     values = all(x->x.type === stringtype && x.anymissing, ctx.columns) && lazystrings ? Vector{PosLen}(undef, ctx.cols) : Vector{Any}(undef, ctx.cols)
     columnmap = collect(1:ctx.cols)
