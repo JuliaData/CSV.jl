@@ -145,6 +145,7 @@ function Context(source,
     missingstring,
     delim,
     ignorerepeated,
+    quoted,
     quotechar,
     openquotechar,
     closequotechar,
@@ -248,7 +249,7 @@ function Context(source,
                 end
             end
         end
-        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformat, ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings)
+        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformat, ignorerepeated, ignoreemptylines, comment, quoted, parsingdebug, strict, silencewarnings)
 
         # step 4a: if we're ignoring repeated delimiters, then we ignore any
         # that start a row, so we need to check if we need to adjust our headerpos/datapos
@@ -267,7 +268,7 @@ function Context(source,
         d, rowsguess = detectdelimandguessrows(buf, pos, pos, len, oq, eq, cq, del, cmt, ignoreemptylines)
         wh1 = d == UInt(' ') ? 0x00 : UInt8(' ')
         wh2 = d == UInt8('\t') ? 0x00 : UInt8('\t')
-        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformat, ignorerepeated, ignoreemptylines, comment, true, parsingdebug, strict, silencewarnings)
+        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, dateformat, ignorerepeated, ignoreemptylines, comment, quoted, parsingdebug, strict, silencewarnings)
         rowsguess, names, positions, endpositions = detecttranspose(buf, pos, len, options, header, datarow, normalizenames)
         ncols = length(names)
         datapos = isempty(positions) ? 0 : positions[1]

@@ -632,4 +632,8 @@ f = CSV.File(IOBuffer("x\n\0\n"))
 @test length(f) == 1
 @test f.x[1] == "\0"
 
+# 836
+f = CSV.File(IOBuffer("x\n\"abc\"\n"); quoted=false)
+@test f.x[1] == "\"abc\""
+
 end
