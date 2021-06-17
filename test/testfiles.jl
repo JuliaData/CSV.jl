@@ -1,3 +1,6 @@
+nms(::Type{NamedTuple{names, types}}) where {names, types} = names
+typs(::Type{NamedTuple{names, types}}) where {names, types} = Tuple(fieldtype(types, i) for i = 1:fieldcount(types))
+
 function testfile(file, kwargs, expected_sz, expected_sch, testfunc; dir=dir)
     println("testing $file")
     if file isa IO
@@ -10,8 +13,8 @@ function testfile(file, kwargs, expected_sz, expected_sch, testfunc; dir=dir)
     f = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...)
     t = f |> columntable
     actual_sch = Tables.schema(t)
-    @test Tuple(expected_sch.types) == actual_sch.types
-    @test Tuple(expected_sch.names) == actual_sch.names
+    @test Tuple(typs(expected_sch)) == actual_sch.types
+    @test Tuple(nms(expected_sch)) == actual_sch.names
     @test (length(t) == 0 ? 0 : length(t[1]), length(t)) == expected_sz
     if testfunc === nothing
     elseif testfunc isa Function
