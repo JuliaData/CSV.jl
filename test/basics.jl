@@ -108,7 +108,7 @@ rows = collect(CSV.File(joinpath(dir, "time.csv"); dateformat="H:M:S"))
 @test rows[2].time == Time(0, 10)
 
 # 388
-f = CSV.File(joinpath(dir, "GSM2230757_human1_umifm_counts.csv"); threaded=false);
+f = CSV.File(joinpath(dir, "GSM2230757_human1_umifm_counts.csv"); ntasks=1);
 @test length(f.names) == 20128
 @test length(f) == 3
 
@@ -428,7 +428,7 @@ f = CSV.File(IOBuffer("x\r\n1\r\n2\r\n3\r\n4\r\n5\r\n"), footerskip=3)
 @test f[1][1] == 1
 
 # 578
-f = CSV.File(IOBuffer("h1234567890123456\t"^2262 * "lasthdr\r\n" *"dummy dummy dummy\r\n"* ("1.23\t"^2262 * "2.46\r\n")^10), skipto=3, threaded=false);
+f = CSV.File(IOBuffer("h1234567890123456\t"^2262 * "lasthdr\r\n" *"dummy dummy dummy\r\n"* ("1.23\t"^2262 * "2.46\r\n")^10), skipto=3, ntasks=1);
 @test (length(f), length(f.names)) == (10, 2263)
 @test all(x -> eltype(x) == Float64, Tables.Columns(f))
 
@@ -468,7 +468,7 @@ f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz
 f = CSV.File(joinpath(dir, "promotions.csv"); stringtype=PosLenString)
 @test Tables.schema(f).types == (Float64, Union{Missing, Int64}, Union{Missing, Float64}, PosLenString, Union{Missing, PosLenString}, PosLenString, PosLenString, Union{Missing, Int64})
 
-f = CSV.File(joinpath(dir, "promotions.csv"); limit=7500, threaded=true)
+f = CSV.File(joinpath(dir, "promotions.csv"); limit=7500, ntasks=2)
 @test length(f) == 7500
 
 f = CSV.File(IOBuffer("1,2\r\n3,4\r\n\r\n5,6\r\n"); header=["col1", "col2"], ignoreemptyrows=true)
@@ -557,7 +557,7 @@ f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz
 @test eltype(f.first) == InlineString15
 
 # 723
-f = CSV.File(IOBuffer("col1,col2,col3\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n"); threaded=true)
+f = CSV.File(IOBuffer("col1,col2,col3\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n"); ntasks=2)
 @test length(f) == 4
 @test f isa CSV.File{false}
 
@@ -617,7 +617,7 @@ f = CSV.File(IOBuffer(csv); skipto=1, footerskip=1)
 f = CSV.File(IOBuffer(csv); skipto=1, footerskip=2)
 @test length(f) == 3
 
-f = CSV.File(IOBuffer(join(rand(["a", "b", "c"], 500), "\n")); header=false, threaded=true)
+f = CSV.File(IOBuffer(join(rand(["a", "b", "c"], 500), "\n")); header=false, ntasks=2)
 rt = Tables.rowtable(f)
 @test length(rt) == 500
 @test eltype(rt) == NamedTuple{(:Column1,), Tuple{InlineString1}}

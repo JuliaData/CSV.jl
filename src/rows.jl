@@ -110,7 +110,7 @@ function Rows(source;
     parsingdebug::Bool=false,
     reusebuffer::Bool=false,
     )
-    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, false, 1, nothing, 0, nothing, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, true)
+    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, nothing, nothing, nothing, 0, nothing, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, true)
     allocate!(ctx.columns, 1)
     values = all(x->x.type === stringtype && x.anymissing, ctx.columns) && lazystrings ? Vector{PosLen}(undef, ctx.cols) : Vector{Any}(undef, ctx.cols)
     columnmap = collect(1:ctx.cols)

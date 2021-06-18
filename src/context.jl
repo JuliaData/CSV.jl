@@ -218,6 +218,10 @@ function Context(source,
         Base.depwarn("`type` keyword argument is deprecated; a single type can be passed to `types` instead", :Context)
         types = type
     end
+    if threaded !== nothing
+        Base.depwarn("`threaded` keyword argument is deprecated; to avoid multithreaded parsing, pass `ntasks=1`", :Context)
+        ntasks = threaded ? Threads.nthreads() : 1
+    end
     header = (isa(header, Integer) && header == 1 && skipto == 1) ? -1 : header
     isa(header, Integer) && skipto != -1 && (skipto > header || throw(ArgumentError("data row ($skipto) must come after header row ($header)")))
     skipto = skipto == -1 ? (isa(header, Vector{Symbol}) || isa(header, Vector{String}) ? 0 : last(header)) + 1 : skipto # by default, data starts on line after header
@@ -438,21 +442,24 @@ function Context(source,
     # determine if we can use threads while parsing
     limit = something(limit, typemax(Int64))
     minrows = min(limit, rowsguess)
-    if threaded === nothing && !streaming && ntasks > 1 && !transpose && minrows > (ntasks * 5) && (minrows * ncols) >= 5_000
+    nthreads = something(ntasks, Threads.nthreads())
+    if ntasks === nothing && !streaming && nthreads > 1 && !transpose && minrows > (nthreads * 5) && (minrows * ncols) >= 5_000
         threaded = true
-    elseif threaded === true
+        ntasks = nthreads
+    elseif ntasks !== nothing && ntasks > 1
+        threaded = true
         if transpose
-            @warn "`threaded=true` not supported on transposed files"
+            @warn "`ntasks > 1` not supported on transposed files"
             threaded = false
-        elseif ntasks == 1
-            @warn "`threaded=true` but `ntasks=1`; to support threaded parsing, pass `ntasks=N` where `N > 1`; `ntasks` defaults to `Threads.nthreads()`, so you may consider starting Julia with multiple threads"
+            ntasks = 1
+        elseif minrows < (nthreads * 5)
+            @warn "`ntasks > 1` but there were not enough estimated rows ($minrows) to justify multithreaded parsing"
             threaded = false
-        elseif minrows < (ntasks * 5)
-            @warn "`threaded=true` but there were not enough estimated rows ($minrows) to justify multithreaded parsing"
-            threaded = false
+            ntasks = 1
         end
     else
         threaded = false
+        ntasks = 1
     end
     # attempt to chunk up a file for multithreaded parsing; there's chance we can't figure out how to accurately chunk
     # due to quoted fields, so threaded might get set to false

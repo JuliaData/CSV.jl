@@ -40,7 +40,7 @@ function Chunks(source;
     select=nothing,
     drop=nothing,
     limit::Union{Integer, Nothing}=nothing,
-    ntasks::Integer=Threads.nthreads(),
+    ntasks::Union{Integer, Nothing}=nothing,
     tasks::Union{Nothing, Integer}=nothing,
     rows_to_check::Integer=DEFAULT_ROWS_TO_CHECK,
     lines_to_check=nothing,
@@ -73,7 +73,7 @@ function Chunks(source;
     debug::Bool=false,
     parsingdebug::Bool=false)
 
-    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, true, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
+    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, nothing, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
     !ctx.threaded && throw(ArgumentError("unable to iterate chunks from input file source"))
     foreach(col -> col.lock = ReentrantLock(), ctx.columns)
     return Chunks(ctx)

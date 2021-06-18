@@ -153,7 +153,7 @@ function File(source;
     drop=nothing,
     limit::Union{Integer, Nothing}=nothing,
     threaded::Union{Bool, Nothing}=nothing,
-    ntasks::Integer=Threads.nthreads(),
+    ntasks::Union{Nothing, Integer}=nothing,
     tasks::Union{Nothing, Integer}=nothing,
     rows_to_check::Integer=DEFAULT_ROWS_TO_CHECK,
     lines_to_check=nothing,
