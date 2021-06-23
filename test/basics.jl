@@ -20,8 +20,8 @@ Base.zero(::Type{Dec64}) = Dec64(0.0)
 #test on non-existent file
 @test_throws ArgumentError CSV.File("");
 
-#test where datarow > headerrow
-@test_throws ArgumentError CSV.File(joinpath(dir, "test_no_header.csv"); datarow=1, header=2);
+#test where skipto > headerrow
+@test_throws ArgumentError CSV.File(joinpath(dir, "test_no_header.csv"); skipto=1, header=2);
 
 #test bad types
 @test_throws CSV.Error CSV.File(joinpath(dir, "test_float_in_int_column.csv"); types=[Int, Int, Int], strict=true)
@@ -33,13 +33,13 @@ Base.zero(::Type{Dec64}) = Dec64(0.0)
 @test_throws ArgumentError CSV.File(joinpath(dir, "test_newline_line_endings.csv"), types=Dict(1=>Integer))
 
 # #289
-tmp = CSV.File(IOBuffer(" \"a, b\", \"c\" "), datarow=1) |> columntable
+tmp = CSV.File(IOBuffer(" \"a, b\", \"c\" "), skipto=1) |> columntable
 @test length(tmp) == 2
 @test length(tmp[1]) == 1
 @test tmp.Column1[1] == "a, b"
 @test tmp.Column2[1] == "c"
 
-tmp = CSV.File(IOBuffer(" \"2018-01-01\", \"1\" ,1,2,3"), datarow=1) |> columntable
+tmp = CSV.File(IOBuffer(" \"2018-01-01\", \"1\" ,1,2,3"), skipto=1) |> columntable
 @test length(tmp) == 5
 @test length(tmp[1]) == 1
 @test tmp.Column1[1] == Date(2018, 1, 1)
@@ -62,7 +62,7 @@ f = CSV.File(IOBuffer("a,b\n1,2\n"); header=3)
 @test isempty(f.types)
 @test f.rows == 0
 
-f = CSV.File(IOBuffer("a,b\n1,2\n"); datarow=3)
+f = CSV.File(IOBuffer("a,b\n1,2\n"); skipto=3)
 @test f.names == [:a, :b]
 @test f.rows == 0
 
@@ -108,7 +108,7 @@ rows = collect(CSV.File(joinpath(dir, "time.csv"); dateformat="H:M:S"))
 @test rows[2].time == Time(0, 10)
 
 # 388
-f = CSV.File(joinpath(dir, "GSM2230757_human1_umifm_counts.csv"); threaded=false);
+f = CSV.File(joinpath(dir, "GSM2230757_human1_umifm_counts.csv"); ntasks=1);
 @test length(f.names) == 20128
 @test length(f) == 3
 
@@ -150,33 +150,33 @@ f = CSV.File(IOBuffer("x\n1\n3.14"))
 @test f.x[2] === 3.14
 
 # int => missing
-f = CSV.File(IOBuffer("x\n1\n\n"), ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n1\n\n"), ignoreemptyrows=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] == 1
 @test f.x[2] === missing
 
 # missing => int
-f = CSV.File(IOBuffer("x\n\n1\n"), ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n\n1\n"), ignoreemptyrows=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] === missing
 @test f.x[2] == 1
 
 # missing => int => float
-f = CSV.File(IOBuffer("x\n\n1\n3.14\n"), ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n\n1\n3.14\n"), ignoreemptyrows=false)
 @test (length(f), length(f.names)) == (3, 1)
 @test f.x[1] === missing
 @test f.x[2] === 1.0
 @test f.x[3] === 3.14
 
 # int => missing => float
-f = CSV.File(IOBuffer("x\n1\n\n3.14\n"), ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n1\n\n3.14\n"), ignoreemptyrows=false)
 @test (length(f), length(f.names)) == (3, 1)
 @test f.x[1] === 1.0
 @test f.x[2] === missing
 @test f.x[3] === 3.14
 
 # int => float => missing
-f = CSV.File(IOBuffer("x\n1\n3.14\n\n"), ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n1\n3.14\n\n"), ignoreemptyrows=false)
 @test (length(f), length(f.names)) == (3, 1)
 @test f.x[1] === 1.0
 @test f.x[2] === 3.14
@@ -202,7 +202,7 @@ f = CSV.File(IOBuffer("x\n1\n3.14\nabc"))
 @test f.x[3] == "abc"
 
 # missing => int => float => string
-f = CSV.File(IOBuffer("x\n\n1\n3.14\nabc"), ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n\n1\n3.14\nabc"), ignoreemptyrows=false)
 @test (length(f), length(f.names)) == (4, 1)
 @test f.x[1] === missing
 @test f.x[2] == "1"
@@ -210,53 +210,53 @@ f = CSV.File(IOBuffer("x\n\n1\n3.14\nabc"), ignoreemptylines=false)
 @test f.x[4] == "abc"
 
 # downcast
-f = CSV.File(IOBuffer("x\n1"), downcast=true, ignoreemptylines=true)
+f = CSV.File(IOBuffer("x\n1"), downcast=true, ignoreemptyrows=true)
 @test eltype(f.x) === Int8
 
-f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))"), downcast=true, ignoreemptylines=true)
+f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))"), downcast=true, ignoreemptyrows=true)
 @test eltype(f.x) === Int16
 
-f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))"), downcast=true, ignoreemptylines=true)
+f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))"), downcast=true, ignoreemptyrows=true)
 @test eltype(f.x) === Int32
 
-f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))"), downcast=true, ignoreemptylines=true)
+f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))"), downcast=true, ignoreemptyrows=true)
 @test eltype(f.x) === Int64
 
-f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))"), downcast=true, ignoreemptylines=true)
+f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))"), downcast=true, ignoreemptyrows=true)
 @test eltype(f.x) === Int128
 
-f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))\n3.14"), downcast=true, ignoreemptylines=true)
+f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))\n3.14"), downcast=true, ignoreemptyrows=true)
 @test eltype(f.x) === Float64
 
-f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))\n3.14\nabc"), downcast=true, ignoreemptylines=true)
+f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))\n3.14\nabc"), downcast=true, ignoreemptyrows=true)
 @test eltype(f.x) === InlineString63
 
-f = CSV.File(IOBuffer("x\n\n1"), downcast=true, ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n\n1"), downcast=true, ignoreemptyrows=false)
 @test eltype(f.x) === Union{Missing, Int8}
 
-f = CSV.File(IOBuffer("x\n\n1\n$(typemax(Int16))"), downcast=true, ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n\n1\n$(typemax(Int16))"), downcast=true, ignoreemptyrows=false)
 @test eltype(f.x) === Union{Missing, Int16}
 
-f = CSV.File(IOBuffer("x\n\n1\n$(typemax(Int16))\n$(typemax(Int32))"), downcast=true, ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n\n1\n$(typemax(Int16))\n$(typemax(Int32))"), downcast=true, ignoreemptyrows=false)
 @test eltype(f.x) === Union{Missing, Int32}
 
-f = CSV.File(IOBuffer("x\n\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))"), downcast=true, ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))"), downcast=true, ignoreemptyrows=false)
 @test eltype(f.x) === Union{Missing, Int64}
 
-f = CSV.File(IOBuffer("x\n\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))"), downcast=true, ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))"), downcast=true, ignoreemptyrows=false)
 @test eltype(f.x) === Union{Missing, Int128}
 
-f = CSV.File(IOBuffer("x\n\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))\n3.14"), downcast=true, ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))\n3.14"), downcast=true, ignoreemptyrows=false)
 @test eltype(f.x) === Union{Missing, Float64}
 
 # missing => catg
-f = CSV.File(IOBuffer("x\n\na\n"), pool=true, ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n\na\n"), pool=true, ignoreemptyrows=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] === missing
 @test f.x[2] == "a"
 
 # catg => missing
-f = CSV.File(IOBuffer("x\na\n\n"), pool=true, ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\na\n\n"), pool=true, ignoreemptyrows=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] == "a"
 @test f.x[2] === missing
@@ -290,11 +290,11 @@ f = CSV.File(IOBuffer("x\na\nb\n\"quoted field with \"\" escape character inside
 @test_throws CSV.Error CSV.File(IOBuffer("x\na\n\"quoted field that never ends"), pool=true)
 
 # invalid integer
-f = CSV.File(IOBuffer("x\nabc\n"), type=Int)
+f = CSV.File(IOBuffer("x\nabc\n"), types=Int)
 @test (length(f), length(f.names)) == (1, 1)
 @test f.x[1] === missing
 
-@test_throws CSV.Error CSV.File(IOBuffer("x\nabc\n"), type=Int, strict=true)
+@test_throws CSV.Error CSV.File(IOBuffer("x\nabc\n"), types=Int, strict=true)
 
 # transpose corner cases
 f = CSV.File(IOBuffer("x,y,1\nx2,y2,2\n"), transpose=true, header=2)
@@ -303,13 +303,13 @@ f = CSV.File(IOBuffer("x,y,1\nx2,y2,2\n"), transpose=true, header=2)
 @test f.y[1] == 1
 @test f.y2[1] == 2
 
-f = CSV.File(IOBuffer("x,y,1\nx2,y2,2\n"), transpose=true, header=1, datarow=3)
+f = CSV.File(IOBuffer("x,y,1\nx2,y2,2\n"), transpose=true, header=1, skipto=3)
 @test f.names == [:x, :x2]
 @test (length(f), length(f.names)) == (1, 2)
 @test f.x[1] == 1
 @test f.x2[1] == 2
 
-f = CSV.File(IOBuffer("x,y,1\nx2,y2,2\n"), transpose=true, header=false, datarow=3)
+f = CSV.File(IOBuffer("x,y,1\nx2,y2,2\n"), transpose=true, header=false, skipto=3)
 @test f.names == [:Column1, :Column2]
 @test (length(f), length(f.names)) == (1, 2)
 @test f.Column1[1] == 1
@@ -326,19 +326,19 @@ f = CSV.File(IOBuffer("x\nabc\n"), header=Symbol[])
 @test f.names == [:Column1]
 
 # Union{Bool, Missing}
-f = CSV.File(IOBuffer("x\ntrue\n\n"), ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\ntrue\n\n"), ignoreemptyrows=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] === true
 @test f.x[2] === missing
 
 # Union{Date, Missing}
-f = CSV.File(IOBuffer("x\n2019-01-01\n\n"), ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n2019-01-01\n\n"), ignoreemptyrows=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] === Date(2019, 1, 1)
 @test f.x[2] === missing
 
 # types is Dict{String, Type}
-f = CSV.File(IOBuffer("x\n2019-01-01\n\n"), types=Dict("x"=>Date), ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n2019-01-01\n\n"), types=Dict("x"=>Date), ignoreemptyrows=false)
 @test (length(f), length(f.names)) == (2, 1)
 @test f.x[1] === Date(2019, 1, 1)
 @test f.x[2] === missing
@@ -415,11 +415,11 @@ f = CSV.File(IOBuffer("thistime\n10:00:00.0\n12:00:00.0"))
 @test f.thistime[1] === Time(10)
 
 # 530
-f = CSV.File(IOBuffer(",column2\nNA,2\n2,3"), missingstrings=["NA"])
+f = CSV.File(IOBuffer(",column2\nNA,2\n2,3"), missingstring=["NA"])
 @test f.names == [:Column1, :column2]
 
 # reported on slack from Kevin Bonham
-f = CSV.File(IOBuffer("x\n01:02:03\n\n04:05:06\n"), delim=',', ignoreemptylines=false)
+f = CSV.File(IOBuffer("x\n01:02:03\n\n04:05:06\n"), delim=',', ignoreemptyrows=false)
 @test isequal(f.x, [Dates.Time(1,2,3), missing, Dates.Time(4,5,6)])
 
 # 566
@@ -428,7 +428,7 @@ f = CSV.File(IOBuffer("x\r\n1\r\n2\r\n3\r\n4\r\n5\r\n"), footerskip=3)
 @test f[1][1] == 1
 
 # 578
-f = CSV.File(IOBuffer("h1234567890123456\t"^2262 * "lasthdr\r\n" *"dummy dummy dummy\r\n"* ("1.23\t"^2262 * "2.46\r\n")^10), datarow=3, threaded=false);
+f = CSV.File(IOBuffer("h1234567890123456\t"^2262 * "lasthdr\r\n" *"dummy dummy dummy\r\n"* ("1.23\t"^2262 * "2.46\r\n")^10), skipto=3, ntasks=1);
 @test (length(f), length(f.names)) == (10, 2263)
 @test all(x -> eltype(x) == Float64, Tables.Columns(f))
 
@@ -436,7 +436,7 @@ f = CSV.File(IOBuffer("h1234567890123456\t"^2262 * "lasthdr\r\n" *"dummy dummy d
 f = CSV.File(IOBuffer("date\n2020-05-05\n2020-05-32"))
 
 # multiple dateformats
-f = CSV.File(IOBuffer("time,date,datetime\n10:00:00.0,04/16/2020,2020-04-16 23:14:00\n"), dateformats=Dict(2=>"mm/dd/yyyy", 3=>"yyyy-mm-dd HH:MM:SS"))
+f = CSV.File(IOBuffer("time,date,datetime\n10:00:00.0,04/16/2020,2020-04-16 23:14:00\n"), dateformat=Dict(2=>"mm/dd/yyyy", 3=>"yyyy-mm-dd HH:MM:SS"))
 @test length(f) == 1
 @test f[1].time == Dates.Time(10)
 @test f[1].date == Dates.Date(2020, 4, 16)
@@ -468,13 +468,13 @@ f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz
 f = CSV.File(joinpath(dir, "promotions.csv"); stringtype=PosLenString)
 @test Tables.schema(f).types == (Float64, Union{Missing, Int64}, Union{Missing, Float64}, PosLenString, Union{Missing, PosLenString}, PosLenString, PosLenString, Union{Missing, Int64})
 
-f = CSV.File(joinpath(dir, "promotions.csv"); limit=7500, threaded=true)
+f = CSV.File(joinpath(dir, "promotions.csv"); limit=7500, ntasks=2)
 @test length(f) == 7500
 
-f = CSV.File(IOBuffer("1,2\r\n3,4\r\n\r\n5,6\r\n"); header=["col1", "col2"], ignoreemptylines=true)
+f = CSV.File(IOBuffer("1,2\r\n3,4\r\n\r\n5,6\r\n"); header=["col1", "col2"], ignoreemptyrows=true)
 @test f.col1 == [1, 3, 5]
 
-f = CSV.File(joinpath(dir, "escape_row_starts.csv"); tasks=2)
+f = CSV.File(joinpath(dir, "escape_row_starts.csv"); ntasks=2)
 @test length(f) == 10000
 @test eltype(f.col1) == InlineString63
 @test eltype(f.col2) == Int64
@@ -544,7 +544,7 @@ f = CSV.File(IOBuffer("""x,y
                                        a,b
                                        a,b
 
-                                       """), ignoreemptylines=false)
+                                       """), ignoreemptyrows=false)
 @test f.x[end] === missing
 @test f.y[end] === missing
 
@@ -557,7 +557,7 @@ f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz
 @test eltype(f.first) == InlineString15
 
 # 723
-f = CSV.File(IOBuffer("col1,col2,col3\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n"); threaded=true)
+f = CSV.File(IOBuffer("col1,col2,col3\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n"); ntasks=2)
 @test length(f) == 4
 @test f isa CSV.File{false}
 
@@ -566,7 +566,7 @@ f = CSV.File(IOBuffer("col1,col2,col3,col4,col5\na,b,c,d,e\n" * "a,b,c,d\n"^101)
 @test length(f) == 102
 
 # 743
-f = CSV.File(IOBuffer("col1\n\n \n  \n1\n2\n3"), missingstrings=["", " ", "  "], ignoreemptylines=false)
+f = CSV.File(IOBuffer("col1\n\n \n  \n1\n2\n3"), missingstring=["", " ", "  "], ignoreemptyrows=false)
 @test length(f) == 6
 @test isequal(f.col1, [missing, missing, missing, 1, 2, 3])
 
@@ -580,7 +580,7 @@ f = CSV.File(IOBuffer("""
 name
 junk
 1
-"""), comment="#", header=2, datarow=4)
+"""), comment="#", header=2, skipto=4)
 @test length(f) == 1
 @test f[1].name == 1
 
@@ -589,7 +589,7 @@ f = CSV.File(IOBuffer("""
 name
 junk
 1
-"""), comment="#", header=2, datarow=4)
+"""), comment="#", header=2, skipto=4)
 @test length(f) == 1
 @test f[1].name == 1
 
@@ -617,7 +617,7 @@ f = CSV.File(IOBuffer(csv); skipto=1, footerskip=1)
 f = CSV.File(IOBuffer(csv); skipto=1, footerskip=2)
 @test length(f) == 3
 
-f = CSV.File(IOBuffer(join(rand(["a", "b", "c"], 500), "\n")); header=false, threaded=true)
+f = CSV.File(IOBuffer(join(rand(["a", "b", "c"], 500), "\n")); header=false, ntasks=2)
 rt = Tables.rowtable(f)
 @test length(rt) == 500
 @test eltype(rt) == NamedTuple{(:Column1,), Tuple{InlineString1}}

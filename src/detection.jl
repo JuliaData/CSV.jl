@@ -1,20 +1,20 @@
 # figure out at what byte position the header row(s) start and at what byte position the data starts
-function detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, header, datarow)
+function detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptyrows, header, skipto)
     headerpos = 0
     datapos = 1
     if header isa Integer
         if header <= 0
             # no header row in dataset; skip to data
-            datapos = skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, 1, datarow)
+            datapos = skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptyrows, 1, skipto)
         else
-            headerpos = skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, 1, header)
-            datapos = skiptorow(buf, headerpos, len, oq, eq, cq, cmt, ignoreemptylines, header, datarow)
+            headerpos = skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptyrows, 1, header)
+            datapos = skiptorow(buf, headerpos, len, oq, eq, cq, cmt, ignoreemptyrows, header, skipto)
         end
     elseif header isa AbstractVector{<:Integer}
-        headerpos = skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, 1, header[1])
-        datapos = skiptorow(buf, headerpos, len, oq, eq, cq, cmt, ignoreemptylines, header[1], datarow)
+        headerpos = skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptyrows, 1, header[1])
+        datapos = skiptorow(buf, headerpos, len, oq, eq, cq, cmt, ignoreemptyrows, header[1], skipto)
     elseif header isa Union{AbstractVector{Symbol}, AbstractVector{String}}
-        datapos = skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, 1, datarow)
+        datapos = skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptyrows, 1, skipto)
     else
         throw(ArgumentError("unsupported header argument: $header"))
     end
@@ -25,7 +25,7 @@ end
 # it tries to guess a file's delimiter by which character showed up w/ the same frequency
 # over all rows scanned; we use the average # of bytes per row w/ total length of the file
 # to guess the total # of rows in the file
-function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, delim, cmt, ignoreemptylines)
+function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, delim, cmt, ignoreemptyrows)
     nbytes = 0
     lastbytenewline = false
     parsedanylines = false
@@ -76,7 +76,7 @@ function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, delim
             end
         end
     end
-    pos = max(1, checkcommentandemptyline(buf, datapos, len, cmt, ignoreemptylines))
+    pos = max(1, checkcommentandemptyline(buf, datapos, len, cmt, ignoreemptyrows))
     while pos <= len && nlines < 10
         parsedanylines = true
         @inbounds b = buf[pos]
@@ -101,12 +101,12 @@ function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, delim
                 end
             end
         elseif b == UInt8('\n')
-            pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines)
+            pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptyrows)
             nlines += 1
             lastbytenewline = true
         elseif b == UInt8('\r')
             pos <= len && buf[pos] == UInt8('\n') && (pos += 1)
-            pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines)
+            pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptyrows)
             nlines += 1
             lastbytenewline = true
         else
@@ -161,7 +161,7 @@ function incr!(c::ByteValueCounter, b::UInt8)
     return
 end
 
-ignoreemptylines(opts::Parsers.Options{ir, iel}) where {ir, iel} = iel
+ignoreemptyrows(opts::Parsers.Options{ir, iel}) where {ir, iel} = iel
 
 # given the various header and normalization options, figure out column names for a file
 function detectcolumnnames(buf, headerpos, datapos, len, options, header, normalizenames)
@@ -178,7 +178,7 @@ function detectcolumnnames(buf, headerpos, datapos, len, options, header, normal
     elseif header isa AbstractVector{<:Integer}
         names, pos = readsplitline(buf, headerpos, len, options)
         for row = 2:length(header)
-            pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, options.cmt, ignoreemptylines(options), 1, header[row] - header[row - 1])
+            pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, options.cmt, ignoreemptyrows(options), 1, header[row] - header[row - 1])
             fields, pos = readsplitline(buf, pos, len, options)
             for (i, x) in enumerate(fields)
                 names[i] *= "_" * x
@@ -189,9 +189,9 @@ function detectcolumnnames(buf, headerpos, datapos, len, options, header, normal
 end
 
 # efficiently skip from `cur` to `dest` row
-function skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, cur, dest)
+function skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptyrows, cur, dest)
     nlines = Ref{Int}(0)
-    pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines, nlines)
+    pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptyrows, nlines)
     cur += nlines[]
     nlines[] = 0
     while cur < dest && pos < len
@@ -224,7 +224,7 @@ function skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptylines, cur, dest)
                 break
             end
         end
-        pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines, nlines)
+        pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptyrows, nlines)
         cur += nlines[]
         nlines[] = 0
     end
@@ -274,12 +274,12 @@ end
 
 const NLINES = Ref{Int}(0)
 
-function checkcommentandemptyline(buf, pos, len, cmt, ignoreemptylines, nlines=NLINES)
+function checkcommentandemptyline(buf, pos, len, cmt, ignoreemptyrows, nlines=NLINES)
     cmtptr, cmtlen = cmt === nothing ? (C_NULL, 0) : cmt
     ptr = pointer(buf, pos)
     while pos <= len
         skipped = matched = false
-        if ignoreemptylines
+        if ignoreemptyrows
             newpos = skipemptyrow(buf, pos, len)
             if newpos > pos
                 pos = newpos
@@ -314,11 +314,11 @@ end
 # right # of expected columns then we move on to the next file chunk byte position. If we fail, we start over
 # at the byte position, assuming we were in a quoted field (and encountered a newline inside the quoted
 # field the first time through)
-function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, pool, downcast, lines_to_check=5)
+function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, pool, downcast, rows_to_check=5)
     totalbytes = Threads.Atomic{Int}(0)
     totalrows = Threads.Atomic{Int}(0)
     succeeded = Threads.Atomic{Bool}(true)
-    M = lines_to_check * (length(ranges) - 2)
+    M = rows_to_check * (length(ranges) - 2)
     samples = Matrix{Any}(undef, M, ncols)
     @sync for i = 2:(length(ranges) - 1)
         Threads.@spawn begin
@@ -339,11 +339,11 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, pool, dow
                         break
                     end
                 end
-                # now we read the next `lines_to_check` rows and see if we get the roughly the right # of columns
+                # now we read the next `rows_to_check` rows and see if we get the roughly the right # of columns
                 rowstartpos = pos
                 parsedncols = rowsparsed = 0
-                for j = 1:lines_to_check
-                    m = (i - 2) * lines_to_check
+                for j = 1:rows_to_check
+                    m = (i - 2) * rows_to_check
                     n = 1
                     while pos <= len
                         _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, opts)
@@ -382,7 +382,7 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, pool, dow
                 if (ncols - f40) <= (parsedncols / rowsparsed) <= (ncols + f40)
                     # ok, seems like we figured out the right start for parsing on this chunk
                     Threads.atomic_add!(totalbytes, pos - rowstartpos)
-                    Threads.atomic_add!(totalrows, lines_to_check)
+                    Threads.atomic_add!(totalrows, rows_to_check)
                     break
                 end
                 if attempted_quoted
@@ -488,7 +488,7 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, pool, dow
     return totalbytes[] / finalrows, true
 end
 
-function detecttranspose(buf, pos, len, options, header, datarow, normalizenames)
+function detecttranspose(buf, pos, len, options, header, skipto, normalizenames)
     if isa(header, Integer) && header > 0
         # skip to header column to read column names
         row, pos = skiptofield!(buf, pos, len, options, 1, header)
@@ -496,7 +496,7 @@ function detecttranspose(buf, pos, len, options, header, datarow, normalizenames
         _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
         columnnames = [columnname(buf, vpos, vlen, code, options, 1)]
         pos += tlen
-        row, pos = skiptofield!(buf, pos, len, options, header+1, datarow)
+        row, pos = skiptofield!(buf, pos, len, options, header+1, skipto)
         columnpositions = Int64[pos]
         datapos = pos
         rows, pos = countfields(buf, pos, len, options)
@@ -510,7 +510,7 @@ function detecttranspose(buf, pos, len, options, header, datarow, normalizenames
             _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, options)
             push!(columnnames, columnname(buf, vpos, vlen, code, options, cols))
             pos += tlen
-            row, pos = skiptofield!(buf, pos, len, options, header+1, datarow)
+            row, pos = skiptofield!(buf, pos, len, options, header+1, skipto)
             push!(columnpositions, pos)
             _, pos = countfields(buf, pos, len, options)
             push!(endpositions, pos)
@@ -527,8 +527,8 @@ function detecttranspose(buf, pos, len, options, header, datarow, normalizenames
         rows = 0
     else
         # column names provided explicitly or should be generated, they don't exist in data
-        # skip to datarow
-        row, pos = skiptofield!(buf, pos, len, options, 1, datarow)
+        # skip to skipto
+        row, pos = skiptofield!(buf, pos, len, options, 1, skipto)
         # io now at start of 1st data cell
         columnnames = [isa(header, Integer) || isempty(header) ? "Column1" : string(header[1])]
         columnpositions = Int64[pos]
@@ -538,8 +538,8 @@ function detecttranspose(buf, pos, len, options, header, datarow, normalizenames
         # we're now done w/ column 1, if EOF we're done, otherwise, parse column 2's column name
         cols = 1
         while pos <= len
-            # skip to datarow column
-            row, pos = skiptofield!(buf, pos, len, options, 1, datarow)
+            # skip to skipto column
+            row, pos = skiptofield!(buf, pos, len, options, 1, skipto)
             cols += 1
             push!(columnnames, isa(header, Integer) || isempty(header) ? "Column$cols" : string(header[cols]))
             push!(columnpositions, pos)

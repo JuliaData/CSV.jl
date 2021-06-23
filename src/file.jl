@@ -134,47 +134,7 @@ db = SQLite.DB()
 tbl = CSV.File(file) |> SQLite.load!(db, "sqlite_table")
 ```
 
-Supported keyword arguments include:
-
-### File layout options:
-
-  * `header=1`: the `header` argument can be an `Int`, indicating the row to parse for column names; or a `Range`, indicating a span of rows to be concatenated together as column names; or an entire `Vector{Symbol}` or `Vector{String}` to use as column names; if a file doesn't have column names, either provide them as a `Vector`, or set `header=0` or `header=false` and column names will be auto-generated (`Column1`, `Column2`, etc.). Note that if a row number header and `comment` or `ignoreemtpylines` are provided, the header row will be the first non-commented/non-empty row _after_ the row number, meaning if the provided row number is a commented row, the header row will actually be the next non-commented row.
-  * `normalizenames=false`: whether column names should be "normalized" into valid Julia identifier symbols; useful when iterating rows and accessing column values of a row via `getproperty` (e.g. `row.col1`)
-  * `datarow`: an `Int` argument to specify the row where the data starts in the csv file; by default, the next row after the `header` row is used. If `header=0`, then the 1st row is assumed to be the start of data; providing a `datarow` or `skipto` argument does _not_ affect the `header` argument. Note that if a row number `datarow` and `comment` or `ignoreemtpylines` are provided, the data row will be the first non-commented/non-empty row _after_ the row number, meaning if the provided row number is a commented row, the data row will actually be the next non-commented row.
-  * `skipto::Int`: identical to `datarow`, specifies the number of rows to skip before starting to read data
-  * `footerskip::Int`: number of rows at the end of a file to skip parsing.  Do note that commented rows (see the `comment` keyword argument) *do not* count towards the row number provided for `footerskip`, they are completely ignored by the parser
-  * `limit`: an `Int` to indicate a limited number of rows to parse in a csv file; use in combination with `skipto` to read a specific, contiguous chunk within a file; note for large files when multiple threads are used for parsing, the `limit` argument may not result in exact an exact # of rows parsed; use `threaded=false` to ensure an exact limit if necessary
-  * `transpose::Bool`: read a csv file "transposed", i.e. each column is parsed as a row
-  * `comment`: rows that begin with this `String` will be skipped while parsing. Note that if a row number header or `datarow` and `comment` are provided, the header/data row will be the first non-commented/non-empty row _after_ the row number, meaning if the provided row number is a commented row, the header/data row will actually be the next non-commented row.
-  * `ignoreemptylines::Bool=true`: whether empty rows/lines in a file should be ignored (if `false`, each column will be assigned `missing` for that empty row)
-  * `threaded::Bool`: whether parsing should utilize multiple threads; by default threads are used on large enough files, but isn't allowed when `transpose=true`; only available in Julia 1.3+
-  * `tasks::Integer=Threads.nthreads()`: for multithreaded parsing, this controls the number of tasks spawned to read a file in chunks concurrently; defaults to the # of threads Julia was started with (i.e. `JULIA_NUM_THREADS` environment variable)
-  * `lines_to_check::Integer=30`: for multithreaded parsing, a file is split up into `tasks` # of equal chunks, then `lines_to_check` # of lines are checked to ensure parsing correctly found valid rows; for certain files with very large quoted text fields, `lines_to_check` may need to be higher (10, 30, etc.) to ensure parsing correctly finds these rows
-  * `select`: an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a "selector" function of the form `(i, name) -> keep::Bool`; only columns in the collection or for which the selector function returns `true` will be parsed and accessible in the resulting `CSV.File`. Invalid values in `select` are ignored.
-  * `drop`: inverse of `select`; an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a "drop" function of the form `(i, name) -> drop::Bool`; columns in the collection or for which the drop function returns `true` will ignored in the resulting `CSV.File`. Invalid values in `drop` are ignored.
-
-### Parsing options:
-
-  * `missingstrings`, `missingstring`: either a `String`, or `Vector{String}` to use as sentinel values that will be parsed as `missing`; by default, only an empty field (two consecutive delimiters) is considered `missing`
-  * `delim=','`: a `Char` or `String` that indicates how columns are delimited in a file; if no argument is provided, parsing will try to detect the most consistent delimiter on the first 10 rows of the file
-  * `ignorerepeated::Bool=false`: whether repeated (consecutive) delimiters should be ignored while parsing; useful for fixed-width files with delimiter padding between cells
-  * `quotechar='"'`, `openquotechar`, `closequotechar`: a `Char` (or different start and end characters) that indicate a quoted field which may contain textual delimiters or newline characters
-  * `escapechar='"'`: the `Char` used to escape quote characters in a quoted field
-  * `dateformat::Union{String, Dates.DateFormat, Nothing}`: a date format string to indicate how Date/DateTime columns are formatted for the entire file
-  * `dateformats::Union{AbstractDict, Nothing}`: a Dict of date format strings to indicate how the Date/DateTime columns corresponding to the keys are formatted. The Dict can map column index `Int`, or name `Symbol` or `String` to the format string for that column.
-  * `decimal='.'`: a `Char` indicating how decimals are separated in floats, i.e. `3.14` used '.', or `3,14` uses a comma ','
-  * `truestrings`, `falsestrings`: `Vectors of Strings` that indicate how `true` or `false` values are represented; by default only `true` and `false` are treated as `Bool`
-
-### Column Type Options:
-
-  * `type`: a single type to use for parsing an entire file; i.e. all columns will be treated as the same type; useful for matrix-like data files
-  * `types`: a Vector or Dict of types to be used for column types; a Dict can map column index `Int`, or name `Symbol` or `String` to type for a column, i.e. Dict(1=>Float64) will set the first column as a Float64, Dict(:column1=>Float64) will set the column named column1 to Float64 and, Dict("column1"=>Float64) will set the column1 to Float64; if a `Vector` if provided, it must match the # of columns provided or detected in `header`
-  * `typemap::Dict{Type, Type}`: a mapping of a type that should be replaced in every instance with another type, i.e. `Dict(Float64=>String)` would change every detected `Float64` column to be parsed as `String`; only "standard" types are allowed to be mapped to another type, i.e. `Int64`, `Float64`, `Date`, `DateTime`, `Time`, and `Bool`. If a column of one of those types is "detected", it will be mapped to the specified type.
-  * `pool::Union{Bool, Float64}=0.1`: if `true`, *all* columns detected as `String` will be internally pooled; alternatively, the proportion of unique values below which `String` columns should be pooled (by default 0.1, meaning that if the # of unique strings in a column is under 10%, it will be pooled)
-  * `lazystrings::Bool=false`: avoid allocating full strings in string columns; returns a custom `PosLenStringVector` array type that *does not* support mutable operations (e.g. `push!`, `append!`, or even `setindex!`). Calling `copy(x)` will materialize a full `Vector{String}`. Also note that each `PosLenStringVector` holds a reference to the full input file buffer, so it won't be closed after parsing and trying to delete or modify the file may result in errors (particularly on windows) and generally has undefined behavior. Given these caveats, this setting can help avoid lots of string allocations in large files and lead to faster parsing times.
-  * `strict::Bool=false`: whether invalid values should throw a parsing error or be replaced with `missing`
-  * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
-  * `maxwarnings::Int=100`: if more than `maxwarnings` number of warnings are printed while parsing, further warnings will be silenced by default; for multithreaded parsing, each parsing task will print up to `maxwarnings`
+$KEYWORD_DOCS
 """
 function File(source;
     # file options
@@ -183,17 +143,20 @@ function File(source;
     normalizenames::Bool=false,
     # by default, data starts immediately after header or start of file
     datarow::Integer=-1,
-    skipto::Union{Nothing, Integer}=nothing,
+    skipto::Integer=-1,
     footerskip::Integer=0,
     transpose::Bool=false,
     comment::Union{String, Nothing}=nothing,
-    ignoreemptylines::Bool=true,
+    ignoreemptyrows::Bool=true,
+    ignoreemptylines=nothing,
     select=nothing,
     drop=nothing,
     limit::Union{Integer, Nothing}=nothing,
     threaded::Union{Bool, Nothing}=nothing,
-    tasks::Integer=Threads.nthreads(),
-    lines_to_check::Integer=DEFAULT_LINES_TO_CHECK,
+    ntasks::Union{Nothing, Integer}=nothing,
+    tasks::Union{Nothing, Integer}=nothing,
+    rows_to_check::Integer=DEFAULT_ROWS_TO_CHECK,
+    lines_to_check=nothing,
     # parsing options
     missingstrings=String[],
     missingstring="",
@@ -204,8 +167,8 @@ function File(source;
     openquotechar::Union{UInt8, Char, Nothing}=nothing,
     closequotechar::Union{UInt8, Char, Nothing}=nothing,
     escapechar::Union{UInt8, Char}='"',
-    dateformat::Union{String, Dates.DateFormat, Nothing}=nothing,
-    dateformats::Union{AbstractDict, Nothing}=nothing,
+    dateformat::Union{String, Dates.DateFormat, Nothing, AbstractDict}=nothing,
+    dateformats=nothing,
     decimal::Union{UInt8, Char}=UInt8('.'),
     truestrings::Union{Vector{String}, Nothing}=TRUE_STRINGS,
     falsestrings::Union{Vector{String}, Nothing}=FALSE_STRINGS,
@@ -223,12 +186,12 @@ function File(source;
     debug::Bool=false,
     parsingdebug::Bool=false
     )
-    # header=1;normalizenames=false;datarow=-1;skipto=nothing;footerskip=0;transpose=false;comment=nothing;ignoreemptylines=true;
-    # select=nothing;drop=nothing;limit=nothing;threaded=nothing;tasks=8;lines_to_check=30;missingstrings=String[];missingstring="";
+    # header=1;normalizenames=false;datarow=-1;skipto=nothing;footerskip=0;transpose=false;comment=nothing;ignoreemptyrows=true;
+    # select=nothing;drop=nothing;limit=nothing;threaded=nothing;ntasks=Threads.nthreads();rows_to_check=30;missingstrings=String[];missingstring="";
     # delim=nothing;ignorerepeated=false;quotechar='"';openquotechar=nothing;closequotechar=nothing;escapechar='"';dateformat=nothing;
     # dateformats=nothing;decimal=UInt8('.');truestrings=nothing;falsestrings=nothing;type=nothing;types=nothing;typemap=Dict{Type,Type}();
     # pool=DEFAULT_POOL;downcast=false;lazystrings=false;stringtype=String;strict=false;silencewarnings=false;maxwarnings=100;debug=true;parsingdebug=false;
-    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptylines, select, drop, limit, threaded, tasks, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
+    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, threaded, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
     return File(ctx)
 end
 
