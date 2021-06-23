@@ -36,12 +36,12 @@ include("write.jl")
     @test f.X == ["b", "c", "a", "c"]
     @test f.X.refs[2] == f.X.refs[4]
 
-    f = CSV.File(IOBuffer("X\nb\nc\n\nc"), pool=true, ignoreemptylines=false)
+    f = CSV.File(IOBuffer("X\nb\nc\n\nc"), pool=true, ignoreemptyrows=false)
     @test typeof(f.X) == PooledArray{Union{Missing, InlineString1},UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (4, 1)
     @test f.X[3] === missing
 
-    f = CSV.File(IOBuffer("X\nc\nc\n\nc\nc\nc\nc\nc\nc"), ignoreemptylines=false)
+    f = CSV.File(IOBuffer("X\nc\nc\n\nc\nc\nc\nc\nc\nc"), ignoreemptyrows=false)
     @test typeof(f.X) == PooledArray{Union{Missing, InlineString1},UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (9, 1)
     @test isequal(f.X, ["c", "c", missing, "c", "c", "c", "c", "c", "c"])
@@ -225,7 +225,7 @@ end
 
 @testset "CSV.Chunks" begin
 
-chunks = CSV.Chunks(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz"))); tasks=2)
+chunks = CSV.Chunks(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz"))); ntasks=2)
 @test length(chunks) == 2
 state = iterate(chunks)
 f, st = state

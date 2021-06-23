@@ -108,10 +108,9 @@ extra1,extra2,extra3
 ```
 #### Syntax
 ```julia
-CSV.File(file; datarow=4)
 CSV.File(file; skipto=4)
 ```
-This file has extra rows in between our header row `col1,col2,col3` and the start of our data `1,2,3` on row 4. We can use the `datarow` or `skipto` keyword arguments to provide a row number where the "data" of our file begins.
+This file has extra rows in between our header row `col1,col2,col3` and the start of our data `1,2,3` on row 4. We can use the `skipto` keyword arguments to provide a row number where the "data" of our file begins.
 
 ### Reading Chunks
 #### File
@@ -157,9 +156,9 @@ col1,col2,col3
 #### Syntax
 ```julia
 CSV.File(file; comment="#")
-CSV.File(file; datarow=3)
+CSV.File(file; skipto=3)
 ```
-This file has some rows that begin with the `"#"` string and denote breaks in the data for commentary. We wish to ignore these rows for purposes of reading data. We can pass `comment="#"` and parsing will ignore any row that begins with this string. Alternatively, we can pass `datarow=3` for this example specifically since there is only the one row to skip.
+This file has some rows that begin with the `"#"` string and denote breaks in the data for commentary. We wish to ignore these rows for purposes of reading data. We can pass `comment="#"` and parsing will ignore any row that begins with this string. Alternatively, we can pass `skipto=3` for this example specifically since there is only the one row to skip.
 
 ### Missing Strings
 #### File
@@ -173,9 +172,9 @@ code,age,score
 #### Syntax
 ```julia
 CSV.File(file; missingstring="-999")
-CSV.File(file; missingstrings=["-999", "NA"])
+CSV.File(file; missingstring=["-999", "NA"])
 ```
-In this file, our `code` column has two expected codes, `0` and `1`, but also a few "invalid" codes, which are input as `-999`. We'd like to read the column as `Int64`, but treat the `-999` values as "missing" values. By passing `missingstring="-999"`, we signal that this value should be replaced with the literal `missing` value builtin to the Julia language. We can then do things like `dropmissing(f.col1)` to ignore those values, for example. In the second recommended syntax, we also want to treat the `NA` values in our `score` column as `missing`, so we pass both strings like `missingstrings=["-999", "NA"]`.
+In this file, our `code` column has two expected codes, `0` and `1`, but also a few "invalid" codes, which are input as `-999`. We'd like to read the column as `Int64`, but treat the `-999` values as "missing" values. By passing `missingstring="-999"`, we signal that this value should be replaced with the literal `missing` value builtin to the Julia language. We can then do things like `dropmissing(f.col1)` to ignore those values, for example. In the second recommended syntax, we also want to treat the `NA` values in our `score` column as `missing`, so we pass both strings like `missingstring=["-999", "NA"]`.
 
 ### Fixed Width Files
 #### File

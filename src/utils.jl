@@ -65,8 +65,7 @@ function nonstandardtype(T)
     T = nonmissingtype(T)
     if T === Union{} ||
        T isa StringTypes ||
-       T === Int32 ||
-       T === Int64 ||
+       isinttype(T) ||
        T === Float64 ||
        T === Bool ||
        T === Date ||
