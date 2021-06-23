@@ -194,12 +194,12 @@ function write(file, itr;
     end
 end
 
-function write(sch::Tables.Schema{names}, rows, file, opts;
+function write(sch::Tables.Schema, rows, file, opts;
         append::Bool=false,
         header::Union{Bool, Vector}=String[],
         bufsize::Int=2^22
-    ) where {names}
-    colnames = !(header isa Vector) || isempty(header) ? names : header
+    )
+    colnames = !(header isa Vector) || isempty(header) ? sch.names : header
     cols = length(colnames)
     len = bufsize
     buf = Vector{UInt8}(undef, len)
