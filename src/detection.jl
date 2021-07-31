@@ -251,7 +251,7 @@ function columnname(buf, poslen, code, options, i)
     if Parsers.sentinel(code) || poslen.len == 0
         return "Column$i"
     elseif Parsers.escapedstring(code)
-        return String(buf, poslen, options.e)
+        return Parsers.getstring(buf, poslen, options.e)
     else
         return unsafe_string(pointer(buf, poslen.pos), poslen.len)
     end

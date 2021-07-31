@@ -743,7 +743,7 @@ function detectcell(buf, pos, len, row, rowoffset, i, col, ctx, rowsguess)::Tupl
         val = poslen
     else
         newT = String
-        val = String(buf, poslen, opts.e)
+        val = Parsers.getstring(buf, poslen, opts.e)
     end
 @label done
     # if we're here, that means we found a non-missing value, so we need to update column
@@ -774,7 +774,7 @@ function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::
                 if column isa Vector{UInt32}
                     if type === String || type === PosLenString
                         if Parsers.escapedstring(code)
-                            ref = getref!(col.refpool, type, String(buf, res.val, opts.e))
+                            ref = getref!(col.refpool, type, Parsers.getstring(buf, res.val, opts.e))
                         else
                             poslen = res.val
                             ref = getref!(col.refpool, type, PointerString(pointer(buf, poslen.pos), poslen.len), buf, poslen, opts.e)
@@ -784,7 +784,7 @@ function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::
                     end
                     @inbounds column[row] = ref
                 elseif type === String
-                    @inbounds (column::SVec2{String})[row] = String(buf, res.val, opts.e)
+                    @inbounds (column::SVec2{String})[row] = Parsers.getstring(buf, res.val, opts.e)
                 elseif type === PosLenString
                     @inbounds (column::Vector{PosLen})[row] = res.val
                 else

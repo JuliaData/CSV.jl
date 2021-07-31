@@ -179,7 +179,7 @@ function checkwidencolumns!(r::Rows{t, ct, V}, cols) where {t, ct, V}
     if cols > length(r.names)
         # we widened while parsing this row, need to widen other supporting objects
         for i = (length(r.names) + 1):cols
-            push!(r.values, V === Any ? missing : Parsers.MISSING_BIT)
+            push!(r.values, V === Any ? missing : Base.bitcast(PosLen, Parsers.MISSING_BIT))
             nm = Symbol(:Column, i)
             push!(r.names, nm)
             r.lookup[nm] = length(r.names)
@@ -293,7 +293,7 @@ Base.@propagate_inbounds function Tables.getcolumn(r::Row2, ::Type{T}, i::Int, n
         elseif stringtype === PosLenString
             return PosLenString(getbuf(r), val, e)
         elseif stringtype === String
-            return String(getbuf(r), val, e)
+            return Parsers.getstring(getbuf(r), val, e)
         end
     else
         # at least some column types were manually provided
