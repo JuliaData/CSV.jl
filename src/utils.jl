@@ -98,7 +98,7 @@ function allocate!(columns, rowsguess)
         # if the type hasn't been detected yet, then column will get allocated
         # in the detect method while parsing
         if col.type !== NeedsTypeDetection
-            if pooled(col) || maybepooled(col)
+            if pooled(col) || maybepooled(col) || (isnan(col.pool) && col.type isa StringTypes)
                 col.column = allocate(Pooled, rowsguess)
                 if !isdefined(col, :refpool)
                     col.refpool = RefPool(col.type)
@@ -214,7 +214,7 @@ getordefault(x::AbstractDict{Int}, nm, i, def) = haskey(x, i) ? x[i] : def
 getordefault(x::AbstractDict, nm, i, def) = haskey(x, i) ? x[i] : haskey(x, nm) ? x[nm] : haskey(x, string(nm)) ? x[string(nm)] : def
 
 # given a DateFormat, is it meant for parsing Date, DateTime, or Time?
-function timetype(df::Dates.DateFormat)
+function timetype(df::Parsers.Format)::Union{Type{Date}, Type{Time}, Type{DateTime}}
     date = false
     time = false
     for token in df.tokens
@@ -261,71 +261,109 @@ For advanced usage, you can pass your own `Parsers.Options` type as a keyword ar
 """
 function detect end
 
+@inline pass(code, tlen, x, typecode) = (code, tlen, x, typecode)
+
 function detect(str::String; opts=Parsers.OPTIONS)
-    x, code, tlen = detect(codeunits(str), 1, sizeof(str), opts, true)
+    code, tlen, x, xT = detect(pass, codeunits(str), 1, sizeof(str), opts, true)
     return something(x, str)
 end
 
-const DetectTypes = Union{Missing, Int8, Int16, Int32, Int64, Float64, Date, DateTime, Time, Bool, Nothing}
+const DetectTypes = Union{Missing, Int8, Int16, Int32, Int64, Float64, Date, DateTime, Time, Bool, Nothing, PosLen}
 
-smallestint(x) = x < typemax(Int8) ? Int8(x) : x < typemax(Int16) ? Int16(x) : x < typemax(Int32) ? Int32(x) : x
+const NEEDSTYPEDETECTION = 0x01
+const HARDMISSING = 0x02
+const MISSING = 0x03
+const INT8 = 0x04
+const INT16 = 0x05
+const INT32 = 0x06
+const INT64 = 0x07
+const FLOAT64 = 0x08
+const DATE = 0x09
+const DATETIME = 0x0a
+const TIME = 0x0b
+const BOOL = 0x0c
+const STRING = 0x0d
+const TYPES = Union{Nothing, Type}[NeedsTypeDetection, HardMissing, Missing, Int8, Int16, Int32, Int64, Float64, Date, DateTime, Time, Bool, nothing]
+isinttypecode(T) = T === INT8 || T === INT16 || T === INT32 || T === INT64
+promote_typecode(a, b) = max(a, b)
+typecode(@nospecialize(T)) = T === Missing ? MISSING : T === Int8 ? INT8 : T === Int16 ? INT16 : T === Int32 ? INT32 : T === Int64 ? INT64 :
+                           T === Float64 ? FLOAT64 : T === Date ? DATE : T === DateTime ? DATETIME : T === Time ? TIME : T === Bool ? BOOL :
+                           T === NeedsTypeDetection ? NEEDSTYPEDETECTION : T === HardMissing ? HARDMISSING : STRING
+
+concrete_or_concreteunion(T) = isconcretetype(T) ||
+    (T isa Union && concrete_or_concreteunion(T.a) && concrete_or_concreteunion(T.b))
+
+@inline smallestint(cb, code, tlen, x) = x < typemax(Int8) ? cb(code, tlen, unsafe_trunc(Int8, x), INT8) : x < typemax(Int16) ? cb(code, tlen, unsafe_trunc(Int16, x), INT16) : x < typemax(Int32) ? cb(code, tlen, unsafe_trunc(Int32, x), INT32) : cb(code, tlen, x, INT64)
 _widen(T) = widen(T)
 _widen(::Type{Int128}) = Float64
 _widen(::Type{Float64}) = nothing
 
-@inline function detect(buf, pos, len, opts, ensure_full_buf_consumed=true, downcast=false, row=0, col=0)::Tuple{DetectTypes, Int16, Int64}
-    int, code, vpos, vlen, tlen = Parsers.xparse(Int64, buf, pos, len, opts)
+@noinline function _parseany(T, buf, pos, len, opts)::Parsers.Result{Any}
+    return Parsers.xparse(T, buf, pos, len, opts, Any)
+end
+
+@inline function detect(cb, buf, pos, len, opts, ensure_full_buf_consumed=true, downcast=false, row=0, col=0)
+    int = Parsers.xparse(Int64, buf, pos, len, opts)
+    code, tlen = int.code, int.tlen
     if Parsers.invalidquotedfield(code)
         fatalerror(buf, pos, tlen, code, row, col)
     end
     if Parsers.sentinel(code) && code > 0
-        return missing, code, tlen
+        return cb(code, tlen, missing, NEEDSTYPEDETECTION)
     end
-    if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))
-        return downcast ? smallestint(int) : int, code, tlen
+    if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
+        return downcast ? smallestint(cb, code, tlen, int.val) : cb(code, tlen, int.val, INT64)
     end
-    float, code, vpos, vlen, tlen = Parsers.xparse(Float64, buf, pos, len, opts)
-    if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))
-        return float, code, tlen
+    float = Parsers.xparse(Float64, buf, pos, len, opts)
+    code, tlen = float.code, float.tlen
+    if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
+        return cb(code, tlen, float.val, FLOAT64)
     end
     if opts.dateformat === nothing
-        try
-            date, code, vpos, vlen, tlen = Parsers.xparse(Date, buf, pos, len, opts)
-            if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))
-                return date, code, tlen
-            end
-        catch e
+        date = Parsers.xparse(Date, buf, pos, len, opts, Date)
+        code, tlen = date.code, date.tlen
+        if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
+            return cb(code, tlen, date.val, DATE)
         end
-        try
-            datetime, code, vpos, vlen, tlen = Parsers.xparse(DateTime, buf, pos, len, opts)
-            if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))
-                return datetime, code, tlen
-            end
-        catch e
+        datetime = Parsers.xparse(DateTime, buf, pos, len, opts)
+        code, tlen = datetime.code, datetime.tlen
+        if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
+            return cb(code, tlen, datetime.val, DATETIME)
         end
-        try
-            time, code, vpos, vlen, tlen = Parsers.xparse(Time, buf, pos, len, opts)
-            if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))
-                return time, code, tlen
-            end
-        catch e
+        time = Parsers.xparse(Time, buf, pos, len, opts)
+        code, tlen = time.code, time.tlen
+        if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
+            return cb(code, tlen, time.val, TIME)
         end
     else
-        try
-            # use user-provided dateformat
-            DT = timetype(opts.dateformat)
-            dt, code, vpos, vlen, tlen = Parsers.xparse(DT, buf, pos, len, opts)
-            if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((vpos + vlen - 1) == len)))
-                return dt, code, tlen
+        # use user-provided dateformat
+        DT = timetype(opts.dateformat)
+        if DT === Date
+            dt = Parsers.xparse(DT, buf, pos, len, opts)
+            code, tlen = dt.code, dt.tlen
+            if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
+                return cb(code, tlen, dt.val, DATE)
             end
-        catch e
+        elseif DT === Time
+            dt2 = Parsers.xparse(DT, buf, pos, len, opts)
+            code, tlen = dt2.code, dt2.tlen
+            if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
+                return cb(code, tlen, dt2.val, TIME)
+            end
+        elseif DT === DateTime
+            dt3 = Parsers.xparse(DT, buf, pos, len, opts)
+            code, tlen = dt3.code, dt3.tlen
+            if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
+                return cb(code, tlen, dt3.val, DATETIME)
+            end
         end
     end
-    bool, code, vpos, vlen, tlen = Parsers.xparse(Bool, buf, pos, len, opts)
-    if Parsers.ok(code) && (ensure_full_buf_consumed == ((vpos + vlen - 1) == len))
-        return bool, code, tlen
+    bool = Parsers.xparse(Bool, buf, pos, len, opts)
+    code, tlen = bool.code, bool.tlen
+    if Parsers.ok(code) && (ensure_full_buf_consumed == ((pos + tlen - 1) == len))
+        return cb(code, tlen, bool.val, BOOL)
     end
-    return nothing, code, Int64(0)
+    return cb(code, tlen, nothing, STRING)
 end
 
 # a ReversedBuf takes a byte vector and indexes backwards;
@@ -341,33 +379,6 @@ Base.getindex(a::ReversedBuf, i::Int) = a.buf[end + 1 - i]
 Base.pointer(a::ReversedBuf, pos::Integer=1) = pointer(a.buf, length(a.buf) + 1 - pos)
 
 memset!(ptr, value, num) = ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), ptr, value, num)
-
-function promoteunion(T, S)
-    new = promote_type(T, S)
-    return isabstracttype(new) ? Union{T, S} : new
-end
-
-# lazily treat array with abstract eltype as having eltype of Union of all concrete elements
-struct ConcreteEltype{T, A} <: AbstractVector{T}
-    data::A
-end
-
-concrete_or_concreteunion(T) = isconcretetype(T) ||
-    (T isa Union && concrete_or_concreteunion(T.a) && concrete_or_concreteunion(T.b))
-
-function ConcreteEltype(x::A) where {A}
-    (isempty(x) || concrete_or_concreteunion(eltype(x))) && return x
-    T = typeof(x[1])
-    for i = 2:length(x)
-        T = promoteunion(T, typeof(x[i]))
-    end
-    return ConcreteEltype{T, A}(x)
-end
-
-Base.IndexStyle(::Type{<:ConcreteEltype}) = Base.IndexLinear()
-Base.size(x::ConcreteEltype) = (length(x.data),)
-Base.eltype(::ConcreteEltype{T, A}) where {T, A} = T
-Base.getindex(x::ConcreteEltype{T}, i::Int) where {T} = getindex(x.data, i)
 
 struct PointerString
     ptr::Ptr{UInt8}

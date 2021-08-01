@@ -43,18 +43,22 @@ mutable struct Column
     lock::ReentrantLock
     position::Int
     endposition::Int
-    # options::Parsers.Options
+    options::Parsers.Options
 
     Column(type::Type, anymissing::Bool, userprovidedtype::Bool, willdrop::Bool, pool::Float64) =
         new(type, anymissing, userprovidedtype, willdrop, pool)
 end
 
-function Column(type::Type)
+function Column(type::Type, options::Parsers.Options=nothing)
     T = nonmissingtypeunlessmissingtype(type)
-    return Column(type === Missing ? HardMissing : T,
+    col = Column(type === Missing ? HardMissing : T,
         type >: Missing,
         type !== NeedsTypeDetection,
         false, NaN)
+    if options !== nothing
+        col.options = options
+    end
+    return col
 end
 
 # creating a per-task column from top-level column
@@ -84,7 +88,6 @@ struct Context
     len::Int
     datarow::Int
     options::Parsers.Options
-    coloptions::Any # nothing or Parsers.Options []
     columns::Vector{Column}
     pool::Float64
     downcast::Bool
@@ -95,6 +98,8 @@ struct Context
     threaded::Bool
     ntasks::Int
     chunkpositions::Vector{Int}
+    strict::Bool
+    silencewarnings::Bool
     maxwarnings::Int
     debug::Bool
     streaming::Bool
@@ -121,7 +126,6 @@ function checkvaliddelim(delim)
         throw(ArgumentError("invalid delim argument = '$(escape_string(string(delim)))', "*
                             "the following delimiters are invalid: '\\r', '\\n', '\\0'"))
 end
-
 
 function Context(source,
     # file options
@@ -285,7 +289,7 @@ function Context(source,
                 end
             end
         end
-        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, quoted, parsingdebug, strict, silencewarnings)
+        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, quoted, parsingdebug)
 
         # step 4a: if we're ignoring repeated delimiters, then we ignore any
         # that start a row, so we need to check if we need to adjust our headerpos/datapos
@@ -304,7 +308,7 @@ function Context(source,
         d, rowsguess = detectdelimandguessrows(buf, pos, pos, len, oq, eq, cq, del, cmt, ignoreemptyrows)
         wh1 = d == UInt(' ') ? 0x00 : UInt8(' ')
         wh2 = d == UInt8('\t') ? 0x00 : UInt8('\t')
-        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, quoted, parsingdebug, strict, silencewarnings)
+        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, quoted, parsingdebug)
         rowsguess, names, positions, endpositions = detecttranspose(buf, pos, len, options, header, skipto, normalizenames)
         ncols = length(names)
         datapos = isempty(positions) ? 0 : positions[1]
@@ -319,7 +323,7 @@ function Context(source,
         length(types) == ncols || throw(ArgumentError("provided `types::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(types)) != $ncols`"))
         columns = Vector{Column}(undef, ncols)
         for i = 1:ncols
-            col = Column(types[i])
+            col = Column(types[i], options)
             columns[i] = col
             if nonstandardtype(col.type) !== Union{}
                 customtypes = tupcat(customtypes, nonstandardtype(col.type))
@@ -330,7 +334,7 @@ function Context(source,
         columns = Vector{Column}(undef, ncols)
         for i = 1:ncols
             S = getordefault(types, names[i], i, T)
-            col = Column(S)
+            col = Column(S, options)
             columns[i] = col
             if nonstandardtype(col.type) !== Union{}
                 customtypes = tupcat(customtypes, nonstandardtype(col.type))
@@ -339,7 +343,10 @@ function Context(source,
     else
         T = types === nothing ? (streaming ? Union{stringtype, Missing} : NeedsTypeDetection) : types
         columns = Vector{Column}(undef, ncols)
-        foreach(i -> columns[i] = Column(T), 1:ncols)
+        foreach(1:ncols) do i
+            col = Column(T, options)
+            columns[i] = col
+        end
     end
     if transpose
         # set column positions
@@ -358,20 +365,14 @@ function Context(source,
 
     # generate column options if applicable
     if dateformat isa AbstractDict
-        coloptions = Vector{Parsers.Options}(undef, ncols)
         for i = 1:ncols
             df = getordefault(dateformat, names[i], i, nothing)
             # devdoc: if we want to add any other column-specific parsing options, this is where we'd at the logic
             # e.g. per-column sentinel, decimal, trues, falses, openquotechar, closequotechar, escapechar, etc.
             if df !== nothing
-                coloptions[i] = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, true, parsingdebug, strict, silencewarnings)
-            else
-                coloptions[i] = options
+                columns[i].options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, true, parsingdebug)
             end
         end
-        coloptions = ConcreteEltype(coloptions)
-    else
-        coloptions = nothing
     end
 
     # pool keyword
@@ -472,7 +473,7 @@ function Context(source,
         if limit !== typemax(Int64)
             limitposguess = ceil(Int64, (limit / (origrowsguess * 0.8)) * len)
             newlen = [0, limitposguess, min(limitposguess * 2, len)]
-            findrowstarts!(buf, options, newlen, ncols, columns, stringtype, finalpool, downcast, 5)
+            findrowstarts!(buf, options, newlen, ncols, columns, stringtype, downcast, 5)
             len = newlen[2] - 1
             origrowsguess = limit
             debug && println("limiting, adjusting len to $len")
@@ -480,13 +481,17 @@ function Context(source,
         chunksize = div(len - datapos, ntasks)
         chunkpositions = [i == 0 ? datapos : i == ntasks ? len : (datapos + chunksize * i) for i = 0:ntasks]
         debug && println("initial byte positions before adjusting for start of rows: $chunkpositions")
-        avgbytesperrow, successfullychunked = findrowstarts!(buf, options, chunkpositions, ncols, columns, stringtype, finalpool, downcast, rows_to_check)
+        avgbytesperrow, successfullychunked = findrowstarts!(buf, options, chunkpositions, ncols, columns, stringtype, downcast, rows_to_check)
         if successfullychunked
             origbytesperrow = ((len - datapos) / origrowsguess)
             weightedavgbytesperrow = ceil(Int64, avgbytesperrow * ((ntasks - 1) / ntasks) + origbytesperrow * (1 / ntasks))
             rowsguess = ceil(Int64, ((len - datapos) / weightedavgbytesperrow) * 1.01)
             debug && println("single-threaded estimated rows = $origrowsguess, multi-threaded estimated rows = $rowsguess")
             debug && println("multi-threaded column types sampled as: $columns")
+            # check if we need to adjust column pooling
+            if finalpool == 0.0 || finalpool == 1.0
+                foreach(col -> col.pool = finalpool, columns)
+            end
         else
             debug && println("something went wrong chunking up a file for multithreaded parsing, falling back to single-threaded parsing")
             threaded = false
@@ -510,7 +515,6 @@ function Context(source,
         len,
         skipto,
         options,
-        coloptions,
         columns,
         finalpool,
         downcast,
@@ -521,6 +525,8 @@ function Context(source,
         threaded,
         ntasks,
         chunkpositions,
+        strict,
+        silencewarnings,
         maxwarnings,
         debug,
         streaming
