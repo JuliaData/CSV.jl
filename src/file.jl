@@ -186,11 +186,11 @@ function File(source;
     debug::Bool=false,
     parsingdebug::Bool=false
     )
-    # header=1;normalizenames=false;datarow=-1;skipto=nothing;footerskip=0;transpose=false;comment=nothing;ignoreemptyrows=true;
-    # select=nothing;drop=nothing;limit=nothing;threaded=nothing;ntasks=Threads.nthreads();rows_to_check=30;missingstrings=String[];missingstring="";
-    # delim=nothing;ignorerepeated=false;quotechar='"';openquotechar=nothing;closequotechar=nothing;escapechar='"';dateformat=nothing;
+    # header=1;normalizenames=false;datarow=-1;skipto=-1;footerskip=0;transpose=false;comment=nothing;ignoreemptyrows=true;ignoreemptylines=nothing;
+    # select=nothing;drop=nothing;limit=nothing;threaded=nothing;ntasks=Threads.nthreads();tasks=nothing;rows_to_check=30;lines_to_check=nothing;missingstrings=String[];missingstring="";
+    # delim=nothing;ignorerepeated=false;quoted=true;quotechar='"';openquotechar=nothing;closequotechar=nothing;escapechar='"';dateformat=nothing;
     # dateformats=nothing;decimal=UInt8('.');truestrings=nothing;falsestrings=nothing;type=nothing;types=nothing;typemap=Dict{Type,Type}();
-    # pool=DEFAULT_POOL;downcast=false;lazystrings=false;stringtype=String;strict=false;silencewarnings=false;maxwarnings=100;debug=true;parsingdebug=false;
+    # pool=CSV.DEFAULT_POOL;downcast=false;lazystrings=false;stringtype=String;strict=false;silencewarnings=false;maxwarnings=100;debug=true;parsingdebug=false;
     ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, threaded, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
     return File(ctx)
 end
@@ -219,7 +219,7 @@ function File(ctx::Context, chunking::Bool=false)
                 task_len = ctx.chunkpositions[i + 1] - (i != ntasks)
                 # for error-reporting purposes, we want to try and give the best guess of where a row emits a warning/error, so compute that
                 rowchunkoffset = (ctx.datarow - 1) + (rowchunkguess * (i - 1))
-                task_rows, task_pos = parsefilechunk!(ctx, ctx.buf, task_pos, task_len, rowchunkguess, rowchunkoffset, task_columns, ctx.transpose, ctx.options, ctx.coloptions, ctx.customtypes)
+                task_rows, task_pos = parsefilechunk!(ctx, ctx.buf, task_pos, task_len, rowchunkguess, rowchunkoffset, task_columns, ctx.transpose, ctx.customtypes)
                 rows[i] = task_rows
                 # promote column types/flags this task detected while parsing
                 lock(wholecolumnslock) do
@@ -263,7 +263,7 @@ function File(ctx::Context, chunking::Bool=false)
             if length(task_columns) < length(columns)
                 # some other task widened columns that this task didn't likewise detect
                 for _ = (length(task_columns) + 1):length(columns)
-                    push!(task_columns, Column(Missing))
+                    push!(task_columns, Column(Missing, ctx.options))
                 end
             end
         end
@@ -281,7 +281,7 @@ function File(ctx::Context, chunking::Bool=false)
                         ctx.debug && println("multithreaded promoting column $j to string from $T2")
                         task_len = ctx.chunkpositions[i + 1] - (i != ntasks)
                         task_pos = ctx.chunkpositions[i]
-                        promotetostring!(ctx, ctx.buf, task_pos, task_len, task_rows, (ctx.datarow - 1) + (rowchunkguess * (i - 1)), task_columns, ctx.transpose, ctx.options, ctx.coloptions, ctx.customtypes, j, Ref(0), task_rows, T)
+                        promotetostring!(ctx, ctx.buf, task_pos, task_len, task_rows, (ctx.datarow - 1) + (rowchunkguess * (i - 1)), task_columns, ctx.transpose, ctx.customtypes, j, Ref(0), task_rows, T)
                     elseif T === Float64 && T2 <: Integer
                         # one chunk parsed as Int, another as Float64, promote to Float64
                         ctx.debug && println("multithreaded promoting column $j to float")
@@ -291,7 +291,7 @@ function File(ctx::Context, chunking::Bool=false)
                             task_col.column = convert(SentinelVector{   Float64}, task_col.column)
                         end
                     elseif T !== T2 && T <: InlineString
-                        if pooled(col)
+                        if task_col.column isa Vector{UInt32}
                             task_col.refpool.refs = convert(Refs{T}, task_col.refpool.refs)
                         else
                             task_col.column = convert(SentinelVector{T}, task_col.column)
@@ -303,7 +303,7 @@ function File(ctx::Context, chunking::Bool=false)
                         task_col.column = allocate(pooled(col) ? Pooled : T, task_rows)
                     end
                     # synchronize refs if needed
-                    if pooled(col)
+                    if pooled(col) || (isnan(col.pool) && col.type isa StringTypes)
                         if !isdefined(col, :refpool) && isdefined(task_col, :refpool)
                             # this case only occurs if user explicitly passed pool=true
                             # but we only parsed `missing` values during sampling
@@ -317,11 +317,24 @@ function File(ctx::Context, chunking::Bool=false)
                         end
                     end
                 end
+@label threadedprocesscolumn
                 if pooled(col)
-                    makechain!(pertaskcolumns, col, j, ntasks)
+                    makechain!(col.type, pertaskcolumns, col, j, ntasks)
                     # pooled columns are the one case where we invert the order of arrays;
                     # i.e. we return PooledArray{T, ChainedVector{T}} instead of ChainedVector{T, PooledArray{T}}
                     makepooled!(col)
+                elseif isnan(col.pool) && col.type isa StringTypes
+                    poolval = !isnan(col.pool) ? col.pool : !isnan(ctx.pool) ? ctx.pool : DEFAULT_POOL
+                    if ((length(col.refpool.refs) - 1) / finalrows) <= poolval
+                        col.pool = 1.0
+                        @goto threadedprocesscolumn
+                    else
+                        # cardinality too high, so unpool
+                        col.pool = 0.0
+                        #!!!!FIXME: need to pass in parent refpool, not pertaskcolumn refpools
+                        foreach(cols -> unpool!(cols[j], col.type, col.refpool), pertaskcolumns)
+                        @goto threadedprocesscolumn
+                    end
                 elseif col.type === Int64
                     # we need to special-case Int64 here because while parsing, a default Int64 sentinel value is chosen to
                     # represent missing; if any chunk bumped into that sentinel value while parsing, then it cycled to a 
@@ -329,14 +342,14 @@ function File(ctx::Context, chunking::Bool=false)
                     # passing force=false means it will first check if all chunks already have the same sentinel and return
                     # immediately if so, which will be the case most often
                     SentinelArrays.newsentinel!((pertaskcolumns[i][j].column::SVec{Int64} for i = 1:ntasks)...; force=false)
-                    makechain!(pertaskcolumns, col, j, ntasks)
+                    makechain!(col.type, pertaskcolumns, col, j, ntasks)
                 elseif col.type === PosLenString
                     col.column = ChainedVector(PosLenStringVector{coltype(col)}[makeposlen!(pertaskcolumns[i][j], coltype(col), ctx) for i = 1:ntasks])
                 elseif col.type === NeedsTypeDetection || col.type === HardMissing
                     col.type = Missing
                     col.column = MissingVector(finalrows)
                 else
-                    makechain!(pertaskcolumns, col, j, ntasks)
+                    makechain!(col.type, pertaskcolumns, col, j, ntasks)
                 end
                 if finalrows < length(col.column)
                     # we only ever resize! down here, so no need to use reallocate!
@@ -349,7 +362,7 @@ function File(ctx::Context, chunking::Bool=false)
         columns = ctx.columns
         allocate!(columns, ctx.rowsguess)
         t = Base.time()
-        finalrows, pos = parsefilechunk!(ctx, ctx.buf, ctx.datapos, ctx.len, ctx.rowsguess, 0, columns, ctx.transpose, ctx.options, ctx.coloptions, ctx.customtypes)
+        finalrows, pos = parsefilechunk!(ctx, ctx.buf, ctx.datapos, ctx.len, ctx.rowsguess, 0, columns, ctx.transpose, ctx.customtypes)
         ctx.debug && println("time for initial parsing: $(Base.time() - t)")
         # cleanup our columns if needed
         for col in columns
@@ -373,7 +386,7 @@ function File(ctx::Context, chunking::Bool=false)
                     makepooled!(col)
                 else
                     # cardinality too high, so unpool
-                    unpool!(col)
+                    unpool!(col, col.type, col.refpool)
                     @goto processcolumn
                 end
             elseif col.type === PosLenString
@@ -462,14 +475,16 @@ function syncrefs!(::Type{T}, col, task_col, task_rows) where {T}
     return
 end
 
-function makechain!(pertaskcolumns, col, j, ntasks)
+function makechain!(::Type{T}, pertaskcolumns, col, j, ntasks) where {T}
     if col.anymissing
         col.column = ChainedVector([pertaskcolumns[i][j].column for i = 1:ntasks])
     else
         if col.type === Bool
-            col.column = ChainedVector([convert(Vector{Bool}, pertaskcolumns[i][j].column) for i = 1:ntasks])
+            col.column = ChainedVector([convert(Vector{Bool}, pertaskcolumns[i][j].column::vectype(T)) for i = 1:ntasks])
         elseif col.type !== Union{} && col.type <: SmallIntegers
-            col.column = ChainedVector([convert(Vector{col.type}, pertaskcolumns[i][j].column) for i = 1:ntasks])
+            col.column = ChainedVector([convert(Vector{col.type}, pertaskcolumns[i][j].column::vectype(T)) for i = 1:ntasks])
+        elseif pooled(col)
+            col.column = ChainedVector([pertaskcolumns[i][j].column::Vector{UInt32} for i = 1:ntasks])
         else
             col.column = ChainedVector([parent(pertaskcolumns[i][j].column) for i = 1:ntasks])
         end
@@ -481,6 +496,10 @@ function makepooled!(col)
     T = col.type
     r = isdefined(col, :refpool) ? col.refpool.refs : Refs{T === NeedsTypeDetection ? Missing : T}()
     column = isdefined(col, :column) ? col.column : UInt32[]
+    return makepooled2!(col, T, r, column)
+end
+
+function makepooled2!(col, ::Type{T}, r::Refs{T}, column) where {T}
     if col.anymissing
         r[missing] = UInt32(1)
     else
@@ -498,8 +517,13 @@ function makepooled!(col)
     return
 end
 
-function unpool!(col)
-    r = col.refpool.refs
+function unpool!(col, T, refpool)
+    r = refpool.refs
+    column = isdefined(col, :column) ? col.column : UInt32[]
+    return unpool2!(col, T, r, column)
+end
+
+function unpool2!(col, ::Type{T}, r::Refs{T}, column) where {T}
     if col.anymissing
         r[missing] = UInt32(1)
     end
@@ -509,20 +533,20 @@ function unpool!(col)
     end
     if col.type === PosLenString
         # unwrap the PosLenStrings, so they get handled by makeposlen!
-        col.column = [pool[ref].poslen for ref in col.column]
+        col.column = [pool[ref].poslen for ref in column]
     else
-        col.column = [pool[ref] for ref in col.column]
+        col.column = [pool[ref] for ref in column]
     end
     col.pool = 0.0
     return
 end
 
 function makeposlen!(col, T, ctx)
-    col.column = PosLenStringVector{T}(ctx.buf, col.column, ctx.options.e)
+    col.column = PosLenStringVector{T}(ctx.buf, col.column::Vector{PosLen}, ctx.options.e)
     return col.column
 end
 
-function parsefilechunk!(ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, TR::Val{transpose}, opts, coloptions, ::Type{customtypes}) where {transpose, customtypes}
+function parsefilechunk!(ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, TR::Val{transpose}, ::Type{customtypes}) where {transpose, customtypes}
     limit = ctx.limit
     row = 0
     startpos = pos
@@ -531,7 +555,7 @@ function parsefilechunk!(ctx::Context, buf, pos, len, rowsguess, rowoffset, colu
         while true
             row += 1
             # @show columns
-            @inbounds pos = parserow(startpos, row, numwarnings, ctx, buf, pos, len, rowsguess, rowoffset, columns, TR, opts, coloptions, customtypes)
+            @inbounds pos = parserow(startpos, row, numwarnings, ctx, buf, pos, len, rowsguess, rowoffset, columns, TR, customtypes)
             # @show columns
             row == limit && break
             (transpose ? all(c -> c.position >= c.endposition, columns) : pos > len) && break
@@ -565,7 +589,7 @@ end
 @noinline fatalerror(buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) fatal error, encountered an invalidly quoted field while parsing around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code)), check your `quotechar` arguments or manually fix the field in the file itself"))
 @noinline toomanywwarnings() = @warn("thread = $(Threads.threadid()): too many warnings, silencing any further warnings")
 
-Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, TR::Val{transpose}, options, coloptions, ::Type{customtypes}) where {transpose, customtypes}
+Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, TR::Val{transpose}, ::Type{customtypes}) where {transpose, customtypes}
     # @show columns
     ncols = length(columns)
     for i = 1:ncols
@@ -574,70 +598,77 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
             pos = col.position
         end
         type = col.type
-        opts = coloptions === nothing ? options : coloptions[i]
+        cellstartpos = pos
         if type === HardMissing
-            pos, code = parsevalue!(Missing, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(Missing, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === NeedsTypeDetection
-            pos, code = detect(buf, pos, len, opts, row, rowoffset, i, col, ctx, rowsguess)
+            pos, code = detectcell(buf, pos, len, row, rowoffset, i, col, ctx, rowsguess)
         elseif type === Int8
-            pos, code = parsevalue!(Int8, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(Int8, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === Int16
-            pos, code = parsevalue!(Int16, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(Int16, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === Int32
-            pos, code = parsevalue!(Int32, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(Int32, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === Int64
-            pos, code = parsevalue!(Int64, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(Int64, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === Int128
-            pos, code = parsevalue!(Int128, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(Int128, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === Float64
-            pos, code = parsevalue!(Float64, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(Float64, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === InlineString1
-            pos, code = parsevalue!(InlineString1, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(InlineString1, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === InlineString3
-            pos, code = parsevalue!(InlineString3, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(InlineString3, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === InlineString7
-            pos, code = parsevalue!(InlineString7, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(InlineString7, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === InlineString15
-            pos, code = parsevalue!(InlineString15, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(InlineString15, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === InlineString31
-            pos, code = parsevalue!(InlineString31, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(InlineString31, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === InlineString63
-            pos, code = parsevalue!(InlineString63, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(InlineString63, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === InlineString127
-            pos, code = parsevalue!(InlineString127, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(InlineString127, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === InlineString255
-            pos, code = parsevalue!(InlineString255, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(InlineString255, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === String
-            pos, code = parsevalue!(String, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(String, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === PosLenString
-            pos, code = parsevalue!(PosLenString, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(PosLenString, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === Date
-            pos, code = parsevalue!(Date, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(Date, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === DateTime
-            pos, code = parsevalue!(DateTime, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(DateTime, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === Time
-            pos, code = parsevalue!(Time, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(Time, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === Bool
-            pos, code = parsevalue!(Bool, buf, pos, len, opts, row, rowoffset, i, col)
+            pos, code = parsevalue!(Bool, buf, pos, len, row, rowoffset, i, col, ctx)
         else
             if customtypes !== Tuple{}
-                pos, code = parsecustom!(customtypes, buf, pos, len, opts, row, rowoffset, i, col)
+                pos, code = parsecustom!(customtypes, buf, pos, len, row, rowoffset, i, col, ctx)
             else
                 error("bad column type: $(type))")
             end
         end
         if promote_to_string(code)
             ctx.debug && println("promoting column i = $i to string from $(type) on chunk = $(Threads.threadid())")
-            newT = type <: InlineString ? String : ctx.stringtype === InlineString ? InlineString7 : ctx.stringtype
-            promotetostring!(ctx, buf, startpos, len, rowsguess, rowoffset, columns, TR, options, coloptions, customtypes, i, numwarnings, row, newT)
+            if type <: InlineString
+                newT = String
+            elseif ctx.stringtype === InlineString
+                str = Parsers.xparse(String, buf, cellstartpos, len, col.options)
+                newT = pickstringtype(InlineString, str.val.len)
+            else
+                newT = ctx.stringtype
+            end
+            promotetostring!(ctx, buf, startpos, len, rowsguess, rowoffset, columns, TR, customtypes, i, numwarnings, row, newT)
         end
         if transpose
             col.position = pos
         else
             if i < ncols
                 if Parsers.newline(code) || pos > len
-                    opts.silencewarnings || numwarnings[] > ctx.maxwarnings || notenoughcolumns(i, ncols, rowoffset + row)
-                    !opts.silencewarnings && numwarnings[] == ctx.maxwarnings && toomanywwarnings()
+                    ctx.silencewarnings || numwarnings[] > ctx.maxwarnings || notenoughcolumns(i, ncols, rowoffset + row)
+                    !ctx.silencewarnings && numwarnings[] == ctx.maxwarnings && toomanywwarnings()
                     numwarnings[] += 1
                     for j = (i + 1):ncols
                         columns[j].anymissing = true
@@ -646,25 +677,22 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
                 end
             elseif pos <= len && !Parsers.newline(code)
                 # extra columns on this row, let's widen
-                opts.silencewarnings || toomanycolumns(ncols, rowoffset + row)
+                ctx.silencewarnings || toomanycolumns(ncols, rowoffset + row)
                 j = i + 1
                 T = ctx.streaming ? Union{ctx.stringtype, Missing} : NeedsTypeDetection
                 while pos <= len && !Parsers.newline(code)
-                    col = Column(T)
+                    col = Column(T, ctx.options)
                     col.anymissing = ctx.streaming || rowoffset == 0 && row > 1 # assume all previous rows were missing
                     col.pool = ctx.pool
                     if T === NeedsTypeDetection
-                        pos, code = detect(buf, pos, len, opts, row, rowoffset, j, col, ctx, rowsguess)
+                        pos, code = detectcell(buf, pos, len, row, rowoffset, j, col, ctx, rowsguess)
                     else
                         # need to allocate
                         col.column = allocate(ctx.stringtype, ctx.rowsguess)
-                        pos, code = parsevalue!(ctx.stringtype, buf, pos, len, opts, row, rowoffset, j, col)
+                        pos, code = parsevalue!(ctx.stringtype, buf, pos, len, row, rowoffset, j, col, ctx)
                     end
                     j += 1
                     push!(columns, col)
-                    if coloptions !== nothing
-                        push!(coloptions, ctx.options)
-                    end
                 end
             end
         end
@@ -672,13 +700,12 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
     return pos
 end
 
-@noinline function _parseany(T, buf, pos, len, opts)::Tuple{Any, Int16, Int64, Int64, Int64}
-    return Parsers.xparse(T, buf, pos, len, opts)
-end
-
-function detect(buf, pos, len, opts, row, rowoffset, i, col, ctx, rowsguess)::Tuple{Int64, Int16}
+function detectcell(buf, pos, len, row, rowoffset, i, col, ctx, rowsguess)::Tuple{Int64, Int16}
     # debug && println("detecting on task $(Threads.threadid())")
-    x, code, tlen = detect(buf, pos, len, opts, false, ctx.downcast, rowoffset + row, i)
+    opts = col.options
+    # stats = Base.gc_num()
+    code, tlen, x, xT = detect(pass, buf, pos, len, opts, false, ctx.downcast, rowoffset + row, i)
+    # diff = GC_Diff(gc_num(), stats)
     if x === missing
         col.anymissing = true
         @goto finaldone
@@ -692,9 +719,10 @@ function detect(buf, pos, len, opts, row, rowoffset, i, col, ctx, rowsguess)::Tu
                 # type-mapping typeof(x) => newT
                 # this ultimate call to Parsers.xparse has no hope in inference (because of the typeof(x) => newT mapping)
                 # so we "outline" the call and assert the types of everything but `y` to make sure `code` and `tlen` stay type stable
-                y, code, vpos, vlen, tlen = _parseany(newT, buf, pos, len, opts)
+                res = _parseany(newT, buf, pos, len, opts)
+                code, tlen = res.code, res.tlen
                 if Parsers.ok(code)
-                    val = y
+                    val = res.val
                     @goto done
                 end
             else
@@ -703,18 +731,19 @@ function detect(buf, pos, len, opts, row, rowoffset, i, col, ctx, rowsguess)::Tu
             end
         end
     end
-@label stringdetect
-    _, code, vpos, vlen, tlen = Parsers.xparse(String, buf, pos, len, opts)
-    if newT === InlineString && vlen < DEFAULT_MAX_INLINE_STRING_LENGTH
-        newT = InlineStringType(vlen)
-        val, _, _, _, _ = _parseany(newT, buf, pos, len, opts)
+    # if we "fall through" to here, that means we either detected a string value
+    # or we're type-mapping from another detected type to string
+    str = Parsers.xparse(String, buf, pos, len, opts)
+    poslen = str.val
+    if newT === InlineString && poslen.len < DEFAULT_MAX_INLINE_STRING_LENGTH
+        newT = InlineStringType(poslen.len)
+        val = newT(PosLenString(buf, poslen, opts.e))
     elseif newT === PosLenString
         newT = PosLenString
-        val = PosLen(vpos, vlen, Parsers.sentinel(code), Parsers.escapedstring(code))
+        val = poslen
     else
         newT = String
-        poslen = PosLen(vpos, vlen, Parsers.sentinel(code), Parsers.escapedstring(code))
-        val = String(buf, poslen, opts.e)
+        val = Parsers.getstring(buf, poslen, opts.e)
     end
 @label done
     # if we're here, that means we found a non-missing value, so we need to update column
@@ -732,8 +761,10 @@ function detect(buf, pos, len, opts, row, rowoffset, i, col, ctx, rowsguess)::Tu
     return pos + tlen, code
 end
 
-function parsevalue!(::Type{type}, buf, pos, len, opts, row, rowoffset, i, col)::Tuple{Int64, Int16} where {type}
-    x, code, vpos, vlen, tlen = Parsers.xparse(type === Missing ? String : type, buf, pos, len, opts)
+function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::Tuple{Int64, Int16} where {type}
+    opts = col.options
+    res = Parsers.xparse(type === Missing ? String : type, buf, pos, len, opts)
+    code = res.code
     if !Parsers.invalid(code)
         if type !== Missing
             if Parsers.sentinel(code)
@@ -743,23 +774,21 @@ function parsevalue!(::Type{type}, buf, pos, len, opts, row, rowoffset, i, col):
                 if column isa Vector{UInt32}
                     if type === String || type === PosLenString
                         if Parsers.escapedstring(code)
-                            poslen = PosLen(vpos, vlen, Parsers.sentinel(code), Parsers.escapedstring(code))
-                            ref = getref!(col.refpool, type, String(buf, poslen, opts.e))
+                            ref = getref!(col.refpool, type, Parsers.getstring(buf, res.val, opts.e))
                         else
-                            ref = getref!(col.refpool, type, PointerString(pointer(buf, vpos), vlen))
+                            poslen = res.val
+                            ref = getref!(col.refpool, type, PointerString(pointer(buf, poslen.pos), poslen.len), buf, poslen, opts.e)
                         end
                     else
-                        ref = getref!(col.refpool, type, x)
+                        ref = getref!(col.refpool, type, res.val)
                     end
                     @inbounds column[row] = ref
                 elseif type === String
-                    poslen = PosLen(vpos, vlen, Parsers.sentinel(code), Parsers.escapedstring(code))
-                    @inbounds (column::SVec2{String})[row] = String(buf, poslen, opts.e)
+                    @inbounds (column::SVec2{String})[row] = Parsers.getstring(buf, res.val, opts.e)
                 elseif type === PosLenString
-                    poslen = PosLen(vpos, vlen, Parsers.sentinel(code), Parsers.escapedstring(code))
-                    @inbounds (column::Vector{PosLen})[row] = poslen
+                    @inbounds (column::Vector{PosLen})[row] = res.val
                 else
-                    @inbounds (column::vectype(type))[row] = x
+                    @inbounds (column::vectype(type))[row] = res.val
                 end
             end
         end
@@ -767,38 +796,39 @@ function parsevalue!(::Type{type}, buf, pos, len, opts, row, rowoffset, i, col):
         # something went wrong parsing
         if Parsers.invalidquotedfield(code)
             # this usually means parsing is borked because of an invalidly quoted field, hard error
-            fatalerror(buf, pos, tlen, code, rowoffset + row, i)
+            fatalerror(buf, pos, res.tlen, code, rowoffset + row, i)
         end
         if type !== Missing && type !== PosLenString && type !== String
             if col.userprovidedtype
-                if !opts.strict
-                    opts.silencewarnings || warning(type, buf, pos, tlen, code, rowoffset + row, i)
+                if !ctx.strict
+                    ctx.silencewarnings || warning(type, buf, pos, res.tlen, code, rowoffset + row, i)
                     col.anymissing = true
                 else
-                    stricterror(type, buf, pos, tlen, code, rowoffset + row, i)
+                    stricterror(type, buf, pos, res.tlen, code, rowoffset + row, i)
                 end
             else
                 if type === Int8 || type === Int16 || type === Int32 || type === Int64 || type === Int128
                     newT = _widen(type)
                     while newT !== nothing && !Parsers.ok(code)
-                        code = trytopromote!(type, newT, buf, pos, len, opts, col, row)
+                        code = trytopromote!(type, newT, buf, pos, len, col, row)
                         newT = _widen(newT)
                     end
                 elseif type === InlineString1 || type === InlineString3 || type === InlineString7 || type === InlineString15 || type === InlineString31 || type === InlineString63 || type === InlineString127
                     newT = widen(type)
                     while newT !== InlineString127
-                        newx, code, vpos, vlen, tlen = _parseany(newT, buf, pos, len, opts)
-                        if code > 0
+                        ret = _parseany(newT, buf, pos, len, opts)
+                        if !Parsers.invalid(ret.code)
                             col.type = newT
                             column = col.column
                             if column isa Vector{UInt32}
                                 col.refpool.refs = convert(Refs{newT}, col.refpool.refs)
-                                ref = getref!(col.refpool, newT, newx)
+                                ref = getref!(col.refpool, newT, ret.val)
                                 @inbounds column[row] = ref
                             else
                                 col.column = convert(SentinelVector{newT}, col.column::vectype(type))
+                                @inbounds col.column[row] = ret.val
                             end
-                            return pos + tlen, code
+                            return pos + ret.tlen, ret.code
                         end
                         newT = widen(newT)
                     end
@@ -809,21 +839,22 @@ function parsevalue!(::Type{type}, buf, pos, len, opts, row, rowoffset, i, col):
             end
         end
     end
-    return pos + tlen, code
+    return pos + res.tlen, code
 end
 
-@noinline function trytopromote!(::Type{from}, ::Type{to}, buf, pos, len, opts, col, row) where {from, to}
-    y, code, vpos, vlen, tlen = Parsers.xparse(to, buf, pos, len, opts)
+@noinline function trytopromote!(::Type{from}, ::Type{to}, buf, pos, len, col, row)::Int16 where {from, to}
+    res = Parsers.xparse(to, buf, pos, len, col.options)
+    code = res.code
     if !Parsers.invalid(code)
         col.type = to
         column = col.column
         if column isa Vector{UInt32}
             col.refpool.refs = convert(Refs{to}, col.refpool.refs)
-            ref = getref!(col.refpool, to, y)
+            ref = getref!(col.refpool, to, res.val)
             @inbounds column[row] = ref
         elseif column isa vectype(from)
             col.column = convert(promotevectype(to), column)
-            @inbounds col.column[row] = y
+            @inbounds col.column[row] = res.val
         end
     else
         code |= PROMOTE_TO_STRING
@@ -838,7 +869,7 @@ end
     end
 end
 
-@inline function getref!(refpool, ::Type{T}, key::PointerString)::UInt32 where {T}
+@inline function getref!(refpool, ::Type{T}, key::PointerString, buf, poslen, e)::UInt32 where {T}
     x = refpool.refs::Refs{T}
     index = Base.ht_keyindex2!(x, key)
     if index > 0
@@ -846,13 +877,17 @@ end
         ret = found_key::UInt32
     else
         @inbounds new = refpool.lastref += UInt32(1)
-        @inbounds Base._setindex!(x, new, T(key), -index)
+        if T === PosLenString
+            @inbounds Base._setindex!(x, new, T(buf, poslen, e), -index)
+        else
+            @inbounds Base._setindex!(x, new, T(key), -index)
+        end
         ret = new
     end
     return ret
 end
 
-@inline function parsecustom!(::Type{customtypes}, buf, pos, len, opts, row, rowoffset, i, col) where {customtypes}
+@inline function parsecustom!(::Type{customtypes}, buf, pos, len, row, rowoffset, i, col, ctx) where {customtypes}
     if @generated
         block = Expr(:block)
         push!(block.args, quote
@@ -862,7 +897,7 @@ end
             T = fieldtype(customtypes, i)
             pushfirst!(block.args, quote
                 if type === $T
-                    return parsevalue!($T, buf, pos, len, opts, row, rowoffset, i, col)
+                    return parsevalue!($T, buf, pos, len, row, rowoffset, i, col, ctx)
                 end
             end)
         end
@@ -872,12 +907,12 @@ end
         return block
     else
         # println("generated function failed")
-        return parsevalue!(col.type, buf, pos, len, opts, row, rowoffset, i, col)
+        return parsevalue!(col.type, buf, pos, len, row, rowoffset, i, col, ctx)
     end
 end
 
-@noinline function promotetostring!(ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, TR::Val{transpose}, opts, coloptions, ::Type{customtypes}, column_to_promote, numwarnings, limit, stringtype) where {transpose, customtypes}
-    cols = [i == column_to_promote ? columns[i] : Column(Missing) for i = 1:length(columns)]
+@noinline function promotetostring!(ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, TR::Val{transpose}, ::Type{customtypes}, column_to_promote, numwarnings, limit, stringtype) where {transpose, customtypes}
+    cols = [i == column_to_promote ? columns[i] : Column(Missing, columns[i].options) for i = 1:length(columns)]
     col = cols[column_to_promote]
     if pooled(col) || maybepooled(col) || isnan(col.pool)
         col.refpool = RefPool(stringtype)
@@ -891,7 +926,7 @@ end
     if pos <= len && len > 0
         while row < limit
             row += 1
-            @inbounds pos = parserow(startpos, row, numwarnings, ctx, buf, pos, len, rowsguess, rowoffset, cols, TR, opts, coloptions, customtypes)
+            @inbounds pos = parserow(startpos, row, numwarnings, ctx, buf, pos, len, rowsguess, rowoffset, cols, TR, customtypes)
             pos > len && break
         end
     end

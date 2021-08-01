@@ -17,7 +17,7 @@ using PooledArrays
 # it also provides the MissingVector and ChainedVector array types
 using SentinelArrays
 using WeakRefStrings
-export PosLenString
+export PosLenString, InlineString
 
 struct Error <: Exception
     msg::String
