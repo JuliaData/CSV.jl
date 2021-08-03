@@ -180,7 +180,7 @@ function Context(source,
     # initial argument validation and adjustment
     @inbounds begin
     !isa(source, IO) && !isa(source, AbstractVector{UInt8}) && !isa(source, Cmd) && !isfile(source) &&
-        throw(ArgumentError("\"$source\" is not a valid file"))
+        throw(ArgumentError("\"$source\" is not a valid file or doesn't exist"))
     if types !== nothing
         if types isa AbstractVector || types isa AbstractDict
             any(x->!concrete_or_concreteunion(x), types isa AbstractDict ? values(types) : types) && throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
