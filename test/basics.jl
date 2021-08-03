@@ -6,6 +6,7 @@ struct CSVString
 end
 
 Base.parse(::Type{CSVString}, s::String) = CSVString(s)
+Base.tryparse(::Type{CSVString}, s::String) = CSVString(s)
 Base.zero(::Type{CSVString}) = CSVString("")
 
 struct Dec64
@@ -13,6 +14,7 @@ struct Dec64
 end
 
 Base.parse(::Type{Dec64}, s::String) = Dec64(parse(Float64, s))
+Base.tryparse(::Type{Dec64}, s::String) = Dec64(parse(Float64, s))
 Base.zero(::Type{Dec64}) = Dec64(0.0)
 
 @testset "CSV.File basics" begin
