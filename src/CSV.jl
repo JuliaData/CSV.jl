@@ -16,8 +16,11 @@ using PooledArrays
 # SentinelArrays.jl allow efficient conversion from Vector{Union{T, Missing}} to Vector{T}
 # it also provides the MissingVector and ChainedVector array types
 using SentinelArrays
+# WeakRefStrings provides the InlineString and PosLenString types for more gc-friendly string types
 using WeakRefStrings
 export PosLenString, InlineString
+# CodecZlib is used for unzipping gzip files
+using CodecZlib
 
 struct Error <: Exception
     msg::String

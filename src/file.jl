@@ -425,6 +425,10 @@ function File(ctx::Context, chunking::Bool=false)
     if !chunking && Sys.iswindows() && ctx.stringtype !== PosLenString
         finalize(ctx.buf)
     end
+    # check if a temp file was generated for parsing
+    if !chunking && ctx.tempfile !== nothing && ctx.stringtype !== PosLenString
+        rm(ctx.tempfile; force=true)
+    end
     end # @inbounds begin
     return File{ctx.threaded}(ctx.name, names, types, finalrows, length(columns), columns, lookup)
 end

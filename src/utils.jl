@@ -148,24 +148,37 @@ consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 
 
 # whatever input is given, turn it into an AbstractVector{UInt8} we can parse with
 function getsource(x)
+    tfile = nothing
     if x isa AbstractVector{UInt8}
-        return x, 1, length(x)
+        return x, 1, length(x), tfile
     elseif x isa Base.GenericIOBuffer
-        return x.data, x.ptr, x.size
+        return x.data, x.ptr, x.size, tfile
     elseif x isa Cmd || x isa IO
-        Base.depwarn("`CSV.File` or `CSV.Rows` with `$(typeof(x))` object is deprecated; pass a filename, `IOBuffer`, or byte buffer directly (via `read(x)`)", :getsource)
-        buf = Base.read(x)
-        return buf, 1, length(buf)
+        buf, tfile = buffer_to_tempfile(CodecZlib.TranscodingStreams.Noop(), x isa Cmd ? open(x) : x)
+        return buf, 1, length(buf), tfile
     else
         try
-            buf = Mmap.mmap(string(x))
-            return buf, 1, length(buf)
+            filename = string(x)
+            buf = Mmap.mmap(filename)
+            if endswith(filename, ".gz") || (length(buf) >= 2 && buf[1] == 0x1f && buf[2] == 0x8b)
+                buf, tfile = buffer_to_tempfile(GzipDecompressor(), IOBuffer(buf))
+            end
+            return buf, 1, length(buf), tfile
         catch e
-            # if we can't mmap, try just `read`ing the whole thing into a byte vector
-            buf = Base.read(x)
-            return buf, 1, length(buf)
+            # if we can't mmap, try just buffering the whole thing into a tempfile byte vector
+            buf, tfile = buffer_to_tempfile(CodecZlib.TranscodingStreams.Noop(), x)
+            return buf, 1, length(buf), tfile
         end
     end
+end
+
+function buffer_to_tempfile(codec, x)
+    file = tempname()
+    output = open(file, "w")
+    stream = CodecZlib.TranscodingStream(codec, output)
+    Base.write(stream, x)
+    close(stream)
+    return Mmap.mmap(file), file
 end
 
 getname(buf::Vector{UInt8}) = "<raw buffer>"

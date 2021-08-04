@@ -405,11 +405,11 @@ if Sys.iswindows()
         catcmd = `$busybox cat`
     end
 end
-f = @test_deprecated CSV.File(`$(catcmd) $(joinpath(dir, "test_basic.csv"))`)
+f = CSV.File(`$(catcmd) $(joinpath(dir, "test_basic.csv"))`)
 @test columntable(f) == columntable(CSV.File(joinpath(dir, "test_basic.csv")))
 
 #476
-f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz"))))
+f = CSV.File(joinpath(dir, "randoms.csv.gz"))
 @test (length(f), length(f.names)) == (70000, 7)
 
 f = CSV.File(IOBuffer("thistime\n10:00:00.0\n12:00:00.0"))
@@ -462,7 +462,7 @@ f = CSV.File(
 @test f.csvstring isa CSV.SVec2{CSVString}
 @test isequal(f.csvstring, [CSVString("hey there sailor"), missing])
 
-f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz"))); types=[Int64, CSVString, String, Float64, Dec64, Date, DateTime])
+f = CSV.File(joinpath(dir, "randoms.csv.gz"); types=[Int64, CSVString, String, Float64, Dec64, Date, DateTime])
 @test f.id isa AbstractVector{Int64}
 @test f.first isa AbstractVector{CSVString}
 @test f.wage isa AbstractVector{Union{Missing, Dec64}}
