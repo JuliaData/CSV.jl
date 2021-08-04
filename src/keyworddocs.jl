@@ -18,7 +18,7 @@ const KEYWORD_DOCS = """
 
 ## Parsing options:
 
-  * `missingstring`: either a `String`, or `Vector{String}` to use as sentinel values that will be parsed as `missing`; by default, only an empty field (two consecutive delimiters) is considered `missing`
+  * `missingstring`: either a `nothing`, `String`, or `Vector{String}` to use as sentinel values that will be parsed as `missing`; if `nothing` is passed, no sentinel/missing values will be parsed; by default, `missingstring=""`, which means only an empty field (two consecutive delimiters) is considered `missing`
   * `delim=','`: a `Char` or `String` that indicates how columns are delimited in a file; if no argument is provided, parsing will try to detect the most consistent delimiter on the first 10 rows of the file
   * `ignorerepeated::Bool=false`: whether repeated (consecutive/sequential) delimiters should be ignored while parsing; useful for fixed-width files with delimiter padding between cells
   * `quoted::Bool=true`: whether parsing should check for `quotechar` at the start/end of cells
