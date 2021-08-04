@@ -243,7 +243,7 @@ function Context(source,
     cq = something(closequotechar, quotechar) % UInt8
     trues = truestrings === nothing ? nothing : truestrings
     falses = falsestrings === nothing ? nothing : falsestrings
-    sentinel = (isempty(missingstring) || (missingstring isa Vector && length(missingstring) == 1 && missingstring[1] == "")) ? missing : missingstring isa String ? [missingstring] : missingstring
+    sentinel = missingstring === nothing ? missingstring : (isempty(missingstring) || (missingstring isa Vector && length(missingstring) == 1 && missingstring[1] == "")) ? missing : missingstring isa String ? [missingstring] : missingstring
 
     if delim === nothing
         del = isa(source, AbstractString) && endswith(source, ".tsv") ? UInt8('\t') :

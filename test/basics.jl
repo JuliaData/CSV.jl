@@ -638,4 +638,9 @@ f = CSV.File(IOBuffer("x\n\0\n"))
 f = CSV.File(IOBuffer("x\n\"abc\"\n"); quoted=false)
 @test f.x[1] == "\"abc\""
 
+# 768
+f = CSV.File(IOBuffer("a,b,c\n1,2,3\n,null,4\n"), missingstring=nothing)
+@test eltype(f.a) <: AbstractString
+@test f.a[2] == ""
+
 end
