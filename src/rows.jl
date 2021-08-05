@@ -176,13 +176,13 @@ Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
 end
 
 function checkwidencolumns!(r::Rows{t, ct, V}, cols) where {t, ct, V}
-    if cols > length(r.names)
+    if cols > length(r.values)
         # we widened while parsing this row, need to widen other supporting objects
-        for i = (length(r.names) + 1):cols
+        for i = (length(r.values) + 1):cols
             push!(r.values, V === Any ? missing : Base.bitcast(PosLen, Parsers.MISSING_BIT))
             nm = Symbol(:Column, i)
             push!(r.names, nm)
-            r.lookup[nm] = length(r.names)
+            r.lookup[nm] = length(r.values)
             push!(r.columnmap, i)
         end
     end
