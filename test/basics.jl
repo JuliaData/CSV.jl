@@ -643,4 +643,9 @@ f = CSV.File(IOBuffer("a,b,c\n1,2,3\n,null,4\n"), missingstring=nothing)
 @test eltype(f.a) <: AbstractString
 @test f.a[2] == ""
 
+# 858
+row = first(CSV.Rows(IOBuffer("a,b,c\n1,2,3\n\n"); select=[:a, :c]))
+@test length(row) == 2
+@test row.a == "1" && row.c == "3"
+
 end
