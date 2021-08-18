@@ -1,4 +1,3 @@
-using Pkg; Pkg.activate("."); Pkg.instantiate()
 using Documenter, CSV
 
 makedocs(modules = [CSV], sitename = "CSV.jl", format = Documenter.HTML(edit_link = "main", canonical = "https://juliadata.github.io/CSV.jl/stable/"))
