@@ -192,8 +192,7 @@ function getsource(x, buffer_in_memory)
 end
 
 function buffer_to_tempfile(codec, x)
-    file = tempname()
-    output = open(file, "w")
+    file, output = mktemp()
     stream = CodecZlib.TranscodingStream(codec, output)
     Base.write(stream, x)
     close(stream)
