@@ -74,6 +74,13 @@ function Base.getproperty(f::File, col::Symbol)
     return haskey(lookup, col) ? lookup[col].column : getfield(f, col)
 end
 
+function Base.getindex(f::File, col::Symbol)
+    lookup = getfield(f, :lookup)
+    return haskey(lookup, col) ? lookup[col].column : getfield(f, col)
+end
+
+Base.getindex(f::File, col::String) = getindex(f, Symbol(col))
+
 Tables.getcolumn(f::File, nm::Symbol) = getcolumn(f, nm).column
 Tables.getcolumn(f::File, i::Int) = getcolumn(f, i).column
 
@@ -83,11 +90,11 @@ Base.@propagate_inbounds function Base.getindex(f::File, row::Int)
 end
 
 """
-    CSV.File(source; kwargs...) => CSV.File
+    CSV.File(input; kwargs...) => CSV.File
 
 Read a UTF-8 CSV input and return a `CSV.File` object.
 
-The `source` argument can be one of:
+The [`input`](@ref input) argument can be one of:
   * filename given as a string or FilePaths.jl type
   * an `AbstractVector{UInt8}` like a byte buffer or `codeunits(string)`
   * an `IOBuffer`
@@ -106,7 +113,7 @@ for each column type provided (column types can be given as a `Vector` for all c
 name or index in a `Dict`).
 
 For text encodings other than UTF-8, load the [StringEncodings.jl](https://github.com/JuliaStrings/StringEncodings.jl)
-package and call e.g. `CSV.File(open(read, source, enc"ISO-8859-1"))`.
+package and call e.g. `CSV.File(open(read, input, enc"ISO-8859-1"))`.
 
 The returned `CSV.File` object supports the [Tables.jl](https://github.com/JuliaData/Tables.jl) interface
 and can iterate `CSV.Row`s. `CSV.Row` supports `propertynames` and `getproperty` to access individual row values. `CSV.File`
