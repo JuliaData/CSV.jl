@@ -143,6 +143,7 @@ function Context(source,
     select,
     drop,
     limit,
+    buffer_in_memory,
     threaded,
     ntasks,
     tasks,
@@ -232,7 +233,7 @@ function Context(source,
     skipto = skipto == -1 ? (isa(header, Vector{Symbol}) || isa(header, Vector{String}) ? 0 : last(header)) + 1 : skipto # by default, data starts on line after header
     debug && println("header is: $header, skipto computed as: $skipto")
     # getsource will turn any input into a `AbstractVector{UInt8}`
-    buf, pos, len, tempfile = getsource(source)
+    buf, pos, len, tempfile = getsource(source, buffer_in_memory)
     if len > Int64(2)^42
         throw(ArgumentError("delimited source to parse too large; must be < $(2^42) bytes"))
     end

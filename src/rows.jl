@@ -79,6 +79,7 @@ function Rows(source;
     select=nothing,
     drop=nothing,
     limit::Union{Integer, Nothing}=nothing,
+    buffer_in_memory::Bool=false,
     # parsing options
     missingstrings=String[],
     missingstring="",
@@ -109,7 +110,7 @@ function Rows(source;
     parsingdebug::Bool=false,
     reusebuffer::Bool=false,
     )
-    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, nothing, nothing, nothing, 0, nothing, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, true)
+    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, nothing, nothing, nothing, 0, nothing, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, true)
     foreach(col -> col.pool = 0.0, ctx.columns)
     allocate!(ctx.columns, 1)
     values = all(x->x.type === stringtype && x.anymissing, ctx.columns) && lazystrings ? Vector{PosLen}(undef, ctx.cols) : Vector{Any}(undef, ctx.cols)

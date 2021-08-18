@@ -147,29 +147,48 @@ end
 consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 0xbb && buf[pos + 2] == 0xbf) ? pos + 3 : pos
 
 # whatever input is given, turn it into an AbstractVector{UInt8} we can parse with
-function getsource(x)
+function getbytebuffer(x, buffer_in_memory)
     tfile = nothing
     if x isa AbstractVector{UInt8}
         return x, 1, length(x), tfile
     elseif x isa Base.GenericIOBuffer
         return x.data, x.ptr, x.size, tfile
     elseif x isa Cmd || x isa IO
-        buf, tfile = buffer_to_tempfile(CodecZlib.TranscodingStreams.Noop(), x isa Cmd ? open(x) : x)
+        if buffer_in_memory
+            buf = Base.read(x isa Cmd ? open(x) : x)
+        else
+            buf, tfile = buffer_to_tempfile(CodecZlib.TranscodingStreams.Noop(), x isa Cmd ? open(x) : x)
+        end
         return buf, 1, length(buf), tfile
     else
         try
-            filename = string(x)
-            buf = Mmap.mmap(filename)
-            if endswith(filename, ".gz") || (length(buf) >= 2 && buf[1] == 0x1f && buf[2] == 0x8b)
-                buf, tfile = buffer_to_tempfile(GzipDecompressor(), IOBuffer(buf))
-            end
+            buf = Mmap.mmap(string(x))
             return buf, 1, length(buf), tfile
         catch e
             # if we can't mmap, try just buffering the whole thing into a tempfile byte vector
-            buf, tfile = buffer_to_tempfile(CodecZlib.TranscodingStreams.Noop(), x)
+            if buffer_in_memory
+                buf = Base.read(x)
+            else
+                buf, tfile = buffer_to_tempfile(CodecZlib.TranscodingStreams.Noop(), x)
+            end
             return buf, 1, length(buf), tfile
         end
     end
+end
+
+function getsource(x, buffer_in_memory)
+    buf, pos, len, tfile = getbytebuffer(x, buffer_in_memory)
+    if length(buf) >= 2 && buf[1] == 0x1f && buf[2] == 0x8b
+        # gzipped source, gunzip it
+        if buffer_in_memory
+            buf = transcode(GzipDecompressor, buf)
+        else
+            buf, tfile = buffer_to_tempfile(GzipDecompressor(), IOBuffer(buf))
+        end
+        pos = 1
+        len = length(buf)
+    end
+    return buf, pos, len, tfile
 end
 
 function buffer_to_tempfile(codec, x)
