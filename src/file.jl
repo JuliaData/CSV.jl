@@ -89,16 +89,21 @@ Read a UTF-8 CSV input and return a `CSV.File` object.
 
 The `source` argument can be one of:
   * filename given as a string or FilePaths.jl type
-  * an `AbstractVector{UInt8}` like a byte buffer or `codeunits(string)`
-  * an `IOBuffer`
+  * an `AbstractVector{UInt8}` byte buffer
+  * a `Cmd` or other `IO`
+  * a csv-formatted string can be passed like `IOBuffer(str)`
+  * a gzipped file, which will automatically be decompressed for parsing
 
-To read a csv file from a url, use the HTTP.jl package, where the `HTTP.Response` body can be passed like:
+To read a csv file from a url, use the Downloads.jl stdlib or HTTP.jl package, where the resulting downloaded tempfile or `HTTP.Response` body can be passed like:
 ```julia
+using Downloads, CSV
+f = CSV.File(Downloads.download(url))
+
+# or
+
 using HTTP, CSV
 f = CSV.File(HTTP.get(url).body)
 ```
-
-For other `IO` or `Cmd` inputs, you can pass them like: `f = CSV.File(read(obj))`.
 
 Opens the file and uses passed arguments to detect the number of columns and column types, unless column types are provided
 manually via the `types` keyword argument. Note that passing column types manually can slightly increase performance
@@ -152,6 +157,7 @@ function File(source;
     select=nothing,
     drop=nothing,
     limit::Union{Integer, Nothing}=nothing,
+    buffer_in_memory::Bool=false,
     threaded::Union{Bool, Nothing}=nothing,
     ntasks::Union{Nothing, Integer}=nothing,
     tasks::Union{Nothing, Integer}=nothing,
@@ -191,7 +197,7 @@ function File(source;
     # delim=nothing;ignorerepeated=false;quoted=true;quotechar='"';openquotechar=nothing;closequotechar=nothing;escapechar='"';dateformat=nothing;
     # dateformats=nothing;decimal=UInt8('.');truestrings=nothing;falsestrings=nothing;type=nothing;types=nothing;typemap=Dict{Type,Type}();
     # pool=CSV.DEFAULT_POOL;downcast=false;lazystrings=false;stringtype=String;strict=false;silencewarnings=false;maxwarnings=100;debug=true;parsingdebug=false;
-    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, threaded, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
+    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, threaded, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
     return File(ctx)
 end
 
@@ -424,6 +430,10 @@ function File(ctx::Context, chunking::Bool=false)
     # so we just want to make sure we finalize the input buffer so users don't run into surprises
     if !chunking && Sys.iswindows() && ctx.stringtype !== PosLenString
         finalize(ctx.buf)
+    end
+    # check if a temp file was generated for parsing
+    if !chunking && ctx.tempfile !== nothing && ctx.stringtype !== PosLenString
+        rm(ctx.tempfile; force=true)
     end
     end # @inbounds begin
     return File{ctx.threaded}(ctx.name, names, types, finalrows, length(columns), columns, lookup)
