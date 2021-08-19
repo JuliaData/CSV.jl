@@ -409,7 +409,7 @@ f = CSV.File(`$(catcmd) $(joinpath(dir, "test_basic.csv"))`)
 @test columntable(f) == columntable(CSV.File(joinpath(dir, "test_basic.csv")))
 
 #476
-f = CSV.File(joinpath(dir, "randoms.csv.gz"))
+f = CSV.File(joinpath(dir, "randoms.csv.gz"); buffer_in_memory=true)
 @test (length(f), length(f.names)) == (70000, 7)
 
 f = CSV.File(IOBuffer("thistime\n10:00:00.0\n12:00:00.0"))
