@@ -116,9 +116,11 @@ z = ZipFile.Reader("a.zip") # or "a2.zip"
 # identify the right file in zip
 a_file_in_zip = filter(x->x.name == "a.csv", z.files)[1]
 
-a_copy = CSV.File(read(a_file_in_zip)) |> DataFrame
+a_copy = CSV.File(a_file_in_zip) |> DataFrame
 
 a == a_copy
+
+close(z)
 ```
 
 ### [Column names on 2nd row](@id second_row_header)
@@ -213,6 +215,7 @@ h,i,j
 
 # in order to have valid identifiers for column names, we can pass
 # `normalizenames=true`, which result in our column names becoming "_1", "_2", and "_3"
+# note this isn't required, but can be convenient in certain cases
 file = CSV.File(IOBuffer(data); normalizenames=true)
 
 # we can acces the first column like
@@ -474,7 +477,13 @@ file = CSV.File(IOBuffer(data); quoted=false)
 ```julia
 using CSV
 
-# In this data, we have a few "quoted" fields, which means the field's value starts and ends with `quotechar` (or `openquotechar` and `closequotechar`, respectively). Quoted fields allow the field to contain characters that would otherwise be significant to parsing, such as delimiters or newline characters. When quoted, parsing will ignore these otherwise signficant characters until the closing quote character is found. For quoted fields that need to also include the quote character itself, an escape character is provided to tell parsing to ignore the next character when looking for a close quote character. In the syntax examples, the keyword arguments are passed explicitly, but these also happen to be the default values, so just doing `CSV.File(file)` would result in successful parsing.
+# In this data, we have a few "quoted" fields, which means the field's value starts and ends with `quotechar` (or 
+# `openquotechar` and `closequotechar`, respectively). Quoted fields allow the field to contain characters that would otherwise 
+# be significant to parsing, such as delimiters or newline characters. When quoted, parsing will ignore these otherwise 
+# signficant characters until the closing quote character is found. For quoted fields that need to also include the quote 
+# character itself, an escape character is provided to tell parsing to ignore the next character when looking for a close quote 
+# character. In the syntax examples, the keyword arguments are passed explicitly, but these also happen to be the default 
+# values, so just doing `CSV.File(file)` would result in successful parsing.
 data = """
 col1,col2
 "quoted field with a delimiter , inside","quoted field that contains a \\n newline and ""inner quotes\"\"\"
@@ -492,7 +501,10 @@ file = CSV.File(file; openquotechar='"' closequotechar='"', escapechar='"')
 ```julia
 using CSV
 
-# In this file, our `date` column has dates that are formatted like `yyyy/mm/dd`. We can pass just such a string to the `dateformat` keyword argument to tell parsing to use it when looking for `Date` or `DateTime` columns. Note that currently, only a single `dateformat` string can be passed to parsing, meaning multiple columns with different date formats cannot all be parsed as `Date`/`DateTime`.
+# In this file, our `date` column has dates that are formatted like `yyyy/mm/dd`. We can pass just such a string to the 
+# `dateformat` keyword argument to tell parsing to use it when looking for `Date` or `DateTime` columns. Note that currently, 
+# only a single `dateformat` string can be passed to parsing, meaning multiple columns with different date formats cannot all 
+# be parsed as `Date`/`DateTime`.
 data = """
 code,date
 0,2019/01/01
@@ -507,7 +519,9 @@ file = CSV.File(file; dateformat="yyyy/mm/dd")
 ```julia
 using CSV
 
-# In many places in the world, floating point number decimals are separated with a comma instead of a period (`3,14` vs. `3.14`). We can correctly parse these numbers by passing in the `decimal=','` keyword argument. Note that we probably need to explicitly pass `delim=';'` in this case, since the parser will probably think that it detected `','` as the delimiter.
+# In many places in the world, floating point number decimals are separated with a comma instead of a period (`3,14` vs. `3.14`)
+# . We can correctly parse these numbers by passing in the `decimal=','` keyword argument. Note that we probably need to 
+# explicitly pass `delim=';'` in this case, since the parser will probably think that it detected `','` as the delimiter.
 data = """
 col1;col2;col3
 1,01;2,02;3,03
@@ -522,7 +536,8 @@ file = CSV.File(file; delim=';', decimal=',')
 ```julia
 using CSV
 
-# By default, parsing only considers the string values `true` and `false` as valid `Bool` values. To consider alternative values, we can pass a `Vector{String}` to the `truestrings` and `falsestrings` keyword arguments.
+# By default, parsing only considers the string values `true` and `false` as valid `Bool` values. To consider alternative 
+# values, we can pass a `Vector{String}` to the `truestrings` and `falsestrings` keyword arguments.
 data = """
 id,paid,attended
 0,T,TRUE
@@ -539,7 +554,9 @@ file = CSV.File(file; truestrings=["T", "TRUE"], falsestrings=["F", "FALSE"])
 ```julia
 using CSV
 
-# This file contains a 3x3 identity matrix of `Float64`. By default, parsing will detect the delimiter and type, but we can also explicitly pass `delim= ' '` and `types=Float64`, which tells parsing to explicitly treat each column as `Float64`, without having to guess the type on its own.
+# This file contains a 3x3 identity matrix of `Float64`. By default, parsing will detect the delimiter and type, but we can 
+# also explicitly pass `delim= ' '` and `types=Float64`, which tells parsing to explicitly treat each column as `Float64`, 
+# without having to guess the type on its own.
 data = """
 1.0 0.0 0.0
 0.0 1.0 0.0
@@ -555,7 +572,13 @@ file = CSV.File(file; header=false, delim=' ', types=Float64)
 ```julia
 using CSV
 
-# In this file, our 3rd column has an invalid value on the 2nd row `invalid`. Let's imagine we'd still like to treat it as an `Int` column, and ignore the `invalid` value. The syntax examples provide several ways we can tell parsing to treat the 3rd column as `Int`, by referring to column index `3`, or column name with `Symbol` or `String`. We can also provide an entire `Vector` of types for each column (and which needs to match the length of columns in the file). There are two additional keyword arguments that control parsing behavior; in the first 4 syntax examples, we would see a warning printed like `"warning: invalid Int64 value on row 2, column 3"`. In the fifth example, passing `silencewarnings=true` will suppress this warning printing. In the last syntax example, passing `strict=true` will result in an error being thrown during parsing.
+# In this file, our 3rd column has an invalid value on the 2nd row `invalid`. Let's imagine we'd still like to treat it as an 
+# `Int` column, and ignore the `invalid` value. The syntax examples provide several ways we can tell parsing to treat the 3rd 
+# column as `Int`, by referring to column index `3`, or column name with `Symbol` or `String`. We can also provide an entire 
+# `Vector` of types for each column (and which needs to match the length of columns in the file). There are two additional 
+# keyword arguments that control parsing behavior; in the first 4 syntax examples, we would see a warning printed like 
+# `"warning: invalid Int64 value on row 2, column 3"`. In the fifth example, passing `silencewarnings=true` will suppress this 
+# warning printing. In the last syntax example, passing `strict=true` will result in an error being thrown during parsing.
 data = """
 col1,col2,col3
 1,2,3
@@ -576,7 +599,9 @@ file = CSV.File(file; types=[Int, Int, Int], strict=true)
 ```julia
 using CSV
 
-# In this file, we have U.S. zipcodes in the first column that we'd rather not treat as `Int`, but parsing will detect it as such. In the first syntax example, we pass `typemap=Dict(Int => String)`, which tells parsing to treat any detected `Int` columns as `String` instead. In the second syntax example, we alternatively set the `zipcode` column type manually.
+# In this file, we have U.S. zipcodes in the first column that we'd rather not treat as `Int`, but parsing will detect it as 
+# such. In the first syntax example, we pass `typemap=Dict(Int => String)`, which tells parsing to treat any detected `Int` 
+# columns as `String` instead. In the second syntax example, we alternatively set the `zipcode` column type manually.
 data = """
 zipcode,score
 03494,9.9
@@ -593,7 +618,10 @@ file = CSV.File(file; types=Dict(:zipcode => String))
 ```julia
 using CSV
 
-# In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt64`. By default, `pool=0.1`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide greater control: `pool=0.4` means that if 40% or less of a column's values are unique, then it will be pooled.
+# In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations 
+# like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt64`. By default, 
+# `pool=0.1`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide 
+# greater control: `pool=0.4` means that if 40% or less of a column's values are unique, then it will be pooled.
 data = """
 id,code
 A18E9,AT
