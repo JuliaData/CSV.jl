@@ -40,6 +40,7 @@ function Chunks(source;
     select=nothing,
     drop=nothing,
     limit::Union{Integer, Nothing}=nothing,
+    buffer_in_memory::Bool=false,
     ntasks::Union{Integer, Nothing}=nothing,
     tasks::Union{Nothing, Integer}=nothing,
     rows_to_check::Integer=DEFAULT_ROWS_TO_CHECK,
@@ -73,7 +74,7 @@ function Chunks(source;
     debug::Bool=false,
     parsingdebug::Bool=false)
 
-    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, nothing, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
+    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, nothing, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
     !ctx.threaded && throw(ArgumentError("unable to iterate chunks from input file source"))
     foreach(col -> col.lock = ReentrantLock(), ctx.columns)
     return Chunks(ctx)
@@ -93,7 +94,7 @@ function Base.iterate(x::Chunks, i=1)
     threaded = false
     ntasks = 1
     limit = typemax(Int64)
-    ctx = Context(x.ctx.transpose, x.ctx.name, names, rowsguess, x.ctx.cols, x.ctx.buf, datapos, len, 1, x.ctx.options, columns, x.ctx.pool, x.ctx.downcast, x.ctx.customtypes, x.ctx.typemap, x.ctx.stringtype, limit, threaded, ntasks, x.ctx.chunkpositions, x.ctx.strict, x.ctx.silencewarnings, x.ctx.maxwarnings, x.ctx.debug, x.ctx.streaming)
+    ctx = Context(x.ctx.transpose, x.ctx.name, names, rowsguess, x.ctx.cols, x.ctx.buf, datapos, len, 1, x.ctx.options, columns, x.ctx.pool, x.ctx.downcast, x.ctx.customtypes, x.ctx.typemap, x.ctx.stringtype, limit, threaded, ntasks, x.ctx.chunkpositions, x.ctx.strict, x.ctx.silencewarnings, x.ctx.maxwarnings, x.ctx.debug, x.ctx.tempfile, x.ctx.streaming)
     f = File(ctx, true)
     return f, i + 1
 end
