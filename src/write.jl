@@ -22,6 +22,21 @@ Supported keyword arguments include:
 * `transform=(col,val)->val`: a function that is applied to every cell e.g. we can transform all `nothing` values to `missing` using `(col, val) -> something(val, missing)`
 * `bom=false`: whether to write a UTF-8 BOM header (0xEF 0xBB 0xBF) or not
 * `partition::Bool=false`: by passing `true`, the `table` argument is expected to implement `Tables.partitions` and the `file` argument can either be an indexable collection of `IO`, file `String`s, or a single file `String` that will have an index appended to the name
+
+## Examples
+
+```julia
+using CSV, Tables, DataFrames
+
+# write out a DataFrame to csv file
+df = DataFrame(rand(10, 10), :auto)
+CSV.write("data.csv", df)
+
+# write a matrix to an in-memory IOBuffer
+io = IOBuffer()
+mat = rand(10, 10)
+CSV.write(io, Tables.table(mat))
+```
 """
 function write end
 
