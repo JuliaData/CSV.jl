@@ -92,7 +92,9 @@ end
 """
     CSV.File(input; kwargs...) => CSV.File
 
-Read a UTF-8 CSV input and return a `CSV.File` object.
+Read a UTF-8 CSV input and return a `CSV.File` object, which is like a lightweight table/dataframe, allowing dot-access to columns
+and iterating rows. Satisfies the Tables.jl interface, so can be passed to any valid sink, yet to avoid unnecessary copies of data,
+use `CSV.read(input, sink; kwargs...)` instead if the `CSV.File` intermediate object isn't needed.
 
 The [`input`](@ref input) argument can be one of:
   * filename given as a string or FilePaths.jl type
@@ -123,6 +125,10 @@ package and call e.g. `CSV.File(open(read, input, enc"ISO-8859-1"))`.
 The returned `CSV.File` object supports the [Tables.jl](https://github.com/JuliaData/Tables.jl) interface
 and can iterate `CSV.Row`s. `CSV.Row` supports `propertynames` and `getproperty` to access individual row values. `CSV.File`
 also supports entire column access like a `DataFrame` via direct property access on the file object, like `f = CSV.File(file); f.col1`.
+Or by getindex access with column names, like `f[:col1]` or `f["col1"]`. The returned columns are `AbstractArray` subtypes, including:
+`SentinelVector` (for integers), regular `Vector`, `PooledVector` for pooled columns, `MissingVector` for columns of all `missing` values,
+`PosLenStringVector` when `stringtype=PosLenString` is passed, and `ChainedVector` will chain one of the previous array types together for
+data inputs that use multiple threads to parse (each thread parses a single "chain" of the input).
 Note that duplicate column names will be detected and adjusted to ensure uniqueness (duplicate column name `a` will become `a_1`).
 For example, one could iterate over a csv file with column names `a`, `b`, and `c` by doing:
 
