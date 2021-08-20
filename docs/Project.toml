@@ -1,6 +1,2 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
-Parsers = "69de0a69-1ddd-5017-9359-2bf0b02dc9f0"
-
-[compat]
-Documenter = "0.25"

@@ -1,6 +1,19 @@
-using Pkg; Pkg.activate("."); Pkg.instantiate()
 using Documenter, CSV
 
-makedocs(modules = [CSV], sitename = "CSV.jl", format = Documenter.HTML(edit_link = "main", canonical = "https://juliadata.github.io/CSV.jl/stable/"))
+makedocs(;
+    modules=[CSV],
+    format=Documenter.HTML(),
+    pages=[
+        "Home" => "index.md",
+        "Examples" => "examples.md"
+    ],
+    repo="https://github.com/JuliaData/CSV.jl/blob/{commit}{path}#L{line}",
+    sitename="CSV.jl",
+    authors="Jacob Quinn",
+    assets=String[],
+)
 
-deploydocs(repo = "github.com/JuliaData/CSV.jl.git", devbranch = "main")
+deploydocs(;
+    repo="github.com/JuliaData/CSV.jl",
+    devbranch = "main"
+)
