@@ -1,407 +1,258 @@
 # CSV.jl Documentation
 
-CSV.jl is built to be a fast and flexible pure-Julia library for handling delimited text files.
-
+GitHub Repo: https://github.com/JuliaData/CSV.jl
 
 ```@contents
-Depth = 3
+Depth = 2
 ```
 
-## Getting Started
+Welcome to CSV.jl! A pure-Julia package for handling delimited text data, be it comma-delimited (csv), tab-delimited (tsv), or otherwise.
 
-CSV.jl provides a number of utilities for working with delimited files. `CSV.File` provides a way to read files into columns of data, detecting column types.
-`CSV.Rows` provides a row iterator for looping over rows in a file. Inputs to either should be filenames as `String`s or `FilePath`s, or byte vectors (`AbstractVector{UInt8}`). To read other `IO` inputs, just call `read(io)` and pass the bytes directly to `CSV.File` or `CSV.Rows`.
+To start out, let's discuss the high-level functionality provided by the package, which hopefully will help direct you to more specific documentation for your use-case:
 
-If `julia` is started with multiple threads (i.e. `julia -t 4`, or with `JULIA_NUM_THREADS` environment variable set), `CSV.File` will use those threads
-by default to parse large enough files. There are a few keyword arguments to control multithreaded parsing, including:
-  * `threaded=false`: turn off multithreaded parsing, the file will be read sequentially using a single thread
-  * `tasks=N`: control how many tasks/chunks are used to break up a file; by default, `Threads.nthreads()` will be used
-  * `lines_to_check=M`: when a file is split into chunks, the parser must then find valid starts/ends to rows; this keyword argument controls how many lines are checked to ensure valid rows are found; for files with very large quoted text fields, it may be required to use a higher number here (10, 30, etc.)
+  * [`CSV.File`](@ref): the most commonly used function for ingesting delimited data; will read an entire file, detecting number of columns and rows, along with the type of data for each column. Returns a `CSV.File` object, which is like a lightweight table/DataFrame. Assuming `file` is a variable of a `CSV.File` object, individual columns can be accessed like `file.col1`, `file[:col1]`, or `file["col"]`. You can see parsed column names via `file.names`. A `CSV.File` can also be iterated, where a `CSV.Row` is produced on each iteration, which allows access to each value in the row via `row.col1`, `row[:col1]`, or `row[1]`. You can also index a `CSV.File` directly, like `file[1]` to return the entire `CSV.Row` at the provided index/row number. Multiple threads will be used while parsing the input data if the input is large enough, and full return column buffers to hold the parsed data will be allocated. `CSV.File` satisfies the [Tables.jl](https://github.com/JuliaData/Tables.jl) "source" interface, and so can be passed to valid sink functions like `DataFrame`, `SQLite.load!`, `Arrow.write`, etc. Supports a number of keyword arguments to control parsing, column type, and other file metadata options.
+  * [`CSV.read`](@ref): a convenience function identical to `CSV.File`, but used when a `CSV.File` will be passed direclty to a sink function, like a `DataFrame`. In some cases, sinks may make copies of incoming data for their own safety; by calling `CSV.read(file, DataFrame)`, no copies of the parsed `CSV.File` will be made, and the `DataFrame` will take direct ownership of the `CSV.File`'s columns, which is more efficient than doing `CSV.File(file) |> DataFrame` which will result in an extra copy of each column being made. Keyword arguments are identical to `CSV.File`. Any valid Tables.jl sink function/table type can be passed as the 2nd argument.
+  * [`CSV.Rows`](@ref): an alternative approach for consuming delimited data, where the input is only consumed one row at a time, which allows "streaming" the data with a lower memory footrpint than `CSV.File`. Supports many of the same options as `CSV.File`, except column type handling is a little different. By default, every column type will be essentially `Union{Missing, String}`, i.e. no automatic type detection is done, but column types can be provided manually. Multithreading is not used while parsing. After constructing a `CSV.Rows` object, rows can be "streamed" by iterating, where each iteration produces a `CSV.Row2` object, which operates similar to `CSV.File`'s `CSV.Row` type where individual row values can be accessed via `row.col1`, `row[:col1]`, or `row[1]`. If each row is processed individually, additional memory can be saved by passing `reusebuffer=true`, which means a single buffer will be allocated to hold the values of only the currently iterated row. `CSV.Rows` also supports the Tables.jl interface and can also be passed to valid sink functions.
+  * [`CSV.Chunks`](@ref): similar to `CSV.File`, but allows passing a `ntasks::Integer` keyword argument which will cause the input file to be "chunked" up into `ntasks` number of chunks. After constructing a `CSV.Chunks` object, each iteration of the object will return a `CSV.File` of the next parsed chunk. Useful for processing extremely large files in "chunks". Because each iterated element is a valid Tables.jl "source", `CSV.Chunks` satisfies the `Tables.partitions` interface, so sinks that can process input partitions can operate by passing `CSV.Chunks` as the "source".
+  * [`CSV.write`](@ref): A valid Tables.jl "sink" function for writing any valid input table out in a delimited text format. Supports many options for controlling the output like delimiter, quote characters, etc. Writes data to an internal buffer, which is flushed out when full, buffer size is configurable. Also supports writing out partitioned inputs as separate output files, one file per input partition. To write out a `DataFrame`, for example, it's simply `CSV.write("data.csv", df)`, or to write out a matrix, it's `using Tables; CSV.write("data.csv", Tables.table(mat))`
+  * [`CSV.RowWriter`](@ref): An alternative way to produce csv output; takes any valid Tables.jl input, and on each iteration, produces a single csv-formatted string from the input table's row.
 
-## Key Functions
+That's quite a bit! Let's boil down a TL;DR:
+  * Just want to read a delimited file and do basic stuff with data? Use `CSV.File(file)` or `CSV.read(file, DataFrame)`
+  * Don't need the data as a whole or want to stream through a large file row-by-row? Use `CSV.Rows`.
+  * Want to process a large file in "batches"/chunks? Use `CSV.Chunks`.
+  * Need to produce a csv? Use `CSV.write`.
+  * Want to iterate an input table and produce a single csv string per row? `CSV.RowWriter`.
+
+For the rest of the manual, we're going to have two big sections, *Reading* and *Writing* where we'll walk through the various options to `CSV.File`/`CSV.read`/`CSV.Rows`/`CSV.Chunks` and `CSV.write`/`CSV.RowWriter`.
+
+# Reading
+
+The format for this section will go through the various inputs/options supported by `CSV.File`, with notes about compatibility with the other reading functionality (`CSV.Rows`, `CSV.Chunks`, etc.).
+
+## [`input`](@id input)
+
+A required argument for reading. Input data should be ASCII or UTF-8 encoded text; for other text encodings, use the [StringEncodings.jl](https://github.com/JuliaStrings/StringEncodings.jl) package to convert to UTF-8.
+
+Any delimited input is ultimately converted to a byte buffer (`Vector{UInt8}`) for parsing/processing, so with that in mind, let's look at the various supported input types:
+
+  * File name as a `String` or [`FilePath`](https://juliahub.com/docs/FilePaths/PrU4O/0.8.0/); parsing will call `Mmap.mmap(string(file))` to get a byte buffer to the file data. For gzip compressed inputs, like `file.gz`, the [CodecZlib.jl](https://juliahub.com/docs/CodecZlib/1TI30/0.7.0/) package will be used to decompress the data to a temporary file first, then mmapped to a byte buffer. Decompression can also be done in memory by passing `buffer_in_memory=true`. Note that only gzip-compressed data is automatically decompressed; for other forms of compressed data, seek out the appropriate package to decompress and pass an IO or `Vector{UInt8}` of decompressed data as input.
+  * `AbstractVector{UInt8}`: if you already have a byte buffer from wherever, you can just pass it in directly. If you have a csv-formatted string, you can pass it like `CSV.File(IOBuffer(str))`
+  * `IO` or `Cmd`: you can pass an `IO` or `Cmd` directly, which will be consumed into a temporary file, then mmapped as a byte vector; to avoid a temp file and instead buffer data in memory, pass `buffer_in_memory=true`.
+  * For files from the web, you can call `HTTP.get(url).body` to request the file, then access the data as a `Vector{UInt8}` from the `body` field, which can be passed directly for parsing. For Julia 1.6+, you can also use the `Downloads` stdlib, like `Downloads.download(url)` which can be passed to parsing
+
+### Examples
+  * [StringEncodings.jl example](@ref stringencodings)
+  * [Gzip input](@ref gzipped_input)
+  * [Delimited data in a string](@ref csv_string)
+  * [Data from the web](@ref http)
+  * [Data in zip archive](@ref zip_example)
+
+## [`header`](@id header)
+
+The `header` keyword argument controls how column names are treated when processing files. By default, it is assumed that the column names are the first row/line of the input, i.e. `header=1`. Alternative valid aguments for `header` include:
+  * `Integer`, e.g. `header=2`: provide the row number as an `Integer` where the column names can be found
+  * `Bool`, e.g. `header=false`: no column names exist in the data; column names will be auto-generated depending on the # of columns, like `Column1`, `Column2`, etc.
+  * `Vector{String}` or `Vector{Symbol}`: manually provide column names as strings or symbols; should match the # of columns in the data. A copy of the `Vector` will be made and converted to `Vector{Symbol}`
+  * `AbstractVector{<:Integer}`: in rare cases, there may be multi-row headers; by passing a collection of row numbers, each row will be parsed and the values for each row will be concatenated to form the final column names
+
+### Examples
+  * [Column names on second row](@ref second_row_header)
+  * [No column names in the data](@ref no_header)
+  * [Manually provide column names](@ref manual_header)
+  * [Multi-row column names](@ref multi_row_header)
+
+## [`normalizenames`](@id normalizenames)
+
+Controls whether column names will be "normalized" to valid Julia identifiers. By default, this is `false`. If `normalizenames=true`, then column names with spaces, or that start with numbers, will be adjusted with underscores to become valid Julia identifiers. This is useful when you want to access columns via dot-access or `getproperty`, like `file.col1`. The identifier that comes after the `.` must be valid, so spaces or identifiers starting with numbers aren't allowed.
+
+### Examples
+  * [Normalizing column names](@ref normalize_header)
+
+## [`skipto`](@id skipto)
+
+An `Integer` can be provided that specifies the row number where the data is located. By default, the row immediately following the header row is assumed to be the start of data. If `header=false`, or column names are provided manually as `Vector{String}` or `Vector{Symbol}`, the data is assumed to start on row 1, i.e. `skipto=1`.
+
+### Examples
+  * [Skip to specific row where data starts](@ref skipto_example)
+
+## [`footerskip`](@id footerskip)
+
+An `Integer` argument specifying the number of rows to ignore at the end of a file. This works by the parser starting at the end of the file and parsing in reverse until `footerskip` # of rows have been parsed, then parsing the entire file, stopping at the newly adjusted "end of file".
+
+### Examples
+  * [Skipping trailing useless rows](@ref footerskip_example)
+
+## [`transpose`](@id transpose)
+
+If `transpose=true` is passed, data will be read "transposed", so each row will be parsed as a column, and each column in the data will be returned as a row. Useful when data is extremely wide (many columns), but you want to process it in a "long" format (many rows). Note that multithreaded parsing is not supported when parsing is transposed.
+
+### Examples
+  * [Reading transposed data](@ref transpose_example)
+
+## [`comment`](@id comment)
+
+A `String` argument that, when encountered at the start of a row while parsing, will cause the row to be skipped. When providing `header`, `skipto`, or `footerskip` arguments, it should be noted that commented rows, while ignored, still count as "rows" when skipping to a specific row. In this way, you can visually identify, for example, that column names are on row 6, and pass `header=6`, even if row 5 is a commented row and will be ignored.
+
+### Examples
+  * [Ignoring commented rows](@ref comment_example)
+
+## [`ignoreemptyrows`](@id ignoreemptyrows)
+
+This argument specifies whether "empty rows", where consecutive [newlines](@ref newlines) are parsed, should be ignored or not. By default, they are. If `ignoreemptyrows=false`, then for an empty row, all existing columns will have `missing` assigned to their value for that row. Similar to commented rows, empty rows also still count as "rows" when any of the `header`, `skipto`, or `footerskip` arguments are provided.
+
+### Examples
+  * [Ignoring empty rows](@ref ignoreemptyrows_example)
+
+## [`select` / `drop`](@id select)
+
+Arguments that control which columns from the input data will actually be parsed and available after processing. `select` controls which columns _will_ be accessible after parsing while `drop` controls which columns to _ignore_. Either argument can be provided as a vector of `Integer`, `String`, or `Symbol`, specifing the column numbers or names to include/exclude. A vector of `Bool` matching the number of columns in the input data can also be provided, where each element specifies whether the corresponding column should be included/excluded. Finally, these arguments can also be given as boolean functions, of the form `(i, name) -> Bool`, where each column number and name will be given as arguments and the result of the function will determine if the column will be included/excluded.
+
+### Examples
+  * [Including/excluding columns](@ref select_example)
+
+## [`limit`](@id limit)
+
+An `Integer` argument to specify the number of rows that should be read from the data. Can be used in conjunction with [`skipto`](@ref skipto) to read contiguous chunks of a file. Note that with multithreaded parsing (when the data is deemed large enough), it can be difficult for parsing to determine the exact # of rows to limit to, so it may or may not return exactly `limit` number of rows. To ensure an exact limit on larger files, also pass `ntasks=1` to force single-threaded parsing.
+
+### Examples
+  * [Limiting number of rows from data](@ref limit_example)
+
+## [`ntasks`](@id ntasks)
+
+NOTE: not applicable to `CSV.Rows`
+
+For large enough data inputs, `ntasks` controls the number of multithreaded tasks used to concurrently parse the data. By default, it uses `Threads.nthreads()`, which is the number of threads the julia process was started with, either via `julia -t N` or the `JULIA_NUM_THREADS` environment variable. To avoid multithreaded parsing, even on large files, pass `ntasks=1`. This argument is only applicable to `CSV.File`, not `CSV.Rows`. For `CSV.Chunks`, it controls the total number of chunk iterations a large file will be split up into for parsing.
+
+## [`rows_to_check`](@id rows_to_check)
+
+NOTE: not applicable to `CSV.Rows`
+
+When input data is large enough, parsing will attempt to "chunk" up the data for multithreaded tasks to parse concurrently. To chunk up the data, it is split up into even chunks, then initial parsers attempt to identify the correct start of the first row of that chunk. Once the start of the chunk's first row is found, each parser will check `rows_to_check` number of rows to ensure the expected number of columns are present.
+
+## [`missingstring`](@id missingstring)
+
+Argument to control how `missing` values are handled while parsing input data. The default is `missingstring=""`, which means two consecutive delimiters, like `,,`, will result in a cell being set as a `missing` value. Otherwise, you can pass a single string to use as a "sentinel", like `missingstring="NA"`, or a vector of strings, where _each_ will be checked for when parsing, like `missingstring=["NA", "NAN", "NULL"]`, and if _any_ match, the cell will be set to `missing`. By passing `missingstring=nothing`, no `missing` values will be checked for while parsing.
+
+### Examples
+  * [Specifying custom missing strings](@ref missing_string_example)
+
+## [`delim`](@id delim)
+
+A `Char` or `String` argument that parsing looks for in the data input that separates distinct columns on each row. If no argument is provided (the default), parsing will try to detect the most consistent delimiter on the first 10 rows of the input, falling back to a single comma (`,`) if no other delimiter can be detected consistently.
+
+### Examples
+  * [String delimiter](@ref string_delim)
+
+## [`ignorerepeated`](@id ignorerepeated)
+
+A `Bool` argument, default `false`, that, if set to `true`, will cause parsing to ignore any number of consecutive delimiters between columns. This option can often be used to accurately parse fixed-width data inputs, where columns are delimited with a fixed number of delimiters, or a row is fixed-width and columns may have a variable number of delimiters between them based on the length of cell values.
+
+### Examples
+  * [Fixed width files](@ref ignorerepeated_example)
+
+## [`quoted`](@id quoted)
+
+A `Bool` argument that controls whether parsing will check for opening/closing quote characters at the start/end of cells. Default `true`. If you happen to know a file has no quoted cells, it can simplify parsing to pass `quoted=false`, so parsing avoids treating the `quotechar` or `openquotechar`/`closequotechar` arguments specially.
+
+### Examples
+  * [Turning off quoted cell parsing](@ref quoted_example)
+
+## [`quotechar` / `openquotechar` / `closequotechar`](@id quotechar)
+
+An ASCII `Char` argument (or arguments if both `openquotechar` and `closequotechar` are provided) that parsing uses to handle "quoted" cells. If a cell string value contains the [delim](@ref delim) argument, or a newline, it should start and end with `quotechar`, or start with `openquotechar` and end with `closequotechar` so parsing knows to treat the `delim` or newline as part of the cell _value_ instead of as significant parsing characters. If the `quotechar` or `closequotechar` characters also need to appear in the cell value, they should be properly escaped via the [escapechar](@ref escapechar) argument.
+
+### Examples
+  * [Quoted & escaped fields](@ref quotechar_example)
+
+## [`escapechar`](@id escapechar)
+
+An ASCII `Char` argument that parsing uses when parsing quoted cells and the `quotechar` or `closequotechar` characters appear in a cell string value. If the `escapechar` character is encountered inside a quoted cell, it will be "skipped", and the following character will not be checked for parsing significance, but just treated as another character in the value of the cell. Note the `escapechar` is _not_ included in the value of the cell, but is ignored completely.
+
+## [`dateformat`](@id dateformat)
+
+A `String` or `AbstractDict` argument that controls how parsing detects datetime values in the data input. As a single `String` (or `DateFormat`) argument, the same format will be applied to _all_ columns in the file. For columns without type information provided otherwise, parsing will use the provided format string to check if the cell is parseable and if so, will attempt to parse the entire column as the datetime type (`Time`, `Date`, or `DateTime`). By default, if no `dateformat` argument is explicitly provided, parsing will try to detect any of `Time`, `Date`, or `DateTime` types following the standard `Dates.ISOTimeFormat`, `Dates.ISODateFormat`, or `Dates.ISODateTimeFormat` formats, respectively. If a datetime type is provided for a column, (see the [types](@ref types) argument), then the `dateformat` format string needs to match the format of values in that column, otherwise, a warning will be emitted and the value will be replaced with a `missing` value (this behavior is also configurable via the [strict](@ref) and [silencewarnings](@ref strict) arguments). If an `AbstractDict` is provided, different `dateformat` strings can be provided for specific columns; the provided dict can map either an `Integer` for column number, or a `String` or `Symbol` for column name to the dateformat string that should be used for that column. Columns not mapped in the dict argument will use the default format strings mentioned above.
+
+### Examples
+  * [DateFormat](@ref dateformat_example)
+
+## [`decimal`](@id decimal)
+
+An ASCII `Char` argument that is used when parsing float values that indicates where the fractional portion of the float value begins. i.e. for the truncated values of pie `3.14`, the `'.'` character separates the `3` and `14` values, whereas for `3,14` (common European notation), the `','` character separates the fractional portion. By default, `decimal='.'`.
+
+### Examples
+  * [Custom decimal separator](@ref decimal_example)
+
+## [`truestrings` / `falsestrings`](@id truestrings)
+
+These arguments can be provided as `Vector{String}` to specify custom values that should be treated as the `Bool` `true`/`false` values for all the columns of a data input. By default, `["true", "True", "TRUE", "T", "1"]` string values are used to detect `true` values, and `["false", "False", "FALSE", "F", "0"]` string values are used to detect `false` values. Note that even though `"1"` and `"0"` _can_ be used to parse `true`/`false` values, in terms of _auto_ detecting column types, those values will be parsed as `Int64` first, instead of `Bool`. To instead parse those values as `Bool`s for a column, you can manually provide that column's type as `Bool` (see the [type](@ref types) argument).
+
+### Examples
+  * [Custom bool strings](@ref truestrings_example)
+
+## [`types`](@id types)
+
+Argument to control the types of columns that get parsed in the data input. Can be provided as a single `Type`, an `AbstractVector` of types, or an `AbstractDict`. If a single type is provided, like `types=Float64`, then _all_ columns in the data input will be parsed as `Float64`. If a column's value isn't a valid `Float64` value, then a warning will be emitted, unless `silencewarnings=false` is passed, then no warning will be printed. However, if `strict=true` is passed, then an error will be thrown instead, regarldess of the `silencewarnings` argument. The `types` argument can also be provided as an `AbstractVector{Type}`, wherein the length of the vector should match the number of columns in the data input, and each element gives the type of the corresponding column in order. If provided as an `AbstractDict`, then specific columns can have their column type specified, with the key of the dict being an `Integer` for column number, or `String` or `Symbol` for column name, and the dict value being the column type. Unspecified columns will have their column type auto-detected while parsing. By default, `types=nothing`, which means all column types in the data input will be detected while parsing. Note that it isn't necessary to pass `types=Union{Float64, Missing}` if the data input contains `missing` values. Parsing will detect `missing` values if present, and promote any manually provided column types from the singular (`Float64`) to the missing equivalent (`Union{Float64, Missing}`) automatically. Standard types will be auto-detected in the following order when not otherwise specified:  `Int64`, `Float64`, `Date`, `DateTime`, `Time`, `Bool`, `String`.
+
+Non-standard types can be provided, like `Dec64` from the DecFP.jl package, but must support the `Base.tryparse(T, str)` function for parsing a value from a string. This allows, for example, easily defining a custom type, like `struct Float64Array; values::Vector{Float64}; end`, as long as a corresponding `Base.tryparse` definition is defined, like `Base.tryparse(::Type{Float64Array}, str) = Float64Array(map(x -> parse(Float64, x), split(str, ';')))`, where a single cell in the data input is like `1.23;4.56;7.89`.
+
+Note that the default [stringtype](@ref stringtype) can be overridden by providing a column's type manually, like `CSV.File(source; types=Dict(1 => String), stringtype=PosLenString)`, where the first column will be parsed as a `String`, while any other string columns will have the `PosLenString` type.
+
+### Examples
+  * [Matrix-like Data](@ref matrix_example)
+  * [Providing types](@ref types_example)
+
+## [`typemap`](@id typemap)
+
+A `Dict{Type, Type}` argument that allows replacing a non-`String` standard type with another type when a column's type is auto-detected. Most commonly, this would be used to force all numeric columns to be `Float64`, like `typemap=Dict(Int64 => Float64)`, which would cause any columns detected as `Int64` to be parsed as `Float64` instead. Another common case would be wanting all columns of a specific type to be parsed as strings instead, like `typemap=Dict(Date => String)`, which will cause any columns detected as `Date` to be parsed as `String` instead.
+
+### Examples
+  * [Typemap](@ref typemap_example)
+
+## [`pool`](@id pool)
+
+Argument that controls whether columns will be returned as `PooledArray`s. Can be provided as a `Bool`, `Float64`, vector of `Bool` or `Float64`, or dict mapping column number/name to `Bool` or `Float64`. As a `Bool`, controls absolutely whether a column will be pooled or not; if passed as a single `Bool` argument like `pool=true`, then all string columns will be pooled, regardless of cardinality. When passed as a `Float64`, the value should be between `0.0` and `1.0` indicating the threshold under which the % of unique values found in the column will result in the column being pooled. For example, if `pool=0.1`, then all string columns with a unique value % less than 10% will be returned as `PooledArray`, while other string columns will be normal string vectors. As mentioned, when the `pool` argument is a single `Bool` or `Float64`, only string columns will be considered for pooling. When a vector or dict is provided, the pooling for any column can be provided as a `Bool` or `Float64`. Similar to the [types](@ref types) argument, providing a vector to `pool` should have an element for each column in the data input, while a dict argument can map column number/name to `Bool` or `Float64` for specific columns. Unspecified columns will not be pooled when the argument is a dict.
+
+### Examples
+  * [Pooled values](@ref pool_example)
+
+## [`downcast`](@id downcast)
+
+A `Bool` argument that controls whether `Integer` detected column types will be "shrunk" to the smallest possible integer type. Argument is `false` by default. Only applies to auto-detected column types; i.e. if a column type is provided manually as `Int64`, it will not be shrunk. Useful for shrinking the overall memory footprint of parsed data, though care should be taken when processing the results as Julia by default as [integer overflow](https://en.wikipedia.org/wiki/Integer_overflow) behavior, which is increasingly likely the smaller the integer type.
+
+## [`stringtype`](@id stringtype)
+
+An argument that controls the precise type of string columns. Supported values are `InlineString` (the default), `PosLenString`, or `String`. The various string types are aimed at being mostly transparent to most users. In certain workflows, however, it can be advantageous to be more specific. Here's a quick rundown of the possible options:
+
+  * `InlineString`: a set of fixed-width, stack-allocated primitive types. Can take memory pressure off the GC because they aren't reference types/on the heap. For very large files with string columns that have a fairly low variance in string length, this can provide much better GC interaction than `String`. When string length has a high variance, it can lead to lots of "wasted space", since an entire column will be promoted to the smallest InlineString type that fits the longest string value. For small strings, that can mean a lot of wasted space when they're promoted to a high fixed-width.
+  * `PosLenString`: results in columns returned as `PosLenStringVector` (or `ChainedVector{PosLenStringVector}` for the multithreaded case), which holds a reference to the original input data, and acts as one large "view" vector into the original data where each cell begins/ends. Can result in the smallest memory footprint for string columns. `PosLenStringVector`, however, does not support traditional mutable operations like regular `Vector`s, like `push!`, `append!`, or `deleteat!`.
+  * `String`: each string must be heap-allocated, which can result in higher GC pressure in very large files. But columns are returned as normal `Vector{String}` (or `ChainedVector{Vector{String}}`), which can be processed normally, including any mutating operations.
+
+## [`strict` / `silencewarnings` / `maxwarnings`](@id strict)
+
+Arguments that control error behavior when invalid values are encountered while parsing. Only applicable when types are provided manually by the user via the [types](@ref types) argument. If a column type is manually provided, but an invalid value is encountered, the default behavior is to set the value for that cell to `missing`, emit a warning (i.e. `silencewarnings=false` and `strict=false`), but only up to 100 total warnings and then they'll be silenced (i.e. `maxwarnings=100`). If `strict=true`, then invalid values will result in an error being thrown instead of any warnings emitted.
+
+## [`debug`](@id debug)
+
+A `Bool` argument that controls the printing of extra "debug" information while parsing. Can be useful if parsing doesn't produce the expected result or a bug is suspected in parsing somehow.
+
+# Common terms
+
+### Standard types
+
+The types that are detected by default when column types are not provided by the user otherwise. They include: `Int64`, `Float64`, `Date`, `DateTime`, `Time`, `Bool`, and `String`.
+
+### [Newlines](@id newlines)
+
+For all parsing functionality, newlines are detected/parsed automatically, regardless if they're present in the data as a single newline character (`'\n'`), single return character ('`\r'`), or full CRLF sequence (`"\r\n"`).
+
+### Cardinality
+
+Refers to the ratio of unique values to total number of values in a column. Columns with "low cardinality" have a low % of unique values, or put another way, there are only a few unique values for the entire column of data where unique values are repeated many times. Columns with "high cardinality" have a high % of unique values relative to total number of values. Think of these as "id-like" columns where each or almost each value is a unique identifier with no (or few) repeated values.
+
+# Writing
+
 ```@docs
-CSV.File
-CSV.Chunks
-CSV.Rows
 CSV.write
 CSV.RowWriter
-```
-
-## Examples
-### Basic
-#### File
-```
-col1,col2,col3,col4,col5,col6,col7,col8
-,1,1.0,1,one,2019-01-01,2019-01-01T00:00:00,true
-,2,2.0,2,two,2019-01-02,2019-01-02T00:00:00,false
-,3,3.0,3.14,three,2019-01-03,2019-01-03T00:00:00,true
-```
-#### Syntax
-```julia
-CSV.File(file)
-```
-By default, `CSV.File` will automatically detect this file's delimiter `','`, and the type of each column. By default, it treats "empty fields" as `missing` (the entire first column in this example). It also automatically handles promoting types, like the 4th column, where the first two values are `Int`, but the 3rd row has a `Float64` value (`3.14`). The resulting column's type will be `Float64`. Parsing can detect `Int64`, `Float64`, `Date`, `DateTime`, `Time` and `Bool` types, with `String` as the fallback type for any column.
-
-### Auto-Delimiter Detection
-#### File
-```
-col1|col2
-1|2
-3|4
-```
-#### Syntax
-```julia
-CSV.File(file)
-```
-By default, `CSV.File` will try to detect a file's delimiter from the first 10 lines of the file; candidate delimiters include `','`, `'\t'`, `' '`, `'|'`, `';'`, and `':'`. If it can't auto-detect the delimiter, it will assume `','`. If your file includes a different character or string delimiter, just pass `delim=X` where `X` is the character or string. For this file you could also do `CSV.File(file; delim='|')`.
-
-### String Delimiter
-#### File
-```
-col1::col2
-1::2
-3::4
-```
-#### Syntax
-```julia
-CSV.File(file; delim="::")
-```
-In this example, our file has fields separated by the string `"::"`; we can pass this as the `delim` keyword argument.
-
-### No Header
-#### File
-```
-1,2,3
-4,5,6
-7,8,9
-```
-#### Syntax
-```julia
-CSV.File(file; header=false)
-CSV.File(file; header=["col1", "col2", "col3"])
-CSV.File(file; header=[:col1, :col2, :col3])
-```
-In this file, there is no header row that contains column names. In the first option, we pass `header=false`, and column names will be generated like `[:Column1, :Column2, :Column3]`. In the two latter examples, we pass our own explicit column names, either as `String`s or `Symbol`s.
-
-### Normalize Column Names
-#### File
-```
-column one,column two, column three
-1,2,3
-4,5,6
-```
-#### Syntax
-```julia
-CSV.File(file; normalizenames=true)
-```
-In this file, our column names have spaces in them. It can be convenient with a `CSV.File` or `DataFrame` to access entire columns via property access, e.g. if `f = CSV.File(file)` with column names like `[:col1, :col2]`, I can access the entire first column of the file like `f.col1`, or for the second, `f.col2`. The call of `f.col1` actually gets rewritten to the function call `getproperty(f, :col1)`, which is the function implemented in CSV.jl that returns the `col1` column from the file. When a column name is not a single atom Julia identifier, this is inconvient, because `f.column one` is not valid, so I would have to manually call `getproperty(f, Symbol("column one")`. `normalizenames=true` comes to our rescue; it will replace invalid identifier characters with underscores to ensure each column is a valid Julia identifier, so for this file, we would end up with column names like `[:column_one, :column_two]`. You can call `propertynames(f)` on any `CSV.File` to see the parsed column names.
-
-### Datarow
-#### File
-```
-col1,col2,col3
-metadata1,metadata2,metadata3
-extra1,extra2,extra3
-1,2,3
-4,5,6
-7,8,9
-```
-#### Syntax
-```julia
-CSV.File(file; skipto=4)
-```
-This file has extra rows in between our header row `col1,col2,col3` and the start of our data `1,2,3` on row 4. We can use the `skipto` keyword arguments to provide a row number where the "data" of our file begins.
-
-### Reading Chunks
-#### File
-```
-col1,col2,col3
-1,2,3
-4,5,6
-7,8,9
-10,11,12
-13,14,15
-16,17,18
-19,20,21
-```
-#### Syntax
-```julia
-CSV.File(file; limit=3)
-CSV.File(file; skipto=4, limit=1)
-CSV.File(file; skipto=7, footerskip=1)
-```
-In this example, we desire to only read a subset of rows from the file. Using the `limit`, `skipto`, and `footerskip` keyword arguments, we can specify the exact rows we wish to parse.
-
-### Transposed Data
-#### File
-```
-col1,1,2,3
-col2,4,5,6
-col3,7,8,9
-```
-#### Syntax
-```julia
-CSV.File(file; transpose=true)
-```
-This file has the column names in the first column, and data that extends alongs rows horizontally. The data for `col1` is all on the first row, similarly for `col2` and its data on row 2. In this case, we wish to read the file "transposed", or treating rows as columns. By passing `transpose=true`, CSV.jl will read column names from the first column, and the data for each column from its corresponding row.
-
-### Commented Rows
-#### File
-```
-col1,col2,col3
-# this row is commented and we'd like to ignore it while parsing
-1,2,3
-4,5,6
-```
-#### Syntax
-```julia
-CSV.File(file; comment="#")
-CSV.File(file; skipto=3)
-```
-This file has some rows that begin with the `"#"` string and denote breaks in the data for commentary. We wish to ignore these rows for purposes of reading data. We can pass `comment="#"` and parsing will ignore any row that begins with this string. Alternatively, we can pass `skipto=3` for this example specifically since there is only the one row to skip.
-
-### Missing Strings
-#### File
-```
-code,age,score
-0,21,3.42
-1,42,6.55
--999,81,NA
--999,83,NA
-```
-#### Syntax
-```julia
-CSV.File(file; missingstring="-999")
-CSV.File(file; missingstring=["-999", "NA"])
-```
-In this file, our `code` column has two expected codes, `0` and `1`, but also a few "invalid" codes, which are input as `-999`. We'd like to read the column as `Int64`, but treat the `-999` values as "missing" values. By passing `missingstring="-999"`, we signal that this value should be replaced with the literal `missing` value builtin to the Julia language. We can then do things like `dropmissing(f.col1)` to ignore those values, for example. In the second recommended syntax, we also want to treat the `NA` values in our `score` column as `missing`, so we pass both strings like `missingstring=["-999", "NA"]`.
-
-### Fixed Width Files
-#### File
-```
-col1    col2 col3
-123431  2    3421
-2355    346  7543
-```
-#### Syntax
-```julia
-CSV.File(file; delim=' ', ignorerepeated=true)
-```
-This is an example of a "fixed width" file, where each column is the same number of characters away from each other on each row. This is different from a normal delimited file where each occurence of a delimiter indicates a separate field. With fixed width, however, fields are "padded" with extra delimiters (in this case `' '`) so that each column is the same number of characters each time. In addition to our `delim`, we can pass `ignorerepeated=true`, which tells parsing that consecutive delimiters should be treated as a single delimiter.
-
-### Quoted & Escaped Fields
-#### File
-```
-col1,col2
-"quoted field with a delimiter , inside","quoted field that contains a \\n newline and ""inner quotes"""
-unquoted field,unquoted field with "inner quotes"
-```
-#### Syntax
-```julia
-CSV.File(file; quotechar='"', escapechar='"')
-CSV.File(file; openquotechar='"', closequotechar='"', escapechar='"')
-```
-In this file, we have a few "quoted" fields, which means the field's value starts and ends with `quotechar` (or `openquotechar` and `closequotechar`, respectively). Quoted fields allow the field to contain characters that would otherwise be significant to parsing, such as delimiters or newline characters. When quoted, parsing will ignore these otherwise signficant characters until the closing quote character is found. For quoted fields that need to also include the quote character itself, an escape character is provided to tell parsing to ignore the next character when looking for a close quote character. In the syntax examples, the keyword arguments are passed explicitly, but these also happen to be the default values, so just doing `CSV.File(file)` would result in successful parsing.
-
-### DateFormat
-#### File
-```
-code,date
-0,2019/01/01
-1,2019/01/02
-```
-#### Syntax
-```julia
-CSV.File(file; dateformat="yyyy/mm/dd")
-```
-In this file, our `date` column has dates that are formatted like `yyyy/mm/dd`. We can pass just such a string to the `dateformat` keyword argument to tell parsing to use it when looking for `Date` or `DateTime` columns. Note that currently, only a single `dateformat` string can be passed to parsing, meaning multiple columns with different date formats cannot all be parsed as `Date`/`DateTime`.
-
-### Custom Decimal Separator
-#### File
-```
-col1;col2;col3
-1,01;2,02;3,03
-4,04;5,05;6,06
-```
-#### Syntax
-```julia
-CSV.File(file; delim=';', decimal=',')
-```
-In many places in the world, floating point number decimals are separated with a comma instead of a period (`3,14` vs. `3.14`). We can correctly parse these numbers by passing in the `decimal=','` keyword argument. Note that we probably need to explicitly pass `delim=';'` in this case, since the parser will probably think that it detected `','` as the delimiter.
-
-### Custom Bool Strings
-#### File
-```
-id,paid,attended
-0,T,TRUE
-1,F,TRUE
-2,T,FALSE
-3,F,FALSE
-```
-#### Syntax
-```julia
-CSV.File(file; truestrings=["T", "TRUE"], falsestrings=["F", "FALSE"])
-```
-By default, parsing only considers the string values `true` and `false` as valid `Bool` values. To consider alternative values, we can pass a `Vector{String}` to the `truestrings` and `falsestrings` keyword arguments.
-
-### Matrix-like Data
-#### File
-```
-1.0 0.0 0.0
-0.0 1.0 0.0
-0.0 0.0 1.0
-```
-#### Syntax
-```julia
-CSV.File(file; header=false)
-CSV.File(file; header=false, delim=' ', type=Float64)
-```
-This file contains a 3x3 identity matrix of `Float64`. By default, parsing will detect the delimiter and type, but we can also explicitly pass `delim= ' '` and `type=Float64`, which tells parsing to explicitly treat each column as `Float64`, without having to guess the type on its own.
-
-### Providing Types
-#### File
-```
-col1,col2,col3
-1,2,3
-4,5,invalid
-6,7,8
-```
-#### Syntax
-```julia
-CSV.File(file; types=Dict(3 => Int))
-CSV.File(file; types=Dict(:col3 => Int))
-CSV.File(file; types=Dict("col3" => Int))
-CSV.File(file; types=[Int, Int, Int])
-CSV.File(file; types=[Int, Int, Int], silencewarnings=true)
-CSV.File(file; types=[Int, Int, Int], strict=true)
-```
-In this file, our 3rd column has an invalid value on the 2nd row `invalid`. Let's imagine we'd still like to treat it as an `Int` column, and ignore the `invalid` value. The syntax examples provide several ways we can tell parsing to treat the 3rd column as `Int`, by referring to column index `3`, or column name with `Symbol` or `String`. We can also provide an entire `Vector` of types for each column (and which needs to match the length of columns in the file). There are two additional keyword arguments that control parsing behavior; in the first 4 syntax examples, we would see a warning printed like `"warning: invalid Int64 value on row 2, column 3"`. In the fifth example, passing `silencewarnings=true` will suppress this warning printing. In the last syntax example, passing `strict=true` will result in an error being thrown during parsing.
-
-### Typemap
-#### File
-```
-zipcode,score
-03494,9.9
-12345,6.7
-84044,3.4
-```
-#### Syntax
-```julia
-CSV.File(file; typemap=Dict(Int => String))
-CSV.File(file; types=Dict(:zipcode => String))
-```
-In this file, we have U.S. zipcodes in the first column that we'd rather not treat as `Int`, but parsing will detect it as such. In the first syntax example, we pass `typemap=Dict(Int => String)`, which tells parsing to treat any detected `Int` columns as `String` instead. In the second syntax example, we alternatively set the `zipcode` column type manually.
-
-### Pooled Values
-#### File
-```
-id,code
-A18E9,AT
-BF392,GC
-93EBC,AT
-54EE1,AT
-8CD2E,GC
-```
-#### Syntax
-```julia
-CSV.File(file)
-CSV.File(file; pool=0.4)
-CSV.File(file; pool=0.6)
-```
-In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt64`. By default, `pool=0.1`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide greater control: `pool=0.4` means that if 40% or less of a column's values are unique, then it will be pooled.
-
-### Select/Drop Columns From File
-#### File
-```
-a,b,c
-1,2,3
-4,5,6
-7,8,9
-```
-#### Syntax
-```julia
-# select
-CSV.File(file; select=[1, 3])
-CSV.File(file; select=[:a, :c])
-CSV.File(file; select=["a", "c"])
-CSV.File(file; select=[true, false, true])
-CSV.File(file; select=(i, nm) -> i in (1, 3))
-# drop
-CSV.File(file; drop=[2])
-CSV.File(file; drop=[:b])
-CSV.File(file; drop=["b"])
-CSV.File(file; drop=[false, true, false])
-CSV.File(file; drop=(i, nm) -> i == 2)
-```
-For this file, we have columns `a`, `b`, and `c`; we might only be interested in the data in columns `a` and `c`. Using the `select` or `drop` keyword arguments can allow efficiently choosing of columns from a file; columns not selected or dropped will be efficiently skipped while parsing, allowing for performance boosts. The arguments to `select` or `drop` can be one of: `AbstractVector{Int}` a collection of column indices; `AbstractVector{Symbol}` or `AbstractVector{String}` a collection of column names as `Symbol` or `String`; `AbstractVector{Bool}` a collection of `Bool` equal in length to the # of columns signaling whether a column should be selected or dropped; or a selector/drop function of the form `(i, name) -> keep_or_drop::Bool`, i.e. it takes a column index `i` and column name `name` and returns a `Bool` signaling whether a column should be selected or dropped.
-
-### Non-UTF-8 character encodings
-
-Like Julia in general, CSV.jl interprets strings as being encoded in UTF-8. The [StringEncodings](https://github.com/JuliaStrings/StringEncodings.jl) package has to be used to read or write CSV files in other character encodings.
-
-#### Example: writing to and reading from a file encoded in ISO-8859-1
-```julia
-using CSV, DataFrames, StringEncodings
-
-# writing to ISO-8859-1 file
-a = DataFrame(a = ["café", "noël"])
-open("a.csv", enc"ISO-8859-1", "w") do io
-    CSV.write(io, a)
-end
-
-# reading from ISO-8859-1 file
-CSV.File(open(read, "a.csv", enc"ISO-8859-1")) |> DataFrame
-
-# alternative: reencode data to UTF-8 in a new file and read from it
-open("a2.csv", "w") do io
-    foreach(x -> println(io, x), eachline("a.csv", enc"ISO-8859-1"))
-end
-CSV.File("a2.csv") |> DataFrame
-```
-
-Reencoding to a new file as in the last example above avoids storing an additional copy of the data in memory, which may be useful for large files that do not fit in RAM.
-
-### Reading CSV from gzip (.gz) and zip files
-
-#### Example: reading from a gzip (.gz) file
-```julia
-using CSV, DataFrames, CodecZlib, Mmap
-a = DataFrame(a = 1:3)
-CSV.write("a.csv", a)
-
-# Windows users who do not have gzip available on the PATH should manually gzip the CSV
-;gzip a.csv
-
-a_copy = CSV.File(transcode(GzipDecompressor, Mmap.mmap("a.csv.gz"))) |> DataFrame
-
-a == a_copy # true; restored successfully
-
-```
-
-#### Example: reading from a zip file
-```julia
-using ZipFile, CSV, DataFrames
-
-a = DataFrame(a = 1:3)
-CSV.write("a.csv", a)
-
-# zip the file; Windows users who do not have zip available on the PATH can manually zip the CSV
-# or write directly into the zip archive as shown below
-;zip a.zip a.csv
-
-# alternatively, write directly into the zip archive (without creating an unzipped csv file first)
-z = ZipFile.Writer("a2.zip")
-f = ZipFile.addfile(z, "a.csv", method=ZipFile.Deflate)
-a |> CSV.write(f)
-close(z)
-
-# read file from zip archive
-z = ZipFile.Reader("a.zip") # or "a2.zip"
-
-# identify the right file in zip
-a_file_in_zip = filter(x->x.name == "a.csv", z.files)[1]
-
-a_copy = CSV.File(read(a_file_in_zip)) |> DataFrame
-
-a == a_copy
 ```
