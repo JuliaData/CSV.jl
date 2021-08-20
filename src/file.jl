@@ -31,64 +31,6 @@ end
     return x
 end
 
-# main structure when parsing an entire file and inferring column types
-struct File{threaded} <: AbstractVector{Row}
-    name::String
-    names::Vector{Symbol}
-    types::Vector{Type}
-    rows::Int64
-    cols::Int64
-    columns::Vector{Column}
-    lookup::Dict{Symbol, Column}
-end
-
-getname(f::File) = getfield(f, :name)
-getnames(f::File) = getfield(f, :names)
-gettypes(f::File) = getfield(f, :types)
-getrows(f::File) = getfield(f, :rows)
-getcols(f::File) = getfield(f, :cols)
-getcolumns(f::File) = getfield(f, :columns)
-getlookup(f::File) = getfield(f, :lookup)
-getcolumn(f::File, col::Int) = getfield(f, :columns)[col]
-getcolumn(f::File, col::Symbol) = getfield(f, :lookup)[col]
-
-function Base.show(io::IO, f::File)
-    println(io, "CSV.File(\"$(getname(f))\"):")
-    println(io, "Size: $(getrows(f)) x $(getcols(f))")
-    show(io, Tables.schema(f))
-end
-
-Base.IndexStyle(::Type{<:File}) = Base.IndexLinear()
-Base.eltype(::File) = Row
-Base.size(f::File) = (getrows(f),)
-
-Tables.isrowtable(::Type{<:File}) = true
-Tables.columnaccess(::Type{<:File}) = true
-Tables.schema(f::File)  = Tables.Schema(getnames(f), gettypes(f))
-Tables.columns(f::File) = f
-Tables.columnnames(f::File) = getnames(f)
-Base.propertynames(f::File) = getnames(f)
-
-function Base.getproperty(f::File, col::Symbol)
-    lookup = getfield(f, :lookup)
-    return haskey(lookup, col) ? lookup[col].column : getfield(f, col)
-end
-
-function Base.getindex(f::File, col::Symbol)
-    lookup = getfield(f, :lookup)
-    return haskey(lookup, col) ? lookup[col].column : getfield(f, col)
-end
-
-Base.getindex(f::File, col::String) = getindex(f, Symbol(col))
-
-Tables.getcolumn(f::File, nm::Symbol) = getcolumn(f, nm).column
-Tables.getcolumn(f::File, i::Int) = getcolumn(f, i).column
-
-Base.@propagate_inbounds function Base.getindex(f::File, row::Int)
-    @boundscheck checkbounds(f, row)
-    return Row(getnames(f), getcolumns(f), getlookup(f), row)
-end
-
 """
     CSV.File(input; kwargs...) => CSV.File
 
@@ -102,6 +44,7 @@ The [`input`](@ref input) argument can be one of:
   * a `Cmd` or other `IO`
   * a csv-formatted string can be passed like `IOBuffer(str)`
   * a gzipped file, which will automatically be decompressed for parsing
+  * a `Vector` of any of the above, which will parse and vertically concatenate each source, returning a single, "long" `CSV.File`
 
 To read a csv file from a url, use the Downloads.jl stdlib or HTTP.jl package, where the resulting downloaded tempfile or `HTTP.Response` body can be passed like:
 ```julia
@@ -114,10 +57,14 @@ using HTTP, CSV
 f = CSV.File(HTTP.get(url).body)
 ```
 
-Opens the file and uses passed arguments to detect the number of columns and column types, unless column types are provided
+Opens the file or files and uses passed arguments to detect the number of columns and column types, unless column types are provided
 manually via the `types` keyword argument. Note that passing column types manually can slightly increase performance
 for each column type provided (column types can be given as a `Vector` for all columns, or specified per column via
 name or index in a `Dict`).
+
+When a `Vector` of inputs is provided, the column names and types of each separate file/input must match to be vertically concatenated. Separate threads will
+be used to parse each input, which will each parse their input using just the single thread. The results of all threads are then vertically concatenated using
+`ChainedVector`s to lazily concatenate each thread's columns.
 
 For text encodings other than UTF-8, load the [StringEncodings.jl](https://github.com/JuliaStrings/StringEncodings.jl)
 package and call e.g. `CSV.File(open(read, input, enc"ISO-8859-1"))`.
@@ -154,6 +101,63 @@ tbl = CSV.File(file) |> SQLite.load!(db, "sqlite_table")
 
 $KEYWORD_DOCS
 """
+struct File <: AbstractVector{Row}
+    name::String
+    names::Vector{Symbol}
+    types::Vector{Type}
+    rows::Int64
+    cols::Int64
+    columns::Vector{Column}
+    lookup::Dict{Symbol, Column}
+end
+
+getname(f::File) = getfield(f, :name)
+getnames(f::File) = getfield(f, :names)
+gettypes(f::File) = getfield(f, :types)
+getrows(f::File) = getfield(f, :rows)
+getcols(f::File) = getfield(f, :cols)
+getcolumns(f::File) = getfield(f, :columns)
+getlookup(f::File) = getfield(f, :lookup)
+getcolumn(f::File, col::Int) = getfield(f, :columns)[col]
+getcolumn(f::File, col::Symbol) = getfield(f, :lookup)[col]
+
+function Base.show(io::IO, f::File)
+    println(io, "CSV.File(\"$(getname(f))\"):")
+    println(io, "Size: $(getrows(f)) x $(getcols(f))")
+    show(io, Tables.schema(f))
+end
+
+Base.IndexStyle(::Type{File}) = Base.IndexLinear()
+Base.eltype(::File) = Row
+Base.size(f::File) = (getrows(f),)
+
+Tables.isrowtable(::Type{File}) = true
+Tables.columnaccess(::Type{File}) = true
+Tables.schema(f::File)  = Tables.Schema(getnames(f), gettypes(f))
+Tables.columns(f::File) = f
+Tables.columnnames(f::File) = getnames(f)
+Base.propertynames(f::File) = getnames(f)
+
+function Base.getproperty(f::File, col::Symbol)
+    lookup = getfield(f, :lookup)
+    return haskey(lookup, col) ? lookup[col].column : getfield(f, col)
+end
+
+function Base.getindex(f::File, col::Symbol)
+    lookup = getfield(f, :lookup)
+    return haskey(lookup, col) ? lookup[col].column : getfield(f, col)
+end
+
+Base.getindex(f::File, col::String) = getindex(f, Symbol(col))
+
+Tables.getcolumn(f::File, nm::Symbol) = getcolumn(f, nm).column
+Tables.getcolumn(f::File, i::Int) = getcolumn(f, i).column
+
+Base.@propagate_inbounds function Base.getindex(f::File, row::Int)
+    @boundscheck checkbounds(f, row)
+    return Row(getnames(f), getcolumns(f), getlookup(f), row)
+end
+
 function File(source;
     # file options
     # header can be a row number, range of rows, or actual string vector
@@ -449,7 +453,7 @@ function File(ctx::Context, chunking::Bool=false)
         rm(ctx.tempfile; force=true)
     end
     end # @inbounds begin
-    return File{ctx.threaded}(ctx.name, names, types, finalrows, length(columns), columns, lookup)
+    return File(ctx.name, names, types, finalrows, length(columns), columns, lookup)
 end
 
 const EMPTY_INT_ARRAY = Int64[]
@@ -959,4 +963,31 @@ end
         end
     end
     return
+end
+
+function File(sources::Vector; kw...)
+    isempty(sources) && throw(ArgumentError("unable to read delimited data from empty sources array"))
+    length(sources) == 1 && return File(sources[1]; kw...)
+    kws = merge(values(kw), (ntasks=1,))
+    f = File(sources[1]; kws...)
+    rows = f.rows
+    for col in f.columns
+        col.column = ChainedVector([col.column])
+    end
+    files = Vector{File}(undef, length(sources) - 1)
+    @sync for i = 2:length(sources)
+        Threads.@spawn begin
+            files[i - 1] = File(sources[i]; kws...)
+        end
+    end
+    for i = 2:length(sources)
+        f2 = files[i - 1]
+        f.names == f2.names || throw(ArgumentError("column names don't match between delimited data inputs"))
+        f.types == f2.types || throw(ArgumentError("column types don't match between delimited data inputs"))
+        rows += f2.rows
+        for j = 1:length(f.columns)
+            append!(f.columns[j].column, f2.columns[j].column)
+        end
+    end
+    return File(f.name, f.names, f.types, rows, f.cols, f.columns, f.lookup)
 end

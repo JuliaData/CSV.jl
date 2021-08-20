@@ -49,7 +49,8 @@ include("write.jl")
 """
 `CSV.read(source, sink::T; kwargs...)` => T
 
-Read and parses a delimited file, materializing directly using the `sink` function.
+Read and parses a delimited file or files, materializing directly using the `sink` function. Allows avoiding excessive copies
+of columns for certain sinks like `DataFrame`.
 
 $KEYWORD_DOCS
 """
