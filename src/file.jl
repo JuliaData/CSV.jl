@@ -833,6 +833,11 @@ function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::
                 if type === Int8 || type === Int16 || type === Int32 || type === Int64 || type === Int128
                     newT = _widen(type)
                     while newT !== nothing && !Parsers.ok(code)
+                        newT = get(ctx.typemap, newT, newT)
+                        if newT isa StringTypes
+                            code |= PROMOTE_TO_STRING
+                            break
+                        end
                         code = trytopromote!(type, newT, buf, pos, len, col, row)
                         newT = _widen(newT)
                     end

@@ -661,4 +661,9 @@ row = first(CSV.Rows(IOBuffer("a,b,c\n1,2,3\n\n"); select=[:a, :c]))
 @test_throws ArgumentError CSV.File(IOBuffer("a,b,c\n1,2,3"); pool=Dict(:d => true))
 @test_throws ArgumentError CSV.File(IOBuffer("a,b,c\n1,2,3"); pool=Dict("d" => true))
 
+# 871
+
+f = CSV.File(IOBuffer("a,b,c\n1,2,3\n3.14,5,6\n"); typemap=Dict(Float64 => String))
+@test f.a isa Vector{<:AbstractString}
+
 end
