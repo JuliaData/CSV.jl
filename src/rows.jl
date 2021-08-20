@@ -1,3 +1,7 @@
+mutable struct TempFileWrapper
+    file::Union{String, Nothing}
+end
+
 # structure for iterating over a csv file
 # no automatic type inference is done, but types are allowed to be passed
 # for as many columns as desired; `CSV.detect(row, i)` can also be used to
@@ -19,6 +23,7 @@ struct Rows{transpose, IO, customtypes, V, stringtype}
     numwarnings::Base.RefValue{Int}
     maxwarnings::Int
     ctx::Context
+    tempfile::TempFileWrapper
 end
 
 function Base.show(io::IO, r::Rows)
@@ -123,6 +128,12 @@ function Rows(source;
         end
     end
     lookup = Dict(nm=>i for (i, nm) in enumerate(ctx.names))
+    tempfile = TempFileWrapper(ctx.tempfile)
+    if tempfile.file !== nothing
+        finalizer(tempfile) do x
+            rm(x.file; force=true)
+        end
+    end
     return Rows{transpose, typeof(ctx.buf), ctx.customtypes, eltype(values), stringtype}(
         ctx.name,
         ctx.names,
@@ -139,7 +150,8 @@ function Rows(source;
         lookup,
         Ref(0),
         maxwarnings,
-        ctx
+        ctx,
+        tempfile
     )
 end
 
