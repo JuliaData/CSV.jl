@@ -648,4 +648,17 @@ row = first(CSV.Rows(IOBuffer("a,b,c\n1,2,3\n\n"); select=[:a, :c]))
 @test length(row) == 2
 @test row.a == "1" && row.c == "3"
 
+# 802; throw error when invalid columns passed in types/dateformat/pool keyword arguments
+@test_throws ArgumentError CSV.File(IOBuffer("a,b,c\n1,2,3"); types=Dict(4 => Float64))
+@test_throws ArgumentError CSV.File(IOBuffer("a,b,c\n1,2,3"); types=Dict(:d => Float64))
+@test_throws ArgumentError CSV.File(IOBuffer("a,b,c\n1,2,3"); types=Dict("d" => Float64))
+
+@test_throws ArgumentError CSV.File(IOBuffer("a,b,c\n1,2,3"); dateformat=Dict(4 => "dd/mm/yyyy"))
+@test_throws ArgumentError CSV.File(IOBuffer("a,b,c\n1,2,3"); dateformat=Dict(:d => "dd/mm/yyyy"))
+@test_throws ArgumentError CSV.File(IOBuffer("a,b,c\n1,2,3"); dateformat=Dict("d" => "dd/mm/yyyy"))
+
+@test_throws ArgumentError CSV.File(IOBuffer("a,b,c\n1,2,3"); pool=Dict(4 => true))
+@test_throws ArgumentError CSV.File(IOBuffer("a,b,c\n1,2,3"); pool=Dict(:d => true))
+@test_throws ArgumentError CSV.File(IOBuffer("a,b,c\n1,2,3"); pool=Dict("d" => true))
+
 end
