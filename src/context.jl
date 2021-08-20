@@ -128,6 +128,17 @@ function checkvaliddelim(delim)
                             "the following delimiters are invalid: '\\r', '\\n', '\\0'"))
 end
 
+function checkinvalidcolumns(dict, argname, ncols, names)
+    for (k, _) in dict
+        if k isa Integer
+            (0 < k <= ncols) || throw(ArgumentError("invalid column number provided in `$argname` keyword argument: $k. Column number must be 0 < i <= $ncols as detected in the data"))
+        else
+            Symbol(k) in names || throw(ArgumentError("invalid column name provided in `$argname` keyword argument: $k. Valid column names detected in the data are: $names"))
+        end
+    end
+    return
+end
+
 function Context(source,
     # file options
     # header can be a row number, range of rows, or actual string vector
@@ -342,6 +353,7 @@ function Context(source,
                 customtypes = tupcat(customtypes, nonstandardtype(col.type))
             end
         end
+        checkinvalidcolumns(types, "types", ncols, names)
     else
         T = types === nothing ? (streaming ? Union{stringtype, Missing} : NeedsTypeDetection) : types
         columns = Vector{Column}(undef, ncols)
@@ -375,6 +387,7 @@ function Context(source,
                 columns[i].options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, true, parsingdebug)
             end
         end
+        checkinvalidcolumns(dateformat, "dateformat", ncols, names)
     end
 
     # pool keyword
@@ -389,6 +402,7 @@ function Context(source,
             for i = 1:ncols
                 columns[i].pool = getpool(getordefault(pool, names[i], i, 0.0))
             end
+            checkinvalidcolumns(pool, "pool", ncols, names)
         else
             finalpool = getpool(pool)
         end
