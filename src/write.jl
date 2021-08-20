@@ -346,8 +346,8 @@ end
     A `nothing` value was found in column $col and it is not a printable value.
     There are several ways to handle this situation:
     1) fix the data, perhaps replace `nothing` with `missing`,
-    2) use `transform` option with a function to replace `nothing` with whatever value (including `missing`), or
-    3) use `Tables.transform` option to transform specific columns
+    2) use `transform` option with a function to replace `nothing` with whatever value (including `missing`), like `CSV.write(...; transform=(col, val) -> something(val, missing))` or
+    3) use `TableOperations.transform` option to transform specific columns
     """)
 
 writerow(buf, pos, len, io, ::Nothing, row, cols, opts) =
