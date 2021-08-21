@@ -158,7 +158,7 @@ Base.@propagate_inbounds function Base.getindex(f::File, row::Int)
     return Row(getnames(f), getcolumns(f), getlookup(f), row)
 end
 
-function File(source;
+function File(source::Union{Vector{UInt8}, IO, Cmd, AbstractString, AbstractPath};
     # file options
     # header can be a row number, range of rows, or actual string vector
     header::Union{Integer, Vector{Symbol}, Vector{String}, AbstractVector{<:Integer}}=1,

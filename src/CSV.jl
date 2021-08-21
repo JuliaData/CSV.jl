@@ -21,6 +21,8 @@ using WeakRefStrings
 export PosLenString, InlineString
 # CodecZlib is used for unzipping gzip files
 using CodecZlib
+# FilePathsBase allows more structured file path types
+using FilePathsBase
 
 struct Error <: Exception
     msg::String
