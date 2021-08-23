@@ -199,7 +199,7 @@ function buffer_to_tempfile(codec, x)
     return Mmap.mmap(file), file
 end
 
-getname(buf::Vector{UInt8}) = "<raw buffer>"
+getname(buf::AbstractVector{UInt8}) = "<raw buffer>"
 getname(cmd::Cmd) = string(cmd)
 getname(str) = string(str)
 getname(io::I) where {I <: IO} = string("<", I, ">")

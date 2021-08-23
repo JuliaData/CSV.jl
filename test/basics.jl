@@ -507,12 +507,8 @@ row = first(r)
 
 @test CSV.File(IOBuffer("col1\n1")).col1 == [1]
 
-rows = 0
 chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString)
-for chunk in chunks
-    rows += length(chunk)
-end
-@test rows == 10000
+@test sum(length, chunks) == 10000
 @test Tables.partitions(chunks) === chunks
 
 # 668
@@ -561,7 +557,7 @@ f = CSV.File(transcode(GzipDecompressor, Mmap.mmap(joinpath(dir, "randoms.csv.gz
 # 723
 f = CSV.File(IOBuffer("col1,col2,col3\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n1.0,2.0,3.0\n"); ntasks=2)
 @test length(f) == 4
-@test f isa CSV.File{false}
+@test f isa CSV.File
 
 # 726
 f = CSV.File(IOBuffer("col1,col2,col3,col4,col5\na,b,c,d,e\n" * "a,b,c,d\n"^101))
@@ -572,7 +568,7 @@ f = CSV.File(IOBuffer("col1\n\n \n  \n1\n2\n3"), missingstring=["", " ", "  "], 
 @test length(f) == 6
 @test isequal(f.col1, [missing, missing, missing, 1, 2, 3])
 
-f = CSV.File(codeunits("a\n1"))
+f = CSV.File(IOBuffer("a\n1"))
 @test length(f) == 1
 @test f.a == [1]
 

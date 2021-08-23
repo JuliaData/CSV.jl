@@ -236,4 +236,35 @@ f, st = state
 
 end
 
+@testset "CSV.File vector inputs" begin
+
+data = [
+    "a,b,c\n1,2,3\n4,5,6\n",
+    "a,b,c\n7,8,9\n10,11,12\n",
+    "a,b,c\n13,14,15\n16,17,18",
+]
+
+f = CSV.File(map(IOBuffer, data))
+@test length(f) == 6
+@test f.names == [:a, :b, :c]
+@test f.a == [1, 4, 7, 10, 13, 16]
+
+data = [
+    "a,b,c\n1,2,3\n4,5,6\n",
+    "a,b,c\n7.14,8,9\n10,11,12\n",
+    "a,b,c\n13,14,15\n16,17,18",
+]
+
+@test_throws ArgumentError CSV.File(map(IOBuffer, data))
+
+data = [
+    "a,b,c\n1,2,3\n4,5,6\n",
+    "a2,b,c\n7,8,9\n10,11,12\n",
+    "a,b,c\n13,14,15\n16,17,18",
+]
+
+@test_throws ArgumentError CSV.File(map(IOBuffer, data))
+
+end
+
 end

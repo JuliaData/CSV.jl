@@ -82,7 +82,7 @@ end
 
 Base.IteratorSize(::Type{Chunks}) = Base.HasLength()
 Base.length(x::Chunks) = x.ctx.ntasks
-Base.eltype(x::Chunks) = File{false}
+Base.eltype(x::Chunks) = File
 
 function Base.iterate(x::Chunks, i=1)
     i > x.ctx.ntasks && return nothing
