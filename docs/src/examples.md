@@ -35,6 +35,30 @@ file = CSV.File(open("iso8859_encoded_file.csv", enc"ISO-8859-1"))
 file = CSV.File(open("iso8859_encoded_file.csv", enc"ISO-8859-1"); buffer_in_memory=true)
 ```
 
+### [Concatenate multiple inputs at once](@id vectorinputs)
+
+```julia
+using CSV
+
+# in this case, I have a vector of delimited data inputs that each have
+# matching schema (the same column names and types). I'd like to process all
+# of the inputs together and vertically concatenante them into one "long" table.
+data = [
+    "a,b,c\n1,2,3\n4,5,6\n",
+    "a,b,c\n7,8,9\n10,11,12\n",
+    "a,b,c\n13,14,15\n16,17,18",
+]
+
+# I can just pass a `Vector` of inputs, in this case `IOBuffer(::String)`, but it
+# could also be a `Vector` of any valid input source, like `AbstractVector{UInt8}`,
+# filenames, `IO`, etc. Each input will be processed on a separate thread, with the results
+# being vertically concatenated afterwards as a single `CSV.File`. Each thread's columns
+# will be lazily concatenated using the `ChainedVector` type. As always, if we want to
+# send the parsed columns directly to a sink function, we can use `CSV.read`, like
+# `df = CSV.read(map(IOBuffer, data), DataFrame)`.
+f = CSV.File(map(IOBuffer, data))
+```
+
 ### [Gzipped input](@id gzipped_input)
 
 ```julia

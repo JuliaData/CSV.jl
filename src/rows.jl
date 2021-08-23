@@ -115,10 +115,11 @@ function Rows(source;
     parsingdebug::Bool=false,
     reusebuffer::Bool=false,
     )
+    @nospecialize
     ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, nothing, nothing, nothing, 0, nothing, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, true)
     foreach(col -> col.pool = 0.0, ctx.columns)
     allocate!(ctx.columns, 1)
-    values = all(x->x.type === stringtype && x.anymissing, ctx.columns) && lazystrings ? Vector{PosLen}(undef, ctx.cols) : Vector{Any}(undef, ctx.cols)
+    values = all(x->x.type === ctx.stringtype && x.anymissing, ctx.columns) && ctx.stringtype === PosLenString ? Vector{PosLen}(undef, ctx.cols) : Vector{Any}(undef, ctx.cols)
     columnmap = collect(1:ctx.cols)
     for i = ctx.cols:-1:1
         col = ctx.columns[i]
@@ -134,7 +135,7 @@ function Rows(source;
             rm(x.file; force=true)
         end
     end
-    return Rows{transpose, typeof(ctx.buf), ctx.customtypes, eltype(values), stringtype}(
+    return Rows{ctx.transpose, typeof(ctx.buf), ctx.customtypes, eltype(values), ctx.stringtype}(
         ctx.name,
         ctx.names,
         ctx.columns,
@@ -149,7 +150,7 @@ function Rows(source;
         values,
         lookup,
         Ref(0),
-        maxwarnings,
+        ctx.maxwarnings,
         ctx,
         tempfile
     )
@@ -204,7 +205,7 @@ end
 
 @inline function Base.iterate(r::Rows{transpose, IO, customtypes, V, stringtype}, (pos, len, row)=(r.datapos, r.len, 1)) where {transpose, IO, customtypes, V, stringtype}
     (pos > len || row > r.limit) && return nothing
-    pos = parserow(1, 1, r.numwarnings, r.ctx, r.buf, pos, len, 1, r.datarow + row - 2, r.columns, Val(transpose), customtypes)
+    pos = parserow(1, 1, r.numwarnings, r.ctx, r.buf, pos, len, 1, r.datarow + row - 2, r.columns, transpose, customtypes)
     columns = r.columns
     cols = length(columns)
     checkwidencolumns!(r, cols)
