@@ -38,6 +38,7 @@ const DEFAULT_MAX_WARNINGS = 100
 const DEFAULT_MAX_INLINE_STRING_LENGTH = 32
 const TRUE_STRINGS = ["true", "True", "TRUE", "T", "1"]
 const FALSE_STRINGS = ["false", "False", "FALSE", "F", "0"]
+const ValidSources = Union{Vector{UInt8}, SubArray{UInt8, 1, Vector{UInt8}}, IO, Cmd, AbstractString, AbstractPath}
 
 include("keyworddocs.jl")
 include("utils.jl")
