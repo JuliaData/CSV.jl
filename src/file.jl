@@ -40,7 +40,7 @@ use `CSV.read(input, sink; kwargs...)` instead if the `CSV.File` intermediate ob
 
 The [`input`](@ref input) argument can be one of:
   * filename given as a string or FilePaths.jl type
-  * an `AbstractVector{UInt8}` byte buffer
+  * a `Vector{UInt8}` or `SubArray{UInt8, 1, Vector{UInt8}}` byte buffer
   * a `Cmd` or other `IO`
   * a csv-formatted string can be passed like `IOBuffer(str)`
   * a gzipped file, which will automatically be decompressed for parsing
