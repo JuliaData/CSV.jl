@@ -68,7 +68,7 @@ end
 
 $KEYWORD_DOCS
 """
-function Rows(source;
+function Rows(source::ValidSources;
     # file options
     # header can be a row number, range of rows, or actual string vector
     header::Union{Integer, Vector{Symbol}, Vector{String}, AbstractVector{<:Integer}}=1,

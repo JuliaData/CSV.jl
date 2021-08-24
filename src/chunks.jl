@@ -24,7 +24,7 @@ This functionality is new and thus considered experimental; please
 
 $KEYWORD_DOCS
 """
-function Chunks(source;
+function Chunks(source::ValidSources;
     # file options
     # header can be a row number, range of rows, or actual string vector
     header::Union{Integer, Vector{Symbol}, Vector{String}, AbstractVector{<:Integer}}=1,

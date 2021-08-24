@@ -662,4 +662,13 @@ row = first(CSV.Rows(IOBuffer("a,b,c\n1,2,3\n\n"); select=[:a, :c]))
 f = CSV.File(IOBuffer("a,b,c\n1,2,3\n3.14,5,6\n"); typemap=Dict(Float64 => String))
 @test f.a isa Vector{<:AbstractString}
 
+# support SubArray{UInt8} as source
+f = CSV.File(IOBuffer(strip(""""column_name","data_type","is_nullable"\nfoobar,string,YES\nbazbat,timestamptz,YES""")))
+@test length(f) == 2
+@test f.column_name == ["foobar", "bazbat"]
+data = Vector{UInt8}(""""column_name","data_type","is_nullable"\nfoobar,string,YES\nbazbat,timestamptz,YES""")
+f = CSV.File(@view(data[:]))
+@test length(f) == 2
+@test f.column_name == ["foobar", "bazbat"]
+
 end
