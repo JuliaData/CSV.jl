@@ -1,29 +1,31 @@
 function _precompile_()
     ccall(:jl_generating_output, Cint, ()) == 1 || return nothing
-    # Base.precompile(Tuple{Core.kwftype(typeof(CSV.Type)),NamedTuple{(:debug,),Tuple{Bool}},Type{CSV.File},CSV.Header{false,Parsers.Options{false,false,true,false,Missing,UInt8,Nothing},Array{UInt8,1}}})
-    # Base.precompile(Tuple{Type{CSV.File},String})
-    # Base.precompile(Tuple{Type{CSV.Header{false,Parsers.Options{false,false,true,false,Missing,UInt8,Nothing},Array{UInt8,1}}},String,Array{Symbol,1},Int64,Int64,UInt8,Array{UInt8,1},Int64,Int64,Int64,Parsers.Options{false,false,true,false,Missing,UInt8,Nothing},Nothing,Array{Int64,1},Array{Type,1},Array{UInt8,1},Array{Int64,1},Float64,Bool,Type{T} where T})
-    # Base.precompile(Tuple{typeof(CSV.detectcolumnnames),Array{UInt8,1},Int64,Int64,Int64,Parsers.Options{false,false,true,false,Missing,UInt8,Nothing},Int64,Bool})
-    # Base.precompile(Tuple{typeof(CSV.makechain),Type{Array{Union{Missing, Bool},1}},Array{Union{Missing, Bool},1},Int64,Int64,Array{Array{AbstractArray{T,1} where T,1},1},Int64})
-    # Base.precompile(Tuple{typeof(CSV.multithreadparse),Array{Type,1},Array{UInt8,1},Array{UInt8,1},Int64,Int64,Parsers.Options{false,false,true,false,Missing,UInt8,Nothing},Nothing,Int64,Int64,Float64,Array{CSV.RefPool,1},Int64,Dict{Type,Type},Bool,Type{T} where T,Int64,Int64,Bool})
-    # Base.precompile(Tuple{typeof(CSV.parsefilechunk!),Val{false},Int64,Dict{Type,Type},Array{AbstractArray{T,1} where T,1},Array{UInt8,1},Int64,Int64,Int64,Array{Int64,1},Float64,Array{CSV.RefPool,1},Int64,Int64,Array{Type,1},Array{UInt8,1},Bool,Parsers.Options{false,false,true,false,Missing,UInt8,Nothing},Nothing,Type{Tuple{}},Int})
-    # Base.precompile(Tuple{typeof(CSV.promote_types),Any,Any})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,Array{Union{Missing, Bool},1}}})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,ChainedVector{Union{Missing, Bool},Array{Union{Missing, Bool},1}}}})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,PooledArrays.PooledArray{Union{Missing, String},UInt32,1,Array{UInt32,1}}}})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,PooledArrays.PooledArray{Union{Missing, String},UInt32,1,ChainedVector{UInt32,Array{UInt32,1}}}}})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,SentinelArray{Dates.Date,1,Dates.Date,Missing,Array{Dates.Date,1}}}})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,SentinelArray{Dates.Date,1,Dates.Date,Missing,ChainedVector{Dates.Date,Array{Dates.Date,1}}}}})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,SentinelArray{Dates.DateTime,1,Dates.DateTime,Missing,Array{Dates.DateTime,1}}}})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,SentinelArray{Dates.DateTime,1,Dates.DateTime,Missing,ChainedVector{Dates.DateTime,Array{Dates.DateTime,1}}}}})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,SentinelArray{Dates.Time,1,Dates.Time,Missing,Array{Dates.Time,1}}}})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,SentinelArray{Dates.Time,1,Dates.Time,Missing,ChainedVector{Dates.Time,Array{Dates.Time,1}}}}})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,SentinelArray{Float64,1,Float64,Missing,Array{Float64,1}}}})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,SentinelArray{Float64,1,Float64,Missing,ChainedVector{Float64,Array{Float64,1}}}}})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,SentinelArray{Int64,1,Int64,Missing,Array{Int64,1}}}})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,SentinelArray{Int64,1,Int64,Missing,ChainedVector{Int64,Array{Int64,1}}}}})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,SentinelArray{String,1,UndefInitializer,Missing,Array{String,1}}}})
-    # isdefined(CSV, Symbol("#28#29")) && Base.precompile(Tuple{getfield(CSV, Symbol("#28#29")),Tuple{Symbol,SentinelArray{String,1,UndefInitializer,Missing,ChainedVector{String,Array{String,1}}}}})
-    # isdefined(CSV, Symbol("#34#39")) && Base.precompile(Tuple{getfield(CSV, Symbol("#34#39"))})
-    # isdefined(CSV, Symbol("#36#41")) && Base.precompile(Tuple{getfield(CSV, Symbol("#36#41"))})
+    @assert Base.precompile(Tuple{typeof(parsefilechunk!),Context,Vector{UInt8},Int64,Int64,Int64,Int64,Vector{Column},Val{false},Type{Tuple{}}})   # time: 1.0312017
+    @assert Base.precompile(Tuple{typeof(parsevalue!),Type{BigFloat},Vector{UInt8},Int64,Int64,Int64,Int64,Int64,Column,Context})   # time: 0.5886147
+    @assert Base.precompile(Tuple{typeof(detect),String})   # time: 0.14655608
+    @assert Base.precompile(Tuple{typeof(write),Base.BufferStream,NamedTuple{(:a, :b), Tuple{Vector{Int64}, Vector{Float64}}}})   # time: 0.06289695
+    @assert Base.precompile(Tuple{typeof(parsevalue!),Type{BigInt},Vector{UInt8},Int64,Int64,Int64,Int64,Int64,Column,Context})   # time: 0.0527356
+    @assert Base.precompile(Tuple{typeof(getname),Cmd})   # time: 0.050515886
+    @assert Base.precompile(Tuple{typeof(write),IOBuffer,NamedTuple{(:x,), Tuple{Vector{Char}}}})   # time: 0.035573076
+    @assert Base.precompile(Tuple{typeof(parsevalue!),Type{UInt32},Vector{UInt8},Int64,Int64,Int64,Int64,Int64,Column,Context})   # time: 0.035170615
+    @assert Base.precompile(Tuple{Type{File},Vector{IOBuffer}})   # time: 0.033758428
+    @assert Base.precompile(Tuple{Type{File},Context,Bool})   # time: 0.033758428
+    @assert Base.precompile(Tuple{Type{Context},Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg,Arg})
+    @assert Base.precompile(Tuple{typeof(write),Base.Process,NamedTuple{(:col1, :col2, :col3), Tuple{Vector{Int64}, Vector{Int64}, Vector{Int64}}}})   # time: 0.03311246
+    @assert Base.precompile(Tuple{typeof(detectcolumnnames),Vector{UInt8},Int64,Int64,Int64,Parsers.Options,Any,Bool})   # time: 0.027399136
+    @assert Base.precompile(Tuple{typeof(findchunkrowstart),Vector{Int64},Int64,Vector{UInt8},Parsers.Options,Bool,Int64,Int64,Vector{Column},ReentrantLock,Any,Base.Threads.Atomic{Int64},Base.Threads.Atomic{Int64},Base.Threads.Atomic{Bool}})   # time: 0.026987862
+    @assert Base.precompile(Tuple{typeof(write),String,Vector{NamedTuple{(:a,), Tuple{String}}}})   # time: 0.022341058
+    @assert Base.precompile(Tuple{typeof(makepooled!),Column})   # time: 0.020273618
+    @assert Base.precompile(Tuple{typeof(unpool!),Column,Type,RefPool})   # time: 0.019640453
+    @assert Base.precompile(Tuple{typeof(Tables.getcolumn),File,Symbol})   # time: 0.018873245
+    @assert Base.precompile(Tuple{typeof(getsource),Vector{UInt8},Bool})   # time: 0.013699824
+    @assert Base.precompile(Tuple{typeof(detectheaderdatapos),Vector{UInt8},Int64,Int64,UInt8,UInt8,UInt8,Tuple{Ptr{UInt8}, Int64},Bool,Any,Int64})   # time: 0.012563237
+    @assert Base.precompile(Tuple{typeof(detectheaderdatapos),Vector{UInt8},Int64,Int64,UInt8,UInt8,UInt8,Nothing,Bool,Any,Int64})   # time: 0.011714202
+    @assert Base.precompile(Tuple{typeof(Tables.schema),File})   # time: 0.011355454
+    @assert Base.precompile(Tuple{typeof(detectdelimandguessrows),Vector{UInt8},Int64,Int64,Int64,UInt8,UInt8,UInt8,UInt8,Tuple{Ptr{UInt8}, Int64},Bool})   # time: 0.010538074
+    @assert Base.precompile(Tuple{Type{Context},Val{false},String,Vector{Symbol},Int64,Int64,Vector{UInt8},Int64,Int64,Int64,Parsers.Options,Vector{Column},Float64,Bool,Type,Dict{DataType, DataType},Type,Int64,Bool,Int64,Vector{Int64},Bool,Bool,Int64,Bool,Nothing,Bool})   # time: 0.010367362
+    @assert Base.precompile(Tuple{typeof(detectdelimandguessrows),Vector{UInt8},Int64,Int64,Int64,UInt8,UInt8,UInt8,UInt8,Nothing,Bool})   # time: 0.010337504
+    @assert Base.precompile(Tuple{typeof(warning),Type,Vector{UInt8},Int64,Int64,Int16,Int64,Int64})   # time: 0.008919449
+    @assert Base.precompile(Tuple{Type{Rows},String})   # time: 0.008758181
+    @assert Base.precompile(Tuple{Type{Rows},IOBuffer})   # time: 0.008604496
 end

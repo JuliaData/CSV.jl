@@ -77,35 +77,6 @@ function Column(x::Column)
     return y
 end
 
-struct Context
-    transpose::Val
-    name::String
-    names::Vector{Symbol}
-    rowsguess::Int64
-    cols::Int
-    buf::AbstractVector{UInt8}
-    datapos::Int64
-    len::Int
-    datarow::Int
-    options::Parsers.Options
-    columns::Vector{Column}
-    pool::Float64
-    downcast::Bool
-    customtypes::Type
-    typemap::Dict{Type, Type}
-    stringtype::StringTypes
-    limit::Int
-    threaded::Bool
-    ntasks::Int
-    chunkpositions::Vector{Int}
-    strict::Bool
-    silencewarnings::Bool
-    maxwarnings::Int
-    debug::Bool
-    tempfile::Union{String, Nothing}
-    streaming::Bool
-end
-
 """
     isvaliddelim(delim)
 
@@ -139,33 +110,62 @@ function checkinvalidcolumns(dict, argname, ncols, names)
     return
 end
 
-function Context(source,
+struct Context
+    transpose::Val
+    name::String
+    names::Vector{Symbol}
+    rowsguess::Int64
+    cols::Int
+    buf::AbstractVector{UInt8}
+    datapos::Int64
+    len::Int
+    datarow::Int
+    options::Parsers.Options
+    columns::Vector{Column}
+    pool::Float64
+    downcast::Bool
+    customtypes::Type
+    typemap::Dict{Type, Type}
+    stringtype::StringTypes
+    limit::Int
+    threaded::Bool
+    ntasks::Int
+    chunkpositions::Vector{Int}
+    strict::Bool
+    silencewarnings::Bool
+    maxwarnings::Int
+    debug::Bool
+    tempfile::Union{String, Nothing}
+    streaming::Bool
+end
+
+@refargs function Context(source,
     # file options
     # header can be a row number, range of rows, or actual string vector
-    header,
-    normalizenames,
-    datarow,
-    skipto,
-    footerskip,
-    transpose,
-    comment,
-    ignoreemptyrows,
+    header::Union{Integer, Vector{Symbol}, Vector{String}, AbstractVector{<:Integer}},
+    normalizenames::Bool,
+    datarow::Integer,
+    skipto::Integer,
+    footerskip::Integer,
+    transpose::Bool,
+    comment::Union{String, Nothing},
+    ignoreemptyrows::Bool,
     ignoreemptylines,
     select,
     drop,
-    limit,
-    buffer_in_memory,
+    limit::Union{Integer, Nothing},
+    buffer_in_memory::Bool,
     threaded,
-    ntasks,
+    ntasks::Union{Nothing, Integer},
     tasks,
-    rows_to_check,
+    rows_to_check::Integer,
     lines_to_check,
     # parsing options
     missingstrings,
     missingstring,
     delim,
-    ignorerepeated,
-    quoted,
+    ignorerepeated::Bool,
+    quoted::Bool,
     quotechar,
     openquotechar,
     closequotechar,
@@ -180,15 +180,15 @@ function Context(source,
     types,
     typemap,
     pool,
-    downcast,
+    downcast::Bool,
     lazystrings,
     stringtype,
-    strict,
-    silencewarnings,
-    maxwarnings,
-    debug,
-    parsingdebug,
-    streaming)
+    strict::Bool,
+    silencewarnings::Bool,
+    maxwarnings::Integer,
+    debug::Bool,
+    parsingdebug::Bool,
+    streaming::Bool)
 
     # initial argument validation and adjustment
     @inbounds begin
