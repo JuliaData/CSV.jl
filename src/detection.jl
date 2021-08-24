@@ -1,5 +1,5 @@
 # figure out at what byte position the header row(s) start and at what byte position the data starts
-function detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptyrows, header, skipto)
+function detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptyrows, @nospecialize(header), skipto)
     headerpos = 0
     datapos = 1
     if header isa Integer
@@ -162,7 +162,7 @@ function incr!(c::ByteValueCounter, b::UInt8)
 end
 
 # given the various header and normalization options, figure out column names for a file
-function detectcolumnnames(buf, headerpos, datapos, len, options, header, normalizenames)
+function detectcolumnnames(buf, headerpos, datapos, len, options, @nospecialize(header), normalizenames)
     if header isa Union{AbstractVector{Symbol}, AbstractVector{String}}
         fields, pos = readsplitline(buf, datapos, len, options)
         isempty(header) && return [Symbol(:Column, i) for i = 1:length(fields)]
@@ -230,7 +230,7 @@ function skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptyrows, cur, dest)
 end
 
 # read a single row, splitting cells on delimiters; used for parsing column names from header row(s)
-function readsplitline(buf, pos, len, options::Parsers.Options)
+function readsplitline(buf, pos, len, options)
     vals = String[]
     (pos > len || pos == 0) && return vals, pos
     col = 1
@@ -337,7 +337,7 @@ ColumnProperties(T) = ColumnProperties(T, 0x00)
     end
 end
 
-function findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check, columns, columnlock, stringtype, totalbytes, totalrows, succeeded)
+function findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check, columns, columnlock, @nospecialize(stringtype), totalbytes, totalrows, succeeded)
     pos = ranges[i]
     len = ranges[i + 1]
     while pos <= len
@@ -456,7 +456,7 @@ end
 # right # of expected columns then we move on to the next file chunk byte position. If we fail, we start over
 # at the byte position, assuming we were in a quoted field (and encountered a newline inside the quoted
 # field the first time through)
-function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, downcast, rows_to_check=5)
+function findrowstarts!(buf, opts, ranges, ncols, columns, @nospecialize(stringtype), downcast, rows_to_check=5)
     totalbytes = Threads.Atomic{Int}(0)
     totalrows = Threads.Atomic{Int}(0)
     succeeded = Threads.Atomic{Bool}(true)
@@ -513,7 +513,7 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, stringtype, downcast,
     return totalbytes[] / finalrows, true
 end
 
-function detecttranspose(buf, pos, len, options, header, skipto, normalizenames)
+function detecttranspose(buf, pos, len, options, @nospecialize(header), skipto, normalizenames)
     if isa(header, Integer) && header > 0
         # skip to header column to read column names
         row, pos = skiptofield!(buf, pos, len, options, 1, header)

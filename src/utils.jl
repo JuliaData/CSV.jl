@@ -439,3 +439,32 @@ end
 _unsafe_string(p, len) = ccall(:jl_pchar_to_string, Ref{String}, (Ptr{UInt8}, Int), p, len)
 Base.String(x::PointerString) = _unsafe_string(x.ptr, x.len)
 WeakRefStrings.PosLenString(x::PointerString) = PosLenString(unsafe_wrap(Array, x.ptr, x.len), PosLen(1, x.len), 0x00)
+
+struct Arg
+    x::Any
+end
+Base.getindex(x::Arg) = x.x
+
+macro refargs(ex)
+    ex isa Expr || throw(ArgumentError("must pass an expressiong to @refargs"))
+    (ex.head == :call || ex.head == :function) || throw(ArgumentError("@refargs ex must be function call or definition"))
+    if ex.head == :call
+        for i = 2:length(ex.args)
+            ex.args[i] = Expr(:call, :Arg, ex.args[i])
+        end
+        return esc(ex)
+    else # ex.head == :function
+        refs = Expr(:block)
+        fargs = ex.args[1].args
+        for i = 2:length(fargs)
+            arg = fargs[i]
+            (arg isa Symbol || arg.head == :(::)) || throw(ArgumentError("unsupported argument expression: `$arg`"))
+            nm = arg isa Symbol ? arg : arg.args[1]
+            T = arg isa Symbol ? :Any : arg.args[2]
+            push!(refs.args, Expr(:(=), nm, Expr(:(::), Expr(:ref, nm), T)))
+            fargs[i] = Expr(:(::), nm, :Arg)
+        end
+        pushfirst!(ex.args[2].args, refs)
+        return esc(ex)
+    end
+end
