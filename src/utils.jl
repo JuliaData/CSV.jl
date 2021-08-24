@@ -149,10 +149,17 @@ consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 
 # whatever input is given, turn it into an AbstractVector{UInt8} we can parse with
 function getbytebuffer(x, buffer_in_memory)
     tfile = nothing
-    if x isa AbstractVector{UInt8}
+    if x isa Vector{UInt8}
         return x, 1, length(x), tfile
-    elseif x isa Base.GenericIOBuffer
-        return x.data, x.ptr, x.size, tfile
+    elseif x isa SubArray{UInt8, 1, Vector{UInt8}}
+        return parent(x), first(x.indices[1]), last(x.indices[1]), tfile
+    elseif x isa IOBuffer
+        if x.data isa Vector{UInt8}
+            return x.data, x.ptr, x.size, tfile
+        elseif x.data isa SubArray{UInt8}
+            x = x.data
+            return parent(x), first(x.indices), last(x.indices), tfile
+        end
     elseif x isa Cmd || x isa IO
         if buffer_in_memory
             buf = Base.read(x isa Cmd ? open(x) : x)

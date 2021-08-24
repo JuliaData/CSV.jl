@@ -158,7 +158,7 @@ Base.@propagate_inbounds function Base.getindex(f::File, row::Int)
     return Row(getnames(f), getcolumns(f), getlookup(f), row)
 end
 
-function File(source::Union{Vector{UInt8}, IO, Cmd, AbstractString, AbstractPath};
+function File(source::ValidSources;
     # file options
     # header can be a row number, range of rows, or actual string vector
     header::Union{Integer, Vector{Symbol}, Vector{String}, AbstractVector{<:Integer}}=1,
@@ -968,6 +968,7 @@ end
 function File(sources::Vector; kw...)
     isempty(sources) && throw(ArgumentError("unable to read delimited data from empty sources array"))
     length(sources) == 1 && return File(sources[1]; kw...)
+    all(x -> x isa ValidSources, sources) || throw(ArgumentError("all provided sources must be one of: `$ValidSources`"))
     kws = merge(values(kw), (ntasks=1,))
     f = File(sources[1]; kws...)
     rows = f.rows
