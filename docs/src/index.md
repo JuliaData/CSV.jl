@@ -14,13 +14,13 @@ To start out, let's discuss the high-level functionality provided by the package
   * [`CSV.RowWriter`](@ref): An alternative way to produce csv output; takes any valid Tables.jl input, and on each iteration, produces a single csv-formatted string from the input table's row.
 
 That's quite a bit! Let's boil down a TL;DR:
-  * Just want to read a delimited file or collection of files and do basic stuff with data? Use `CSV.File(file)` or `CSV.read(file, DataFrame)`
-  * Don't need the data as a whole or want to stream through a large file row-by-row? Use `CSV.Rows`.
-  * Want to process a large file in "batches"/chunks? Use `CSV.Chunks`.
-  * Need to produce a csv? Use `CSV.write`.
-  * Want to iterate an input table and produce a single csv string per row? `CSV.RowWriter`.
+  * Just want to read a delimited file or collection of files and do basic stuff with data? Use [`CSV.File(file)`](@ref CSV.File) or [`CSV.read(file, DataFrame)`](@ref CSV.read)
+  * Don't need the data as a whole or want to stream through a large file row-by-row? Use [`CSV.Rows`](@ref).
+  * Want to process a large file in "batches"/chunks? Use [`CSV.Chunks`](@ref).
+  * Need to produce a csv? Use [`CSV.write`](@ref).
+  * Want to iterate an input table and produce a single csv string per row? [`CSV.RowWriter`](@ref).
 
-For the rest of the manual, we're going to have two big sections, *Reading* and *Writing* where we'll walk through the various options to `CSV.File`/`CSV.read`/`CSV.Rows`/`CSV.Chunks` and `CSV.write`/`CSV.RowWriter`.
+For the rest of the manual, we're going to have two big sections, *[Reading](@ref)* and *[Writing](@ref)* where we'll walk through the various options to `CSV.File`/`CSV.read`/`CSV.Rows`/`CSV.Chunks` and `CSV.write`/`CSV.RowWriter`.
 
 ```@contents
 Pages = ["reading.md", "writing.md", "examples.md"]

@@ -1,6 +1,6 @@
 # Reading
 
-The format for this section will go through the various inputs/options supported by `CSV.File`, with notes about compatibility with the other reading functionality (`CSV.Rows`, `CSV.Chunks`, etc.).
+The format for this section will go through the various inputs/options supported by [`CSV.File`](@ref)/[`CSV.read`](@ref), with notes about compatibility with the other reading functionality ([`CSV.Rows`](@ref), [`CSV.Chunks`](@ref), etc.).
 
 ## [`input`](@id input)
 
