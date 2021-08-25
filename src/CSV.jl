@@ -39,6 +39,8 @@ const DEFAULT_MAX_INLINE_STRING_LENGTH = 32
 const TRUE_STRINGS = ["true", "True", "TRUE", "T", "1"]
 const FALSE_STRINGS = ["false", "False", "FALSE", "F", "0"]
 const ValidSources = Union{Vector{UInt8}, SubArray{UInt8, 1, Vector{UInt8}}, IO, Cmd, AbstractString, AbstractPath}
+const MAX_INPUT_SIZE = Int64(2)^42
+const EMPTY_INT_ARRAY = Int64[]
 
 include("keyworddocs.jl")
 include("utils.jl")
@@ -66,5 +68,11 @@ end
 
 include("precompile.jl")
 _precompile_()
+
+function __init__()
+    CSV.File(IOBuffer(PRECOMPILE_DATA))
+    foreach(row -> row, CSV.Rows(IOBuffer(PRECOMPILE_DATA)))
+    CSV.File(joinpath(dirname(pathof(CSV)), "..", "test", "testfiles", "promotions.csv"))
+end
 
 end # module

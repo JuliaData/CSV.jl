@@ -21,11 +21,14 @@ coltype(col) = ifelse(col.anymissing, Union{finaltype(col.type), Missing}, final
 pooled(col) = col.pool == 1.0
 maybepooled(col) = 0.0 < col.pool < 1.0
 
-getpool(x::Bool) = x ? 1.0 : 0.0
-function getpool(x::Real)
-    y = Float64(x)
-    (isnan(y) || 0.0 <= y <= 1.0) || throw(ArgumentError("pool argument must be in the range: 0.0 <= x <= 1.0"))
-    return y
+function getpool(x::Real)::Float64
+    if x isa Bool
+        return x ? 1.0 : 0.0
+    else
+        y = Float64(x)
+        (isnan(y) || 0.0 <= y <= 1.0) || throw(ArgumentError("pool argument must be in the range: 0.0 <= x <= 1.0"))
+        return y
+    end
 end
 
 tupcat(::Type{Tuple{}}, S) = Tuple{S}
@@ -61,7 +64,7 @@ isinttype(T) = T === Int8 || T === Int16 || T === Int32 || T === Int64 || T === 
 end
 
 # when users pass non-standard types, we need to keep track of them in a Tuple{...} to generate efficient custom parsing kernel codes
-function nonstandardtype(T)
+@inline function nonstandardtype(T)
     T = nonmissingtype(T)
     if T === Union{} ||
        T isa StringTypes ||
@@ -111,35 +114,43 @@ function allocate!(columns, rowsguess)
     return
 end
 
-# MissingVector is an efficient representation in SentinelArrays.jl package
-allocate(::Type{NeedsTypeDetection}, len) = MissingVector(len)
-allocate(::Type{HardMissing}, len) = MissingVector(len)
-allocate(::Type{Missing}, len) = MissingVector(len)
-function allocate(::Type{PosLenString}, len)
-    A = Vector{PosLen}(undef, len)
-    memset!(pointer(A), typemax(UInt8), sizeof(A))
-    return A
-end
-allocate(::Type{String}, len) = SentinelVector{String}(undef, len)
-allocate(::Type{Pooled}, len) = fill(UInt32(1), len) # initialize w/ all missing values
-allocate(::Type{Bool}, len) = Vector{Union{Missing, Bool}}(undef, len)
-allocate(::Type{T}, len) where {T <: SmallIntegers} = Vector{Union{Missing, T}}(undef, len)
-allocate(T, len) = SentinelVector{T}(undef, len)
-
-reallocate!(A, len) = resize!(A, len)
-function reallocate!(A::Vector{UInt32}, len)
-    oldlen = length(A)
-    resize!(A, len)
-    for i = (oldlen + 1):len
-        @inbounds A[i] = UInt32(1)
+@inline function allocate(T, len)
+    if T === NeedsTypeDetection || T === HardMissing || T === Missing
+        # MissingVector is an efficient representation in SentinelArrays.jl package
+        return MissingVector(len)
+    elseif T === PosLenString
+        A = Vector{PosLen}(undef, len)
+        memset!(pointer(A), typemax(UInt8), sizeof(A))
+        return A
+    elseif T === String
+        return SentinelVector{String}(undef, len)
+    elseif T === Pooled
+        return fill(UInt32(1), len) # initialize w/ all missing values
+    elseif T === Bool
+        return Vector{Union{Missing, Bool}}(undef, len)
+    elseif T <: SmallIntegers
+        return Vector{Union{Missing, T}}(undef, len)
+    else
+        return SentinelVector{T}(undef, len)
     end
-    return
 end
-# when reallocating, we just need to make sure the missing bit is set for lazy string PosLen
-function reallocate!(A::Vector{PosLen}, len)
-    oldlen = length(A)
-    resize!(A, len)
-    memset!(pointer(A, oldlen + 1), typemax(UInt8), (len - oldlen) * 8)
+
+function reallocate!(@nospecialize(A), len)
+    if A isa Vector{UInt32}
+        oldlen = length(A)
+        resize!(A, len)
+        # make sure new values are initialized to missing
+        for i = (oldlen + 1):len
+            @inbounds A[i] = UInt32(1)
+        end
+    elseif A isa Vector{PosLen}
+        oldlen = length(A)
+        resize!(A, len)
+        # when reallocating, we just need to make sure the missing bit is set for lazy string PosLen
+        memset!(pointer(A, oldlen + 1), typemax(UInt8), (len - oldlen) * 8)
+    else
+        resize!(A, len)
+    end
     return
 end
 
@@ -147,7 +158,7 @@ end
 consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 0xbb && buf[pos + 2] == 0xbf) ? pos + 3 : pos
 
 # whatever input is given, turn it into an AbstractVector{UInt8} we can parse with
-function getbytebuffer(x, buffer_in_memory)
+@inline function getbytebuffer(x, buffer_in_memory)
     tfile = nothing
     if x isa Vector{UInt8}
         return x, 1, length(x), tfile
@@ -183,8 +194,8 @@ function getbytebuffer(x, buffer_in_memory)
     end
 end
 
-function getsource(x, buffer_in_memory)
-    buf, pos, len, tfile = getbytebuffer(x, buffer_in_memory)
+function getsource(@nospecialize(x), buffer_in_memory)
+    buf, pos, len, tfile = getbytebuffer(x, buffer_in_memory)::Tuple{Vector{UInt8},Int64,Int64,Union{Nothing,String}}
     if length(buf) >= 2 && buf[1] == 0x1f && buf[2] == 0x8b
         # gzipped source, gunzip it
         if buffer_in_memory
@@ -198,7 +209,7 @@ function getsource(x, buffer_in_memory)
     return buf, pos, len, tfile
 end
 
-function buffer_to_tempfile(codec, x)
+@inline function buffer_to_tempfile(codec, x)
     file, output = mktemp()
     stream = CodecZlib.TranscodingStream(codec, output)
     Base.write(stream, x)
@@ -206,10 +217,15 @@ function buffer_to_tempfile(codec, x)
     return Mmap.mmap(file), file
 end
 
-getname(buf::AbstractVector{UInt8}) = "<raw buffer>"
-getname(cmd::Cmd) = string(cmd)
-getname(str) = string(str)
-getname(io::I) where {I <: IO} = string("<", I, ">")
+@inline function getname(x)
+    if x isa AbstractVector{UInt8}
+        return "<raw byte buffer>"
+    elseif x isa IO
+        return string("<", typeof(x), ">")
+    else
+        return string(x)
+    end
+end
 
 # normalizing column name utilities
 const RESERVED = Set(["local", "global", "export", "let",
@@ -457,7 +473,7 @@ macro refargs(ex)
     (ex.head == :call || ex.head == :function) || throw(ArgumentError("@refargs ex must be function call or definition"))
     if ex.head == :call
         for i = 2:length(ex.args)
-            ex.args[i] = Expr(:call, :Arg, ex.args[i])
+            ex.args[i] = Expr(:call, :(CSV.Arg), ex.args[i])
         end
         return esc(ex)
     else # ex.head == :function
@@ -468,8 +484,8 @@ macro refargs(ex)
             (arg isa Symbol || arg.head == :(::)) || throw(ArgumentError("unsupported argument expression: `$arg`"))
             nm = arg isa Symbol ? arg : arg.args[1]
             T = arg isa Symbol ? :Any : arg.args[2]
-            push!(refs.args, Expr(:(=), nm, Expr(:(::), Expr(:ref, nm), T)))
-            fargs[i] = Expr(:(::), nm, :Arg)
+            push!(refs.args, Expr(:(=), Expr(:(::), nm, T), Expr(:ref, nm)))
+            fargs[i] = Expr(:(::), nm, :(CSV.Arg))
         end
         pushfirst!(ex.args[2].args, refs)
         return esc(ex)
