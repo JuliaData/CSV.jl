@@ -5,7 +5,9 @@ makedocs(;
     format=Documenter.HTML(),
     pages=[
         "Home" => "index.md",
-        "Examples" => "examples.md"
+        "Reading" => "reading.md",
+        "Writing" => "writing.md",
+        "Examples" => "examples.md",
     ],
     repo="https://github.com/JuliaData/CSV.jl/blob/{commit}{path}#L{line}",
     sitename="CSV.jl",
