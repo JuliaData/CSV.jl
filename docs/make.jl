@@ -9,7 +9,7 @@ makedocs(;
         "Writing" => "writing.md",
         "Examples" => "examples.md",
     ],
-    repo="https://github.com/JuliaData/CSV.jl/blob/{commit}{path}#L{line}",
+    repo="https://github.com/JuliaData/CSV.jl/blob/{commit}{path}#{line}",
     sitename="CSV.jl",
     authors="Jacob Quinn",
 )
