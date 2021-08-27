@@ -2,15 +2,16 @@ using Documenter, CSV
 
 makedocs(;
     modules=[CSV],
-    format=Documenter.HTML(),
+    format=Documenter.HTML(prettyurls=false),
     pages=[
         "Home" => "index.md",
-        "Examples" => "examples.md"
+        "Reading" => "reading.md",
+        "Writing" => "writing.md",
+        "Examples" => "examples.md",
     ],
-    repo="https://github.com/JuliaData/CSV.jl/blob/{commit}{path}#L{line}",
+    repo="https://github.com/JuliaData/CSV.jl/blob/{commit}{path}#{line}",
     sitename="CSV.jl",
     authors="Jacob Quinn",
-    assets=String[],
 )
 
 deploydocs(;

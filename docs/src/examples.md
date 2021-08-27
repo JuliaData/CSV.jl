@@ -1,23 +1,10 @@
+# Examples
+
 ```@contents
-Depth = 3
+Pages = ["examples.md"]
 ```
 
-## API Reference
-```@docs
-CSV.read
-CSV.File
-CSV.Chunks
-CSV.Rows
-```
-
-## Utilities
-```@docs
-CSV.detect
-```
-
-## Examples
-
-### [Non-UTF-8 character encodings](@id stringencodings)
+## [Non-UTF-8 character encodings](@id stringencodings)
 
 ```julia
 # assume I have csv text data encoded in ISO-8859-1 encoding
@@ -35,7 +22,7 @@ file = CSV.File(open("iso8859_encoded_file.csv", enc"ISO-8859-1"))
 file = CSV.File(open("iso8859_encoded_file.csv", enc"ISO-8859-1"); buffer_in_memory=true)
 ```
 
-### [Concatenate multiple inputs at once](@id vectorinputs)
+## [Concatenate multiple inputs at once](@id vectorinputs)
 
 ```julia
 using CSV
@@ -59,7 +46,7 @@ data = [
 f = CSV.File(map(IOBuffer, data))
 ```
 
-### [Gzipped input](@id gzipped_input)
+## [Gzipped input](@id gzipped_input)
 
 ```julia
 # assume I have csv text data compressed via gzip
@@ -76,7 +63,7 @@ file = CSV.File("data.gz")
 file = CSV.File("data.gz"; buffer_in_memory=true)
 ```
 
-### [Delimited data in a string](@id csv_string)
+## [Delimited data in a string](@id csv_string)
 
 ```julia
 using CSV
@@ -93,7 +80,7 @@ a,b,c
 file = CSV.File(IOBuffer(data))
 ```
 
-### [Data from the web/a url](@id http)
+## [Data from the web/a url](@id http)
 
 ```julia
 # assume there's delimited data I want to read from the web
@@ -116,7 +103,7 @@ http_response = Downloads.download(url)
 file = CSV.File(http_response)
 ```
 
-#### [Reading from a zip file](@id zip_example)
+## [Reading from a zip file](@id zip_example)
 
 ```julia
 using ZipFile, CSV, DataFrames
@@ -147,7 +134,7 @@ a == a_copy
 close(z)
 ```
 
-### [Column names on 2nd row](@id second_row_header)
+## [Column names on 2nd row](@id second_row_header)
 
 ```julia
 using CSV
@@ -166,7 +153,7 @@ a,b,c
 file = CSV.File(IOBuffer(data); header=2)
 ```
 
-### [No column names in data](@id no_header)
+## [No column names in data](@id no_header)
 
 ```julia
 using CSV
@@ -183,7 +170,7 @@ data = """
 file = CSV.File(IOBuffer(data); header=false)
 ```
 
-### [Manually provide column names](@id manual_header)
+## [Manually provide column names](@id manual_header)
 
 ```julia
 using CSV
@@ -203,7 +190,7 @@ file = CSV.File(IOBuffer(data); header=["a", "b", "c"])
 file = CSV.File(IOBuffer(data); header=[:a, :b, :c])
 ```
 
-### [Multi-row column names](@id multi_row_header)
+## [Multi-row column names](@id multi_row_header)
 
 ```julia
 using CSV
@@ -222,7 +209,7 @@ a,b,c
 file = CSV.File(IOBuffer(data); header=[1, 2])
 ```
 
-### [Normalizing column names](@id normalize_header)
+## [Normalizing column names](@id normalize_header)
 
 ```julia
 using CSV
@@ -256,7 +243,7 @@ column one,column two, column three
 file = CSV.File(IOBuffer(data); normalizenames=true)
 ```
 
-### [Skip to specific row where data starts](@id skipto_example)
+## [Skip to specific row where data starts](@id skipto_example)
 
 ```julia
 using CSV
@@ -276,7 +263,7 @@ descriptive row that gives information about the data that we'd like to ignore
 file = CSV.File(IOBuffer(data); header=false, skipto=2)
 ```
 
-### [Skipping trailing useless rows](@id footerskip_example)
+## [Skipping trailing useless rows](@id footerskip_example)
 
 ```julia
 using CSV
@@ -299,7 +286,7 @@ grand total: 45
 file = CSV.File(IOBuffer(data); footerskip=2)
 ```
 
-### [Reading transposed data](@id transpose_example)
+## [Reading transposed data](@id transpose_example)
 
 ```julia
 using CSV
@@ -318,7 +305,7 @@ c,3,6,9
 file = CSV.File(IOBuffer(data); transpose=true)
 ```
 
-### [Ignoring commented rows](@id comment_example)
+## [Ignoring commented rows](@id comment_example)
 
 ```julia
 using CSV
@@ -337,7 +324,7 @@ a,b,c
 file = CSV.File(IOBuffer(data); comment="#")
 ```
 
-### [Ignoring empty rows](@id ignoreemptyrows_example)
+## [Ignoring empty rows](@id ignoreemptyrows_example)
 
 ```julia
 using CSV
@@ -359,7 +346,7 @@ a,b,c
 file = CSV.File(IOBuffer(data); ignoreemptyrows=true)
 ```
 
-### [Including/excluding columns](@id select_example)
+## [Including/excluding columns](@id select_example)
 
 ```julia
 using CSV
@@ -390,7 +377,7 @@ file = CSV.File(file; drop=[false, true, false])
 file = CSV.File(file; drop=(i, nm) -> i == 2)
 ```
 
-### [Limiting number of rows from data](@id limit_example)
+## [Limiting number of rows from data](@id limit_example)
 
 ```julia
 using CSV
@@ -413,7 +400,7 @@ a,b,c
 file = CSV.File(IOBuffer(data); limit=3)
 ```
 
-### [Specifying custom missing strings](@id missing_string_example)
+## [Specifying custom missing strings](@id missing_string_example)
 
 ```julia
 using CSV
@@ -434,7 +421,7 @@ code,age,score
 file = CSV.File(file; missingstring=["-999", "NA"])
 ```
 
-### [String delimiter](@id string_delim)
+## [String delimiter](@id string_delim)
 
 ```julia
 using CSV
@@ -451,7 +438,7 @@ col1::col2
 file = CSV.File(file; delim="::")
 ```
 
-### [Fixed width files](@id ignorerepeated_example)
+## [Fixed width files](@id ignorerepeated_example)
 
 ```julia
 using CSV
@@ -473,7 +460,7 @@ col1    col2 col3
 file = CSV.File(file; delim=' ', ignorerepeated=true)
 ```
 
-### [Turning off quoted cell parsing](@id quoted_example)
+## [Turning off quoted cell parsing](@id quoted_example)
 
 ```julia
 using CSV
@@ -496,7 +483,7 @@ sailor,6,7
 file = CSV.File(IOBuffer(data); quoted=false)
 ```
 
-### [Quoted & escaped fields](@id quotechar_example)
+## [Quoted & escaped fields](@id quotechar_example)
 
 ```julia
 using CSV
@@ -520,7 +507,7 @@ file = CSV.File(file; openquotechar='"' closequotechar='"', escapechar='"')
 ```
 
 
-### [DateFormat](@id dateformat_example)
+## [DateFormat](@id dateformat_example)
 
 ```julia
 using CSV
@@ -538,7 +525,7 @@ code,date
 file = CSV.File(file; dateformat="yyyy/mm/dd")
 ```
 
-### [Custom decimal separator](@id decimal_example)
+## [Custom decimal separator](@id decimal_example)
 
 ```julia
 using CSV
@@ -555,7 +542,7 @@ col1;col2;col3
 file = CSV.File(file; delim=';', decimal=',')
 ```
 
-### [Custom bool strings](@id truestrings_example)
+## [Custom bool strings](@id truestrings_example)
 
 ```julia
 using CSV
@@ -573,7 +560,7 @@ id,paid,attended
 file = CSV.File(file; truestrings=["T", "TRUE"], falsestrings=["F", "FALSE"])
 ```
 
-### [Matrix-like Data](@id matrix_example)
+## [Matrix-like Data](@id matrix_example)
 
 ```julia
 using CSV
@@ -591,7 +578,7 @@ file = CSV.File(file; header=false)
 file = CSV.File(file; header=false, delim=' ', types=Float64)
 ```
 
-### [Providing types](@id types_example)
+## [Providing types](@id types_example)
 
 ```julia
 using CSV
@@ -618,7 +605,7 @@ file = CSV.File(file; types=[Int, Int, Int], silencewarnings=true)
 file = CSV.File(file; types=[Int, Int, Int], strict=true)
 ```
 
-### [Typemap](@id typemap_example)
+## [Typemap](@id typemap_example)
 
 ```julia
 using CSV
@@ -637,7 +624,7 @@ file = CSV.File(file; typemap=Dict(Int => String))
 file = CSV.File(file; types=Dict(:zipcode => String))
 ```
 
-### [Pooled values](@id pool_example)
+## [Pooled values](@id pool_example)
 
 ```julia
 using CSV
