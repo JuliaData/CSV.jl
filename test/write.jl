@@ -1,4 +1,4 @@
-using CSV, Dates, WeakRefStrings, Tables
+using CSV, Dates, WeakRefStrings, Tables, CodecZlib
 using FilePathsBase
 using FilePathsBase: /
 
@@ -336,5 +336,10 @@ const table_types = (
     @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
     @test String(take!(io2)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
 
+    # compressed writing
+    io = IOBuffer()
+    CSV.write(io, default_table; compress=true)
+    ct = CSV.read(io, Tables.columntable)
+    @test ct == default_table
 
 end # @testset "CSV.write"
