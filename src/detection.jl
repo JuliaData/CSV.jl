@@ -1,5 +1,5 @@
 # figure out at what byte position the header row(s) start and at what byte position the data starts
-function detectheaderdatapos(buf, pos, len, oq, eq, cq, cmt, ignoreemptyrows, @nospecialize(header), skipto)
+function detectheaderdatapos(buf, pos, len, oq, eq, cq, @nospecialize(cmt), ignoreemptyrows, @nospecialize(header), skipto)
     headerpos = 0
     datapos = 1
     if header isa Integer
@@ -25,7 +25,7 @@ end
 # it tries to guess a file's delimiter by which character showed up w/ the same frequency
 # over all rows scanned; we use the average # of bytes per row w/ total length of the file
 # to guess the total # of rows in the file
-function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, delim, cmt, ignoreemptyrows)
+function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, @nospecialize(cmt), ignoreemptyrows, delim=0x00)
     nbytes = 0
     lastbytenewline = false
     parsedanylines = false
@@ -115,6 +115,7 @@ function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, delim
         end
     end
     nlines += parsedanylines && !lastbytenewline
+    d = delim
     if delim == UInt8('\n')
         if nlines > 0
             d = UInt8('\n')
@@ -143,8 +144,6 @@ function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, delim
         else
             d = UInt8(',')
         end
-    else # delim explicitly provided
-        d = delim
     end
     guess = ((len - datapos) / (nbytes / nlines))
     rowsguess = isfinite(guess) ? ceil(Int, guess) : 0
@@ -162,7 +161,7 @@ function incr!(c::ByteValueCounter, b::UInt8)
 end
 
 # given the various header and normalization options, figure out column names for a file
-function detectcolumnnames(buf, headerpos, datapos, len, options, @nospecialize(header), normalizenames)
+function detectcolumnnames(buf, headerpos, datapos, len, options, @nospecialize(header), normalizenames)::Vector{Symbol}
     if header isa Union{AbstractVector{Symbol}, AbstractVector{String}}
         fields, pos = readsplitline(buf, datapos, len, options)
         isempty(header) && return [Symbol(:Column, i) for i = 1:length(fields)]
@@ -187,7 +186,7 @@ function detectcolumnnames(buf, headerpos, datapos, len, options, @nospecialize(
 end
 
 # efficiently skip from `cur` to `dest` row
-function skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptyrows, cur, dest)
+function skiptorow(buf, pos, len, oq, eq, cq, @nospecialize(cmt), ignoreemptyrows, cur, dest)
     nlines = Ref{Int}(0)
     pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptyrows, nlines)
     cur += nlines[]
@@ -273,7 +272,7 @@ end
 
 const NLINES = Ref{Int}(0)
 
-function checkcommentandemptyline(buf, pos, len, cmt, ignoreemptyrows, nlines=NLINES)
+function checkcommentandemptyline(buf, pos, len, @nospecialize(cmt), ignoreemptyrows, nlines=NLINES)
     cmtptr, cmtlen = cmt === nothing ? (C_NULL, 0) : cmt
     ptr = pointer(buf, pos)
     while pos <= len
@@ -467,50 +466,7 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, @nospecialize(stringt
             findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check, columns, lock, stringtype, totalbytes, totalrows, succeeded)
         end
     end
-    finalrows = totalrows[]
-    !succeeded[] && return totalbytes[] / finalrows, false
-    # alright, we successfully identified the starting byte positions for each chunk
-    # now let's take a look at our samples we parsed, and juice up our column types/flags
-    # for n = 1:ncols
-    #     col = columns[n]
-    #     type = col.type
-    #     # build up a refpool of initial values if applicable
-    #     # if not, or cardinality is too high, we'll set the column to non-pooled at this stage
-    #     if type === NeedsTypeDetection
-    #         # if the type is still NeedsTypeDetection, that means we only sampled `missing` values
-    #         # in that case, the type will stay NeedsTypeDetection and may be detected while parsing
-    #         # by individual chunks over the whole file
-    #         # as for pooling, we'll only pool in this case if user explicitly asked for pooling
-    #         # so maybepooled(col) or isnan(col.pool) won't turn into PooledArray for multithreading
-    #         # unless we sample something other than `missing` during this stage
-    #         # if !pooled(col)
-    #         #     col.pool = 0.0
-    #         # end
-    #     else
-    #         # if (pooled(col) || maybepooled(col) || (type isa StringTypes && pool != 0.0))
-    #         #     refpool = RefPool(type)
-    #         #     for m = 1:M
-    #         #         if isassigned(samples, m, n)
-    #         #             val = samples[m, n]
-    #         #             if val isa type || (val isa PosLen && type isa StringTypes)
-    #         #                 getref!(refpool, type, PosLenString(buf, val, opts.e))
-    #         #             end
-    #         #         end
-    #         #     end
-    #         #     poolval = !isnan(col.pool) ? col.pool : !isnan(pool) ? pool : DEFAULT_POOL
-    #         #     if pooled(col) || ((length(refpool.refs) - 1) / finalrows) <= poolval
-    #         #        col.refpool = refpool 
-    #         #        col.pool = 1.0
-    #         #     else
-    #         #         col.pool = 0.0
-    #         #     end
-    #         # else
-    #         #     col.pool = 0.0
-    #         # end
-    #     end
-    #     col.type = type
-    # end
-    return totalbytes[] / finalrows, true
+    return totalbytes[] / totalrows[], succeeded[]
 end
 
 function detecttranspose(buf, pos, len, options, @nospecialize(header), skipto, normalizenames)

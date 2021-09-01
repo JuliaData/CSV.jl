@@ -6,7 +6,7 @@ end
 # no automatic type inference is done, but types are allowed to be passed
 # for as many columns as desired; `CSV.detect(row, i)` can also be used to
 # use the same inference logic used in `CSV.File` for determing a cell's typed value
-struct Rows{transpose, IO, customtypes, V, stringtype}
+struct Rows{IO, customtypes, V, stringtype}
     name::String
     names::Vector{Symbol} # only includes "select"ed columns
     columns::Vector{Column}
@@ -134,7 +134,7 @@ function Rows(source::ValidSources;
             rm(x.file; force=true)
         end
     end
-    return Rows{ctx.transpose, typeof(ctx.buf), ctx.customtypes, eltype(values), ctx.stringtype}(
+    return Rows{typeof(ctx.buf), ctx.customtypes, eltype(values), ctx.stringtype}(
         ctx.name,
         ctx.names,
         ctx.columns,
@@ -188,7 +188,7 @@ Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
     end
 end
 
-function checkwidencolumns!(r::Rows{t, ct, V}, cols) where {t, ct, V}
+function checkwidencolumns!(r::Rows{ct, V}, cols) where {ct, V}
     if cols > length(r.values)
         # we widened while parsing this row, need to widen other supporting objects
         for i = (length(r.values) + 1):cols
@@ -202,9 +202,9 @@ function checkwidencolumns!(r::Rows{t, ct, V}, cols) where {t, ct, V}
     return
 end
 
-@inline function Base.iterate(r::Rows{transpose, IO, customtypes, V, stringtype}, (pos, len, row)=(r.datapos, r.len, 1)) where {transpose, IO, customtypes, V, stringtype}
+@inline function Base.iterate(r::Rows{IO, customtypes, V, stringtype}, (pos, len, row)=(r.datapos, r.len, 1)) where {IO, customtypes, V, stringtype}
     (pos > len || row > r.limit) && return nothing
-    pos = parserow(1, 1, r.numwarnings, r.ctx, r.buf, pos, len, 1, r.datarow + row - 2, r.columns, transpose, customtypes)
+    pos = parserow(1, 1, r.numwarnings, r.ctx, r.buf, pos, len, 1, r.datarow + row - 2, r.columns, customtypes)
     columns = r.columns
     cols = length(columns)
     checkwidencolumns!(r, cols)
