@@ -14,6 +14,7 @@ Supported keyword arguments include:
 * `missingstring::String=""`: string to print for `missing` values
 * `dateformat=Dates.default_format(T)`: the date format string to use for printing out `Date` & `DateTime` columns
 * `append=false`: whether to append writing to an existing file/IO, if `true`, it will not write column names by default
+* `compress=false`: compress the written output using standard gzip compression (provided by the CodecZlib.jl package); note that a compression stream can always be provided as the first "file" argument to support other forms of compression; passing `compress=true` is just for convenience to avoid needing to manually setup a GzipCompressorStream
 * `writeheader=!append`: whether to write an initial row of delimited column names, not written by default if appending
 * `header`: pass a list of column names (Symbols or Strings) to use instead of the column names of the input table
 * `newline='\\n'`: character or string to use to separate rows (lines in the csv file)
@@ -163,6 +164,7 @@ function write(file, itr;
     transform::Function=_identity,
     bom::Bool=false,
     append::Bool=false,
+    compress::Bool=false,
     writeheader=nothing,
     partition::Bool=false,
     kwargs...)
@@ -189,7 +191,7 @@ function write(file, itr;
                         push!(outfiles, string(file, "_$i"))
                     end
                     write(outfiles[i], part; delim=delim, quotechar=quotechar, openquotechar=openquotechar, closequotechar=closequotechar, escapechar=escapechar, newline=newline,
-                        decimal=decimal, dateformat=dateformat, quotestrings=quotestrings, missingstring=missingstring, transform=transform, bom=bom, append=append,
+                        decimal=decimal, dateformat=dateformat, quotestrings=quotestrings, missingstring=missingstring, transform=transform, bom=bom, append=append, compress=compress,
                         writeheader=writeheader, partition=false, kwargs...)
                 end
             else
@@ -197,7 +199,7 @@ function write(file, itr;
                     push!(outfiles, string(file, "_$i"))
                 end
                 write(outfiles[i], part; delim=delim, quotechar=quotechar, openquotechar=openquotechar, closequotechar=closequotechar, escapechar=escapechar, newline=newline,
-                    decimal=decimal, dateformat=dateformat, quotestrings=quotestrings, missingstring=missingstring, transform=transform, bom=bom, append=append,
+                    decimal=decimal, dateformat=dateformat, quotestrings=quotestrings, missingstring=missingstring, transform=transform, bom=bom, append=append, compress=compress,
                     writeheader=writeheader, partition=false, kwargs...)
             end
         end
@@ -205,12 +207,13 @@ function write(file, itr;
     else
         rows = Tables.rows(itr)
         sch = Tables.schema(rows)
-        return write(sch, rows, file, opts; append=append, header=header, kwargs...)
+        return write(sch, rows, file, opts; append=append, compress=compress, header=header, kwargs...)
     end
 end
 
 function write(sch::Tables.Schema, rows, file, opts;
         append::Bool=false,
+        compress::Bool=false,
         header::Union{Bool, Vector}=String[],
         bufsize::Int=2^22
     )
@@ -219,7 +222,7 @@ function write(sch::Tables.Schema, rows, file, opts;
     len = bufsize
     buf = Vector{UInt8}(undef, len)
     pos = 1
-    with(file, append) do io
+    with(file, append, compress) do io
         Base.@_inline_meta
         if !append && opts.bom
             pos = writebom(buf, pos, len)
@@ -231,6 +234,7 @@ function write(sch::Tables.Schema, rows, file, opts;
         for row in rows
             writerow(buf, ref, len, io, sch, row, cols, opts)
         end
+        @show typeof(io)
         Base.write(io, resize!(buf, ref[] - 1))
     end
     return file
@@ -239,6 +243,7 @@ end
 # handle unknown schema case
 function write(::Nothing, rows, file, opts;
         append::Bool=false,
+        compress::Bool=false,
         header::Union{Bool, Vector}=String[],
         bufsize::Int=2^22
     )
@@ -248,8 +253,8 @@ function write(::Nothing, rows, file, opts;
     state = iterate(rows)
     if state === nothing
         if header isa Vector && !isempty(header)
-            with(file, append) do io
-                ! append && opts.bom && (pos = writebom(buf, pos, len) )
+            with(file, append, compress) do io
+                !append && opts.bom && (pos = writebom(buf, pos, len) )
                 pos = writenames(buf, pos, len, io, header, length(header), opts)
                 Base.write(io, resize!(buf, pos - 1))
             end
@@ -260,7 +265,7 @@ function write(::Nothing, rows, file, opts;
     names = header isa Bool || isempty(header) ? propertynames(row) : header
     sch = Tables.Schema(names, nothing)
     cols = length(names)
-    with(file, append) do io
+    with(file, append, compress) do io
         if !append && opts.bom
             pos = writebom(buf, pos, len)
         end
@@ -281,19 +286,24 @@ end
 
 _seekstart(io::T) where {T <: IO} = hasmethod(seek, Tuple{T, Integer}) ? seekstart(io) : nothing
 
-@inline function with(f::Function, io::IO, append)
-    !append && _seekstart(io)
-    f(io)
-end
-
-function with(f::Function, io::Union{Base.TTY, Base.Pipe, Base.PipeEndpoint, Base.DevNull}, append)
-    # seeking in an unbuffered pipe makes no sense...
-    f(io)
-end
-
-function with(f::Function, file, append)
-    open(file, append ? "a" : "w") do io
-        f(io)
+function with(f::Function, @nospecialize(io), append, compress)
+    needtoclose = false
+    if io isa Union{Base.TTY, Base.Pipe, Base.PipeEndpoint, Base.DevNull}
+        # pass, can't seek these
+    elseif io isa IO && !append
+        _seekstart(io)
+    else
+        io = open(io, append ? "a" : "w")
+        needtoclose = true
+    end
+    if compress
+        io = GzipCompressorStream(io)
+        needtoclose = true
+    end
+    try
+        return f(io)
+    finally
+        needtoclose && close(io)
     end
 end
 
