@@ -234,7 +234,6 @@ function write(sch::Tables.Schema, rows, file, opts;
         for row in rows
             writerow(buf, ref, len, io, sch, row, cols, opts)
         end
-        @show typeof(io)
         Base.write(io, resize!(buf, ref[] - 1))
     end
     return file
@@ -290,8 +289,8 @@ function with(f::Function, @nospecialize(io), append, compress)
     needtoclose = false
     if io isa Union{Base.TTY, Base.Pipe, Base.PipeEndpoint, Base.DevNull}
         # pass, can't seek these
-    elseif io isa IO && !append
-        _seekstart(io)
+    elseif io isa IO
+        !append && _seekstart(io)
     else
         io = open(io, append ? "a" : "w")
         needtoclose = true
