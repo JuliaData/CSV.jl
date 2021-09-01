@@ -71,8 +71,8 @@ _precompile_()
 
 function __init__()
     CSV.File(IOBuffer(PRECOMPILE_DATA))
-    foreach(row -> row, CSV.Rows(IOBuffer(PRECOMPILE_DATA)))
-    CSV.File(joinpath(dirname(pathof(CSV)), "..", "test", "testfiles", "promotions.csv"))
+    # foreach(row -> row, CSV.Rows(IOBuffer(PRECOMPILE_DATA)))
+    # CSV.File(joinpath(dirname(pathof(CSV)), "..", "test", "testfiles", "promotions.csv"))
 end
 
 end # module

@@ -2,6 +2,6 @@ const PRECOMPILE_DATA = "int,float,date,datetime,bool,null,str,catg,int_float\n1
 function _precompile_()
     ccall(:jl_generating_output, Cint, ()) == 1 || return nothing
     CSV.File(IOBuffer(PRECOMPILE_DATA))
-    foreach(row -> row, CSV.Rows(IOBuffer(PRECOMPILE_DATA)))
-    CSV.File(joinpath(dirname(pathof(CSV)), "..", "test", "testfiles", "promotions.csv"))
+    # foreach(row -> row, CSV.Rows(IOBuffer(PRECOMPILE_DATA)))
+    # CSV.File(joinpath(dirname(pathof(CSV)), "..", "test", "testfiles", "promotions.csv"))
 end
