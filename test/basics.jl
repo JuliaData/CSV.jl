@@ -671,4 +671,7 @@ f = CSV.File(@view(data[:]))
 @test length(f) == 2
 @test f.column_name == ["foobar", "bazbat"]
 
+# 701
+f = CSV.File(IOBuffer("1,2,3,4,5\n6,7,8,9,10\n11,12,13,14,15\n"); header=[:col1, :col3, :col5], select=)
+
 end

@@ -161,10 +161,10 @@ function incr!(c::ByteValueCounter, b::UInt8)
 end
 
 # given the various header and normalization options, figure out column names for a file
-function detectcolumnnames(buf, headerpos, datapos, len, options, @nospecialize(header), normalizenames)::Vector{Symbol}
+function detectcolumnnames(buf, headerpos, datapos, len, options, @nospecialize(header), normalizenames, selectorfunc)::Vector{Symbol}
     if header isa Union{AbstractVector{Symbol}, AbstractVector{String}}
         fields, pos = readsplitline(buf, datapos, len, options)
-        isempty(header) && return [Symbol(:Column, i) for i = 1:length(fields)]
+        (isempty(header) || selectorfunc) && return [Symbol(:Column, i) for i = 1:length(fields)]
         names = header
     elseif headerpos == 0
         fields, pos = readsplitline(buf, datapos, len, options)
