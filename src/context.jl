@@ -118,7 +118,7 @@ struct Context
     names::Vector{Symbol}
     rowsguess::Int64
     cols::Int
-    buf::AbstractVector{UInt8}
+    buf::Vector{UInt8}
     datapos::Int64
     len::Int
     datarow::Int
@@ -139,6 +139,61 @@ struct Context
     debug::Bool
     tempfile::Union{String, Nothing}
     streaming::Bool
+end
+
+# user-facing function if just the context is desired
+function Context(source::ValidSources;
+    # file options
+    # header can be a row number, range of rows, or actual string vector
+    header::Union{Integer, Vector{Symbol}, Vector{String}, AbstractVector{<:Integer}}=1,
+    normalizenames::Bool=false,
+    # by default, data starts immediately after header or start of file
+    datarow::Integer=-1,
+    skipto::Integer=-1,
+    footerskip::Integer=0,
+    transpose::Bool=false,
+    comment::Union{String, Nothing}=nothing,
+    ignoreemptyrows::Bool=true,
+    ignoreemptylines=nothing,
+    select=nothing,
+    drop=nothing,
+    limit::Union{Integer, Nothing}=nothing,
+    buffer_in_memory::Bool=false,
+    threaded::Union{Bool, Nothing}=nothing,
+    ntasks::Union{Nothing, Integer}=nothing,
+    tasks::Union{Nothing, Integer}=nothing,
+    rows_to_check::Integer=DEFAULT_ROWS_TO_CHECK,
+    lines_to_check=nothing,
+    # parsing options
+    missingstrings=String[],
+    missingstring="",
+    delim::Union{Nothing, Char, String}=nothing,
+    ignorerepeated::Bool=false,
+    quoted::Bool=true,
+    quotechar::Union{UInt8, Char}='"',
+    openquotechar::Union{UInt8, Char, Nothing}=nothing,
+    closequotechar::Union{UInt8, Char, Nothing}=nothing,
+    escapechar::Union{UInt8, Char}='"',
+    dateformat::Union{String, Dates.DateFormat, Nothing, AbstractDict}=nothing,
+    dateformats=nothing,
+    decimal::Union{UInt8, Char}=UInt8('.'),
+    truestrings::Union{Vector{String}, Nothing}=TRUE_STRINGS,
+    falsestrings::Union{Vector{String}, Nothing}=FALSE_STRINGS,
+    # type options
+    type=nothing,
+    types=nothing,
+    typemap::Dict=Dict{Type, Type}(),
+    pool::Union{Bool, Real, AbstractVector, AbstractDict}=DEFAULT_POOL,
+    downcast::Bool=false,
+    lazystrings::Bool=false,
+    stringtype::StringTypes=DEFAULT_STRINGTYPE,
+    strict::Bool=false,
+    silencewarnings::Bool=false,
+    maxwarnings::Int=DEFAULT_MAX_WARNINGS,
+    debug::Bool=false,
+    parsingdebug::Bool=false
+    )
+    return @refargs Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, threaded, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
 end
 
 @refargs function Context(source::ValidSources,
