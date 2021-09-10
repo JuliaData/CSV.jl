@@ -187,7 +187,7 @@ consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 
             if buffer_in_memory
                 buf = Base.read(x)
             else
-                buf, tfile = buffer_to_tempfile(CodecZlib.TranscodingStreams.Noop(), x)
+                buf, tfile = buffer_to_tempfile(CodecZlib.TranscodingStreams.Noop(), open(x))
             end
             return buf, 1, length(buf), tfile
         end
