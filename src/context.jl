@@ -23,6 +23,7 @@ Fields:
   * `userprovidedtype`: whether the column type was provided by the user or not; this affects whether we'll promote a column's type while parsing, or emit a warning/error depending on `strict` keyword arg
   * `willdrop`: whether we'll drop this column from the final columnset; computed from select/drop keyword arguments; this will result in a column type of `HardMissing` while parsing, where an efficient parser is used to "skip" a field w/o allocating any parsed value
   * `pool`: computed from `pool` keyword argument; `true` is `1.0`, `false` is `0.0`, everything else is `Float64(pool)`; once computed, this field isn't mutated at all while parsing; it's used in type detection to determine whether a column will be pooled or not once a type is detected; 
+  * `columnspecificpool`: if `pool` was provided via Vector or Dict by user, then `true`, other `false`; if `false`, then only string column types will attempt pooling
   * `column`: the actual column vector to hold parsed values; field is typed as `AbstractVector` and while parsing, we do switches on `col.type` to assert the column type to make code concretely typed
   * `refpool`: if the column is pooled (or might be pooled in single-threaded case), this is the column-specific `RefPool` used to track unique parsed values and their `UInt32` ref codes
   * `lock`: in multithreaded parsing, we have a top-level set of `Vector{Column}`, then each threaded parsing task makes its own copy to parse its own chunk; when synchronizing column types/pooled refs, the task-local `Column` will `lock(col.lock)` to make changes to the parent `Column`; each task-local `Column` shares the same `lock` of the top-level `Column`
@@ -36,6 +37,7 @@ mutable struct Column
     userprovidedtype::Bool
     willdrop::Bool
     pool::Float64
+    columnspecificpool::Bool
     # lazily/manually initialized fields
     column::AbstractVector
     refpool::RefPool
@@ -45,8 +47,8 @@ mutable struct Column
     endposition::Int
     options::Parsers.Options
 
-    Column(type::Type, anymissing::Bool, userprovidedtype::Bool, willdrop::Bool, pool::Float64) =
-        new(type, anymissing, userprovidedtype, willdrop, pool)
+    Column(type::Type, anymissing::Bool, userprovidedtype::Bool, willdrop::Bool, pool::Float64, columnspecificpool::Bool) =
+        new(type, anymissing, userprovidedtype, willdrop, pool, columnspecificpool)
 end
 
 function Column(type::Type, options::Parsers.Options=nothing)
@@ -54,7 +56,7 @@ function Column(type::Type, options::Parsers.Options=nothing)
     col = Column(type === Missing ? HardMissing : T,
         type >: Missing,
         type !== NeedsTypeDetection,
-        false, NaN)
+        false, NaN, false)
     if options !== nothing
         col.options = options
     end
@@ -64,7 +66,7 @@ end
 # creating a per-task column from top-level column
 function Column(x::Column)
     @assert isdefined(x, :lock)
-    y = Column(x.type, x.anymissing, x.userprovidedtype, x.willdrop, x.pool)
+    y = Column(x.type, x.anymissing, x.userprovidedtype, x.willdrop, x.pool, x.columnspecificpool)
     y.lock = x.lock # parent and child columns _share_ the same lock
     if isdefined(x, :options)
         y.options = x.options
@@ -483,15 +485,22 @@ end
         if pool isa AbstractVector
             length(pool) == ncols || throw(ArgumentError("provided `pool::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(pool)) != $ncols`"))
             for i = 1:ncols
-                columns[i].pool = getpool(pool[i])
+                col = columns[i]
+                col.pool = getpool(pool[i])
+                col.columnspecificpool = true
             end
         elseif pool isa AbstractDict
             for i = 1:ncols
-                columns[i].pool = getpool(getordefault(pool, names[i], i, 0.0))
+                col = columns[i]
+                col.pool = getpool(getordefault(pool, names[i], i, 0.0))
+                col.columnspecificpool = true
             end
             checkinvalidcolumns(pool, "pool", ncols, names)
         else
             finalpool = getpool(pool)
+            for col in columns
+                col.pool = finalpool
+            end
         end
     end
 
@@ -595,12 +604,6 @@ end
             rowsguess = ceil(Int64, ((len - datapos) / weightedavgbytesperrow) * 1.01)
             debug && println("single-threaded estimated rows = $origrowsguess, multi-threaded estimated rows = $rowsguess")
             debug && println("multi-threaded column types sampled as: $columns")
-            # check if we need to adjust column pooling
-            if finalpool == 0.0 || finalpool == 1.0
-                for col in columns
-                    col.pool = finalpool
-                end
-            end
         else
             debug && println("something went wrong chunking up a file for multithreaded parsing, falling back to single-threaded parsing")
             threaded = false
