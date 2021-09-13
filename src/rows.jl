@@ -155,8 +155,7 @@ function Rows(source::ValidSources;
     )
 end
 
-Tables.rowtable(::Type{<:Rows}) = true
-Tables.rows(r::Rows) = r
+Tables.isrowtable(::Type{<:Rows}) = true
 Tables.schema(r::Rows) = Tables.Schema(r.names, [coltype(x) for x in view(r.columns, r.columnmap)])
 Base.eltype(::Rows) = Row2
 Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
