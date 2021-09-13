@@ -269,7 +269,9 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
         # cleanup our columns if needed
         for col in columns
 @label processcolumn
-            if !isdefined(col, :refpool) && pooled(col)
+            if col.type === NeedsTypeDetection && pooled(col)
+                # we get here if user specified pool=true for at least this column
+                # but we never encountered any non-missing values
                 col.type = Missing
                 col.column = allocate(Pooled, finalrows)
                 col.refpool = RefPool(Missing)
@@ -279,12 +281,11 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
                 col.column = MissingVector(finalrows)
                 col.pool = 0.0
             end
-            if pooled(col)
-                makepooled!(col)
-            elseif col.column isa Vector{UInt32}
-                # check if final column should be PooledArray or not
-                poolval = !isnan(col.pool) ? col.pool : !isnan(ctx.pool) ? ctx.pool : DEFAULT_POOL
-                if ((length(col.refpool.refs) - 1) / finalrows) <= poolval
+            if col.column isa Vector{UInt32}
+                if pooled(col)
+                    makepooled!(col)
+                elseif ((length(col.refpool.refs) - 1) / finalrows) <= col.pool
+                    # check if final column should be PooledArray or not
                     makepooled!(col)
                 else
                     # cardinality too high, so unpool
@@ -394,7 +395,7 @@ function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, rowchunkguess, 
         elseif T === Float64 && T2 <: Integer
             # one chunk parsed as Int, another as Float64, promote to Float64
             ctx.debug && println("multithreaded promoting column $j to float")
-            if pooled(col)
+            if task_col.column isa Vector{UInt32}
                 task_col.refpool.refs = convert(Refs{Float64}, task_col.refpool.refs)
             else
                 task_col.column = convert(SentinelVector{Float64}, task_col.column)
@@ -409,17 +410,13 @@ function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, rowchunkguess, 
             # one chunk parsed all missing values, but another chunk had a typed value, promote to that
             # while keeping all values `missing` (allocate by default ensures columns have all missing values)
             ctx.debug && println("multithreaded promoting column $j from missing on task $i")
-            task_col.column = allocate(pooled(col) ? Pooled : T, task_rows)
+            task_col.column = allocate(maybepooled(col) && (T isa StringTypes || col.columnspecificpool) ? Pooled : T, task_rows)
         end
         # synchronize refs if needed
-        if pooled(col) || (isnan(col.pool) && col.type isa StringTypes)
+        if maybepooled(col) && (T isa StringTypes || col.columnspecificpool)
             if !isdefined(col, :refpool) && isdefined(task_col, :refpool)
                 # this case only occurs if user explicitly passed pool=true
                 # but we only parsed `missing` values during sampling
-                col.refpool = task_col.refpool
-            elseif isdefined(col, :refpool) && pooltype(col) !== T && isdefined(task_col, :refpool)
-                # we pooled/detected one type while sampling, but parsing promoted to another type
-                # if the task_col has a refpool, then we know it's the promoted type
                 col.refpool = task_col.refpool
             elseif isdefined(task_col, :refpool)
                 syncrefs!(col.type, col, task_col, task_rows)
@@ -427,14 +424,14 @@ function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, rowchunkguess, 
         end
     end
 @label threadedprocesscolumn
-    if pooled(col)
-        makechain!(col.type, pertaskcolumns, col, j, ntasks)
-        # pooled columns are the one case where we invert the order of arrays;
-        # i.e. we return PooledArray{T, ChainedVector{T}} instead of ChainedVector{T, PooledArray{T}}
-        makepooled!(col)
-    elseif isnan(col.pool) && col.type isa StringTypes
-        poolval = !isnan(col.pool) ? col.pool : !isnan(ctx.pool) ? ctx.pool : DEFAULT_POOL
-        if ((length(col.refpool.refs) - 1) / finalrows) <= poolval
+    # @show maybepooled(col), col.type, isdefined(col, :column)
+    if maybepooled(col) && (col.type isa StringTypes || col.columnspecificpool)
+        if pooled(col)
+            makechain!(col.type, pertaskcolumns, col, j, ntasks)
+            # pooled columns are the one case where we invert the order of arrays;
+            # i.e. we return PooledArray{T, ChainedVector{T}} instead of ChainedVector{T, PooledArray{T}}
+            makepooled!(col)
+        elseif ((length(col.refpool.refs) - 1) / finalrows) <= col.pool
             col.pool = 1.0
             @goto threadedprocesscolumn
         else
@@ -519,7 +516,7 @@ function makechain!(::Type{T}, pertaskcolumns, col, j, ntasks) where {T}
             col.column = ChainedVector([convert(Vector{Bool}, pertaskcolumns[i][j].column::vectype(T)) for i = 1:ntasks])
         elseif col.type !== Union{} && col.type <: SmallIntegers
             col.column = ChainedVector([convert(Vector{col.type}, pertaskcolumns[i][j].column::vectype(T)) for i = 1:ntasks])
-        elseif pooled(col)
+        elseif maybepooled(col) && (col.type isa StringTypes || col.columnspecificpool)
             col.column = ChainedVector([pertaskcolumns[i][j].column::Vector{UInt32} for i = 1:ntasks])
         else
             col.column = ChainedVector([parent(pertaskcolumns[i][j].column) for i = 1:ntasks])
@@ -783,7 +780,7 @@ function detectcell(buf, pos, len, row, rowoffset, i, col, ctx, rowsguess)::Tupl
     end
 @label done
     # if we're here, that means we found a non-missing value, so we need to update column
-    if pooled(col) || maybepooled(col) || (isnan(col.pool) && newT isa StringTypes)
+    if maybepooled(col) && (newT isa StringTypes || col.columnspecificpool)
         column = allocate(Pooled, rowsguess)
         col.refpool = RefPool(newT)
         val = getref!(col.refpool, newT, val isa PosLen ? PosLenString(buf, val, opts.e) : val)
@@ -955,7 +952,7 @@ end
 @noinline function promotetostring!(ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, ::Type{customtypes}, column_to_promote, numwarnings, limit, stringtype) where {customtypes}
     cols = [i == column_to_promote ? columns[i] : Column(Missing, columns[i].options) for i = 1:length(columns)]
     col = cols[column_to_promote]
-    if pooled(col) || maybepooled(col) || isnan(col.pool)
+    if maybepooled(col)
         col.refpool = RefPool(stringtype)
         col.column = allocate(Pooled, rowsguess)
     else

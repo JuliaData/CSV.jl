@@ -19,7 +19,7 @@ finaltype(::Type{NeedsTypeDetection}) = Missing
 coltype(col) = ifelse(col.anymissing, Union{finaltype(col.type), Missing}, finaltype(col.type))
 
 pooled(col) = col.pool == 1.0
-maybepooled(col) = 0.0 < col.pool < 1.0
+maybepooled(col) = 0.0 < col.pool
 
 function getpool(x::Real)::Float64
     if x isa Bool
@@ -101,7 +101,7 @@ function allocate!(columns, rowsguess)
         # if the type hasn't been detected yet, then column will get allocated
         # in the detect method while parsing
         if col.type !== NeedsTypeDetection
-            if pooled(col) || maybepooled(col) || (isnan(col.pool) && col.type isa StringTypes)
+            if maybepooled(col) && (col.type isa StringTypes || col.columnspecificpool)
                 col.column = allocate(Pooled, rowsguess)
                 if !isdefined(col, :refpool)
                     col.refpool = RefPool(col.type)
