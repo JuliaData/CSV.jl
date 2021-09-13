@@ -336,7 +336,7 @@ ColumnProperties(T) = ColumnProperties(T, 0x00)
     end
 end
 
-function findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check, columns, columnlock, @nospecialize(stringtype), totalbytes, totalrows, succeeded)
+function findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check, columns, origcoltypes, columnlock, @nospecialize(stringtype), totalbytes, totalrows, succeeded)
     pos = ranges[i]
     len = ranges[i + 1]
     while pos <= len
@@ -359,9 +359,11 @@ function findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check,
         parsedncols = rowsparsed = 0
         columnprops = Vector{ColumnProperties}(undef, ncols)
         for i = 1:ncols
-            if columns[i].type === NeedsTypeDetection
-                columnprops[i] = ColumnProperties(typecode(columns[i].type))
+            if origcoltypes[i] === NeedsTypeDetection
+                columnprops[i] = ColumnProperties(NEEDSTYPEDETECTION)
             else
+                # if column type is already set, that means user provided manually
+                # so we don't care about sampling that column's values for type
                 columnprops[i] = ColumnProperties(0x00)
             end
         end
@@ -461,9 +463,10 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, @nospecialize(stringt
     succeeded = Threads.Atomic{Bool}(true)
     N = length(ranges) - 2
     lock = ReentrantLock()
+    origcoltypes = Type[col.type for col in columns]
     @sync for i = 2:(length(ranges) - 1)
         Threads.@spawn begin
-            findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check, columns, lock, stringtype, totalbytes, totalrows, succeeded)
+            findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check, columns, origcoltypes, lock, stringtype, totalbytes, totalrows, succeeded)
         end
     end
     return totalbytes[] / totalrows[], succeeded[]
