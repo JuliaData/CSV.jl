@@ -648,6 +648,10 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
             pos, code = parsevalue!(Int64, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === Int128
             pos, code = parsevalue!(Int128, buf, pos, len, row, rowoffset, i, col, ctx)
+        elseif type === Float16
+            pos, code = parsevalue!(Float16, buf, pos, len, row, rowoffset, i, col, ctx)
+        elseif type === Float32
+            pos, code = parsevalue!(Float32, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === Float64
             pos, code = parsevalue!(Float64, buf, pos, len, row, rowoffset, i, col, ctx)
         elseif type === InlineString1
