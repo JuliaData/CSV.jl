@@ -671,4 +671,13 @@ f = CSV.File(@view(data[:]))
 @test length(f) == 2
 @test f.column_name == ["foobar", "bazbat"]
 
+# 901; nonstandard types passed via types=T
+f = CSV.File(IOBuffer("a,b,c\n1.2,3.4,5.6\n"); types=Float32)
+@test length(f) == 1
+@test NamedTuple(f[1]) === (a=Float32(1.2), b=Float32(3.4), c=Float32(5.6))
+
+f = CSV.File(IOBuffer("a,b,c\n1.2,3.4,5.6\n"); types=BigFloat)
+@test length(f) == 1
+@test f[1].a == BigFloat("1.2") && f[1].b == BigFloat("3.4") && f[1].c == BigFloat("5.6")
+
 end

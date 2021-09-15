@@ -265,39 +265,39 @@ end
     checkvaliddelim(delim)
     ignorerepeated && delim === nothing && throw(ArgumentError("auto-delimiter detection not supported when `ignorerepeated=true`; please provide delimiter like `delim=','`"))
     if lazystrings && !streaming
-        Base.depwarn("`lazystrings` keyword argument is deprecated; use `stringtype=PosLenString` instead", :Context)
+        @warn "`lazystrings` keyword argument is deprecated; use `stringtype=PosLenString` instead"
         stringtype = PosLenString
     end
     if tasks !== nothing
-        Base.depwarn("`tasks` keyword argument is deprecated; use `ntasks` instead", :Context)
+        @warn "`tasks` keyword argument is deprecated; use `ntasks` instead"
         ntasks = tasks
     end
     if ignoreemptylines !== nothing
-        Base.depwarn("`ignoreemptylines` keyword argument is deprecated; use `ignoreemptyrows` instead", :Context)
+        @warn "`ignoreemptylines` keyword argument is deprecated; use `ignoreemptyrows` instead"
         ignoreemptyrows = ignoreemptylines
     end
     if lines_to_check !== nothing
-        Base.depwarn("`lines_to_check` keyword argument is deprecated; use `rows_to_check` instead", :Context)
+        @warn "`lines_to_check` keyword argument is deprecated; use `rows_to_check` instead"
         rows_to_check = lines_to_check
     end
     if !isempty(missingstrings)
-        Base.depwarn("`missingstrings` keyword argument is deprecated; pass a `Vector{String}` to `missingstring` instead", :Context)
+        @warn "`missingstrings` keyword argument is deprecated; pass a `Vector{String}` to `missingstring` instead"
         missingstring = missingstrings
     end
     if dateformats !== nothing
-        Base.depwarn("`dateformats` keyword argument is deprecated; pass column date formats to `dateformat` keyword argument instead", :Context)
+        @warn "`dateformats` keyword argument is deprecated; pass column date formats to `dateformat` keyword argument instead"
         dateformat = dateformats
     end
     if datarow != -1
-        Base.depwarn("`datarow` keyword argument is deprecated; use `skipto` instead", :Context)
+        @warn "`datarow` keyword argument is deprecated; use `skipto` instead"
         skipto = datarow
     end
     if type !== nothing
-        Base.depwarn("`type` keyword argument is deprecated; a single type can be passed to `types` instead", :Context)
+        @warn "`type` keyword argument is deprecated; a single type can be passed to `types` instead"
         types = type
     end
     if threaded !== nothing
-        Base.depwarn("`threaded` keyword argument is deprecated; to avoid multithreaded parsing, pass `ntasks=1`", :Context)
+        @warn "`threaded` keyword argument is deprecated; to avoid multithreaded parsing, pass `ntasks=1`"
         ntasks = threaded ? Threads.nthreads() : 1
     end
     if header isa Integer
@@ -445,6 +445,9 @@ end
         checkinvalidcolumns(types, "types", ncols, names)
     else
         T = types === nothing ? (streaming ? Union{stringtype, Missing} : NeedsTypeDetection) : types
+        if nonstandardtype(T) !== Union{}
+            customtypes = tupcat(customtypes, nonstandardtype(T))
+        end
         columns = Vector{Column}(undef, ncols)
         for i = 1:ncols
             col = Column(T, options)
