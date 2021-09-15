@@ -37,10 +37,14 @@ end
 
 Read a csv input returning a `CSV.Rows` object.
 
-The `source` argument can be one of:
+The [`input`](@ref input) argument can be one of:
   * filename given as a string or FilePaths.jl type
-  * an `AbstractVector{UInt8}` like a byte buffer or `codeunits(string)`
-  * an `IOBuffer`
+  * a `Vector{UInt8}` or `SubArray{UInt8, 1, Vector{UInt8}}` byte buffer
+  * a `CodeUnits` object, which wraps a `String`, like `codeunits(str)`
+  * a csv-formatted string can also be passed like `IOBuffer(str)`
+  * a `Cmd` or other `IO`
+  * a gzipped file (or gzipped data in any of the above), which will automatically be decompressed for parsing
+
 
 To read a csv file from a url, use the HTTP.jl package, where the `HTTP.Response` body can be passed like:
 ```julia
