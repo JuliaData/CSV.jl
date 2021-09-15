@@ -41,9 +41,10 @@ use `CSV.read(input, sink; kwargs...)` instead if the `CSV.File` intermediate ob
 The [`input`](@ref input) argument can be one of:
   * filename given as a string or FilePaths.jl type
   * a `Vector{UInt8}` or `SubArray{UInt8, 1, Vector{UInt8}}` byte buffer
+  * a `CodeUnits` object, which wraps a `String`, like `codeunits(str)`
+  * a csv-formatted string can also be passed like `IOBuffer(str)`
   * a `Cmd` or other `IO`
-  * a csv-formatted string can be passed like `IOBuffer(str)`
-  * a gzipped file, which will automatically be decompressed for parsing
+  * a gzipped file (or gzipped data in any of the above), which will automatically be decompressed for parsing
   * a `Vector` of any of the above, which will parse and vertically concatenate each source, returning a single, "long" `CSV.File`
 
 To read a csv file from a url, use the Downloads.jl stdlib or HTTP.jl package, where the resulting downloaded tempfile or `HTTP.Response` body can be passed like:

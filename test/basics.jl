@@ -680,4 +680,9 @@ f = CSV.File(IOBuffer("a,b,c\n1.2,3.4,5.6\n"); types=BigFloat)
 @test length(f) == 1
 @test f[1].a == BigFloat("1.2") && f[1].b == BigFloat("3.4") && f[1].c == BigFloat("5.6")
 
+# 894
+f = CSV.File(codeunits("a,b,c\n1.2,3.4,5.6\n"))
+@test length(f) == 1
+@test NamedTuple(f[1]) === (a=1.2, b=3.4, c=5.6)
+
 end

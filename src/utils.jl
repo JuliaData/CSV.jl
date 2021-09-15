@@ -171,6 +171,8 @@ consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 
         return x, 1, length(x), tfile
     elseif x isa SubArray{UInt8, 1, Vector{UInt8}}
         return parent(x), first(x.indices[1]), last(x.indices[1]), tfile
+    elseif x isa StringCodeUnits
+        return unsafe_wrap(Vector{UInt8}, x.s), 1, length(x), tfile
     elseif x isa IOBuffer
         if x.data isa Vector{UInt8}
             return x.data, x.ptr, x.size, tfile
