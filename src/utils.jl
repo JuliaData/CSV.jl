@@ -69,6 +69,8 @@ end
     if T === Union{} ||
        T isa StringTypes ||
        isinttype(T) ||
+       T === Float16 ||
+       T === Float32 ||
        T === Float64 ||
        T === Bool ||
        T === Date ||
