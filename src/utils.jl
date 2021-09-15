@@ -89,12 +89,13 @@ const SmallIntegers = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32}
 const SVec{T} = SentinelVector{T, T, Missing, Vector{T}}
 const SVec2{T} = SentinelVector{T, typeof(undef), Missing, Vector{T}}
 
+struct Pooled end
+
 vectype(::Type{T}) where {T <: Union{Bool, SmallIntegers}} = Vector{Union{T, Missing}}
 vectype(::Type{T}) where {T} = isbitstype(T) ? SVec{T} : SVec2{T}
+vectype(::Type{Pooled}) = Vector{UInt32}
 promotevectype(::Type{T}) where {T <: Union{Bool, SmallIntegers}} = vectype(T)
 promotevectype(::Type{T}) where {T} = SentinelVector{T}
-
-struct Pooled end
 
 # allocate columns for a full file
 function allocate!(columns, rowsguess)
@@ -115,6 +116,10 @@ function allocate!(columns, rowsguess)
     end
     return
 end
+
+setmissing!(col, i) = col[i] = missing
+const POSLEN_MISSING = PosLen(0, 0, true)
+setmissing!(col::Vector{PosLen}, i) = col[i] = POSLEN_MISSING
 
 @inline function allocate(T, len)
     if T === NeedsTypeDetection || T === HardMissing || T === Missing

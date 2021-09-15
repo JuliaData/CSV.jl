@@ -160,7 +160,7 @@ Tables.schema(r::Rows) = Tables.Schema(r.names, [coltype(x) for x in view(r.colu
 Base.eltype(::Rows) = Row2
 Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
 
-@inline function setcustom!(::Type{customtypes}, values, columns, i) where {customtypes}
+@inline function setcustom!(::Type{customtypes}, values, columns, i, setmissing) where {customtypes}
     if @generated
         block = Expr(:block)
         push!(block.args, quote
@@ -172,7 +172,11 @@ Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
             pushfirst!(block.args, quote
                 column = columns[i].column
                 if column isa $vT
-                    @inbounds values[i] = column[1]
+                    if setmissing
+                        setmissing!(column, 1)
+                    else
+                        @inbounds values[i] = column[1]
+                    end
                     return
                 end
             end)
@@ -201,63 +205,84 @@ function checkwidencolumns!(r::Rows{ct, V}, cols) where {ct, V}
     return
 end
 
-@inline function Base.iterate(r::Rows{IO, customtypes, V, stringtype}, (pos, len, row)=(r.datapos, r.len, 1)) where {IO, customtypes, V, stringtype}
-    (pos > len || row > r.limit) && return nothing
-    pos = parserow(1, 1, r.numwarnings, r.ctx, r.buf, pos, len, 1, r.datarow + row - 2, r.columns, customtypes)
-    columns = r.columns
-    cols = length(columns)
-    checkwidencolumns!(r, cols)
-    values = r.reusebuffer ? r.values : Vector{V}(undef, cols)
-    for i = 1:cols
-        @inbounds column = columns[i].column
+macro unrollcolumns(setmissing, ex)
+    return esc(quote
         if column isa MissingVector
-            @inbounds values[i] = missing
+            if !($setmissing)
+                @inbounds values[i] = missing
+            end
         elseif column isa Vector{PosLen}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa Vector{Union{Missing, Int8}}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa Vector{Union{Missing, Int16}}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa Vector{Union{Missing, Int32}}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa SVec{Int64}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa SVec{Int128}
-            @inbounds values[i] = column[1]
+            $ex
+        elseif column isa SVec{Float16}
+            $ex
+        elseif column isa SVec{Float32}
+            $ex
         elseif column isa SVec{Float64}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa SVec{InlineString1}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa SVec{InlineString3}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa SVec{InlineString7}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa SVec{InlineString15}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa SVec{InlineString31}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa SVec{InlineString63}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa SVec{InlineString127}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa SVec{InlineString255}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa SVec2{String}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa SVec{Date}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa SVec{DateTime}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa SVec{Time}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa Vector{Union{Missing, Bool}}
-            @inbounds values[i] = column[1]
+            $ex
         elseif column isa Vector{UInt32}
-            @inbounds values[i] = column[1]
+            $ex
         elseif customtypes !== Tuple{}
-            setcustom!(customtypes, values, columns, i)
+            setcustom!(customtypes, values, columns, i, $setmissing)
         else
             error("bad array type: $(typeof(column))")
+        end
+    end)
+end
+
+@inline function Base.iterate(r::Rows{IO, customtypes, V, stringtype}, (pos, len, row)=(r.datapos, r.len, 1)) where {IO, customtypes, V, stringtype}
+    (pos > len || row > r.limit) && return nothing
+    columns = r.columns
+    cols = length(columns)
+    for i = 1:cols
+        @inbounds column = columns[i].column
+        @unrollcolumns true begin
+            setmissing!(column, 1)
+        end
+    end
+    pos = parserow(1, 1, r.numwarnings, r.ctx, r.buf, pos, len, 1, r.datarow + row - 2, columns, customtypes)
+    cols = length(columns)
+    values = r.reusebuffer ? r.values : Vector{V}(undef, cols)
+    checkwidencolumns!(r, cols)
+    for i = 1:cols
+        @inbounds column = columns[i].column
+        @unrollcolumns false begin
+            @inbounds values[i] = column[1]
         end
     end
     return Row2{V, stringtype}(r.names, r.columns, r.columnmap, r.lookup, values, r.buf), (pos, len, row + 1)
