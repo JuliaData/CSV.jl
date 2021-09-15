@@ -120,6 +120,11 @@ end
         @test all(row .== [string(i)])
     end
 
+    # 903
+    rows = collect(CSV.Rows(IOBuffer("int,float,date,datetime,bool,null,str,catg,int_float\n1,3.14,2019-01-01,2019-01-01T01:02:03,true,,hey,abc,2\n,,,,,,,,\n2,NaN,2019-01-02,2019-01-03T01:02:03,false,,there,abc,3.14\n"); types=[Int, Float64, Date, DateTime, Bool, Missing, String, String, Float64]))
+    @test isequal(collect(rows[1]), [1, 3.14, Date(2019, 1, 1), DateTime(2019, 1, 1, 1, 2, 3), true, missing, "hey", "abc", 2.0])
+    foreach(x -> @test(x === missing), rows[2])
+    @test isequal(collect(rows[3]), [2, NaN, Date(2019, 1, 2), DateTime(2019, 1, 3, 1, 2, 3), false, missing, "there", "abc", 3.14])
 end
 
 @testset "CSV.detect" begin
