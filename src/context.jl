@@ -236,7 +236,7 @@ end
     falsestrings::Union{Nothing, Vector{String}},
     # type options
     type::Union{Nothing, Type},
-    types::Union{Nothing, Type, AbstractVector, AbstractDict, Base.Callable},
+    types::Union{Nothing, Type, AbstractVector, AbstractDict, Function},
     typemap::Dict,
     pool::Union{Bool, Real, AbstractVector, AbstractDict, Base.Callable},
     downcast::Bool,
@@ -443,7 +443,7 @@ end
             end
         end
         checkinvalidcolumns(types, "types", ncols, names)
-    elseif types isa Base.Callable
+    elseif types isa Function
         defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
         columns = Vector{Column}(undef, ncols)
         for i = 1:ncols
