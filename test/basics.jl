@@ -685,4 +685,15 @@ f = CSV.File(codeunits("a,b,c\n1.2,3.4,5.6\n"))
 @test length(f) == 1
 @test NamedTuple(f[1]) === (a=1.2, b=3.4, c=5.6)
 
+# 896
+f = CSV.File(codeunits("a,b,c,d\n1,2,3.14,hey\n4,2,6.5,hey\n");
+                types=(i, nm) -> i == 1 ? Int8 : i == 2 ? BigInt : i == 3 ? Float64 : String,
+                pool=(i, nm) -> i == 2 ? true : nothing)
+@test f.a == [1, 4]
+@test eltype(f.a) == Int8
+@test f.b == [2, 2]
+@test f.b isa PooledVector{BigInt}
+@test f.c == [3.14, 6.5]
+@test f.d == ["hey", "hey"]
+
 end
