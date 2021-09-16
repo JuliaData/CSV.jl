@@ -185,7 +185,7 @@ function Context(source::ValidSources;
     type=nothing,
     types=nothing,
     typemap::Dict=Dict{Type, Type}(),
-    pool::Union{Bool, Real, AbstractVector, AbstractDict}=DEFAULT_POOL,
+    pool=DEFAULT_POOL,
     downcast::Bool=false,
     lazystrings::Bool=false,
     stringtype::StringTypes=DEFAULT_STRINGTYPE,
@@ -236,9 +236,9 @@ end
     falsestrings::Union{Nothing, Vector{String}},
     # type options
     type::Union{Nothing, Type},
-    types::Union{Nothing, Type, AbstractVector, AbstractDict},
+    types::Union{Nothing, Type, AbstractVector, AbstractDict, Function},
     typemap::Dict,
-    pool::Union{Bool, Real, AbstractVector, AbstractDict},
+    pool::Union{Bool, Real, AbstractVector, AbstractDict, Base.Callable},
     downcast::Bool,
     lazystrings::Bool,
     stringtype::StringTypes,
@@ -258,7 +258,7 @@ end
         elseif types isa AbstractDict
             typs = values(types)
             any(x->!concrete_or_concreteunion(x), typs) && nonconcretetypes(typs)
-        else
+        elseif types isa Type
             concrete_or_concreteunion(types) || nonconcretetypes(types)
         end
     end
@@ -443,6 +443,17 @@ end
             end
         end
         checkinvalidcolumns(types, "types", ncols, names)
+    elseif types isa Function
+        defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
+        columns = Vector{Column}(undef, ncols)
+        for i = 1:ncols
+            T = something(types(i, names[i]), defaultT)
+            col = Column(T, options)
+            columns[i] = col
+            if nonstandardtype(col.type) !== Union{}
+                customtypes = tupcat(customtypes, nonstandardtype(col.type))
+            end
+        end
     else
         T = types === nothing ? (streaming ? Union{stringtype, Missing} : NeedsTypeDetection) : types
         if nonstandardtype(T) !== Union{}
@@ -495,10 +506,22 @@ end
         elseif pool isa AbstractDict
             for i = 1:ncols
                 col = columns[i]
-                col.pool = getpool(getordefault(pool, names[i], i, 0.0))
-                col.columnspecificpool = true
+                p = getordefault(pool, names[i], i, NaN)
+                if !isnan(p)
+                    col.pool = getpool(p)
+                    col.columnspecificpool = true
+                end
             end
             checkinvalidcolumns(pool, "pool", ncols, names)
+        elseif pool isa Base.Callable
+            for i = 1:ncols
+                col = columns[i]
+                p = pool(i, names[i])
+                if p !== nothing
+                    col.pool = getpool(p)
+                    col.columnspecificpool = true
+                end
+            end
         else
             finalpool = getpool(pool)
             for col in columns

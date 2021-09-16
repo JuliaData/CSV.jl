@@ -200,7 +200,7 @@ function File(source::ValidSources;
     type=nothing,
     types=nothing,
     typemap::Dict=Dict{Type, Type}(),
-    pool::Union{Bool, Real, AbstractVector, AbstractDict}=DEFAULT_POOL,
+    pool=DEFAULT_POOL,
     downcast::Bool=false,
     lazystrings::Bool=false,
     stringtype::StringTypes=DEFAULT_STRINGTYPE,
