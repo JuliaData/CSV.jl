@@ -40,6 +40,7 @@ const KEYWORD_DOCS = """
   * `silencewarnings::Bool=false`: if `strict=false`, whether invalid value warnings should be silenced
   * `maxwarnings::Int=$DEFAULT_MAX_WARNINGS`: if more than `maxwarnings` number of warnings are printed while parsing, further warnings will be silenced by default; for multithreaded parsing, each parsing task will print up to `maxwarnings`
   * `debug::Bool=false`: passing `true` will result in many informational prints while a dataset is parsed; can be useful when reporting issues or figuring out what is going on internally while a dataset is parsed
+  * `validate::Bool=true`: whether or not to validate that columns specified in the `types`, `dateformat` and `pool` keywords are actually found in the data. If `false` no validation is done, meaning no error will be thrown if `types`/`dateformat`/`pool` specify settings for columns not actually found in the data.
 
 ## Iteration options:
 
