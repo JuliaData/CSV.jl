@@ -401,7 +401,8 @@ function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, rowchunkguess, 
             else
                 task_col.column = convert(SentinelVector{Float64}, task_col.column)
             end
-        elseif T !== T2 && T <: InlineString
+        elseif T !== T2 && (T <: InlineString || (T === String && T2 <: InlineString))
+            # promote to widest InlineString type
             if task_col.column isa Vector{UInt32}
                 task_col.refpool.refs = convert(Refs{T}, task_col.refpool.refs)
             else
