@@ -108,7 +108,7 @@ function Rows(source::ValidSources;
     type=nothing,
     types=nothing,
     typemap::Dict=Dict{Type, Type}(),
-    pool::Union{Bool, Real, AbstractVector, AbstractDict}=false,
+    pool=false,
     downcast::Bool=false,
     stringtype::StringTypes=PosLenString,
     lazystrings::Bool=stringtype === PosLenString,
