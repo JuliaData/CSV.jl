@@ -140,7 +140,6 @@ struct Context
     maxwarnings::Int
     debug::Bool
     tempfile::Union{String, Nothing}
-    validate::Bool
     streaming::Bool
 end
 
@@ -671,7 +670,6 @@ end
         maxwarnings,
         debug,
         tempfile,
-        validate,
         streaming
     )
 end
