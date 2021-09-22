@@ -190,6 +190,7 @@ Argument that controls whether columns will be returned as `PooledArray`s. Can b
 
 ### Examples
   * [Pooled values](@ref pool_example)
+  * [Non-string column pooling](@ref nonstring_pool_example)
 
 ## [`downcast`](@id downcast)
 
