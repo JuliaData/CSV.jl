@@ -363,18 +363,18 @@ a,b,c
 # there are quite a few ways to provide the select/drop arguments
 # so we provide an example of each, first for selecting the columns
 # "a" and "c" that we want to include or keep from parsing
-file = CSV.File(file; select=[1, 3])
-file = CSV.File(file; select=[:a, :c])
-file = CSV.File(file; select=["a", "c"])
-file = CSV.File(file; select=[true, false, true])
-file = CSV.File(file; select=(i, nm) -> i in (1, 3))
+file = CSV.File(IOBuffer(data); select=[1, 3])
+file = CSV.File(IOBuffer(data); select=[:a, :c])
+file = CSV.File(IOBuffer(data); select=["a", "c"])
+file = CSV.File(IOBuffer(data); select=[true, false, true])
+file = CSV.File(IOBuffer(data); select=(i, nm) -> i in (1, 3))
 # now examples of dropping, when we'd rather specify the column(s)
 # we'd like to drop/exclude from parsing
-file = CSV.File(file; drop=[2])
-file = CSV.File(file; drop=[:b])
-file = CSV.File(file; drop=["b"])
-file = CSV.File(file; drop=[false, true, false])
-file = CSV.File(file; drop=(i, nm) -> i == 2)
+file = CSV.File(IOBuffer(data); drop=[2])
+file = CSV.File(IOBuffer(data); drop=[:b])
+file = CSV.File(IOBuffer(data); drop=["b"])
+file = CSV.File(IOBuffer(data); drop=[false, true, false])
+file = CSV.File(IOBuffer(data); drop=(i, nm) -> i == 2)
 ```
 
 ## [Limiting number of rows from data](@id limit_example)
@@ -418,7 +418,7 @@ code,age,score
 
 # by passing missingstring=["-999", "NA"], parsing will check each cell if it matches
 # either string in order to set the value of the cell to `missing`
-file = CSV.File(file; missingstring=["-999", "NA"])
+file = CSV.File(IOBuffer(data); missingstring=["-999", "NA"])
 ```
 
 ## [String delimiter](@id string_delim)
@@ -435,7 +435,7 @@ col1::col2
 """
 
 # we can pass a single character or string for delim
-file = CSV.File(file; delim="::")
+file = CSV.File(IOBuffer(data); delim="::")
 ```
 
 ## [Fixed width files](@id ignorerepeated_example)
@@ -457,7 +457,7 @@ col1    col2 col3
 # `ignorerepeated=true`, which tells parsing that 
 #consecutive delimiters should be treated as a single 
 # delimiter.
-file = CSV.File(file; delim=' ', ignorerepeated=true)
+file = CSV.File(IOBuffer(data); delim=' ', ignorerepeated=true)
 ```
 
 ## [Turning off quoted cell parsing](@id quoted_example)
@@ -494,16 +494,16 @@ using CSV
 # signficant characters until the closing quote character is found. For quoted fields that need to also include the quote 
 # character itself, an escape character is provided to tell parsing to ignore the next character when looking for a close quote 
 # character. In the syntax examples, the keyword arguments are passed explicitly, but these also happen to be the default 
-# values, so just doing `CSV.File(file)` would result in successful parsing.
+# values, so just doing `CSV.File(IOBuffer(data))` would result in successful parsing.
 data = """
 col1,col2
 "quoted field with a delimiter , inside","quoted field that contains a \\n newline and ""inner quotes\"\"\"
 unquoted field,unquoted field with "inner quotes"
 """
 
-file = CSV.File(file; quotechar='"', escapechar='"')
+file = CSV.File(IOBuffer(data); quotechar='"', escapechar='"')
 
-file = CSV.File(file; openquotechar='"' closequotechar='"', escapechar='"')
+file = CSV.File(IOBuffer(data); openquotechar='"' closequotechar='"', escapechar='"')
 ```
 
 
@@ -522,7 +522,7 @@ code,date
 1,2019/01/02
 """
 
-file = CSV.File(file; dateformat="yyyy/mm/dd")
+file = CSV.File(IOBuffer(data); dateformat="yyyy/mm/dd")
 ```
 
 ## [Custom decimal separator](@id decimal_example)
@@ -539,7 +539,7 @@ col1;col2;col3
 4,04;5,05;6,06
 """
 
-file = CSV.File(file; delim=';', decimal=',')
+file = CSV.File(IOBuffer(data); delim=';', decimal=',')
 ```
 
 ## [Custom bool strings](@id truestrings_example)
@@ -557,7 +557,7 @@ id,paid,attended
 3,F,FALSE
 """
 
-file = CSV.File(file; truestrings=["T", "TRUE"], falsestrings=["F", "FALSE"])
+file = CSV.File(IOBuffer(data); truestrings=["T", "TRUE"], falsestrings=["F", "FALSE"])
 ```
 
 ## [Matrix-like Data](@id matrix_example)
@@ -574,8 +574,8 @@ data = """
 0.0 0.0 1.0
 """
 
-file = CSV.File(file; header=false)
-file = CSV.File(file; header=false, delim=' ', types=Float64)
+file = CSV.File(IOBuffer(data); header=false)
+file = CSV.File(IOBuffer(data); header=false, delim=' ', types=Float64)
 ```
 
 ## [Providing types](@id types_example)
@@ -597,12 +597,12 @@ col1,col2,col3
 6,7,8
 """
 
-file = CSV.File(file; types=Dict(3 => Int))
-file = CSV.File(file; types=Dict(:col3 => Int))
-file = CSV.File(file; types=Dict("col3" => Int))
-file = CSV.File(file; types=[Int, Int, Int])
-file = CSV.File(file; types=[Int, Int, Int], silencewarnings=true)
-file = CSV.File(file; types=[Int, Int, Int], strict=true)
+file = CSV.File(IOBuffer(data); types=Dict(3 => Int))
+file = CSV.File(IOBuffer(data); types=Dict(:col3 => Int))
+file = CSV.File(IOBuffer(data); types=Dict("col3" => Int))
+file = CSV.File(IOBuffer(data); types=[Int, Int, Int])
+file = CSV.File(IOBuffer(data); types=[Int, Int, Int], silencewarnings=true)
+file = CSV.File(IOBuffer(data); types=[Int, Int, Int], strict=true)
 ```
 
 ## [Typemap](@id typemap_example)
@@ -620,8 +620,8 @@ zipcode,score
 84044,3.4
 """
 
-file = CSV.File(file; typemap=Dict(Int => String))
-file = CSV.File(file; types=Dict(:zipcode => String))
+file = CSV.File(IOBuffer(data); typemap=Dict(Int => String))
+file = CSV.File(IOBuffer(data); types=Dict(:zipcode => String))
 ```
 
 ## [Pooled values](@id pool_example)
@@ -642,7 +642,28 @@ BF392,GC
 8CD2E,GC
 """
 
-file = CSV.File(file)
-file = CSV.File(file; pool=0.4)
-file = CSV.File(file; pool=0.6)
+file = CSV.File(IOBuffer(data))
+file = CSV.File(IOBuffer(data); pool=0.4)
+file = CSV.File(IOBuffer(data); pool=0.6)
+```
+
+## [Non-string pooled values](@id nonstring_pool_example)
+
+```julia
+using CSV
+
+# in this data, our `category` column is an integer type, but represents a limited set of values that could benefit from
+# pooling. Indeed, we may want to do various DataFrame grouping/joining operations on the column, which can be more
+# efficient if the column type is a PooledVector. By default, passing `pool=true` will only pool string column types,
+# if we pass a vector or dict however, we can specify how specific, non-string type, columns should be pooled.
+data = """
+category,amount
+1,100.01
+1,101.10
+2,201.10
+2,202.40
+"""
+
+file = CSV.File(IOBuffer(data); pool=Dict(1 => true))
+file = CSV.File(IOBuffer(data); pool=[true, false])
 ```
