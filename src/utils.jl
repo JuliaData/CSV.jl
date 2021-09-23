@@ -204,7 +204,7 @@ consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 
 end
 
 function getsource(@nospecialize(x), buffer_in_memory)
-    buf, pos, len, tfile = getbytebuffer(x, buffer_in_memory)::Tuple{Vector{UInt8},Int64,Int64,Union{Nothing,String}}
+    buf, pos, len, tfile = getbytebuffer(x, buffer_in_memory)::Tuple{Vector{UInt8},Int,Int,Union{Nothing,String}}
     if length(buf) >= 2 && buf[1] == 0x1f && buf[2] == 0x8b
         # gzipped source, gunzip it
         if buffer_in_memory

@@ -458,15 +458,15 @@ end
 # at the byte position, assuming we were in a quoted field (and encountered a newline inside the quoted
 # field the first time through)
 function findrowstarts!(buf, opts, ranges, ncols, columns, @nospecialize(stringtype), downcast, rows_to_check=5)
-    totalbytes = Threads.Atomic{Int}(0)
-    totalrows = Threads.Atomic{Int}(0)
+    totalbytes = Threads.Atomic{Int64}(0)
+    totalrows = Threads.Atomic{Int64}(0)
     succeeded = Threads.Atomic{Bool}(true)
     N = length(ranges) - 2
     lock = ReentrantLock()
     origcoltypes = Type[col.type for col in columns]
     @sync for i = 2:(length(ranges) - 1)
         Threads.@spawn begin
-            findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check, columns, origcoltypes, lock, stringtype, totalbytes, totalrows, succeeded)
+            findchunkrowstart(ranges, i, buf, opts, downcast, ncols, Int64(rows_to_check), columns, origcoltypes, lock, stringtype, totalbytes, totalrows, succeeded)
         end
     end
     return totalbytes[] / totalrows[], succeeded[]

@@ -122,8 +122,8 @@ struct Context
     cols::Int
     buf::Vector{UInt8}
     datapos::Int64
-    len::Int
-    datarow::Int
+    len::Int64
+    datarow::Int64
     options::Parsers.Options
     columns::Vector{Column}
     pool::Float64
@@ -131,7 +131,7 @@ struct Context
     customtypes::Type
     typemap::Dict{Type, Type}
     stringtype::StringTypes
-    limit::Int
+    limit::Int64
     threaded::Bool
     ntasks::Int
     chunkpositions::Vector{Int}
