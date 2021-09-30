@@ -241,6 +241,207 @@ f, st = state
 
 end
 
+function strs(x::Vector, e=nothing)
+    len = sum(x -> sizeof(coalesce(x, "")), x)
+    data = Vector{UInt8}(undef, len)
+    poslens = Vector{PosLen}(undef, length(x))
+    pos = 1
+    anymissing = false
+    for (i, s) in enumerate(x)
+        if s !== missing
+            slen = sizeof(s)
+            bytes = codeunits(s)
+            copyto!(data, pos, bytes, 1, slen)
+            poslens[i] = PosLen(pos, slen, false, e !== nothing && e in bytes)
+            pos += slen
+        else
+            anymissing = true
+            poslens[i] = PosLen(pos, 0, true, false)
+        end
+    end
+    return PosLenStringVector{anymissing ? Union{Missing, PosLenString} : PosLenString}(data, poslens, something(e, 0x00))
+end
+
+arrtype(x::ChainedVector{T, AT}) where {T, AT} = AT
+
+@testset "CSV.chaincolumns!" begin
+
+mv = MissingVector(1)
+vec = [big(1)]
+svec = convert(SentinelArray{BigInt}, [big(1), missing])
+# MissingVector -> Vector{CustomType}
+@test arrtype(CSV.chaincolumns!(ChainedVector([mv]), vec)) == typeof(svec)
+# Vector{CustomType} -> MissingVector
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec]), mv)) == typeof(svec)
+# MissingVector -> SentinelVector{CustomType}
+@test arrtype(CSV.chaincolumns!(ChainedVector([mv]), svec)) == typeof(svec)
+# SentinelVector{CustomType} -> MissingVector
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec]), mv)) == typeof(svec)
+# Vector{CustomType} -> SentinelVector{CustomType}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec]), svec)) == typeof(svec)
+# SentinelVector{CustomType} -> Vector{CustomType}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec]), vec)) == typeof(svec)
+# Vector{CustomType} -> Vector{CustomType}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec]), vec)) == Vector{BigInt}
+# SentinelVector{CustomType} -> SentinelVector{CustomType}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec]), svec)) == typeof(svec)
+
+vec = strs(["hey", "there", "sailor"])
+svec = strs(["hey", "ho", missing])
+# MissingVector -> PosLenStringVector{PosLenString}
+@test arrtype(CSV.chaincolumns!(ChainedVector([mv]), vec)) <: PosLenStringVector{Union{PosLenString, Missing}}
+# PosLenStringVector{PosLenString} -> MissingVector
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec]), mv)) <: PosLenStringVector{Union{PosLenString, Missing}}
+# MissingVector -> PosLenStringVector{Union{PosLenString, Missing}}
+@test arrtype(CSV.chaincolumns!(ChainedVector([mv]), svec)) <: PosLenStringVector{Union{PosLenString, Missing}}
+# PosLenStringVector{Union{PosLenString, Missing}} -> MissingVector
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec]), mv)) <: PosLenStringVector{Union{PosLenString, Missing}}
+# PosLenStringVector{PosLenString} -> PosLenStringVector{Union{PosLenString, Missing}}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec]), svec)) <: PosLenStringVector{Union{PosLenString, Missing}}
+# PosLenStringVector{Union{PosLenString, Missing}} -> PosLenStringVector{PosLenString}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec]), vec)) <: PosLenStringVector{Union{PosLenString, Missing}}
+
+vec = [true, false, true]
+svec = [true, false, missing]
+# MissingVector -> Vector{Bool}
+@test arrtype(CSV.chaincolumns!(ChainedVector([mv]), vec)) == Vector{Union{Bool, Missing}}
+# Vector{Bool} -> MissingVector
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec]), mv)) == Vector{Union{Bool, Missing}}
+# MissingVector -> Vector{Union{Bool, Missing}}
+@test arrtype(CSV.chaincolumns!(ChainedVector([mv]), svec)) == Vector{Union{Bool, Missing}}
+# Vector{Union{Bool, Missing}} -> MissingVector
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec]), mv)) == Vector{Union{Bool, Missing}}
+# Vector{Bool} -> Vector{Union{Bool, Missing}}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec]), svec)) == Vector{Union{Bool, Missing}}
+# Vector{Union{Bool, Missing}} -> Vector{Bool}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec]), vec)) == Vector{Union{Bool, Missing}}
+
+vec1 = Int32[1, 2, 3]
+vec2 = Int64[1, 2, 3]
+svec1 = convert(SentinelArray{Int32}, [Int32(1), Int32(2), missing])
+svec2 = convert(SentinelArray{Int64}, [Int64(1), Int64(2), missing])
+# Vector{Int32} -> Vector{Int64}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec1]), vec2)) == Vector{Int64}
+# Vector{Int64} -> Vector{Int32}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec2]), vec1)) == Vector{Int64}
+# Vector{Int32} -> SentinelVector{Int64}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec1]), svec2)) == typeof(svec2)
+# SentinelVector{Int32} -> Vector{Int64}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec1]), vec2)) == typeof(svec2)
+# SentinelVector{Int32} -> SentinelVector{Int64}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec1]), svec2)) == typeof(svec2)
+# SentinelVector{Int64} -> SentinelVector{Int32}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec2]), svec1)) == typeof(svec2)
+
+vec1 = String3["hey", "ho"]
+vec2 = String7["hey", "ho"]
+svec1 = convert(SentinelArray{String3}, [String3("hey"), missing])
+svec2 = convert(SentinelArray{String7}, [String7("hey"), missing])
+# Vector{InlineString3} -> Vector{InlineString7}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec1]), vec2)) == Vector{String7}
+# Vector{InlineString7} -> Vector{InlineString3}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec2]), vec1)) == Vector{String7}
+# Vector{InlineString3} -> SentinelVector{InlineString7}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec1]), svec2)) == typeof(svec2)
+# SentinelVector{InlineString3} -> Vector{InlineString7}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec1]), vec2)) == typeof(svec2)
+# SentinelVector{InlineString3} -> SentinelVector{InlineString7}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec1]), svec2)) == typeof(svec2)
+# SentinelVector{InlineString7} -> SentinelVector{InlineString3}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec2]), svec1)) == typeof(svec2)
+
+vec1 = Int64[1, 2]
+vec2 = [3.14, 2.28]
+svec1 = convert(SentinelArray{Int64}, [Int64(1), missing])
+svec2 = convert(SentinelArray{Float64}, [3.14, missing])
+# Vector{Int64} -> Vector{Float64}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec1]), vec2)) == Vector{Float64}
+# Vector{Float64} -> Vector{Int64}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec2]), vec1)) == Vector{Float64}
+# Vector{Int64} -> SentinelVector{Float64}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec1]), svec2)) == typeof(svec2)
+# SentinelVector{Int64} -> Vector{Float64}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec1]), vec2)) == typeof(svec2)
+# SentinelVector{Int64} -> SentinelVector{Float64}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec1]), svec2)) == typeof(svec2)
+# SentinelVector{Float64} -> SentinelVector{Int64}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec2]), svec1)) == typeof(svec2)
+
+vec1 = String3["hey", "ho"]
+vec2 = ["hey", "ho"]
+svec1 = convert(SentinelArray{String3}, [String3("hey"), missing])
+svec2 = convert(SentinelArray{String}, ["ho", missing])
+# Vector{InlineString3} -> Vector{String}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec1]), vec2)) == Vector{String}
+# Vector{String} -> Vector{InlineString3}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec2]), vec1)) == Vector{String}
+# Vector{InlineString3} -> SentinelVector{String}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec1]), svec2)) == typeof(svec2)
+# SentinelVector{InlineString3} -> Vector{String}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec1]), vec2)) == typeof(svec2)
+# SentinelVector{InlineString3} -> SentinelVector{String}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec1]), svec2)) == typeof(svec2)
+# SentinelVector{String} -> SentinelVector{InlineString3}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec2]), svec1)) == typeof(svec2)
+
+vec1 = String3["hey", "ho"]
+vec2 = ["hey", "ho"]
+svec1 = convert(SentinelArray{String3}, [String3("hey"), missing])
+svec2 = convert(SentinelArray{String}, ["ho", missing])
+function pvecs(vec1, vec2, svec1, svec2)
+    return PooledArray(vec1), PooledArray(vec2), PooledArray(svec1), PooledArray(svec2)
+end
+# MissingVector -> PooledVector{String7}
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(mv, pvec1)) == typeof(psvec1)
+# PooledVector{String} -> MissingVector
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(pvec2, mv)) == typeof(psvec2)
+# MissingVector -> PooledVector{Union{String, Missing}}
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(mv, psvec2)) == typeof(psvec2)
+# PooledVector{Union{String7, Missing}} -> MissingVector
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(psvec1, mv)) == typeof(psvec1)
+# PooledVector{String} -> Vector{String}
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(pvec2, vec2)) == typeof(pvec2)
+# PooledVector{String} -> SentinelVector{String7}
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(pvec2, svec1)) == typeof(psvec2)
+# PooledVector{Union{String, Missing}} -> Vector{String}
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(psvec2, vec2)) == typeof(psvec2)
+# PooledVector{Union{String7, Missing}} -> SentinelVector{String}
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(psvec1, svec2)) == typeof(psvec2)
+# PooledVector{String} -> PooledVector{Union{String, Missing}}
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(pvec2, psvec2)) == typeof(psvec2)
+# PooledVector{String} -> PooledVector{Union{String7, Missing}}
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(pvec2, psvec1)) == typeof(psvec2)
+# Vector{String} -> PooledVector{String7}
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(vec2, pvec1)) == typeof(pvec2)
+# SentinelVector{String} -> PooledVector{String7}
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(svec2, pvec1)) == typeof(psvec2)
+# Vector{String7} -> PooledVector{Union{String, Missing}}
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(vec1, psvec2)) == typeof(psvec2)
+# SentinelVector{String7} -> PooledVector{Union{String, Missing}}
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(svec1, psvec2)) == typeof(psvec2)
+# PooledVector{Union{String7, Missing}} -> PooledVector{String7}
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(psvec1, pvec1)) == typeof(psvec1)
+# PooledVector{Union{String, Missing}} -> PooledVector{String7}
+pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
+@test typeof(CSV.chaincolumns!(psvec2, pvec1)) == typeof(psvec2)
+
+end
+
 @testset "CSV.File vector inputs" begin
 
 data = [
@@ -255,20 +456,28 @@ f = CSV.File(map(IOBuffer, data))
 @test f.a == [1, 4, 7, 10, 13, 16]
 
 data = [
+    "a,b\nbill,x\njane,y\n",
+    "a,b\ntomm,z\ntimm,\n",
+    "a,b\njoee,z\njerr,g\n",
+]
+
+f = CSV.File(map(IOBuffer, data))
+
+data = [
     "a,b,c\n1,2,3\n4,5,6\n",
     "a,b,c\n7.14,8,9\n10,11,12\n",
     "a,b,c\n13,14,15\n16,17,18",
 ]
 
-@test_throws ArgumentError CSV.File(map(IOBuffer, data))
+f = CSV.File(map(IOBuffer, data))
 
-data = [
-    "a,b,c\n1,2,3\n4,5,6\n",
-    "a2,b,c\n7,8,9\n10,11,12\n",
-    "a,b,c\n13,14,15\n16,17,18",
-]
+# data = [
+#     "a,b,c\n1,2,3\n4,5,6\n",
+#     "a2,b,c\n7,8,9\n10,11,12\n",
+#     "a,b,c\n13,14,15\n16,17,18",
+# ]
 
-@test_throws ArgumentError CSV.File(map(IOBuffer, data))
+# @test_throws ArgumentError CSV.File(map(IOBuffer, data))
 
 end
 

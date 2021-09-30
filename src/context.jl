@@ -51,7 +51,7 @@ mutable struct Column
         new(type, anymissing, userprovidedtype, willdrop, pool, columnspecificpool)
 end
 
-function Column(type::Type, options::Parsers.Options=nothing)
+function Column(type::Type, options::Union{Parsers.Options, Nothing}=nothing)
     T = nonmissingtypeunlessmissingtype(type)
     col = Column(type === Missing ? HardMissing : T,
         type >: Missing,

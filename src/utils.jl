@@ -91,9 +91,6 @@ const SVec2{T} = SentinelVector{T, typeof(undef), Missing, Vector{T}}
 
 struct Pooled end
 
-vectype(::Type{T}) where {T <: Union{Bool, SmallIntegers}} = Vector{Union{T, Missing}}
-vectype(::Type{T}) where {T} = isbitstype(T) ? SVec{T} : SVec2{T}
-vectype(::Type{Pooled}) = Vector{UInt32}
 promotevectype(::Type{T}) where {T <: Union{Bool, SmallIntegers}} = vectype(T)
 promotevectype(::Type{T}) where {T} = SentinelVector{T}
 
@@ -159,6 +156,85 @@ function reallocate!(@nospecialize(A), len)
         resize!(A, len)
     end
     return
+end
+
+firstarray(x::ChainedVector) = x.arrays[1]
+
+vectype(::Type{T}) where {T <: Union{Bool, SmallIntegers}} = Vector{Union{T, Missing}}
+vectype(::Type{T}) where {T} = isbitstype(T) ? SVec{T} : SVec2{T}
+vectype(::Type{PosLenString}) = PosLenStringVector{Union{PosLenString, Missing}}
+vectype(::Type{Pooled}) = Vector{UInt32}
+pooledvectype(::Type{T}) where {T} = PooledVector{Union{T, Missing}, UInt32, Vector{UInt32}}
+pooledtype(::Type{T}) where {T} = PooledVector{T, UInt32, Vector{UInt32}}
+# missingvectype(::PooledVector{T, R, AT}) where {T, R, AT} = PooledVector{Union{T, Missing}, R, AT}
+
+_promote(::Type{A}, x::A) where {A} = x
+_promote(::Type{A}, x::MissingVector) where {A <: AbstractVector{T}} where {T} = allocate(Base.nonmissingtype(T), length(x))
+_promote(::Type{A}, x::Vector) where {A <: SentinelArray{T}} where {T} = convert(SentinelVector{T}, x)
+_promote(::Type{Vector{T}}, x::Vector) where {T} = convert(Vector{T}, x)
+_promote(::Type{A}, x::SentinelVector) where {A <: SentinelVector{T}} where {T} = convert(SentinelVector{T}, x)
+_promote(::Type{PosLenStringVector{Union{PosLenString, Missing}}}, x::PosLenStringVector{PosLenString}) = PosLenStringVector{Union{PosLenString, Missing}}(x.data, x.poslens, x.e)
+_promote(::Type{PosLenStringVector{Union{PosLenString, Missing}}}, x::MissingVector) = PosLenStringVector{Union{PosLenString, Missing}}(UInt8[], fill(POSLEN_MISSING, x.len), 0x00)
+_promote(::Type{PooledVector{Union{T, Missing}, R, RA}}, x::PooledVector) where {T, R, RA} =
+    PooledArray(PooledArrays.RefArray(x.refs), convert(Dict{Union{T, Missing}, UInt32}, x.invpool), convert(Vector{Union{T, Missing}}, x.pool))
+_promote(::Type{PooledVector{Union{T, Missing}, R, RA}}, x::MissingVector) where {T, R, RA} =
+    PooledArray(PooledArrays.RefArray(fill(UInt32(1), length(x))), Dict{Union{T, Missing}, UInt32}(missing => UInt32(1)), Union{T, Missing}[missing])
+_promote(::Type{PooledVector{T, R, RA}}, x) where {T, R, RA} = PooledArray{T}(x)
+
+function chaincolumns!(@nospecialize(a), @nospecialize(b))
+    if a isa PooledArray || b isa PooledArray
+        # special-case PooledArrays apart from other container types
+        # because we want the outermost array to be PooledArray instead of ChainedVector
+        if eltype(a) == eltype(b)
+            if a isa PooledArray
+                return append!(a, b)
+            else
+                px = _promote(pooledtype(eltype(a)), a)
+                return append!(px, b)
+            end
+        elseif a isa MissingVector
+            P = pooledvectype(eltype(b))
+        elseif b isa MissingVector
+            P = pooledvectype(eltype(a))
+        elseif eltype(a) >: Missing || eltype(b) >: Missing
+            P = pooledvectype(promote_types(Base.nonmissingtype(eltype(a)), Base.nonmissingtype(eltype(b))))
+        else
+            # both arrays are non-missing, but not same eltype, just need to promote
+            P = pooledtype(promote_types(eltype(a), eltype(b)))
+        end
+        px = _promote(P, a)
+        py = _promote(P, b)
+        return append!(px, py)
+    end
+    c = firstarray(a)
+    if typeof(c) == typeof(b)
+        # easiest case; vector types match, so just append
+        return append!(a, b)
+    elseif c isa MissingVector
+        A = vectype(Base.nonmissingtype(eltype(b)))
+    elseif b isa MissingVector
+        A = vectype(Base.nonmissingtype(eltype(c)))
+    elseif c isa Vector && b isa SentinelVector
+        A = vectype(promote_types(eltype(c), Base.nonmissingtype(eltype(b))))
+    elseif c isa SentinelVector && b isa Vector
+        A = vectype(promote_types(Base.nonmissingtype(eltype(c)), eltype(b)))
+    elseif c isa PosLenStringVector{PosLenString} && b isa PosLenStringVector{Union{PosLenString, Missing}}
+        A = typeof(b)
+    elseif c isa PosLenStringVector{Union{PosLenString, Missing}} && b isa PosLenStringVector{PosLenString}
+        A = typeof(c)
+    elseif c isa Vector{Bool} && b isa Vector{Union{Bool, Missing}}
+        A = typeof(b)
+    elseif c isa Vector{Union{Bool, Missing}} && b isa Vector{Bool}
+        A = typeof(c)
+    elseif c isa Vector && b isa Vector
+        # two vectors, but we know eltype doesn't match, so try to promote
+        A = Vector{promote_types(eltype(c), eltype(b))}
+    elseif c isa SentinelVector && b isa SentinelVector
+        A = vectype(promote_types(Base.nonmissingtype(eltype(c)), Base.nonmissingtype(eltype(b))))
+    end
+    x = ChainedVector([_promote(A, x) for x in a.arrays])
+    y = _promote(A, b)
+    return append!(x, y)
 end
 
 # one-liner suggested from ScottPJones
@@ -228,9 +304,9 @@ end
 
 @inline function getname(x)
     if x isa AbstractVector{UInt8}
-        return "<raw byte buffer>"
+        return "<raw byte buffer: $(hash(x))>"
     elseif x isa IO
-        return string("<", typeof(x), ">")
+        return string("<", typeof(x), ": $(hash(x))>")
     else
         return string(x)
     end

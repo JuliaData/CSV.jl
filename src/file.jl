@@ -257,7 +257,7 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
         end
         @sync for (j, col) in enumerate(columns)
             let finalrows=finalrows
-                Threads.@spawn multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, rowchunkguess, finalrows, j, col)
+                Threads.@spawn multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, col)
             end
         end
     else
@@ -379,7 +379,7 @@ function multithreadparse(ctx, pertaskcolumns, rowchunkguess, i, rows, wholecolu
     return
 end
 
-function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, rowchunkguess, finalrows, j, col)
+function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, col)
     for i = 1:ntasks
         task_columns = pertaskcolumns[i]
         task_col = task_columns[j]
@@ -392,7 +392,7 @@ function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, rowchunkguess, 
             ctx.debug && println("multithreaded promoting column $j to string from $T2")
             task_len = ctx.chunkpositions[i + 1] - (i != ntasks)
             task_pos = ctx.chunkpositions[i]
-            promotetostring!(ctx, ctx.buf, task_pos, task_len, task_rows, (ctx.datarow - 1) + (rowchunkguess * (i - 1)), task_columns, ctx.customtypes, j, Ref(0), task_rows, T)
+            promotetostring!(ctx, ctx.buf, task_pos, task_len, task_rows, sum(rows[1:i-1]), task_columns, ctx.customtypes, j, Ref(0), task_rows, T)
         elseif T === Float64 && T2 <: Integer
             # one chunk parsed as Int, another as Float64, promote to Float64
             ctx.debug && println("multithreaded promoting column $j to float")
@@ -977,7 +977,10 @@ end
     return
 end
 
-function File(sources::Vector; kw...)
+function File(sources::Vector;
+    source::Union{Nothing, Symbol, AbstractString,
+        Pair{<:Union{Symbol, AbstractString}, <:AbstractVector}}=nothing,
+    kw...)
     isempty(sources) && throw(ArgumentError("unable to read delimited data from empty sources array"))
     length(sources) == 1 && return File(sources[1]; kw...)
     all(x -> x isa ValidSources, sources) || throw(ArgumentError("all provided sources must be one of: `$ValidSources`"))
@@ -993,14 +996,31 @@ function File(sources::Vector; kw...)
             files[i - 1] = File(sources[i]; kws...)
         end
     end
+    lookup = f.lookup
     for i = 2:length(sources)
         f2 = files[i - 1]
-        f.names == f2.names || throw(ArgumentError("column names don't match between delimited data inputs"))
-        f.types == f2.types || throw(ArgumentError("column types don't match between delimited data inputs"))
         rows += f2.rows
-        for j = 1:length(f.columns)
-            append!(f.columns[j].column, f2.columns[j].column)
+        fl2 = f2.lookup
+        for (nm, col) in lookup
+            if haskey(fl2, nm)
+                col.column = chaincolumns!(col.column, fl2[nm].column)
+            else
+                @warn "column named `$nm` not found in input index $i"
+            end
         end
+    end
+    if source !== nothing
+        # add file name of each "partition" as 1st column
+        pushfirst!(files, f)
+        col = Column(String)
+        vals = source isa Pair ? source.second : [f.name for f in files]
+        pool = Dict{String, UInt32}(string(x) => i for (i, x) in enumerate(vals))
+        col.column = PooledArray(PooledArrays.RefArray(ChainedVector([fill(UInt32(i), f.rows) for (i, f) in enumerate(files)])), pool)
+        push!(f.columns, col)
+        colnm = Symbol(source isa Pair ? source.first : source)
+        push!(f.names, colnm)
+        push!(f.types, String)
+        f.lookup[colnm] = col
     end
     return File(f.name, f.names, f.types, rows, f.cols, f.columns, f.lookup)
 end
