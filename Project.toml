@@ -1,12 +1,13 @@
 name = "CSV"
 uuid = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 authors = ["Jacob Quinn <quinn.jacobd@gmail.com>"]
-version = "0.9.4"
+version = "0.9.5"
 
 [deps]
 CodecZlib = "944b1d66-785c-5afd-91f1-9de20f533193"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 FilePathsBase = "48062228-2e41-5def-b9a4-89aafe57970f"
+InlineStrings = "842dd82b-1e85-43dc-bf29-5d0ee9dffc48"
 Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
 Parsers = "69de0a69-1ddd-5017-9359-2bf0b02dc9f0"
 PooledArrays = "2dfb63ee-cc39-5dd5-95bd-886bf059d720"
@@ -17,12 +18,13 @@ WeakRefStrings = "ea10d353-3f73-51f8-a26c-33c1cb351aa5"
 
 [compat]
 CodecZlib = "0.7"
+InlineStrings = "1"
 FilePathsBase = "0.6,0.7,0.8,0.9"
 Parsers = "2"
 PooledArrays = "0.5, 1.0"
 SentinelArrays = "1.2"
 Tables = "1.1"
-WeakRefStrings = "1.3"
+WeakRefStrings = "1.4"
 julia = "1.3"
 
 [extras]
