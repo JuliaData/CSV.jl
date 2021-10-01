@@ -103,6 +103,12 @@ NOTE: not applicable to `CSV.Rows`
 
 When input data is large enough, parsing will attempt to "chunk" up the data for multithreaded tasks to parse concurrently. To chunk up the data, it is split up into even chunks, then initial parsers attempt to identify the correct start of the first row of that chunk. Once the start of the chunk's first row is found, each parser will check `rows_to_check` number of rows to ensure the expected number of columns are present.
 
+## [`source`](@id source)
+
+NOTE: only applicable to vector of inputs passed to `CSV.File`
+
+A `Symbol`, `String`, or `Pair` of `Symbol` or `String` to `Vector`. As a single `Symbol` or `String`, provides the column name that will be added to the parsed columns, the values of the column will be the input "name" (usually file name) of the input from whence the value was parsed. As a `Pair`, the 2nd part of the pair should be a `Vector` of values matching the length of the # of inputs, where each value will be used instead of the input name for that inputs values in the auto-added column.
+
 ## [`missingstring`](@id missingstring)
 
 Argument to control how `missing` values are handled while parsing input data. The default is `missingstring=""`, which means two consecutive delimiters, like `,,`, will result in a cell being set as a `missing` value. Otherwise, you can pass a single string to use as a "sentinel", like `missingstring="NA"`, or a vector of strings, where _each_ will be checked for when parsing, like `missingstring=["NA", "NAN", "NULL"]`, and if _any_ match, the cell will be set to `missing`. By passing `missingstring=nothing`, no `missing` values will be checked for while parsing.
