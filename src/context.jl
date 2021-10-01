@@ -104,9 +104,9 @@ end
 function checkinvalidcolumns(dict, argname, ncols, names)
     for (k, _) in dict
         if k isa Integer
-            (0 < k <= ncols) || throw(ArgumentError("invalid column number provided in `$argname` keyword argument: $k. Column number must be 0 < i <= $ncols as detected in the data"))
+            (0 < k <= ncols) || throw(ArgumentError("invalid column number provided in `$argname` keyword argument: $k. Column number must be 0 < i <= $ncols as detected in the data. To ignore invalid columns numbers in `$argname`, pass `validate=false`"))
         else
-            Symbol(k) in names || throw(ArgumentError("invalid column name provided in `$argname` keyword argument: $k. Valid column names detected in the data are: $names"))
+            Symbol(k) in names || throw(ArgumentError("invalid column name provided in `$argname` keyword argument: $k. Valid column names detected in the data are: $names. To ignore invalid columns names in `$argname`, pass `validate=false`"))
         end
     end
     return
@@ -193,9 +193,10 @@ function Context(source::ValidSources;
     silencewarnings::Bool=false,
     maxwarnings::Int=DEFAULT_MAX_WARNINGS,
     debug::Bool=false,
-    parsingdebug::Bool=false
+    parsingdebug::Bool=false,
+    validate::Bool=true,
     )
-    return @refargs Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, threaded, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, false)
+    return @refargs Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, threaded, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, validate, false)
 end
 
 @refargs function Context(source::ValidSources,
@@ -247,6 +248,7 @@ end
     maxwarnings::Integer,
     debug::Bool,
     parsingdebug::Bool,
+    validate::Bool,
     streaming::Bool)
 
     # initial argument validation and adjustment
@@ -442,7 +444,7 @@ end
                 customtypes = tupcat(customtypes, nonstandardtype(col.type))
             end
         end
-        checkinvalidcolumns(types, "types", ncols, names)
+        validate && checkinvalidcolumns(types, "types", ncols, names)
     elseif types isa Function
         defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
         columns = Vector{Column}(undef, ncols)
@@ -490,7 +492,7 @@ end
                 columns[i].options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, true, parsingdebug)
             end
         end
-        checkinvalidcolumns(dateformat, "dateformat", ncols, names)
+        validate && checkinvalidcolumns(dateformat, "dateformat", ncols, names)
     end
 
     # pool keyword
@@ -512,7 +514,7 @@ end
                     col.columnspecificpool = true
                 end
             end
-            checkinvalidcolumns(pool, "pool", ncols, names)
+            validate && checkinvalidcolumns(pool, "pool", ncols, names)
         elseif pool isa Base.Callable
             for i = 1:ncols
                 col = columns[i]
