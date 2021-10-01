@@ -290,7 +290,13 @@ function getsource(@nospecialize(x), buffer_in_memory)
         if buffer_in_memory
             buf = transcode(GzipDecompressor, buf)
         else
+            # 917; if we already buffered input to tempfile, make sure the compressed tempfile is
+            # cleaned up since we're only passing the *uncompressed* tempfile up for removal post-parsing
+            tfile1 = tfile === nothing ? nothing : tfile
             buf, tfile = buffer_to_tempfile(GzipDecompressor(), IOBuffer(buf))
+            if tfile1 !== nothing
+                rm(tfile1; force=true)
+            end
         end
         pos = 1
         len = length(buf)
