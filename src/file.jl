@@ -982,6 +982,9 @@ function File(sources::Vector;
         Pair{<:Union{Symbol, AbstractString}, <:AbstractVector}}=nothing,
     kw...)
     isempty(sources) && throw(ArgumentError("unable to read delimited data from empty sources array"))
+    if source isa Pair
+        length(source.second) == length(sources) || throw(ArgumentError("source pair keyword argument list ($(length(source.second))) must match length of input vector ($(length(sources)))"))
+    end
     length(sources) == 1 && return File(sources[1]; kw...)
     all(x -> x isa ValidSources, sources) || throw(ArgumentError("all provided sources must be one of: `$ValidSources`"))
     kws = merge(values(kw), (ntasks=1,))
@@ -1005,21 +1008,22 @@ function File(sources::Vector;
             if haskey(fl2, nm)
                 col.column = chaincolumns!(col.column, fl2[nm].column)
             else
-                @warn "column named `$nm` not found in input index $i"
+                col.column = chaincolumns!(col.column, MissingVector(f2.rows))
             end
         end
     end
     if source !== nothing
         # add file name of each "partition" as 1st column
         pushfirst!(files, f)
-        col = Column(String)
         vals = source isa Pair ? source.second : [f.name for f in files]
-        pool = Dict{String, UInt32}(string(x) => i for (i, x) in enumerate(vals))
-        col.column = PooledArray(PooledArrays.RefArray(ChainedVector([fill(UInt32(i), f.rows) for (i, f) in enumerate(files)])), pool)
+        pool = Dict(x => UInt32(i) for (i, x) in enumerate(vals))
+        arr = PooledArray(PooledArrays.RefArray(ChainedVector([fill(UInt32(i), f.rows) for (i, f) in enumerate(files)])), pool)
+        col = Column(eltype(arr))
+        col.column = arr
         push!(f.columns, col)
         colnm = Symbol(source isa Pair ? source.first : source)
         push!(f.names, colnm)
-        push!(f.types, String)
+        push!(f.types, eltype(arr))
         f.lookup[colnm] = col
     end
     return File(f.name, f.names, f.types, rows, f.cols, f.columns, f.lookup)

@@ -316,6 +316,21 @@ svec = [true, false, missing]
 # Vector{Union{Bool, Missing}} -> Vector{Bool}
 @test arrtype(CSV.chaincolumns!(ChainedVector([svec]), vec)) == Vector{Union{Bool, Missing}}
 
+vec = Int32[1, 2, 3]
+svec = Union{Int32, Missing}[1, 2, missing]
+# MissingVector -> Vector{Int32}
+@test arrtype(CSV.chaincolumns!(ChainedVector([mv]), vec)) == Vector{Union{Int32, Missing}}
+# Vector{Int32} -> MissingVector
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec]), mv)) == Vector{Union{Int32, Missing}}
+# MissingVector -> Vector{Union{Int32, Missing}}
+@test arrtype(CSV.chaincolumns!(ChainedVector([mv]), svec)) == Vector{Union{Int32, Missing}}
+# Vector{Union{Int32, Missing}} -> MissingVector
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec]), mv)) == Vector{Union{Int32, Missing}}
+# Vector{Int32} -> Vector{Union{Int32, Missing}}
+@test arrtype(CSV.chaincolumns!(ChainedVector([vec]), svec)) == Vector{Union{Int32, Missing}}
+# Vector{Union{Int32, Missing}} -> Vector{Int32}
+@test arrtype(CSV.chaincolumns!(ChainedVector([svec]), vec)) == Vector{Union{Int32, Missing}}
+
 vec1 = Int32[1, 2, 3]
 vec2 = Int64[1, 2, 3]
 svec1 = convert(SentinelArray{Int32}, [Int32(1), Int32(2), missing])
@@ -462,6 +477,8 @@ data = [
 ]
 
 f = CSV.File(map(IOBuffer, data))
+@test length(f) == 6
+@test isequal(f.b, ["x", "y", "z", missing, "z", "g"])
 
 data = [
     "a,b,c\n1,2,3\n4,5,6\n",
@@ -470,14 +487,32 @@ data = [
 ]
 
 f = CSV.File(map(IOBuffer, data))
+@test eltype(f.a) == Float64
 
-# data = [
-#     "a,b,c\n1,2,3\n4,5,6\n",
-#     "a2,b,c\n7,8,9\n10,11,12\n",
-#     "a,b,c\n13,14,15\n16,17,18",
-# ]
+data = [
+    "a,b,c\n1,2,3\n4,5,6\n",
+    "a2,b,c\n7,8,9\n10,11,12\n",
+    "a,b,c\n13,14,15\n16,17,18",
+]
 
-# @test_throws ArgumentError CSV.File(map(IOBuffer, data))
+f = CSV.File(map(IOBuffer, data))
+@test isequal(f.a, [1, 4, missing, missing, 13, 16])
+
+f = CSV.File(map(IOBuffer, data); source=:source)
+@test eltype(f.source) == String
+@test f.source isa PooledArray
+
+f = CSV.File(map(IOBuffer, data); source="source")
+@test eltype(f.source) == String
+@test f.source isa PooledArray
+
+f = CSV.File(map(IOBuffer, data); source="source"=>[1,2,3])
+@test eltype(f.source) <: Integer
+@test f.source isa PooledArray
+
+f = CSV.File(map(IOBuffer, data); source=:source=>["1", "2", "3"])
+@test eltype(f.source) == String
+@test f.source isa PooledArray
 
 end
 

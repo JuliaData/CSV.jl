@@ -226,6 +226,10 @@ function chaincolumns!(@nospecialize(a), @nospecialize(b))
         A = typeof(b)
     elseif c isa Vector{Union{Bool, Missing}} && b isa Vector{Bool}
         A = typeof(c)
+    elseif c isa Vector{<:SmallIntegers} && b isa Vector{Union{<:SmallIntegers, Missing}}
+        A = typeof(b)
+    elseif c isa Vector{Union{<:SmallIntegers, Missing}} && b isa Vector{<:SmallIntegers}
+        A = typeof(c)
     elseif c isa Vector && b isa Vector
         # two vectors, but we know eltype doesn't match, so try to promote
         A = Vector{promote_types(eltype(c), eltype(b))}
