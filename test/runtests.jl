@@ -455,6 +455,12 @@ pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
 pvec1, pvec2, psvec1, psvec2 = pvecs(vec1, vec2, svec1, svec2)
 @test typeof(CSV.chaincolumns!(psvec2, pvec1)) == typeof(psvec2)
 
+# issue 925; ambiguity in `CSV._promote(::Type{PooledVector{T,R,RA}}, x::PooledVector{T,R,RA})`
+# PooledVector{String1} -> PooledVector{String3}
+a_col = PooledArray{String1}(["a", "a"])
+b_col = PooledArray{String3}(["bb", "bb"])
+@test typeof(CSV.chaincolumns!(a_col, b_col)) == typeof(b_col)
+
 end
 
 @testset "CSV.File vector inputs" begin
