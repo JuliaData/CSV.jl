@@ -181,6 +181,7 @@ _promote(::Type{PooledVector{Union{T, Missing}, R, RA}}, x::MissingVector) where
     PooledArray(PooledArrays.RefArray(fill(UInt32(1), length(x))), Dict{Union{T, Missing}, UInt32}(missing => UInt32(1)), Union{T, Missing}[missing])
 _promote(::Type{PooledVector{T, R, RA}}, x) where {T, R, RA} = PooledArray{T}(x)
 _promote(::Type{PooledVector{T, R, RA}}, x::PooledVector{T, R, RA}) where {T, R, RA} = x  # avoid ambiguity
+_promote(::Type{PooledVector{T, R, RA}}, x::PooledVector{T, R, RA}) where {T>:Missing, R, RA} = x  # avoid ambiguity
 
 function chaincolumns!(@nospecialize(a), @nospecialize(b))
     if a isa PooledArray || b isa PooledArray
