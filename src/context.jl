@@ -118,10 +118,10 @@ struct Context
     transpose::Bool
     name::String
     names::Vector{Symbol}
-    rowsguess::Int64
+    rowsguess::Int
     cols::Int
     buf::Vector{UInt8}
-    datapos::Int64
+    datapos::Int
     len::Int
     datarow::Int
     options::Parsers.Options
@@ -581,7 +581,7 @@ end
     debug && println("computed types are: $types")
 
     # determine if we can use threads while parsing
-    limit = something(limit, typemax(Int64))
+    limit = something(limit, typemax(Int))
     minrows = min(limit, rowsguess)
     nthreads = Int(something(ntasks, Threads.nthreads()))
     if ntasks === nothing && !streaming && nthreads > 1 && !transpose && minrows > (nthreads * 5) && (minrows * ncols) >= 5_000
@@ -610,9 +610,9 @@ end
         # we add some cushion so we hopefully get the limit row correctly w/o shooting past too far and needing to resize! down
         # but we also don't guarantee limit will be exact w/ multithreaded parsing
         origrowsguess = rowsguess
-        if limit !== typemax(Int64)
-            limit = Int64(limit)
-            limitposguess = ceil(Int64, (limit / (origrowsguess * 0.8)) * len)
+        if limit !== typemax(Int)
+            limit = Int(limit)
+            limitposguess = ceil(Int, (limit / (origrowsguess * 0.8)) * len)
             newlen = [0, limitposguess, min(limitposguess * 2, len)]
             findrowstarts!(buf, options, newlen, ncols, columns, stringtype, downcast, 5)
             len = newlen[2] - 1
@@ -620,7 +620,7 @@ end
             debug && println("limiting, adjusting len to $len")
         end
         chunksize = div(len - datapos, ntasks)
-        chunkpositions = Vector{Int64}(undef, ntasks + 1)
+        chunkpositions = Vector{Int}(undef, ntasks + 1)
         for i = 0:ntasks
             chunkpositions[i + 1] = i == 0 ? datapos : i == ntasks ? len : (datapos + chunksize * i)
         end
@@ -628,8 +628,8 @@ end
         avgbytesperrow, successfullychunked = findrowstarts!(buf, options, chunkpositions, ncols, columns, stringtype, downcast, rows_to_check)
         if successfullychunked
             origbytesperrow = ((len - datapos) / origrowsguess)
-            weightedavgbytesperrow = ceil(Int64, avgbytesperrow * ((ntasks - 1) / ntasks) + origbytesperrow * (1 / ntasks))
-            rowsguess = ceil(Int64, ((len - datapos) / weightedavgbytesperrow) * 1.01)
+            weightedavgbytesperrow = ceil(Int, avgbytesperrow * ((ntasks - 1) / ntasks) + origbytesperrow * (1 / ntasks))
+            rowsguess = ceil(Int, ((len - datapos) / weightedavgbytesperrow) * 1.01)
             debug && println("single-threaded estimated rows = $origrowsguess, multi-threaded estimated rows = $rowsguess")
             debug && println("multi-threaded column types sampled as: $columns")
         else

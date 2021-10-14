@@ -350,7 +350,7 @@ f = CSV.File(IOBuffer("int,float,date,datetime,bool,null,str,catg,int_float\n1,3
 @test Tables.istable(f)
 @test Tables.rowaccess(typeof(f))
 @test Tables.columnaccess(typeof(f))
-@test Tables.schema(f) == Tables.Schema([:int, :float, :date, :datetime, :bool, :null, :str, :catg, :int_float], [Int64, Float64, Date, DateTime, Bool, Missing, InlineString7, InlineString3, Float64])
+@test Tables.schema(f) == Tables.Schema([:int, :float, :date, :datetime, :bool, :null, :str, :catg, :int_float], [Int, Float64, Date, DateTime, Bool, Missing, InlineString7, InlineString3, Float64])
 @test Tables.rows(f) === f
 @test eltype(f) <: CSV.Row
 row = first(f)
@@ -462,13 +462,13 @@ f = CSV.File(
 @test f.csvstring isa CSV.SVec2{CSVString}
 @test isequal(f.csvstring, [CSVString("hey there sailor"), missing])
 
-f = CSV.File(joinpath(dir, "randoms.csv.gz"); types=[Int64, CSVString, String, Float64, Dec64, Date, DateTime])
-@test f.id isa AbstractVector{Int64}
+f = CSV.File(joinpath(dir, "randoms.csv.gz"); types=[Int, CSVString, String, Float64, Dec64, Date, DateTime])
+@test f.id isa AbstractVector{Int}
 @test f.first isa AbstractVector{CSVString}
 @test f.wage isa AbstractVector{Union{Missing, Dec64}}
 
 f = CSV.File(joinpath(dir, "promotions.csv"); stringtype=PosLenString)
-@test Tables.schema(f).types == (Float64, Union{Missing, Int64}, Union{Missing, Float64}, PosLenString, Union{Missing, PosLenString}, PosLenString, PosLenString, Union{Missing, Int64})
+@test Tables.schema(f).types == (Float64, Union{Missing, Int}, Union{Missing, Float64}, PosLenString, Union{Missing, PosLenString}, PosLenString, PosLenString, Union{Missing, Int})
 
 f = CSV.File(joinpath(dir, "promotions.csv"); limit=7500, ntasks=2)
 @test length(f) == 7500
@@ -479,7 +479,7 @@ f = CSV.File(IOBuffer("1,2\r\n3,4\r\n\r\n5,6\r\n"); header=["col1", "col2"], ign
 f = CSV.File(joinpath(dir, "escape_row_starts.csv"); ntasks=2)
 @test length(f) == 10000
 @test eltype(f.col1) == InlineString63
-@test eltype(f.col2) == Int64
+@test eltype(f.col2) == Int
 
 f = CSV.File(IOBuffer("col1\nhey\nthere\nsailor"); stringtype=PosLenString)
 @test f.col1 isa PosLenStringVector
@@ -525,9 +525,9 @@ f = CSV.File(buf, header=["A", "B"])
 @test (f[2].A, f[2].B) == ("1", "2")
 
 # 680: ensure typemap works with custom types
-f = CSV.File(IOBuffer("a\n1\n2\n3"); typemap=Dict(Int64=>Int32))
-@test f.a isa Vector{Int32}
-f = CSV.File(IOBuffer("a\n1\n2\n3"); typemap=Dict(Int64=>String))
+f = CSV.File(IOBuffer("a\n1\n2\n3"); typemap=Dict(Int => (Int === Int64 ? Int32 : Int64)))
+@test f.a isa Vector{Int === Int64 ? Int32 : Int64}
+f = CSV.File(IOBuffer("a\n1\n2\n3"); typemap=Dict(Int=>String))
 @test f.a isa Vector{String}
 
 # 678

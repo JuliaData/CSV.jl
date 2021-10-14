@@ -95,7 +95,7 @@ function Base.iterate(x::Chunks, i=1)
     rowsguess = cld(x.ctx.rowsguess, x.ctx.ntasks)
     threaded = false
     ntasks = 1
-    limit = typemax(Int64)
+    limit = typemax(Int)
     ctx = Context(x.ctx.transpose, x.ctx.name, names, rowsguess, x.ctx.cols, x.ctx.buf, datapos, len, 1, x.ctx.options, columns, x.ctx.pool, x.ctx.downcast, x.ctx.customtypes, x.ctx.typemap, x.ctx.stringtype, limit, threaded, ntasks, x.ctx.chunkpositions, x.ctx.strict, x.ctx.silencewarnings, x.ctx.maxwarnings, x.ctx.debug, x.ctx.tempfile, x.ctx.streaming)
     f = File(ctx, true)
     return f, i + 1

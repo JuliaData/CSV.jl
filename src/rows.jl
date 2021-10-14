@@ -12,10 +12,10 @@ struct Rows{IO, customtypes, V, stringtype}
     columns::Vector{Column}
     columnmap::Vector{Int} # maps "select"ed column index to actual file column index
     buf::IO
-    datapos::Int64
+    datapos::Int
     datarow::Int
     len::Int
-    limit::Int64
+    limit::Int
     options::Parsers.Options
     reusebuffer::Bool
     values::Vector{V} # once values are parsed, put in values; allocated on each iteration if reusebuffer=false
@@ -223,6 +223,8 @@ macro unrollcolumns(setmissing, ex)
         elseif column isa Vector{Union{Missing, Int16}}
             $ex
         elseif column isa Vector{Union{Missing, Int32}}
+            $ex
+        elseif column isa SVec{Int32}
             $ex
         elseif column isa SVec{Int64}
             $ex

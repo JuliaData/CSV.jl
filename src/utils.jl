@@ -286,7 +286,7 @@ consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 
 end
 
 function getsource(@nospecialize(x), buffer_in_memory)
-    buf, pos, len, tfile = getbytebuffer(x, buffer_in_memory)::Tuple{Vector{UInt8},Int64,Int64,Union{Nothing,String}}
+    buf, pos, len, tfile = getbytebuffer(x, buffer_in_memory)::Tuple{Vector{UInt8},Int,Int,Union{Nothing,String}}
     if length(buf) >= 2 && buf[1] == 0x1f && buf[2] == 0x8b
         # gzipped source, gunzip it
         if buffer_in_memory
@@ -406,7 +406,7 @@ end
 
 Use the same logic used by `CSV.File` to detect column types, to parse a value from a plain string.
 This can be useful in conjunction with the `CSV.Rows` type, which returns each cell of a file as a String.
-The order of types attempted is: `Int64`, `Float64`, `Date`, `DateTime`, `Bool`, and if all fail, the input String is returned.
+The order of types attempted is: `Int`, `Float64`, `Date`, `DateTime`, `Bool`, and if all fail, the input String is returned.
 No errors are thrown.
 For advanced usage, you can pass your own `Parsers.Options` type as a keyword argument `option=ops` for sentinel value detection.
 """
@@ -454,7 +454,7 @@ _widen(::Type{Float64}) = nothing
 end
 
 @inline function detect(cb, buf, pos, len, opts, ensure_full_buf_consumed=true, downcast=false, row=0, col=0)
-    int = Parsers.xparse(Int64, buf, pos, len, opts)
+    int = Parsers.xparse(Int, buf, pos, len, opts)
     code, tlen = int.code, int.tlen
     if Parsers.invalidquotedfield(code)
         fatalerror(buf, pos, tlen, code, row, col)
@@ -463,7 +463,7 @@ end
         return cb(code, tlen, missing, NEEDSTYPEDETECTION)
     end
     if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
-        return downcast ? smallestint(cb, code, tlen, int.val) : cb(code, tlen, int.val, INT64)
+        return downcast ? smallestint(cb, code, tlen, int.val) : cb(code, tlen, int.val, Int === Int64 ? INT64 : INT32)
     end
     float = Parsers.xparse(Float64, buf, pos, len, opts)
     code, tlen = float.code, float.tlen
