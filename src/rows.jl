@@ -210,11 +210,11 @@ function checkwidencolumns!(r::Rows{ct, V}, cols) where {ct, V}
     return
 end
 
-macro unrollcolumns(setmissing, ex)
+macro unrollcolumns(setmissing, values, ex)
     return esc(quote
         if column isa MissingVector
             if !($setmissing)
-                @inbounds values[i] = missing
+                @inbounds $(values)[i] = missing
             end
         elseif column isa Vector{PosLen}
             $ex
@@ -263,7 +263,7 @@ macro unrollcolumns(setmissing, ex)
         elseif column isa Vector{UInt32}
             $ex
         elseif customtypes !== Tuple{}
-            setcustom!(customtypes, values, columns, i, $setmissing)
+            setcustom!(customtypes, $values, columns, i, $setmissing)
         else
             error("bad array type: $(typeof(column))")
         end
@@ -276,7 +276,7 @@ end
     cols = length(columns)
     for i = 1:cols
         @inbounds column = columns[i].column
-        @unrollcolumns true begin
+        @unrollcolumns true nothing begin
             setmissing!(column, 1)
         end
     end
@@ -286,7 +286,7 @@ end
     checkwidencolumns!(r, cols)
     for i = 1:cols
         @inbounds column = columns[i].column
-        @unrollcolumns false begin
+        @unrollcolumns false values begin
             @inbounds values[i] = column[1]
         end
     end
