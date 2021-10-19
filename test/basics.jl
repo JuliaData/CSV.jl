@@ -705,4 +705,19 @@ f = CSV.File(codeunits("a,b,c,d\n1,2,3.14,hey\n4,2,6.5,hey\n");
 @test f.c == [3.14, 6.5]
 @test f.d == ["hey", "hey"]
 
+# 929
+str = """id,pos_1,pos_2,pos_3,has_prisoner,capture_time,shape
+5,11,86,1,false,0,diamond
+4,5,43,1,false,0,diamond
+6,16,90,1,false,0,diamond
+7,75,35,1,false,0,diamond
+2,35,89,1,false,0,diamond
+10,81,25,1,false,0,diamond
+9,48,98,1,false,0,diamond
+8,98,62,1,false,0,diamond
+3,50,2,1,false,0,diamond
+1,95,24,1,false,0,diamond"""
+r = collect(CSV.Rows(IOBuffer(str); types=Dict(:shape => Symbol)))
+@test length(r) == 10
+
 end
