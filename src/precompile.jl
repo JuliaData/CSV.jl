@@ -4,5 +4,5 @@ function _precompile_()
     while false; end
     # CSV.Context(IOBuffer(CSV.PRECOMPILE_DATA))
     # foreach(row -> row, CSV.Rows(IOBuffer(PRECOMPILE_DATA)))
-    CSV.Context(joinpath(dirname(pathof(CSV)), "..", "test", "testfiles", "promotions.csv"))
+    CSV.Context(joinpath(dirname(pathof(CSV)), "promotions.csv"))
 end
