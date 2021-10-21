@@ -381,6 +381,7 @@ function multithreadparse(ctx, pertaskcolumns, rowchunkguess, i, rows, wholecolu
 end
 
 function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, col)
+    # first check if need to re-parse any chunks
     for i = 1:ntasks
         task_columns = pertaskcolumns[i]
         task_col = task_columns[j]
@@ -394,7 +395,18 @@ function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, c
             task_len = ctx.chunkpositions[i + 1] - (i != ntasks)
             task_pos = ctx.chunkpositions[i]
             promotetostring!(ctx, ctx.buf, task_pos, task_len, task_rows, sum(rows[1:i-1]), task_columns, ctx.customtypes, j, Ref(0), task_rows, T)
-        elseif T === Float64 && T2 <: Integer
+            col.type = something(promote_types(T, task_columns[j].type), ctx.stringtype)
+            T = col.type
+        end
+    end
+    for i = 1:ntasks
+        task_columns = pertaskcolumns[i]
+        task_col = task_columns[j]
+        task_rows = rows[i]
+        # check if we need to promote a task-local column based on what other threads parsed
+        T = col.type # final promoted type from amongst all separate parsing tasks
+        T2 = task_col.type
+        if T === Float64 && T2 <: Integer
             # one chunk parsed as Int, another as Float64, promote to Float64
             ctx.debug && println("multithreaded promoting column $j to float")
             if task_col.column isa Vector{UInt32}
@@ -427,7 +439,6 @@ function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, c
         end
     end
 @label threadedprocesscolumn
-    # @show maybepooled(col), col.type, isdefined(col, :column)
     if maybepooled(col) && (col.type isa StringTypes || col.columnspecificpool)
         if pooled(col)
             makechain!(col.type, pertaskcolumns, col, j, ntasks)

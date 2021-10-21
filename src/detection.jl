@@ -388,6 +388,7 @@ function findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check,
                 end
                 pos += tlen
                 if Parsers.newline(code)
+                    parsedncols += 1
                     rowsparsed += 1
                     break
                 end
@@ -408,7 +409,7 @@ function findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check,
                 end
             end
         end
-        f40 = ncols * 0.4
+        f40 = ncols * 0.025
         if (ncols - f40) <= (parsedncols / rowsparsed) <= (ncols + f40)
             # ok, seems like we figured out the right start for parsing on this chunk
             Threads.atomic_add!(totalbytes, pos - rowstartpos)
