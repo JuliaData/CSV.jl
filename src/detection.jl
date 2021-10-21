@@ -388,6 +388,7 @@ function findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check,
                 end
                 pos += tlen
                 if Parsers.newline(code)
+                    parsedncols += 1
                     rowsparsed += 1
                     break
                 end
