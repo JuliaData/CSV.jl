@@ -720,4 +720,9 @@ str = """id,pos_1,pos_2,pos_3,has_prisoner,capture_time,shape
 r = collect(CSV.Rows(IOBuffer(str); types=Dict(:shape => Symbol)))
 @test length(r) == 10
 
+# 932
+f = CSV.File(joinpath(dir, "multithreadedpromote.csv"))
+@test eltype(f.col1) == String7
+@test length(f) == 5001
+
 end
