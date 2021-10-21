@@ -489,7 +489,6 @@ function syncrefs!(::Type{T}, col, task_col, task_rows) where {T}
     taskrefpool = task_col.refpool
     taskrefs = taskrefpool.refs::Refs{T}
     refrecodes = EMPTY_REFRECODE
-    @show colrefs, taskrefs
     recode = false
     for (k, v) in taskrefs
         # `k` is our task-specific parsed value
