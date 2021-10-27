@@ -3,7 +3,7 @@ struct Row <: Tables.AbstractRow
     names::Vector{Symbol}
     columns::Vector{Column}
     lookup::Dict{Symbol, Column}
-    row::Int64
+    row::Int
 end
 
 getnames(r::Row) = getfield(r, :names)
@@ -106,8 +106,8 @@ struct File <: AbstractVector{Row}
     name::String
     names::Vector{Symbol}
     types::Vector{Type}
-    rows::Int64
-    cols::Int64
+    rows::Int
+    cols::Int
     columns::Vector{Column}
     lookup::Dict{Symbol, Column}
 end
@@ -234,7 +234,7 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
         # initialize each top-level column's lock; used after a task is done parsing its chunk of rows
         # and it "checks in" the types it parsed for each column
         foreach(col -> col.lock = ReentrantLock(), columns)
-        rows = zeros(Int64, ntasks) # how many rows each parsing task ended up actually parsing
+        rows = zeros(Int, ntasks) # how many rows each parsing task ended up actually parsing
         @sync for i = 1:ntasks
             Threads.@spawn multithreadparse(ctx, pertaskcolumns, rowchunkguess, i, rows, wholecolumnslock)
             # CSV.multithreadparse(ctx, pertaskcolumns, rowchunkguess, i, rows, wholecolumnslock)
@@ -266,7 +266,7 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
         columns = ctx.columns
         allocate!(columns, ctx.rowsguess)
         t = Base.time()
-        finalrows, pos = parsefilechunk!(ctx, ctx.datapos, ctx.len, ctx.rowsguess, 0, columns, ctx.customtypes)::Tuple{Int64, Int64}
+        finalrows, pos = parsefilechunk!(ctx, ctx.datapos, ctx.len, ctx.rowsguess, 0, columns, ctx.customtypes)::Tuple{Int, Int}
         ctx.debug && println("time for initial parsing: $(Base.time() - t)")
         # cleanup our columns if needed
         for col in columns
@@ -348,7 +348,7 @@ function multithreadparse(ctx, pertaskcolumns, rowchunkguess, i, rows, wholecolu
     task_len = ctx.chunkpositions[i + 1] - (i != ctx.ntasks)
     # for error-reporting purposes, we want to try and give the best guess of where a row emits a warning/error, so compute that
     rowchunkoffset = (ctx.datarow - 1) + (rowchunkguess * (i - 1))
-    task_rows, task_pos = parsefilechunk!(ctx, task_pos, task_len, rowchunkguess, rowchunkoffset, task_columns, ctx.customtypes)::Tuple{Int64, Int64}
+    task_rows, task_pos = parsefilechunk!(ctx, task_pos, task_len, rowchunkguess, rowchunkoffset, task_columns, ctx.customtypes)::Tuple{Int, Int}
     rows[i] = task_rows
     # promote column types/flags this task detected while parsing
     lock(wholecolumnslock) do
@@ -455,7 +455,7 @@ function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, c
             @goto threadedprocesscolumn
         end
     elseif col.type === Int64
-        # we need to special-case Int64 here because while parsing, a default Int64 sentinel value is chosen to
+        # we need to special-case Int here because while parsing, a default Int64 sentinel value is chosen to
         # represent missing; if any chunk bumped into that sentinel value while parsing, then it cycled to a 
         # new sentinel value; this step ensure that each chunk has the same encoded sentinel value
         # passing force=false means it will first check if all chunks already have the same sentinel and return
@@ -593,7 +593,7 @@ function makeposlen!(col, T, ctx)
     return col.column
 end
 
-function parsefilechunk!(ctx::Context, pos, len, rowsguess, rowoffset, columns, ::Type{customtypes})::Tuple{Int64, Int64} where {customtypes}
+function parsefilechunk!(ctx::Context, pos, len, rowsguess, rowoffset, columns, ::Type{customtypes})::Tuple{Int, Int} where {customtypes}
     buf = ctx.buf
     transpose = ctx.transpose
     limit = ctx.limit
@@ -604,14 +604,14 @@ function parsefilechunk!(ctx::Context, pos, len, rowsguess, rowoffset, columns, 
         while true
             row += 1
             # @show columns
-            @inbounds pos = parserow(startpos, row, numwarnings, ctx, buf, pos, len, rowsguess, rowoffset, columns, customtypes)::Int64
+            @inbounds pos = parserow(startpos, row, numwarnings, ctx, buf, pos, len, rowsguess, rowoffset, columns, customtypes)::Int
             # @show columns
             row == limit && break
             (transpose ? all(c -> c.position >= c.endposition, columns) : pos > len) && break
             # if our initial row estimate was too few, we need to reallocate our columns to read the rest of the file/chunk
             if !transpose && row + 1 > rowsguess
                 # (bytes left in file/chunk) / (avg bytes per row) == estimated rows left in file (+ 5% to try and avoid reallocating)
-                estimated_rows_left = ceil(Int64, ((len - pos) / ((pos - startpos) / row)) * 1.05)
+                estimated_rows_left = ceil(Int, ((len - pos) / ((pos - startpos) / row)) * 1.05)
                 newrowsguess = rowsguess + estimated_rows_left
                 newrowsguess = max(rowsguess + 1, newrowsguess)
                 ctx.debug && reallocatecolumns(rowoffset + row, rowsguess, newrowsguess)
@@ -638,7 +638,7 @@ end
 @noinline fatalerror(buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) fatal error, encountered an invalidly quoted field while parsing around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code)), check your `quotechar` arguments or manually fix the field in the file itself"))
 @noinline toomanywwarnings() = @warn("thread = $(Threads.threadid()): too many warnings, silencing any further warnings")
 
-Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, ::Type{customtypes})::Int64 where {customtypes}
+Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, ::Type{customtypes})::Int where {customtypes}
     # @show columns
     ncols = length(columns)
     for i = 1:ncols
@@ -753,7 +753,7 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
     return pos
 end
 
-function detectcell(buf, pos, len, row, rowoffset, i, col, ctx, rowsguess)::Tuple{Int64, Int16}
+function detectcell(buf, pos, len, row, rowoffset, i, col, ctx, rowsguess)::Tuple{Int, Int16}
     # debug && println("detecting on task $(Threads.threadid())")
     opts = col.options
     code, tlen, x, xT = detect(pass, buf, pos, len, opts, false, ctx.downcast, rowoffset + row, i)
@@ -812,7 +812,7 @@ function detectcell(buf, pos, len, row, rowoffset, i, col, ctx, rowsguess)::Tupl
     return pos + tlen, code
 end
 
-function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::Tuple{Int64, Int16} where {type}
+function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::Tuple{Int, Int16} where {type}
     opts = col.options
     res = Parsers.xparse(type === Missing ? String : type, buf, pos, len, opts)
     code = res.code

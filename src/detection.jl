@@ -151,8 +151,8 @@ function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, @nosp
 end
 
 struct ByteValueCounter
-    counts::Vector{Int64}
-    ByteValueCounter() = new(zeros(Int64, 256))
+    counts::Vector{Int}
+    ByteValueCounter() = new(zeros(Int, 256))
 end
 
 function incr!(c::ByteValueCounter, b::UInt8)
@@ -412,7 +412,7 @@ function findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check,
         f40 = ncols * 0.025
         if (ncols - f40) <= (parsedncols / rowsparsed) <= (ncols + f40)
             # ok, seems like we figured out the right start for parsing on this chunk
-            Threads.atomic_add!(totalbytes, pos - rowstartpos)
+            Threads.atomic_add!(totalbytes, Int(pos - rowstartpos))
             Threads.atomic_add!(totalrows, rows_to_check)
             break
         end
@@ -482,10 +482,10 @@ function detecttranspose(buf, pos, len, options, @nospecialize(header), skipto, 
         columnnames = [columnname(buf, res.val, res.code, options, 1)]
         pos += res.tlen
         row, pos = skiptofield!(buf, pos, len, options, header+1, skipto)
-        columnpositions = Int64[pos]
+        columnpositions = Int[pos]
         datapos = pos
         rows, pos = countfields(buf, pos, len, options)
-        endpositions = Int64[pos]
+        endpositions = Int[pos]
         # we're now done w/ column 1, if EOF we're done, otherwise, parse column 2's column name
         cols = 1
         while pos <= len
@@ -506,8 +506,8 @@ function detecttranspose(buf, pos, len, options, @nospecialize(header), skipto, 
     elseif pos > len
         # emtpy file, use column names if provided
         datapos = pos
-        columnpositions = Int64[]
-        endpositions = Int64[]
+        columnpositions = Int[]
+        endpositions = Int[]
         columnnames = header isa Vector && !isempty(header) ? String[string(x) for x in header] : []
         rows = 0
     else
@@ -516,10 +516,10 @@ function detecttranspose(buf, pos, len, options, @nospecialize(header), skipto, 
         row, pos = skiptofield!(buf, pos, len, options, 1, skipto)
         # io now at start of 1st data cell
         columnnames = [isa(header, Integer) || isempty(header) ? "Column1" : string(header[1])]
-        columnpositions = Int64[pos]
+        columnpositions = Int[pos]
         datapos = pos
         rows, pos = countfields(buf, pos, len, options)
-        endpositions = Int64[pos]
+        endpositions = Int[pos]
         # we're now done w/ column 1, if EOF we're done, otherwise, parse column 2's column name
         cols = 1
         while pos <= len
