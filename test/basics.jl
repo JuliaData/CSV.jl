@@ -724,5 +724,23 @@ r = collect(CSV.Rows(IOBuffer(str); types=Dict(:shape => Symbol)))
 f = CSV.File(joinpath(dir, "multithreadedpromote.csv"))
 @test eltype(f.col1) == String7
 @test length(f) == 5001
+    
+# 939
+using DataFrames
 
+io=IOBuffer(maxsize=100000000)
+for i in 1:271
+   write(io,"$(i+10000000000)")
+   for i in 1:60000
+       g = rand(["-1","0","1"])
+       write(io," $(g)")
+   end
+   write(io,"\n")
+end
+seek(io,1)
+
+gf=CSV.read(io,DataFrame;header=false, types=Dict(1=>String), typemap=Dict(Int64 => Int8))
+
+@test size(gf)[1] == 271
+@test size(gf)[2] == 60001
 end
