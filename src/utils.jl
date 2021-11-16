@@ -7,7 +7,12 @@
 # but in HardMissing case, we don't; we know the column will *always* be Missing
 struct HardMissing end
 
-willdrop!(columns, i) = setfield!(@inbounds(columns[i]), :willdrop, true)
+function willdrop!(columns, i)
+    @inbounds col = columns[i]
+    col.willdrop = true
+    col.type = HardMissing
+    return
+end
 
 struct NeedsTypeDetection end
 
