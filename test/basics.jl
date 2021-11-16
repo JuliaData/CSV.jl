@@ -725,4 +725,13 @@ f = CSV.File(joinpath(dir, "multithreadedpromote.csv"))
 @test eltype(f.col1) == String7
 @test length(f) == 5001
 
+# 942
+data = """
+name, age
+Jack, 12
+Tom, 10
+"""
+f = CSV.File(IOBuffer(data); select=[2], type=Int32)
+
+
 end
