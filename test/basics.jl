@@ -735,4 +735,12 @@ f = CSV.File(IOBuffer(data); select=[2], type=Int32)
 @test length(f) == 2
 @test length(f.names) == 1
 
+# 939
+row = join((i == 1 ? string(i + 10000000000) : i == 60_000 ? "0\n" : rand(("-1", "0", "1")) for i = 1:60_000), " ")
+data = repeat(row, 271);
+f = CSV.File(IOBuffer(data); header=false, types=Dict(1 => String), typemap=Dict(Int => Int8));
+@test f.types == [i == 1 ? String : Int8 for i = 1:60_000]
+f = CSV.File(IOBuffer(data); header=false, types=Dict(1 => String), downcast=true);
+@test f.types == [i == 1 ? String : Int8 for i = 1:60_000]
+
 end

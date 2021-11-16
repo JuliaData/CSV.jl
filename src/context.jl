@@ -614,7 +614,7 @@ end
             limit = Int(limit)
             limitposguess = ceil(Int, (limit / (origrowsguess * 0.8)) * len)
             newlen = [0, limitposguess, min(limitposguess * 2, len)]
-            findrowstarts!(buf, options, newlen, ncols, columns, stringtype, downcast, 5)
+            findrowstarts!(buf, options, newlen, ncols, columns, stringtype, typemap, downcast, 5)
             len = newlen[2] - 1
             origrowsguess = limit
             debug && println("limiting, adjusting len to $len")
@@ -625,7 +625,7 @@ end
             chunkpositions[i + 1] = i == 0 ? datapos : i == ntasks ? len : (datapos + chunksize * i)
         end
         debug && println("initial byte positions before adjusting for start of rows: $chunkpositions")
-        avgbytesperrow, successfullychunked = findrowstarts!(buf, options, chunkpositions, ncols, columns, stringtype, downcast, rows_to_check)
+        avgbytesperrow, successfullychunked = findrowstarts!(buf, options, chunkpositions, ncols, columns, stringtype, typemap, downcast, rows_to_check)
         if successfullychunked
             origbytesperrow = ((len - datapos) / origrowsguess)
             weightedavgbytesperrow = ceil(Int, avgbytesperrow * ((ntasks - 1) / ntasks) + origbytesperrow * (1 / ntasks))
