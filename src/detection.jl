@@ -336,7 +336,7 @@ ColumnProperties(T) = ColumnProperties(T, 0x00)
     end
 end
 
-function findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check, columns, origcoltypes, columnlock, @nospecialize(stringtype), totalbytes, totalrows, succeeded)
+function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_to_check, columns, origcoltypes, columnlock, @nospecialize(stringtype), totalbytes, totalrows, succeeded)
     pos = ranges[i]
     len = ranges[i + 1]
     while pos <= len
@@ -405,7 +405,7 @@ function findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check,
                     if type === stringtype
                         type = pickstringtype(stringtype, cp.maxstringsize)
                     end
-                    col.type = type
+                    col.type = get(typemap, type, type)
                 end
             end
         end
@@ -458,7 +458,7 @@ end
 # right # of expected columns then we move on to the next file chunk byte position. If we fail, we start over
 # at the byte position, assuming we were in a quoted field (and encountered a newline inside the quoted
 # field the first time through)
-function findrowstarts!(buf, opts, ranges, ncols, columns, @nospecialize(stringtype), downcast, rows_to_check=5)
+function findrowstarts!(buf, opts, ranges, ncols, columns, @nospecialize(stringtype), typemap, downcast, rows_to_check=5)
     totalbytes = Threads.Atomic{Int}(0)
     totalrows = Threads.Atomic{Int}(0)
     succeeded = Threads.Atomic{Bool}(true)
@@ -467,7 +467,7 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, @nospecialize(stringt
     origcoltypes = Type[col.type for col in columns]
     @sync for i = 2:(length(ranges) - 1)
         Threads.@spawn begin
-            findchunkrowstart(ranges, i, buf, opts, downcast, ncols, rows_to_check, columns, origcoltypes, lock, stringtype, totalbytes, totalrows, succeeded)
+            findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_to_check, columns, origcoltypes, lock, stringtype, totalbytes, totalrows, succeeded)
         end
     end
     return totalbytes[] / totalrows[], succeeded[]

@@ -72,6 +72,7 @@ end
 @inline function nonstandardtype(T)
     T = nonmissingtype(T)
     if T === Union{} ||
+       T === NeedsTypeDetection ||
        T isa StringTypes ||
        isinttype(T) ||
        T === Float16 ||
