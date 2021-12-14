@@ -273,7 +273,7 @@ testfiles = [
     # other various files from around the interwebs
     ("baseball.csv", (pool=true, normalizenames=true),
         (35, 15),
-        NamedTuple{(:Rk, :Year, :Age, :Tm, :Lg, :Column6, :W, :L, :W_L_, :G, :Finish, :Wpost, :Lpost, :W_L_post, :Column15), Tuple{Union{Int, Missing},Union{Int, Missing},Union{Int, Missing},Union{InlineString31, Missing},Union{InlineString3, Missing},Union{InlineString15, Missing},Union{Int, Missing},Union{Int, Missing},Union{Float64, Missing},Union{Int, Missing},Union{Float64, Missing},Union{Int, Missing},Union{Int, Missing},Union{Float64, Missing},Union{InlineString63, Missing}}},
+        NamedTuple{(:Rk, :Year, :Age, :Tm, :Lg, :Column6, :W, :L, :W_L_, :G, :Finish, :Wpost, :Lpost, :W_L_post, :Column15), Tuple{Union{Int, Missing},Union{Int, Missing},Union{Int, Missing},Union{InlineString31, Missing},Union{InlineString3, Missing},Union{InlineString15, Missing},Union{Int, Missing},Union{Int, Missing},Union{Float64, Missing},Union{Int, Missing},Union{Float64, Missing},Union{Int, Missing},Union{Int, Missing},Union{Float64, Missing},Union{String, Missing}}},
         nothing
     ),
     ("FL_insurance_sample.csv", (pool=true,),
@@ -293,12 +293,12 @@ testfiles = [
     ),
     ("SalesJan2009.csv", (pool=true,),
         (998, 12),
-        NamedTuple{(:Transaction_date, :Product, :Price, :Payment_Type, :Name, :City, :State, :Country, :Account_Created, :Last_Login, :Latitude, :Longitude),Tuple{InlineString15,InlineString15,InlineString7,InlineString15,InlineString31,InlineString63,Union{Missing, InlineString31},InlineString31,InlineString15,InlineString15,Float64,Float64}},
+        NamedTuple{(:Transaction_date, :Product, :Price, :Payment_Type, :Name, :City, :State, :Country, :Account_Created, :Last_Login, :Latitude, :Longitude),Tuple{InlineString15,InlineString15,InlineString7,InlineString15,InlineString31,String,Union{Missing, InlineString31},InlineString31,InlineString15,InlineString15,Float64,Float64}},
         nothing
     ),
     ("stocks.csv", (normalizenames=true,),
         (30, 2),
-        NamedTuple{(:Stock_Name, :Company_Name), Tuple{InlineString7, InlineString63}},
+        NamedTuple{(:Stock_Name, :Company_Name), Tuple{InlineString7, String}},
         nothing
     ),
     ("TechCrunchcontinentalUSA.csv", (pool=true, stringtype=String),
@@ -623,7 +623,7 @@ testfiles = [
     # https://github.com/JuliaData/CSV.jl/issues/577
     ("csv_segfault.txt", (delim="\t", ignoreemptyrows=true),
         (468, 9),
-        NamedTuple{(Symbol("Time (CEST)"), :Latitude, :Longitude, :Course, :kts, :mph, :feet, :Rate, Symbol("Reporting Facility")),Tuple{InlineString63, Union{Missing, InlineString15}, Union{Missing, InlineString15}, Union{Missing, InlineString31}, Union{Missing, InlineString3}, Union{Missing, InlineString3}, Union{Missing, InlineString7}, Union{Missing, InlineString31}, Union{Missing, InlineString31}}},
+        NamedTuple{(Symbol("Time (CEST)"), :Latitude, :Longitude, :Course, :kts, :mph, :feet, :Rate, Symbol("Reporting Facility")),Tuple{String, Union{Missing, InlineString15}, Union{Missing, InlineString15}, Union{Missing, InlineString31}, Union{Missing, InlineString3}, Union{Missing, InlineString3}, Union{Missing, InlineString7}, Union{Missing, InlineString31}, Union{Missing, InlineString31}}},
         nothing
     ),
     # https://github.com/JuliaData/CSV.jl/issues/575
@@ -644,7 +644,7 @@ testfiles = [
     # https://github.com/JuliaData/CSV.jl/issues/597
     push!(testfiles, ("ampm.csv", (dateformat="m/d/yyyy I:M:S p",),
         (2, 16),
-        NamedTuple{(:ID, :INTERLOCK_NUMBER, :INTERLOCK_DESCRIPTION, :TYPE, :CREATE_DATE, :MODIFY_DATE, :USERNAME, :UNIT, :AREA, :PURPOSE, :PID, :LOCATION, :FUNC_DATE, :FUNC_BY, :TECHNICAL_DESCRIPTION, :types), Tuple{Int, Union{Missing, InlineString15}, InlineString63, Missing, DateTime, DateTime, InlineString15, InlineString15, InlineString15, InlineString31, Missing, Missing, DateTime, Missing, InlineString63, InlineString3}},
+        NamedTuple{(:ID, :INTERLOCK_NUMBER, :INTERLOCK_DESCRIPTION, :TYPE, :CREATE_DATE, :MODIFY_DATE, :USERNAME, :UNIT, :AREA, :PURPOSE, :PID, :LOCATION, :FUNC_DATE, :FUNC_BY, :TECHNICAL_DESCRIPTION, :types), Tuple{Int, Union{Missing, InlineString15}, String, Missing, DateTime, DateTime, InlineString15, InlineString15, InlineString15, InlineString31, Missing, Missing, DateTime, Missing, String, InlineString3}},
         x -> @test x.CREATE_DATE == [DateTime("2012-02-09T00:00:00"), DateTime("1998-07-22T16:37:01")]
     ))
     nothing
