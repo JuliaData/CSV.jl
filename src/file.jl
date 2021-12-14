@@ -869,9 +869,9 @@ function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::
                         code = trytopromote!(type, newT, buf, pos, len, col, row)
                         newT = _widen(newT)
                     end
-                elseif type === InlineString1 || type === InlineString3 || type === InlineString7 || type === InlineString15 || type === InlineString31 || type === InlineString63 || type === InlineString127
+                elseif type === InlineString1 || type === InlineString3 || type === InlineString7 || type === InlineString15
                     newT = widen(type)
-                    while newT !== InlineString127
+                    while newT !== InlineString63
                         ret = _parseany(newT, buf, pos, len, opts)
                         if !Parsers.invalid(ret.code)
                             col.type = newT
