@@ -231,7 +231,7 @@ f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int
 @test eltype(f.x) === Float64
 
 f = CSV.File(IOBuffer("x\n1\n$(typemax(Int16))\n$(typemax(Int32))\n$(typemax(Int64))\n$(typemax(Int128))\n3.14\nabc"), downcast=true, ignoreemptyrows=true)
-@test eltype(f.x) === InlineString63
+@test eltype(f.x) === String
 
 f = CSV.File(IOBuffer("x\n\n1"), downcast=true, ignoreemptyrows=false)
 @test eltype(f.x) === Union{Missing, Int8}
@@ -478,7 +478,7 @@ f = CSV.File(IOBuffer("1,2\r\n3,4\r\n\r\n5,6\r\n"); header=["col1", "col2"], ign
 
 f = CSV.File(joinpath(dir, "escape_row_starts.csv"); ntasks=2)
 @test length(f) == 10000
-@test eltype(f.col1) == InlineString63
+@test eltype(f.col1) == String
 @test eltype(f.col2) == Int
 
 f = CSV.File(IOBuffer("col1\nhey\nthere\nsailor"); stringtype=PosLenString)
