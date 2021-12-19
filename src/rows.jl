@@ -104,6 +104,7 @@ function Rows(source::ValidSources;
     decimal::Union{UInt8, Char}=UInt8('.'),
     truestrings::Union{Vector{String}, Nothing}=TRUE_STRINGS,
     falsestrings::Union{Vector{String}, Nothing}=FALSE_STRINGS,
+    stripwhitespace::Bool=false,
     # type options
     type=nothing,
     types=nothing,
@@ -120,7 +121,7 @@ function Rows(source::ValidSources;
     validate::Bool=true,
     reusebuffer::Bool=false,
     )
-    ctx = @refargs Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, nothing, nothing, nothing, 0, nothing, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, validate, true)
+    ctx = @refargs Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, nothing, nothing, nothing, 0, nothing, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, stripwhitespace, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, validate, true)
     foreach(col -> col.pool = 0.0, ctx.columns)
     allocate!(ctx.columns, 1)
     values = all(x->x.type === ctx.stringtype && x.anymissing, ctx.columns) && ctx.stringtype === PosLenString ? Vector{PosLen}(undef, ctx.cols) : Vector{Any}(undef, ctx.cols)
