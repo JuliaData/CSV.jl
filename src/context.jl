@@ -181,6 +181,7 @@ function Context(source::ValidSources;
     decimal::Union{UInt8, Char}=UInt8('.'),
     truestrings::Union{Vector{String}, Nothing}=TRUE_STRINGS,
     falsestrings::Union{Vector{String}, Nothing}=FALSE_STRINGS,
+    stripwhitespace::Bool=false,
     # type options
     type=nothing,
     types=nothing,
@@ -196,7 +197,7 @@ function Context(source::ValidSources;
     parsingdebug::Bool=false,
     validate::Bool=true,
     )
-    return @refargs Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, threaded, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, validate, false)
+    return @refargs Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, threaded, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, stripwhitespace, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, validate, false)
 end
 
 @refargs function Context(source::ValidSources,
@@ -235,6 +236,7 @@ end
     decimal::Union{UInt8, Char},
     truestrings::Union{Nothing, Vector{String}},
     falsestrings::Union{Nothing, Vector{String}},
+    stripwhitespace::Bool,
     # type options
     type::Union{Nothing, Type},
     types::Union{Nothing, Type, AbstractVector, AbstractDict, Function},
@@ -383,14 +385,14 @@ end
         d, rowsguess = detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, cmt, ignoreemptyrows, del)
         wh1 = d == UInt(' ') ? 0x00 : wh1
         wh2 = d == UInt8('\t') ? 0x00 : wh2
-        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, quoted, parsingdebug)
+        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, quoted, parsingdebug, stripwhitespace)
     elseif del isa Char
         _, rowsguess = detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, cmt, ignoreemptyrows)
-        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, del, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, quoted, parsingdebug)
+        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, del, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, quoted, parsingdebug, stripwhitespace)
         d = del
     elseif del isa String
         _, rowsguess = detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, cmt, ignoreemptyrows)
-        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, del, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, quoted, parsingdebug)
+        options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, del, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, quoted, parsingdebug, stripwhitespace)
         d = del
     else
         error("invalid delim type")
@@ -489,7 +491,7 @@ end
             # devdoc: if we want to add any other column-specific parsing options, this is where we'd at the logic
             # e.g. per-column sentinel, decimal, trues, falses, openquotechar, closequotechar, escapechar, etc.
             if df !== nothing
-                columns[i].options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, true, parsingdebug)
+                columns[i].options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, true, parsingdebug, stripwhitespace)
             end
         end
         validate && checkinvalidcolumns(dateformat, "dateformat", ncols, names)
