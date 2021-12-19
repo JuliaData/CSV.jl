@@ -748,4 +748,15 @@ f = CSV.File(IOBuffer("a,b\n1,2\n3,"))
 @test f.a == [1, 3]
 @test isequal(f.b, [2, missing])
 
+# 951
+data = """
+| Name       |  Zip |
+| Joe        |  123 |
+| Mary Anne  | 1234 |
+"""
+f = CSV.File(IOBuffer(data); delim='|', normalizenames=true, stripwhitespace=false)
+@test f.Name[1] == " Joe        "
+f = CSV.File(IOBuffer(data); delim='|', normalizenames=true, stripwhitespace=true)
+@test f.Name[2] == "Mary Anne"
+
 end
