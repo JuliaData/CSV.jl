@@ -349,17 +349,20 @@ function makeunique(names)
     set = Set(names)
     length(set) == length(names) && return Symbol[Symbol(x) for x in names]
     nms = Symbol[]
+    nextsuffix = Dict{eltype(names), UInt}()
     for nm in names
-        if nm in nms
-            k = 1
+        if haskey(nextsuffix, nm)
+            k = nextsuffix[nm]
             newnm = Symbol("$(nm)_$k")
-            while newnm in set || newnm in nms
+            while newnm in set || haskey(nextsuffix, newnm)
                 k += 1
                 newnm = Symbol("$(nm)_$k")
             end
+            nextsuffix[nm] = k + 1
             nm = newnm
         end
         push!(nms, nm)
+        nextsuffix[nm] = 1
     end
     @assert length(names) == length(nms)
     return nms
