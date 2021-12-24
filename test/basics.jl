@@ -748,4 +748,14 @@ f = CSV.File(IOBuffer("a,b\n1,2\n3,"))
 @test f.a == [1, 3]
 @test isequal(f.b, [2, missing])
 
+# duplicate column names
+f = CSV.File(IOBuffer("a,a,a\n"))
+@test f.names == [:a, :a_1, :a_2]
+
+f = CSV.File(IOBuffer("a,a_1,a\n"))
+@test f.names == [:a, :a_1, :a_2]
+
+f = CSV.File(IOBuffer("a,a,a_1\n")) # this case is not covered in test_duplicate_columnnames.csv
+@test f.names == [:a, :a_2, :a_1]
+
 end
