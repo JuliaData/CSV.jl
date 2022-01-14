@@ -17,21 +17,20 @@ end
 struct NeedsTypeDetection end
 
 nonmissingtypeunlessmissingtype(::Type{T}) where {T} = ifelse(T === Missing, Missing, nonmissingtype(T))
-pooltype(col) = nonmissingtype(keytype(col.refpool.refs))
 finaltype(T) = T
 finaltype(::Type{HardMissing}) = Missing
 finaltype(::Type{NeedsTypeDetection}) = Missing
 coltype(col) = ifelse(col.anymissing, Union{finaltype(col.type), Missing}, finaltype(col.type))
 
 pooled(col) = col.pool == 1.0
-maybepooled(col) = 0.0 < col.pool
+maybepooled(col) = col.pool > 0.0
 
 function getpool(x::Real)::Float64
     if x isa Bool
         return x ? 1.0 : 0.0
     else
         y = Float64(x)
-        (isnan(y) || 0.0 <= y <= 1.0) || throw(ArgumentError("pool argument must be in the range: 0.0 <= x <= 1.0"))
+        (isnan(y) || 0.0 <= y) || throw(ArgumentError("pool argument must be in the range: 0.0 <= x <= 1.0 or a positive integer > 1"))
         return y
     end
 end
@@ -95,8 +94,6 @@ const SmallIntegers = Union{Int8, UInt8, Int16, UInt16, Int32, UInt32}
 const SVec{T} = SentinelVector{T, T, Missing, Vector{T}}
 const SVec2{T} = SentinelVector{T, typeof(undef), Missing, Vector{T}}
 
-struct Pooled end
-
 promotevectype(::Type{T}) where {T <: Union{Bool, SmallIntegers}} = vectype(T)
 promotevectype(::Type{T}) where {T} = SentinelVector{T}
 
@@ -107,14 +104,7 @@ function allocate!(columns, rowsguess)
         # if the type hasn't been detected yet, then column will get allocated
         # in the detect method while parsing
         if col.type !== NeedsTypeDetection
-            if maybepooled(col) && (col.type isa StringTypes || col.columnspecificpool)
-                col.column = allocate(Pooled, rowsguess)
-                if !isdefined(col, :refpool)
-                    col.refpool = RefPool(col.type)
-                end
-            else
-                col.column = allocate(col.type, rowsguess)
-            end
+            col.column = allocate(col.type, rowsguess)
         end
     end
     return
@@ -134,8 +124,6 @@ setmissing!(col::Vector{PosLen}, i) = col[i] = POSLEN_MISSING
         return A
     elseif T === String
         return SentinelVector{String}(undef, len)
-    elseif T === Pooled
-        return fill(UInt32(1), len) # initialize w/ all missing values
     elseif T === Bool
         return Vector{Union{Missing, Bool}}(undef, len)
     elseif T <: SmallIntegers
@@ -146,14 +134,7 @@ setmissing!(col::Vector{PosLen}, i) = col[i] = POSLEN_MISSING
 end
 
 function reallocate!(@nospecialize(A), len)
-    if A isa Vector{UInt32}
-        oldlen = length(A)
-        resize!(A, len)
-        # make sure new values are initialized to missing
-        for i = (oldlen + 1):len
-            @inbounds A[i] = UInt32(1)
-        end
-    elseif A isa Vector{PosLen}
+    if A isa Vector{PosLen}
         oldlen = length(A)
         resize!(A, len)
         # when reallocating, we just need to make sure the missing bit is set for lazy string PosLen
@@ -166,10 +147,13 @@ end
 
 firstarray(x::ChainedVector) = x.arrays[1]
 
+columntype(::Type{T}) where {T <: Union{Bool, SmallIntegers}} = Vector{Union{T, Missing}}
+columntype(::Type{T}) where {T} = isbitstype(T) ? SVec{T} : SVec2{T}
+columntype(::Type{PosLenString}) = Vector{PosLen}
+
 vectype(::Type{T}) where {T <: Union{Bool, SmallIntegers}} = Vector{Union{T, Missing}}
 vectype(::Type{T}) where {T} = isbitstype(T) ? SVec{T} : SVec2{T}
 vectype(::Type{PosLenString}) = PosLenStringVector{Union{PosLenString, Missing}}
-vectype(::Type{Pooled}) = Vector{UInt32}
 pooledvectype(::Type{T}) where {T} = PooledVector{Union{T, Missing}, UInt32, Vector{UInt32}}
 pooledtype(::Type{T}) where {T} = PooledVector{T, UInt32, Vector{UInt32}}
 # missingvectype(::PooledVector{T, R, AT}) where {T, R, AT} = PooledVector{Union{T, Missing}, R, AT}
