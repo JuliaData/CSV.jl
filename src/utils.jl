@@ -22,15 +22,24 @@ finaltype(::Type{HardMissing}) = Missing
 finaltype(::Type{NeedsTypeDetection}) = Missing
 coltype(col) = ifelse(col.anymissing, Union{finaltype(col.type), Missing}, finaltype(col.type))
 
-pooled(col) = col.pool == 1.0
-maybepooled(col) = col.pool > 0.0
+maybepooled(col) = col.pool isa Tuple ? (col.pool[1] > 0.0) : (col.pool > 0.0)
 
-function getpool(x::Real)::Float64
+function getpool(x)::Union{Float64, Tuple{Float64, Int}}
     if x isa Bool
         return x ? 1.0 : 0.0
+    elseif x isa Tuple
+        y = Float64(x[1])
+        (isnan(y) || 0.0 <= y <= 1.0) || throw(ArgumentError("pool tuple 1st argument must be in the range: 0.0 <= x <= 1.0"))
+        try
+            z = Int(x[2])
+            @assert z > 0
+            return (y, z)
+        catch
+            throw(ArgumentError("pool tuple 2nd argument must be a positive integer > 0"))
+        end
     else
         y = Float64(x)
-        (isnan(y) || 0.0 <= y) || throw(ArgumentError("pool argument must be in the range: 0.0 <= x <= 1.0 or a positive integer > 1"))
+        (isnan(y) || 0.0 <= y <= 1.0) || throw(ArgumentError("pool argument must be in the range: 0.0 <= x <= 1.0"))
         return y
     end
 end

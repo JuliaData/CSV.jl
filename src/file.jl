@@ -458,6 +458,7 @@ function checkpooled!(::Type{T}, pertaskcolumns, col, j, ntasks, nrows, ctx) whe
     lastref = Ref{UInt32}(0)
     refs = Vector{UInt32}(undef, nrows)
     k = 1
+    limit = col.pool isa Tuple ? col.pool[2] : typemax(Int)
     for i = 1:ntasks
         column = (pertaskcolumns === nothing ? col.column : pertaskcolumns[i][j].column)::columntype(S)
         for x in column
@@ -494,15 +495,13 @@ function checkpooled!(::Type{T}, pertaskcolumns, col, j, ntasks, nrows, ctx) whe
                 end
             end
             k += 1
-            if col.pool > 1.0 && nrows > col.pool && length(pool) > col.pool
+            if length(pool) > limit
                 return false
             end
         end
     end
-    if col.pool <= 1.0 && ((length(pool) - 1) / nrows) <= col.pool
-        col.column = PooledArray(PooledArrays.RefArray(refs), pool)
-        return true
-    elseif col.pool > 1.0 && nrows > col.pool && length(pool) <= col.pool
+    percent = col.pool isa Tuple ? col.pool[1] : col.pool
+    if ((length(pool) - 1) / nrows) <= percent
         col.column = PooledArray(PooledArrays.RefArray(refs), pool)
         return true
     else

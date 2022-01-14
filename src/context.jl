@@ -19,7 +19,7 @@ mutable struct Column
     anymissing::Bool
     userprovidedtype::Bool
     willdrop::Bool
-    pool::Float64
+    pool::Union{Float64, Tuple{Float64, Int}}
     columnspecificpool::Bool
     # lazily/manually initialized fields
     column::AbstractVector
@@ -29,7 +29,7 @@ mutable struct Column
     endposition::Int
     options::Parsers.Options
 
-    Column(type::Type, anymissing::Bool, userprovidedtype::Bool, willdrop::Bool, pool::Float64, columnspecificpool::Bool) =
+    Column(type::Type, anymissing::Bool, userprovidedtype::Bool, willdrop::Bool, pool::Union{Float64, Tuple{Float64, Int}}, columnspecificpool::Bool) =
         new(type, anymissing, userprovidedtype, willdrop, pool, columnspecificpool)
 end
 
@@ -104,7 +104,7 @@ struct Context
     datarow::Int
     options::Parsers.Options
     columns::Vector{Column}
-    pool::Float64
+    pool::Union{Float64, Tuple{Float64, Int}}
     downcast::Bool
     customtypes::Type
     typemap::Dict{Type, Type}
@@ -217,7 +217,7 @@ end
     type::Union{Nothing, Type},
     types::Union{Nothing, Type, AbstractVector, AbstractDict, Function},
     typemap::Dict,
-    pool::Union{Bool, Real, AbstractVector, AbstractDict, Base.Callable},
+    pool::Union{Bool, Real, AbstractVector, AbstractDict, Base.Callable, Tuple},
     downcast::Bool,
     lazystrings::Bool,
     stringtype::StringTypes,
