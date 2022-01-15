@@ -41,7 +41,7 @@ include("write.jl")
     @test (length(f), length(f.names)) == (4, 1)
     @test f.X[3] === missing
 
-    f = CSV.File(IOBuffer("X\nc\nc\n\nc\nc\nc\nc\nc\nc"), ignoreemptyrows=false)
+    f = CSV.File(IOBuffer("X\nc\nc\n\nc\nc\nc\nc\nc\nc"), pool=0.25, ignoreemptyrows=false)
     @test typeof(f.X) == PooledArray{Union{Missing, InlineString1},UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (9, 1)
     @test isequal(f.X, ["c", "c", missing, "c", "c", "c", "c", "c", "c"])
