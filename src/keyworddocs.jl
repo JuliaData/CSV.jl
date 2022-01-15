@@ -29,6 +29,7 @@ const KEYWORD_DOCS = """
   * `dateformat::Union{String, Dates.DateFormat, Nothing, AbstractDict}`: a date format string to indicate how Date/DateTime columns are formatted for the entire file; if given as an `AbstractDict`, date format strings to indicate how the Date/DateTime columns corresponding to the keys are formatted. The Dict can map column index `Int`, or name `Symbol` or `String` to the format string for that column.
   * `decimal='.'`: a `Char` indicating how decimals are separated in floats, i.e. `3.14` uses `'.'`, or `3,14` uses a comma `','`
   * `truestrings`, `falsestrings`: `Vector{String}`s that indicate how `true` or `false` values are represented; by default `"true", "True", "TRUE", "T", "1"` are used to detect `true` and `"false", "False", "FALSE", "F", "0"` are used to detect `false`; note that columns with only `1` and `0` values will default to `Int64` column type unless explicitly requested to be `Bool` via `types` keyword argument
+  * `stripwhitespace=false`: if true, leading and trailing whitespace are stripped from string values, including column names
 
 ## Column Type Options:
 
