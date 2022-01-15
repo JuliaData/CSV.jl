@@ -23,7 +23,6 @@ struct StructType
     aumber::Union{Real, Nothing}
 end
 
-#structtable = [StructType(Date("2021-12-01"), "string 1", 123.45), StructType(Date("2021-12-02"), "string 2", 456.78)]
 
 @testset "CSV.write" begin
 
