@@ -766,7 +766,7 @@ data = """
 """
 f = CSV.File(IOBuffer(data); delim='|', normalizenames=true, stripwhitespace=false)
 @test f.Name[1] == " Joe        "
-f = CSV.File(IOBuffer(data); delim='|', normalizenames=true, stripwhitespace=true)
+f = CSV.File(IOBuffer(data); delim='|', stripwhitespace=true)
 @test f.Name[2] == "Mary Anne"
 
 end
