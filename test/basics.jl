@@ -430,7 +430,7 @@ f = CSV.File(IOBuffer("x\r\n1\r\n2\r\n3\r\n4\r\n5\r\n"), footerskip=3)
 @test f[1][1] == 1
 
 # 578
-f = CSV.File(IOBuffer("h1234567890123456\t"^2262 * "lasthdr\r\n" *"dummy dummy dummy\r\n"* ("1.23\t"^2262 * "2.46\r\n")^10), skipto=3, ntasks=1);
+f = CSV.File(IOBuffer("h1234567890123456\t"^2262 * "lasthdr\r\n" * "dummy dummy dummy\r\n" * ("1.23\t"^2262 * "2.46\r\n")^10), skipto=3, ntasks=1);
 @test (length(f), length(f.names)) == (10, 2263)
 @test all(x -> eltype(x) == Float64, Tables.Columns(f))
 
@@ -669,7 +669,7 @@ row = first(CSV.Rows(IOBuffer("a,b,c\n1,2,3\n\n"); select=[:a, :c]))
 # 871
 
 f = CSV.File(IOBuffer("a,b,c\n1,2,3\n3.14,5,6\n"); typemap=Dict(Float64 => String))
-@test f.a isa Vector{<:AbstractString}
+@test f.a isa AbstractVector{<:AbstractString}
 
 # support SubArray{UInt8} as source
 f = CSV.File(IOBuffer(strip(""""column_name","data_type","is_nullable"\nfoobar,string,YES\nbazbat,timestamptz,YES""")))
@@ -747,6 +747,16 @@ f = CSV.File(IOBuffer(data); header=false, types=Dict(1 => String), downcast=tru
 f = CSV.File(IOBuffer("a,b\n1,2\n3,"))
 @test f.a == [1, 3]
 @test isequal(f.b, [2, missing])
+
+# duplicate column names
+f = CSV.File(IOBuffer("a,a,a\n"))
+@test f.names == [:a, :a_1, :a_2]
+
+f = CSV.File(IOBuffer("a,a_1,a\n"))
+@test f.names == [:a, :a_1, :a_2]
+
+f = CSV.File(IOBuffer("a,a,a_1\n")) # this case is not covered in test_duplicate_columnnames.csv
+@test f.names == [:a, :a_2, :a_1]
 
 # 951
 data = """

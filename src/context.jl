@@ -1,19 +1,3 @@
-# a RefPool holds our refs as a Dict, along with a lastref field which is incremented when a new ref is found while parsing pooled columns
-mutable struct RefPool
-    # what? why ::Any here? well, we want flexibility in what kind of refs we stick in here
-    # it might be Dict{Union{String, Missing}, UInt32}, but it might be some other string type
-    # or it might not allow `missing`; in short, there are too many options to try and type
-    # the field concretely; luckily, working with the `refs` field here is limited to
-    # a very few specific methods, and we'll always have the column type, so we just need
-    # to make sure we assert the concrete type before using refs
-    refs::Any
-    lastref::UInt32
-end
-
-# start lastref at 1, since it's reserved for `missing`, so first ref value will be 2
-const Refs{T} = Dict{Union{T, Missing}, UInt32}
-RefPool(::Type{T}=String) where {T} = RefPool(Refs{T}(), 1)
-
 """
 Internal structure used to track information for a single column in a delimited file.
 
@@ -25,7 +9,6 @@ Fields:
   * `pool`: computed from `pool` keyword argument; `true` is `1.0`, `false` is `0.0`, everything else is `Float64(pool)`; once computed, this field isn't mutated at all while parsing; it's used in type detection to determine whether a column will be pooled or not once a type is detected; 
   * `columnspecificpool`: if `pool` was provided via Vector or Dict by user, then `true`, other `false`; if `false`, then only string column types will attempt pooling
   * `column`: the actual column vector to hold parsed values; field is typed as `AbstractVector` and while parsing, we do switches on `col.type` to assert the column type to make code concretely typed
-  * `refpool`: if the column is pooled (or might be pooled in single-threaded case), this is the column-specific `RefPool` used to track unique parsed values and their `UInt32` ref codes
   * `lock`: in multithreaded parsing, we have a top-level set of `Vector{Column}`, then each threaded parsing task makes its own copy to parse its own chunk; when synchronizing column types/pooled refs, the task-local `Column` will `lock(col.lock)` to make changes to the parent `Column`; each task-local `Column` shares the same `lock` of the top-level `Column`
   * `position`: for transposed reading, the current column position
   * `endposition`: for transposed reading, the expected ending position for this column
@@ -36,18 +19,17 @@ mutable struct Column
     anymissing::Bool
     userprovidedtype::Bool
     willdrop::Bool
-    pool::Float64
+    pool::Union{Float64, Tuple{Float64, Int}}
     columnspecificpool::Bool
     # lazily/manually initialized fields
     column::AbstractVector
-    refpool::RefPool
     # per top-level column fields (don't need to copy per task when parsing)
     lock::ReentrantLock
     position::Int
     endposition::Int
     options::Parsers.Options
 
-    Column(type::Type, anymissing::Bool, userprovidedtype::Bool, willdrop::Bool, pool::Float64, columnspecificpool::Bool) =
+    Column(type::Type, anymissing::Bool, userprovidedtype::Bool, willdrop::Bool, pool::Union{Float64, Tuple{Float64, Int}}, columnspecificpool::Bool) =
         new(type, anymissing, userprovidedtype, willdrop, pool, columnspecificpool)
 end
 
@@ -70,10 +52,6 @@ function Column(x::Column)
     y.lock = x.lock # parent and child columns _share_ the same lock
     if isdefined(x, :options)
         y.options = x.options
-    end
-    if isdefined(x, :refpool)
-        # if parent has refpool from sampling, make a copy
-        y.refpool = RefPool(copy(x.refpool.refs), x.refpool.lastref)
     end
     # specifically _don't_ copy/re-use x.column; that needs to be allocated fresh per parsing task
     return y
@@ -126,7 +104,7 @@ struct Context
     datarow::Int
     options::Parsers.Options
     columns::Vector{Column}
-    pool::Float64
+    pool::Union{Float64, Tuple{Float64, Int}}
     downcast::Bool
     customtypes::Type
     typemap::Dict{Type, Type}
@@ -241,7 +219,7 @@ end
     type::Union{Nothing, Type},
     types::Union{Nothing, Type, AbstractVector, AbstractDict, Function},
     typemap::Dict,
-    pool::Union{Bool, Real, AbstractVector, AbstractDict, Base.Callable},
+    pool::Union{Bool, Real, AbstractVector, AbstractDict, Base.Callable, Tuple},
     downcast::Bool,
     lazystrings::Bool,
     stringtype::StringTypes,

@@ -56,7 +56,7 @@ Base.showerror(io::IO, e::Error) = println(io, e.msg)
 
 # constants
 const DEFAULT_STRINGTYPE = InlineString
-const DEFAULT_POOL = 0.25
+const DEFAULT_POOL = (0.2, 500)
 const DEFAULT_ROWS_TO_CHECK = 30
 const DEFAULT_MAX_WARNINGS = 100
 const DEFAULT_MAX_INLINE_STRING_LENGTH = 32

@@ -272,29 +272,17 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
         # cleanup our columns if needed
         for col in columns
 @label processcolumn
-            if col.type === NeedsTypeDetection && pooled(col)
-                # we get here if user specified pool=true for at least this column
-                # but we never encountered any non-missing values
-                col.type = Missing
-                col.column = allocate(Pooled, finalrows)
-                col.refpool = RefPool(Missing)
-            elseif col.type === NeedsTypeDetection
+            if col.type === NeedsTypeDetection
                 # fill in uninitialized column fields
                 col.type = Missing
                 col.column = MissingVector(finalrows)
                 col.pool = 0.0
             end
-            if col.column isa Vector{UInt32}
-                if pooled(col)
-                    makepooled!(col)
-                elseif ((length(col.refpool.refs) - 1) / finalrows) <= col.pool
-                    # check if final column should be PooledArray or not
-                    makepooled!(col)
-                else
-                    # cardinality too high, so unpool
-                    unpool!(col, col.type, col.refpool)
-                    @goto processcolumn
-                end
+            T = col.anymissing ? Union{col.type, Missing} : col.type
+            if maybepooled(col) &&
+                (col.type isa StringTypes || col.columnspecificpool) &&
+                checkpooled!(T, nothing, col, 0, 1, finalrows, ctx)
+                # col.column is a PooledArray
             elseif col.type === PosLenString
                 # string col parsed lazily; return a PosLenStringVector
                 makeposlen!(col, coltype(col), ctx)
@@ -410,55 +398,26 @@ function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, c
         if T === Float64 && T2 <: Integer
             # one chunk parsed as Int, another as Float64, promote to Float64
             ctx.debug && println("multithreaded promoting column $j to float")
-            if task_col.column isa Vector{UInt32}
-                task_col.refpool.refs = convert(Refs{Float64}, task_col.refpool.refs)
-            else
-                task_col.column = convert(SentinelVector{Float64}, task_col.column)
-            end
+            task_col.column = convert(SentinelVector{Float64}, task_col.column)
         elseif T !== T2 && (T <: InlineString || (T === String && T2 <: InlineString))
             # promote to widest InlineString type
-            if task_col.column isa Vector{UInt32}
-                task_col.refpool.refs = convert(Refs{T}, task_col.refpool.refs)
-            else
-                task_col.column = convert(SentinelVector{T}, task_col.column)
-            end
+            task_col.column = convert(SentinelVector{T}, task_col.column)
         elseif T !== T2
             # one chunk parsed all missing values, but another chunk had a typed value, promote to that
             # while keeping all values `missing` (allocate by default ensures columns have all missing values)
             ctx.debug && println("multithreaded promoting column $j from missing on task $i")
-            task_col.column = allocate(maybepooled(col) && (T isa StringTypes || col.columnspecificpool) ? Pooled : T, task_rows)
-        end
-        # synchronize refs if needed
-        if maybepooled(col) && (T isa StringTypes || col.columnspecificpool)
-            if !isdefined(col, :refpool) && isdefined(task_col, :refpool)
-                # this case only occurs if user explicitly passed pool=true
-                # but we only parsed `missing` values during sampling
-                col.refpool = task_col.refpool
-            elseif isdefined(task_col, :refpool)
-                syncrefs!(col.type, col, task_col, task_rows)
-            end
+            task_col.column = allocate(T, task_rows)
         end
     end
-@label threadedprocesscolumn
-    if maybepooled(col) && (col.type isa StringTypes || col.columnspecificpool)
-        if pooled(col)
-            makechain!(col.type, pertaskcolumns, col, j, ntasks)
-            # pooled columns are the one case where we invert the order of arrays;
-            # i.e. we return PooledArray{T, ChainedVector{T}} instead of ChainedVector{T, PooledArray{T}}
-            makepooled!(col)
-        elseif ((length(col.refpool.refs) - 1) / finalrows) <= col.pool
-            col.pool = 1.0
-            @goto threadedprocesscolumn
-        else
-            # cardinality too high, so unpool
-            col.pool = 0.0
-            foreach(cols -> unpool!(cols[j], col.type, col.refpool), pertaskcolumns)
-            @goto threadedprocesscolumn
-        end
+    T = col.anymissing ? Union{col.type, Missing} : col.type
+    if maybepooled(col) &&
+        (col.type isa StringTypes || col.columnspecificpool) &&
+        checkpooled!(T, pertaskcolumns, col, j, ntasks, finalrows, ctx)
+        # col.column is a PooledArray
     elseif col.type === Int64
         # we need to special-case Int here because while parsing, a default Int64 sentinel value is chosen to
         # represent missing; if any chunk bumped into that sentinel value while parsing, then it cycled to a 
-        # new sentinel value; this step ensure that each chunk has the same encoded sentinel value
+        # new sentinel value; this step ensures that each chunk has the same encoded sentinel value
         # passing force=false means it will first check if all chunks already have the same sentinel and return
         # immediately if so, which will be the case most often
         SentinelArrays.newsentinel!((pertaskcolumns[i][j].column::SVec{Int64} for i = 1:ntasks)...; force=false)
@@ -478,51 +437,6 @@ function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, c
     return
 end
 
-const EMPTY_REFRECODE = UInt32[]
-
-# after multithreaded parsing, we need to synchronize pooled refs from different chunks of the file
-# we pick one chunk as "source of truth", then adjust other chunks as needed
-function syncrefs!(::Type{T}, col, task_col, task_rows) where {T}
-    @assert task_col.column isa Vector{UInt32}
-    # @inbounds begin
-    colrefpool = col.refpool
-    colrefs = colrefpool.refs::Refs{T}
-    taskrefpool = task_col.refpool
-    taskrefs = taskrefpool.refs::Refs{T}
-    refrecodes = EMPTY_REFRECODE
-    recode = false
-    for (k, v) in taskrefs
-        # `k` is our task-specific parsed value
-        # `v` is our task-specific UInt32 ref code
-        # for each task-specific ref, check if it matches parent column ref
-        refvalue = get(colrefs, k, UInt32(0))
-        if refvalue != v
-            # task-specific ref didn't match parent column ref, need to recode
-            recode = true
-            if isempty(refrecodes)
-                # refrecodes is indexed by task-specific ref code
-                # each *element*, however, is the parent column ref code
-                refrecodes = [UInt32(i) for i = 1:taskrefpool.lastref]
-            end
-            if refvalue == 0
-                # parent column didn't know about this ref, so we add it
-                refvalue = (colrefpool.lastref += UInt32(1))
-                colrefs[k] = refvalue
-            end
-            refrecodes[v] = refvalue
-        end
-    end
-    if recode
-        column = task_col.column::Vector{UInt32}
-        for j = 1:task_rows
-            # here we recode by replacing task column ref code w/ parent column ref code
-            column[j] = refrecodes[column[j]]
-        end
-    end
-    # end # @inbounds begin
-    return
-end
-
 function makechain!(::Type{T}, pertaskcolumns, col, j, ntasks) where {T}
     if col.anymissing
         col.column = ChainedVector([pertaskcolumns[i][j].column for i = 1:ntasks])
@@ -531,8 +445,6 @@ function makechain!(::Type{T}, pertaskcolumns, col, j, ntasks) where {T}
             col.column = ChainedVector([convert(Vector{Bool}, pertaskcolumns[i][j].column::vectype(T)) for i = 1:ntasks])
         elseif col.type !== Union{} && col.type <: SmallIntegers
             col.column = ChainedVector([convert(Vector{col.type}, pertaskcolumns[i][j].column::vectype(T)) for i = 1:ntasks])
-        elseif maybepooled(col) && (col.type isa StringTypes || col.columnspecificpool)
-            col.column = ChainedVector([pertaskcolumns[i][j].column::Vector{UInt32} for i = 1:ntasks])
         else
             col.column = ChainedVector([parent(pertaskcolumns[i][j].column) for i = 1:ntasks])
         end
@@ -540,53 +452,62 @@ function makechain!(::Type{T}, pertaskcolumns, col, j, ntasks) where {T}
     return
 end
 
-function makepooled!(col)
-    T = col.type
-    r = isdefined(col, :refpool) ? col.refpool.refs : Refs{T === NeedsTypeDetection ? Missing : T}()
-    column = isdefined(col, :column) ? col.column : UInt32[]
-    return makepooled2!(col, T, r, column)
-end
-
-function makepooled2!(col, ::Type{T}, r::Refs{T}, column) where {T}
-    if col.anymissing
-        r[missing] = UInt32(1)
-    else
-        # need to recode pool and refs
-        for (k, v) in r
-            @inbounds r[k] = v - 1
+# T is Union{T, Missing} or T depending on col.anymissing
+function checkpooled!(::Type{T}, pertaskcolumns, col, j, ntasks, nrows, ctx) where {T}
+    S = Base.nonmissingtype(T)
+    pool = Dict{T, UInt32}()
+    lastref = Ref{UInt32}(0)
+    refs = Vector{UInt32}(undef, nrows)
+    k = 1
+    limit = col.pool isa Tuple ? col.pool[2] : typemax(Int)
+    for i = 1:ntasks
+        column = (pertaskcolumns === nothing ? col.column : pertaskcolumns[i][j].column)::columntype(S)
+        for x in column
+            if x isa PosLen
+                if x.missingvalue
+                    @inbounds refs[k] = get!(pool, missing) do
+                        lastref[] += UInt32(1)
+                    end
+                elseif x.escapedvalue
+                    val = S === PosLenString ? S(ctx.buf, x, ctx.options.e) : Parsers.getstring(ctx.buf, x, ctx.options.e)
+                    @inbounds refs[k] = get!(pool, val) do
+                        lastref[] += UInt32(1)
+                    end
+                else
+                    val = PointerString(pointer(ctx.buf, x.pos), x.len)
+                    index = Base.ht_keyindex2!(pool, val)
+                    if index > 0
+                        @inbounds found_key = pool.vals[index]
+                        ref = found_key::UInt32
+                    else
+                        new = lastref[] += UInt32(1)
+                        if S === PosLenString
+                            @inbounds Base._setindex!(pool, new, S(ctx.buf, x, ctx.options.e), -index)
+                        else
+                            @inbounds Base._setindex!(pool, new, S(val), -index)
+                        end
+                        ref = new
+                    end
+                    @inbounds refs[k] = ref
+                end
+            else
+                @inbounds refs[k] = get!(pool, x) do
+                    lastref[] += UInt32(1)
+                end
+            end
+            k += 1
+            if length(pool) > limit
+                return false
+            end
         end
-        r = convert(Dict{T, UInt32}, r)
-        # recode refs
-        for i = 1:length(column)
-            @inbounds column[i] -= 1
-        end
     end
-    col.column = PooledArray(PooledArrays.RefArray(column), r)
-    return
-end
-
-function unpool!(col, T, refpool)
-    r = refpool.refs
-    column = isdefined(col, :column) ? col.column : UInt32[]
-    return unpool2!(col, T, r, column)
-end
-
-function unpool2!(col, ::Type{T}, r::Refs{T}, column) where {T}
-    if col.anymissing
-        r[missing] = UInt32(1)
-    end
-    pool = Vector{keytype(r)}(undef, length(r) + 1)
-    for (k, v) in r
-        @inbounds pool[v] = k
-    end
-    if col.type === PosLenString
-        # unwrap the PosLenStrings, so they get handled by makeposlen!
-        col.column = [pool[ref].poslen for ref in column]
+    percent = col.pool isa Tuple ? col.pool[1] : col.pool
+    if ((length(pool) - 1) / nrows) <= percent
+        col.column = PooledArray(PooledArrays.RefArray(refs), pool)
+        return true
     else
-        col.column = [pool[ref] for ref in column]
+        return false
     end
-    col.pool = 0.0
-    return
 end
 
 function makeposlen!(col, T, ctx)
@@ -807,13 +728,7 @@ function detectcell(buf, pos, len, row, rowoffset, i, col, ctx, rowsguess)::Tupl
     end
 @label done
     # if we're here, that means we found a non-missing value, so we need to update column
-    if maybepooled(col) && (newT isa StringTypes || col.columnspecificpool)
-        column = allocate(Pooled, rowsguess)
-        col.refpool = RefPool(newT)
-        val = getref!(col.refpool, newT, val isa PosLen ? PosLenString(buf, val, opts.e) : val)
-    else
-        column = allocate(newT, rowsguess)
-    end
+    column = allocate(newT, rowsguess)
     column[row] = val
     col.column = column
     col.type = newT
@@ -831,22 +746,10 @@ function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::
                 col.anymissing = true
             else
                 column = col.column
-                if column isa Vector{UInt32}
-                    if type === String || type === PosLenString
-                        if Parsers.escapedstring(code)
-                            ref = getref!(col.refpool, type, Parsers.getstring(buf, res.val, opts.e))
-                        else
-                            poslen = res.val
-                            ref = getref!(col.refpool, type, PointerString(pointer(buf, poslen.pos), poslen.len), buf, poslen, opts.e)
-                        end
-                    else
-                        ref = getref!(col.refpool, type, res.val)
-                    end
-                    @inbounds column[row] = ref
+                if column isa Vector{PosLen}
+                    @inbounds (column::Vector{PosLen})[row] = res.val
                 elseif type === String
                     @inbounds (column::SVec2{String})[row] = Parsers.getstring(buf, res.val, opts.e)
-                elseif type === PosLenString
-                    @inbounds (column::Vector{PosLen})[row] = res.val
                 else
                     @inbounds (column::vectype(type))[row] = res.val
                 end
@@ -885,18 +788,13 @@ function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::
                         if !Parsers.invalid(ret.code)
                             col.type = newT
                             column = col.column
-                            if column isa Vector{UInt32}
-                                col.refpool.refs = convert(Refs{newT}, col.refpool.refs)
-                                ref = getref!(col.refpool, newT, ret.val)
-                                @inbounds column[row] = ref
-                            else
-                                col.column = convert(SentinelVector{newT}, col.column::vectype(type))
-                                @inbounds col.column[row] = ret.val
-                            end
+                            col.column = convert(SentinelVector{newT}, col.column::vectype(type))
+                            @inbounds col.column[row] = ret.val
                             return pos + ret.tlen, ret.code
                         end
                         newT = widen(newT)
                     end
+                    #TODO: should we just convert(SentinelVector{String}) here?
                     code |= PROMOTE_TO_STRING
                 else
                     code |= PROMOTE_TO_STRING
@@ -913,11 +811,7 @@ end
     if !Parsers.invalid(code)
         col.type = to
         column = col.column
-        if column isa Vector{UInt32}
-            col.refpool.refs = convert(Refs{to}, col.refpool.refs)
-            ref = getref!(col.refpool, to, res.val)
-            @inbounds column[row] = ref
-        elseif column isa vectype(from)
+        if column isa vectype(from)
             col.column = convert(promotevectype(to), column)
             @inbounds col.column[row] = res.val
         end
@@ -925,31 +819,6 @@ end
         code |= PROMOTE_TO_STRING
     end
     return code
-end
-
-@inline function getref!(refpool, ::Type{T}, key)::UInt32 where {T}
-    x = refpool.refs::Refs{T}
-    get!(x, key) do
-        refpool.lastref += UInt32(1)
-    end
-end
-
-@inline function getref!(refpool, ::Type{T}, key::PointerString, buf, poslen, e)::UInt32 where {T}
-    x = refpool.refs::Refs{T}
-    index = Base.ht_keyindex2!(x, key)
-    if index > 0
-        @inbounds found_key = x.vals[index]
-        ret = found_key::UInt32
-    else
-        @inbounds new = refpool.lastref += UInt32(1)
-        if T === PosLenString
-            @inbounds Base._setindex!(x, new, T(buf, poslen, e), -index)
-        else
-            @inbounds Base._setindex!(x, new, T(key), -index)
-        end
-        ret = new
-    end
-    return ret
 end
 
 @inline function parsecustom!(::Type{customtypes}, buf, pos, len, row, rowoffset, i, col, ctx) where {customtypes}
@@ -979,12 +848,7 @@ end
 @noinline function promotetostring!(ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, ::Type{customtypes}, column_to_promote, numwarnings, limit, stringtype) where {customtypes}
     cols = [i == column_to_promote ? columns[i] : Column(Missing, columns[i].options) for i = 1:length(columns)]
     col = cols[column_to_promote]
-    if maybepooled(col)
-        col.refpool = RefPool(stringtype)
-        col.column = allocate(Pooled, rowsguess)
-    else
-        col.column = allocate(stringtype, rowsguess)
-    end
+    col.column = allocate(stringtype, rowsguess)
     col.type = stringtype
     row = 0
     startpos = pos

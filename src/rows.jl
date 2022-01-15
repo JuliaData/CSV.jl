@@ -263,8 +263,6 @@ macro unrollcolumns(setmissing, values, ex)
             $ex
         elseif column isa Vector{Union{Missing, Bool}}
             $ex
-        elseif column isa Vector{UInt32}
-            $ex
         elseif customtypes !== Tuple{}
             setcustom!(customtypes, $values, columns, i, $setmissing)
         else
