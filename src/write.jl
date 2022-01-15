@@ -261,7 +261,7 @@ function write(::Nothing, rows, file, opts;
         return file
     end
     row, st = state
-    names = header isa Bool || isempty(header) ? propertynames(row) : header
+    names = header isa Bool || isempty(header) ? Tables.columnnames(row) : header
     sch = Tables.Schema(propertynames(row), nothing)
     cols = length(names)
     with(file, append, compress) do io
