@@ -17,6 +17,13 @@ const table_types = (
     col8=weakrefs,
 )
 
+struct StructType
+    adate::Date
+    astring::Union{String, Nothing}
+    aumber::Union{Real, Nothing}
+end
+
+
 @testset "CSV.write" begin
 
     testcases = [
@@ -172,6 +179,12 @@ const table_types = (
             Any[(a=1,)],
             NamedTuple(),
             "a\n1\n"
+        ),
+        # jcunwin
+        (
+            [StructType(Date("2021-12-01"), "string 1", 123.45), StructType(Date("2021-12-02"), "string 2", 456.78)],
+            (header=["Date Column", "String Column", "Number Column"],),
+            "Date Column,String Column,Number Column\n2021-12-01,string 1,123.45\n2021-12-02,string 2,456.78\n"
         )
     ]
 
