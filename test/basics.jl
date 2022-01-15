@@ -758,4 +758,15 @@ f = CSV.File(IOBuffer("a,a_1,a\n"))
 f = CSV.File(IOBuffer("a,a,a_1\n")) # this case is not covered in test_duplicate_columnnames.csv
 @test f.names == [:a, :a_2, :a_1]
 
+# 951
+data = """
+| Name       |  Zip |
+| Joe        |  123 |
+| Mary Anne  | 1234 |
+"""
+f = CSV.File(IOBuffer(data); delim='|', normalizenames=true, stripwhitespace=false)
+@test f.Name[1] == " Joe        "
+f = CSV.File(IOBuffer(data); delim='|', stripwhitespace=true)
+@test f.Name[2] == "Mary Anne"
+
 end
