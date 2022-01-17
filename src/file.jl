@@ -243,6 +243,23 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
         finalrows = sum(rows)
         if ctx.limit < finalrows
             finalrows = ctx.limit
+            # adjust columns according to limit
+            acc = 0
+            for i = 1:ntasks
+                if acc + rows[i] > finalrows
+                    # need to resize this tasks columns down
+                    if finalrows - acc > 0
+                        for col in pertaskcolumns[i]
+                            resize!(col.column, finalrows - acc)
+                        end
+                    else
+                        for col in pertaskcolumns[i]
+                            empty!(col.column)
+                        end
+                    end
+                end
+                acc += rows[i]
+            end
         end
         # ok, all the parsing tasks have finished and we've promoted their types w/ the top-level columns
         # so now we just need to finish processing each column by making ChainedVectors of the individual columns
@@ -465,33 +482,33 @@ function checkpooled!(::Type{T}, pertaskcolumns, col, j, ntasks, nrows, ctx) whe
         for x in column
             if x isa PosLen
                 if x.missingvalue
-                    @inbounds refs[k] = get!(pool, missing) do
+                    refs[k] = get!(pool, missing) do
                         lastref[] += UInt32(1)
                     end
                 elseif x.escapedvalue
                     val = S === PosLenString ? S(ctx.buf, x, ctx.options.e) : Parsers.getstring(ctx.buf, x, ctx.options.e)
-                    @inbounds refs[k] = get!(pool, val) do
+                    refs[k] = get!(pool, val) do
                         lastref[] += UInt32(1)
                     end
                 else
                     val = PointerString(pointer(ctx.buf, x.pos), x.len)
                     index = Base.ht_keyindex2!(pool, val)
                     if index > 0
-                        @inbounds found_key = pool.vals[index]
+                        found_key = pool.vals[index]
                         ref = found_key::UInt32
                     else
                         new = lastref[] += UInt32(1)
                         if S === PosLenString
-                            @inbounds Base._setindex!(pool, new, S(ctx.buf, x, ctx.options.e), -index)
+                            Base._setindex!(pool, new, S(ctx.buf, x, ctx.options.e), -index)
                         else
-                            @inbounds Base._setindex!(pool, new, S(val), -index)
+                            Base._setindex!(pool, new, S(val), -index)
                         end
                         ref = new
                     end
-                    @inbounds refs[k] = ref
+                    refs[k] = ref
                 end
             else
-                @inbounds refs[k] = get!(pool, x) do
+                refs[k] = get!(pool, x) do
                     lastref[] += UInt32(1)
                 end
             end

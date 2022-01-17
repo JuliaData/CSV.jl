@@ -769,4 +769,8 @@ f = CSV.File(IOBuffer(data); delim='|', normalizenames=true, stripwhitespace=fal
 f = CSV.File(IOBuffer(data); delim='|', stripwhitespace=true)
 @test f.Name[2] == "Mary Anne"
 
+# 963
+f = CSV.File(IOBuffer(join((rand(("a,$(rand())", "b,$(rand())")) for _ = 1:10^6), "\n")), header=false, limit=10000)
+@test length(f) == 10000
+
 end
