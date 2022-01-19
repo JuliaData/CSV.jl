@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Examples · CSV.jl</title><script data-outdated-warner src="assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.039/juliamono-regular.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.13.11/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="assets/documenter.js"></script><script src="siteinfo.js"></script><script src="../versions.js"></script><script src="../copy.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="index.html">CSV.jl</a></span></div><form class="docs-search" action="search.html"><input class="docs-search-query" id="documenter-search-query" name="q" type="text" placeholder="Search docs"/></form><ul class="docs-menu"><li><a class="tocitem" href="index.html">Home</a></li><li><a class="tocitem" href="reading.html">Reading</a></li><li><a class="tocitem" href="writing.html">Writing</a></li><li class="is-active"><a class="tocitem" href="examples.html">Examples</a><ul class="internal"><li><a class="tocitem" href="#stringencodings"><span>Non-UTF-8 character encodings</span></a></li><li><a class="tocitem" href="#vectorinputs"><span>Concatenate multiple inputs at once</span></a></li><li><a class="tocitem" href="#gzipped_input"><span>Gzipped input</span></a></li><li><a class="tocitem" href="#csv_string"><span>Delimited data in a string</span></a></li><li><a class="tocitem" href="#http"><span>Data from the web/a url</span></a></li><li><a class="tocitem" href="#zip_example"><span>Reading from a zip file</span></a></li><li><a class="tocitem" href="#second_row_header"><span>Column names on 2nd row</span></a></li><li><a class="tocitem" href="#no_header"><span>No column names in data</span></a></li><li><a class="tocitem" href="#manual_header"><span>Manually provide column names</span></a></li><li><a class="tocitem" href="#multi_row_header"><span>Multi-row column names</span></a></li><li><a class="tocitem" href="#normalize_header"><span>Normalizing column names</span></a></li><li><a class="tocitem" href="#skipto_example"><span>Skip to specific row where data starts</span></a></li><li><a class="tocitem" href="#footerskip_example"><span>Skipping trailing useless rows</span></a></li><li><a class="tocitem" href="#transpose_example"><span>Reading transposed data</span></a></li><li><a class="tocitem" href="#comment_example"><span>Ignoring commented rows</span></a></li><li><a class="tocitem" href="#ignoreemptyrows_example"><span>Ignoring empty rows</span></a></li><li><a class="tocitem" href="#select_example"><span>Including/excluding columns</span></a></li><li><a class="tocitem" href="#limit_example"><span>Limiting number of rows from data</span></a></li><li><a class="tocitem" href="#missing_string_example"><span>Specifying custom missing strings</span></a></li><li><a class="tocitem" href="#string_delim"><span>String delimiter</span></a></li><li><a class="tocitem" href="#ignorerepeated_example"><span>Fixed width files</span></a></li><li><a class="tocitem" href="#quoted_example"><span>Turning off quoted cell parsing</span></a></li><li><a class="tocitem" href="#quotechar_example"><span>Quoted &amp; escaped fields</span></a></li><li><a class="tocitem" href="#dateformat_example"><span>DateFormat</span></a></li><li><a class="tocitem" href="#decimal_example"><span>Custom decimal separator</span></a></li><li><a class="tocitem" href="#truestrings_example"><span>Custom bool strings</span></a></li><li><a class="tocitem" href="#matrix_example"><span>Matrix-like Data</span></a></li><li><a class="tocitem" href="#types_example"><span>Providing types</span></a></li><li><a class="tocitem" href="#typemap_example"><span>Typemap</span></a></li><li><a class="tocitem" href="#pool_example"><span>Pooled values</span></a></li><li><a class="tocitem" href="#nonstring_pool_example"><span>Non-string pooled values</span></a></li><li><a class="tocitem" href="#pool_absolute_threshold"><span>Pool with absolute threshold</span></a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href="examples.html">Examples</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href="examples.html">Examples</a></li></ul></nav><div class="docs-right"><a class="docs-edit-link" href="https://github.com/JuliaData/CSV.jl/blob/master/docs/src/examples.md#" title="Edit on GitHub"><span class="docs-icon fab"></span><span class="docs-label is-hidden-touch">Edit on GitHub</span></a><a class="docs-settings-button fas fa-cog" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-sidebar-button fa fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a></div></header><article class="content" id="documenter-page"><h1 id="Examples"><a class="docs-heading-anchor" href="#Examples">Examples</a><a id="Examples-1"></a><a class="docs-heading-anchor-permalink" href="#Examples" title="Permalink"></a></h1><ul><li><a href="examples.html#Examples">Examples</a></li><li class="no-marker"><ul><li><a href="examples.html#stringencodings">Non-UTF-8 character encodings</a></li><li><a href="examples.html#vectorinputs">Concatenate multiple inputs at once</a></li><li><a href="examples.html#gzipped_input">Gzipped input</a></li><li><a href="examples.html#csv_string">Delimited data in a string</a></li><li><a href="examples.html#http">Data from the web/a url</a></li><li><a href="examples.html#zip_example">Reading from a zip file</a></li><li><a href="examples.html#second_row_header">Column names on 2nd row</a></li><li><a href="examples.html#no_header">No column names in data</a></li><li><a href="examples.html#manual_header">Manually provide column names</a></li><li><a href="examples.html#multi_row_header">Multi-row column names</a></li><li><a href="examples.html#normalize_header">Normalizing column names</a></li><li><a href="examples.html#skipto_example">Skip to specific row where data starts</a></li><li><a href="examples.html#footerskip_example">Skipping trailing useless rows</a></li><li><a href="examples.html#transpose_example">Reading transposed data</a></li><li><a href="examples.html#comment_example">Ignoring commented rows</a></li><li><a href="examples.html#ignoreemptyrows_example">Ignoring empty rows</a></li><li><a href="examples.html#select_example">Including/excluding columns</a></li><li><a href="examples.html#limit_example">Limiting number of rows from data</a></li><li><a href="examples.html#missing_string_example">Specifying custom missing strings</a></li><li><a href="examples.html#string_delim">String delimiter</a></li><li><a href="examples.html#ignorerepeated_example">Fixed width files</a></li><li><a href="examples.html#quoted_example">Turning off quoted cell parsing</a></li><li><a href="examples.html#quotechar_example">Quoted &amp; escaped fields</a></li><li><a href="examples.html#dateformat_example">DateFormat</a></li><li><a href="examples.html#decimal_example">Custom decimal separator</a></li><li><a href="examples.html#truestrings_example">Custom bool strings</a></li><li><a href="examples.html#matrix_example">Matrix-like Data</a></li><li><a href="examples.html#types_example">Providing types</a></li><li><a href="examples.html#typemap_example">Typemap</a></li><li><a href="examples.html#pool_example">Pooled values</a></li><li><a href="examples.html#nonstring_pool_example">Non-string pooled values</a></li><li><a href="examples.html#pool_absolute_threshold">Pool with absolute threshold</a></li></ul></li></ul><h2 id="stringencodings"><a class="docs-heading-anchor" href="#stringencodings">Non-UTF-8 character encodings</a><a id="stringencodings-1"></a><a class="docs-heading-anchor-permalink" href="#stringencodings" title="Permalink"></a></h2><pre><code class="language-julia hljs"># assume I have csv text data encoded in ISO-8859-1 encoding
+# I load the StringEncodings package, which provides encoding conversion functionality
+using CSV, StringEncodings
+
+# I open my `iso8859_encoded_file.csv` with the `enc&quot;ISO-8859-1&quot;` encoding
+# and pass the opened IO object to `CSV.File`, which will read the entire
+# input into a temporary file, then parse the data from the temp file
+file = CSV.File(open(&quot;iso8859_encoded_file.csv&quot;, enc&quot;ISO-8859-1&quot;))
+
+# to instead have the encoding conversion happen in memory, pass
+# `buffer_in_memory=true`; this can be faster, but obviously results
+# in more memory being used rather than disk via a temp file
+file = CSV.File(open(&quot;iso8859_encoded_file.csv&quot;, enc&quot;ISO-8859-1&quot;); buffer_in_memory=true)</code></pre><h2 id="vectorinputs"><a class="docs-heading-anchor" href="#vectorinputs">Concatenate multiple inputs at once</a><a id="vectorinputs-1"></a><a class="docs-heading-anchor-permalink" href="#vectorinputs" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# in this case, I have a vector of delimited data inputs that each have
+# matching schema (the same column names and types). I&#39;d like to process all
+# of the inputs together and vertically concatenante them into one &quot;long&quot; table.
+data = [
+    &quot;a,b,c\n1,2,3\n4,5,6\n&quot;,
+    &quot;a,b,c\n7,8,9\n10,11,12\n&quot;,
+    &quot;a,b,c\n13,14,15\n16,17,18&quot;,
+]
+
+# I can just pass a `Vector` of inputs, in this case `IOBuffer(::String)`, but it
+# could also be a `Vector` of any valid input source, like `AbstractVector{UInt8}`,
+# filenames, `IO`, etc. Each input will be processed on a separate thread, with the results
+# being vertically concatenated afterwards as a single `CSV.File`. Each thread&#39;s columns
+# will be lazily concatenated using the `ChainedVector` type. As always, if we want to
+# send the parsed columns directly to a sink function, we can use `CSV.read`, like
+# `df = CSV.read(map(IOBuffer, data), DataFrame)`.
+f = CSV.File(map(IOBuffer, data))</code></pre><h2 id="gzipped_input"><a class="docs-heading-anchor" href="#gzipped_input">Gzipped input</a><a id="gzipped_input-1"></a><a class="docs-heading-anchor-permalink" href="#gzipped_input" title="Permalink"></a></h2><pre><code class="language-julia hljs"># assume I have csv text data compressed via gzip
+# no additional packages are needed; CSV.jl can decompress automatically
+using CSV
+
+# pass name of gzipped input file directly; data will be decompressed to a
+# temporary file, then mmapped as a byte buffer for actual parsing
+file = CSV.File(&quot;data.gz&quot;)
+
+# to instead have the decompression happen in memory, pass
+# `buffer_in_memory=true`; this can be faster, but obviously results
+# in more memory being used rather than disk via a temp file
+file = CSV.File(&quot;data.gz&quot;; buffer_in_memory=true)</code></pre><h2 id="csv_string"><a class="docs-heading-anchor" href="#csv_string">Delimited data in a string</a><a id="csv_string-1"></a><a class="docs-heading-anchor-permalink" href="#csv_string" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# I have csv data in a string I want to parse
+data = &quot;&quot;&quot;
+a,b,c
+1,2,3
+4,5,6
+&quot;&quot;&quot;
+
+# Calling `IOBuffer` on a string returns an in-memory IO object
+# of the string data, which can be passed to `CSV.File` for parsing
+file = CSV.File(IOBuffer(data))</code></pre><h2 id="http"><a class="docs-heading-anchor" href="#http">Data from the web/a url</a><a id="http-1"></a><a class="docs-heading-anchor-permalink" href="#http" title="Permalink"></a></h2><pre><code class="language-julia hljs"># assume there&#39;s delimited data I want to read from the web
+# one option is to use the HTTP.jl package
+using CSV, HTTP
+
+# I first make the web request to get the data via `HTTP.get` on the `url`
+http_response = HTTP.get(url)
+
+# I can then access the data of the response as a `Vector{UInt8}` and pass
+# it directly to `CSV.File` for parsing
+file = CSV.File(http_response.body)
+
+# another option, with Julia 1.6+, is using the Downloads stdlib
+using Downloads
+http_response = Downloads.download(url)
+
+# by default, `Downloads.download` writes the response data to a temporary file
+# which can then be passed to `CSV.File` for parsing
+file = CSV.File(http_response)</code></pre><h2 id="zip_example"><a class="docs-heading-anchor" href="#zip_example">Reading from a zip file</a><a id="zip_example-1"></a><a class="docs-heading-anchor-permalink" href="#zip_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using ZipFile, CSV, DataFrames
+
+a = DataFrame(a = 1:3)
+CSV.write(&quot;a.csv&quot;, a)
+
+# zip the file; Windows users who do not have zip available on the PATH can manually zip the CSV
+# or write directly into the zip archive as shown below
+;zip a.zip a.csv
+
+# alternatively, write directly into the zip archive (without creating an unzipped csv file first)
+z = ZipFile.Writer(&quot;a2.zip&quot;)
+f = ZipFile.addfile(z, &quot;a.csv&quot;, method=ZipFile.Deflate)
+a |&gt; CSV.write(f)
+close(z)
+
+# read file from zip archive
+z = ZipFile.Reader(&quot;a.zip&quot;) # or &quot;a2.zip&quot;
+
+# identify the right file in zip
+a_file_in_zip = filter(x-&gt;x.name == &quot;a.csv&quot;, z.files)[1]
+
+a_copy = CSV.File(a_file_in_zip) |&gt; DataFrame
+
+a == a_copy
+
+close(z)</code></pre><h2 id="second_row_header"><a class="docs-heading-anchor" href="#second_row_header">Column names on 2nd row</a><a id="second_row_header-1"></a><a class="docs-heading-anchor-permalink" href="#second_row_header" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+data = &quot;&quot;&quot;
+descriptive row with information about the file that we&#39;d like to ignore
+a,b,c
+1,2,3
+4,5,6
+&quot;&quot;&quot;
+
+# by passing header=2, parsing will ignore the 1st row entirely
+# then parse the column names on row 2, then by default, it assumes
+# the data starts on the row after the column names (row 3 in this case)
+# which is correct for this case
+file = CSV.File(IOBuffer(data); header=2)</code></pre><h2 id="no_header"><a class="docs-heading-anchor" href="#no_header">No column names in data</a><a id="no_header-1"></a><a class="docs-heading-anchor-permalink" href="#no_header" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# in this case, our data doesn&#39;t have any column names
+data = &quot;&quot;&quot;
+1,2,3
+4,5,6
+&quot;&quot;&quot;
+
+# by passing `header=false`, parsing won&#39;t worry about looking for column names
+# anywhere, but instead just start parsing the data and generate column names
+# as needed, like `Column1`, `Column2`, and `Column3` in this case
+file = CSV.File(IOBuffer(data); header=false)</code></pre><h2 id="manual_header"><a class="docs-heading-anchor" href="#manual_header">Manually provide column names</a><a id="manual_header-1"></a><a class="docs-heading-anchor-permalink" href="#manual_header" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# in this case, our data doesn&#39;t have any column names
+data = &quot;&quot;&quot;
+1,2,3
+4,5,6
+&quot;&quot;&quot;
+
+# instead of passing `header=false` and getting auto-generated column names,
+# we can instead pass the column names ourselves
+file = CSV.File(IOBuffer(data); header=[&quot;a&quot;, &quot;b&quot;, &quot;c&quot;])
+
+# we can also pass the column names as Symbols; a copy of the manually provided
+# column names will always be made and then converted to `Vector{Symbol}`
+file = CSV.File(IOBuffer(data); header=[:a, :b, :c])</code></pre><h2 id="multi_row_header"><a class="docs-heading-anchor" href="#multi_row_header">Multi-row column names</a><a id="multi_row_header-1"></a><a class="docs-heading-anchor-permalink" href="#multi_row_header" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# in this case, our column names are `col_a`, `col_b`, and `col_c`,
+# but split over the first and second rows
+data = &quot;&quot;&quot;
+col,col,col
+a,b,c
+1,2,3
+4,5,6
+&quot;&quot;&quot;
+
+# by passing a collection of integers, parsing will parse each row in the collection
+# and concatenate the values for each column, separating rows with `_` character
+file = CSV.File(IOBuffer(data); header=[1, 2])</code></pre><h2 id="normalize_header"><a class="docs-heading-anchor" href="#normalize_header">Normalizing column names</a><a id="normalize_header-1"></a><a class="docs-heading-anchor-permalink" href="#normalize_header" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# in this case, our data are single letters, with column names of &quot;1&quot;, &quot;2&quot;, and &quot;3&quot;
+# A single digit isn&#39;t a valid identifier in Julia, meaning we couldn&#39;t do something
+# like `1 = 2 + 2`, where `1` would be a variable name
+data = &quot;&quot;&quot;
+1,2,3
+a,b,c
+d,e,f
+h,i,j
+&quot;&quot;&quot;
+
+# in order to have valid identifiers for column names, we can pass
+# `normalizenames=true`, which result in our column names becoming &quot;_1&quot;, &quot;_2&quot;, and &quot;_3&quot;
+# note this isn&#39;t required, but can be convenient in certain cases
+file = CSV.File(IOBuffer(data); normalizenames=true)
+
+# we can acces the first column like
+file._1
+
+# another example where we may want to normalize is column names with spaces in them
+data = &quot;&quot;&quot;
+column one,column two, column three
+1,2,3
+4,5,6
+&quot;&quot;&quot;
+
+# normalizing will result in column names like &quot;column_one&quot;, &quot;column_two&quot; and &quot;column_three&quot;
+file = CSV.File(IOBuffer(data); normalizenames=true)</code></pre><h2 id="skipto_example"><a class="docs-heading-anchor" href="#skipto_example">Skip to specific row where data starts</a><a id="skipto_example-1"></a><a class="docs-heading-anchor-permalink" href="#skipto_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# our data has a first row that we&#39;d like to ignore; our data also doesn&#39;t have
+# column names, so we&#39;d like them to be auto-generated
+data = &quot;&quot;&quot;
+descriptive row that gives information about the data that we&#39;d like to ignore
+1,2,3
+4,5,6
+&quot;&quot;&quot;
+
+# with no column names in the data, we first pass `header=false`; by itself,
+# this would result in parsing starting on row 1 to parse the actual data;
+# but we&#39;d like to ignore the first row, so we pass `skipto=2` to skip over
+# the first row; our colum names will be generated like `Column1`, `Column2`, `Column3`
+file = CSV.File(IOBuffer(data); header=false, skipto=2)</code></pre><h2 id="footerskip_example"><a class="docs-heading-anchor" href="#footerskip_example">Skipping trailing useless rows</a><a id="footerskip_example-1"></a><a class="docs-heading-anchor-permalink" href="#footerskip_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# our data has column names of &quot;a&quot;, &quot;b&quot;, and &quot;c&quot;
+# but at the end of the data, we have 2 rows we&#39;d like to ignore while parsing
+# since they&#39;re not properly delimited
+data = &quot;&quot;&quot;
+a,b,c
+1,2,3
+4,5,6
+7,8,9
+totals: 12, 15, 18
+grand total: 45
+&quot;&quot;&quot;
+
+# by passing `footerskip=2`, we tell parsing to start the end of the data and
+# read 2 rows, ignoring their contents, then mark the ending position where
+# the normal parsing process should finish
+file = CSV.File(IOBuffer(data); footerskip=2)</code></pre><h2 id="transpose_example"><a class="docs-heading-anchor" href="#transpose_example">Reading transposed data</a><a id="transpose_example-1"></a><a class="docs-heading-anchor-permalink" href="#transpose_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# our data is transposed, meaning our column names are in the first column,
+# with the data for column &quot;a&quot; all on the first row, data for column &quot;b&quot;
+# all on the second row, and so on.
+data = &quot;&quot;&quot;
+a,1,4,7
+b,2,5,8
+c,3,6,9
+&quot;&quot;&quot;
+
+# by passing `transpose=true`, parsing will look for column names in the first
+# column of data, then parse each row as a separate column
+file = CSV.File(IOBuffer(data); transpose=true)</code></pre><h2 id="comment_example"><a class="docs-heading-anchor" href="#comment_example">Ignoring commented rows</a><a id="comment_example-1"></a><a class="docs-heading-anchor-permalink" href="#comment_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# here, we have several non-data rows that all beging with the &quot;#&quot; string
+data = &quot;&quot;&quot;
+# row describing column names
+a,b,c
+# row describing first row of data
+1,2,3
+# row describign second row of data
+4,5,6
+&quot;&quot;&quot;
+
+# we want to ignore these &quot;commented&quot; rows
+file = CSV.File(IOBuffer(data); comment=&quot;#&quot;)</code></pre><h2 id="ignoreemptyrows_example"><a class="docs-heading-anchor" href="#ignoreemptyrows_example">Ignoring empty rows</a><a id="ignoreemptyrows_example-1"></a><a class="docs-heading-anchor-permalink" href="#ignoreemptyrows_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# here, we have a &quot;gap&quot; row in between the first and second row of data
+# by default, these &quot;empty&quot; rows are ignored, but in our case, this is
+# how a row of data is input when all columns have missing/null values
+# so we don&#39;t want those rows to be ignored so we can know how many
+# missing cases there are in our data
+data = &quot;&quot;&quot;
+a,b,c
+1,2,3
+
+4,5,6
+&quot;&quot;&quot;
+
+# by passing `ignoreemptyrows=false`, we ensure parsing treats an empty row
+# as each column having a `missing` value set for that row
+file = CSV.File(IOBuffer(data); ignoreemptyrows=true)</code></pre><h2 id="select_example"><a class="docs-heading-anchor" href="#select_example">Including/excluding columns</a><a id="select_example-1"></a><a class="docs-heading-anchor-permalink" href="#select_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# simple dataset, but we know column &quot;b&quot; isn&#39;t needed
+# so we&#39;d like to save time by having parsing ignore it completely
+data = &quot;&quot;&quot;
+a,b,c
+1,2,3
+4,5,6
+7,8,9
+&quot;&quot;&quot;
+
+# there are quite a few ways to provide the select/drop arguments
+# so we provide an example of each, first for selecting the columns
+# &quot;a&quot; and &quot;c&quot; that we want to include or keep from parsing
+file = CSV.File(IOBuffer(data); select=[1, 3])
+file = CSV.File(IOBuffer(data); select=[:a, :c])
+file = CSV.File(IOBuffer(data); select=[&quot;a&quot;, &quot;c&quot;])
+file = CSV.File(IOBuffer(data); select=[true, false, true])
+file = CSV.File(IOBuffer(data); select=(i, nm) -&gt; i in (1, 3))
+# now examples of dropping, when we&#39;d rather specify the column(s)
+# we&#39;d like to drop/exclude from parsing
+file = CSV.File(IOBuffer(data); drop=[2])
+file = CSV.File(IOBuffer(data); drop=[:b])
+file = CSV.File(IOBuffer(data); drop=[&quot;b&quot;])
+file = CSV.File(IOBuffer(data); drop=[false, true, false])
+file = CSV.File(IOBuffer(data); drop=(i, nm) -&gt; i == 2)</code></pre><h2 id="limit_example"><a class="docs-heading-anchor" href="#limit_example">Limiting number of rows from data</a><a id="limit_example-1"></a><a class="docs-heading-anchor-permalink" href="#limit_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# here, we have quite a few rows of data (relative to other examples, lol)
+# but we know we only need the first 3 for the analysis we need to do
+# so instead of spending the time parsing the entire file, we&#39;d like
+# to just read the first 3 rows and ignore the rest
+data = &quot;&quot;&quot;
+a,b,c
+1,2,3
+4,5,6
+7,8,9
+10,11,12
+13,14,15
+&quot;&quot;&quot;
+
+# parsing will start reading rows, and once 3 have been read, it will
+# terminate early, avoiding the parsing of the rest of the data entirely
+file = CSV.File(IOBuffer(data); limit=3)</code></pre><h2 id="missing_string_example"><a class="docs-heading-anchor" href="#missing_string_example">Specifying custom missing strings</a><a id="missing_string_example-1"></a><a class="docs-heading-anchor-permalink" href="#missing_string_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# in this data, our first column has &quot;missing&quot; values coded with -999
+# but our score column has &quot;NA&quot; instead
+# we&#39;d like either of those values to show up as `missing` after we parse the data
+data = &quot;&quot;&quot;
+code,age,score
+0,21,3.42
+1,42,6.55
+-999,81,NA
+-999,83,NA
+&quot;&quot;&quot;
+
+# by passing missingstring=[&quot;-999&quot;, &quot;NA&quot;], parsing will check each cell if it matches
+# either string in order to set the value of the cell to `missing`
+file = CSV.File(IOBuffer(data); missingstring=[&quot;-999&quot;, &quot;NA&quot;])</code></pre><h2 id="string_delim"><a class="docs-heading-anchor" href="#string_delim">String delimiter</a><a id="string_delim-1"></a><a class="docs-heading-anchor-permalink" href="#string_delim" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# our data has two columns, separated by double colon
+# characters (&quot;::&quot;)
+data = &quot;&quot;&quot;
+col1::col2
+1::2
+3::4
+&quot;&quot;&quot;
+
+# we can pass a single character or string for delim
+file = CSV.File(IOBuffer(data); delim=&quot;::&quot;)</code></pre><h2 id="ignorerepeated_example"><a class="docs-heading-anchor" href="#ignorerepeated_example">Fixed width files</a><a id="ignorerepeated_example-1"></a><a class="docs-heading-anchor-permalink" href="#ignorerepeated_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# This is an example of &quot;fixed width&quot; data, where each 
+# column is the same number of characters away from each 
+# other on each row. Fields are &quot;padded&quot; with extra 
+# delimiters (in this case `&#39; &#39;`) so that each column is 
+# the same number of characters each time
+data = &quot;&quot;&quot;
+col1    col2 col3
+123431  2    3421
+2355    346  7543
+&quot;&quot;&quot;
+# In addition to our `delim`, we can pass 
+# `ignorerepeated=true`, which tells parsing that 
+#consecutive delimiters should be treated as a single 
+# delimiter.
+file = CSV.File(IOBuffer(data); delim=&#39; &#39;, ignorerepeated=true)</code></pre><h2 id="quoted_example"><a class="docs-heading-anchor" href="#quoted_example">Turning off quoted cell parsing</a><a id="quoted_example-1"></a><a class="docs-heading-anchor-permalink" href="#quoted_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# by default, cells like the 1st column, 2nd row
+# will be treated as &quot;quoted&quot; cells, where they start
+# and end with the quote character &#39;&quot;&#39;. The quotes will
+# be removed from the final parsed value
+# we may, however, want the &quot;raw&quot; value and _not_ ignore
+# the quote characters in the final value
+data = &quot;&quot;&quot;
+a,b,c
+&quot;hey&quot;,2,3
+there,4,5
+sailor,6,7
+&quot;&quot;&quot;
+
+# we can &quot;turn off&quot; the detection of quoted cells
+# by passing `quoted=false`
+file = CSV.File(IOBuffer(data); quoted=false)</code></pre><h2 id="quotechar_example"><a class="docs-heading-anchor" href="#quotechar_example">Quoted &amp; escaped fields</a><a id="quotechar_example-1"></a><a class="docs-heading-anchor-permalink" href="#quotechar_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# In this data, we have a few &quot;quoted&quot; fields, which means the field&#39;s value starts and ends with `quotechar` (or 
+# `openquotechar` and `closequotechar`, respectively). Quoted fields allow the field to contain characters that would otherwise 
+# be significant to parsing, such as delimiters or newline characters. When quoted, parsing will ignore these otherwise 
+# signficant characters until the closing quote character is found. For quoted fields that need to also include the quote 
+# character itself, an escape character is provided to tell parsing to ignore the next character when looking for a close quote 
+# character. In the syntax examples, the keyword arguments are passed explicitly, but these also happen to be the default 
+# values, so just doing `CSV.File(IOBuffer(data))` would result in successful parsing.
+data = &quot;&quot;&quot;
+col1,col2
+&quot;quoted field with a delimiter , inside&quot;,&quot;quoted field that contains a \\n newline and &quot;&quot;inner quotes\&quot;\&quot;\&quot;
+unquoted field,unquoted field with &quot;inner quotes&quot;
+&quot;&quot;&quot;
+
+file = CSV.File(IOBuffer(data); quotechar=&#39;&quot;&#39;, escapechar=&#39;&quot;&#39;)
+
+file = CSV.File(IOBuffer(data); openquotechar=&#39;&quot;&#39; closequotechar=&#39;&quot;&#39;, escapechar=&#39;&quot;&#39;)</code></pre><h2 id="dateformat_example"><a class="docs-heading-anchor" href="#dateformat_example">DateFormat</a><a id="dateformat_example-1"></a><a class="docs-heading-anchor-permalink" href="#dateformat_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# In this file, our `date` column has dates that are formatted like `yyyy/mm/dd`. We can pass just such a string to the 
+# `dateformat` keyword argument to tell parsing to use it when looking for `Date` or `DateTime` columns. Note that currently, 
+# only a single `dateformat` string can be passed to parsing, meaning multiple columns with different date formats cannot all 
+# be parsed as `Date`/`DateTime`.
+data = &quot;&quot;&quot;
+code,date
+0,2019/01/01
+1,2019/01/02
+&quot;&quot;&quot;
+
+file = CSV.File(IOBuffer(data); dateformat=&quot;yyyy/mm/dd&quot;)</code></pre><h2 id="decimal_example"><a class="docs-heading-anchor" href="#decimal_example">Custom decimal separator</a><a id="decimal_example-1"></a><a class="docs-heading-anchor-permalink" href="#decimal_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# In many places in the world, floating point number decimals are separated with a comma instead of a period (`3,14` vs. `3.14`)
+# . We can correctly parse these numbers by passing in the `decimal=&#39;,&#39;` keyword argument. Note that we probably need to 
+# explicitly pass `delim=&#39;;&#39;` in this case, since the parser will probably think that it detected `&#39;,&#39;` as the delimiter.
+data = &quot;&quot;&quot;
+col1;col2;col3
+1,01;2,02;3,03
+4,04;5,05;6,06
+&quot;&quot;&quot;
+
+file = CSV.File(IOBuffer(data); delim=&#39;;&#39;, decimal=&#39;,&#39;)</code></pre><h2 id="truestrings_example"><a class="docs-heading-anchor" href="#truestrings_example">Custom bool strings</a><a id="truestrings_example-1"></a><a class="docs-heading-anchor-permalink" href="#truestrings_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# By default, parsing only considers the string values `true` and `false` as valid `Bool` values. To consider alternative 
+# values, we can pass a `Vector{String}` to the `truestrings` and `falsestrings` keyword arguments.
+data = &quot;&quot;&quot;
+id,paid,attended
+0,T,TRUE
+1,F,TRUE
+2,T,FALSE
+3,F,FALSE
+&quot;&quot;&quot;
+
+file = CSV.File(IOBuffer(data); truestrings=[&quot;T&quot;, &quot;TRUE&quot;], falsestrings=[&quot;F&quot;, &quot;FALSE&quot;])</code></pre><h2 id="matrix_example"><a class="docs-heading-anchor" href="#matrix_example">Matrix-like Data</a><a id="matrix_example-1"></a><a class="docs-heading-anchor-permalink" href="#matrix_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# This file contains a 3x3 identity matrix of `Float64`. By default, parsing will detect the delimiter and type, but we can 
+# also explicitly pass `delim= &#39; &#39;` and `types=Float64`, which tells parsing to explicitly treat each column as `Float64`, 
+# without having to guess the type on its own.
+data = &quot;&quot;&quot;
+1.0 0.0 0.0
+0.0 1.0 0.0
+0.0 0.0 1.0
+&quot;&quot;&quot;
+
+file = CSV.File(IOBuffer(data); header=false)
+file = CSV.File(IOBuffer(data); header=false, delim=&#39; &#39;, types=Float64)</code></pre><h2 id="types_example"><a class="docs-heading-anchor" href="#types_example">Providing types</a><a id="types_example-1"></a><a class="docs-heading-anchor-permalink" href="#types_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# In this file, our 3rd column has an invalid value on the 2nd row `invalid`. Let&#39;s imagine we&#39;d still like to treat it as an 
+# `Int` column, and ignore the `invalid` value. The syntax examples provide several ways we can tell parsing to treat the 3rd 
+# column as `Int`, by referring to column index `3`, or column name with `Symbol` or `String`. We can also provide an entire 
+# `Vector` of types for each column (and which needs to match the length of columns in the file). There are two additional 
+# keyword arguments that control parsing behavior; in the first 4 syntax examples, we would see a warning printed like 
+# `&quot;warning: invalid Int64 value on row 2, column 3&quot;`. In the fifth example, passing `silencewarnings=true` will suppress this 
+# warning printing. In the last syntax example, passing `strict=true` will result in an error being thrown during parsing.
+data = &quot;&quot;&quot;
+col1,col2,col3
+1,2,3
+4,5,invalid
+6,7,8
+&quot;&quot;&quot;
+
+file = CSV.File(IOBuffer(data); types=Dict(3 =&gt; Int))
+file = CSV.File(IOBuffer(data); types=Dict(:col3 =&gt; Int))
+file = CSV.File(IOBuffer(data); types=Dict(&quot;col3&quot; =&gt; Int))
+file = CSV.File(IOBuffer(data); types=[Int, Int, Int])
+file = CSV.File(IOBuffer(data); types=[Int, Int, Int], silencewarnings=true)
+file = CSV.File(IOBuffer(data); types=[Int, Int, Int], strict=true)</code></pre><h2 id="typemap_example"><a class="docs-heading-anchor" href="#typemap_example">Typemap</a><a id="typemap_example-1"></a><a class="docs-heading-anchor-permalink" href="#typemap_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# In this file, we have U.S. zipcodes in the first column that we&#39;d rather not treat as `Int`, but parsing will detect it as 
+# such. In the first syntax example, we pass `typemap=Dict(Int =&gt; String)`, which tells parsing to treat any detected `Int` 
+# columns as `String` instead. In the second syntax example, we alternatively set the `zipcode` column type manually.
+data = &quot;&quot;&quot;
+zipcode,score
+03494,9.9
+12345,6.7
+84044,3.4
+&quot;&quot;&quot;
+
+file = CSV.File(IOBuffer(data); typemap=Dict(Int =&gt; String))
+file = CSV.File(IOBuffer(data); types=Dict(:zipcode =&gt; String))</code></pre><h2 id="pool_example"><a class="docs-heading-anchor" href="#pool_example">Pooled values</a><a id="pool_example-1"></a><a class="docs-heading-anchor-permalink" href="#pool_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations 
+# like joining and grouping when `String` values are &quot;pooled&quot;, meaning each unique value is mapped to a `UInt32`. By default, 
+# `pool=(0.2, 500)`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide 
+# greater control: `pool=0.4` means that if 40% or less of a column&#39;s values are unique, then it will be pooled.
+data = &quot;&quot;&quot;
+id,code
+A18E9,AT
+BF392,GC
+93EBC,AT
+54EE1,AT
+8CD2E,GC
+&quot;&quot;&quot;
+
+file = CSV.File(IOBuffer(data))
+file = CSV.File(IOBuffer(data); pool=0.4)
+file = CSV.File(IOBuffer(data); pool=0.6)</code></pre><h2 id="nonstring_pool_example"><a class="docs-heading-anchor" href="#nonstring_pool_example">Non-string pooled values</a><a id="nonstring_pool_example-1"></a><a class="docs-heading-anchor-permalink" href="#nonstring_pool_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# in this data, our `category` column is an integer type, but represents a limited set of values that could benefit from
+# pooling. Indeed, we may want to do various DataFrame grouping/joining operations on the column, which can be more
+# efficient if the column type is a PooledVector. By default, passing `pool=true` will only pool string column types,
+# if we pass a vector or dict however, we can specify how specific, non-string type, columns should be pooled.
+data = &quot;&quot;&quot;
+category,amount
+1,100.01
+1,101.10
+2,201.10
+2,202.40
+&quot;&quot;&quot;
+
+file = CSV.File(IOBuffer(data); pool=Dict(1 =&gt; true))
+file = CSV.File(IOBuffer(data); pool=[true, false])</code></pre><h2 id="pool_absolute_threshold"><a class="docs-heading-anchor" href="#pool_absolute_threshold">Pool with absolute threshold</a><a id="pool_absolute_threshold-1"></a><a class="docs-heading-anchor-permalink" href="#pool_absolute_threshold" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+
+# In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations 
+# like joining and grouping when `String` values are &quot;pooled&quot;, meaning each unique value is mapped to a `UInt32`. By default, 
+# `pool=(0.2, 500)`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide 
+# greater control: `pool=(0.5, 2)` means that if a column has 2 or fewer unique values _and_ the total number of unique values is less than 50% of all values, then it will be pooled.
+data = &quot;&quot;&quot;
+id,code
+A18E9,AT
+BF392,GC
+93EBC,AT
+54EE1,AT
+8CD2E,GC
+&quot;&quot;&quot;
+
+file = CSV.File(IOBuffer(data); pool=(0.5, 2))</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="writing.html">« Writing</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.12 on <span class="colophon-date" title="Wednesday 19 January 2022 18:53">Wednesday 19 January 2022</span>. Using Julia version 1.7.1.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
