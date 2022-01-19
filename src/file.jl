@@ -250,11 +250,15 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
                     # need to resize this tasks columns down
                     if finalrows - acc > 0
                         for col in pertaskcolumns[i]
-                            resize!(col.column, finalrows - acc)
+                            if isdefined(col, :column)
+                                resize!(col.column, finalrows - acc)
+                            end
                         end
                     else
                         for col in pertaskcolumns[i]
-                            empty!(col.column)
+                            if isdefined(col, :column)
+                                empty!(col.column)
+                            end
                         end
                     end
                 end
