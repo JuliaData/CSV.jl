@@ -522,7 +522,8 @@ function checkpooled!(::Type{T}, pertaskcolumns, col, j, ntasks, nrows, ctx) whe
             end
         end
     end
-    percent = col.pool isa Tuple ? col.pool[1] : col.pool
+    cpool = col.pool
+    percent = cpool isa Tuple ? cpool[1] : cpool
     if ((length(pool) - 1) / nrows) <= percent
         col.column = PooledArray(PooledArrays.RefArray(refs), pool)
         return true
@@ -767,12 +768,13 @@ function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::
                 col.anymissing = true
             else
                 column = col.column
-                if column isa Vector{PosLen}
-                    @inbounds (column::Vector{PosLen})[row] = res.val
+                val = res.val
+                if column isa Vector{PosLen} && val isa PosLen
+                    @inbounds (column::Vector{PosLen})[row] = val
                 elseif type === String
-                    @inbounds (column::SVec2{String})[row] = Parsers.getstring(buf, res.val, opts.e)
+                    @inbounds (column::SVec2{String})[row] = Parsers.getstring(buf, val, opts.e)
                 else
-                    @inbounds (column::vectype(type))[row] = res.val
+                    @inbounds (column::vectype(type))[row] = val
                 end
             end
         end
