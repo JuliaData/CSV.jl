@@ -4,6 +4,21 @@ GitHub Repo: [https://github.com/JuliaData/CSV.jl](https://github.com/JuliaData/
 
 Welcome to CSV.jl! A pure-Julia package for handling delimited text data, be it comma-delimited (csv), tab-delimited (tsv), or otherwise.
 
+## Installation
+
+You can install CSV by typing the following in the Julia REPL:
+```julia
+] add CSV 
+```
+
+followed by 
+```julia
+using CSV
+```
+to load the package.
+
+## Overview 
+
 To start out, let's discuss the high-level functionality provided by the package, which hopefully will help direct you to more specific documentation for your use-case:
 
   * [`CSV.File`](@ref): the most commonly used function for ingesting delimited data; will read an entire data input or vector of data inputs, detecting number of columns and rows, along with the type of data for each column. Returns a `CSV.File` object, which is like a lightweight table/DataFrame. Assuming `file` is a variable of a `CSV.File` object, individual columns can be accessed like `file.col1`, `file[:col1]`, or `file["col"]`. You can see parsed column names via `file.names`. A `CSV.File` can also be iterated, where a `CSV.Row` is produced on each iteration, which allows access to each value in the row via `row.col1`, `row[:col1]`, or `row[1]`. You can also index a `CSV.File` directly, like `file[1]` to return the entire `CSV.Row` at the provided index/row number. Multiple threads will be used while parsing the input data if the input is large enough, and full return column buffers to hold the parsed data will be allocated. `CSV.File` satisfies the [Tables.jl](https://github.com/JuliaData/Tables.jl) "source" interface, and so can be passed to valid sink functions like `DataFrame`, `SQLite.load!`, `Arrow.write`, etc. Supports a number of keyword arguments to control parsing, column type, and other file metadata options.
