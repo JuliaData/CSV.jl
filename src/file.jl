@@ -762,7 +762,7 @@ function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::
     opts = col.options
     res = Parsers.xparse(type === Missing ? String : type, buf, pos, len, opts)
     code = res.code
-    if !Parsers.invalid(code)
+    if Parsers.valueok(code)
         if type !== Missing
             if Parsers.sentinel(code)
                 col.anymissing = true

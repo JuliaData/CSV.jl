@@ -773,4 +773,8 @@ f = CSV.File(IOBuffer(data); delim='|', stripwhitespace=true)
 f = CSV.File(IOBuffer(join((rand(("a,$(rand())", "b,$(rand())")) for _ = 1:10^6), "\n")), header=false, limit=10000)
 @test length(f) == 10000
 
+# 972
+f = CSV.File(joinpath(dir, "rdatasets.csv"))
+@test length(f) == 2
+
 end
