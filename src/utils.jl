@@ -22,26 +22,24 @@ finaltype(::Type{HardMissing}) = Missing
 finaltype(::Type{NeedsTypeDetection}) = Missing
 coltype(col) = ifelse(col.anymissing, Union{finaltype(col.type), Missing}, finaltype(col.type))
 
-maybepooled(col) = col.pool isa Tuple ? (col.pool[1] > 0.0) : (col.pool > 0.0)
+maybepooled(col) = col.pool > 0.0
 
-function getpool(x)::Union{Float64, Tuple{Float64, Int}}
-    if x isa Bool
-        return x ? 1.0 : 0.0
-    elseif x isa Tuple
-        y = Float64(x[1])
-        (isnan(y) || 0.0 <= y <= 1.0) || throw(ArgumentError("pool tuple 1st argument must be in the range: 0.0 <= x <= 1.0"))
-        try
-            z = Int(x[2])
-            @assert z > 0
-            return (y, z)
-        catch
-            throw(ArgumentError("pool tuple 2nd argument must be a positive integer > 0"))
-        end
-    else
-        y = Float64(x)
-        (isnan(y) || 0.0 <= y <= 1.0) || throw(ArgumentError("pool argument must be in the range: 0.0 <= x <= 1.0"))
-        return y
+getpool(x::Bool) = x ? (1.0, 0) : (0.0, typemax(Int))
+function getpool(x::Tuple)
+    y = Float64(x[1])
+    (isnan(y) || 0.0 <= y <= 1.0) || throw(ArgumentError("pool tuple 1st argument must be in the range: 0.0 <= x <= 1.0"))
+    try
+        z = Int(x[2])
+        @assert z > 0
+        return (y, z)
+    catch
+        throw(ArgumentError("pool tuple 2nd argument must be a positive integer > 0"))
     end
+end
+function getpool(x::Real)
+    y = Float64(x)
+    (isnan(y) || 0.0 <= y <= 1.0) || throw(ArgumentError("pool argument must be in the range: 0.0 <= x <= 1.0"))
+    return (y, typemax(Int))
 end
 
 tupcat(::Type{Tuple{}}, S) = Tuple{S}
@@ -247,7 +245,7 @@ consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 
 
 # whatever input is given, turn it into an AbstractVector{UInt8} we can parse with
 @inline function getbytebuffer(x, buffer_in_memory)
-    tfile = nothing
+    tfile = ""
     if x isa Vector{UInt8}
         return x, 1, length(x), tfile
     elseif x isa SubArray{UInt8, 1, Vector{UInt8}}
@@ -285,7 +283,7 @@ consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 
 end
 
 function getsource(@nospecialize(x), buffer_in_memory)
-    buf, pos, len, tfile = getbytebuffer(x, buffer_in_memory)::Tuple{Vector{UInt8},Int,Int,Union{Nothing,String}}
+    buf, pos, len, tfile = getbytebuffer(x, buffer_in_memory)::Tuple{Vector{UInt8},Int,Int,String}
     if length(buf) >= 2 && buf[1] == 0x1f && buf[2] == 0x8b
         # gzipped source, gunzip it
         if buffer_in_memory
@@ -293,9 +291,9 @@ function getsource(@nospecialize(x), buffer_in_memory)
         else
             # 917; if we already buffered input to tempfile, make sure the compressed tempfile is
             # cleaned up since we're only passing the *uncompressed* tempfile up for removal post-parsing
-            tfile1 = tfile === nothing ? nothing : tfile
+            tfile1 = tfile
             buf, tfile = buffer_to_tempfile(GzipDecompressor(), IOBuffer(buf))
-            if tfile1 !== nothing
+            if tfile1 !== ""
                 rm(tfile1; force=true)
             end
         end

@@ -19,18 +19,19 @@ mutable struct Column
     anymissing::Bool
     userprovidedtype::Bool
     willdrop::Bool
-    pool::Union{Float64, Tuple{Float64, Int}}
+    pool::Float64
+    poollimit::Int64
     columnspecificpool::Bool
     # lazily/manually initialized fields
-    column::AbstractVector
+    column::Union{Vector{T},SentinelVector{T,T,Missing,Vector{T}}} where T
     # per top-level column fields (don't need to copy per task when parsing)
     lock::ReentrantLock
     position::Int
     endposition::Int
     options::Parsers.Options
 
-    Column(type::Type, anymissing::Bool, userprovidedtype::Bool, willdrop::Bool, pool::Union{Float64, Tuple{Float64, Int}}, columnspecificpool::Bool) =
-        new(type, anymissing, userprovidedtype, willdrop, pool, columnspecificpool)
+    Column(type::Type, anymissing::Bool, userprovidedtype::Bool, willdrop::Bool, pool::Float64, poollimit::Int64, columnspecificpool::Bool) =
+        new(type, anymissing, userprovidedtype, willdrop, pool, poollimit, columnspecificpool)
 end
 
 function Column(type::Type, options::Union{Parsers.Options, Nothing}=nothing)
@@ -38,7 +39,7 @@ function Column(type::Type, options::Union{Parsers.Options, Nothing}=nothing)
     col = Column(type === Missing ? HardMissing : T,
         type >: Missing,
         type !== NeedsTypeDetection,
-        false, NaN, false)
+        false, NaN, typemax(Int64), false)
     if options !== nothing
         col.options = options
     end
@@ -48,7 +49,7 @@ end
 # creating a per-task column from top-level column
 function Column(x::Column)
     @assert isdefined(x, :lock)
-    y = Column(x.type, x.anymissing, x.userprovidedtype, x.willdrop, x.pool, x.columnspecificpool)
+    y = Column(x.type, x.anymissing, x.userprovidedtype, x.willdrop, x.pool, x.poollimit, x.columnspecificpool)
     y.lock = x.lock # parent and child columns _share_ the same lock
     if isdefined(x, :options)
         y.options = x.options
@@ -117,7 +118,7 @@ struct Context
     silencewarnings::Bool
     maxwarnings::Int
     debug::Bool
-    tempfile::Union{String, Nothing}
+    tempfile::String
     streaming::Bool
 end
 
@@ -482,16 +483,14 @@ end
             length(pool) == ncols || throw(ArgumentError("provided `pool::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(pool)) != $ncols`"))
             for i = 1:ncols
                 col = columns[i]
-                col.pool = getpool(pool[i])
-                col.columnspecificpool = true
+                col.pool, col.poollimit = getpool(pool[i])
             end
         elseif pool isa AbstractDict
             for i = 1:ncols
                 col = columns[i]
                 p = getordefault(pool, names[i], i, NaN)
                 if !isnan(p)
-                    col.pool = getpool(p)
-                    col.columnspecificpool = true
+                    col.pool, col.poollimit = getpool(p)
                 end
             end
             validate && checkinvalidcolumns(pool, "pool", ncols, names)
@@ -500,14 +499,14 @@ end
                 col = columns[i]
                 p = pool(i, names[i])
                 if p !== nothing
-                    col.pool = getpool(p)
+                    col.pool, col.poollimit = getpool(p)
                     col.columnspecificpool = true
                 end
             end
         else
-            finalpool = getpool(pool)
+            finalpool, finalpoollimit = getpool(pool)
             for col in columns
-                col.pool = finalpool
+                col.pool, col.poollimit = finalpool, finalpoollimit
             end
         end
     end

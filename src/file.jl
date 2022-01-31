@@ -232,7 +232,7 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
     end
     # delete any dropped columns from names, columns
     names = ctx.names
-    length(columns) > length(names) && _generate_trailing!(names, columns)
+    length(columns) > length(names) && _generate_trailing_names!(names, columns)
     for i = length(columns):-1:1
         col = columns[i]
         if col.willdrop
@@ -242,14 +242,14 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
     end
     types = Type[coltype(col) for col in columns]
     lookup = Dict{Symbol,Column}(k => v for (k, v) in zip(names, columns))
-    ctx.debug && println("types after parsing: $types, pool = $(ctx.pool)")
+    # ctx.debug && println("types after parsing: $types, pool = $(ctx.pool)")
     # for windows, it's particularly finicky about throwing errors when you try to modify an mmapped file
     # so we just want to make sure we finalize the input buffer so users don't run into surprises
     if !chunking && Sys.iswindows() && ctx.stringtype !== PosLenString
         finalize(ctx.buf)
     end
     # check if a temp file was generated for parsing
-    if !chunking && ctx.tempfile !== nothing && ctx.stringtype !== PosLenString
+    if !chunking && ctx.tempfile !== "" && ctx.stringtype !== PosLenString
         rm(ctx.tempfile; force=true)
     end
     end # @inbounds begin
@@ -257,17 +257,18 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
 end
 
 # columns were widened during parsing, auto-generate trailing column names
-function _generate_trailing!(names, columns)
+function _generate_trailing_names!(names, columns)
     makeunique(append!(names, [Symbol(:Column, i) for i = (length(names) + 1):length(columns)]))
+    return names
 end
 
-function _ctx_single!(ctx, chunking)
+@noinline function _ctx_single!(ctx, chunking)
     # single-threaded parsing
     columns = ctx.columns
     allocate!(columns, ctx.rowsguess)
     t = Base.time()
     finalrows, pos = parsefilechunk!(ctx, ctx.datapos, ctx.len, ctx.rowsguess, 0, columns, ctx.customtypes)::Tuple{Int, Int}
-    ctx.debug && println("time for initial parsing: $(Base.time() - t)")
+    # ctx.debug && println("time for initial parsing: $(Base.time() - t)")
     # cleanup our columns if needed
     for col in columns
 # @label processcolumn
@@ -285,21 +286,26 @@ function _ctx_single!(ctx, chunking)
             # string col parsed lazily; return a PosLenStringVector
             makeposlen!(col, coltype(col), ctx)
         elseif !col.anymissing
-            # if no missing values were parsed for a col, we want to "unwrap" it to a plain Vector{T}
-            if col.type === Bool
-                col.column = convert(Vector{Bool}, col.column)
-            elseif col.type !== Union{} && col.type <: SmallIntegers
-                col.column = convert(Vector{col.type}, col.column)
-            else
-                col.column = parent(col.column)
-            end
+            col.column = _vector_column(col.type, col.column)
         end
     end
     return finalrows, columns
 end
 
+# if no missing values were parsed for a col, we want to "unwrap" it to a plain Vector{T}
+@noinline function _vector_column(::Type{T}, column) where T
+    # if no missing values were parsed for a col, we want to "unwrap" it to a plain Vector{T}
+    if T === Bool
+        convert(Vector{Bool}, column)::Vector{Bool}
+    elseif T !== Union{} && T <: SmallIntegers
+        convert(Vector{T}, column)::Vector{T}
+    else
+        parent(column)::Vector{T}
+    end
+end
 
-function _ctx_threaded!(ctx, chunking)
+
+@noinline function _ctx_threaded!(ctx, chunking)
     # multithreaded parsing
     rowsguess, ntasks, columns = ctx.rowsguess, ctx.ntasks, ctx.columns
     # calculate our guess for how many rows will be parsed by each concurrent parsing task
@@ -392,13 +398,13 @@ function multithreadparse(ctx, pertaskcolumns, rowchunkguess, i, rows, wholecolu
             task_col = task_columns[j]
             T = col.type
             col.type = something(promote_types(T, task_col.type), ctx.stringtype)
-            if T !== col.type
-                ctx.debug && println("promoting col = $j from $T to $(col.type), task chunk ($i) was type = $(task_col.type)")
-            end
+            # if T !== col.type
+                # ctx.debug && println("promoting col = $j from $T to $(col.type), task chunk ($i) was type = $(task_col.type)")
+            # end
             col.anymissing |= task_col.anymissing
         end
     end
-    ctx.debug && println("finished parsing $task_rows rows on task = $i: time for parsing: $(Base.time() - tt)")
+    # ctx.debug && println("finished parsing $task_rows rows on task = $i: time for parsing: $(Base.time() - tt)")
     return
 end
 
@@ -413,7 +419,7 @@ function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, c
         T2 = task_col.type
         if T isa StringTypes && !(T2 isa StringTypes)
             # promoting non-string to string column
-            ctx.debug && println("multithreaded promoting column $j to string from $T2")
+            # ctx.debug && println("multithreaded promoting column $j to string from $T2")
             task_len = ctx.chunkpositions[i + 1] - (i != ntasks)
             task_pos = ctx.chunkpositions[i]
             promotetostring!(ctx, ctx.buf, task_pos, task_len, task_rows, sum(rows[1:i-1]), task_columns, ctx.customtypes, j, Ref(0), task_rows, T)
@@ -430,7 +436,7 @@ function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, c
         T2 = task_col.type
         if T === Float64 && T2 <: Integer
             # one chunk parsed as Int, another as Float64, promote to Float64
-            ctx.debug && println("multithreaded promoting column $j to float")
+            # ctx.debug && println("multithreaded promoting column $j to float")
             task_col.column = convert(SentinelVector{Float64}, task_col.column)
         elseif T !== T2 && (T <: InlineString || (T === String && T2 <: InlineString))
             # promote to widest InlineString type
@@ -438,7 +444,7 @@ function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, c
         elseif T !== T2
             # one chunk parsed all missing values, but another chunk had a typed value, promote to that
             # while keeping all values `missing` (allocate by default ensures columns have all missing values)
-            ctx.debug && println("multithreaded promoting column $j from missing on task $i")
+            # ctx.debug && println("multithreaded promoting column $j from missing on task $i")
             task_col.column = allocate(T, task_rows)
         end
     end
@@ -486,13 +492,13 @@ function makechain!(::Type{T}, pertaskcolumns, col, j, ntasks) where {T}
 end
 
 # T is Union{T, Missing} or T depending on col.anymissing
-function checkpooled!(::Type{T}, pertaskcolumns, col, j, ntasks, nrows, ctx) where {T}
+@noinline function checkpooled!(::Type{T}, pertaskcolumns, col, j, ntasks, nrows, ctx) where {T}
     S = Base.nonmissingtype(T)
     pool = Dict{T, UInt32}()
     lastref = Ref{UInt32}(0)
     refs = Vector{UInt32}(undef, nrows)
     k = 1
-    limit = col.pool isa Tuple ? col.pool[2] : typemax(Int)
+    limit = col.poollimit
     for i = 1:ntasks
         column = (pertaskcolumns === nothing ? col.column : pertaskcolumns[i][j].column)::columntype(S)
         for x in column
@@ -502,9 +508,16 @@ function checkpooled!(::Type{T}, pertaskcolumns, col, j, ntasks, nrows, ctx) whe
                         lastref[] += UInt32(1)
                     end
                 elseif x.escapedvalue
-                    val = S === PosLenString ? S(ctx.buf, x, ctx.options.e) : Parsers.getstring(ctx.buf, x, ctx.options.e)
-                    refs[k] = get!(pool, val) do
-                        lastref[] += UInt32(1)
+                    if S === PosLenString 
+                        val1 = S(ctx.buf, x, ctx.options.e)
+                        refs[k] = get!(pool, val1) do
+                            lastref[] += UInt32(1)
+                        end
+                    else
+                        val2 = Parsers.getstring(ctx.buf, x, ctx.options.e)
+                        refs[k] = get!(pool, val2) do
+                            lastref[] += UInt32(1)
+                        end
                     end
                 else
                     val = PointerString(pointer(ctx.buf, x.pos), x.len)
@@ -534,8 +547,7 @@ function checkpooled!(::Type{T}, pertaskcolumns, col, j, ntasks, nrows, ctx) whe
             end
         end
     end
-    cpool = col.pool
-    percent = cpool isa Tuple ? cpool[1] : cpool
+    percent = col.pool
     if ((length(pool) - 1) / nrows) <= percent
         col.column = PooledArray(PooledArrays.RefArray(refs), pool)
         return true
@@ -544,12 +556,12 @@ function checkpooled!(::Type{T}, pertaskcolumns, col, j, ntasks, nrows, ctx) whe
     end
 end
 
-function makeposlen!(col, T, ctx)
+@noinline function makeposlen!(col, T, ctx)
     col.column = PosLenStringVector{T}(ctx.buf, col.column::Vector{PosLen}, ctx.options.e)
     return col.column
 end
 
-function parsefilechunk!(ctx::Context, pos, len, rowsguess, rowoffset, columns, ::Type{customtypes})::Tuple{Int, Int} where {customtypes}
+@noinline function parsefilechunk!(ctx::Context, pos, len, rowsguess, rowoffset, columns, ::Type{customtypes})::Tuple{Int, Int} where {customtypes}
     buf = ctx.buf
     transpose = ctx.transpose
     limit = ctx.limit
@@ -570,7 +582,7 @@ function parsefilechunk!(ctx::Context, pos, len, rowsguess, rowoffset, columns, 
                 estimated_rows_left = ceil(Int, ((len - pos) / ((pos - startpos) / row)) * 1.05)
                 newrowsguess = rowsguess + estimated_rows_left
                 newrowsguess = max(rowsguess + 1, newrowsguess)
-                ctx.debug && reallocatecolumns(rowoffset + row, rowsguess, newrowsguess)
+                # ctx.debug && reallocatecolumns(rowoffset + row, rowsguess, newrowsguess)
                 for col in columns
                     isdefined(col, :column) && reallocate!(col.column, newrowsguess)
                 end
@@ -660,7 +672,7 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
             end
         end
         if promote_to_string(code)
-            ctx.debug && println("promoting column i = $i to string from $(type) on chunk = $(Threads.threadid())")
+            # ctx.debug && println("promoting column i = $i to string from $(type) on chunk = $(Threads.threadid())")
             if type <: InlineString
                 newT = String
             elseif ctx.stringtype === InlineString
@@ -708,7 +720,7 @@ function _ctx_transpose!(columns, pos, code, ncols, len, i)
     return false
 end
 
-function _widen_columns(columns, code, ncols, i)
+@noinline function _widen_columns(columns, code, ncols, i)
     # extra columns on this row, let's widen
     ctx.silencewarnings || toomanycolumns(ncols, rowoffset + row)
     j = i + 1
@@ -953,7 +965,7 @@ function File(sources::Vector;
         # add file name of each "partition" as 1st column
         pushfirst!(files, f)
         vals = source isa Pair ? source.second : [f.name for f in files]
-        pool = Dict(x => UInt32(i) for (i, x) in enumerate(vals))
+        pool = Dict{String,UInt32}(x => UInt32(i) for (i, x) in enumerate(vals))
         arr = PooledArray(PooledArrays.RefArray(ChainedVector([fill(UInt32(i), f.rows) for (i, f) in enumerate(files)])), pool)
         col = Column(eltype(arr))
         col.column = arr
