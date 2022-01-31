@@ -225,99 +225,10 @@ end
 function File(ctx::Context, @nospecialize(chunking::Bool=false))
     @inbounds begin
     # we now do our parsing pass over the file, starting at datapos
-    if ctx.threaded
-        # multithreaded parsing
-        rowsguess, ntasks, columns = ctx.rowsguess, ctx.ntasks, ctx.columns
-        # calculate our guess for how many rows will be parsed by each concurrent parsing task
-        rowchunkguess = cld(rowsguess, ntasks)
-        wholecolumnslock = ReentrantLock() # in case columns are widened during parsing
-        pertaskcolumns = Vector{Vector{Column}}(undef, ntasks)
-        # initialize each top-level column's lock; used after a task is done parsing its chunk of rows
-        # and it "checks in" the types it parsed for each column
-        foreach(col -> col.lock = ReentrantLock(), columns)
-        rows = zeros(Int, ntasks) # how many rows each parsing task ended up actually parsing
-        @sync for i = 1:ntasks
-            Threads.@spawn multithreadparse(ctx, pertaskcolumns, rowchunkguess, i, rows, wholecolumnslock)
-            # CSV.multithreadparse(ctx, pertaskcolumns, rowchunkguess, i, rows, wholecolumnslock)
-        end
-        finalrows = sum(rows)
-        if ctx.limit < finalrows
-            finalrows = ctx.limit
-            # adjust columns according to limit
-            acc = 0
-            for i = 1:ntasks
-                if acc + rows[i] > finalrows
-                    # need to resize this tasks columns down
-                    if finalrows - acc > 0
-                        for col in pertaskcolumns[i]
-                            if isdefined(col, :column)
-                                resize!(col.column, finalrows - acc)
-                            end
-                        end
-                    else
-                        for col in pertaskcolumns[i]
-                            if isdefined(col, :column)
-                                empty!(col.column)
-                            end
-                        end
-                    end
-                end
-                acc += rows[i]
-            end
-        end
-        # ok, all the parsing tasks have finished and we've promoted their types w/ the top-level columns
-        # so now we just need to finish processing each column by making ChainedVectors of the individual columns
-        # from each task
-        # quick check that each set of task columns has the right # of columns
-        for i = 1:ntasks
-            task_columns = pertaskcolumns[i]
-            if length(task_columns) < length(columns)
-                # some other task widened columns that this task didn't likewise detect
-                for _ = (length(task_columns) + 1):length(columns)
-                    push!(task_columns, Column(Missing, ctx.options))
-                end
-            end
-        end
-        @sync for (j, col) in enumerate(columns)
-            let finalrows=finalrows
-                Threads.@spawn multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, col)
-            end
-        end
+    finalrows, columns = if ctx.threaded
+        _ctx_threaded!(ctx, chunking)
     else
-        # single-threaded parsing
-        columns = ctx.columns
-        allocate!(columns, ctx.rowsguess)
-        t = Base.time()
-        finalrows, pos = parsefilechunk!(ctx, ctx.datapos, ctx.len, ctx.rowsguess, 0, columns, ctx.customtypes)::Tuple{Int, Int}
-        ctx.debug && println("time for initial parsing: $(Base.time() - t)")
-        # cleanup our columns if needed
-        for col in columns
-@label processcolumn
-            if col.type === NeedsTypeDetection
-                # fill in uninitialized column fields
-                col.type = Missing
-                col.column = MissingVector(finalrows)
-                col.pool = 0.0
-            end
-            T = col.anymissing ? Union{col.type, Missing} : col.type
-            if maybepooled(col) &&
-                (col.type isa StringTypes || col.columnspecificpool) &&
-                checkpooled!(T, nothing, col, 0, 1, finalrows, ctx)
-                # col.column is a PooledArray
-            elseif col.type === PosLenString
-                # string col parsed lazily; return a PosLenStringVector
-                makeposlen!(col, coltype(col), ctx)
-            elseif !col.anymissing
-                # if no missing values were parsed for a col, we want to "unwrap" it to a plain Vector{T}
-                if col.type === Bool
-                    col.column = convert(Vector{Bool}, col.column)
-                elseif col.type !== Union{} && col.type <: SmallIntegers
-                    col.column = convert(Vector{col.type}, col.column)
-                else
-                    col.column = parent(col.column)
-                end
-            end
-        end
+        _ctx_single!(ctx, chunking)
     end
     # delete any dropped columns from names, columns
     names = ctx.names
@@ -346,6 +257,106 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
     end
     end # @inbounds begin
     return File(ctx.name, names, types, finalrows, length(columns), columns, lookup)
+end
+
+function _ctx_single!(ctx, chunking)
+    # single-threaded parsing
+    columns = ctx.columns
+    allocate!(columns, ctx.rowsguess)
+    t = Base.time()
+    finalrows, pos = parsefilechunk!(ctx, ctx.datapos, ctx.len, ctx.rowsguess, 0, columns, ctx.customtypes)::Tuple{Int, Int}
+    ctx.debug && println("time for initial parsing: $(Base.time() - t)")
+    # cleanup our columns if needed
+    for col in columns
+# @label processcolumn
+        if col.type === NeedsTypeDetection
+            # fill in uninitialized column fields
+            col.type = Missing
+            col.column = MissingVector(finalrows)
+            col.pool = 0.0
+        end
+        T = col.anymissing ? Union{col.type, Missing} : col.type
+        if maybepooled(col) &&
+            (col.type isa StringTypes || col.columnspecificpool) &&
+            checkpooled!(T, nothing, col, 0, 1, finalrows, ctx)
+            # col.column is a PooledArray
+        elseif col.type === PosLenString
+            # string col parsed lazily; return a PosLenStringVector
+            makeposlen!(col, coltype(col), ctx)
+        elseif !col.anymissing
+            # if no missing values were parsed for a col, we want to "unwrap" it to a plain Vector{T}
+            if col.type === Bool
+                col.column = convert(Vector{Bool}, col.column)
+            elseif col.type !== Union{} && col.type <: SmallIntegers
+                col.column = convert(Vector{col.type}, col.column)
+            else
+                col.column = parent(col.column)
+            end
+        end
+    end
+    return finalrows, columns
+end
+
+
+function _ctx_threaded!(ctx, chunking)
+    # multithreaded parsing
+    rowsguess, ntasks, columns = ctx.rowsguess, ctx.ntasks, ctx.columns
+    # calculate our guess for how many rows will be parsed by each concurrent parsing task
+    rowchunkguess = cld(rowsguess, ntasks)
+    wholecolumnslock = ReentrantLock() # in case columns are widened during parsing
+    pertaskcolumns = Vector{Vector{Column}}(undef, ntasks)
+    # initialize each top-level column's lock; used after a task is done parsing its chunk of rows
+    # and it "checks in" the types it parsed for each column
+    foreach(col -> col.lock = ReentrantLock(), columns)
+    rows = zeros(Int, ntasks) # how many rows each parsing task ended up actually parsing
+    @sync for i = 1:ntasks
+        Threads.@spawn multithreadparse(ctx, pertaskcolumns, rowchunkguess, i, rows, wholecolumnslock)
+        # CSV.multithreadparse(ctx, pertaskcolumns, rowchunkguess, i, rows, wholecolumnslock)
+    end
+    finalrows = sum(rows)
+    if ctx.limit < finalrows
+        finalrows = ctx.limit
+        # adjust columns according to limit
+        acc = 0
+        for i = 1:ntasks
+            if acc + rows[i] > finalrows
+                # need to resize this tasks columns down
+                if finalrows - acc > 0
+                    for col in pertaskcolumns[i]
+                        if isdefined(col, :column)
+                            resize!(col.column, finalrows - acc)
+                        end
+                    end
+                else
+                    for col in pertaskcolumns[i]
+                        if isdefined(col, :column)
+                            empty!(col.column)
+                        end
+                    end
+                end
+            end
+            acc += rows[i]
+        end
+    end
+    # ok, all the parsing tasks have finished and we've promoted their types w/ the top-level columns
+    # so now we just need to finish processing each column by making ChainedVectors of the individual columns
+    # from each task
+    # quick check that each set of task columns has the right # of columns
+    for i = 1:ntasks
+        task_columns = pertaskcolumns[i]
+        if length(task_columns) < length(columns)
+            # some other task widened columns that this task didn't likewise detect
+            for _ = (length(task_columns) + 1):length(columns)
+                push!(task_columns, Column(Missing, ctx.options))
+            end
+        end
+    end
+    @sync for (j, col) in enumerate(columns)
+        let finalrows=finalrows
+            Threads.@spawn multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, col)
+        end
+    end
+    return finalrows, columns
 end
 
 function multithreadparse(ctx, pertaskcolumns, rowchunkguess, i, rows, wholecolumnslock)
