@@ -5,4 +5,8 @@ function _precompile_()
     # CSV.Context(IOBuffer(CSV.PRECOMPILE_DATA))
     # foreach(row -> row, CSV.Rows(IOBuffer(PRECOMPILE_DATA)))
     CSV.Context(joinpath(dirname(pathof(CSV)), "promotions.csv"))
+
+    for T in (Int64, Float64)
+        precompile(parsevalue!, (Type{T}, Vector{UInt8}, Int, Int, Int, Int, Int, Column, Context))
+    end
 end

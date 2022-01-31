@@ -23,7 +23,7 @@ mutable struct Column
     poollimit::Int64
     columnspecificpool::Bool
     # lazily/manually initialized fields
-    column::Union{Vector{T},SentinelVector{T,T,Missing,Vector{T}}} where T
+    column::AbstractVector #Union{Vector{T},SentinelVector{T,T,Missing,Vector{T}}} where T
     # per top-level column fields (don't need to copy per task when parsing)
     lock::ReentrantLock
     position::Int

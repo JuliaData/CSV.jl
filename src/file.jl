@@ -277,11 +277,12 @@ end
             col.type = Missing
             col.column = MissingVector(finalrows)
             col.pool = 0.0
+            col.poollimit = typemax(Int64)
         end
         T = col.anymissing ? Union{col.type, Missing} : col.type
         if maybepooled(col) && (col.type isa StringTypes || col.columnspecificpool)
-            checkpooled!(T, nothing, col, 0, 1, finalrows, ctx)
             # col.column is a PooledArray
+            checkpooled!(T, nothing, col, 0, 1, finalrows, ctx)
         elseif col.type === PosLenString
             # string col parsed lazily; return a PosLenStringVector
             makeposlen!(col, coltype(col), ctx)
@@ -300,7 +301,7 @@ end
     elseif T !== Union{} && T <: SmallIntegers
         convert(Vector{T}, column)::Vector{T}
     else
-        parent(column)::Vector{T}
+        parent(column)
     end
 end
 
@@ -561,7 +562,9 @@ end
     return col.column
 end
 
-@noinline function parsefilechunk!(ctx::Context, pos, len, rowsguess, rowoffset, columns, ::Type{customtypes})::Tuple{Int, Int} where {customtypes}
+@noinline function parsefilechunk!(
+    ctx::Context, pos::Int, len::Int, rowsguess::Int, rowoffset::Int, columns, ::Type{customtypes}
+)::Tuple{Int, Int} where {customtypes}
     buf = ctx.buf
     transpose = ctx.transpose
     limit = ctx.limit
@@ -598,103 +601,108 @@ end
     return row, pos
 end
 
-@noinline reallocatecolumns(row, old, new) = @warn("thread = $(Threads.threadid()) warning: didn't pre-allocate enough column while parsing around row $row, re-allocating from $old to $new...")
-@noinline notenoughcolumns(cols, ncols, row) = @warn("thread = $(Threads.threadid()) warning: only found $cols / $ncols columns around data row: $row. Filling remaining columns with `missing`")
-@noinline toomanycolumns(cols, row) = @warn("thread = $(Threads.threadid()) warning: parsed expected $cols columns, but didn't reach end of line around data row: $row. Parsing extra columns and widening final columnset")
-@noinline stricterror(T, buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) error parsing $T around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))"))
-@noinline warning(T, buf, pos, len, code, row, col) = @warn("thread = $(Threads.threadid()) warning: error parsing $T around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))")
-@noinline fatalerror(buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) fatal error, encountered an invalidly quoted field while parsing around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code)), check your `quotechar` arguments or manually fix the field in the file itself"))
-@noinline toomanywwarnings() = @warn("thread = $(Threads.threadid()): too many warnings, silencing any further warnings")
-
-Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, ::Type{customtypes})::Int where {customtypes}
+Base.@propagate_inbounds function parserow(
+    startpos::Int, row::Int, numwarnings::Ref{Int}, ctx::Context, buf::Vector{UInt8}, pos::Int, len::Int, rowsguess::Int, rowoffset::Int, columns, ::Type{customtypes}
+)::Int where {customtypes}
     # @show columns
     ncols = length(columns)
     for i = 1:ncols
         col = columns[i]
-        if ctx.transpose
-            pos = col.position
-        end
-        type = col.type
-        cellstartpos = pos
-        if type === HardMissing
-            pos, code = parsevalue!(Missing, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === NeedsTypeDetection
+        if col.type === NeedsTypeDetection
             pos, code = detectcell(buf, pos, len, row, rowoffset, i, col, ctx, rowsguess)
-        elseif type === Int8
-            pos, code = parsevalue!(Int8, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === Int16
-            pos, code = parsevalue!(Int16, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === Int32
-            pos, code = parsevalue!(Int32, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === Int64
-            pos, code = parsevalue!(Int64, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === Int128
-            pos, code = parsevalue!(Int128, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === Float16
-            pos, code = parsevalue!(Float16, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === Float32
-            pos, code = parsevalue!(Float32, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === Float64
-            pos, code = parsevalue!(Float64, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === InlineString1
-            pos, code = parsevalue!(InlineString1, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === InlineString3
-            pos, code = parsevalue!(InlineString3, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === InlineString7
-            pos, code = parsevalue!(InlineString7, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === InlineString15
-            pos, code = parsevalue!(InlineString15, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === InlineString31
-            pos, code = parsevalue!(InlineString31, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === InlineString63
-            pos, code = parsevalue!(InlineString63, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === InlineString127
-            pos, code = parsevalue!(InlineString127, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === InlineString255
-            pos, code = parsevalue!(InlineString255, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === String
-            pos, code = parsevalue!(String, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === PosLenString
-            pos, code = parsevalue!(PosLenString, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === Date
-            pos, code = parsevalue!(Date, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === DateTime
-            pos, code = parsevalue!(DateTime, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === Time
-            pos, code = parsevalue!(Time, buf, pos, len, row, rowoffset, i, col, ctx)
-        elseif type === Bool
-            pos, code = parsevalue!(Bool, buf, pos, len, row, rowoffset, i, col, ctx)
         else
-            if customtypes !== Tuple{}
-                pos, code = parsecustom!(customtypes, buf, pos, len, row, rowoffset, i, col, ctx)
-            else
-                error("bad column type: $(type))")
-            end
+            column = col.column
+            pos, code =  parsecol(buf, pos, len, row, rowoffset, i, col, column, ctx)
         end
         if promote_to_string(code)
-            # ctx.debug && println("promoting column i = $i to string from $(type) on chunk = $(Threads.threadid())")
-            if type <: InlineString
-                newT = String
-            elseif ctx.stringtype === InlineString
-                str = Parsers.xparse(String, buf, cellstartpos, len, col.options)
-                newT = pickstringtype(InlineString, str.val.len)
-            else
-                newT = ctx.stringtype
-            end
+            newT = _ctx_stringtype!(columns, pos, code, ncols, len, i)
             promotetostring!(ctx, buf, startpos, len, rowsguess, rowoffset, columns, customtypes, i, numwarnings, row, newT)
         end
         if ctx.transpose
             col.position = pos
         else
-            shouldbreak = _ctx_transpose!(columns, pos, code, ncols, len, i)
-            shouldbreak && break
+            _ctx_transpose!(columns, pos, code, ncols, len, i) && break
         end
     end
     return pos
 end
 
+@noinline function parsecol(buf, pos, len, row, rowoffset, i, col, column, ctx)
+    if ctx.transpose
+        pos = col.position
+    end
+    type = col.type
+    cellstartpos = pos
+    if type === HardMissing
+        pos, code = parsevalue!(Missing, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === Int8
+        pos, code = parsevalue!(Int8, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === Int16
+        pos, code = parsevalue!(Int16, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === Int32
+        pos, code = parsevalue!(Int32, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === Int64
+        pos, code = parsevalue!(Int64, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === Int128
+        pos, code = parsevalue!(Int128, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === Float16
+        pos, code = parsevalue!(Float16, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === Float32
+        pos, code = parsevalue!(Float32, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === Float64
+        pos, code = parsevalue!(Float64, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === InlineString1
+        pos, code = parsevalue!(InlineString1, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === InlineString3
+        pos, code = parsevalue!(InlineString3, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === InlineString7
+        pos, code = parsevalue!(InlineString7, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === InlineString15
+        pos, code = parsevalue!(InlineString15, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === InlineString31
+        pos, code = parsevalue!(InlineString31, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === InlineString63
+        pos, code = parsevalue!(InlineString63, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === InlineString127
+        pos, code = parsevalue!(InlineString127, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === InlineString255
+        pos, code = parsevalue!(InlineString255, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === String
+        pos, code = parsevalue!(String, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === PosLenString
+        pos, code = parsevalue!(PosLenString, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === Date
+        pos, code = parsevalue!(Date, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === DateTime
+        pos, code = parsevalue!(DateTime, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === Time
+        pos, code = parsevalue!(Time, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    elseif type === Bool
+        pos, code = parsevalue!(Bool, buf, pos, len, row, rowoffset, i, col, column, ctx)
+    else
+        if customtypes !== Tuple{}
+            pos, code = parsecustom!(customtypes, buf, pos, len, row, rowoffset, i, col, ctx)
+        else
+            error("bad column type: $(type))")
+        end
+    end
+    return pos, code
+end
 
-function _ctx_transpose!(columns, pos, code, ncols, len, i)
+@noinline function _ctx_stringtype!(ctx)
+    # ctx.debug && println("promoting column i = $i to string from $(type) on chunk = $(Threads.threadid())")
+    if type <: InlineString
+        newT = String
+    elseif ctx.stringtype === InlineString
+        str = Parsers.xparse(String, buf, cellstartpos, len, col.options)
+        newT = pickstringtype(InlineString, str.val.len)
+    else
+        newT = ctx.stringtype
+    end
+end
+
+
+@noinline function _ctx_transpose!(columns, pos, code, ncols, len, i)
     if i < ncols
         if Parsers.newline(code) || pos > len
             # in https://github.com/JuliaData/CSV.jl/issues/948,
@@ -734,7 +742,7 @@ end
         else
             # need to allocate
             col.column = allocate(ctx.stringtype, ctx.rowsguess)
-            pos, code = parsevalue!(ctx.stringtype, buf, pos, len, row, rowoffset, j, col, ctx)
+            pos, code = parsevalue!(ctx.stringtype, buf, pos, len, row, rowoffset, j, col, col.column, ctx)
         end
         j += 1
         push!(columns, col)
@@ -794,7 +802,7 @@ function detectcell(buf, pos, len, row, rowoffset, i, col, ctx, rowsguess)::Tupl
     return pos + tlen, code
 end
 
-function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::Tuple{Int, Int16} where {type}
+@noinline function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, column, ctx)::Tuple{Int, Int16} where {type}
     opts = col.options
     res = Parsers.xparse(type === Missing ? String : type, buf, pos, len, opts)
     code = res.code
@@ -803,7 +811,6 @@ function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::
             if Parsers.sentinel(code)
                 col.anymissing = true
             else
-                column = col.column
                 val = res.val
                 if column isa Vector{PosLen} && val isa PosLen
                     @inbounds (column::Vector{PosLen})[row] = val
@@ -816,12 +823,12 @@ function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::
         end
         return pos + res.tlen, code
     else
-        return parsers_invalid(type, buf, pos, len, row, rowoffset, i, col, ctx)
+        return _parsers_invalid(type, buf, pos, len, row, rowoffset, i, col, column, ctx, code, res)
     end
 end
 
 # something went wrong parsing
-function _parsers_invalid(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx) where type
+function _parsers_invalid(::Type{type}, buf, pos, len, row, rowoffset, i, col, column, ctx, code, res) where type
     if Parsers.invalidquotedfield(code)
         # this usually means parsing is borked because of an invalidly quoted field, hard error
         fatalerror(buf, pos, res.tlen, code, rowoffset + row, i)
@@ -852,9 +859,9 @@ function _parsers_invalid(::Type{type}, buf, pos, len, row, rowoffset, i, col, c
                     ret = _parseany(newT, buf, pos, len, opts)
                     if !Parsers.invalid(ret.code)
                         col.type = newT
-                        column = col.column
-                        col.column = convert(SentinelVector{newT}, col.column::vectype(type))
-                        @inbounds col.column[row] = ret.val
+                        sentinel_column = convert(SentinelVector{newT}, column)
+                        @inbounds sentinel_column[row] = ret.val
+                        col.column = sentinel_column
                         return pos + ret.tlen, ret.code
                     end
                     newT = widen(newT)
@@ -909,7 +916,7 @@ end
     end
 end
 
-@noinline function promotetostring!(ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, ::Type{customtypes}, column_to_promote, numwarnings, limit, stringtype) where {customtypes}
+@noinline function promotetostring!(ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, ::Type{customtypes}, column_to_promote, numwarnings, limit, ::Type{stringtype}) where {customtypes,stringtype}
     cols = [i == column_to_promote ? columns[i] : Column(Missing, columns[i].options) for i = 1:length(columns)]
     col = cols[column_to_promote]
     col.column = allocate(stringtype, rowsguess)
@@ -977,3 +984,11 @@ function File(sources::Vector;
     end
     return File(f.name, f.names, f.types, rows, f.cols, f.columns, f.lookup)
 end
+
+@noinline reallocatecolumns(row, old, new) = @warn("thread = $(Threads.threadid()) warning: didn't pre-allocate enough column while parsing around row $row, re-allocating from $old to $new...")
+@noinline notenoughcolumns(cols, ncols, row) = @warn("thread = $(Threads.threadid()) warning: only found $cols / $ncols columns around data row: $row. Filling remaining columns with `missing`")
+@noinline toomanycolumns(cols, row) = @warn("thread = $(Threads.threadid()) warning: parsed expected $cols columns, but didn't reach end of line around data row: $row. Parsing extra columns and widening final columnset")
+@noinline stricterror(T, buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) error parsing $T around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))"))
+@noinline warning(T, buf, pos, len, code, row, col) = @warn("thread = $(Threads.threadid()) warning: error parsing $T around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code))")
+@noinline fatalerror(buf, pos, len, code, row, col) = throw(Error("thread = $(Threads.threadid()) fatal error, encountered an invalidly quoted field while parsing around row = $row, col = $col: \"$(String(buf[pos:pos+len-1]))\", error=$(Parsers.codes(code)), check your `quotechar` arguments or manually fix the field in the file itself"))
+@noinline toomanywwarnings() = @warn("thread = $(Threads.threadid()): too many warnings, silencing any further warnings")
