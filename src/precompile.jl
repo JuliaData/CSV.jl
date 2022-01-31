@@ -9,4 +9,17 @@ function _precompile_()
     for T in (Int64, Float64)
         precompile(parsevalue!, (Type{T}, Vector{UInt8}, Int, Int, Int, Int, Int, Column, Context))
     end
+
+    input="""
+    time, ping, label
+    1,25.7,x
+    2,31.8,y
+    """
+    function read_csv(input)
+        io = IOBuffer(input)
+        file = CSV.File(io)
+        close(io)
+        file
+    end
+    read_csv(input)
 end

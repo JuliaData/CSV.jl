@@ -558,8 +558,9 @@ end
 end
 
 @noinline function makeposlen!(col, T, ctx)
-    col.column = PosLenStringVector{T}(ctx.buf, col.column::Vector{PosLen}, ctx.options.e)
-    return col.column
+    c = PosLenStringVector{T}(ctx.buf, col.column::Vector{PosLen}, ctx.options.e)
+    col.column = c
+    return c
 end
 
 @noinline function parsefilechunk!(
@@ -627,7 +628,7 @@ Base.@propagate_inbounds function parserow(
     return pos
 end
 
-@noinline function parsecol(buf, pos, len, row, rowoffset, i, col, column, ctx)
+function parsecol(buf, pos, len, row, rowoffset, i, col, column, ctx)
     if ctx.transpose
         pos = col.position
     end
