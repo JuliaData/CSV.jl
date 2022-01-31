@@ -232,10 +232,7 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
     end
     # delete any dropped columns from names, columns
     names = ctx.names
-    if length(columns) > length(names)
-        # columns were widened during parsing, auto-generate trailing column names
-        names = makeunique(append!(names, [Symbol(:Column, i) for i = (length(names) + 1):length(columns)]))
-    end
+    length(columns) > length(names) && _generate_trailing!(names, columns)
     for i = length(columns):-1:1
         col = columns[i]
         if col.willdrop
@@ -244,7 +241,7 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
         end
     end
     types = Type[coltype(col) for col in columns]
-    lookup = Dict(k => v for (k, v) in zip(names, columns))
+    lookup = Dict{Symbol,Column}(k => v for (k, v) in zip(names, columns))
     ctx.debug && println("types after parsing: $types, pool = $(ctx.pool)")
     # for windows, it's particularly finicky about throwing errors when you try to modify an mmapped file
     # so we just want to make sure we finalize the input buffer so users don't run into surprises
@@ -257,6 +254,11 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
     end
     end # @inbounds begin
     return File(ctx.name, names, types, finalrows, length(columns), columns, lookup)
+end
+
+# columns were widened during parsing, auto-generate trailing column names
+function _generate_trailing!(names, columns)
+    makeunique(append!(names, [Symbol(:Column, i) for i = (length(names) + 1):length(columns)]))
 end
 
 function _ctx_single!(ctx, chunking)
@@ -276,8 +278,7 @@ function _ctx_single!(ctx, chunking)
             col.pool = 0.0
         end
         T = col.anymissing ? Union{col.type, Missing} : col.type
-        if maybepooled(col) &&
-            (col.type isa StringTypes || col.columnspecificpool) &&
+        if maybepooled(col) && (col.type isa StringTypes || col.columnspecificpool)
             checkpooled!(T, nothing, col, 0, 1, finalrows, ctx)
             # col.column is a PooledArray
         elseif col.type === PosLenString
@@ -673,47 +674,59 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
         if ctx.transpose
             col.position = pos
         else
-            if i < ncols
-                if Parsers.newline(code) || pos > len
-                    # in https://github.com/JuliaData/CSV.jl/issues/948,
-                    # it was noticed that if we reached the EOF right before parsing
-                    # the last expected column, then the warning is a bit spurious.
-                    # The final value is `missing` and the csv writer chose to just
-                    # "close" the file w/o including a final newline
-                    # we can treat this special-case as "valid" and not emit a warning
-                    if !(pos > len && i == (ncols - 1))
-                        ctx.silencewarnings || numwarnings[] > ctx.maxwarnings || notenoughcolumns(i, ncols, rowoffset + row)
-                        !ctx.silencewarnings && numwarnings[] == ctx.maxwarnings && toomanywwarnings()
-                        numwarnings[] += 1
-                    end
-                    for j = (i + 1):ncols
-                        columns[j].anymissing = true
-                    end
-                    break # from for i = 1:ncols
-                end
-            elseif pos <= len && !Parsers.newline(code)
-                # extra columns on this row, let's widen
-                ctx.silencewarnings || toomanycolumns(ncols, rowoffset + row)
-                j = i + 1
-                T = ctx.streaming ? Union{ctx.stringtype, Missing} : NeedsTypeDetection
-                while pos <= len && !Parsers.newline(code)
-                    col = Column(T, ctx.options)
-                    col.anymissing = ctx.streaming || rowoffset == 0 && row > 1 # assume all previous rows were missing
-                    col.pool = ctx.pool
-                    if T === NeedsTypeDetection
-                        pos, code = detectcell(buf, pos, len, row, rowoffset, j, col, ctx, rowsguess)
-                    else
-                        # need to allocate
-                        col.column = allocate(ctx.stringtype, ctx.rowsguess)
-                        pos, code = parsevalue!(ctx.stringtype, buf, pos, len, row, rowoffset, j, col, ctx)
-                    end
-                    j += 1
-                    push!(columns, col)
-                end
-            end
+            shouldbreak = _ctx_transpose!(columns, pos, code, ncols, len, i)
+            shouldbreak && break
         end
     end
     return pos
+end
+
+
+function _ctx_transpose!(columns, pos, code, ncols, len, i)
+    if i < ncols
+        if Parsers.newline(code) || pos > len
+            # in https://github.com/JuliaData/CSV.jl/issues/948,
+            # it was noticed that if we reached the EOF right before parsing
+            # the last expected column, then the warning is a bit spurious.
+            # The final value is `missing` and the csv writer chose to just
+            # "close" the file w/o including a final newline
+            # we can treat this special-case as "valid" and not emit a warning
+            if !(pos > len && i == (ncols - 1))
+                ctx.silencewarnings || numwarnings[] > ctx.maxwarnings || notenoughcolumns(i, ncols, rowoffset + row)
+                !ctx.silencewarnings && numwarnings[] == ctx.maxwarnings && toomanywwarnings()
+                numwarnings[] += 1
+            end
+            for j = (i + 1):ncols
+                columns[j].anymissing = true
+            end
+            # break # from for i = 1:ncols
+            return true
+        end
+    elseif pos <= len && !Parsers.newline(code)
+        _widen_columns(columns, code, ncols, i)
+    end
+    return false
+end
+
+function _widen_columns(columns, code, ncols, i)
+    # extra columns on this row, let's widen
+    ctx.silencewarnings || toomanycolumns(ncols, rowoffset + row)
+    j = i + 1
+    T = ctx.streaming ? Union{ctx.stringtype, Missing} : NeedsTypeDetection
+    while pos <= len && !Parsers.newline(code)
+        col = Column(T, ctx.options)
+        col.anymissing = ctx.streaming || rowoffset == 0 && row > 1 # assume all previous rows were missing
+        col.pool = ctx.pool
+        if T === NeedsTypeDetection
+            pos, code = detectcell(buf, pos, len, row, rowoffset, j, col, ctx, rowsguess)
+        else
+            # need to allocate
+            col.column = allocate(ctx.stringtype, ctx.rowsguess)
+            pos, code = parsevalue!(ctx.stringtype, buf, pos, len, row, rowoffset, j, col, ctx)
+        end
+        j += 1
+        push!(columns, col)
+    end
 end
 
 function detectcell(buf, pos, len, row, rowoffset, i, col, ctx, rowsguess)::Tuple{Int, Int16}
@@ -789,50 +802,55 @@ function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::
                 end
             end
         end
+        return pos + res.tlen, code
     else
-        # something went wrong parsing
-        if Parsers.invalidquotedfield(code)
-            # this usually means parsing is borked because of an invalidly quoted field, hard error
-            fatalerror(buf, pos, res.tlen, code, rowoffset + row, i)
-        end
-        if type !== Missing && type !== PosLenString && type !== String
-            if col.userprovidedtype
-                if !ctx.strict
-                    ctx.silencewarnings || warning(type, buf, pos, res.tlen, code, rowoffset + row, i)
-                    col.anymissing = true
-                else
-                    stricterror(type, buf, pos, res.tlen, code, rowoffset + row, i)
-                end
+        return parsers_invalid(type, buf, pos, len, row, rowoffset, i, col, ctx)
+    end
+end
+
+# something went wrong parsing
+function _parsers_invalid(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx) where type
+    if Parsers.invalidquotedfield(code)
+        # this usually means parsing is borked because of an invalidly quoted field, hard error
+        fatalerror(buf, pos, res.tlen, code, rowoffset + row, i)
+    end
+    if type !== Missing && type !== PosLenString && type !== String
+        if col.userprovidedtype
+            if !ctx.strict
+                ctx.silencewarnings || warning(type, buf, pos, res.tlen, code, rowoffset + row, i)
+                col.anymissing = true
             else
-                if type === Int8 || type === Int16 || type === Int32 || type === Int64 || type === Int128
-                    newT = _widen(type)
-                    while newT !== nothing && !Parsers.ok(code)
-                        newT = get(ctx.typemap, newT, newT)
-                        if newT isa StringTypes
-                            code |= PROMOTE_TO_STRING
-                            break
-                        end
-                        code = trytopromote!(type, newT, buf, pos, len, col, row)
-                        newT = _widen(newT)
+                stricterror(type, buf, pos, res.tlen, code, rowoffset + row, i)
+            end
+        else
+            if type === Int8 || type === Int16 || type === Int32 || type === Int64 || type === Int128
+                newT = _widen(type)
+                while newT !== nothing && !Parsers.ok(code)
+                    newT = get(ctx.typemap, newT, newT)
+                    if newT isa StringTypes
+                        code |= PROMOTE_TO_STRING
+                        break
                     end
-                elseif type === InlineString1 || type === InlineString3 || type === InlineString7 || type === InlineString15
-                    newT = widen(type)
-                    while newT !== InlineString63
-                        ret = _parseany(newT, buf, pos, len, opts)
-                        if !Parsers.invalid(ret.code)
-                            col.type = newT
-                            column = col.column
-                            col.column = convert(SentinelVector{newT}, col.column::vectype(type))
-                            @inbounds col.column[row] = ret.val
-                            return pos + ret.tlen, ret.code
-                        end
-                        newT = widen(newT)
-                    end
-                    #TODO: should we just convert(SentinelVector{String}) here?
-                    code |= PROMOTE_TO_STRING
-                else
-                    code |= PROMOTE_TO_STRING
+                    code = trytopromote!(type, newT, buf, pos, len, col, row)
+                    newT = _widen(newT)
                 end
+            elseif type === InlineString1 || type === InlineString3 || type === InlineString7 || type === InlineString15
+                newT = widen(type)
+                while newT !== InlineString63
+                    ret = _parseany(newT, buf, pos, len, opts)
+                    if !Parsers.invalid(ret.code)
+                        col.type = newT
+                        column = col.column
+                        col.column = convert(SentinelVector{newT}, col.column::vectype(type))
+                        @inbounds col.column[row] = ret.val
+                        return pos + ret.tlen, ret.code
+                    end
+                    newT = widen(newT)
+                end
+                #TODO: should we just convert(SentinelVector{String}) here?
+                code |= PROMOTE_TO_STRING
+            else
+                code |= PROMOTE_TO_STRING
             end
         end
     end
