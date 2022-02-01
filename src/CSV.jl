@@ -94,11 +94,11 @@ end
 include("precompile.jl")
 _precompile_()
 
-function __init__()
-    CSV.Context(IOBuffer(CSV.PRECOMPILE_DATA))
+# function __init__()
+    # CSV.Context(IOBuffer(CSV.PRECOMPILE_DATA))
     # CSV.File(IOBuffer(CSV.PRECOMPILE_DATA))
     # foreach(row -> row, CSV.Rows(IOBuffer(PRECOMPILE_DATA)))
     # CSV.File(joinpath(dirname(pathof(CSV)), "..", "test", "testfiles", "promotions.csv"))
-end
+# end
 
 end # module
