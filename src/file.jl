@@ -218,7 +218,7 @@ function File(source::ValidSources;
     # dateformats=nothing;decimal=UInt8('.');truestrings=nothing;falsestrings=nothing;type=nothing;types=nothing;typemap=Dict{Type,Type}();
     # pool=CSV.DEFAULT_POOL;downcast=false;lazystrings=false;stringtype=String;strict=false;silencewarnings=false;maxwarnings=100;debug=false;parsingdebug=false;buffer_in_memory=false
     # @descend CSV.Context(CSV.Arg(source), CSV.Arg(header), CSV.Arg(normalizenames), CSV.Arg(datarow), CSV.Arg(skipto), CSV.Arg(footerskip), CSV.Arg(transpose), CSV.Arg(comment), CSV.Arg(ignoreemptyrows), CSV.Arg(ignoreemptylines), CSV.Arg(select), CSV.Arg(drop), CSV.Arg(limit), CSV.Arg(buffer_in_memory), CSV.Arg(threaded), CSV.Arg(ntasks), CSV.Arg(tasks), CSV.Arg(rows_to_check), CSV.Arg(lines_to_check), CSV.Arg(missingstrings), CSV.Arg(missingstring), CSV.Arg(delim), CSV.Arg(ignorerepeated), CSV.Arg(quoted), CSV.Arg(quotechar), CSV.Arg(openquotechar), CSV.Arg(closequotechar), CSV.Arg(escapechar), CSV.Arg(dateformat), CSV.Arg(dateformats), CSV.Arg(decimal), CSV.Arg(truestrings), CSV.Arg(falsestrings), CSV.Arg(type), CSV.Arg(types), CSV.Arg(typemap), CSV.Arg(pool), CSV.Arg(downcast), CSV.Arg(lazystrings), CSV.Arg(stringtype), CSV.Arg(strict), CSV.Arg(silencewarnings), CSV.Arg(maxwarnings), CSV.Arg(debug), CSV.Arg(parsingdebug), CSV.Arg(false))
-    ctx = @refargs Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, threaded, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, stripwhitespace, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, validate, false)
+    ctx = Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, threaded, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, stripwhitespace, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, validate, false)
     return File(ctx)
 end
 
@@ -271,7 +271,6 @@ end
     # ctx.debug && println("time for initial parsing: $(Base.time() - t)")
     # cleanup our columns if needed
     for col in columns
-# @label processcolumn
         if col.type === NeedsTypeDetection
             # fill in uninitialized column fields
             col.type = Missing
@@ -281,8 +280,8 @@ end
         end
         T = col.anymissing ? Union{col.type, Missing} : col.type
         if maybepooled(col) && (col.type isa StringTypes || col.columnspecificpool)
-            # col.column is a PooledArray
             checkpooled!(T, nothing, col, 0, 1, finalrows, ctx)
+            # col.column is a PooledArray
         elseif col.type === PosLenString
             # string col parsed lazily; return a PosLenStringVector
             makeposlen!(col, coltype(col), ctx)
@@ -299,7 +298,7 @@ end
     if T === Bool
         convert(Vector{Bool}, column)::Vector{Bool}
     elseif T !== Union{} && T <: SmallIntegers
-        convert(Vector{T}, column)::Vector{T}
+        convert(Vector{T}, column)
     else
         parent(column)
     end
@@ -602,41 +601,59 @@ end
     return row, pos
 end
 
-Base.@propagate_inbounds function parserow(
-    startpos::Int, row::Int, numwarnings::Ref{Int}, ctx::Context, buf::Vector{UInt8}, pos::Int, len::Int, rowsguess::Int, rowoffset::Int, columns, ::Type{customtypes}
-)::Int where {customtypes}
+Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, ::Type{customtypes})::Int where {customtypes}
     # @show columns
     ncols = length(columns)
     for i = 1:ncols
         col = columns[i]
-        if col.type === NeedsTypeDetection
-            pos, code = detectcell!(col, buf, pos, len, row, rowoffset, i, ctx, rowsguess)
-        else
-            column = col.column
-            pos, code =  parsecol(buf, pos, len, row, rowoffset, i, col, column, ctx)
+        if ctx.transpose
+            pos = col.position
+        end
+        type = col.type
+        cellstartpos = pos
+        if type === NeedsTypeDetection
+            pos, code = detectcell(buf, pos, len, row, rowoffset, i, col, ctx, rowsguess)
+        elseif type === HardMissing
+            pos, code = parsevalue!(Missing, buf, pos, len, row, rowoffset, i, col, missing, ctx)
+        elseif isdefined(col, :column)
+            pos, code = parsecol(buf, pos, len, row, rowoffset, i, col, col.column, ctx)
+            if pos == code == -1
+                if customtypes !== Tuple{}
+                    pos, code = parsecustom!(customtypes, buf, pos, len, row, rowoffset, i, col, ctx)
+                else
+                    error("bad column type: $(col.type))")
+                end
+            end
         end
         if promote_to_string(code)
-            newT = _ctx_stringtype!(columns, pos, code, ncols, len, i)
+            # ctx.debug && println("promoting column i = $i to string from $(type) on chunk = $(Threads.threadid())")
+            if type <: InlineString
+                newT = String
+            elseif ctx.stringtype === InlineString
+                str = Parsers.xparse(String, buf, cellstartpos, len, col.options)
+                newT = pickstringtype(InlineString, str.val.len)
+            else
+                newT = ctx.stringtype
+            end
             promotetostring!(ctx, buf, startpos, len, rowsguess, rowoffset, columns, customtypes, i, numwarnings, row, newT)
         end
         if ctx.transpose
             col.position = pos
         else
-            _ctx_transpose!(columns, pos, code, ncols, len, i) && break
+            shouldbreak = _ctx_transpose!(columns, buf, pos, len, row, rowoffset, i, col, ctx, numwarnings, code, ncols)
+            shouldbreak && break
         end
     end
     return pos
 end
 
-function parsecol(buf, pos, len, row, rowoffset, i, col, column, ctx)
+function parsecol(buf, pos, len, row, rowoffset, i, col, column, ctx) where customtypes
     if ctx.transpose
         pos = col.position
     end
     type = col.type
     cellstartpos = pos
-    if type === HardMissing
-        pos, code = parsevalue!(Missing, buf, pos, len, row, rowoffset, i, col, column, ctx)
-    elseif type === Int8
+    if type === Int8
         pos, code = parsevalue!(Int8, buf, pos, len, row, rowoffset, i, col, column, ctx)
     elseif type === Int16
         pos, code = parsevalue!(Int16, buf, pos, len, row, rowoffset, i, col, column, ctx)
@@ -681,11 +698,8 @@ function parsecol(buf, pos, len, row, rowoffset, i, col, column, ctx)
     elseif type === Bool
         pos, code = parsevalue!(Bool, buf, pos, len, row, rowoffset, i, col, column, ctx)
     else
-        if customtypes !== Tuple{}
-            pos, code = parsecustom!(customtypes, buf, pos, len, row, rowoffset, i, col, ctx)
-        else
-            error("bad column type: $(type))")
-        end
+        # Simple failure code
+        pos, code = (-1, -1)
     end
     return pos, code
 end
@@ -702,7 +716,7 @@ end
     end
 end
 
-@noinline function _ctx_transpose!(columns, pos, code, ncols, len, i)
+@noinline function _ctx_transpose!(columns, buf, pos, len, row, rowoffset, i, col, ctx, numwarnings, code, ncols)
     if i < ncols
         if Parsers.newline(code) || pos > len
             # in https://github.com/JuliaData/CSV.jl/issues/948,
@@ -723,12 +737,12 @@ end
             return true
         end
     elseif pos <= len && !Parsers.newline(code)
-        _widen_columns(columns, code, ncols, i)
+        _widen_columns(columns, buf, pos, len, row, rowoffset, i, col, ctx, numwarnings, code, ncols)
     end
     return false
 end
 
-@noinline function _widen_columns(columns, code, ncols, i)
+@noinline function _widen_columns(columns, buf, pos, len, row, rowoffset, i, col, ctx, numwarnings, code, ncols)
     # extra columns on this row, let's widen
     ctx.silencewarnings || toomanycolumns(ncols, rowoffset + row)
     j = i + 1
@@ -738,63 +752,187 @@ end
         col.anymissing = ctx.streaming || rowoffset == 0 && row > 1 # assume all previous rows were missing
         col.pool = ctx.pool
         if T === NeedsTypeDetection
-            pos, code = detectcell!(col, buf, pos, len, row, rowoffset, j, ctx, rowsguess)
+            pos, code = detectcell(buf, pos, len, row, rowoffset, i, col, ctx, rowsguess)
         else
             # need to allocate
-            col.column = allocate(ctx.stringtype, ctx.rowsguess)
-            pos, code = parsevalue!(ctx.stringtype, buf, pos, len, row, rowoffset, j, col, col.column, ctx)
+            column = allocate(ctx.stringtype, ctx.rowsguess)
+            col.column = column
+            pos, code = parsevalue!(ctx.stringtype, buf, pos, len, row, rowoffset, j, col, column, ctx)
         end
         j += 1
         push!(columns, col)
     end
 end
 
-function detectcell!(
-    col::Column, buf::Vector{UInt8}, pos::Int, len::Int, row::Int, rowoffset::Int, i::Int, ctx::Context, rowsguess::Int
-)::Tuple{Int, Int16}
+function detectcell(buf, pos, len, row, rowoffset, i, col, ctx, rowsguess)::Tuple{Int, Int16}
     # debug && println("detecting on task $(Threads.threadid())")
     opts = col.options
     code, tlen, x, xT = detect(pass, buf, pos, len, opts, false, ctx.downcast, rowoffset + row, i)
     if x === missing
         col.anymissing = true
-        return pos + tlen, code
+        @goto finaldone
     end
     newT = ctx.stringtype
-    if !isnothing(x)
+    if x !== nothing
         # we found a non-missing value
         newT = get(ctx.typemap, typeof(x), typeof(x))
-        _nonnothing!(col, newT, buf, pos, len, tlen, opts, x, row, rowsguess, code)
+        if !(newT isa StringTypes)
+            if newT !== typeof(x)
+                # type-mapping typeof(x) => newT
+                # this ultimate call to Parsers.xparse has no hope in inference (because of the typeof(x) => newT mapping)
+                # so we "outline" the call and assert the types of everything but `y` to make sure `code` and `tlen` stay type stable
+                res = _parseany(newT, buf, pos, len, opts)
+                code, tlen = res.code, res.tlen
+                if Parsers.ok(code)
+                    val = res.val
+                    @goto done
+                end
+            else
+                val = x
+                @goto done
+            end
+        end
     end
+    # if we "fall through" to here, that means we either detected a string value
+    # or we're type-mapping from another detected type to string
     str = Parsers.xparse(String, buf, pos, len, opts)
-    poslen = str.val 
-    _stringtype!(col, newT, buf, poslen, row, rowsguess, opts)
+    poslen = str.val
+    if newT === InlineString && poslen.len < DEFAULT_MAX_INLINE_STRING_LENGTH
+        newT = InlineStringType(poslen.len)
+        val = newT(PosLenString(buf, poslen, opts.e))
+    elseif newT === PosLenString
+        newT = PosLenString
+        val = poslen
+    else
+        newT = String
+        val = Parsers.getstring(buf, poslen, opts.e)
+    end
+@label done
+    # if we're here, that means we found a non-missing value, so we need to update column
+    column = allocate(newT, rowsguess)
+    column[row] = val
+    col.column = column
+    col.type = newT
+@label finaldone
     return pos + tlen, code
 end
 
-function _nonnothing!(col, ::Type{newT}, buf, pos, len, tlen, opts, x, row, rowsguess, code) where newT
-    if !(newT isa StringTypes)
-        if newT !== typeof(x)
-            # type-mapping typeof(x) => newT
-            # this ultimate call to Parsers.xparse has no hope in inference (because of the typeof(x) => newT mapping)
-            # so we "outline" the call and assert the types of everything but `y` to make sure `code` and `tlen` stay type stable
-            res = _parseany(newT, buf, pos, len, opts)
-            code, tlen = res.code, res.tlen
-            if Parsers.ok(code)
+function parsevalue!(::Type{type}, buf, pos, len, row, rowoffset, i, col, ctx)::Tuple{Int, Int16} where {type}
+    opts = col.options
+    res = Parsers.xparse(type === Missing ? String : type, buf, pos, len, opts)
+    code = res.code
+    if !Parsers.invalid(code)
+        if type !== Missing
+            if Parsers.sentinel(code)
+                col.anymissing = true
+            else
+                column = col.column
                 val = res.val
-                _newcoltype!(col, newT, row, rowsguess, val)
-                return pos + tlen, code
+                if column isa Vector{PosLen} && val isa PosLen
+                    @inbounds (column::Vector{PosLen})[row] = val
+                elseif type === String
+                    @inbounds (column::SVec2{String})[row] = Parsers.getstring(buf, val, opts.e)
+                else
+                    @inbounds (column::vectype(type))[row] = val
+                end
             end
-        else
-            val = x
-            _newcoltype!(col, newT, row, rowsguess, val)
-            return pos + tlen, code
+        end
+    else
+        # something went wrong parsing
+        if Parsers.invalidquotedfield(code)
+            # this usually means parsing is borked because of an invalidly quoted field, hard error
+            fatalerror(buf, pos, res.tlen, code, rowoffset + row, i)
+        end
+        if type !== Missing && type !== PosLenString && type !== String
+            if col.userprovidedtype
+                if !ctx.strict
+                    ctx.silencewarnings || warning(type, buf, pos, res.tlen, code, rowoffset + row, i)
+                    col.anymissing = true
+                else
+                    stricterror(type, buf, pos, res.tlen, code, rowoffset + row, i)
+                end
+            else
+                if type === Int8 || type === Int16 || type === Int32 || type === Int64 || type === Int128
+                    newT = _widen(type)
+                    while newT !== nothing && !Parsers.ok(code)
+                        newT = get(ctx.typemap, newT, newT)
+                        if newT isa StringTypes
+                            code |= PROMOTE_TO_STRING
+                            break
+                        end
+                        code = trytopromote!(type, newT, buf, pos, len, col, row)
+                        newT = _widen(newT)
+                    end
+                elseif type === InlineString1 || type === InlineString3 || type === InlineString7 || type === InlineString15
+                    newT = widen(type)
+                    while newT !== InlineString63
+                        ret = _parseany(newT, buf, pos, len, opts)
+                        if !Parsers.invalid(ret.code)
+                            col.type = newT
+                            column = col.column
+                            col.column = convert(SentinelVector{newT}, col.column::vectype(type))
+                            @inbounds col.column[row] = ret.val
+                            return pos + ret.tlen, ret.code
+                        end
+                        newT = widen(newT)
+                    end
+                    #TODO: should we just convert(SentinelVector{String}) here?
+                    code |= PROMOTE_TO_STRING
+                else
+                    code |= PROMOTE_TO_STRING
+                end
+            end
         end
     end
-    str = Parsers.xparse(String, buf, pos, len, opts)
-    poslen = str.val 
-    _stringtype!(col, newT, buf, poslen, row, rowsguess, opts)
-    return pos + tlen, code
+    return pos + res.tlen, code
 end
+
+# function detectcell!(
+#     col::Column, buf::Vector{UInt8}, pos::Int, len::Int, row::Int, rowoffset::Int, i::Int, ctx::Context, rowsguess::Int
+# )::Tuple{Int, Int16}
+#     # debug && println("detecting on task $(Threads.threadid())")
+#     opts = col.options
+#     code, tlen, x, xT = detect(pass, buf, pos, len, opts, false, ctx.downcast, rowoffset + row, i)
+#     if x === missing
+#         col.anymissing = true
+#         return pos + tlen, code
+#     end
+#     newT = ctx.stringtype
+#     if !isnothing(x)
+#         # we found a non-missing value
+#         newT = get(ctx.typemap, typeof(x), typeof(x))
+#         _nonnothing!(col, newT, buf, pos, len, tlen, opts, x, row, rowsguess, code)
+#     end
+#     str = Parsers.xparse(String, buf, pos, len, opts)
+#     poslen = str.val 
+#     _stringtype!(col, newT, buf, poslen, row, rowsguess, opts)
+#     return pos + tlen, code
+# end
+
+# function _nonnothing!(col, ::Type{newT}, buf, pos, len, tlen, opts, x, row, rowsguess, code) where newT
+#     if !(newT isa StringTypes)
+#         if newT !== typeof(x)
+#             # type-mapping typeof(x) => newT
+#             # this ultimate call to Parsers.xparse has no hope in inference (because of the typeof(x) => newT mapping)
+#             # so we "outline" the call and assert the types of everything but `y` to make sure `code` and `tlen` stay type stable
+#             res = _parseany(newT, buf, pos, len, opts)
+#             code, tlen = res.code, res.tlen
+#             if Parsers.ok(code)
+#                 val = res.val
+#                 _newcoltype!(col, newT, row, rowsguess, val)
+#                 return pos + tlen, code
+#             end
+#         else
+#             val = x
+#             _newcoltype!(col, newT, row, rowsguess, val)
+#             return pos + tlen, code
+#         end
+#     end
+#     str = Parsers.xparse(String, buf, pos, len, opts)
+#     poslen = str.val 
+#     _stringtype!(col, newT, buf, poslen, row, rowsguess, opts)
+#     return pos + tlen, code
+# end
 
 # if we "fall through" to here, that means we either detected a string value
 # or we're type-mapping from another detected type to string

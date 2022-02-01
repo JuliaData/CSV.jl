@@ -453,7 +453,7 @@ _widen(::Type{Float64}) = nothing
     return Parsers.xparse(T, buf, pos, len, opts, Any)
 end
 
-@inline function detect(cb, buf, pos, len, opts, ensure_full_buf_consumed=true, downcast=false, row=0, col=0)
+@noinline function detect(cb, buf, pos, len, opts, ensure_full_buf_consumed=true, downcast=false, row=0, col=0)
     int = Parsers.xparse(Int, buf, pos, len, opts)
     code, tlen = int.code, int.tlen
     if Parsers.invalidquotedfield(code)
