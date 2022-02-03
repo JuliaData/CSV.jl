@@ -105,11 +105,12 @@ struct Context
     datarow::Int
     options::Parsers.Options
     columns::Vector{Column}
-    pool::Union{Float64, Tuple{Float64, Int}}
+    pool::Float64
+    poollimit::Int
     downcast::Bool
     customtypes::Type
     typemap::Dict{Type, Type}
-    stringtype::StringTypes
+    stringtype::Type
     limit::Int
     threaded::Bool
     ntasks::Int
@@ -140,13 +141,9 @@ function Context(source::ValidSources;
     drop=nothing,
     limit::Union{Integer, Nothing}=nothing,
     buffer_in_memory::Bool=false,
-    threaded::Union{Bool, Nothing}=nothing,
     ntasks::Union{Nothing, Integer}=nothing,
-    tasks::Union{Nothing, Integer}=nothing,
     rows_to_check::Integer=DEFAULT_ROWS_TO_CHECK,
-    lines_to_check=nothing,
     # parsing options
-    missingstrings=String[],
     missingstring="",
     delim::Union{Nothing, Char, String}=nothing,
     ignorerepeated::Bool=false,
@@ -165,9 +162,9 @@ function Context(source::ValidSources;
     type=nothing,
     types=nothing,
     typemap::Dict=Dict{Type, Type}(),
-    pool=DEFAULT_POOL,
+    pool=DEFAULT_POOL[1],
+    poollimit=DEFAULT_POOL[2],
     downcast::Bool=false,
-    lazystrings::Bool=false,
     stringtype::StringTypes=DEFAULT_STRINGTYPE,
     strict::Bool=false,
     silencewarnings::Bool=false,
@@ -176,7 +173,7 @@ function Context(source::ValidSources;
     parsingdebug::Bool=false,
     validate::Bool=true,
     )
-    return Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, threaded, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, stripwhitespace, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, validate, false)
+    return Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, ntasks, rows_to_check, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, stripwhitespace, type, types, typemap, pool, downcast, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, validate, false)
 end
 
 function Context(source::ValidSources,
@@ -195,13 +192,9 @@ function Context(source::ValidSources,
     drop,
     limit::Union{Integer, Nothing},
     buffer_in_memory::Bool,
-    threaded::Union{Nothing, Bool},
     ntasks::Union{Nothing, Integer},
-    tasks::Union{Nothing, Integer},
     rows_to_check::Integer,
-    lines_to_check::Union{Nothing, Integer},
     # parsing options
-    missingstrings::Union{Nothing, String, Vector{String}},
     missingstring::Union{Nothing, String, Vector{String}},
     delim::Union{Nothing, UInt8, Char, String},
     ignorerepeated::Bool,
@@ -222,7 +215,6 @@ function Context(source::ValidSources,
     typemap::Dict,
     pool::Union{Bool, Real, AbstractVector, AbstractDict, Base.Callable, Tuple},
     downcast::Bool,
-    lazystrings::Bool,
     stringtype::StringTypes,
     strict::Bool,
     silencewarnings::Bool,
@@ -233,56 +225,161 @@ function Context(source::ValidSources,
     streaming::Bool)
 
     # initial argument validation and adjustment
-    @inbounds begin
+    # @inbounds begin
     ((source isa AbstractString || source isa AbstractPath) && !isfile(source)::Bool) && throw(ArgumentError("\"$source\" is not a valid file or doesn't exist"))
-    if types !== nothing
-        if types isa AbstractVector
-            any(x->!concrete_or_concreteunion(x), types) && nonconcretetypes(types)
-        elseif types isa AbstractDict
-            typs = values(types)
-            any(x->!concrete_or_concreteunion(x), typs) && nonconcretetypes(typs)
-        elseif types isa Type
-            concrete_or_concreteunion(types) || nonconcretetypes(types)
+    # FIXME seems to do nothing?
+    # if types !== nothing
+    #     if types isa AbstractVector
+    #         any(x->!concrete_or_concreteunion(x), types) && nonconcretetypes(types)
+    #     elseif types isa AbstractDict
+    #         typs = values(types)
+    #         any(x->!concrete_or_concreteunion(x), typs) && nonconcretetypes(typs)
+    #     elseif types isa Type
+    #         concrete_or_concreteunion(types) || nonconcretetypes(types)
+    #     end
+    # end
+
+    skipto = _getskipto(skipto, header, debug)
+    # getsource will turn any input into a `AbstractVector{UInt8}`
+    buf, pos, len, tempfile = getsource(source, buffer_in_memory)
+    if len > MAX_INPUT_SIZE
+        throw(ArgumentError("delimited source to parse too large; must be < $MAX_INPUT_SIZE bytes"))
+    end
+    # skip over initial BOM character, if present
+    pos = consumeBOM(buf, pos)
+
+    oq = something(openquotechar, quotechar) % UInt8
+    eq = escapechar % UInt8
+    cq = something(closequotechar, quotechar) % UInt8
+    trues = truestrings === nothing ? nothing : truestrings
+    falses = falsestrings === nothing ? nothing : falsestrings
+    sentinel = missingstring === nothing ? missingstring : (isempty(missingstring) || (missingstring isa Vector && length(missingstring) == 1 && missingstring[1] == "")) ? missing : missingstring isa String ? [missingstring] : missingstring
+    
+    headerpos, datapos, options, rowsguess = _getdelim(source, header, skipto, debug, delim, dateformat, pos, footerskip, sentinel, transpose, buf, len, oq, cq, eq, decimal, trues, falses, ignorerepeated, ignoreemptyrows, comment, quoted, parsingdebug, stripwhitespace)
+
+    if !transpose
+        # step 4a: if we're ignoring repeated delimiters, then we ignore any
+        # that start a row, so we need to check if we need to adjust our headerpos/datapos
+        if ignorerepeated
+            if headerpos > 0
+                headerpos = Parsers.checkdelim!(buf, headerpos, len, options)
+            end
+            datapos = Parsers.checkdelim!(buf, datapos, len, options)
+        end
+
+        # step 4b: generate or parse column names
+        names = detectcolumnnames(buf, headerpos, datapos, len, options, header, normalizenames)
+        ncols = length(names)
+    else
+        # transpose
+        rowsguess, names, positions, endpositions = detecttranspose(buf, pos, len, options, header, skipto, normalizenames)
+        ncols = length(names)
+        datapos = isempty(positions) ? 0 : positions[1]
+    end
+    # debug && println("column names detected: $names")
+    # debug && println("byte position of data computed at: $datapos")
+
+    # generate initial columns
+    # deduce initial column types/flags for parsing based on whether any user-provided types were provided or not
+    columns, customtypes = _generate_columns(types, streaming, ncols, options, typemap, validate) 
+
+    if transpose
+        # set column positions
+        for i = 1:ncols
+            col = columns[i]
+            col.position = positions[i]
+            col.endposition = endpositions[i]
         end
     end
-    checkvaliddelim(delim)
-    ignorerepeated && delim === nothing && throw(ArgumentError("auto-delimiter detection not supported when `ignorerepeated=true`; please provide delimiter like `delim=','`"))
-    if lazystrings && !streaming
-        @warn "`lazystrings` keyword argument is deprecated; use `stringtype=PosLenString` instead"
-        stringtype = PosLenString
+
+    # generate column options if applicable
+    if dateformat isa AbstractDict
+        for i = 1:ncols
+            df = getordefault(dateformat, names[i], i, nothing)
+            # devdoc: if we want to add any other column-specific parsing options, this is where we'd at the logic
+            # e.g. per-column sentinel, decimal, trues, falses, openquotechar, closequotechar, escapechar, etc.
+            if df !== nothing
+                columns[i].options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, true, parsingdebug, stripwhitespace)
+            end
+        end
+        validate && checkinvalidcolumns(dateformat, "dateformat", ncols, names)
+        return nothing
     end
-    if tasks !== nothing
-        @warn "`tasks` keyword argument is deprecated; use `ntasks` instead"
-        ntasks = tasks
+
+
+    # pool keyword
+    finalpool, finalpoollimit = _setpool!(columns, pool, streaming, validate)
+
+    # figure out if we'll drop any columns while parsing
+    # debug && println("computed types are: $types")
+    _setdropcols!(columns, drop, select) 
+
+    # determine if we can use threads while parsing
+    limit = something(limit, typemax(Int))
+    minrows = min(limit, rowsguess)
+    nthreads = Int(something(ntasks, Threads.nthreads()))
+    if ntasks === nothing && !streaming && nthreads > 1 && !transpose && minrows > (nthreads * 5) && (minrows * ncols) >= 5_000
+        threaded = true
+        ntasks = nthreads
+    elseif ntasks !== nothing && ntasks > 1
+        threaded = true
+        if transpose
+            @warn "`ntasks > 1` not supported on transposed files"
+            threaded = false
+            ntasks = 1
+        elseif minrows < (nthreads * 5)
+            @warn "`ntasks > 1` but there were not enough estimated rows ($minrows) to justify multithreaded parsing"
+            threaded = false
+            ntasks = 1
+        end
+    else
+        threaded = false
+        ntasks = 1
     end
-    if ignoreemptylines !== nothing
-        @warn "`ignoreemptylines` keyword argument is deprecated; use `ignoreemptyrows` instead"
-        ignoreemptyrows = ignoreemptylines
+    # attempt to chunk up a file for multithreaded parsing; there's chance we can't figure out how to accurately chunk
+    # due to quoted fields, so threaded might get set to false
+    if threaded
+        threaded, rowsguess, len = _threadrows(buf, options, ncols, columns, stringtype, typemap, downcast, rowsguess, limit, ntasks, debug, len)
+    else
+        chunkpositions = EMPTY_INT_ARRAY
     end
-    if lines_to_check !== nothing
-        @warn "`lines_to_check` keyword argument is deprecated; use `rows_to_check` instead"
-        rows_to_check = lines_to_check
+    if !threaded && limit < rowsguess
+        rowsguess = limit
     end
-    if !isempty(missingstrings)
-        @warn "`missingstrings` keyword argument is deprecated; pass a `Vector{String}` to `missingstring` instead"
-        missingstring = missingstrings
-    end
-    if dateformats !== nothing
-        @warn "`dateformats` keyword argument is deprecated; pass column date formats to `dateformat` keyword argument instead"
-        dateformat = dateformats
-    end
-    if datarow != -1
-        @warn "`datarow` keyword argument is deprecated; use `skipto` instead"
-        skipto = datarow
-    end
-    if type !== nothing
-        @warn "`type` keyword argument is deprecated; a single type can be passed to `types` instead"
-        types = type
-    end
-    if threaded !== nothing
-        @warn "`threaded` keyword argument is deprecated; to avoid multithreaded parsing, pass `ntasks=1`"
-        ntasks = threaded ? Threads.nthreads() : 1
-    end
+
+    # end # @inbounds begin
+    return Context(
+        transpose,
+        getname(source),
+        names,
+        rowsguess,
+        ncols,
+        buf,
+        datapos,
+        len,
+        skipto,
+        options,
+        columns,
+        finalpool,
+        finalpoollimit,
+        downcast,
+        customtypes,
+        typemap,
+        stringtype,
+        limit,
+        threaded,
+        ntasks,
+        chunkpositions,
+        strict,
+        silencewarnings,
+        maxwarnings,
+        debug,
+        tempfile,
+        streaming
+    )
+end
+
+@noinline function _getskipto(skipto::Int, header::Int, debug::Bool)
     if header isa Integer
         if header == 1 && skipto == 1
             header = -1
@@ -301,21 +398,192 @@ function Context(source::ValidSources,
         end
     end
     debug && println("header is: $header, skipto computed as: $skipto")
-    # getsource will turn any input into a `AbstractVector{UInt8}`
-    buf, pos, len, tempfile = getsource(source, buffer_in_memory)
-    if len > MAX_INPUT_SIZE
-        throw(ArgumentError("delimited source to parse too large; must be < $MAX_INPUT_SIZE bytes"))
+    return skipto
+end
+
+@noinline function _threadrows(buf, options, ncols, columns, stringtype, typemap, downcast, rowsguess::Int, limit::Int, ntasks::Int, debug::Bool, len)
+    # when limiting w/ multithreaded parsing, we try to guess about where in the file the limit row # will be
+    # then adjust our final file len to the end of that row
+    # we add some cushion so we hopefully get the limit row correctly w/o shooting past too far and needing to resize! down
+    # but we also don't guarantee limit will be exact w/ multithreaded parsing
+    origrowsguess = rowsguess
+    if limit !== typemax(Int)
+        limit = Int(limit)
+        limitposguess = ceil(Int, (limit / (origrowsguess * 0.8)) * len)
+        newlen = [0, limitposguess, min(limitposguess * 2, len)]
+        findrowstarts!(buf, options, newlen, ncols, columns, stringtype, typemap, downcast, 5)
+        len = newlen[2] - 1
+        origrowsguess = limit
+        debug && println("limiting, adjusting len to $len")
     end
-    # skip over initial BOM character, if present
-    pos = consumeBOM(buf, pos)
+    chunksize = div(len - datapos, ntasks)
+    chunkpositions = Vector{Int}(undef, ntasks + 1)
+    for i = 0:ntasks
+        chunkpositions[i + 1] = i == 0 ? datapos : i == ntasks ? len : (datapos + chunksize * i)
+    end
+    debug && println("initial byte positions before adjusting for start of rows: $chunkpositions")
+    avgbytesperrow, successfullychunked = findrowstarts!(buf, options, chunkpositions, ncols, columns, stringtype, typemap, downcast, rows_to_check)
+    if successfullychunked
+        origbytesperrow = ((len - datapos) / origrowsguess)
+        weightedavgbytesperrow = ceil(Int, avgbytesperrow * ((ntasks - 1) / ntasks) + origbytesperrow * (1 / ntasks))
+        rowsguess = ceil(Int, ((len - datapos) / weightedavgbytesperrow) * 1.01)
+        debug && println("single-threaded estimated rows = $origrowsguess, multi-threaded estimated rows = $rowsguess")
+        debug && println("multi-threaded column types sampled as: $columns")
+        threaded = true
+    else
+        debug && println("something went wrong chunking up a file for multithreaded parsing, falling back to single-threaded parsing")
+        threaded = false
+    end
+    return threaded, rowsguess, len
+end
 
-    oq = something(openquotechar, quotechar) % UInt8
-    eq = escapechar % UInt8
-    cq = something(closequotechar, quotechar) % UInt8
-    trues = truestrings === nothing ? nothing : truestrings
-    falses = falsestrings === nothing ? nothing : falsestrings
-    sentinel = missingstring === nothing ? missingstring : (isempty(missingstring) || (missingstring isa Vector && length(missingstring) == 1 && missingstring[1] == "")) ? missing : missingstring isa String ? [missingstring] : missingstring
+@noinline function _setpool!(columns, pool, streaming::Bool, validate)
+    finalpool = 0.0
+    finalpoollimit = typemax(Int)
+    if !streaming
+        if pool isa AbstractVector
+            length(pool) == ncols || throw(ArgumentError("provided `pool::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(pool)) != $ncols`"))
+            for i = 1:ncols
+                col = columns[i]
+                col.pool, col.poollimit = getpool(pool[i])
+            end
+        elseif pool isa AbstractDict
+            for i = 1:ncols
+                col = columns[i]
+                p = getordefault(pool, names[i], i, NaN)
+                if !isnan(p)
+                    col.pool, col.poollimit = getpool(p)
+                end
+            end
+            validate && checkinvalidcolumns(pool, "pool", ncols, names)
+        elseif pool isa Base.Callable
+            for i = 1:ncols
+                col = columns[i]
+                p = pool(i, names[i])
+                if p !== nothing
+                    col.pool, col.poollimit = getpool(p)
+                    col.columnspecificpool = true
+                end
+            end
+        else
+            finalpool, finalpoollimit = getpool(pool)
+            for col in columns
+                col.pool, col.poollimit = finalpool, finalpoollimit
+            end
+        end
+    end
+    return finalpool, finalpoollimit
+end
 
+
+@noinline function _generate_columns(types, streaming, ncols, options, typemap, validate) 
+    customtypes = Tuple{}
+    if types isa AbstractVector
+        length(types) == ncols || throw(ArgumentError("provided `types::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(types)) != $ncols`"))
+        columns = Vector{Column}(undef, ncols)
+        for i = 1:ncols
+            col = Column(types[i], options)
+            columns[i] = col
+            if nonstandardtype(col.type) !== Union{}
+                customtypes = tupcat(customtypes, nonstandardtype(col.type))
+            end
+        end
+    elseif types isa AbstractDict
+        T = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
+        columns = Vector{Column}(undef, ncols)
+        for i = 1:ncols
+            S = getordefault(types, names[i], i, T)
+            col = Column(S, options)
+            columns[i] = col
+            if nonstandardtype(col.type) !== Union{}
+                customtypes = tupcat(customtypes, nonstandardtype(col.type))
+            end
+        end
+        validate && checkinvalidcolumns(types, "types", ncols, names)
+    elseif types isa Function
+        defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
+        columns = Vector{Column}(undef, ncols)
+        for i = 1:ncols
+            T = something(types(i, names[i]), defaultT)
+            col = Column(T, options)
+            columns[i] = col
+            if nonstandardtype(col.type) !== Union{}
+                customtypes = tupcat(customtypes, nonstandardtype(col.type))
+            end
+        end
+    else
+        T = types === nothing ? (streaming ? Union{stringtype, Missing} : NeedsTypeDetection) : types
+        if nonstandardtype(T) !== Union{}
+            customtypes = tupcat(customtypes, nonstandardtype(T))
+        end
+        columns = Vector{Column}(undef, ncols)
+        for i = 1:ncols
+            col = Column(T, options)
+            columns[i] = col
+        end
+    end
+    # check for nonstandard types in typemap
+    for T in values(typemap)
+        if nonstandardtype(T) !== Union{}
+            customtypes = tupcat(customtypes, nonstandardtype(T))
+        end
+    end
+    return columns, customtypes
+end
+
+@noinline _setdropcols!(columns, drop::Nothing, select::Nothing) = nothing 
+@noinline function _setdropcols!(columns, drop, select) 
+    throw(ArgumentError("`select` and `drop` keywords were both provided; only one or the other is allowed"))
+end
+@noinline function _setdropcols!(columns, drop::Nothing, select) 
+    if select isa AbstractVector{Bool}
+        for i = 1:ncols
+            select[i] || willdrop!(columns, i)
+        end
+    elseif select isa AbstractVector{<:Integer}
+        for i = 1:ncols
+            i in select || willdrop!(columns, i)
+        end
+    elseif select isa AbstractVector{Symbol} || select isa AbstractVector{<:AbstractString}
+        select = map(Symbol, select)
+        for i = 1:ncols
+            names[i] in select || willdrop!(columns, i)
+        end
+    elseif select isa Base.Callable
+        for i = 1:ncols
+            select(i, names[i])::Bool || willdrop!(columns, i)
+        end
+    else
+        throw(ArgumentError("`select` keyword argument must be an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a selector function of the form `(i, name) -> keep::Bool`"))
+    end
+    return nothing
+end
+@noinline function _setdropcols!(columns, drop, select::Nothing) 
+    if drop isa AbstractVector{Bool}
+        for i = 1:ncols
+            drop[i] && willdrop!(columns, i)
+        end
+    elseif drop isa AbstractVector{<:Integer}
+        for i = 1:ncols
+            i in drop && willdrop!(columns, i)
+        end
+    elseif drop isa AbstractVector{Symbol} || drop isa AbstractVector{<:AbstractString}
+        drop = map(Symbol, drop)
+        for i = 1:ncols
+            names[i] in drop && willdrop!(columns, i)
+        end
+    elseif drop isa Base.Callable
+        for i = 1:ncols
+            drop(i, names[i])::Bool && willdrop!(columns, i)
+        end
+    else
+        throw(ArgumentError("`drop` keyword argument must be an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a selector function of the form `(i, name) -> keep::Bool`"))
+    end
+    return nothing
+end
+
+
+@noinline function _getdelim(source, header, skipto, debug, delim, dateformat, pos, footerskip, sentinel, transpose, buf, len, oq, cq, eq, decimal, trues, falses, ignorerepeated, ignoreemptyrows, comment, quoted, parsingdebug, stripwhitespace)
     if delim === nothing
         if source isa AbstractString || source isa AbstractPath
             filename = string(source)
@@ -376,279 +644,7 @@ function Context(source::ValidSources,
     else
         error("invalid delim type")
     end
-    debug && println("estimated rows: $rowsguess")
-    debug && println("detected delimiter: \"$(escape_string(d isa UInt8 ? string(Char(d)) : d))\"")
-
-    if !transpose
-        # step 4a: if we're ignoring repeated delimiters, then we ignore any
-        # that start a row, so we need to check if we need to adjust our headerpos/datapos
-        if ignorerepeated
-            if headerpos > 0
-                headerpos = Parsers.checkdelim!(buf, headerpos, len, options)
-            end
-            datapos = Parsers.checkdelim!(buf, datapos, len, options)
-        end
-
-        # step 4b: generate or parse column names
-        names = detectcolumnnames(buf, headerpos, datapos, len, options, header, normalizenames)
-        ncols = length(names)
-    else
-        # transpose
-        rowsguess, names, positions, endpositions = detecttranspose(buf, pos, len, options, header, skipto, normalizenames)
-        ncols = length(names)
-        datapos = isempty(positions) ? 0 : positions[1]
-    end
-    debug && println("column names detected: $names")
-    debug && println("byte position of data computed at: $datapos")
-
-    # generate initial columns
-    # deduce initial column types/flags for parsing based on whether any user-provided types were provided or not
-    customtypes = Tuple{}
-    if types isa AbstractVector
-        length(types) == ncols || throw(ArgumentError("provided `types::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(types)) != $ncols`"))
-        columns = Vector{Column}(undef, ncols)
-        for i = 1:ncols
-            col = Column(types[i], options)
-            columns[i] = col
-            if nonstandardtype(col.type) !== Union{}
-                customtypes = tupcat(customtypes, nonstandardtype(col.type))
-            end
-        end
-    elseif types isa AbstractDict
-        T = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
-        columns = Vector{Column}(undef, ncols)
-        for i = 1:ncols
-            S = getordefault(types, names[i], i, T)
-            col = Column(S, options)
-            columns[i] = col
-            if nonstandardtype(col.type) !== Union{}
-                customtypes = tupcat(customtypes, nonstandardtype(col.type))
-            end
-        end
-        validate && checkinvalidcolumns(types, "types", ncols, names)
-    elseif types isa Function
-        defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
-        columns = Vector{Column}(undef, ncols)
-        for i = 1:ncols
-            T = something(types(i, names[i]), defaultT)
-            col = Column(T, options)
-            columns[i] = col
-            if nonstandardtype(col.type) !== Union{}
-                customtypes = tupcat(customtypes, nonstandardtype(col.type))
-            end
-        end
-    else
-        T = types === nothing ? (streaming ? Union{stringtype, Missing} : NeedsTypeDetection) : types
-        if nonstandardtype(T) !== Union{}
-            customtypes = tupcat(customtypes, nonstandardtype(T))
-        end
-        columns = Vector{Column}(undef, ncols)
-        for i = 1:ncols
-            col = Column(T, options)
-            columns[i] = col
-        end
-    end
-    if transpose
-        # set column positions
-        for i = 1:ncols
-            col = columns[i]
-            col.position = positions[i]
-            col.endposition = endpositions[i]
-        end
-    end
-    # check for nonstandard types in typemap
-    for T in values(typemap)
-        if nonstandardtype(T) !== Union{}
-            customtypes = tupcat(customtypes, nonstandardtype(T))
-        end
-    end
-
-    # generate column options if applicable
-    if dateformat isa AbstractDict
-        for i = 1:ncols
-            df = getordefault(dateformat, names[i], i, nothing)
-            # devdoc: if we want to add any other column-specific parsing options, this is where we'd at the logic
-            # e.g. per-column sentinel, decimal, trues, falses, openquotechar, closequotechar, escapechar, etc.
-            if df !== nothing
-                columns[i].options = Parsers.Options(sentinel, wh1, wh2, oq, cq, eq, d, decimal, trues, falses, df, ignorerepeated, ignoreemptyrows, comment, true, parsingdebug, stripwhitespace)
-            end
-        end
-        validate && checkinvalidcolumns(dateformat, "dateformat", ncols, names)
-    end
-
-    # pool keyword
-    finalpool = 0.0
-    if !streaming
-        if pool isa AbstractVector
-            length(pool) == ncols || throw(ArgumentError("provided `pool::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(pool)) != $ncols`"))
-            for i = 1:ncols
-                col = columns[i]
-                col.pool, col.poollimit = getpool(pool[i])
-            end
-        elseif pool isa AbstractDict
-            for i = 1:ncols
-                col = columns[i]
-                p = getordefault(pool, names[i], i, NaN)
-                if !isnan(p)
-                    col.pool, col.poollimit = getpool(p)
-                end
-            end
-            validate && checkinvalidcolumns(pool, "pool", ncols, names)
-        elseif pool isa Base.Callable
-            for i = 1:ncols
-                col = columns[i]
-                p = pool(i, names[i])
-                if p !== nothing
-                    col.pool, col.poollimit = getpool(p)
-                    col.columnspecificpool = true
-                end
-            end
-        else
-            finalpool, finalpoollimit = getpool(pool)
-            for col in columns
-                col.pool, col.poollimit = finalpool, finalpoollimit
-            end
-        end
-    end
-
-    # figure out if we'll drop any columns while parsing
-    if select !== nothing && drop !== nothing
-        throw(ArgumentError("`select` and `drop` keywords were both provided; only one or the other is allowed"))
-    elseif select !== nothing
-        if select isa AbstractVector{Bool}
-            for i = 1:ncols
-                select[i] || willdrop!(columns, i)
-            end
-        elseif select isa AbstractVector{<:Integer}
-            for i = 1:ncols
-                i in select || willdrop!(columns, i)
-            end
-        elseif select isa AbstractVector{Symbol} || select isa AbstractVector{<:AbstractString}
-            select = map(Symbol, select)
-            for i = 1:ncols
-                names[i] in select || willdrop!(columns, i)
-            end
-        elseif select isa Base.Callable
-            for i = 1:ncols
-                select(i, names[i])::Bool || willdrop!(columns, i)
-            end
-        else
-            throw(ArgumentError("`select` keyword argument must be an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a selector function of the form `(i, name) -> keep::Bool`"))
-        end
-    elseif drop !== nothing
-        if drop isa AbstractVector{Bool}
-            for i = 1:ncols
-                drop[i] && willdrop!(columns, i)
-            end
-        elseif drop isa AbstractVector{<:Integer}
-            for i = 1:ncols
-                i in drop && willdrop!(columns, i)
-            end
-        elseif drop isa AbstractVector{Symbol} || drop isa AbstractVector{<:AbstractString}
-            drop = map(Symbol, drop)
-            for i = 1:ncols
-                names[i] in drop && willdrop!(columns, i)
-            end
-        elseif drop isa Base.Callable
-            for i = 1:ncols
-                drop(i, names[i])::Bool && willdrop!(columns, i)
-            end
-        else
-            throw(ArgumentError("`drop` keyword argument must be an `AbstractVector` of `Int`, `Symbol`, `String`, or `Bool`, or a selector function of the form `(i, name) -> keep::Bool`"))
-        end
-    end
-    debug && println("computed types are: $types")
-
-    # determine if we can use threads while parsing
-    limit = something(limit, typemax(Int))
-    minrows = min(limit, rowsguess)
-    nthreads = Int(something(ntasks, Threads.nthreads()))
-    if ntasks === nothing && !streaming && nthreads > 1 && !transpose && minrows > (nthreads * 5) && (minrows * ncols) >= 5_000
-        threaded = true
-        ntasks = nthreads
-    elseif ntasks !== nothing && ntasks > 1
-        threaded = true
-        if transpose
-            @warn "`ntasks > 1` not supported on transposed files"
-            threaded = false
-            ntasks = 1
-        elseif minrows < (nthreads * 5)
-            @warn "`ntasks > 1` but there were not enough estimated rows ($minrows) to justify multithreaded parsing"
-            threaded = false
-            ntasks = 1
-        end
-    else
-        threaded = false
-        ntasks = 1
-    end
-    # attempt to chunk up a file for multithreaded parsing; there's chance we can't figure out how to accurately chunk
-    # due to quoted fields, so threaded might get set to false
-    if threaded
-        # when limiting w/ multithreaded parsing, we try to guess about where in the file the limit row # will be
-        # then adjust our final file len to the end of that row
-        # we add some cushion so we hopefully get the limit row correctly w/o shooting past too far and needing to resize! down
-        # but we also don't guarantee limit will be exact w/ multithreaded parsing
-        origrowsguess = rowsguess
-        if limit !== typemax(Int)
-            limit = Int(limit)
-            limitposguess = ceil(Int, (limit / (origrowsguess * 0.8)) * len)
-            newlen = [0, limitposguess, min(limitposguess * 2, len)]
-            findrowstarts!(buf, options, newlen, ncols, columns, stringtype, typemap, downcast, 5)
-            len = newlen[2] - 1
-            origrowsguess = limit
-            debug && println("limiting, adjusting len to $len")
-        end
-        chunksize = div(len - datapos, ntasks)
-        chunkpositions = Vector{Int}(undef, ntasks + 1)
-        for i = 0:ntasks
-            chunkpositions[i + 1] = i == 0 ? datapos : i == ntasks ? len : (datapos + chunksize * i)
-        end
-        debug && println("initial byte positions before adjusting for start of rows: $chunkpositions")
-        avgbytesperrow, successfullychunked = findrowstarts!(buf, options, chunkpositions, ncols, columns, stringtype, typemap, downcast, rows_to_check)
-        if successfullychunked
-            origbytesperrow = ((len - datapos) / origrowsguess)
-            weightedavgbytesperrow = ceil(Int, avgbytesperrow * ((ntasks - 1) / ntasks) + origbytesperrow * (1 / ntasks))
-            rowsguess = ceil(Int, ((len - datapos) / weightedavgbytesperrow) * 1.01)
-            debug && println("single-threaded estimated rows = $origrowsguess, multi-threaded estimated rows = $rowsguess")
-            debug && println("multi-threaded column types sampled as: $columns")
-        else
-            debug && println("something went wrong chunking up a file for multithreaded parsing, falling back to single-threaded parsing")
-            threaded = false
-        end
-    else
-        chunkpositions = EMPTY_INT_ARRAY
-    end
-    if !threaded && limit < rowsguess
-        rowsguess = limit
-    end
-
-    end # @inbounds begin
-    return Context(
-        transpose,
-        getname(source),
-        names,
-        rowsguess,
-        ncols,
-        buf,
-        datapos,
-        len,
-        skipto,
-        options,
-        columns,
-        finalpool,
-        downcast,
-        customtypes,
-        typemap,
-        stringtype,
-        limit,
-        threaded,
-        ntasks,
-        chunkpositions,
-        strict,
-        silencewarnings,
-        maxwarnings,
-        debug,
-        tempfile,
-        streaming
-    )
+    # debug && println("estimated rows: $rowsguess")
+    # debug && println("detected delimiter: \"$(escape_string(d isa UInt8 ? string(Char(d)) : d))\"")
+    return headerpos, datapos, options, rowsguess
 end
