@@ -5,22 +5,9 @@ const PRECOMPILE_DATA2 = """
     2,31.8,y
     """
 function _precompile_()
-    ccall(:jl_generating_output, Cint, ()) == 1 || return nothing
-    while false; end
-    CSV.Context(IOBuffer(CSV.PRECOMPILE_DATA))
+    # ccall(:jl_generating_output, Cint, ()) == 1 || return nothing
+    # while false; end
+    # CSV.Context(IOBuffer(CSV.PRECOMPILE_DATA))
     # foreach(row -> row, CSV.Rows(IOBuffer(PRECOMPILE_DATA)))
-    CSV.Context(joinpath(dirname(pathof(CSV)), "promotions.csv"))
-
-    for T in (Int64, Float64, String)
-        precompile(parsevalue!, (Type{T}, Vector{UInt8}, Int, Int, Int, Int, Int, Column, Context))
-    end
-
-    function read_csv(input)
-        io = IOBuffer(input)
-        file = CSV.File(io)
-        close(io)
-        file
-    end
-    read_csv(PRECOMPILE_DATA)
-    read_csv(PRECOMPILE_DATA2)
+    # CSV.Context(joinpath(dirname(pathof(CSV)), "promotions.csv"))
 end

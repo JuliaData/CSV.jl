@@ -21,6 +21,7 @@ finaltype(T) = T
 finaltype(::Type{HardMissing}) = Missing
 finaltype(::Type{NeedsTypeDetection}) = Missing
 coltype(col) = ifelse(col.anymissing, Union{finaltype(col.type), Missing}, finaltype(col.type))
+coltype(::Type{T}, col) where T = ifelse(col.anymissing, Union{finaltype(T), Missing}, finaltype(T))
 
 maybepooled(col) = col.pool > 0.0
 
@@ -105,13 +106,13 @@ promotevectype(::Type{T}) where {T <: Union{Bool, SmallIntegers}} = vectype(T)
 promotevectype(::Type{T}) where {T} = SentinelVector{T}
 
 # allocate columns for a full file
-function allocate!(columns, rowsguess)
-    for i = 1:length(columns)
+@noinline function allocate!(columns, rowsguess::Int)
+    for i in eachindex(columns)
         @inbounds col = columns[i]
         # if the type hasn't been detected yet, then column will get allocated
         # in the detect method while parsing
         if col.type !== NeedsTypeDetection
-            col.column = allocate(col.type, rowsguess)
+            col.column = allocate(col.type, rowsguess)::AbstractVector
         end
     end
     return
@@ -121,26 +122,18 @@ setmissing!(col, i) = col[i] = missing
 const POSLEN_MISSING = PosLen(0, 0, true)
 setmissing!(col::Vector{PosLen}, i) = col[i] = POSLEN_MISSING
 
-@inline function allocate(T, len)
-    if T === NeedsTypeDetection || T === HardMissing || T === Missing
-        # MissingVector is an efficient representation in SentinelArrays.jl package
-        return MissingVector(len)
-    elseif T === PosLenString
-        A = Vector{PosLen}(undef, len)
-        memset!(pointer(A), typemax(UInt8), sizeof(A))
-        return A
-    elseif T === String
-        return SentinelVector{String}(undef, len)
-    elseif T === Bool
-        return Vector{Union{Missing, Bool}}(undef, len)
-    elseif T <: SmallIntegers
-        return Vector{Union{Missing, T}}(undef, len)
-    else
-        return SentinelVector{T}(undef, len)
-    end
+allocate(::Type{T}, len) where T<:SmallIntegers = Vector{Union{Missing, T}}(undef, len)
+allocate(::Type{Bool}, len) = Vector{Union{Missing, Bool}}(undef, len)
+allocate(::Type{String}, len) = SentinelVector{String}(undef, len)
+allocate(::Type{Union{NeedsTypeDetection,HardMissing,Missing}}, len) = MissingVector(len)
+function allocate(::Type{PosLenString}, len)
+    A = Vector{PosLen}(undef, len)
+    memset!(pointer(A), typemax(UInt8), sizeof(A))
+    return A
 end
+allocate(::Type{T}, len) where T = SentinelVector{T}(undef, len)
 
-function reallocate!(@nospecialize(A), len)
+@noinline function reallocate!(@nospecialize(A), len)
     if A isa Vector{PosLen}
         oldlen = length(A)
         resize!(A, len)
@@ -180,7 +173,7 @@ _promote(::Type{PooledVector{T, R, RA}}, x) where {T, R, RA} = PooledArray{T}(x)
 _promote(::Type{PooledVector{T, R, RA}}, x::PooledVector{T, R, RA}) where {T, R, RA} = x  # avoid ambiguity
 _promote(::Type{PooledVector{T, R, RA}}, x::PooledVector{T, R, RA}) where {T>:Missing, R, RA} = x  # avoid ambiguity
 
-function chaincolumns!(@nospecialize(a), @nospecialize(b))
+@noinline function chaincolumns!(@nospecialize(a), @nospecialize(b))
     if a isa PooledArray || b isa PooledArray
         # special-case PooledArrays apart from other container types
         # because we want the outermost array to be PooledArray instead of ChainedVector
@@ -244,7 +237,7 @@ end
 consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 0xbb && buf[pos + 2] == 0xbf) ? pos + 3 : pos
 
 # whatever input is given, turn it into an AbstractVector{UInt8} we can parse with
-@inline function getbytebuffer(x, buffer_in_memory)
+@noinline function getbytebuffer(x, buffer_in_memory::Bool)
     tfile = ""
     if x isa Vector{UInt8}
         return x, 1, length(x), tfile
@@ -282,7 +275,7 @@ consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 
     end
 end
 
-function getsource(@nospecialize(x), buffer_in_memory)
+@noinline function getsource(@nospecialize(x), buffer_in_memory)
     buf, pos, len, tfile = getbytebuffer(x, buffer_in_memory)::Tuple{Vector{UInt8},Int,Int,String}
     if length(buf) >= 2 && buf[1] == 0x1f && buf[2] == 0x8b
         # gzipped source, gunzip it
@@ -336,11 +329,11 @@ function normalizename(name::String)::Symbol
     return Symbol(replace(cleansed, r"(_)\1+"=>"_"))
 end
 
-function makeunique(names)
+function makeunique(names::Vector{Symbol})
     set = Set(names)
-    length(set) == length(names) && return Symbol[Symbol(x) for x in names]
+    length(set) == length(names) && return names
     nms = Symbol[]
-    nextsuffix = Dict{eltype(names), UInt}()
+    nextsuffix = Dict{Symbol,UInt}()
     for nm in names
         if haskey(nextsuffix, nm)
             k = nextsuffix[nm]
@@ -414,8 +407,8 @@ function detect end
 
 @inline pass(code, tlen, x, typecode) = (code, tlen, x, typecode)
 
-function detect(str::String; opts=Parsers.OPTIONS)
-    code, tlen, x, xT = detect(pass, codeunits(str), 1, sizeof(str), opts, true)
+@noinline function detect(str::String; opts=Parsers.OPTIONS)
+    code, tlen, x, xT = detect(codeunits(str), 1, sizeof(str), opts, true)
     return something(x, str)
 end
 
@@ -444,77 +437,111 @@ typecode(@nospecialize(T)) = T === Missing ? MISSING : T === Int8 ? INT8 : T ===
 concrete_or_concreteunion(T) = isconcretetype(T) ||
     (T isa Union && concrete_or_concreteunion(T.a) && concrete_or_concreteunion(T.b))
 
-@inline smallestint(cb, code, tlen, x) = x < typemax(Int8) ? cb(code, tlen, unsafe_trunc(Int8, x), INT8) : x < typemax(Int16) ? cb(code, tlen, unsafe_trunc(Int16, x), INT16) : x < typemax(Int32) ? cb(code, tlen, unsafe_trunc(Int32, x), INT32) : cb(code, tlen, x, INT64)
+@inline smallestint(code, tlen, x) = x < typemax(Int8) ? (code, tlen, unsafe_trunc(Int8, x), INT8) : x < typemax(Int16) ? (code, tlen, unsafe_trunc(Int16, x), INT16) : x < typemax(Int32) ? (code, tlen, unsafe_trunc(Int32, x), INT32) : (code, tlen, x, INT64)
 _widen(T) = widen(T)
 _widen(::Type{Int128}) = Float64
 _widen(::Type{Float64}) = nothing
 
-@noinline function _parseany(T, buf, pos, len, opts)::Parsers.Result{Any}
+@noinline function _parseany(T::Type, buf::Vector{UInt8}, pos::Int, len::Int, opts::Parsers.Options)::Parsers.Result{Any}
     return Parsers.xparse(T, buf, pos, len, opts, Any)
 end
 
-@noinline function detect(cb, buf, pos, len, opts, ensure_full_buf_consumed=true, downcast=false, row=0, col=0)
-    int = Parsers.xparse(Int, buf, pos, len, opts)
+@noinline function detect(
+    buf::Vector{UInt8}, pos::Int, len::Int, opts::Parsers.Options, ensure_full_buf_consumed::Bool=true, downcast::Bool=false, row::Int=0, col::Int=0
+)
+    
+    int = _parseany(Int, buf, pos, len, opts)
     code, tlen = int.code, int.tlen
     if Parsers.invalidquotedfield(code)
         fatalerror(buf, pos, tlen, code, row, col)
     end
+
     if Parsers.sentinel(code) && code > 0
-        return cb(code, tlen, missing, NEEDSTYPEDETECTION)
-    end
-    if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
-        return downcast ? smallestint(cb, code, tlen, int.val) : cb(code, tlen, int.val, Int === Int64 ? INT64 : INT32)
-    end
-    float = Parsers.xparse(Float64, buf, pos, len, opts)
-    code, tlen = float.code, float.tlen
-    if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
-        return cb(code, tlen, float.val, FLOAT64)
-    end
-    if opts.dateformat === nothing
-        date = Parsers.xparse(Date, buf, pos, len, opts, Date)
-        code, tlen = date.code, date.tlen
+        return (code, tlen, int, NEEDSTYPEDETECTION)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
+    elseif Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
+        return (code, tlen, int, INT64)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
+        # return (downcast ? smallestint(code, tlen, int) : (code, tlen, int, Int === Int64 ? INT64 : INT32))
+    else
+        float = _parseany(Float64, buf, pos, len, opts)
+        code, tlen = float.code, float.tlen
         if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
-            return cb(code, tlen, date.val, DATE)
+            return (code, tlen, float, FLOAT64)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
+        else
+            bool = _parseany(Bool, buf, pos, len, opts)
+            code, tlen = bool.code, bool.tlen
+            if Parsers.ok(code) && (ensure_full_buf_consumed == ((pos + tlen - 1) == len))
+                return (code, tlen, bool, BOOL)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
+            else
+                return detectdateformat(buf, pos, len, opts, ensure_full_buf_consumed, downcast, row, col)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
+            end
         end
-        datetime = Parsers.xparse(DateTime, buf, pos, len, opts)
+    end
+end
+
+@noinline function detectdateformat(buf, pos, len, opts, ensure_full_buf_consumed, downcast, row, col)
+    if opts.dateformat === nothing
+        return detectunknowndateformat(buf, pos, len, opts, ensure_full_buf_consumed, downcast, row, col)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
+    else
+        return detectknowndateformat(buf, pos, len, opts, ensure_full_buf_consumed, downcast, row, col)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8} 
+    end
+end
+
+@noinline function detectunknowndateformat(buf, pos, len, opts, ensure_full_buf_consumed, downcast, row, col)
+    date = _parseany(Date, buf, pos, len, opts)
+    code, tlen = date.code, date.tlen
+    if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
+        return (code, tlen, date, DATE)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
+    else
+        datetime = _parseany(DateTime, buf, pos, len, opts)
         code, tlen = datetime.code, datetime.tlen
         if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
-            return cb(code, tlen, datetime.val, DATETIME)
-        end
-        time = Parsers.xparse(Time, buf, pos, len, opts)
-        code, tlen = time.code, time.tlen
-        if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
-            return cb(code, tlen, time.val, TIME)
-        end
-    else
-        # use user-provided dateformat
-        DT = timetype(opts.dateformat)
-        if DT === Date
-            dt = Parsers.xparse(DT, buf, pos, len, opts)
-            code, tlen = dt.code, dt.tlen
+            return (code, tlen, datetime, DATETIME)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
+        else
+            time = _parseany(Time, buf, pos, len, opts)
+            code, tlen = time.code, time.tlen
             if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
-                return cb(code, tlen, dt.val, DATE)
-            end
-        elseif DT === Time
-            dt2 = Parsers.xparse(DT, buf, pos, len, opts)
-            code, tlen = dt2.code, dt2.tlen
-            if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
-                return cb(code, tlen, dt2.val, TIME)
-            end
-        elseif DT === DateTime
-            dt3 = Parsers.xparse(DT, buf, pos, len, opts)
-            code, tlen = dt3.code, dt3.tlen
-            if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
-                return cb(code, tlen, dt3.val, DATETIME)
+                return (code, tlen, time, TIME)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
+            else
+                return detectother(buf, pos, len, opts, ensure_full_buf_consumed, downcast, row, col)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
             end
         end
     end
-    bool = Parsers.xparse(Bool, buf, pos, len, opts)
+end
+
+@noinline function detectknowndateformat(buf, pos, len, opts, ensure_full_buf_consumed, downcast, row, col)
+    DT = timetype(opts.dateformat)
+    # use user-provided dateformat
+    if DT === Date
+        dt = _parseany(DT, buf, pos, len, opts)
+        code, tlen = dt.code, dt.tlen
+        if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
+            return (code, tlen, dt, DATE)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
+        end
+    elseif DT === Time
+        dt2 = _parseanyxparse(DT, buf, pos, len, opts)
+        code, tlen = dt2.code, dt2.tlen
+        if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
+            return (code, tlen, dt2, TIME)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
+        end
+    elseif DT === DateTime
+        dt3 = _parseany(DT, buf, pos, len, opts)
+        code, tlen = dt3.code, dt3.tlen
+        if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
+            return (code, tlen, dt3, DATETIME)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
+        end
+    end
+    return detectother(buf, pos, len, opts, ensure_full_buf_consumed, downcast, row, col)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
+end
+
+@noinline function detectother(buf, pos, len, opts, ensure_full_buf_consumed, downcast, row, col)
+    bool = _parseany(Bool, buf, pos, len, opts)
     code, tlen = bool.code, bool.tlen
     if Parsers.ok(code) && (ensure_full_buf_consumed == ((pos + tlen - 1) == len))
-        return cb(code, tlen, bool.val, BOOL)
+        return (code, tlen, bool, BOOL)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
+    else
+        # TODO fix this so it's a String
+        return (code, tlen, bool, STRING)::Tuple{Int16, Int, Parsers.Result{Any}, UInt8}
     end
-    return cb(code, tlen, nothing, STRING)
 end
 
 # a ReversedBuf takes a byte vector and indexes backwards;

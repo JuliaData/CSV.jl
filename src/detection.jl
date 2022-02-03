@@ -1,5 +1,5 @@
 # figure out at what byte position the header row(s) start and at what byte position the data starts
-function detectheaderdatapos(buf, pos, len, oq, eq, cq, @nospecialize(cmt), ignoreemptyrows, @nospecialize(header), skipto)
+@noinline function detectheaderdatapos(buf, pos, len, oq, eq, cq, @nospecialize(cmt), ignoreemptyrows, @nospecialize(header), skipto)
     headerpos = 0
     datapos = 1
     if header isa Integer
@@ -25,7 +25,7 @@ end
 # it tries to guess a file's delimiter by which character showed up w/ the same frequency
 # over all rows scanned; we use the average # of bytes per row w/ total length of the file
 # to guess the total # of rows in the file
-function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, @nospecialize(cmt), ignoreemptyrows, delim=0x00)
+@noinline function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, @nospecialize(cmt), ignoreemptyrows, delim=0x00)
     nbytes = 0
     lastbytenewline = false
     parsedanylines = false
@@ -161,7 +161,7 @@ function incr!(c::ByteValueCounter, b::UInt8)
 end
 
 # given the various header and normalization options, figure out column names for a file
-function detectcolumnnames(buf, headerpos, datapos, len, options, @nospecialize(header), normalizenames)::Vector{Symbol}
+@noinline function detectcolumnnames(buf, headerpos, datapos, len, options, @nospecialize(header), normalizenames)::Vector{Symbol}
     if header isa Union{AbstractVector{Symbol}, AbstractVector{String}}
         fields, pos = readsplitline(buf, datapos, len, options)
         isempty(header) && return [Symbol(:Column, i) for i = 1:length(fields)]
@@ -186,7 +186,7 @@ function detectcolumnnames(buf, headerpos, datapos, len, options, @nospecialize(
 end
 
 # efficiently skip from `cur` to `dest` row
-function skiptorow(buf, pos, len, oq, eq, cq, @nospecialize(cmt), ignoreemptyrows, cur, dest)
+@noinline function skiptorow(buf, pos, len, oq, eq, cq, @nospecialize(cmt), ignoreemptyrows, cur, dest)
     nlines = Ref{Int}(0)
     pos = checkcommentandemptyline(buf, pos, len, cmt, ignoreemptyrows, nlines)
     cur += nlines[]
@@ -272,7 +272,7 @@ end
 
 const NLINES = Ref{Int}(0)
 
-function checkcommentandemptyline(buf, pos, len, @nospecialize(cmt), ignoreemptyrows, nlines=NLINES)
+@noinline function checkcommentandemptyline(buf, pos, len, @nospecialize(cmt), ignoreemptyrows, nlines=NLINES)
     cmtptr, cmtlen = cmt === nothing ? (C_NULL, 0) : cmt
     ptr = pointer(buf, pos)
     while pos <= len
@@ -336,7 +336,7 @@ ColumnProperties(T) = ColumnProperties(T, 0x00)
     end
 end
 
-function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_to_check, columns, origcoltypes, columnlock, @nospecialize(stringtype), totalbytes, totalrows, succeeded)
+@noinline function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_to_check, columns, origcoltypes, columnlock, @nospecialize(stringtype), totalbytes, totalrows, succeeded)
     pos = ranges[i]
     len = ranges[i + 1]
     while pos <= len
@@ -473,7 +473,7 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, @nospecialize(stringt
     return totalbytes[] / totalrows[], succeeded[]
 end
 
-function detecttranspose(buf, pos, len, options, @nospecialize(header), skipto, normalizenames)
+@noinline function detecttranspose(buf, pos, len, options, @nospecialize(header), skipto, normalizenames)
     if isa(header, Integer) && header > 0
         # skip to header column to read column names
         row, pos = skiptofield!(buf, pos, len, options, 1, header)

@@ -381,7 +381,7 @@ Base.@propagate_inbounds function detect(r::Row2, i::Int)
         poslen = getvalues(r)[j]
         poslen.missingvalue && return missing
         pos = poslen.pos
-        code, tlen, x, xT = detect(pass, getbuf(r), pos, pos + poslen.len - 1, col.options)
+        code, tlen, x, xT = detect(getbuf(r), pos, pos + poslen.len - 1, col.options)
         return x === nothing ? r[i] : x
     end
 end
