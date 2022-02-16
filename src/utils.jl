@@ -513,7 +513,7 @@ end
     end
     bool = Parsers.xparse(Bool, buf, pos, len, opts)
     code, tlen = bool.code, bool.tlen
-    if Parsers.ok(code) && (ensure_full_buf_consumed == ((pos + tlen - 1) == len))
+    if Parsers.ok(code) && (!ensure_full_buf_consumed || (ensure_full_buf_consumed == ((pos + tlen - 1) == len)))
         return cb(code, tlen, bool.val, BOOL)
     end
     return cb(code, tlen, nothing, STRING)
