@@ -773,4 +773,8 @@ f = CSV.File(IOBuffer(data); delim='|', stripwhitespace=true)
 f = CSV.File(IOBuffer(join((rand(("a,$(rand())", "b,$(rand())")) for _ = 1:10^6), "\n")), header=false, limit=10000)
 @test length(f) == 10000
 
+# fix bool detection
+f = CSV.File(IOBuffer("a\nfalse\n"))
+@test eltype(f.a) == Bool
+
 end
