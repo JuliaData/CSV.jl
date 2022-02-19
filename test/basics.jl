@@ -819,4 +819,15 @@ f = CSV.File(IOBuffer(str); delim=" ", header=false, types=(i,nm) -> (i == 5 ? I
 f = CSV.File(IOBuffer(str); delim=" ", header=false, types=Dict(r".*" => Float16))
 @test Float16 <: eltype(f.Column5)
 
+# 982
+data = """a,b,c,d
+A,BB,CCC,DDDD
+A,BB,CCC,DDDD
+"""
+f = CSV.File(IOBuffer(data))
+@test !(f.a isa PooledArray)
+@test !(f.b isa PooledArray)
+@test !(f.c isa PooledArray)
+@test f.d isa PooledArray
+
 end

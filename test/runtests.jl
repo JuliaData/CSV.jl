@@ -24,27 +24,27 @@ include("write.jl")
 
 @testset "PooledArrays" begin
 
-    f = CSV.File(IOBuffer("X\nb\nc\na\nc"), pool=true)
-    @test typeof(f.X) == PooledArrays.PooledArray{InlineString1,UInt32,1,Array{UInt32,1}}
+    f = CSV.File(IOBuffer("X\nbbbb\ncccc\naaaa\ncccc"), pool=true)
+    @test typeof(f.X) == PooledArrays.PooledArray{String7,UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (4, 1)
-    @test f.X == ["b", "c", "a", "c"]
+    @test f.X == ["bbbb", "cccc", "aaaa", "cccc"]
     @test f.X.refs[2] == f.X.refs[4]
 
-    f = CSV.File(IOBuffer("X\nb\nc\na\nc"), pool=0.75)
-    @test typeof(f.X) == PooledArrays.PooledArray{InlineString1,UInt32,1,Array{UInt32,1}}
+    f = CSV.File(IOBuffer("X\nbbbb\ncccc\naaaa\ncccc"), pool=0.75)
+    @test typeof(f.X) == PooledArrays.PooledArray{String7,UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (4, 1)
-    @test f.X == ["b", "c", "a", "c"]
+    @test f.X == ["bbbb", "cccc", "aaaa", "cccc"]
     @test f.X.refs[2] == f.X.refs[4]
 
-    f = CSV.File(IOBuffer("X\nb\nc\n\nc"), pool=true, ignoreemptyrows=false)
-    @test typeof(f.X) == PooledArray{Union{Missing, InlineString1},UInt32,1,Array{UInt32,1}}
+    f = CSV.File(IOBuffer("X\nbbbb\ncccc\n\ncccc"), pool=true, ignoreemptyrows=false)
+    @test typeof(f.X) == PooledArray{Union{Missing, String7},UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (4, 1)
     @test f.X[3] === missing
 
-    f = CSV.File(IOBuffer("X\nc\nc\n\nc\nc\nc\nc\nc\nc"), pool=0.25, ignoreemptyrows=false)
-    @test typeof(f.X) == PooledArray{Union{Missing, InlineString1},UInt32,1,Array{UInt32,1}}
+    f = CSV.File(IOBuffer("X\ncccc\ncccc\n\ncccc\ncccc\ncccc\ncccc\ncccc\ncccc"), pool=0.25, ignoreemptyrows=false)
+    @test typeof(f.X) == PooledArray{Union{Missing, String7},UInt32,1,Array{UInt32,1}}
     @test (length(f), length(f.names)) == (9, 1)
-    @test isequal(f.X, ["c", "c", missing, "c", "c", "c", "c", "c", "c"])
+    @test isequal(f.X, ["cccc", "cccc", missing, "cccc", "cccc", "cccc", "cccc", "cccc", "cccc"])
 
 end
 
