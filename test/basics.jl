@@ -362,11 +362,13 @@ df = CSV.read(GzipDecompressorStream(open(joinpath(dir, "randoms.csv.gz"))))
 @test size(df) == (70000, 7)
 
 # int sentinel cycling
-import Random; Random.seed!(1234)
-df = CSV.read(joinpath(dir, "test_int_sentinel.csv"))
-@test df.id.sentinel == 0x6690d6bed2a7da46
-@test df.id[end] == CSV.INT_SENTINEL
-@test df.id[end-1] === missing
+if VERSION <= v"1.6.99" # RNG stream changed in 1.6
+    import Random; Random.seed!(1234)
+    df = CSV.read(joinpath(dir, "test_int_sentinel.csv"))
+    @test df.id.sentinel == 0x6690d6bed2a7da46
+    @test df.id[end] == CSV.INT_SENTINEL
+    @test df.id[end-1] === missing
+end
 
 Random.seed!(1234)
 df = CSV.read(joinpath(dir, "test_int_sentinel.csv"), threaded=true)

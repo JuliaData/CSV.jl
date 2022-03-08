@@ -5,14 +5,20 @@ function testfile(file, kwargs, expected_sz, expected_sch, testfunc; dir=dir)
     end
     rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
     actual_sch = Tables.schema(rows)
-    @test Tuple(expected_sch.names) == actual_sch.names
+    datatype_has_fieldnames = :names in fieldnames(DataType)
+    if datatype_has_fieldnames
+        @test Tuple(expected_sch.names) == actual_sch.names
+    end
     if file isa IO
         seekstart(file)
     end
     t = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...) |> columntable
     actual_sch = Tables.schema(t)
+    datatype_has_fieldnames = :names in fieldnames(DataType)
     @test Tuple(expected_sch.types) == actual_sch.types
-    @test Tuple(expected_sch.names) == actual_sch.names
+    if datatype_has_fieldnames
+        @test Tuple(expected_sch.names) == actual_sch.names
+    end
     @test (length(t) == 0 ? 0 : length(t[1]), length(t)) == expected_sz
     if testfunc === nothing
     elseif testfunc isa Function

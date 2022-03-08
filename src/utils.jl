@@ -381,7 +381,7 @@ end
 
 function unset!(A::Vector, i::Int, row, x)
     finalize(A[i])
-    ccall(:jl_arrayunset, Cvoid, (Array, Csize_t), A, i - 1)
+    ccall(:jl_arrayunset, Cvoid, (Any, Csize_t), A, i - 1)
     # println("deleting col = $i on thread = $(Threads.threadid()), row = $row, id = $x")
     return
 end
