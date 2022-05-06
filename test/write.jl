@@ -355,4 +355,14 @@ end
     ct = CSV.read(io, Tables.columntable)
     @test ct == default_table
 
+    # CSV.writerow
+    row = (a=1, b=2.3, c="hey", d=Date(2022, 5, 4))
+    str = CSV.writerow(row)
+    @test str == "1,2.3,hey,2022-05-04\n"
+    io = IOBuffer()
+    CSV.writerow(io, row)
+    @test String(take!(io)) == "1,2.3,hey,2022-05-04\n"
+    str = CSV.writerow(row; delim='\t')
+    @test str == "1\t2.3\they\t2022-05-04\n"
+
 end # @testset "CSV.write"
