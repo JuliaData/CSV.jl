@@ -60,6 +60,28 @@ tup(x::AbstractString) = Tuple(codeunits(x))
 tlen(::UInt8) = 1
 tlen(::NTuple{N, UInt8}) where {N} = N
 
+function Options(;
+    delim::Union{Char, String}=',',
+    quotechar::Char='"',
+    openquotechar::Union{Char, Nothing}=nothing,
+    closequotechar::Union{Char, Nothing}=nothing,
+    escapechar::Char='"',
+    newline::Union{Char, String}='\n',
+    decimal::Char='.',
+    dateformat=nothing,
+    quotestrings::Bool=false,
+    missingstring::AbstractString="",
+    transform::Function=_identity,
+    bom::Bool=false,
+    kw...
+    )
+    checkvaliddelim(delim)
+    (isascii(something(openquotechar, quotechar)) && isascii(something(closequotechar, quotechar)) && isascii(escapechar)) || throw(ArgumentError("quote and escape characters must be ASCII characters "))
+    oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
+    e = escapechar % UInt8
+    return Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring), transform, bom)
+end
+
 """
     CSV.RowWriter(table; kwargs...)
 
@@ -97,26 +119,11 @@ Base.eltype(r::RowWriter) = String
 _identity(col, val) = val
 
 function RowWriter(table;
-    delim::Union{Char, String}=',',
-    quotechar::Char='"',
-    openquotechar::Union{Char, Nothing}=nothing,
-    closequotechar::Union{Char, Nothing}=nothing,
-    escapechar::Char='"',
-    newline::Union{Char, String}='\n',
-    decimal::Char='.',
-    dateformat=nothing,
-    quotestrings::Bool=false,
-    missingstring::AbstractString="",
-    transform::Function=_identity,
-    bom::Bool=false,
     header::Vector=String[],
     writeheader::Bool=true,
-    bufsize::Int=2^22)
-    checkvaliddelim(delim)
-    (isascii(something(openquotechar, quotechar)) && isascii(something(closequotechar, quotechar)) && isascii(escapechar)) || throw(ArgumentError("quote and escape characters must be ASCII characters "))
-    oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
-    e = escapechar % UInt8
-    opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring), transform, bom)
+    bufsize::Int=2^22,
+    kw...)
+    opts = Options(; kw...)
     source = Tables.rows(table)
     sch = Tables.schema(source)
     return RowWriter(source, sch, opts, Vector{UInt8}(undef, bufsize), header, writeheader)
@@ -151,34 +158,18 @@ end
 
 write(file; kwargs...) = x->write(file, x; kwargs...)
 function write(file, itr;
-    delim::Union{Char, String}=',',
-    quotechar::Char='"',
-    openquotechar::Union{Char, Nothing}=nothing,
-    closequotechar::Union{Char, Nothing}=nothing,
-    escapechar::Char='"',
-    newline::Union{Char, String}='\n',
-    decimal::Char='.',
-    dateformat=nothing,
-    quotestrings::Bool=false,
-    missingstring::AbstractString="",
-    transform::Function=_identity,
-    bom::Bool=false,
     append::Bool=false,
     compress::Bool=false,
     writeheader=nothing,
     partition::Bool=false,
-    kwargs...)
-    checkvaliddelim(delim)
+    kw...)
     if writeheader !== nothing
         Base.depwarn("`writeheader=$writeheader` is deprecated in favor of `header=$writeheader`", :write)
         header = writeheader
     else
         header = !append
     end
-    (isascii(something(openquotechar, quotechar)) && isascii(something(closequotechar, quotechar)) && isascii(escapechar)) || throw(ArgumentError("quote and escape characters must be ASCII characters "))
-    oq, cq = openquotechar !== nothing ? (openquotechar % UInt8, closequotechar % UInt8) : (quotechar % UInt8, quotechar % UInt8)
-    e = escapechar % UInt8
-    opts = Options(tup(delim), oq, cq, e, tup(newline), decimal % UInt8, dateformat, quotestrings, tup(missingstring), transform, bom)
+    opts = Options(; kw...)
     if partition
         if file isa IO
             throw(ArgumentError("must pass single file name as a String, or iterable of filenames or IO arguments"))
@@ -190,24 +181,20 @@ function write(file, itr;
                     if file isa String
                         push!(outfiles, string(file, "_$i"))
                     end
-                    write(outfiles[i], part; delim=delim, quotechar=quotechar, openquotechar=openquotechar, closequotechar=closequotechar, escapechar=escapechar, newline=newline,
-                        decimal=decimal, dateformat=dateformat, quotestrings=quotestrings, missingstring=missingstring, transform=transform, bom=bom, append=append, compress=compress,
-                        writeheader=writeheader, partition=false, kwargs...)
+                    write(outfiles[i], part; append=append, compress=compress, writeheader=writeheader, partition=false, kw...)
                 end
             else
                 if file isa String
                     push!(outfiles, string(file, "_$i"))
                 end
-                write(outfiles[i], part; delim=delim, quotechar=quotechar, openquotechar=openquotechar, closequotechar=closequotechar, escapechar=escapechar, newline=newline,
-                    decimal=decimal, dateformat=dateformat, quotestrings=quotestrings, missingstring=missingstring, transform=transform, bom=bom, append=append, compress=compress,
-                    writeheader=writeheader, partition=false, kwargs...)
+                write(outfiles[i], part; append=append, compress=compress, writeheader=writeheader, partition=false, kw...)
             end
         end
         return outfiles
     else
         rows = Tables.rows(itr)
         sch = Tables.schema(rows)
-        return write(sch, rows, file, opts; append=append, compress=compress, header=header, kwargs...)
+        return write(sch, rows, file, opts; append=append, compress=compress, header=header, kw...)
     end
 end
 
@@ -215,7 +202,8 @@ function write(sch::Tables.Schema, rows, file, opts;
         append::Bool=false,
         compress::Bool=false,
         header::Union{Bool, Vector}=String[],
-        bufsize::Int=2^22
+        bufsize::Int=2^22,
+        kw...
     )
     colnames = !(header isa Vector) || isempty(header) ? sch.names : header
     cols = length(colnames)
@@ -244,7 +232,8 @@ function write(::Nothing, rows, file, opts;
         append::Bool=false,
         compress::Bool=false,
         header::Union{Bool, Vector}=String[],
-        bufsize::Int=2^22
+        bufsize::Int=2^22,
+        kw...
     )
     len = bufsize
     buf = Vector{UInt8}(undef, len)
@@ -372,6 +361,37 @@ function writerow(buf, pos, len, io, sch, row, cols, opts)
         pos[] = writedelimnewline(buf, posx, len, io, ifelse(col == cols, n, d))
     end
     return
+end
+
+function writerow(io::IO, row; opts::Union{Options, Nothing}=nothing, bufsize::Int=2^22, buf=Vector{UInt8}(undef, bufsize), len=bufsize, kw...)
+    if opts === nothing
+        opts = Options(; kw...)
+    end
+    nms = Tables.columnnames(row)
+    pos = 1
+    for i = 1:length(nms)
+        val = opts.transform(i, Tables.getcolumn(row, i))
+        val === nothing && nothingerror(col)
+        pos = writecell(buf, pos, len, io, val, opts)
+        pos = writedelimnewline(buf, pos, len, io, ifelse(i == length(nms), opts.newline, opts.delim))
+    end
+    Base.write(io, resize!(buf, pos - 1))
+end
+
+function writerow(row; opts::Union{Options, Nothing}=nothing, bufsize::Int=2^22, buf=Vector{UInt8}(undef, bufsize), len=bufsize, kw...)
+    if opts === nothing
+        opts = Options(; kw...)
+    end
+    io = DummyIO()
+    nms = Tables.columnnames(row)
+    pos = 1
+    for i = 1:length(nms)
+        val = opts.transform(i, Tables.getcolumn(row, i))
+        val === nothing && nothingerror(col)
+        pos = writecell(buf, pos, len, io, val, opts)
+        pos = writedelimnewline(buf, pos, len, io, ifelse(i == length(nms), opts.newline, opts.delim))
+    end
+    return unsafe_string(pointer(buf), pos - 1)
 end
 
 function writecell(buf, pos, len, io, ::Missing, opts)
