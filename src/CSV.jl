@@ -82,6 +82,30 @@ include("write.jl")
 Read and parses a delimited file or files, materializing directly using the `sink` function. Allows avoiding excessive copies
 of columns for certain sinks like `DataFrame`.
 
+# Example
+```
+julia> using CSV, DataFrames
+
+julia> path = tempname();
+
+julia> write(path, "a,b,c\\n1,2,3");
+
+julia> CSV.read(path, DataFrame)
+1×3 DataFrame
+ Row │ a      b      c
+     │ Int64  Int64  Int64
+─────┼─────────────────────
+   1 │     1      2      3
+
+julia> CSV.read(path, DataFrame; header=false)
+2×3 DataFrame
+ Row │ Column1  Column2  Column3
+     │ String1  String1  String1
+─────┼───────────────────────────
+   1 │ a        b        c
+   2 │ 1        2        3
+```
+
 $KEYWORD_DOCS
 """
 function read(source, sink=nothing; copycols::Bool=false, kwargs...)
