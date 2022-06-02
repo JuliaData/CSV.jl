@@ -52,7 +52,8 @@ There are several other packages for reading CSV files in Julia, which may suit 
   into any [IterableTables.jl](https://github.com/queryverse/IterableTables.jl) sink.
   The package uses [TextParse.jl](https://github.com/queryverse/TextParse.jl) for parsing.
 
-* [DLMReader.jl](https://github.com/sl-solution/DLMReader.jl) also aims to be fast for large files. 
-  Closely associated with [InMemoryDatasets.jl](https://github.com/sl-solution/InMemoryDatasets.jl) rather than [DataFrames.jl](https://github.com/JuliaData/DataFrames.jl)
+* [DLMReader.jl](https://github.com/sl-solution/DLMReader.jl) also aims to be fast for large files,
+  closely associated with [InMemoryDatasets.jl](https://github.com/sl-solution/InMemoryDatasets.jl).
 
-* [Pandas.jl](https://github.com/JuliaPy/Pandas.jl) wraps Python's pandas library, via PyCall.jl.
+* [Pandas.jl](https://github.com/JuliaPy/Pandas.jl) wraps Python's [pandas](https://pandas.pydata.org) library (using [PyCall.jl](https://github.com/JuliaPy/PyCall.jl)).
+  This is a closer cousin of [DataFrames.jl](https://github.com/JuliaData/DataFrames.jl), but builds in the ability to read/write CSV files.
