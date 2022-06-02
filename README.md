@@ -48,8 +48,11 @@ There are several other packages for reading CSV files in Julia, which may suit 
 * The standard library contains [DelimitedFiles.jl](https://docs.julialang.org/en/v1/stdlib/DelimitedFiles/),
   which is perfect for quickly reading small files.
 
+* [CSVFiles.jl](https://github.com/queryverse/CSVFiles.jl) uses the [FileIO.jl](https://github.com/JuliaIO/FileIO.jl) API 
+  into any [IterableTables.jl](https://github.com/queryverse/IterableTables.jl) sink.
+  The package uses [TextParse.jl](https://github.com/queryverse/TextParse.jl) for parsing.
+
 * [DLMReader.jl](https://github.com/sl-solution/DLMReader.jl) also aims to be fast for large files. 
-  Closely associated with [InMemoryDatasets.jl](https://github.com/sl-solution/InMemoryDatasets.jl).
+  Closely associated with [InMemoryDatasets.jl](https://github.com/sl-solution/InMemoryDatasets.jl) rather than [DataFrames.jl](https://github.com/JuliaData/DataFrames.jl)
 
-Python and R also have CSV readers in the standard library. Fast packages include...
-
+* [Pandas.jl](https://github.com/JuliaPy/Pandas.jl) wraps Python's pandas library, via PyCall.jl.
