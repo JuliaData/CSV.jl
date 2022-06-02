@@ -40,3 +40,16 @@ Contributions are very welcome, as are feature requests and suggestions. Please 
 [codecov-url]: https://codecov.io/gh/JuliaData/CSV.jl
 
 [issues-url]: https://github.com/JuliaData/CSV.jl/issues
+
+## Alternatives
+
+There are several other packages for reading CSV files in Julia, which may suit your needs better:
+
+* The standard library contains [DelimitedFiles.jl](https://docs.julialang.org/en/v1/stdlib/DelimitedFiles/),
+  which is perfect for quickly reading small files.
+
+* [DLMReader.jl](https://github.com/sl-solution/DLMReader.jl) also aims to be fast for large files. 
+  Closely associated with [InMemoryDatasets.jl](https://github.com/sl-solution/InMemoryDatasets.jl).
+
+Python and R also have CSV readers in the standard library. Fast packages include...
+
