@@ -49,9 +49,8 @@ There are several other packages for reading CSV files in Julia, which may suit 
   This returns a `Matrix` rather than a [Tables.jl](https://github.com/JuliaData/Tables.jl)-style container, thus works best for files of homogenous element type. 
   On large files, CSV.jl will be much faster.
 
-* [CSVFiles.jl](https://github.com/queryverse/CSVFiles.jl) uses the [FileIO.jl](https://github.com/JuliaIO/FileIO.jl) API 
-  into any [IterableTables.jl](https://github.com/queryverse/IterableTables.jl) sink.
-  The package uses [TextParse.jl](https://github.com/queryverse/TextParse.jl) for parsing.
+* [CSVFiles.jl](https://github.com/queryverse/CSVFiles.jl) uses the [FileIO.jl](https://github.com/JuliaIO/FileIO.jl)'s `load` / `save` API,
+  but otherwise has similar goals. Like CSV.jl, it works with [Tables.jl](https://github.com/JuliaData/Tables.jl objects such as DataFrames.
 
 * [DLMReader.jl](https://github.com/sl-solution/DLMReader.jl) also aims to be fast for large files,
   closely associated with [InMemoryDatasets.jl](https://github.com/sl-solution/InMemoryDatasets.jl).
