@@ -777,16 +777,21 @@ f = CSV.File(IOBuffer(join((rand(("a,$(rand())", "b,$(rand())")) for _ = 1:10^6)
 f = CSV.File(IOBuffer("a\nfalse\n"))
 @test eltype(f.a) == Bool
 
-# 1014 - types is Dict{Regex}
+# 1014
+# types is Dict{Regex}
 data = IOBuffer("a_col,b_col,c,d\n1,2,3.14,hey\n4,2,6.5,hey\n")
 f = CSV.File(data; types=Dict(r"_col$" => Int16))
 @test eltype(f.a_col) == Int16
 @test eltype(f.b_col) == Int16
 @test_throws ArgumentError CSV.File(data; types=Dict(r"_column$" => Int16))
-# 1014 - types is Dict{Any} including `Regex` key
+# types is Dict{Any} including `Regex` key
 f = CSV.File(data; types=Dict(r"_col$" => Int16, "c" => Float16))
 @test eltype(f.a_col) == Int16
 @test eltype(f.b_col) == Int16
 @test eltype(f.c) == Float16
+# dateformat supports Regex
+f = CSV.File(IOBuffer("time,date1,date2\n10:00:00.0,04/16/2020,04/17/2022\n"); dateformat=Dict(r"^date"=>"mm/dd/yyyy"))
+@test f[1].date1 == Dates.Date(2020, 4, 16)
+@test f[1].date2 == Dates.Date(2020, 4, 17)
 
 end
