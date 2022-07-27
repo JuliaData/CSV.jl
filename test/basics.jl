@@ -792,6 +792,6 @@ f = CSV.File(data; types=Dict(r"_col$" => Int16, "c" => Float16))
 # dateformat supports Regex
 f = CSV.File(IOBuffer("time,date1,date2\n10:00:00.0,04/16/2020,04/17/2022\n"); dateformat=Dict(r"^date"=>"mm/dd/yyyy"))
 @test f[1].date1 == Dates.Date(2020, 4, 16)
-@test f[1].date2 == Dates.Date(2020, 4, 17)
+@test f[1].date2 == Dates.Date(2022, 4, 17)
 
 end
