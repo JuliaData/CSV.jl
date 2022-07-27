@@ -783,5 +783,10 @@ f = CSV.File(data; types=Dict(r"_col$" => Int16))
 @test eltype(f.a_col) == Int16
 @test eltype(f.b_col) == Int16
 @test_throws ArgumentError CSV.File(data; types=Dict(r"_column$" => Int16))
+# 1014 - types is Dict{Any} including `Regex` key
+f = CSV.File(data; types=Dict(r"_col$" => Int16, "c" => Float16))
+@test eltype(f.a_col) == Int16
+@test eltype(f.b_col) == Int16
+@test eltype(f.c) == Float16
 
 end

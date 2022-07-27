@@ -364,12 +364,31 @@ end
 getordefault(x::AbstractDict{String}, nm, i, def) = haskey(x, string(nm)) ? x[string(nm)] : def
 getordefault(x::AbstractDict{Symbol}, nm, i, def) = haskey(x, nm) ? x[nm] : def
 getordefault(x::AbstractDict{Int}, nm, i, def) = haskey(x, i) ? x[i] : def
-getordefault(x::AbstractDict, nm, i, def) = haskey(x, i) ? x[i] : haskey(x, nm) ? x[nm] : haskey(x, string(nm)) ? x[string(nm)] : def
 function getordefault(x::AbstractDict{Regex}, nm, i, def)
     for (re, T) in x
         contains(string(nm), re) && return T
     end
     return def
+end
+function getordefault(x::AbstractDict, nm, i, def)
+    return if haskey(x, i)
+        x[i]
+    elseif haskey(x, nm)
+        x[nm]
+    elseif haskey(x, string(nm))
+        x[string(nm)]
+    else
+        val = _firstmatch(x, string(nm))
+        val !== nothing ? val : def
+    end
+end
+
+# return the first value in `x` with a `key::Regex` that matches on `nm`
+function _firstmatch(x::AbstractDict, nm::AbstractString)
+    for (k, T) in x
+        k isa Regex && contains(nm, k) && return T
+    end
+    return nothing
 end
 
 # given a DateFormat, is it meant for parsing Date, DateTime, or Time?
