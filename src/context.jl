@@ -83,6 +83,8 @@ function checkinvalidcolumns(dict, argname, ncols, names)
     for (k, _) in dict
         if k isa Integer
             (0 < k <= ncols) || throw(ArgumentError("invalid column number provided in `$argname` keyword argument: $k. Column number must be 0 < i <= $ncols as detected in the data. To ignore invalid columns numbers in `$argname`, pass `validate=false`"))
+        elseif k isa Regex
+            # TODO
         else
             Symbol(k) in names || throw(ArgumentError("invalid column name provided in `$argname` keyword argument: $k. Valid column names detected in the data are: $names. To ignore invalid columns names in `$argname`, pass `validate=false`"))
         end

@@ -777,4 +777,10 @@ f = CSV.File(IOBuffer(join((rand(("a,$(rand())", "b,$(rand())")) for _ = 1:10^6)
 f = CSV.File(IOBuffer("a\nfalse\n"))
 @test eltype(f.a) == Bool
 
+# 1014 - types is Dict{Regex}
+data = "a_col,b_col,c,d\n1,2,3.14,hey\n4,2,6.5,hey\n"
+f = CSV.File(IOBuffer(data); types=Dict(r"_col$" => Int16))
+@test eltype(f.a_col) == Int16
+@test eltype(f.b_col) == Int16
+
 end

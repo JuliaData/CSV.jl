@@ -365,6 +365,12 @@ getordefault(x::AbstractDict{String}, nm, i, def) = haskey(x, string(nm)) ? x[st
 getordefault(x::AbstractDict{Symbol}, nm, i, def) = haskey(x, nm) ? x[nm] : def
 getordefault(x::AbstractDict{Int}, nm, i, def) = haskey(x, i) ? x[i] : def
 getordefault(x::AbstractDict, nm, i, def) = haskey(x, i) ? x[i] : haskey(x, nm) ? x[nm] : haskey(x, string(nm)) ? x[string(nm)] : def
+function getordefault(x::AbstractDict{Regex}, nm, i, def)
+    for (re, T) in x
+        contains(string(nm), re) && return T
+    end
+    return def
+end
 
 # given a DateFormat, is it meant for parsing Date, DateTime, or Time?
 function timetype(df::Parsers.Format)::Union{Type{Date}, Type{Time}, Type{DateTime}}
