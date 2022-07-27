@@ -778,9 +778,10 @@ f = CSV.File(IOBuffer("a\nfalse\n"))
 @test eltype(f.a) == Bool
 
 # 1014 - types is Dict{Regex}
-data = "a_col,b_col,c,d\n1,2,3.14,hey\n4,2,6.5,hey\n"
-f = CSV.File(IOBuffer(data); types=Dict(r"_col$" => Int16))
+data = IOBuffer("a_col,b_col,c,d\n1,2,3.14,hey\n4,2,6.5,hey\n")
+f = CSV.File(data; types=Dict(r"_col$" => Int16))
 @test eltype(f.a_col) == Int16
 @test eltype(f.b_col) == Int16
+@test_throws ArgumentError CSV.File(data; types=Dict(r"_column$" => Int16))
 
 end
