@@ -789,6 +789,10 @@ f = CSV.File(data; types=Dict(r"_col$" => Int16, "c" => Float16))
 @test eltype(f.a_col) == Int16
 @test eltype(f.b_col) == Int16
 @test eltype(f.c) == Float16
+# Regex has lower precedence than exact column name/number match
+f = CSV.File(data; types=Dict(r"_col$" => Int16, :a_col => Int8))
+@test eltype(f.a_col) == Int8
+@test eltype(f.b_col) == Int16
 # dateformat supports Regex
 f = CSV.File(IOBuffer("time,date1,date2\n10:00:00.0,04/16/2020,04/17/2022\n"); dateformat=Dict(r"^date"=>"mm/dd/yyyy"))
 @test f[1].date1 == Dates.Date(2020, 4, 16)
