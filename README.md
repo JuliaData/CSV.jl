@@ -45,7 +45,7 @@ Contributions are very welcome, as are feature requests and suggestions. Please 
 
 There are several other packages for reading CSV files in Julia, which may suit your needs better:
 
-* The standard library contains [DelimitedFiles.jl](https://docs.julialang.org/en/v1/stdlib/DelimitedFiles/).
+* The standard library contains [DelimitedFiles.jl](https://docs.julialang.org/en/v1/stdlib/DelimitedFiles/), at least until Julia 1.8.
   This returns a `Matrix` rather than a [Tables.jl](https://github.com/JuliaData/Tables.jl)-style container, thus works best for files of homogenous element type. 
   On large files, CSV.jl will be much faster.
 
