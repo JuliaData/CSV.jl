@@ -50,7 +50,7 @@ There are several other packages for reading CSV files in Julia, which may suit 
   On large files, CSV.jl will be much faster.
 
 * [CSVFiles.jl](https://github.com/queryverse/CSVFiles.jl) uses the [FileIO.jl](https://github.com/JuliaIO/FileIO.jl)'s `load` / `save` API,
-  but otherwise has similar goals. Like CSV.jl, it works with [Tables.jl](https://github.com/JuliaData/Tables.jl objects such as DataFrames.
+  but otherwise has similar goals. Like CSV.jl, it works with [Tables.jl](https://github.com/JuliaData/Tables.jl) objects such as DataFrames.
 
 * [DLMReader.jl](https://github.com/sl-solution/DLMReader.jl) also aims to be fast for large files,
   closely associated with [InMemoryDatasets.jl](https://github.com/sl-solution/InMemoryDatasets.jl).
