@@ -688,6 +688,7 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
                     col = initialize_column(j, ctx)
                     col.anymissing = ctx.streaming || rowoffset == 0 && row > 1 # assume all previous rows were missing
                     col.pool = ctx.pool
+                    # TODO: Do we need to check `nonstandardtype(T)` and potentially create a `Context` an updated `customtypes`?
                     T = col.type
                     if T === NeedsTypeDetection
                         pos, code = detectcell(buf, pos, len, row, rowoffset, j, col, ctx, rowsguess)

@@ -91,15 +91,21 @@ function checkinvalidcolumns(dict::AbstractDict, argname, ncols, names)
     return nothing
 end
 function checkinvalidcolumns(vec::AbstractVector, argname, ncols, names)
-    # we generally expect `length(types) == ncols` but we still want to support the case
-    # where an additional column is found later in the file and has its type given in `types`
+    # we generally expect `length(types) == ncols` but still want to support the case where
+    # an additional column is found later in the file and e.g. has its type given in `types`
     length(vec) >= ncols || throw(ArgumentError("provided `$argname::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(vec)) < $ncols`"))
     return nothing
 end
-checkinvalidcolumns(::Any, argname, ncols, names) = nothing
+# if the argument isn't given as an AbstractDict or an AbstractVector then
+# we have no way to check it again the number of cols or the names
+checkinvalidcolumns(arg::Any, argname, ncols, names) = nothing
 
 @noinline nonconcretetypes(types) = throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
 
+# Create all the `Column`s and keep track of any non-standard eltypes for which we will
+# later need generate specialized parsing methods.
+# - `ncols` is the number of columns to create
+# - `types` is the user-given input
 function initialize_columns(ncols::Int, types, names, args...; validate)
     columns = Vector{Column}(undef, ncols)
     customtypes = Tuple{}
@@ -114,6 +120,10 @@ function initialize_columns(ncols::Int, types, names, args...; validate)
     return columns, customtypes
 end
 
+# Create a `Column` with their eltype set using any user-provided types,
+# but without yet allocating a vector to hold the parsed results (see `allocate`)
+# - `i` is the column number e.g. i=1 for the 1st column.
+# - `types` is the user-given input
 function initialize_column(i, types::AbstractVector, names, stringtype, streaming::Bool, options)
     # we generally expected `length(types) == ncols` but we still want to support the case
     # where an additional column is found later in the file and wasn't in `types`
@@ -457,7 +467,6 @@ end
     debug && println("byte position of data computed at: $datapos")
 
     # generate initial columns
-    # deduce initial column types/flags for parsing based on whether any user-provided types were provided or not
     columns, customtypes = initialize_columns(ncols, types, names, stringtype, streaming, options; validate=validate)
     if transpose
         # set column positions
