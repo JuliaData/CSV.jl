@@ -93,6 +93,55 @@ end
 
 @noinline nonconcretetypes(types) = throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
 
+function initialize_columns(ncols::Int, names, types, stringtype, streaming::Bool, validate::Bool, options::Parsers.Options)
+    customtypes = Tuple{}
+    if types isa AbstractVector
+        length(types) == ncols || throw(ArgumentError("provided `types::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(types)) != $ncols`"))
+        columns = Vector{Column}(undef, ncols)
+        for i = 1:ncols
+            col = Column(types[i], options)
+            columns[i] = col
+            if nonstandardtype(col.type) !== Union{}
+                customtypes = tupcat(customtypes, nonstandardtype(col.type))
+            end
+        end
+    elseif types isa AbstractDict
+        T = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
+        columns = Vector{Column}(undef, ncols)
+        for i = 1:ncols
+            S = getordefault(types, names[i], i, T)
+            col = Column(S, options)
+            columns[i] = col
+            if nonstandardtype(col.type) !== Union{}
+                customtypes = tupcat(customtypes, nonstandardtype(col.type))
+            end
+        end
+        validate && checkinvalidcolumns(types, "types", ncols, names)
+    elseif types isa Function
+        defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
+        columns = Vector{Column}(undef, ncols)
+        for i = 1:ncols
+            T = something(types(i, names[i]), defaultT)
+            col = Column(T, options)
+            columns[i] = col
+            if nonstandardtype(col.type) !== Union{}
+                customtypes = tupcat(customtypes, nonstandardtype(col.type))
+            end
+        end
+    else
+        T = types === nothing ? (streaming ? Union{stringtype, Missing} : NeedsTypeDetection) : types
+        if nonstandardtype(T) !== Union{}
+            customtypes = tupcat(customtypes, nonstandardtype(T))
+        end
+        columns = Vector{Column}(undef, ncols)
+        for i = 1:ncols
+            col = Column(T, options)
+            columns[i] = col
+        end
+    end
+    return columns, customtypes
+end
+
 struct Context
     transpose::Bool
     name::String
@@ -403,51 +452,7 @@ end
 
     # generate initial columns
     # deduce initial column types/flags for parsing based on whether any user-provided types were provided or not
-    customtypes = Tuple{}
-    if types isa AbstractVector
-        length(types) == ncols || throw(ArgumentError("provided `types::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(types)) != $ncols`"))
-        columns = Vector{Column}(undef, ncols)
-        for i = 1:ncols
-            col = Column(types[i], options)
-            columns[i] = col
-            if nonstandardtype(col.type) !== Union{}
-                customtypes = tupcat(customtypes, nonstandardtype(col.type))
-            end
-        end
-    elseif types isa AbstractDict
-        T = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
-        columns = Vector{Column}(undef, ncols)
-        for i = 1:ncols
-            S = getordefault(types, names[i], i, T)
-            col = Column(S, options)
-            columns[i] = col
-            if nonstandardtype(col.type) !== Union{}
-                customtypes = tupcat(customtypes, nonstandardtype(col.type))
-            end
-        end
-        validate && checkinvalidcolumns(types, "types", ncols, names)
-    elseif types isa Function
-        defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
-        columns = Vector{Column}(undef, ncols)
-        for i = 1:ncols
-            T = something(types(i, names[i]), defaultT)
-            col = Column(T, options)
-            columns[i] = col
-            if nonstandardtype(col.type) !== Union{}
-                customtypes = tupcat(customtypes, nonstandardtype(col.type))
-            end
-        end
-    else
-        T = types === nothing ? (streaming ? Union{stringtype, Missing} : NeedsTypeDetection) : types
-        if nonstandardtype(T) !== Union{}
-            customtypes = tupcat(customtypes, nonstandardtype(T))
-        end
-        columns = Vector{Column}(undef, ncols)
-        for i = 1:ncols
-            col = Column(T, options)
-            columns[i] = col
-        end
-    end
+    columns, customtypes = initialize_columns(ncols, names, types, stringtype, streaming, validate, options)
     if transpose
         # set column positions
         for i = 1:ncols
