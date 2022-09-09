@@ -134,9 +134,13 @@ function initialize_column(i, types::Function, names, stringtype, streaming::Boo
     return Column(T, options)
 end
 
-function initialize_column(i, types::Any, names, stringtype, streaming::Bool, options)
-    T = types === nothing ? (streaming ? Union{stringtype, Missing} : NeedsTypeDetection) : types
+function initialize_column(i, types::Nothing, names, stringtype, streaming::Bool, options)
+    T = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
     return Column(T, options)
+end
+
+function initialize_column(i, types::Type, names, stringtype, streaming::Bool, options)
+    return Column(types, options)
 end
 
 struct Context
