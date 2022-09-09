@@ -79,7 +79,7 @@ function checkvaliddelim(delim)
                             "the following delimiters are invalid: '\\r', '\\n', '\\0'"))
 end
 
-function checkinvalidcolumns(dict, argname, ncols, names)
+function checkinvalidcolumns(dict::AbstractDict, argname, ncols, names)
     for (k, _) in dict
         if k isa Integer
             (0 < k <= ncols) || throw(ArgumentError("invalid column number provided in `$argname` keyword argument: $k. Column number must be 0 < i <= $ncols as detected in the data. To ignore invalid columns numbers in `$argname`, pass `validate=false`"))
@@ -88,16 +88,24 @@ function checkinvalidcolumns(dict, argname, ncols, names)
             isvalid || throw(ArgumentError("invalid column name provided in `$argname` keyword argument: $k. Valid column names detected in the data are: $names. To ignore invalid columns names in `$argname`, pass `validate=false`"))
         end
     end
-    return
+    return nothing
 end
+function checkinvalidcolumns(vec::AbstractVector, argname, ncols, names)
+    # we generally expect `length(types) == ncols` but we still want to support the case
+    # where an additional column is found later in the file and has its type given in `types`
+    length(vec) >= ncols || throw(ArgumentError("provided `$argname::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(vec)) < $ncols`"))
+    return nothing
+end
+checkinvalidcolumns(::Any, argname, ncols, names) = nothing
 
 @noinline nonconcretetypes(types) = throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
 
-function initialize_columns(ncols::Int, args...)
+function initialize_columns(ncols::Int, types, names, args...; validate)
     columns = Vector{Column}(undef, ncols)
     customtypes = Tuple{}
+    validate && checkinvalidcolumns(types, "types", ncols, names)
     for i = 1:ncols
-        col = initialize_column(i, args...)
+        col = initialize_column(i, types, names, args...)
         columns[i] = col
         if nonstandardtype(col.type) !== Union{}
             customtypes = tupcat(customtypes, nonstandardtype(col.type))
@@ -106,26 +114,27 @@ function initialize_columns(ncols::Int, args...)
     return columns, customtypes
 end
 
-function initialize_column(i, types::AbstractVector, names, stringtype, streaming::Bool, validate::Bool, options::Parsers.Options)
-    i <= length(types) || throw(ArgumentError("provided `types::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(types)) != $ncols`"))
-    return Column(types[i], options)
+function initialize_column(i, types::AbstractVector, names, stringtype, streaming::Bool, options)
+    # we generally expected `length(types) == ncols` but we still want to support the case
+    # where an additional column is found later in the file and wasn't in `types`
+    T = i <= length(types) ? types[i] : NeedsTypeDetection
+    return Column(T, options)
 end
 
-function initialize_column(i, types::AbstractDict, names, stringtype, streaming::Bool, validate::Bool, options::Parsers.Options)
+function initialize_column(i, types::AbstractDict, names, stringtype, streaming::Bool, options)
     defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
     T = getordefault(types, names[i], i, defaultT)
     col = Column(T, options)
-    validate && checkinvalidcolumns(types, "types", #=ncols=# 100, names) # TODO ncols
     return col
 end
 
-function initialize_column(i, types::Function, names, stringtype, streaming::Bool, validate::Bool, options::Parsers.Options)
+function initialize_column(i, types::Function, names, stringtype, streaming::Bool, options)
     defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
     T = something(types(i, names[i]), defaultT)
     return Column(T, options)
 end
 
-function initialize_column(i, types::Any, names, stringtype, streaming::Bool, validate::Bool, options::Parsers.Options)
+function initialize_column(i, types::Any, names, stringtype, streaming::Bool, options)
     T = types === nothing ? (streaming ? Union{stringtype, Missing} : NeedsTypeDetection) : types
     return Column(T, options)
 end
@@ -157,6 +166,11 @@ struct Context
     debug::Bool
     tempfile::Union{String, Nothing}
     streaming::Bool
+    types::Union{Nothing, Type, AbstractVector, AbstractDict, Function}
+end
+
+function initialize_column(i, ctx::Context)
+    return initialize_column(i, ctx.types, ctx.names, ctx.stringtype, ctx.streaming, ctx.options)
 end
 
 # user-facing function if just the context is desired
@@ -440,7 +454,7 @@ end
 
     # generate initial columns
     # deduce initial column types/flags for parsing based on whether any user-provided types were provided or not
-    columns, customtypes = initialize_columns(ncols, types, names, stringtype, streaming, validate, options)
+    columns, customtypes = initialize_columns(ncols, types, names, stringtype, streaming, options; validate=validate)
     if transpose
         # set column positions
         for i = 1:ncols
@@ -644,6 +658,7 @@ end
         maxwarnings,
         debug,
         tempfile,
-        streaming
+        streaming,
+        types,
     )
 end

@@ -684,17 +684,17 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
                 # extra columns on this row, let's widen
                 ctx.silencewarnings || toomanycolumns(ncols, rowoffset + row)
                 j = i + 1
-                T = ctx.streaming ? Union{ctx.stringtype, Missing} : NeedsTypeDetection
                 while pos <= len && !Parsers.newline(code)
-                    col = Column(T, ctx.options)
+                    col = initialize_column(j, ctx)
                     col.anymissing = ctx.streaming || rowoffset == 0 && row > 1 # assume all previous rows were missing
                     col.pool = ctx.pool
+                    T = col.type
                     if T === NeedsTypeDetection
                         pos, code = detectcell(buf, pos, len, row, rowoffset, j, col, ctx, rowsguess)
                     else
                         # need to allocate
-                        col.column = allocate(ctx.stringtype, ctx.rowsguess)
-                        pos, code = parsevalue!(ctx.stringtype, buf, pos, len, row, rowoffset, j, col, ctx)
+                        col.column = allocate(T, ctx.rowsguess)
+                        pos, code = parsevalue!(T, buf, pos, len, row, rowoffset, j, col, ctx)
                     end
                     j += 1
                     push!(columns, col)
