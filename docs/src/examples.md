@@ -603,6 +603,19 @@ file = CSV.File(IOBuffer(data); types=Dict("col3" => Int))
 file = CSV.File(IOBuffer(data); types=[Int, Int, Int])
 file = CSV.File(IOBuffer(data); types=[Int, Int, Int], silencewarnings=true)
 file = CSV.File(IOBuffer(data); types=[Int, Int, Int], strict=true)
+
+
+# In this file we have lots of columns, and would like to specify the same type for all
+# columns except one which should have a different type. We can do this by providing a
+# function that takes the column index and column name and uses these to decide the type.
+data = """
+col1,col2,col3,col4,col5,col6,col7
+1,2,3,4,5,6,7
+0,2,3,4,5,6,7
+1,2,3,4,5,6,7
+"""
+file = CSV.File(IOBuffer(data); types=(i, name) -> i == 1 ? Bool : Int8)
+file = CSV.File(IOBuffer(data); types=(i, name) -> name == :col1 ? Bool : Int8)
 ```
 
 ## [Typemap](@id typemap_example)
