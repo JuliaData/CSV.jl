@@ -93,53 +93,41 @@ end
 
 @noinline nonconcretetypes(types) = throw(ArgumentError("Non-concrete types passed in `types` keyword argument, please provide concrete types for columns: $types"))
 
-function initialize_columns(ncols::Int, names, types, stringtype, streaming::Bool, validate::Bool, options::Parsers.Options)
+function initialize_columns(ncols::Int, args...)
+    columns = Vector{Column}(undef, ncols)
     customtypes = Tuple{}
-    if types isa AbstractVector
-        length(types) == ncols || throw(ArgumentError("provided `types::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(types)) != $ncols`"))
-        columns = Vector{Column}(undef, ncols)
-        for i = 1:ncols
-            col = Column(types[i], options)
-            columns[i] = col
-            if nonstandardtype(col.type) !== Union{}
-                customtypes = tupcat(customtypes, nonstandardtype(col.type))
-            end
-        end
-    elseif types isa AbstractDict
-        T = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
-        columns = Vector{Column}(undef, ncols)
-        for i = 1:ncols
-            S = getordefault(types, names[i], i, T)
-            col = Column(S, options)
-            columns[i] = col
-            if nonstandardtype(col.type) !== Union{}
-                customtypes = tupcat(customtypes, nonstandardtype(col.type))
-            end
-        end
-        validate && checkinvalidcolumns(types, "types", ncols, names)
-    elseif types isa Function
-        defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
-        columns = Vector{Column}(undef, ncols)
-        for i = 1:ncols
-            T = something(types(i, names[i]), defaultT)
-            col = Column(T, options)
-            columns[i] = col
-            if nonstandardtype(col.type) !== Union{}
-                customtypes = tupcat(customtypes, nonstandardtype(col.type))
-            end
-        end
-    else
-        T = types === nothing ? (streaming ? Union{stringtype, Missing} : NeedsTypeDetection) : types
-        if nonstandardtype(T) !== Union{}
-            customtypes = tupcat(customtypes, nonstandardtype(T))
-        end
-        columns = Vector{Column}(undef, ncols)
-        for i = 1:ncols
-            col = Column(T, options)
-            columns[i] = col
+    for i = 1:ncols
+        col = initialize_column(i, args...)
+        columns[i] = col
+        if nonstandardtype(col.type) !== Union{}
+            customtypes = tupcat(customtypes, nonstandardtype(col.type))
         end
     end
     return columns, customtypes
+end
+
+function initialize_column(i, types::AbstractVector, names, stringtype, streaming::Bool, validate::Bool, options::Parsers.Options)
+    i <= length(types) || throw(ArgumentError("provided `types::AbstractVector` keyword argument doesn't match detected # of columns: `$(length(types)) != $ncols`"))
+    return Column(types[i], options)
+end
+
+function initialize_column(i, types::AbstractDict, names, stringtype, streaming::Bool, validate::Bool, options::Parsers.Options)
+    defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
+    T = getordefault(types, names[i], i, defaultT)
+    col = Column(T, options)
+    validate && checkinvalidcolumns(types, "types", #=ncols=# 100, names) # TODO ncols
+    return col
+end
+
+function initialize_column(i, types::Function, names, stringtype, streaming::Bool, validate::Bool, options::Parsers.Options)
+    defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
+    T = something(types(i, names[i]), defaultT)
+    return Column(T, options)
+end
+
+function initialize_column(i, types::Any, names, stringtype, streaming::Bool, validate::Bool, options::Parsers.Options)
+    T = types === nothing ? (streaming ? Union{stringtype, Missing} : NeedsTypeDetection) : types
+    return Column(T, options)
 end
 
 struct Context
@@ -452,7 +440,7 @@ end
 
     # generate initial columns
     # deduce initial column types/flags for parsing based on whether any user-provided types were provided or not
-    columns, customtypes = initialize_columns(ncols, names, types, stringtype, streaming, validate, options)
+    columns, customtypes = initialize_columns(ncols, types, names, stringtype, streaming, validate, options)
     if transpose
         # set column positions
         for i = 1:ncols
