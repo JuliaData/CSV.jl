@@ -504,7 +504,7 @@ function detecttranspose(buf, pos, len, options, @nospecialize(header), skipto, 
         # column names span several columns
         throw(ArgumentError("not implemented for transposed csv files"))
     elseif pos > len
-        # emtpy file, use column names if provided
+        # empty file, use column names if provided
         datapos = pos
         columnpositions = Int[]
         endpositions = Int[]

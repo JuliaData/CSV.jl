@@ -568,7 +568,7 @@ end
 Base.getindex(x::Arg) = x.x
 
 macro refargs(ex)
-    ex isa Expr || throw(ArgumentError("must pass an expressiong to @refargs"))
+    ex isa Expr || throw(ArgumentError("must pass an expression to @refargs"))
     (ex.head == :call || ex.head == :function) || throw(ArgumentError("@refargs ex must be function call or definition"))
     if ex.head == :call
         for i = 2:length(ex.args)
