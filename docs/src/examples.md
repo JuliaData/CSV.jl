@@ -310,7 +310,7 @@ file = CSV.File(IOBuffer(data); transpose=true)
 ```julia
 using CSV
 
-# here, we have several non-data rows that all beging with the "#" string
+# here, we have several non-data rows that all begin with the "#" string
 data = """
 # row describing column names
 a,b,c
