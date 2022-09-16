@@ -366,7 +366,7 @@ testfiles = [
         NamedTuple{(:col1,),Tuple{Int}},
         (col1 = [1],)
     ),
-    ("transposed_emtpy.csv", (transpose=true,),
+    ("transposed_empty.csv", (transpose=true,),
         (0, 1),
         NamedTuple{(:col1,),Tuple{Missing}},
         (col1 = Missing[],)

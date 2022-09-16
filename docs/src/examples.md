@@ -29,7 +29,7 @@ using CSV
 
 # in this case, I have a vector of delimited data inputs that each have
 # matching schema (the same column names and types). I'd like to process all
-# of the inputs together and vertically concatenante them into one "long" table.
+# of the inputs together and vertically concatenate them into one "long" table.
 data = [
     "a,b,c\n1,2,3\n4,5,6\n",
     "a,b,c\n7,8,9\n10,11,12\n",
@@ -310,13 +310,13 @@ file = CSV.File(IOBuffer(data); transpose=true)
 ```julia
 using CSV
 
-# here, we have several non-data rows that all beging with the "#" string
+# here, we have several non-data rows that all begin with the "#" string
 data = """
 # row describing column names
 a,b,c
 # row describing first row of data
 1,2,3
-# row describign second row of data
+# row describing second row of data
 4,5,6
 """
 
