@@ -15,7 +15,7 @@ file = CSV.File(open(&quot;iso8859_encoded_file.csv&quot;, enc&quot;ISO-8859-1&q
 
 # in this case, I have a vector of delimited data inputs that each have
 # matching schema (the same column names and types). I&#39;d like to process all
-# of the inputs together and vertically concatenante them into one &quot;long&quot; table.
+# of the inputs together and vertically concatenate them into one &quot;long&quot; table.
 data = [
     &quot;a,b,c\n1,2,3\n4,5,6\n&quot;,
     &quot;a,b,c\n7,8,9\n10,11,12\n&quot;,
@@ -218,13 +218,13 @@ c,3,6,9
 # column of data, then parse each row as a separate column
 file = CSV.File(IOBuffer(data); transpose=true)</code></pre><h2 id="comment_example"><a class="docs-heading-anchor" href="#comment_example">Ignoring commented rows</a><a id="comment_example-1"></a><a class="docs-heading-anchor-permalink" href="#comment_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
 
-# here, we have several non-data rows that all beging with the &quot;#&quot; string
+# here, we have several non-data rows that all begin with the &quot;#&quot; string
 data = &quot;&quot;&quot;
 # row describing column names
 a,b,c
 # row describing first row of data
 1,2,3
-# row describign second row of data
+# row describing second row of data
 4,5,6
 &quot;&quot;&quot;
 
@@ -504,4 +504,4 @@ BF392,GC
 8CD2E,GC
 &quot;&quot;&quot;
 
-file = CSV.File(IOBuffer(data); pool=(0.5, 2))</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="writing.html">« Writing</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.23 on <span class="colophon-date" title="Friday 9 September 2022 14:50">Friday 9 September 2022</span>. Using Julia version 1.8.0.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+file = CSV.File(IOBuffer(data); pool=(0.5, 2))</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="writing.html">« Writing</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.23 on <span class="colophon-date" title="Friday 16 September 2022 21:37">Friday 16 September 2022</span>. Using Julia version 1.8.0.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
