@@ -810,8 +810,8 @@ str = """
 f = CSV.File(IOBuffer(str); delim=" ", header=false, types=String)
 @test String <: eltype(f.Column5)
 # case where `types isa AbstractVector`
-f = CSV.File(IOBuffer(str); delim=" ", header=false, types=[Int8, Int16, Int32, Int64, String])
-@test String <: eltype(f.Column5)
+f = CSV.File(IOBuffer(str); delim=" ", header=false, types=[Int8, Int16, Int32, Int64, Int128])
+@test Int128 <: eltype(f.Column5)
 # case where `types isa Function`
 f = CSV.File(IOBuffer(str); delim=" ", header=false, types=(i,nm) -> (i == 5 ? Int8 : String))
 @test Int8 <: eltype(f.Column5)
