@@ -693,7 +693,7 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
                     # Right now if `T` is a `nonstandardtype` not already in `customtypes`, then
                     # we won't have a specialised parse method for it, so parsing is expected to fail.
                     # Only log the error, rather than throw, in case parsing somehow works.
-                    T in TYPES || T in ctx.customtypes.parameters || @error "Parsing extra column with unknown type `$T`. Parsing may fail!"
+                    nonstandardtype(T) === Union{} || T in ctx.customtypes.parameters || @error "Parsing extra column with unknown type `$T`. Parsing may fail!"
                     if T === NeedsTypeDetection
                         pos, code = detectcell(buf, pos, len, row, rowoffset, j, col, ctx, rowsguess)
                     else
