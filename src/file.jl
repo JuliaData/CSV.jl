@@ -644,7 +644,7 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
             if customtypes !== Tuple{}
                 pos, code = parsecustom!(customtypes, buf, pos, len, row, rowoffset, i, col, ctx)
             else
-                error("bad column type: $(type))")
+                error("Column $i bad column type: `$(type)`")
             end
         end
         if promote_to_string(code)
@@ -684,17 +684,22 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
                 # extra columns on this row, let's widen
                 ctx.silencewarnings || toomanycolumns(ncols, rowoffset + row)
                 j = i + 1
-                T = ctx.streaming ? Union{ctx.stringtype, Missing} : NeedsTypeDetection
                 while pos <= len && !Parsers.newline(code)
-                    col = Column(T, ctx.options)
+                    col = initialize_column(j, ctx)
                     col.anymissing = ctx.streaming || rowoffset == 0 && row > 1 # assume all previous rows were missing
                     col.pool = ctx.pool
+                    T = col.type
+                    # TODO: Support edge case where a custom type was provided for the new column?
+                    # Right now if `T` is a `nonstandardtype` not already in `customtypes`, then
+                    # we won't have a specialised parse method for it, so parsing is expected to fail.
+                    # Only log the error, rather than throw, in case parsing somehow works.
+                    nonstandardtype(T) === Union{} || T in ctx.customtypes.parameters || @error "Parsing extra column with unknown type `$T`. Parsing may fail!"
                     if T === NeedsTypeDetection
                         pos, code = detectcell(buf, pos, len, row, rowoffset, j, col, ctx, rowsguess)
                     else
                         # need to allocate
-                        col.column = allocate(ctx.stringtype, ctx.rowsguess)
-                        pos, code = parsevalue!(ctx.stringtype, buf, pos, len, row, rowoffset, j, col, ctx)
+                        col.column = allocate(T, ctx.rowsguess)
+                        pos, code = parsevalue!(T, buf, pos, len, row, rowoffset, j, col, ctx)
                     end
                     j += 1
                     push!(columns, col)

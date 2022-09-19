@@ -798,4 +798,25 @@ f = CSV.File(IOBuffer("time,date1,date2\n10:00:00.0,04/16/2020,04/17/2022\n"); d
 @test f[1].date1 == Dates.Date(2020, 4, 16)
 @test f[1].date2 == Dates.Date(2022, 4, 17)
 
+# 1021 - https://github.com/JuliaData/CSV.jl/issues/1021
+# user-given types for columns only found later in file
+str = """
+    1 2 3
+    1 2
+    1 2 3 4
+    1
+    1 2 3 4 5
+    """
+f = CSV.File(IOBuffer(str); delim=" ", header=false, types=String)
+@test String <: eltype(f.Column5)
+# case where `types isa AbstractVector`
+f = CSV.File(IOBuffer(str); delim=" ", header=false, types=[Int8, Int16, Int32, Int64, Int128])
+@test Int128 <: eltype(f.Column5)
+# case where `types isa Function`
+f = CSV.File(IOBuffer(str); delim=" ", header=false, types=(i,nm) -> (i == 5 ? Int8 : String))
+@test Int8 <: eltype(f.Column5)
+# case where `types isa AbstractDict`
+f = CSV.File(IOBuffer(str); delim=" ", header=false, types=Dict(r".*" => Float16))
+@test Float16 <: eltype(f.Column5)
+
 end
