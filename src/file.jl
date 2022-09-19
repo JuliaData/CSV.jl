@@ -644,7 +644,7 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
             if customtypes !== Tuple{}
                 pos, code = parsecustom!(customtypes, buf, pos, len, row, rowoffset, i, col, ctx)
             else
-                error("bad column type: $(type))")
+                error("Column $i bad column type: `$(type)`")
             end
         end
         if promote_to_string(code)
@@ -688,8 +688,12 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
                     col = initialize_column(j, ctx)
                     col.anymissing = ctx.streaming || rowoffset == 0 && row > 1 # assume all previous rows were missing
                     col.pool = ctx.pool
-                    # TODO: Do we need to check `nonstandardtype(T)` and potentially create a `Context` an updated `customtypes`?
                     T = col.type
+                    # TODO: Support edge case where a custom type was provided for the new column?
+                    # Right now if `T` is a `nonstandardtype` not already in `customtypes`, then
+                    # we won't have a specialised parse method for it, so parsing is expected to fail.
+                    # Only log the error, rather than throw, in case parsing somehow works.
+                    T in TYPES || T in ctx.customtypes.parameters || @error "Parsing extra column with unknown type `$T`. Parsing may fail!"
                     if T === NeedsTypeDetection
                         pos, code = detectcell(buf, pos, len, row, rowoffset, j, col, ctx, rowsguess)
                     else
