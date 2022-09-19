@@ -815,5 +815,8 @@ f = CSV.File(IOBuffer(str); delim=" ", header=false, types=[Int8, Int16, Int32, 
 # case where `types isa Function`
 f = CSV.File(IOBuffer(str); delim=" ", header=false, types=(i,nm) -> (i == 5 ? Int8 : String))
 @test Int8 <: eltype(f.Column5)
+# case where `types isa AbstractDict`
+f = CSV.File(IOBuffer(str); delim=" ", header=false, types=Dict(r".*" => Float16))
+@test Float16 <: eltype(f.Column5)
 
 end
