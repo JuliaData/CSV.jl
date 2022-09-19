@@ -140,7 +140,9 @@ end
 
 function initialize_column(i, types::Function, names, stringtype, streaming::Bool, options)
     defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
-    T = something(types(i, names[i]), defaultT)
+    # if an additional column is found while parsing, it will not have a name yet
+    nm = i <= length(names) ? names[i] : ""
+    T = something(types(i, nm), defaultT)
     return Column(T, options)
 end
 
