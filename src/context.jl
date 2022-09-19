@@ -133,7 +133,9 @@ end
 
 function initialize_column(i, types::AbstractDict, names, stringtype, streaming::Bool, options)
     defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
-    T = getordefault(types, names[i], i, defaultT)
+    # if an additional column is found while parsing, it will not have a name yet
+    nm = i <= length(names) ? names[i] : ""
+    T = getordefault(types, nm, i, defaultT)
     col = Column(T, options)
     return col
 end
