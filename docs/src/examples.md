@@ -616,6 +616,9 @@ col1,col2,col3,col4,col5,col6,col7
 """
 file = CSV.File(IOBuffer(data); types=(i, name) -> i == 1 ? Bool : Int8)
 file = CSV.File(IOBuffer(data); types=(i, name) -> name == :col1 ? Bool : Int8)
+# Alternatively by providing the exact name for the first column and a Regex to match the rest.
+# Note that an exact column name always takes precedence over a regular expression.
+file = CSV.File(IOBuffer(data); types=Dict(:col1 => Bool, r"^col\d" => Int8))
 ```
 
 ## [Typemap](@id typemap_example)
