@@ -819,8 +819,4 @@ f = CSV.File(IOBuffer(str); delim=" ", header=false, types=(i,nm) -> (i == 5 ? I
 f = CSV.File(IOBuffer(str); delim=" ", header=false, types=Dict(r".*" => Float16))
 @test Float16 <: eltype(f.Column5)
 
-# checkdelim!
-buf = UInt8[0x20, 0x20, 0x41, 0x20, 0x20, 0x42, 0x0a, 0x20, 0x20, 0x31, 0x20, 0x20, 0x32, 0x0a, 0x20, 0x20, 0x31, 0x31, 0x20, 0x32, 0x32]
-@test Parsers.checkdelim!(buf, 1, 21, Parsers.Options(delim=' ', ignorerepeated=true)) == 3
-
 end
