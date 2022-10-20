@@ -161,7 +161,7 @@ function incr!(c::ByteValueCounter, b::UInt8)
 end
 
 # given the various header and normalization options, figure out column names for a file
-function detectcolumnnames(buf, headerpos, datapos, len, options, @nospecialize(header), normalizenames)::Vector{Symbol}
+function detectcolumnnames(buf, headerpos, datapos, len, options, @nospecialize(header), normalizenames, oq, eq, cq, cmt, ignoreemptyrows)::Vector{Symbol}
     if header isa Union{AbstractVector{Symbol}, AbstractVector{String}}
         fields, pos = readsplitline(buf, datapos, len, options)
         isempty(header) && return [Symbol(:Column, i) for i = 1:length(fields)]
@@ -175,7 +175,7 @@ function detectcolumnnames(buf, headerpos, datapos, len, options, @nospecialize(
     elseif header isa AbstractVector{<:Integer}
         names, pos = readsplitline(buf, headerpos, len, options)
         for row = 2:length(header)
-            pos = skiptorow(buf, pos, len, options.oq, options.e, options.cq, options.cmt, options.ignoreemptylines, 1, header[row] - header[row - 1])
+            pos = skiptorow(buf, pos, len, oq, eq, cq, cmt, ignoreemptyrows, 1, header[row] - header[row - 1])
             fields, pos = readsplitline(buf, pos, len, options)
             for (i, x) in enumerate(fields)
                 names[i] *= "_" * x

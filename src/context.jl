@@ -459,7 +459,7 @@ end
         end
 
         # step 4b: generate or parse column names
-        names = detectcolumnnames(buf, headerpos, datapos, len, options, header, normalizenames)
+        names = detectcolumnnames(buf, headerpos, datapos, len, options, header, normalizenames, oq, eq, cq, cmt, ignoreemptyrows)
         ncols = length(names)
     else
         # transpose
