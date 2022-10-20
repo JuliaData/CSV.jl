@@ -15,7 +15,7 @@ const PRECOMPILE_DATA = """"int,float,date,datetime,bool,null,str,catg,int_float
 
     CSV.read(
         joinpath(dirname(pathof(CSV)), "..", "test", "testfiles", "precompile_small.csv"),
-        Dict
+        Tables.dictcolumntable
     )
 
     table = Tables.dictcolumntable(Dict(
