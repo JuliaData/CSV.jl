@@ -1,3 +1,5 @@
+import Base: Ryu
+
 """
     CSV.write(file, table; kwargs...) => file
     table |> CSV.write(file; kwargs...) => file
@@ -460,8 +462,8 @@ function writecell(buf, pos, len, io, x::AbstractFloat, opts)
 end
 
 function writecell(buf, pos, len, io, x::T, opts) where {T <: Base.IEEEFloat}
-    @check Parsers.neededdigits(T)
-    return Parsers.writeshortest(buf, pos, x, false, false, true, -1, UInt8('e'), false, opts.decimal)
+    @check Ryu.neededdigits(T)
+    return Ryu.writeshortest(buf, pos, x, false, false, true, -1, UInt8('e'), false, opts.decimal)
 end
 
 getvalue(x::T, df) where {T <: Dates.TimeType} = Dates.format(x, df === nothing ? Dates.default_format(T) : df)
