@@ -507,7 +507,7 @@ row = first(r)
 
 @test CSV.File(IOBuffer("col1\n1")).col1 == [1]
 
-chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString)
+chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString, ntasks=2)
 @test sum(length, chunks) == 10000
 @test Tables.partitions(chunks) === chunks
 
