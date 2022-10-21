@@ -511,6 +511,8 @@ chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString, nt
 @test sum(length, chunks) == 10000
 @test Tables.partitions(chunks) === chunks
 
+@test_throws ArgumentError CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString, ntasks=1)
+
 # 668
 buf = IOBuffer("""
        garbage
