@@ -514,10 +514,10 @@ chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString, nt
 @test_throws ArgumentError CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString, ntasks=1)
 
 # Test `ntasks` has expected defaults.
+chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString)
 if Threads.nthreads() == 1
-    @test_throws ArgumentError CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString)
+    @test length(chunks) == 8
 else
-    chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString)
     @test length(chunks) == Threads.nthreads()
 end
 

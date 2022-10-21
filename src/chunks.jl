@@ -41,7 +41,7 @@ function Chunks(source::ValidSources;
     drop=nothing,
     limit::Union{Integer, Nothing}=nothing,
     buffer_in_memory::Bool=false,
-    ntasks::Union{Integer, Nothing}=nothing,
+    ntasks::Union{Integer, Nothing}=Threads.nthreads() == 1 ? 8 : Threads.nthreads(),
     tasks::Union{Nothing, Integer}=nothing,
     rows_to_check::Integer=DEFAULT_ROWS_TO_CHECK,
     lines_to_check=nothing,
