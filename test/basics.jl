@@ -507,9 +507,19 @@ row = first(r)
 
 @test CSV.File(IOBuffer("col1\n1")).col1 == [1]
 
-chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString)
+chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString, ntasks=2)
 @test sum(length, chunks) == 10000
 @test Tables.partitions(chunks) === chunks
+
+@test_throws ArgumentError CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString, ntasks=1)
+
+# Test `ntasks` has expected defaults.
+chunks = CSV.Chunks(joinpath(dir, "promotions.csv"); stringtype=PosLenString)
+if Threads.nthreads() == 1
+    @test length(chunks) == 8
+else
+    @test length(chunks) == Threads.nthreads()
+end
 
 # 668
 buf = IOBuffer("""
