@@ -620,8 +620,16 @@ end
 # as suggested in the above issue, spawned tasks may
 # end up getting stuck in thread local storage
 # running clear_thread_states clears out any thread local storage tasks
+struct _Returns{V} <: Function
+    value::V
+    _Returns{V}(value) where {V} = new{V}(value)
+    _Returns(value) = new{_stable_typeof(value)}(value)
+end
+
+(obj::_Returns)(@nospecialize(args...); @nospecialize(kw...)) = obj.value
+
 function clear_thread_states()
     Threads.@threads :static for _ in 1:Threads.nthreads()
-        Timer(Returns(nothing), 0; interval = 1)
+        Timer(_Returns(nothing), 0; interval = 1)
     end
 end
