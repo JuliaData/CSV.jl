@@ -622,8 +622,6 @@ end
 # running clear_thread_states clears out any thread local storage tasks
 struct _Returns{V} <: Function
     value::V
-    _Returns{V}(value) where {V} = new{V}(value)
-    _Returns(value) = new{_stable_typeof(value)}(value)
 end
 
 (obj::_Returns)(@nospecialize(args...); @nospecialize(kw...)) = obj.value
