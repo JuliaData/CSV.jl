@@ -615,3 +615,13 @@ macro refargs(ex)
         return esc(ex)
     end
 end
+
+# https://github.com/JuliaLang/julia/issues/40626
+# as suggested in the above issue, spawned tasks may
+# end up getting stuck in thread local storage
+# running clear_thread_states clears out any thread local storage tasks
+function clear_thread_states()
+    Threads.@threads :static for _ in 1:Threads.nthreads()
+        Timer(Returns(nothing), 0; interval = 1)
+    end
+end

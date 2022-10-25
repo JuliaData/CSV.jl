@@ -283,6 +283,7 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
                 Threads.@spawn multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, col)
             end
         end
+        clear_thread_states()
     else
         # single-threaded parsing
         columns = ctx.columns
