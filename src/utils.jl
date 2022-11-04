@@ -627,7 +627,12 @@ end
 (obj::_Returns)(@nospecialize(args...); @nospecialize(kw...)) = obj.value
 
 function clear_thread_states()
-    Threads.@threads :static for _ in 1:Threads.nthreads()
-        Timer(_Returns(nothing), 0; interval = 1)
+    # only clear thread states in the workflow where a user is running
+    # CSV.File from the REPL at the top-level; if we're already spawned
+    # in a task, we don't want to mess up thread task states
+    if current_task() == Base.roottask
+        Threads.@threads :static for _ in 1:Threads.nthreads()
+            Timer(_Returns(nothing), 0; interval = 1)
+        end
     end
 end
