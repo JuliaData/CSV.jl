@@ -236,7 +236,7 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
         # and it "checks in" the types it parsed for each column
         foreach(col -> col.lock = ReentrantLock(), columns)
         rows = zeros(Int, ntasks) # how many rows each parsing task ended up actually parsing
-        @syncpreserve ctx pertaskcolumns rowchunkguess rows wholecolumnslock for i = 1:ntasks
+        @sync for i = 1:ntasks
             @weakrefspawn ctx pertaskcolumns rowchunkguess i rows wholecolumnslock multithreadparse(_ctx, _pertaskcolumns, _rowchunkguess, _i, _rows, _wholecolumnslock)
             # CSV.multithreadparse(ctx, pertaskcolumns, rowchunkguess, i, rows, wholecolumnslock)
         end
@@ -278,7 +278,7 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
                 end
             end
         end
-        @syncpreserve ctx ntasks pertaskcolumns rows finalrows for (j, col) in enumerate(columns)
+        @sync for (j, col) in enumerate(columns)
             let j=j, col=col
                 @weakrefspawn ctx ntasks pertaskcolumns rows finalrows j col multithreadpostparse(_ctx, _ntasks, _pertaskcolumns, _rows, _finalrows, _j, _col)
             end

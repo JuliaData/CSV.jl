@@ -657,10 +657,14 @@ macro weakrefspawn(args...)
     args = args[1:end-1]
     block = Expr(:block, :(wkd = Dict()))
     unpack = Expr(:block)
+    unders = Symbol[]
     for arg in args
         push!(block.args, :(wkd[$(Meta.quot(arg))] = WeakRef($arg)))
-        push!(unpack.args, :($(Symbol("_", arg)) = wkd[$(Meta.quot(arg))].value))
+        under = Symbol("_", arg)
+        push!(unders, under)
+        push!(unpack.args, :($under = wkd[$(Meta.quot(arg))].value))
     end
+    expr = Expr(:gc_preserve, expr, unders...)
     esc(quote
         $block
         Threads.@spawn begin
