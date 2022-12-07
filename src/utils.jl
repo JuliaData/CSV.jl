@@ -644,7 +644,7 @@ macro weakrefspawn(args...)
     unpack = Expr(:block)
     unders = Symbol[]
     for arg in args
-        push!(block.args, :(wkd[$(Meta.quot(arg))] = ismutable(arg) ? WeakRef($arg) : arg))
+        push!(block.args, :(wkd[$(Meta.quot(arg))] = ismutable($arg) ? WeakRef($arg) : $arg))
         under = Symbol("_", arg)
         push!(unders, under)
         push!(unpack.args, :($under = unwrap(wkd[$(Meta.quot(arg))])))
