@@ -616,23 +616,8 @@ macro refargs(ex)
     end
 end
 
-"""
-    @syncpreserve args... begin
-
-    end
-
-A macro that wraps a `@sync` block with `GC.@preserve` calls for all `args...` arguments, to ensure
-they are not garbage collected for the lifetime of the `@sync` block.
-"""
-macro syncpreserve(args...)
-    expr = args[end]
-    args = args[1:end-1]
-    esc(quote
-        GC.@preserve $(args...) begin
-            @sync $expr
-        end
-    end)
-end
+unwrap(val) = val
+unwrap(val::WeakRef) = val.value
 
 """
     @weakrefspawn args... begin
@@ -659,10 +644,10 @@ macro weakrefspawn(args...)
     unpack = Expr(:block)
     unders = Symbol[]
     for arg in args
-        push!(block.args, :(wkd[$(Meta.quot(arg))] = WeakRef($arg)))
+        push!(block.args, :(wkd[$(Meta.quot(arg))] = ismutable(arg) ? WeakRef($arg) : arg))
         under = Symbol("_", arg)
         push!(unders, under)
-        push!(unpack.args, :($under = wkd[$(Meta.quot(arg))].value))
+        push!(unpack.args, :($under = unwrap(wkd[$(Meta.quot(arg))])))
     end
     expr = Expr(:gc_preserve, expr, unders...)
     esc(quote
