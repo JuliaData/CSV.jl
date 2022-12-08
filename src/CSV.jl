@@ -47,6 +47,8 @@ export String1, String3, String7, String15, String31, String63, String127, Strin
 using CodecZlib
 # FilePathsBase allows more structured file path types
 using FilePathsBase
+# WorkerUtilities for lock/spawn utilities
+using WorkerUtilities
 
 struct Error <: Exception
     msg::String
