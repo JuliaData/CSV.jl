@@ -237,7 +237,7 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
         foreach(col -> col.lock = ReentrantLock(), columns)
         rows = zeros(Int, ntasks) # how many rows each parsing task ended up actually parsing
         @sync for i = 1:ntasks
-            Threads.@spawn multithreadparse(ctx, pertaskcolumns, rowchunkguess, i, rows, wholecolumnslock)
+            @wkspawn multithreadparse($ctx, $pertaskcolumns, $rowchunkguess, $i, $rows, $wholecolumnslock)
             # CSV.multithreadparse(ctx, pertaskcolumns, rowchunkguess, i, rows, wholecolumnslock)
         end
         finalrows = sum(rows)
@@ -279,11 +279,8 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
             end
         end
         @sync for (j, col) in enumerate(columns)
-            let finalrows=finalrows
-                Threads.@spawn multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, col)
-            end
+            @wkspawn multithreadpostparse($ctx, $ntasks, $pertaskcolumns, $rows, $finalrows, $j, $col)
         end
-        clear_thread_states()
     else
         # single-threaded parsing
         columns = ctx.columns

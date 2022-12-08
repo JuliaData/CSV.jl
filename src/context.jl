@@ -157,7 +157,7 @@ function initialize_column(i, types::Type, names, stringtype, streaming::Bool, o
     return Column(types, options)
 end
 
-struct Context
+mutable struct Context
     transpose::Bool
     name::String
     names::Vector{Symbol}

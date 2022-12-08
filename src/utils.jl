@@ -615,24 +615,3 @@ macro refargs(ex)
         return esc(ex)
     end
 end
-
-# https://github.com/JuliaLang/julia/issues/40626
-# as suggested in the above issue, spawned tasks may
-# end up getting stuck in thread local storage
-# running clear_thread_states clears out any thread local storage tasks
-struct _Returns{V} <: Function
-    value::V
-end
-
-(obj::_Returns)(@nospecialize(args...); @nospecialize(kw...)) = obj.value
-
-function clear_thread_states()
-    # only clear thread states in the workflow where a user is running
-    # CSV.File from the REPL at the top-level; if we're already spawned
-    # in a task, we don't want to mess up thread task states
-    if current_task() == Base.roottask
-        Threads.@threads :static for _ in 1:Threads.nthreads()
-            Timer(_Returns(nothing), 0; interval = 1)
-        end
-    end
-end
