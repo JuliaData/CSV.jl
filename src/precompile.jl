@@ -11,3 +11,5 @@ using SnoopPrecompile
         CSV.File(Vector{UInt8}(PRECOMPILE_DATA))
     end
 end
+
+precompile(CSV.File, (String,))
