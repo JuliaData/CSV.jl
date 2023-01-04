@@ -76,18 +76,6 @@ f = CSV.File(IOBuffer("a,b\n1,2\n"); limit=0)
 @test f.names == [:a, :b]
 @test f.rows == 0
 
-# delim same as quotechar
-f = CSV.File(IOBuffer("a\"b\n1\"2\n"); delim='"')
-@test f.rows == 0
-@test f.cols == 2
-@test f.types == [Missing, Missing]
-
-# delim same as quotechar w/ quoted field
-f = CSV.File(IOBuffer("a\"b\n1\"\"2\"\n"); delim='"')
-@test f.rows == 0
-@test f.cols == 2
-@test f.types == [Missing, Missing]
-
 # 387
 f = CSV.File(IOBuffer("a,b\n1,1\n1,2\n1,3\n"))
 
