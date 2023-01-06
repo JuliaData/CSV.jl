@@ -339,18 +339,18 @@ end
 function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_to_check, columns, origcoltypes, columnlock, @nospecialize(stringtype), totalbytes, totalrows, succeeded)
     pos = ranges[i]
     len = ranges[i + 1]
-    while pos <= len
-        startpos = pos
-        code = Parsers.ReturnCode(0)
-        attempted_quoted = false
-@label findnextnewline
+    nextrowpos = 0
+    startpos = pos
+    code = Parsers.ReturnCode(0)
+    attempted_quoted = false
+    while true
         # assume not in quoted field; start parsing, count ncols + newline and if things match, return
         while pos <= len
             res = Parsers.xparse(String, buf, pos, len, opts)
             pos += res.tlen
             if Parsers.newline(res.code)
                 # assume we found the correct start of the next row
-                ranges[i] = pos
+                nextrowpos = pos
                 break
             end
         end
@@ -449,8 +449,8 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
         end
         # ok, we made it out of a quoted field
         attempted_quoted = true
-        @goto findnextnewline
     end
+    return ifelse(nextrowpos==0, startpos, nextrowpos)
 end
 
 # here we try to "chunk" up a file; given the equally spaced out byte positions in `ranges`, we start at each
@@ -462,13 +462,17 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, @nospecialize(stringt
     totalbytes = Threads.Atomic{Int}(0)
     totalrows = Threads.Atomic{Int}(0)
     succeeded = Threads.Atomic{Bool}(true)
-    N = length(ranges) - 2
+    N = length(ranges) - 1
     lock = ReentrantLock()
     origcoltypes = Type[col.type for col in columns]
-    @sync for i = 2:(length(ranges) - 1)
+    newranges = similar(ranges)
+    @sync for i in 2:N
         Threads.@spawn begin
-            findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_to_check, columns, origcoltypes, lock, stringtype, totalbytes, totalrows, succeeded)
+            newranges[i] = findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_to_check, columns, origcoltypes, lock, stringtype, totalbytes, totalrows, succeeded)
         end
+    end
+    @inbounds for i in 2:N # this update occurs after the parallel loop to avoid a race condition
+        ranges[i] = newranges[i]
     end
     return totalbytes[] / totalrows[], succeeded[]
 end
