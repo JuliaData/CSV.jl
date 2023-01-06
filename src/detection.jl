@@ -336,9 +336,23 @@ ColumnProperties(T) = ColumnProperties(T, 0x00)
     end
 end
 
+# preprocessing of ranges: ensure that each range starts and ends at a newline
+function findrangerowstart!(ranges, i, buf)
+    pos = ranges[i]
+    stop = last(ranges)
+    while pos < stop
+        if buf[pos] == UInt8('\n')
+            ranges[i] = pos + 1
+            return
+        end
+        pos += 1
+    end
+    nothing
+end
+
 function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_to_check, columns, origcoltypes, columnlock, @nospecialize(stringtype), totalbytes, totalrows, succeeded)
     pos = ranges[i]
-    len = ranges[i + 1]
+    len = ranges[i + 1] - 1
     nextrowpos = 0
     startpos = pos
     code = Parsers.ReturnCode(0)
@@ -462,10 +476,16 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, @nospecialize(stringt
     totalbytes = Threads.Atomic{Int}(0)
     totalrows = Threads.Atomic{Int}(0)
     succeeded = Threads.Atomic{Bool}(true)
-    N = length(ranges) - 1
     lock = ReentrantLock()
     origcoltypes = Type[col.type for col in columns]
+    @sync for i in 3:(length(ranges) - 1)
+        Threads.@spawn begin
+            findrangerowstart!(ranges, i, buf)
+        end
+    end
+    unique!(ranges) # in case multiple tasks start on the same row
     newranges = similar(ranges)
+    N = length(ranges) - 1
     @sync for i in 2:N
         Threads.@spawn begin
             newranges[i] = findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_to_check, columns, origcoltypes, lock, stringtype, totalbytes, totalrows, succeeded)
