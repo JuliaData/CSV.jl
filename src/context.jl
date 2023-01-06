@@ -124,37 +124,43 @@ end
 # but without yet allocating a vector to hold the parsed results (see `allocate`)
 # - `i` is the column number e.g. i=1 for the 1st column.
 # - `types` is the user-given input
-function initialize_column(i, types::AbstractVector, names, stringtype, streaming::Bool, options)
+function initialize_column(i, types, names, stringtype, streaming::Bool, options)
+    T = initial_column_type(i, types, names, stringtype, streaming::Bool)
+    return Column(T, options)
+end
+
+function initial_column_type(i, types::AbstractVector, _, _, ::Bool)
     # we generally expected `length(types) == ncols` but we still want to support the case
     # where an additional column is found later in the file and wasn't in `types`
-    T = i <= length(types) ? types[i] : NeedsTypeDetection
-    return Column(T, options)
+    i <= length(types) ? types[i] : NeedsTypeDetection
 end
 
-function initialize_column(i, types::AbstractDict, names, stringtype, streaming::Bool, options)
+function initial_column_type(i, types::AbstractDict, names, stringtype, streaming::Bool)
     defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
     # if an additional column is found while parsing, it will not have a name yet
     nm = i <= length(names) ? names[i] : ""
-    T = getordefault(types, nm, i, defaultT)
-    col = Column(T, options)
-    return col
+    getordefault(types, nm, i, defaultT)
 end
 
-function initialize_column(i, types::Function, names, stringtype, streaming::Bool, options)
+function initial_column_type(i, types::Function, names, stringtype, streaming::Bool)
     defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
     # if an additional column is found while parsing, it will not have a name yet
     nm = i <= length(names) ? names[i] : ""
-    T = something(types(i, nm), defaultT)
-    return Column(T, options)
+    something(types(i, nm), defaultT)
 end
 
-function initialize_column(i, types::Nothing, names, stringtype, streaming::Bool, options)
-    T = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
-    return Column(T, options)
+function initial_column_type(_, ::Nothing, _, stringtype, streaming::Bool)
+    streaming ? Union{stringtype, Missing} : NeedsTypeDetection
 end
 
-function initialize_column(i, types::Type, names, stringtype, streaming::Bool, options)
-    return Column(types, options)
+function initial_column_type(_, types::Type, _, _, ::Bool)
+    types
+end
+
+function reinitialize_column_type!(columns, types, names, stringtype, streaming)
+    for (i, col) in pairs(columns)
+        col.type = initial_column_type(i, types, names, stringtype, streaming)
+    end
 end
 
 mutable struct Context
@@ -639,13 +645,15 @@ end
             debug && println("multi-threaded column types sampled as: $columns")
         else
             debug && println("something went wrong chunking up a file for multithreaded parsing, falling back to single-threaded parsing")
+            reinitialize_column_type!(columns, types, names, stringtype, streaming)
             threaded = false
         end
-    else
-        chunkpositions = EMPTY_INT_ARRAY
     end
-    if !threaded && limit < rowsguess
-        rowsguess = limit
+    if !threaded
+        chunkpositions = EMPTY_INT_ARRAY
+        if limit < rowsguess
+            rowsguess = limit
+        end
     end
 
     end # @inbounds begin
