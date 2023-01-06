@@ -625,8 +625,9 @@ end
             limit = Int(limit)
             limitposguess = ceil(Int, (limit / (origrowsguess * 0.8)) * len)
             newlen = [0, limitposguess, min(limitposguess * 2, len)]
-            findrowstarts!(buf, options, newlen, ncols, columns, stringtype, typemap, downcast, 5)
+            findchunkrowstart(newlen, 2, buf, options, typemap, downcast, ncols, 5, columns, Type[col.type for col in columns], ReentrantLock(), stringtype, Threads.Atomic{Int}(0), Threads.Atomic{Int}(0), Threads.Atomic{Bool}(true))
             len = newlen[2] - 1
+            reinitialize_column_type!(columns, types, names, stringtype, streaming)
             origrowsguess = limit
             debug && println("limiting, adjusting len to $len")
         end
