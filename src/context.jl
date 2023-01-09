@@ -624,11 +624,13 @@ end
         if limit !== typemax(Int)
             limit = Int(limit)
             limitposguess = ceil(Int, (limit / (origrowsguess * 0.8)) * len)
-            newlen = [0, limitposguess, min(limitposguess * 2, len)]
-            findchunkrowstart(newlen, 2, buf, options, typemap, downcast, ncols, 5, columns, Type[col.type for col in columns], ReentrantLock(), stringtype, Threads.Atomic{Int}(0), Threads.Atomic{Int}(0), Threads.Atomic{Bool}(true))
-            len = newlen[2] - 1
-            reinitialize_column_type!(columns, types, names, stringtype, streaming)
-            origrowsguess = limit
+            if limitposguess < len
+                newlen = [0, limitposguess, min(limitposguess * 2, len)]
+                findchunkrowstart(newlen, 2, buf, options, typemap, downcast, ncols, 5, columns, Type[col.type for col in columns], ReentrantLock(), stringtype, Threads.Atomic{Int}(0), Threads.Atomic{Int}(0), Threads.Atomic{Bool}(true))
+                len = newlen[2] - 1
+                reinitialize_column_type!(columns, types, names, stringtype, streaming)
+                origrowsguess = limit
+            end
             debug && println("limiting, adjusting len to $len")
         end
         chunksize = div(len - datapos, ntasks)
