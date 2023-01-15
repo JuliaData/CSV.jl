@@ -626,8 +626,8 @@ file = CSV.File(IOBuffer(data); types=Dict(:col1 => Bool, r"^col\d" => Int8))
 ```julia
 using CSV
 
-# In this file, we have U.S. zipcodes in the first column that we'd rather not treat as `Int`, but parsing will detect it as 
-# such. In the first syntax example, we pass `typemap=Dict(Int => String)`, which tells parsing to treat any detected `Int` 
+# In this file, we have U.S. zipcodes in the first column that we'd rather not treat as `Int`, but parsing will detect it as
+# such. In the first syntax example, we pass `typemap=IdDict(Int => String)`, which tells parsing to treat any detected `Int`
 # columns as `String` instead. In the second syntax example, we alternatively set the `zipcode` column type manually.
 data = """
 zipcode,score
@@ -636,7 +636,7 @@ zipcode,score
 84044,3.4
 """
 
-file = CSV.File(IOBuffer(data); typemap=Dict(Int => String))
+file = CSV.File(IOBuffer(data); typemap=IdDict(Int => String))
 file = CSV.File(IOBuffer(data); types=Dict(:zipcode => String))
 ```
 

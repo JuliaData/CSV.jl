@@ -64,7 +64,7 @@ function Chunks(source::ValidSources;
     # type options
     type=nothing,
     types=nothing,
-    typemap::Dict=Dict{Type, Type}(),
+    typemap::AbstractDict=IdDict{Type, Type}(),
     pool::Union{Bool, Real, AbstractVector, AbstractDict, Base.Callable, Tuple}=DEFAULT_POOL,
     downcast::Bool=false,
     lazystrings::Bool=false,

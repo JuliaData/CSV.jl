@@ -411,7 +411,7 @@ testfiles = [
         NamedTuple{(:int, :bools), Tuple{Int, Bool}},
         (int = [1, 2, 3, 4, 5, 6], bools = Bool[true, true, true, false, false, false])
     ),
-    ("test_truestrings.csv", (truestrings=["T", "TRUE", "true"], falsestrings=["F", "FALSE", "false"], typemap=Dict(Bool=>String)),
+    ("test_truestrings.csv", (truestrings=["T", "TRUE", "true"], falsestrings=["F", "FALSE", "false"], typemap=IdDict(Bool=>String)),
         (6, 2),
         NamedTuple{(:int, :bools), Tuple{Int, String}},
         (int = [1, 2, 3, 4, 5, 6], bools = ["T", "TRUE", "true", "F", "FALSE", "false"])

@@ -108,7 +108,7 @@ function Rows(source::ValidSources;
     # type options
     type=nothing,
     types=nothing,
-    typemap::Dict=Dict{Type, Type}(),
+    typemap::AbstractDict=IdDict{Type, Type}(),
     pool=false,
     downcast::Bool=false,
     stringtype::StringTypes=PosLenString,
