@@ -443,19 +443,19 @@ file = CSV.File(IOBuffer(data); delim="::")
 ```julia
 using CSV
 
-# This is an example of "fixed width" data, where each 
-# column is the same number of characters away from each 
-# other on each row. Fields are "padded" with extra 
-# delimiters (in this case `' '`) so that each column is 
+# This is an example of "fixed width" data, where each
+# column is the same number of characters away from each
+# other on each row. Fields are "padded" with extra
+# delimiters (in this case `' '`) so that each column is
 # the same number of characters each time
 data = """
 col1    col2 col3
 123431  2    3421
 2355    346  7543
 """
-# In addition to our `delim`, we can pass 
-# `ignorerepeated=true`, which tells parsing that 
-#consecutive delimiters should be treated as a single 
+# In addition to our `delim`, we can pass
+# `ignorerepeated=true`, which tells parsing that
+#consecutive delimiters should be treated as a single
 # delimiter.
 file = CSV.File(IOBuffer(data); delim=' ', ignorerepeated=true)
 ```
@@ -488,12 +488,12 @@ file = CSV.File(IOBuffer(data); quoted=false)
 ```julia
 using CSV
 
-# In this data, we have a few "quoted" fields, which means the field's value starts and ends with `quotechar` (or 
-# `openquotechar` and `closequotechar`, respectively). Quoted fields allow the field to contain characters that would otherwise 
-# be significant to parsing, such as delimiters or newline characters. When quoted, parsing will ignore these otherwise 
-# signficant characters until the closing quote character is found. For quoted fields that need to also include the quote 
-# character itself, an escape character is provided to tell parsing to ignore the next character when looking for a close quote 
-# character. In the syntax examples, the keyword arguments are passed explicitly, but these also happen to be the default 
+# In this data, we have a few "quoted" fields, which means the field's value starts and ends with `quotechar` (or
+# `openquotechar` and `closequotechar`, respectively). Quoted fields allow the field to contain characters that would otherwise
+# be significant to parsing, such as delimiters or newline characters. When quoted, parsing will ignore these otherwise
+# signficant characters until the closing quote character is found. For quoted fields that need to also include the quote
+# character itself, an escape character is provided to tell parsing to ignore the next character when looking for a close quote
+# character. In the syntax examples, the keyword arguments are passed explicitly, but these also happen to be the default
 # values, so just doing `CSV.File(IOBuffer(data))` would result in successful parsing.
 data = """
 col1,col2
@@ -512,9 +512,9 @@ file = CSV.File(IOBuffer(data); openquotechar='"' closequotechar='"', escapechar
 ```julia
 using CSV
 
-# In this file, our `date` column has dates that are formatted like `yyyy/mm/dd`. We can pass just such a string to the 
-# `dateformat` keyword argument to tell parsing to use it when looking for `Date` or `DateTime` columns. Note that currently, 
-# only a single `dateformat` string can be passed to parsing, meaning multiple columns with different date formats cannot all 
+# In this file, our `date` column has dates that are formatted like `yyyy/mm/dd`. We can pass just such a string to the
+# `dateformat` keyword argument to tell parsing to use it when looking for `Date` or `DateTime` columns. Note that currently,
+# only a single `dateformat` string can be passed to parsing, meaning multiple columns with different date formats cannot all
 # be parsed as `Date`/`DateTime`.
 data = """
 code,date
@@ -531,7 +531,7 @@ file = CSV.File(IOBuffer(data); dateformat="yyyy/mm/dd")
 using CSV
 
 # In many places in the world, floating point number decimals are separated with a comma instead of a period (`3,14` vs. `3.14`)
-# . We can correctly parse these numbers by passing in the `decimal=','` keyword argument. Note that we probably need to 
+# . We can correctly parse these numbers by passing in the `decimal=','` keyword argument. Note that we probably need to
 # explicitly pass `delim=';'` in this case, since the parser will probably think that it detected `','` as the delimiter.
 data = """
 col1;col2;col3
@@ -547,7 +547,7 @@ file = CSV.File(IOBuffer(data); delim=';', decimal=',')
 ```julia
 using CSV
 
-# By default, parsing only considers the string values `true` and `false` as valid `Bool` values. To consider alternative 
+# By default, parsing only considers the string values `true` and `false` as valid `Bool` values. To consider alternative
 # values, we can pass a `Vector{String}` to the `truestrings` and `falsestrings` keyword arguments.
 data = """
 id,paid,attended
@@ -565,8 +565,8 @@ file = CSV.File(IOBuffer(data); truestrings=["T", "TRUE"], falsestrings=["F", "F
 ```julia
 using CSV
 
-# This file contains a 3x3 identity matrix of `Float64`. By default, parsing will detect the delimiter and type, but we can 
-# also explicitly pass `delim= ' '` and `types=Float64`, which tells parsing to explicitly treat each column as `Float64`, 
+# This file contains a 3x3 identity matrix of `Float64`. By default, parsing will detect the delimiter and type, but we can
+# also explicitly pass `delim= ' '` and `types=Float64`, which tells parsing to explicitly treat each column as `Float64`,
 # without having to guess the type on its own.
 data = """
 1.0 0.0 0.0
@@ -583,12 +583,12 @@ file = CSV.File(IOBuffer(data); header=false, delim=' ', types=Float64)
 ```julia
 using CSV
 
-# In this file, our 3rd column has an invalid value on the 2nd row `invalid`. Let's imagine we'd still like to treat it as an 
-# `Int` column, and ignore the `invalid` value. The syntax examples provide several ways we can tell parsing to treat the 3rd 
-# column as `Int`, by referring to column index `3`, or column name with `Symbol` or `String`. We can also provide an entire 
-# `Vector` of types for each column (and which needs to match the length of columns in the file). There are two additional 
-# keyword arguments that control parsing behavior; in the first 4 syntax examples, we would see a warning printed like 
-# `"warning: invalid Int64 value on row 2, column 3"`. In the fifth example, passing `silencewarnings=true` will suppress this 
+# In this file, our 3rd column has an invalid value on the 2nd row `invalid`. Let's imagine we'd still like to treat it as an
+# `Int` column, and ignore the `invalid` value. The syntax examples provide several ways we can tell parsing to treat the 3rd
+# column as `Int`, by referring to column index `3`, or column name with `Symbol` or `String`. We can also provide an entire
+# `Vector` of types for each column (and which needs to match the length of columns in the file). There are two additional
+# keyword arguments that control parsing behavior; in the first 4 syntax examples, we would see a warning printed like
+# `"warning: invalid Int64 value on row 2, column 3"`. In the fifth example, passing `silencewarnings=true` will suppress this
 # warning printing. In the last syntax example, passing `strict=true` will result in an error being thrown during parsing.
 data = """
 col1,col2,col3
@@ -645,9 +645,9 @@ file = CSV.File(IOBuffer(data); types=Dict(:zipcode => String))
 ```julia
 using CSV
 
-# In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations 
-# like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt32`. By default, 
-# `pool=(0.2, 500)`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide 
+# In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations
+# like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt32`. By default,
+# `pool=(0.2, 500)`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide
 # greater control: `pool=0.4` means that if 40% or less of a column's values are unique, then it will be pooled.
 data = """
 id,code
@@ -689,9 +689,9 @@ file = CSV.File(IOBuffer(data); pool=[true, false])
 ```julia
 using CSV
 
-# In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations 
-# like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt32`. By default, 
-# `pool=(0.2, 500)`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide 
+# In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations
+# like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt32`. By default,
+# `pool=(0.2, 500)`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide
 # greater control: `pool=(0.5, 2)` means that if a column has 2 or fewer unique values _and_ the total number of unique values is less than 50% of all values, then it will be pooled.
 data = """
 id,code

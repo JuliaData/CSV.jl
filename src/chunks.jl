@@ -9,7 +9,7 @@ end
 Returns a file "chunk" iterator. Accepts all the same inputs and keyword arguments as [`CSV.File`](@ref),
 see those docs for explanations of each keyword argument.
 
-The `ntasks` keyword argument specifies how many chunks a file should be split up into, defaulting to 
+The `ntasks` keyword argument specifies how many chunks a file should be split up into, defaulting to
 the # of threads available to Julia (i.e. `JULIA_NUM_THREADS` environment variable) or 8 if Julia is
 run single-threaded.
 
