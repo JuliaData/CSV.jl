@@ -200,7 +200,7 @@ function File(source::ValidSources;
     # type options
     type=nothing,
     types=nothing,
-    typemap::Dict=Dict{Type, Type}(),
+    typemap::AbstractDict=IdDict{Type, Type}(),
     pool=DEFAULT_POOL,
     downcast::Bool=false,
     lazystrings::Bool=false,
@@ -215,7 +215,7 @@ function File(source::ValidSources;
     # header=1;normalizenames=false;datarow=-1;skipto=-1;footerskip=0;transpose=false;comment=nothing;ignoreemptyrows=true;ignoreemptylines=nothing;
     # select=nothing;drop=nothing;limit=nothing;threaded=nothing;ntasks=Threads.nthreads();tasks=nothing;rows_to_check=30;lines_to_check=nothing;missingstrings=String[];missingstring="";
     # delim=nothing;ignorerepeated=false;quoted=true;quotechar='"';openquotechar=nothing;closequotechar=nothing;escapechar='"';dateformat=nothing;
-    # dateformats=nothing;decimal=UInt8('.');truestrings=nothing;falsestrings=nothing;type=nothing;types=nothing;typemap=Dict{Type,Type}();
+    # dateformats=nothing;decimal=UInt8('.');truestrings=nothing;falsestrings=nothing;type=nothing;types=nothing;typemap=IdDict{Type,Type}();
     # pool=CSV.DEFAULT_POOL;downcast=false;lazystrings=false;stringtype=String;strict=false;silencewarnings=false;maxwarnings=100;debug=false;parsingdebug=false;buffer_in_memory=false
     # @descend CSV.Context(CSV.Arg(source), CSV.Arg(header), CSV.Arg(normalizenames), CSV.Arg(datarow), CSV.Arg(skipto), CSV.Arg(footerskip), CSV.Arg(transpose), CSV.Arg(comment), CSV.Arg(ignoreemptyrows), CSV.Arg(ignoreemptylines), CSV.Arg(select), CSV.Arg(drop), CSV.Arg(limit), CSV.Arg(buffer_in_memory), CSV.Arg(threaded), CSV.Arg(ntasks), CSV.Arg(tasks), CSV.Arg(rows_to_check), CSV.Arg(lines_to_check), CSV.Arg(missingstrings), CSV.Arg(missingstring), CSV.Arg(delim), CSV.Arg(ignorerepeated), CSV.Arg(quoted), CSV.Arg(quotechar), CSV.Arg(openquotechar), CSV.Arg(closequotechar), CSV.Arg(escapechar), CSV.Arg(dateformat), CSV.Arg(dateformats), CSV.Arg(decimal), CSV.Arg(truestrings), CSV.Arg(falsestrings), CSV.Arg(type), CSV.Arg(types), CSV.Arg(typemap), CSV.Arg(pool), CSV.Arg(downcast), CSV.Arg(lazystrings), CSV.Arg(stringtype), CSV.Arg(strict), CSV.Arg(silencewarnings), CSV.Arg(maxwarnings), CSV.Arg(debug), CSV.Arg(parsingdebug), CSV.Arg(false))
     ctx = @refargs Context(source, header, normalizenames, datarow, skipto, footerskip, transpose, comment, ignoreemptyrows, ignoreemptylines, select, drop, limit, buffer_in_memory, threaded, ntasks, tasks, rows_to_check, lines_to_check, missingstrings, missingstring, delim, ignorerepeated, quoted, quotechar, openquotechar, closequotechar, escapechar, dateformat, dateformats, decimal, truestrings, falsestrings, stripwhitespace, type, types, typemap, pool, downcast, lazystrings, stringtype, strict, silencewarnings, maxwarnings, debug, parsingdebug, validate, false)
@@ -435,7 +435,7 @@ function multithreadpostparse(ctx, ntasks, pertaskcolumns, rows, finalrows, j, c
         # col.column is a PooledArray
     elseif col.type === Int64
         # we need to special-case Int here because while parsing, a default Int64 sentinel value is chosen to
-        # represent missing; if any chunk bumped into that sentinel value while parsing, then it cycled to a 
+        # represent missing; if any chunk bumped into that sentinel value while parsing, then it cycled to a
         # new sentinel value; this step ensures that each chunk has the same encoded sentinel value
         # passing force=false means it will first check if all chunks already have the same sentinel and return
         # immediately if so, which will be the case most often

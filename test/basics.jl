@@ -523,9 +523,12 @@ f = CSV.File(buf, header=["A", "B"])
 @test (f[2].A, f[2].B) == ("1", "2")
 
 # 680: ensure typemap works with custom types
-f = CSV.File(IOBuffer("a\n1\n2\n3"); typemap=Dict(Int => (Int === Int64 ? Int32 : Int64)))
+for tm in (Dict(Int => (Int === Int64 ? Int32 : Int64)),
+           IdDict(Int => (Int === Int64 ? Int32 : Int64)))
+    f = CSV.File(IOBuffer("a\n1\n2\n3"); typemap=tm)
+end
 @test f.a isa Vector{Int === Int64 ? Int32 : Int64}
-f = CSV.File(IOBuffer("a\n1\n2\n3"); typemap=Dict(Int=>String))
+f = CSV.File(IOBuffer("a\n1\n2\n3"); typemap=IdDict(Int=>String))
 @test f.a isa Vector{String}
 
 # 678
@@ -666,7 +669,7 @@ row = first(CSV.Rows(IOBuffer("a,b,c\n1,2,3\n\n"); select=[:a, :c]))
 
 # 871
 
-f = CSV.File(IOBuffer("a,b,c\n1,2,3\n3.14,5,6\n"); typemap=Dict(Float64 => String))
+f = CSV.File(IOBuffer("a,b,c\n1,2,3\n3.14,5,6\n"); typemap=IdDict(Float64 => String))
 @test f.a isa AbstractVector{<:AbstractString}
 
 # support SubArray{UInt8} as source
@@ -736,7 +739,7 @@ f = CSV.File(IOBuffer(data); select=[2], type=Int32)
 # 939
 row = join((i == 1 ? string(i + 10000000000) : i == 60_000 ? "0\n" : rand(("-1", "0", "1")) for i = 1:60_000), " ")
 data = repeat(row, 271);
-f = CSV.File(IOBuffer(data); header=false, types=Dict(1 => String), typemap=Dict(Int => Int8));
+f = CSV.File(IOBuffer(data); header=false, types=Dict(1 => String), typemap=IdDict(Int => Int8));
 @test f.types == [i == 1 ? String : Int8 for i = 1:60_000]
 f = CSV.File(IOBuffer(data); header=false, types=Dict(1 => String), downcast=true);
 @test f.types == [i == 1 ? String : Int8 for i = 1:60_000]
