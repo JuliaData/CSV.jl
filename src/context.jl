@@ -172,7 +172,7 @@ mutable struct Context
     pool::Union{Float64, Tuple{Float64, Int}}
     downcast::Bool
     customtypes::Type
-    typemap::Dict{Type, Type}
+    typemap::IdDict{Type, Type}
     stringtype::StringTypes
     limit::Int
     threaded::Bool
@@ -233,7 +233,7 @@ function Context(source::ValidSources;
     # type options
     type=nothing,
     types=nothing,
-    typemap::Dict=Dict{Type, Type}(),
+    typemap::AbstractDict=IdDict{Type, Type}(),
     pool=DEFAULT_POOL,
     downcast::Bool=false,
     lazystrings::Bool=false,
@@ -288,7 +288,7 @@ end
     # type options
     type::Union{Nothing, Type},
     types::Union{Nothing, Type, AbstractVector, AbstractDict, Function},
-    typemap::Dict,
+    typemap::AbstractDict,
     pool::Union{Bool, Real, AbstractVector, AbstractDict, Base.Callable, Tuple},
     downcast::Bool,
     lazystrings::Bool,
@@ -481,6 +481,7 @@ end
         end
     end
     # check for nonstandard types in typemap
+    typemap = convert(IdDict{Type, Type}, typemap)::IdDict{Type, Type}
     for T in values(typemap)
         if nonstandardtype(T) !== Union{}
             customtypes = tupcat(customtypes, nonstandardtype(T))

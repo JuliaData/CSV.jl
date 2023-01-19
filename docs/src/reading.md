@@ -189,7 +189,7 @@ Note that the default [stringtype](@ref stringtype) can be overridden by providi
 
 ## [`typemap`](@id typemap)
 
-A `Dict{Type, Type}` argument that allows replacing a non-`String` standard type with another type when a column's type is auto-detected. Most commonly, this would be used to force all numeric columns to be `Float64`, like `typemap=Dict(Int64 => Float64)`, which would cause any columns detected as `Int64` to be parsed as `Float64` instead. Another common case would be wanting all columns of a specific type to be parsed as strings instead, like `typemap=Dict(Date => String)`, which will cause any columns detected as `Date` to be parsed as `String` instead.
+An `AbstractDict{Type, Type}` argument that allows replacing a non-`String` standard type with another type when a column's type is auto-detected. Most commonly, this would be used to force all numeric columns to be `Float64`, like `typemap=IdDict(Int64 => Float64)`, which would cause any columns detected as `Int64` to be parsed as `Float64` instead. Another common case would be wanting all columns of a specific type to be parsed as strings instead, like `typemap=IdDict(Date => String)`, which will cause any columns detected as `Date` to be parsed as `String` instead.
 
 ### Examples
   * [Typemap](@ref typemap_example)
