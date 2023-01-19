@@ -315,19 +315,19 @@ col1::col2
 # we can pass a single character or string for delim
 file = CSV.File(IOBuffer(data); delim=&quot;::&quot;)</code></pre><h2 id="ignorerepeated_example"><a class="docs-heading-anchor" href="#ignorerepeated_example">Fixed width files</a><a id="ignorerepeated_example-1"></a><a class="docs-heading-anchor-permalink" href="#ignorerepeated_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
 
-# This is an example of &quot;fixed width&quot; data, where each 
-# column is the same number of characters away from each 
-# other on each row. Fields are &quot;padded&quot; with extra 
-# delimiters (in this case `&#39; &#39;`) so that each column is 
+# This is an example of &quot;fixed width&quot; data, where each
+# column is the same number of characters away from each
+# other on each row. Fields are &quot;padded&quot; with extra
+# delimiters (in this case `&#39; &#39;`) so that each column is
 # the same number of characters each time
 data = &quot;&quot;&quot;
 col1    col2 col3
 123431  2    3421
 2355    346  7543
 &quot;&quot;&quot;
-# In addition to our `delim`, we can pass 
-# `ignorerepeated=true`, which tells parsing that 
-#consecutive delimiters should be treated as a single 
+# In addition to our `delim`, we can pass
+# `ignorerepeated=true`, which tells parsing that
+#consecutive delimiters should be treated as a single
 # delimiter.
 file = CSV.File(IOBuffer(data); delim=&#39; &#39;, ignorerepeated=true)</code></pre><h2 id="quoted_example"><a class="docs-heading-anchor" href="#quoted_example">Turning off quoted cell parsing</a><a id="quoted_example-1"></a><a class="docs-heading-anchor-permalink" href="#quoted_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
 
@@ -348,12 +348,12 @@ sailor,6,7
 # by passing `quoted=false`
 file = CSV.File(IOBuffer(data); quoted=false)</code></pre><h2 id="quotechar_example"><a class="docs-heading-anchor" href="#quotechar_example">Quoted &amp; escaped fields</a><a id="quotechar_example-1"></a><a class="docs-heading-anchor-permalink" href="#quotechar_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
 
-# In this data, we have a few &quot;quoted&quot; fields, which means the field&#39;s value starts and ends with `quotechar` (or 
-# `openquotechar` and `closequotechar`, respectively). Quoted fields allow the field to contain characters that would otherwise 
-# be significant to parsing, such as delimiters or newline characters. When quoted, parsing will ignore these otherwise 
-# signficant characters until the closing quote character is found. For quoted fields that need to also include the quote 
-# character itself, an escape character is provided to tell parsing to ignore the next character when looking for a close quote 
-# character. In the syntax examples, the keyword arguments are passed explicitly, but these also happen to be the default 
+# In this data, we have a few &quot;quoted&quot; fields, which means the field&#39;s value starts and ends with `quotechar` (or
+# `openquotechar` and `closequotechar`, respectively). Quoted fields allow the field to contain characters that would otherwise
+# be significant to parsing, such as delimiters or newline characters. When quoted, parsing will ignore these otherwise
+# signficant characters until the closing quote character is found. For quoted fields that need to also include the quote
+# character itself, an escape character is provided to tell parsing to ignore the next character when looking for a close quote
+# character. In the syntax examples, the keyword arguments are passed explicitly, but these also happen to be the default
 # values, so just doing `CSV.File(IOBuffer(data))` would result in successful parsing.
 data = &quot;&quot;&quot;
 col1,col2
@@ -365,9 +365,9 @@ file = CSV.File(IOBuffer(data); quotechar=&#39;&quot;&#39;, escapechar=&#39;&quo
 
 file = CSV.File(IOBuffer(data); openquotechar=&#39;&quot;&#39; closequotechar=&#39;&quot;&#39;, escapechar=&#39;&quot;&#39;)</code></pre><h2 id="dateformat_example"><a class="docs-heading-anchor" href="#dateformat_example">DateFormat</a><a id="dateformat_example-1"></a><a class="docs-heading-anchor-permalink" href="#dateformat_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
 
-# In this file, our `date` column has dates that are formatted like `yyyy/mm/dd`. We can pass just such a string to the 
-# `dateformat` keyword argument to tell parsing to use it when looking for `Date` or `DateTime` columns. Note that currently, 
-# only a single `dateformat` string can be passed to parsing, meaning multiple columns with different date formats cannot all 
+# In this file, our `date` column has dates that are formatted like `yyyy/mm/dd`. We can pass just such a string to the
+# `dateformat` keyword argument to tell parsing to use it when looking for `Date` or `DateTime` columns. Note that currently,
+# only a single `dateformat` string can be passed to parsing, meaning multiple columns with different date formats cannot all
 # be parsed as `Date`/`DateTime`.
 data = &quot;&quot;&quot;
 code,date
@@ -378,7 +378,7 @@ code,date
 file = CSV.File(IOBuffer(data); dateformat=&quot;yyyy/mm/dd&quot;)</code></pre><h2 id="decimal_example"><a class="docs-heading-anchor" href="#decimal_example">Custom decimal separator</a><a id="decimal_example-1"></a><a class="docs-heading-anchor-permalink" href="#decimal_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
 
 # In many places in the world, floating point number decimals are separated with a comma instead of a period (`3,14` vs. `3.14`)
-# . We can correctly parse these numbers by passing in the `decimal=&#39;,&#39;` keyword argument. Note that we probably need to 
+# . We can correctly parse these numbers by passing in the `decimal=&#39;,&#39;` keyword argument. Note that we probably need to
 # explicitly pass `delim=&#39;;&#39;` in this case, since the parser will probably think that it detected `&#39;,&#39;` as the delimiter.
 data = &quot;&quot;&quot;
 col1;col2;col3
@@ -388,7 +388,7 @@ col1;col2;col3
 
 file = CSV.File(IOBuffer(data); delim=&#39;;&#39;, decimal=&#39;,&#39;)</code></pre><h2 id="truestrings_example"><a class="docs-heading-anchor" href="#truestrings_example">Custom bool strings</a><a id="truestrings_example-1"></a><a class="docs-heading-anchor-permalink" href="#truestrings_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
 
-# By default, parsing only considers the string values `true` and `false` as valid `Bool` values. To consider alternative 
+# By default, parsing only considers the string values `true` and `false` as valid `Bool` values. To consider alternative
 # values, we can pass a `Vector{String}` to the `truestrings` and `falsestrings` keyword arguments.
 data = &quot;&quot;&quot;
 id,paid,attended
@@ -400,8 +400,8 @@ id,paid,attended
 
 file = CSV.File(IOBuffer(data); truestrings=[&quot;T&quot;, &quot;TRUE&quot;], falsestrings=[&quot;F&quot;, &quot;FALSE&quot;])</code></pre><h2 id="matrix_example"><a class="docs-heading-anchor" href="#matrix_example">Matrix-like Data</a><a id="matrix_example-1"></a><a class="docs-heading-anchor-permalink" href="#matrix_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
 
-# This file contains a 3x3 identity matrix of `Float64`. By default, parsing will detect the delimiter and type, but we can 
-# also explicitly pass `delim= &#39; &#39;` and `types=Float64`, which tells parsing to explicitly treat each column as `Float64`, 
+# This file contains a 3x3 identity matrix of `Float64`. By default, parsing will detect the delimiter and type, but we can
+# also explicitly pass `delim= &#39; &#39;` and `types=Float64`, which tells parsing to explicitly treat each column as `Float64`,
 # without having to guess the type on its own.
 data = &quot;&quot;&quot;
 1.0 0.0 0.0
@@ -412,12 +412,12 @@ data = &quot;&quot;&quot;
 file = CSV.File(IOBuffer(data); header=false)
 file = CSV.File(IOBuffer(data); header=false, delim=&#39; &#39;, types=Float64)</code></pre><h2 id="types_example"><a class="docs-heading-anchor" href="#types_example">Providing types</a><a id="types_example-1"></a><a class="docs-heading-anchor-permalink" href="#types_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
 
-# In this file, our 3rd column has an invalid value on the 2nd row `invalid`. Let&#39;s imagine we&#39;d still like to treat it as an 
-# `Int` column, and ignore the `invalid` value. The syntax examples provide several ways we can tell parsing to treat the 3rd 
-# column as `Int`, by referring to column index `3`, or column name with `Symbol` or `String`. We can also provide an entire 
-# `Vector` of types for each column (and which needs to match the length of columns in the file). There are two additional 
-# keyword arguments that control parsing behavior; in the first 4 syntax examples, we would see a warning printed like 
-# `&quot;warning: invalid Int64 value on row 2, column 3&quot;`. In the fifth example, passing `silencewarnings=true` will suppress this 
+# In this file, our 3rd column has an invalid value on the 2nd row `invalid`. Let&#39;s imagine we&#39;d still like to treat it as an
+# `Int` column, and ignore the `invalid` value. The syntax examples provide several ways we can tell parsing to treat the 3rd
+# column as `Int`, by referring to column index `3`, or column name with `Symbol` or `String`. We can also provide an entire
+# `Vector` of types for each column (and which needs to match the length of columns in the file). There are two additional
+# keyword arguments that control parsing behavior; in the first 4 syntax examples, we would see a warning printed like
+# `&quot;warning: invalid Int64 value on row 2, column 3&quot;`. In the fifth example, passing `silencewarnings=true` will suppress this
 # warning printing. In the last syntax example, passing `strict=true` will result in an error being thrown during parsing.
 data = &quot;&quot;&quot;
 col1,col2,col3
@@ -449,8 +449,8 @@ file = CSV.File(IOBuffer(data); types=(i, name) -&gt; name == :col1 ? Bool : Int
 # Note that an exact column name always takes precedence over a regular expression.
 file = CSV.File(IOBuffer(data); types=Dict(:col1 =&gt; Bool, r&quot;^col\d&quot; =&gt; Int8))</code></pre><h2 id="typemap_example"><a class="docs-heading-anchor" href="#typemap_example">Typemap</a><a id="typemap_example-1"></a><a class="docs-heading-anchor-permalink" href="#typemap_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
 
-# In this file, we have U.S. zipcodes in the first column that we&#39;d rather not treat as `Int`, but parsing will detect it as 
-# such. In the first syntax example, we pass `typemap=Dict(Int =&gt; String)`, which tells parsing to treat any detected `Int` 
+# In this file, we have U.S. zipcodes in the first column that we&#39;d rather not treat as `Int`, but parsing will detect it as
+# such. In the first syntax example, we pass `typemap=IdDict(Int =&gt; String)`, which tells parsing to treat any detected `Int`
 # columns as `String` instead. In the second syntax example, we alternatively set the `zipcode` column type manually.
 data = &quot;&quot;&quot;
 zipcode,score
@@ -459,12 +459,12 @@ zipcode,score
 84044,3.4
 &quot;&quot;&quot;
 
-file = CSV.File(IOBuffer(data); typemap=Dict(Int =&gt; String))
+file = CSV.File(IOBuffer(data); typemap=IdDict(Int =&gt; String))
 file = CSV.File(IOBuffer(data); types=Dict(:zipcode =&gt; String))</code></pre><h2 id="pool_example"><a class="docs-heading-anchor" href="#pool_example">Pooled values</a><a id="pool_example-1"></a><a class="docs-heading-anchor-permalink" href="#pool_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
 
-# In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations 
-# like joining and grouping when `String` values are &quot;pooled&quot;, meaning each unique value is mapped to a `UInt32`. By default, 
-# `pool=(0.2, 500)`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide 
+# In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations
+# like joining and grouping when `String` values are &quot;pooled&quot;, meaning each unique value is mapped to a `UInt32`. By default,
+# `pool=(0.2, 500)`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide
 # greater control: `pool=0.4` means that if 40% or less of a column&#39;s values are unique, then it will be pooled.
 data = &quot;&quot;&quot;
 id,code
@@ -494,9 +494,9 @@ category,amount
 file = CSV.File(IOBuffer(data); pool=Dict(1 =&gt; true))
 file = CSV.File(IOBuffer(data); pool=[true, false])</code></pre><h2 id="pool_absolute_threshold"><a class="docs-heading-anchor" href="#pool_absolute_threshold">Pool with absolute threshold</a><a id="pool_absolute_threshold-1"></a><a class="docs-heading-anchor-permalink" href="#pool_absolute_threshold" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
 
-# In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations 
-# like joining and grouping when `String` values are &quot;pooled&quot;, meaning each unique value is mapped to a `UInt32`. By default, 
-# `pool=(0.2, 500)`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide 
+# In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations
+# like joining and grouping when `String` values are &quot;pooled&quot;, meaning each unique value is mapped to a `UInt32`. By default,
+# `pool=(0.2, 500)`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide
 # greater control: `pool=(0.5, 2)` means that if a column has 2 or fewer unique values _and_ the total number of unique values is less than 50% of all values, then it will be pooled.
 data = &quot;&quot;&quot;
 id,code
@@ -507,4 +507,4 @@ BF392,GC
 8CD2E,GC
 &quot;&quot;&quot;
 
-file = CSV.File(IOBuffer(data); pool=(0.5, 2))</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="writing.html">« Writing</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.23 on <span class="colophon-date" title="Wednesday 4 January 2023 14:21">Wednesday 4 January 2023</span>. Using Julia version 1.8.3.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+file = CSV.File(IOBuffer(data); pool=(0.5, 2))</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="writing.html">« Writing</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.23 on <span class="colophon-date" title="Thursday 19 January 2023 03:06">Thursday 19 January 2023</span>. Using Julia version 1.8.4.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
