@@ -162,6 +162,13 @@ An ASCII `Char` argument that is used when parsing float values that indicates w
 ### Examples
   * [Custom decimal separator](@ref decimal_example)
 
+## [`groupmark`](@id groupmark)
+
+An optional ASCII `Char` argument that denotes the number grouping mark. This is useful when, e.g., parsing numbers containing thousand separators: `1.000` is `1000`.
+
+### Examples
+  * [Number grouping mark](@ref groupmark_example)
+
 ## [`truestrings` / `falsestrings`](@id truestrings)
 
 These arguments can be provided as `Vector{String}` to specify custom values that should be treated as the `Bool` `true`/`false` values for all the columns of a data input. By default, `["true", "True", "TRUE", "T", "1"]` string values are used to detect `true` values, and `["false", "False", "FALSE", "F", "0"]` string values are used to detect `false` values. Note that even though `"1"` and `"0"` _can_ be used to parse `true`/`false` values, in terms of _auto_ detecting column types, those values will be parsed as `Int64` first, instead of `Bool`. To instead parse those values as `Bool`s for a column, you can manually provide that column's type as `Bool` (see the [type](@ref types) argument).

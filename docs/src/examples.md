@@ -542,6 +542,21 @@ col1;col2;col3
 file = CSV.File(IOBuffer(data); delim=';', decimal=',')
 ```
 
+## [Number grouping mark](@id groupmark_example)
+
+```julia
+using CSV
+
+# If the numbers contain, e.g., thousand separators, we can use the `groupmark` argument.
+data = """
+col1;col2;col3
+1.000;2.000.000;3
+4.000;5.000.000;6
+"""
+
+file = CSV.File(IOBuffer(data); delim=';', groupmark='.')
+```
+
 ## [Custom bool strings](@id truestrings_example)
 
 ```julia

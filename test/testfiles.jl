@@ -638,6 +638,12 @@ testfiles = [
         NamedTuple{(:state, :positive, :negative, :pending, :hospitalized, :death, :dateChecked), Tuple{InlineString3, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, InlineString31}},
         nothing
     ),
+    # https://github.com/JuliaData/CSV.jl/issues/626
+    ("groupmark.csv", (delim=';', groupmark=',', decimal='.'),
+        (2, 2),
+        NamedTuple{(:x, :y),Tuple{Float64,Int}},
+        (x = [100_000.0, 100.0], y = [1, 1])
+    ),
 ];
 
 @static if VERSION >= v"1.3-DEV"
