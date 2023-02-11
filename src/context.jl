@@ -634,12 +634,11 @@ end
             debug && println("limiting, adjusting len to $len")
         end
         chunksize = div(len - datapos, ntasks)
-        chunkpositions = Vector{Int}(undef, ntasks + 1)
-        for i = 0:ntasks
-            chunkpositions[i + 1] = i == 0 ? datapos : i == ntasks ? len : (datapos + chunksize * i)
-        end
+        chunkpositions = [datapos + chunksize * i for i in 0:ntasks]
+        chunkpositions[end] = len
         debug && println("initial byte positions before adjusting for start of rows: $chunkpositions")
         avgbytesperrow, successfullychunked = findrowstarts!(buf, options, chunkpositions, ncols, columns, stringtype, typemap, downcast, rows_to_check)
+        ntasks = length(chunkpositions) - 1
         if successfullychunked
             origbytesperrow = ((len - datapos) / origrowsguess)
             weightedavgbytesperrow = ceil(Int, avgbytesperrow * ((ntasks - 1) / ntasks) + origbytesperrow * (1 / ntasks))

@@ -336,18 +336,13 @@ ColumnProperties(T) = ColumnProperties(T, 0x00)
     end
 end
 
-# preprocessing of ranges: ensure that each range starts and ends at a newline
-function findrangerowstart!(ranges, i, buf)
-    pos = ranges[i]
-    stop = last(ranges)
+function findnextnewline(pos, stop, buf, opts)
     while pos < stop
-        if buf[pos] == UInt8('\n')
-            ranges[i] = pos + 1
-            return
-        end
-        pos += 1
+        res = Parsers.xparse(String, buf, pos, stop, opts)
+        pos += res.tlen
+        Parsers.newline(res.code) && return pos
     end
-    nothing
+    return stop
 end
 
 function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_to_check, columns, origcoltypes, columnlock, @nospecialize(stringtype), totalbytes, totalrows, succeeded)
@@ -358,16 +353,6 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
     code = Parsers.ReturnCode(0)
     attempted_quoted = false
     while true
-        # assume not in quoted field; start parsing, count ncols + newline and if things match, return
-        while pos <= len
-            res = Parsers.xparse(String, buf, pos, len, opts)
-            pos += res.tlen
-            if Parsers.newline(res.code)
-                # assume we found the correct start of the next row
-                nextrowpos = pos
-                break
-            end
-        end
         # now we read the next `rows_to_check` rows and see if we get the roughly the right # of columns
         rowstartpos = pos
         parsedncols = rowsparsed = 0
@@ -383,6 +368,7 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
         end
         for _ = 1:rows_to_check
             n = 1
+            numcolsthisrow = 0
             while pos <= len
                 res = Parsers.xparse(String, buf, pos, len, opts)
                 poslen, code, tlen = res.val, res.code, res.tlen
@@ -401,14 +387,12 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
                     end
                 end
                 pos += tlen
-                if Parsers.newline(code)
-                    parsedncols += 1
-                    rowsparsed += 1
-                    break
-                end
+                numcolsthisrow += 1
+                Parsers.newline(code) && break
                 n += 1
-                parsedncols += 1
             end
+            rowsparsed += ((pos < len) | (numcolsthisrow != 0)) # trailing newline does not count
+            parsedncols += numcolsthisrow
         end
         lock(columnlock) do
             for i = 1:ncols
@@ -427,7 +411,7 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
         if (ncols - f40) <= (parsedncols / rowsparsed) <= (ncols + f40)
             # ok, seems like we figured out the right start for parsing on this chunk
             Threads.atomic_add!(totalbytes, Int(pos - rowstartpos))
-            Threads.atomic_add!(totalrows, rows_to_check)
+            Threads.atomic_add!(totalrows, rowsparsed)
             break
         end
         if attempted_quoted
@@ -463,6 +447,7 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
         end
         # ok, we made it out of a quoted field
         attempted_quoted = true
+        pos = nextrowpos = findnextnewline(pos, len, buf, opts)
     end
     return ifelse(nextrowpos==0, startpos, nextrowpos)
 end
@@ -478,11 +463,20 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, @nospecialize(stringt
     succeeded = Threads.Atomic{Bool}(true)
     lock = ReentrantLock()
     origcoltypes = Type[col.type for col in columns]
-    @sync for i in 3:(length(ranges) - 1)
+    stop = last(ranges)
+    @sync for i in 2:(length(ranges) - 1)
+        # preprocessing of ranges: ensure that each range starts and ends at a newline
         Threads.@spawn begin
-            findrangerowstart!(ranges, i, buf)
+            ranges[i] = findnextnewline(ranges[i], stop, buf, opts)
         end
     end
+    # remove ranges starting after the end, if any
+    new_last_idx = length(ranges)-1
+    while ranges[new_last_idx] > stop
+        new_last_idx -= 1
+    end
+    ranges[new_last_idx+1] = stop
+    resize!(ranges, new_last_idx+1)
     unique!(ranges) # in case multiple tasks start on the same row
     newranges = similar(ranges)
     N = length(ranges) - 1
