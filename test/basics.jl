@@ -741,6 +741,9 @@ f = CSV.File(IOBuffer(data); header=false, types=Dict(1 => String), typemap=Dict
 f = CSV.File(IOBuffer(data); header=false, types=Dict(1 => String), downcast=true);
 @test f.types == [i == 1 ? String : Int8 for i = 1:60_000]
 
+f = CSV.File(IOBuffer(data); header=false, types=Dict(1 => String), typemap=Dict(Int => Int8), ntasks=16);
+@test f.types == [i == 1 ? String : Int8 for i = 1:60_000]
+
 # 948
 f = CSV.File(IOBuffer("a,b\n1,2\n3,"))
 @test f.a == [1, 3]
