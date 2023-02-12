@@ -646,7 +646,7 @@ end
             debug && println("single-threaded estimated rows = $origrowsguess, multi-threaded estimated rows = $rowsguess")
             debug && println("multi-threaded column types sampled as: $columns")
         else
-            debug && println("something went wrong chunking up a file for multithreaded parsing, falling back to single-threaded parsing")
+            @error "Multi-threaded parsing failed (are there newlines inside quoted fields?), falling back to single-threaded parsing"
             reinitialize_column_type!(columns, types, names, stringtype, streaming)
             threaded = false
         end
