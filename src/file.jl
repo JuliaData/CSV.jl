@@ -900,8 +900,8 @@ function File(sources::Vector;
     all(x -> x isa ValidSources, sources) || throw(ArgumentError("all provided sources must be one of: `$ValidSources`"))
     kws = merge(values(kw), (ntasks=1,))
     f = File(sources[1]; kws...)
-    rows = f.rows
-    for col in f.columns
+    rows = getrows(f)
+    for col in getcolumns(f)
         col.column = ChainedVector([col.column])
     end
     files = Vector{File}(undef, length(sources) - 1)
@@ -910,16 +910,16 @@ function File(sources::Vector;
             files[i - 1] = File(sources[i]; kws...)
         end
     end
-    lookup = f.lookup
+    lookup = getlookup(f)
     for i = 2:length(sources)
         f2 = files[i - 1]
-        rows += f2.rows
-        fl2 = f2.lookup
+        rows += getrows(f2)
+        fl2 = getlookup(f2)
         for (nm, col) in lookup
             if haskey(fl2, nm)
                 col.column = chaincolumns!(col.column, fl2[nm].column)
             else
-                col.column = chaincolumns!(col.column, MissingVector(f2.rows))
+                col.column = chaincolumns!(col.column, MissingVector(getrows(f2)))
             end
         end
     end
@@ -928,14 +928,14 @@ function File(sources::Vector;
         pushfirst!(files, f)
         vals = source isa Pair ? source.second : [f.name for f in files]
         pool = Dict(x => UInt32(i) for (i, x) in enumerate(vals))
-        arr = PooledArray(PooledArrays.RefArray(ChainedVector([fill(UInt32(i), f.rows) for (i, f) in enumerate(files)])), pool)
+        arr = PooledArray(PooledArrays.RefArray(ChainedVector([fill(UInt32(i), getrows(f)) for (i, f) in enumerate(files)])), pool)
         col = Column(eltype(arr))
         col.column = arr
-        push!(f.columns, col)
+        push!(getcolumns(f), col)
         colnm = Symbol(source isa Pair ? source.first : source)
-        push!(f.names, colnm)
-        push!(f.types, eltype(arr))
+        push!(getnames(f), colnm)
+        push!(gettypes(f), eltype(arr))
         f.lookup[colnm] = col
     end
-    return File(f.name, f.names, f.types, rows, f.cols, f.columns, f.lookup)
+    return File(getname(f), getnames(f), gettypes(f), rows, getcols(f), getcolumns(f), getlookup(f))
 end
