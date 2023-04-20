@@ -820,4 +820,9 @@ f = CSV.File(IOBuffer(str); delim=" ", header=false, types=(i,nm) -> (i == 5 ? I
 f = CSV.File(IOBuffer(str); delim=" ", header=false, types=Dict(r".*" => Float16))
 @test Float16 <: eltype(f.Column5)
 
+# 1080
+# bug in reading multiple files when a column shares name with a field in File
+f = CSV.File(map(IOBuffer, ["name\n2\n", "name\n11\n"]))
+@test f.name == [2, 11]
+
 end
