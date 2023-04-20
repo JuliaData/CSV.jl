@@ -576,6 +576,15 @@ data = """
 
 file = CSV.File(IOBuffer(data); header=false)
 file = CSV.File(IOBuffer(data); header=false, delim=' ', types=Float64)
+
+# as a last step if you want to convert this to a Matrix, this can be done by reading in first as a DataFrame and then 
+# function chaining to a Matrix
+using DataFrames
+A = file|>DataFrame|>Matrix
+3×3 Matrix{Float64}:
+ 1.0  0.0  0.0
+ 0.0  1.0  0.0
+ 0.0  0.0  1.0
 ```
 
 ## [Providing types](@id types_example)
