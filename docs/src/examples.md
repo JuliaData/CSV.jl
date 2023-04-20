@@ -581,10 +581,9 @@ file = CSV.File(IOBuffer(data); header=false, delim=' ', types=Float64)
 # function chaining to a Matrix
 using DataFrames
 A = file|>DataFrame|>Matrix
-3×3 Matrix{Float64}:
- 1.0  0.0  0.0
- 0.0  1.0  0.0
- 0.0  0.0  1.0
+ 
+# another alternative is to simply use CSV.Tables.matrix and say
+B = file|>CSV.Tables.matrix # does not require DataFrames
 ```
 
 ## [Providing types](@id types_example)
