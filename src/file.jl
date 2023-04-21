@@ -926,7 +926,7 @@ function File(sources::Vector;
     if source !== nothing
         # add file name of each "partition" as 1st column
         pushfirst!(files, f)
-        vals = source isa Pair ? source.second : [f.name for f in files]
+        vals = source isa Pair ? source.second : [getname(f) for f in files]
         pool = Dict(x => UInt32(i) for (i, x) in enumerate(vals))
         arr = PooledArray(PooledArrays.RefArray(ChainedVector([fill(UInt32(i), getrows(f)) for (i, f) in enumerate(files)])), pool)
         col = Column(eltype(arr))
@@ -935,7 +935,7 @@ function File(sources::Vector;
         colnm = Symbol(source isa Pair ? source.first : source)
         push!(getnames(f), colnm)
         push!(gettypes(f), eltype(arr))
-        f.lookup[colnm] = col
+        getlookup(f)[colnm] = col
     end
     return File(getname(f), getnames(f), gettypes(f), rows, getcols(f), getcolumns(f), getlookup(f))
 end
