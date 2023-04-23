@@ -410,7 +410,15 @@ data = &quot;&quot;&quot;
 &quot;&quot;&quot;
 
 file = CSV.File(IOBuffer(data); header=false)
-file = CSV.File(IOBuffer(data); header=false, delim=&#39; &#39;, types=Float64)</code></pre><h2 id="types_example"><a class="docs-heading-anchor" href="#types_example">Providing types</a><a id="types_example-1"></a><a class="docs-heading-anchor-permalink" href="#types_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+file = CSV.File(IOBuffer(data); header=false, delim=&#39; &#39;, types=Float64)
+
+# as a last step if you want to convert this to a Matrix, this can be done by reading in first as a DataFrame and then 
+# function chaining to a Matrix
+using DataFrames
+A = file|&gt;DataFrame|&gt;Matrix
+ 
+# another alternative is to simply use CSV.Tables.matrix and say
+B = file|&gt;CSV.Tables.matrix # does not require DataFrames</code></pre><h2 id="types_example"><a class="docs-heading-anchor" href="#types_example">Providing types</a><a id="types_example-1"></a><a class="docs-heading-anchor-permalink" href="#types_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
 
 # In this file, our 3rd column has an invalid value on the 2nd row `invalid`. Let&#39;s imagine we&#39;d still like to treat it as an
 # `Int` column, and ignore the `invalid` value. The syntax examples provide several ways we can tell parsing to treat the 3rd
@@ -507,4 +515,4 @@ BF392,GC
 8CD2E,GC
 &quot;&quot;&quot;
 
-file = CSV.File(IOBuffer(data); pool=(0.5, 2))</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="writing.html">« Writing</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.24 on <span class="colophon-date" title="Sunday 23 April 2023 04:08">Sunday 23 April 2023</span>. Using Julia version 1.8.5.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+file = CSV.File(IOBuffer(data); pool=(0.5, 2))</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="writing.html">« Writing</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.24 on <span class="colophon-date" title="Sunday 23 April 2023 04:27">Sunday 23 April 2023</span>. Using Julia version 1.8.5.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
