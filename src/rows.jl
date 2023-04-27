@@ -1,3 +1,314 @@
+using ChunkedCSV
+using Parsers: PosLen31
+
+struct CSVRowsParsedPayload{M}
+    row_num::Int
+    results::ChunkedCSV.TaskResultBuffer{M}
+    parsing_ctx::ChunkedCSV.ParsingContext
+end
+Base.length(payload::CSVRowsParsedPayload) = length(payload.results.row_statuses)
+last_row(payload::CSVRowsParsedPayload) = (payload.row_num + length(payload) - 1)
+
+function reenqueue_ordered!(queue::Channel{T}, waiting_room::Vector{T}, payload::T) where {T}
+    row = payload.row_num
+    for _ in 1:length(waiting_room)
+        nrows = length(payload)
+        payload = first(waiting_room)
+        if payload.row_num == (nrows + row)
+            put!(queue, popfirst!(waiting_room))
+        else
+            break
+        end
+    end
+end
+
+function reorder!(queue::Channel{T}, waiting_room::Vector{T}, payload::T, expected_row::Int) where{T}
+    row = payload.row_num
+    # @info "id=$(payload.parsing_ctx.id), expected=$expected_row rownum=$(payload.row_num) nrows=$(length(payload)) len_waiting=$(length(waiting_room)) nums=$(join(map(x->x.row_num, waiting_room)[1:min(end,3)], ", "))"
+    if row == expected_row
+        reenqueue_ordered!(queue, waiting_room, payload)
+        return false
+    end
+
+    ChunkedCSV.ConsumeContexts.insertsorted!(waiting_room, payload, x->x.row_num)
+
+    if waiting_room[1].row_num == expected_row
+        payload = popfirst!(waiting_room)
+        put!(queue, payload)
+        reenqueue_ordered!(queue, waiting_room, payload)
+    end
+
+    return true
+end
+
+# To overload consume! method in ChunkedCSV and to gather the results
+struct CSVRowsContext{M} <: ChunkedCSV.AbstractConsumeContext
+    queue::Channel{CSVRowsParsedPayload{M}}
+end
+
+# What we return to the user when that user calls CSV.CSVRows
+struct CSVRowsIterator{M,V,CustomTypes,StringType}
+    consume_ctx::CSVRowsContext{M}
+    waiting_room::Vector{CSVRowsParsedPayload{M}}
+    bufferschema::Vector{DataType}
+    buffer::Vector{V}
+end
+
+# The `state` in `Base.iterate(iter::CSVRowsIterator, state)`
+mutable struct CSVRowsIteratorState{M}
+    payload::CSVRowsParsedPayload{M}
+    row::Int
+    indicators_idx::Int
+end
+
+# The return type of `Base.iterate(iter::CSVRowsIterator, state::CSVRowsIteratorState)`
+struct CSVRow2{V,StringType} <: Tables.AbstractRow
+    names::Vector{Symbol}
+    values::Vector{V}
+    buf::Vector{UInt8}
+    chunk_id::Int
+    e::UInt8
+end
+
+struct PosLen31String
+    buf::Vector{UInt8}
+    poslen::PosLen31
+    e::UInt8
+end
+
+# The `AbstractRow` overides `getproperty` to allow for field access
+getnames(r::CSVRow2) = getfield(r, :names)
+getcolumns(r::CSVRow2) = getfield(r, :columns)
+getcolumnmap(r::CSVRow2) = getfield(r, :columnmap)
+getlookup(r::CSVRow2) = getfield(r, :lookup)
+getvalues(r::CSVRow2) = getfield(r, :values)
+getbuf(r::CSVRow2) = getfield(r, :buf)
+getV(::CSVRow2{V}) where {V} = V
+getescapechar(r::CSVRow2) = getfield(r, :e)
+
+Base.checkbounds(r::CSVRow2, i) = 0 < i < length(r)
+
+# Tables.jl interface
+Tables.columnnames(r::CSVRow2) = getnames(r)
+
+Tables.getcolumn(r::CSVRow2, nm::Symbol) = Tables.getcolumn(r, @something(findfirst(==(nm), getnames(r)), throw(KeyError(nm))))
+Base.@propagate_inbounds function Tables.getcolumn(r::CSVRow2, i::Int)
+    @boundscheck checkbounds(r, i)
+    type = @inbounds typeof(getvalues(r)[i])
+    return unsafe_getcolumn(r, type, i)
+end
+Base.@propagate_inbounds function Tables.getcolumn(r::CSVRow2{S}, ::Type{T}, i::Int, nm::Symbol) where {S,T <: S}
+    @boundscheck checkbounds(r, i)
+    return unsafe_getcolumn(r, T, i)
+end
+
+function unsafe_getcolumn(r::CSVRow2{Union{PosLen31,Missing},ST}, @nospecialize(type), i::Int) where {ST}
+    @inbounds if type === PosLen31
+        if ST == String
+            return getvalues(r)[i]::ST
+        else
+            return PosLen31String(getbuf(r), getvalues(r)[i]::PosLen31, getescapechar(r))::ST
+        end
+    else
+        return missing
+    end
+end
+function unsafe_getcolumn(r::CSVRow2{Union{T,S,Missing}}, @nospecialize(type), i::Int) where {T,S}
+    return @inbounds getvalues(r)[i]
+end
+function unsafe_getcolumn(r::CSVRow2{Union{PosLen31,S,Missing},ST}, @nospecialize(type), i::Int) where {S,ST}
+    @inbounds if type === PosLen31
+        if ST == String
+            return getvalues(r)[i]::ST
+        else
+            return PosLen31String(getbuf(r), getvalues(r)[i]::PosLen31, getescapechar(r))::ST
+        end
+    elseif type === Missing
+        return missing
+    else
+        return getvalues(r)[i]::S
+    end
+end
+
+
+# We do our own ntask decrements in the iterate function 
+ChunkedCSV.task_done!(::CSVRowsContext{M}, ::ChunkedCSV.ParsingContext, ::ChunkedCSV.TaskResultBuffer{M}) where {M} = nothing
+
+function ChunkedCSV.consume!(consume_ctx::CSVRowsContext{M}, parsing_ctx::ChunkedCSV.ParsingContext, task_buf::ChunkedCSV.TaskResultBuffer{M}, row_num::Int, eol_idx::Int32) where {M}  
+    put!(consume_ctx.queue, CSVRowsParsedPayload{M}(row_num, task_buf, parsing_ctx))
+end
+
+function CSVRows(
+    input; 
+    types=nothing, 
+    _force::Symbol=:default, 
+    reusebuffer::Bool=false,
+    kwargs...,
+)
+    should_close, parsing_ctx, lexer, options = ChunkedCSV.setup_parser(input, types; kwargs...)
+    
+    bufferschema = ChunkedCSV._translate_to_buffer_type.(parsing_ctx.schema, reusebuffer)
+    unique_types = unique(bufferschema)
+    M = ChunkedCSV._bounding_flag_type(length(parsing_ctx.schema))
+    V = length(unique_types) > 2 ? Any : Union{unique_types..., Missing}
+    CT = ChunkedCSV._custom_types(parsing_ctx.schema)
+
+    consume_ctx = CSVRowsContext{M}(Channel{CSVRowsParsedPayload{M}}(Inf))
+
+    Base.errormonitor(Threads.@spawn begin 
+        ChunkedCSV.parse_file(lexer, parsing_ctx, consume_ctx, options, _force)
+        should_close && close(lexer.io)
+        close(consume_ctx.queue)
+    end)
+
+    return CSVRowsIterator{M, V, CT, reusebuffer ? PosLen31String : String}(
+        consume_ctx,
+        sizehint!(CSVRowsParsedPayload{M}[], Threads.nthreads()),
+        bufferschema,
+        Vector{V}(undef, length(parsing_ctx.schema)),
+    )
+end
+
+@inline function setcustom!(::Type{customtypes}, values, cols, i, j, _type) where {customtypes}
+    if @generated
+        block = Expr(:block)
+        push!(block.args, quote
+            error("CSV.jl code-generation error, unexpected column type: $(eltype(cols))")
+        end)
+        for i = 1:fieldcount(customtypes)
+            T = fieldtype(customtypes, i)
+            pushfirst!(block.args, quote
+                if type === $T
+                    values[i] = (cols[i]::ChunkedCSV.BufferedVector{$T})[j]::$T
+                    return
+                end
+            end)
+        end
+        pushfirst!(block.args, :(type = _type))
+        pushfirst!(block.args, Expr(:meta, :inline))
+        # @show block
+        return block
+    else
+        # println("generated function failed")
+        @inbounds values[i] = cols[i][j]
+        return
+    end
+end
+
+@inline function _fill_row_buffer!(rows::CSVRowsIterator{M,V,CT}, state::CSVRowsIteratorState{M}) where {M,V,CT}
+    row = state.row
+    payload = state.payload
+    bytes = payload.parsing_ctx.bytes
+    e = payload.parsing_ctx.escapechar
+    @inbounds begin
+        row_status = payload.results.row_statuses[row]
+        if row_status != ChunkedCSV.RowStatus.Ok
+            fill!(rows.buffer, missing)
+            indicators = payload.results.column_indicators[state.indicators_idx]
+            state.indicators_idx += 1
+        else
+            indicators = ChunkedCSV.initflag(M)
+        end
+        for col in 1:length(payload.parsing_ctx.schema)
+            ChunkedCSV.isflagset(indicators, col) && continue
+            dsttype = rows.bufferschema[col]
+            if dsttype === Int
+                rows.buffer[col] = (payload.results.cols[col]::ChunkedCSV.BufferedVector{Int})[row]::Int
+            elseif dsttype === Float64
+                rows.buffer[col] = (payload.results.cols[col]::ChunkedCSV.BufferedVector{Float64})[row]::Float64
+            elseif dsttype === Bool
+                rows.buffer[col] = (payload.results.cols[col]::ChunkedCSV.BufferedVector{Bool})[row]::Bool
+            elseif dsttype === DateTime
+                rows.buffer[col] = (payload.results.cols[col]::ChunkedCSV.BufferedVector{DateTime})[row]::DateTime
+            elseif dsttype === Date
+                rows.buffer[col] = (payload.results.cols[col]::ChunkedCSV.BufferedVector{Date})[row]::Date
+            elseif dsttype === Time
+                rows.buffer[col] = (payload.results.cols[col]::ChunkedCSV.BufferedVector{Time})[row]::Time
+            elseif dsttype === Char
+                rows.buffer[col] = (payload.results.cols[col]::ChunkedCSV.BufferedVector{Char})[row]::Char
+            elseif dsttype === Parsers.PosLen31
+                pl = (payload.results.cols[col]::ChunkedCSV.BufferedVector{Parsers.PosLen31})[row]::Parsers.PosLen31
+                rows.buffer[col] = pl
+            elseif dsttype === String
+                pl = (payload.results.cols[col]::ChunkedCSV.BufferedVector{Parsers.PosLen31})[row]::Parsers.PosLen31
+                rows.buffer[col] = Parsers.getstring(bytes, pl, e)::String
+            else
+                setcustom!(CT, rows.buffer, payload.results.cols, col, row, dsttype)
+            end
+        end
+    end
+    return nothing
+end
+
+function Base.iterate(rows::CSVRowsIterator{M,V,CT,ST}) where {M,V,CT,ST}
+    local state, payload
+    try
+        payload = take!(rows.consume_ctx.queue)
+        state = CSVRowsIteratorState(
+            payload,
+            1,
+            1,
+        )
+        while reorder!(rows.consume_ctx.queue, rows.waiting_room, state.payload, state.row) 
+            state.payload = take!(rows.consume_ctx.queue)
+        end
+    catch e
+        if isa(e, Base.InvalidStateException) # Closing of the channel signal work is done
+            return nothing
+        else
+            rethrow(e)
+        end
+    end
+    
+    _fill_row_buffer!(rows, state)
+    parsing_ctx = state.payload.parsing_ctx
+    parsed_row = ST === PosLen31String ? rows.buffer : copy(rows.buffer)
+    e = parsing_ctx.escapechar
+    return (CSVRow2{V,ST}(parsing_ctx.header, parsed_row, parsing_ctx.bytes, 0, e), state)
+    # return (parsed_row, state)
+end
+
+function Base.iterate(rows::CSVRowsIterator{M,V,CT,ST}, state::CSVRowsIteratorState{M}) where {M,V,CT,ST}
+    payload = state.payload
+    if state.row == length(payload)
+        @lock payload.parsing_ctx.cond.cond_wait begin
+            payload.parsing_ctx.cond.ntasks -= 1
+            notify(payload.parsing_ctx.cond.cond_wait)
+        end
+
+        expected_next_row = last_row(payload) + 1
+
+        local payload
+        try
+            payload = take!(rows.consume_ctx.queue)
+            while reorder!(rows.consume_ctx.queue, rows.waiting_room, payload, expected_next_row)
+                payload = take!(rows.consume_ctx.queue)
+            end
+        catch e
+            if isa(e, Base.InvalidStateException) # Closing of the channel signal work is done
+                return nothing
+            else
+                rethrow(e)
+            end
+        end
+        state.row = 1
+    else
+        state.row += 1
+    end
+    state.payload = payload
+    _fill_row_buffer!(rows, state)
+    parsing_ctx = state.payload.parsing_ctx
+    parsed_row = ST === PosLen31String ? rows.buffer : copy(rows.buffer)
+    e = parsing_ctx.escapechar
+    return (CSVRow2{V,ST}(parsing_ctx.header, parsed_row, parsing_ctx.bytes, 0, e), state)
+    # return (parsed_row, state)
+end
+
+Base.eltype(::CSVRowsIterator{M,V,CT,ST}) where {M,V,CT,ST} = CSVRow2{V,ST}
+# Base.eltype(::CSVRowsIterator{M,V}) where {M,V} = Vector{V}
+Base.IteratorSize(::CSVRowsIterator) = Base.SizeUnknown()
+Base.IteratorEltype(::CSVRowsIterator) = Base.HasEltype()
+
 mutable struct TempFileWrapper
     file::Union{String, Nothing}
 end
