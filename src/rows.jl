@@ -52,6 +52,7 @@ struct CSVRowsIterator{M,V,CustomTypes,StringType}
     waiting_room::Vector{CSVRowsParsedPayload{M}}
     bufferschema::Vector{DataType}
     buffer::Vector{V}
+    options::Parsers.Options # needed for detect/parse in CSVRow2
 end
 
 # The `state` in `Base.iterate(iter::CSVRowsIterator, state)`
@@ -68,6 +69,7 @@ struct CSVRow2{V,StringType} <: Tables.AbstractRow
     buf::Vector{UInt8}
     chunk_id::Int
     e::UInt8
+    options::Parsers.Options # needed for detect/parse
 end
 
 struct PosLen31String
@@ -78,13 +80,11 @@ end
 
 # The `AbstractRow` overides `getproperty` to allow for field access
 getnames(r::CSVRow2) = getfield(r, :names)
-getcolumns(r::CSVRow2) = getfield(r, :columns)
-getcolumnmap(r::CSVRow2) = getfield(r, :columnmap)
-getlookup(r::CSVRow2) = getfield(r, :lookup)
 getvalues(r::CSVRow2) = getfield(r, :values)
 getbuf(r::CSVRow2) = getfield(r, :buf)
 getV(::CSVRow2{V}) where {V} = V
 getescapechar(r::CSVRow2) = getfield(r, :e)
+getoptions(r::CSVRow2) = getfield(r, :options)
 
 Base.checkbounds(r::CSVRow2, i) = 0 < i < length(r)
 
@@ -130,6 +130,62 @@ function unsafe_getcolumn(r::CSVRow2{Union{PosLen31,S,Missing},ST}, @nospecializ
     end
 end
 
+Base.@propagate_inbounds function Parsers.parse(::Type{T}, r::CSVRow2{V,String}, i::Int) where {T,V}
+    @boundscheck checkbounds(r, i)
+    @inbounds begin
+        val = Tables.getcolumn(r, i)
+        val isa String || stringsonly()
+        res = Parsers.xparse(T, val, 1, ncodeunits(val), getoptions(r))
+    end
+    return Parsers.ok(res.code) ? (res.val::T) : missing
+end
+Base.@propagate_inbounds function Parsers.parse(::Type{T}, r::CSVRow2{V,PosLen31String}, i::Int) where {T,V}
+    @boundscheck checkbounds(r, i)
+    @inbounds begin
+        val = Tables.getcolumn(r, i)
+        val isa PosLen31String || stringsonly()
+        poslen = val.poslen
+        poslen.missingvalue && return missing
+        pos = poslen.pos
+        res = Parsers.xparse(T, getbuf(r), pos, pos + poslen.len - 1, getoptions(r))
+    end
+    return Parsers.ok(res.code) ? (res.val::T) : missing
+end
+
+
+Base.@propagate_inbounds function detect(r::CSVRow2{V,String}, i::Int) where {V}
+    @boundscheck checkbounds(r, i)
+    @inbounds begin
+        val = Tables.getcolumn(r, i)
+        val isa String || stringsonly()
+        code, tlen, x, xT = detect(pass, val, 1, ncodeunits(val), getoptions(r))
+        return x === nothing ? r[i] : x
+    end
+end
+Base.@propagate_inbounds function detect(r::CSVRow2{V,PosLen31String}, i::Int) where {V}
+    @boundscheck checkbounds(r, i)
+    @inbounds begin
+        val = Tables.getcolumn(r, i)
+        val isa PosLen31String || stringsonly()
+        poslen = val.poslen
+        poslen.missingvalue && return missing
+        pos = poslen.pos
+        code, tlen, x, xT = detect(pass, val, pos, pos + poslen.len - 1, getoptions(r))
+        return x === nothing ? r[i] : x
+    end
+end
+
+function Parsers.parse(::Type{T}, r::CSVRow2, nm::Symbol) where {T}
+    @inbounds x = Parsers.parse(T, r, @something(findfirst(==(nm), getnames(r)), throw(KeyError(nm))))
+    return x
+end
+
+function detect(r::CSVRow2, nm::Symbol)
+    @inbounds x = detect(r, @something(findfirst(==(nm), getnames(r)), throw(KeyError(nm))))
+    return x
+end
+
+
 
 # We do our own ntask decrements in the iterate function 
 ChunkedCSV.task_done!(::CSVRowsContext{M}, ::ChunkedCSV.ParsingContext, ::ChunkedCSV.TaskResultBuffer{M}) where {M} = nothing
@@ -166,6 +222,7 @@ function CSVRows(
         sizehint!(CSVRowsParsedPayload{M}[], Threads.nthreads()),
         bufferschema,
         Vector{V}(undef, length(parsing_ctx.schema)),
+        options,
     )
 end
 
@@ -200,17 +257,24 @@ end
     payload = state.payload
     bytes = payload.parsing_ctx.bytes
     e = payload.parsing_ctx.escapechar
+    N = length(payload.parsing_ctx.schema)
+    row_ok = true
+    indicators = ChunkedCSV.initflag(M)
     @inbounds begin
         row_status = payload.results.row_statuses[row]
         if row_status != ChunkedCSV.RowStatus.Ok
+            row_ok = false
             fill!(rows.buffer, missing)
             indicators = payload.results.column_indicators[state.indicators_idx]
             state.indicators_idx += 1
+            has_too_many_columns = (row_status & ChunkedCSV.RowStatus.TooManyColumns > 0)
         else
-            indicators = ChunkedCSV.initflag(M)
+            row_ok = true
         end
-        for col in 1:length(payload.parsing_ctx.schema)
-            ChunkedCSV.isflagset(indicators, col) && continue
+        for col in 1:N
+            if row_ok && ChunkedCSV.isflagset(indicators, col)
+                has_too_many_columns && col == N || continue
+            end
             dsttype = rows.bufferschema[col]
             if dsttype === Int
                 rows.buffer[col] = (payload.results.cols[col]::ChunkedCSV.BufferedVector{Int})[row]::Int
@@ -264,7 +328,7 @@ function Base.iterate(rows::CSVRowsIterator{M,V,CT,ST}) where {M,V,CT,ST}
     parsing_ctx = state.payload.parsing_ctx
     parsed_row = ST === PosLen31String ? rows.buffer : copy(rows.buffer)
     e = parsing_ctx.escapechar
-    return (CSVRow2{V,ST}(parsing_ctx.header, parsed_row, parsing_ctx.bytes, 0, e), state)
+    return (CSVRow2{V,ST}(parsing_ctx.header, parsed_row, parsing_ctx.bytes, 0, e, rows.options), state)
     # return (parsed_row, state)
 end
 
@@ -300,7 +364,7 @@ function Base.iterate(rows::CSVRowsIterator{M,V,CT,ST}, state::CSVRowsIteratorSt
     parsing_ctx = state.payload.parsing_ctx
     parsed_row = ST === PosLen31String ? rows.buffer : copy(rows.buffer)
     e = parsing_ctx.escapechar
-    return (CSVRow2{V,ST}(parsing_ctx.header, parsed_row, parsing_ctx.bytes, 0, e), state)
+    return (CSVRow2{V,ST}(parsing_ctx.header, parsed_row, parsing_ctx.bytes, 0, e, rows.options), state)
     # return (parsed_row, state)
 end
 
