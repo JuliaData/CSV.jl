@@ -124,37 +124,43 @@ end
 # but without yet allocating a vector to hold the parsed results (see `allocate`)
 # - `i` is the column number e.g. i=1 for the 1st column.
 # - `types` is the user-given input
-function initialize_column(i, types::AbstractVector, names, stringtype, streaming::Bool, options)
+function initialize_column(i, types, names, stringtype, streaming::Bool, options)
+    T = initial_column_type(i, types, names, stringtype, streaming::Bool)
+    return Column(T, options)
+end
+
+function initial_column_type(i, types::AbstractVector, _, _, ::Bool)
     # we generally expected `length(types) == ncols` but we still want to support the case
     # where an additional column is found later in the file and wasn't in `types`
-    T = i <= length(types) ? types[i] : NeedsTypeDetection
-    return Column(T, options)
+    i <= length(types) ? types[i] : NeedsTypeDetection
 end
 
-function initialize_column(i, types::AbstractDict, names, stringtype, streaming::Bool, options)
+function initial_column_type(i, types::AbstractDict, names, stringtype, streaming::Bool)
     defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
     # if an additional column is found while parsing, it will not have a name yet
     nm = i <= length(names) ? names[i] : ""
-    T = getordefault(types, nm, i, defaultT)
-    col = Column(T, options)
-    return col
+    getordefault(types, nm, i, defaultT)
 end
 
-function initialize_column(i, types::Function, names, stringtype, streaming::Bool, options)
+function initial_column_type(i, types::Function, names, stringtype, streaming::Bool)
     defaultT = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
     # if an additional column is found while parsing, it will not have a name yet
     nm = i <= length(names) ? names[i] : ""
-    T = something(types(i, nm), defaultT)
-    return Column(T, options)
+    something(types(i, nm), defaultT)
 end
 
-function initialize_column(i, types::Nothing, names, stringtype, streaming::Bool, options)
-    T = streaming ? Union{stringtype, Missing} : NeedsTypeDetection
-    return Column(T, options)
+function initial_column_type(_, ::Nothing, _, stringtype, streaming::Bool)
+    streaming ? Union{stringtype, Missing} : NeedsTypeDetection
 end
 
-function initialize_column(i, types::Type, names, stringtype, streaming::Bool, options)
-    return Column(types, options)
+function initial_column_type(_, types::Type, _, _, ::Bool)
+    types
+end
+
+function reinitialize_column_type!(columns, types, names, stringtype, streaming)
+    for (i, col) in pairs(columns)
+        col.type = initial_column_type(i, types, names, stringtype, streaming)
+    end
 end
 
 mutable struct Context
@@ -619,19 +625,21 @@ end
         if limit !== typemax(Int)
             limit = Int(limit)
             limitposguess = ceil(Int, (limit / (origrowsguess * 0.8)) * len)
-            newlen = [0, limitposguess, min(limitposguess * 2, len)]
-            findrowstarts!(buf, options, newlen, ncols, columns, stringtype, typemap, downcast, 5)
-            len = newlen[2] - 1
-            origrowsguess = limit
+            if limitposguess < len
+                newlen = [0, limitposguess, min(limitposguess * 2, len)]
+                findchunkrowstart(newlen, 2, buf, options, typemap, downcast, ncols, 5, columns, Type[col.type for col in columns], ReentrantLock(), stringtype, Threads.Atomic{Int}(0), Threads.Atomic{Int}(0), Threads.Atomic{Bool}(true))
+                len = newlen[2] - 1
+                reinitialize_column_type!(columns, types, names, stringtype, streaming)
+                origrowsguess = limit
+            end
             debug && println("limiting, adjusting len to $len")
         end
         chunksize = div(len - datapos, ntasks)
-        chunkpositions = Vector{Int}(undef, ntasks + 1)
-        for i = 0:ntasks
-            chunkpositions[i + 1] = i == 0 ? datapos : i == ntasks ? len : (datapos + chunksize * i)
-        end
+        chunkpositions = [datapos + chunksize * i for i in 0:ntasks]
+        chunkpositions[end] = len
         debug && println("initial byte positions before adjusting for start of rows: $chunkpositions")
         avgbytesperrow, successfullychunked = findrowstarts!(buf, options, chunkpositions, ncols, columns, stringtype, typemap, downcast, rows_to_check)
+        ntasks = length(chunkpositions) - 1
         if successfullychunked
             origbytesperrow = ((len - datapos) / origrowsguess)
             weightedavgbytesperrow = ceil(Int, avgbytesperrow * ((ntasks - 1) / ntasks) + origbytesperrow * (1 / ntasks))
@@ -639,14 +647,16 @@ end
             debug && println("single-threaded estimated rows = $origrowsguess, multi-threaded estimated rows = $rowsguess")
             debug && println("multi-threaded column types sampled as: $columns")
         else
-            debug && println("something went wrong chunking up a file for multithreaded parsing, falling back to single-threaded parsing")
+            @error "Multi-threaded parsing failed (are there newlines inside quoted fields?), falling back to single-threaded parsing"
+            reinitialize_column_type!(columns, types, names, stringtype, streaming)
             threaded = false
         end
-    else
-        chunkpositions = EMPTY_INT_ARRAY
     end
-    if !threaded && limit < rowsguess
-        rowsguess = limit
+    if !threaded
+        chunkpositions = EMPTY_INT_ARRAY
+        if limit < rowsguess
+            rowsguess = limit
+        end
     end
 
     end # @inbounds begin

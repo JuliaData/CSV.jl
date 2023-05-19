@@ -336,24 +336,23 @@ ColumnProperties(T) = ColumnProperties(T, 0x00)
     end
 end
 
+function findnextnewline(pos, stop, buf, opts)
+    while pos < stop
+        res = Parsers.xparse(String, buf, pos, stop, opts)
+        pos += res.tlen
+        Parsers.newline(res.code) && return pos
+    end
+    return stop
+end
+
 function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_to_check, columns, origcoltypes, columnlock, @nospecialize(stringtype), totalbytes, totalrows, succeeded)
     pos = ranges[i]
-    len = ranges[i + 1]
-    while pos <= len
-        startpos = pos
-        code = Parsers.ReturnCode(0)
-        attempted_quoted = false
-@label findnextnewline
-        # assume not in quoted field; start parsing, count ncols + newline and if things match, return
-        while pos <= len
-            res = Parsers.xparse(String, buf, pos, len, opts)
-            pos += res.tlen
-            if Parsers.newline(res.code)
-                # assume we found the correct start of the next row
-                ranges[i] = pos
-                break
-            end
-        end
+    len = ranges[i + 1] - 1
+    nextrowpos = 0
+    startpos = pos
+    code = Parsers.ReturnCode(0)
+    attempted_quoted = false
+    while true
         # now we read the next `rows_to_check` rows and see if we get the roughly the right # of columns
         rowstartpos = pos
         parsedncols = rowsparsed = 0
@@ -369,6 +368,7 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
         end
         for _ = 1:rows_to_check
             n = 1
+            numcolsthisrow = 0
             while pos <= len
                 res = Parsers.xparse(String, buf, pos, len, opts)
                 poslen, code, tlen = res.val, res.code, res.tlen
@@ -387,14 +387,12 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
                     end
                 end
                 pos += tlen
-                if Parsers.newline(code)
-                    parsedncols += 1
-                    rowsparsed += 1
-                    break
-                end
+                numcolsthisrow += 1
+                Parsers.newline(code) && break
                 n += 1
-                parsedncols += 1
             end
+            rowsparsed += ((pos < len) | (numcolsthisrow != 0)) # trailing newline does not count
+            parsedncols += numcolsthisrow
         end
         lock(columnlock) do
             for i = 1:ncols
@@ -413,7 +411,7 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
         if (ncols - f40) <= (parsedncols / rowsparsed) <= (ncols + f40)
             # ok, seems like we figured out the right start for parsing on this chunk
             Threads.atomic_add!(totalbytes, Int(pos - rowstartpos))
-            Threads.atomic_add!(totalrows, rows_to_check)
+            Threads.atomic_add!(totalrows, rowsparsed)
             break
         end
         if attempted_quoted
@@ -449,8 +447,9 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
         end
         # ok, we made it out of a quoted field
         attempted_quoted = true
-        @goto findnextnewline
+        pos = nextrowpos = findnextnewline(pos, len, buf, opts)
     end
+    return ifelse(nextrowpos==0, startpos, nextrowpos)
 end
 
 # here we try to "chunk" up a file; given the equally spaced out byte positions in `ranges`, we start at each
@@ -462,13 +461,32 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, @nospecialize(stringt
     totalbytes = Threads.Atomic{Int}(0)
     totalrows = Threads.Atomic{Int}(0)
     succeeded = Threads.Atomic{Bool}(true)
-    N = length(ranges) - 2
     lock = ReentrantLock()
     origcoltypes = Type[col.type for col in columns]
-    @sync for i = 2:(length(ranges) - 1)
+    stop = last(ranges)
+    @sync for i in 2:(length(ranges) - 1)
+        # preprocessing of ranges: ensure that each range starts and ends at a newline
         Threads.@spawn begin
-            findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_to_check, columns, origcoltypes, lock, stringtype, totalbytes, totalrows, succeeded)
+            ranges[i] = findnextnewline(ranges[i], stop, buf, opts)
         end
+    end
+    # remove ranges starting after the end, if any
+    new_last_idx = length(ranges)-1
+    while ranges[new_last_idx] > stop
+        new_last_idx -= 1
+    end
+    ranges[new_last_idx+1] = stop
+    resize!(ranges, new_last_idx+1)
+    unique!(ranges) # in case multiple tasks start on the same row
+    newranges = similar(ranges)
+    N = length(ranges) - 1
+    @sync for i in 2:N
+        Threads.@spawn begin
+            newranges[i] = findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_to_check, columns, origcoltypes, lock, stringtype, totalbytes, totalrows, succeeded)
+        end
+    end
+    @inbounds for i in 2:N # this update occurs after the parallel loop to avoid a race condition
+        ranges[i] = newranges[i]
     end
     return totalbytes[] / totalrows[], succeeded[]
 end
