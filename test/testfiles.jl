@@ -6,11 +6,12 @@ function testfile(file, kwargs, expected_sz, expected_sch, testfunc; dir=dir)
     if file isa IO
         seekstart(file)
     end
-    rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); kwargs...) |> Tables.dictrowtable |> columntable
+    f = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...)
     if file isa IO
         seekstart(file)
     end
-    f = CSV.File(file isa IO ? file : joinpath(dir, file); kwargs...)
+    kwargs = Base.structdiff(kwargs, (ntasks=0,)) # Rows does not support the "ntasks" kwarg
+    rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); kwargs...) |> Tables.dictrowtable |> columntable
     t = f |> columntable
     actual_sch = Tables.schema(t)
     @test Tuple(typs(expected_sch)) == actual_sch.types
@@ -637,6 +638,43 @@ testfiles = [
         (1485, 7),
         NamedTuple{(:state, :positive, :negative, :pending, :hospitalized, :death, :dateChecked), Tuple{InlineString3, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, InlineString31}},
         nothing
+    ),
+    # https://github.com/JuliaData/CSV.jl/issues/1010
+    ("test_multithreaded_row_start_detection_singlecol.csv", (ntasks=120,),
+        (3210, 1),
+        NamedTuple{(:foobar,), Tuple{Float64}},
+        nothing
+    ),
+    # https://github.com/JuliaData/CSV.jl/issues/1047
+    ("test_multithreaded_row_start_detection_int.csv", (ntasks=8,),
+        (151, 30),
+        NamedTuple{ntuple(i -> Symbol("col", i), 30), NTuple{30,Int}},
+        nothing
+    ),
+    # https://github.com/JuliaData/CSV.jl/pull/1073
+    ("test_multithreaded_row_start_detection_float.csv", (ntasks=16,),
+        (81, 55),
+        NamedTuple{ntuple(Symbol, 55), NTuple{55,Float64}},
+        nothing
+    ),
+    ("test_multithreaded_row_start_detection_float.csv", (ntasks=12,),
+        (81, 55),
+        NamedTuple{ntuple(Symbol, 55), NTuple{55,Float64}},
+        nothing
+    ),
+    ("test_multithreaded_row_start_detection_float.csv", (ntasks=16, limit=82),
+        (81, 55),
+        NamedTuple{ntuple(Symbol, 55), NTuple{55,Float64}},
+        nothing
+    ),
+    ("test_quoted_delim_multiple_newlines.csv", (escapechar='\\', pool=false, ntasks=2),
+        (9, 3),
+        NamedTuple{(:col1, :col2, :col3), Tuple{String, InlineString31, Union{Missing,InlineString15}}},
+        (
+            col1 = ["quoted ,field 1", "fieldA", "\n\nlarge multiline quoted field\n\n", "A", "U", "lastfieldmissing", "\nx", ",", "\n"],
+            col2 = ["quoted\n field 2", "fieldB", "nextfieldmissing", "B", "\"\n\n\nV", "\n\n", "y\n", "", "quoted,field"],
+            col3 = ["quoted field 3", "quoted\"field C", missing, "C", "w\n\n\n\"", missing, " z", "\\\n,", "unquotedfield"]
+        )
     ),
 ];
 
