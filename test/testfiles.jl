@@ -676,6 +676,17 @@ testfiles = [
             col3 = ["quoted field 3", "quoted\"field C", missing, "C", "w\n\n\n\"", missing, " z", "\\\n,", "unquotedfield"]
         )
     ),
+    # https://github.com/JuliaData/CSV.jl/pull/1093
+    ("groupmark_quote.csv", (groupmark=',',),
+        (2, 2),
+        NamedTuple{(:x, :y), Tuple{Int, Int}},
+        (x = [15887, 23603], y = [24651, 14076])
+    ),
+    ("groupmark_space.csv", (groupmark=',',),
+        (2, 2),
+        NamedTuple{(:x, :y), Tuple{Int, Int}},
+        (x = [15887, 23603], y = [24651, 14076])
+    ),
 ];
 
 @static if VERSION >= v"1.3-DEV"
