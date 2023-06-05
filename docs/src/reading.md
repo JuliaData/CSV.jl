@@ -162,6 +162,14 @@ An ASCII `Char` argument that is used when parsing float values that indicates w
 ### Examples
   * [Custom decimal separator](@ref decimal_example)
 
+## [`groupmark` / thousands separator](@id groupmark)
+
+A "groupmark" is a symbol that separates groups of digits so that it easier for humans to read a number. Thousands separators are a common example of groupmarks. The argument `groupmark`, if provided, must be an ASCII `Char` which will be ignored during parsing when it occurs between two digits on the left hand side of the decimal. e.g the groupmark in the integer `1,729` is `','` and the groupmark for the US social security number `875-39-3196` is `-`. By default, `groupmark=nothing` which indicates that there are no stray characters separating digits.
+
+### Examples
+  * [Thousands separator](@ref thousands_example)
+  * [Custom groupmarks](@ref groupmark_example)
+
 ## [`truestrings` / `falsestrings`](@id truestrings)
 
 These arguments can be provided as `Vector{String}` to specify custom values that should be treated as the `Bool` `true`/`false` values for all the columns of a data input. By default, `["true", "True", "TRUE", "T", "1"]` string values are used to detect `true` values, and `["false", "False", "FALSE", "F", "0"]` string values are used to detect `false` values. Note that even though `"1"` and `"0"` _can_ be used to parse `true`/`false` values, in terms of _auto_ detecting column types, those values will be parsed as `Int64` first, instead of `Bool`. To instead parse those values as `Bool`s for a column, you can manually provide that column's type as `Bool` (see the [type](@ref types) argument).

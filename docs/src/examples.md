@@ -542,6 +542,42 @@ col1;col2;col3
 file = CSV.File(IOBuffer(data); delim=';', decimal=',')
 ```
 
+## [Thousands separator](@ref thousands_example)
+
+```julia
+using CSV
+
+# In many places in the world, digits to the left of the decimal place are broken into
+# groups by a thousands separator. We can ignore those separators by passing the `groupmark`
+# keyword argument.
+data = """
+x y
+1 2
+2 1,729
+3 87,539,319
+"""
+
+file = CSV.File(IOBuffer(data); groupmark=',')
+```
+```
+
+## [Custom groupmarks](@ref groupmark_example)
+
+```julia
+using CSV
+
+# In some contexts, separators other than thousands separators group digits in a number.
+# `groupmark` supports ignoring them as long as the separator character is ASCII
+data = """
+name;ssn;credit card number
+Ayodele Beren;597-21-8366;5538-6111-0574-2633
+Trinidad Shiori;387-35-5126;3017-9300-0776-5301
+Ori Cherokee;731-12-4606;4682-5416-0636-3877
+"""
+
+file = CSV.File(IOBuffer(data); groupmark='-')
+```
+
 ## [Custom bool strings](@id truestrings_example)
 
 ```julia
@@ -577,11 +613,11 @@ data = """
 file = CSV.File(IOBuffer(data); header=false)
 file = CSV.File(IOBuffer(data); header=false, delim=' ', types=Float64)
 
-# as a last step if you want to convert this to a Matrix, this can be done by reading in first as a DataFrame and then 
+# as a last step if you want to convert this to a Matrix, this can be done by reading in first as a DataFrame and then
 # function chaining to a Matrix
 using DataFrames
 A = file|>DataFrame|>Matrix
- 
+
 # another alternative is to simply use CSV.Tables.matrix and say
 B = file|>CSV.Tables.matrix # does not require DataFrames
 ```
