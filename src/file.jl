@@ -564,6 +564,15 @@ function parsefilechunk!(ctx::Context, pos, len, rowsguess, rowoffset, columns, 
                 rowsguess = newrowsguess
             end
         end
+        if !ctx.threaded && ctx.ntasks > 1 && !ctx.silencewarnings
+            # !ctx.threaded && ctx.ntasks > 1 indicate that multithreaded parsing failed.
+            # Thes messages echo the corresponding debug statement in the definition of ctx
+            if numwarnings[] > 0
+                @warn "Multithreaded parsing failed and fell back to single-threaded parsing, check previous warnings for possible reasons."
+            else
+                @error "Multithreaded parsing failed and fell back to single-threaded parsing. This can happen if the input contains multi-line fields; otherwise, please report this issue."
+            end
+        end
     end
     # done parsing (at least this chunk), so resize columns to final row count
     for col in columns

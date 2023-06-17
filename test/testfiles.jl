@@ -709,3 +709,16 @@ testfile("test_basic.csv", (types=Dict(2=>Float64),),
     (col1 = [1, 4, 7], col2 = [2.0, 5.0, 8.0], col3 = [3, 6, 9]);
     dir=Path(dir)
 )
+
+# https://github.com/JuliaData/CSV.jl/pull/1099
+@info "The following test is expected to @error with \"Multithreaded parsing failed...\""
+testfile("test_multiline_field_errorwarning.csv", (ntasks=3,),
+    (20, 3),
+    NamedTuple{(:col1, :col2, :col3), Tuple{String3, String, Int}},
+    let col1 = [String3("A$i") for i in 1:19], col2 = [".$i" for i in 1:19], col3 = collect(1:19)
+        insert!(col1, 14, String3("foo"))
+        insert!(col2, 14, "a field to thwart all heuristics\n  ,,,\n, ,\n   , ,,\n, ,,\n  , ,,\n,,\n    ,,\n  ,    ,\n ,   ,\n ,,  ,  ,\n  ,  ,,,\n,   ,,\n\n, , ,    ,\n    ,     ,\n\n  ,,,\n,,,\n,,,\n ,,,\n\n,\n,\n")
+        insert!(col3, 14, 0)
+        (; col1, col2, col3)
+    end
+)
