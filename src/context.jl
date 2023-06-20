@@ -649,9 +649,10 @@ end
             debug && println("single-threaded estimated rows = $origrowsguess, multi-threaded estimated rows = $rowsguess")
             debug && println("multi-threaded column types sampled as: $columns")
         else
-            @error "Multi-threaded parsing failed (are there newlines inside quoted fields?), falling back to single-threaded parsing"
+            # The following debug statement is doubled by a loud @warning or @error in parsefilechunk!
+            debug && println("multi-threaded parsing failed! Falling back to single thread, reinitializing column types.")
             reinitialize_column_type!(columns, types, names, stringtype, streaming)
-            threaded = false
+            threaded = false # the failing is signaled by having !ctx.threaded && ctx.ntasks > 1
         end
     end
     if !threaded
