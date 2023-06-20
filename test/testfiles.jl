@@ -687,6 +687,11 @@ testfiles = [
         NamedTuple{(:x, :y), Tuple{Int, Int}},
         (x = [15887, 23603], y = [24651, 14076])
     ),
+    ("test_trailing_empty_column.csv", (ntasks=3,),
+        (14,3),
+        NamedTuple{(:X,:Y,:Z), Tuple{Int, Union{Missing,String7}, Union{Missing,Float64}}},
+        nothing
+    )
 ];
 
 @static if VERSION >= v"1.3-DEV"

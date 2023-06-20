@@ -348,6 +348,11 @@ end
 function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_to_check, columns, origcoltypes, columnlock, @nospecialize(stringtype), totalbytes, totalrows, succeeded)
     pos = ranges[i]
     len = ranges[i + 1] - 1
+    addtrailingcolumn = false # set if the file ends with an empty column with no trailing newline
+    if i == length(ranges)-1
+        len += 1 # correctly handle the absence of a trailing newline
+        addtrailingcolumn = Parsers.delimited(Parsers.xparse(String, buf, len, len, opts).code)
+    end
     nextrowpos = 0
     startpos = pos
     code = Parsers.ReturnCode(0)
@@ -394,6 +399,7 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
             rowsparsed += ((pos < len) | (numcolsthisrow != 0)) # trailing newline does not count
             parsedncols += numcolsthisrow
         end
+        parsedncols += addtrailingcolumn
         lock(columnlock) do
             for i = 1:ncols
                 cp = columnprops[i]
@@ -475,8 +481,8 @@ function findrowstarts!(buf, opts, ranges, ncols, columns, @nospecialize(stringt
     while ranges[new_last_idx] > stop
         new_last_idx -= 1
     end
-    ranges[new_last_idx+1] = stop
     resize!(ranges, new_last_idx+1)
+    ranges[end] = stop
     unique!(ranges) # in case multiple tasks start on the same row
     newranges = similar(ranges)
     N = length(ranges) - 1
