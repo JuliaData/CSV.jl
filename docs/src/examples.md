@@ -559,7 +559,6 @@ x y
 
 file = CSV.File(IOBuffer(data); groupmark=',')
 ```
-```
 
 ## [Custom groupmarks](@ref groupmark_example)
 
