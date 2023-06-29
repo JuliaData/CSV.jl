@@ -316,6 +316,8 @@ end
 @inline function getname(x)
     if x isa AbstractVector{UInt8}
         return "<raw byte buffer: $(hash(x))>"
+    elseif x isa IOStream
+        return string("<IOStream: ", @view(x.name[7:end]))
     elseif x isa IO
         return string("<", typeof(x), ": $(hash(x))>")
     else

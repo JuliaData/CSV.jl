@@ -4,6 +4,7 @@ authors = ["Jacob Quinn <quinn.jacobd@gmail.com>"]
 version = "0.10.9"
 
 [deps]
+ChunkedBase = "a380dd43-0ebf-4429-88d6-6f06ea920732"
 ChunkedCSV = "c0d0730e-6432-44b2-a51e-6ec55e1c8b99"
 CodecZlib = "944b1d66-785c-5afd-91f1-9de20f533193"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"

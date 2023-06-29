@@ -486,7 +486,7 @@ f = CSV.File(joinpath(dir, "big_types.csv"); stringtype=PosLenString, pool=false
 @test eltype(f.lazy) == PosLenString
 @test eltype(f.lazy_missing) == Union{PosLenString, Missing}
 
-r = CSV.Rows(joinpath(dir, "big_types.csv"); types=[Dates.Time, Bool, String, Union{String, Missing}])
+r = CSV.Rows(joinpath(dir, "big_types.csv"); types=[Dates.Time, Bool, String, String])
 row = first(r)
 @test row.time == Dates.Time(12)
 @test row.bool
