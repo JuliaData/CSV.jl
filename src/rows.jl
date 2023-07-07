@@ -58,6 +58,13 @@ function __subset_columns!(ctx, flip::Bool, cols::AbstractVector{Symbol})
 end
 __subset_columns!(ctx, flip::Bool, cols::AbstractVector{<:AbstractString}) = __subset_columns!(ctx, flip, map(Symbol, cols))
 
+# TODO: this is a WIP
+_sentinel(ms::Missing, mss::Missing) = missing
+_sentinel(ms::Missing, mss::String) = [mss]
+_sentinel(ms::Missing, mss::Nothing) = mss
+_sentinel(ms::Missing, mss::Vector{String}) = mss
+_sentinel(ms, mss) = _sentinel(mss, ms)
+
 const CSVPayload = ChunkedBase.ParsedPayload{ChunkedCSV.TaskResultBuffer, ChunkedCSV.ParsingContext}
 const CSVPayloadOrderer = ChunkedBase.PayloadOrderer{ChunkedCSV.TaskResultBuffer, ChunkedCSV.ParsingContext}
 
@@ -103,6 +110,7 @@ end
 
 # TODO: something better
 Base.show(io::IO, s::PosLen31String) = print(io, "pls$(repr(Parsers.getstring(s.buf, s.poslen, s.e)))31")
+Base.collect(s::PosLen31String) = Parsers.getstring(s.buf, s.poslen, s.e)
 
 # The `AbstractRow` overides `getproperty` to allow for field access
 getnames(r::Row2) = getfield(r, :state).payload.parsing_ctx.header
@@ -163,6 +171,8 @@ function unsafe_getcolumn(r::Row2{Union{PosLen31,S,Missing},ST}, @nospecialize(t
         return getvalues(r)[i]::S
     end
 end
+
+stringsonly() = throw(ArgumentError("only strings are allowed in this column"))
 
 Base.@propagate_inbounds function Parsers.parse(::Type{T}, r::Row2{V,String}, i::Int) where {T,V}
     @boundscheck checkbounds(r, i)
@@ -270,9 +280,24 @@ function Rows(
     reusebuffer::Bool=false,
     select=nothing,
     drop=nothing,
+    transpose::Bool=false,
+    pool::Bool=false,
+    footerskip::Int=0,
+    missingstring=missing,
+    missingstrings=missing,
     kwargs...,
 )
-    should_close, parsing_ctx, chunking_ctx, lexer = ChunkedCSV.setup_parser(input, types; kwargs...)
+    transpose && throw(ArgumentError("transpose is not supported for CSV.Rows"))
+    pool && throw(ArgumentError("pool is not supported for CSV.Rows"))
+    footerskip > 0 && throw(ArgumentError("footerskip is not supported for CSV.Rows"))
+    should_close, parsing_ctx, chunking_ctx, lexer = try
+        ChunkedCSV.setup_parser(input, types; kwargs..., sentinel=_sentinel(missingstring, missingstrings))
+    catch e
+        if e isa ChunkedBase.FatalLexingError
+            e = Error(e.msg)
+        end
+        rethrow(e)
+    end
     _subset_columns!(parsing_ctx, select, drop)
 
     bufferschema = ChunkedCSV._translate_to_buffer_type.(parsing_ctx.schema, reusebuffer)
@@ -285,6 +310,11 @@ function Rows(
     Base.errormonitor(Threads.@spawn begin
         try
             ChunkedCSV.parse_file(lexer, parsing_ctx, consume_ctx, chunking_ctx, _force)
+        catch e
+            if e isa ChunkedBase.FatalLexingError
+                e = Error(e.msg)
+            end
+            rethrow(e)
         finally
             should_close && close(lexer.io)
             close(consume_ctx.queue)
@@ -340,7 +370,7 @@ end
         if row_status != ChunkedCSV.RowStatus.Ok
             row_ok = false
             fill!(buffer, missing)
-            has_missing = (row_status | ChunkedCSV.RowStatus.HasColumnIndicators) > 0
+            has_missing = (row_status & ChunkedCSV.RowStatus.HasColumnIndicators) > 0
             state.indicators_idx += has_missing
         end
         for col in 1:N
@@ -374,14 +404,38 @@ end
     return nothing
 end
 
+function _skip_missing_rows!(rows::Rows{V,CT,ST}, state) where {V,CT,ST}
+    keep_skipping = true
+    while true
+        rs = state.payload.results.row_statuses
+        @inbounds for i in state.row:length(rs)
+            if (rs[i] & ChunkedCSV.RowStatus.SkippedRow) > 0
+                state.row += 1
+                state.indicators_idx += 1
+            else
+                keep_skipping = false
+                break
+            end
+        end
+        !keep_skipping && break
+        ChunkedBase.dec!(state.payload.chunking_ctx.counter)
+        state.payload = take!(rows.consume_ctx.queue)
+        state.row = 1
+        state.indicators_idx = 0
+    end
+    return nothing
+end
+
 function Base.iterate(rows::Rows{V,CT,ST}) where {V,CT,ST}
     try
         payload = take!(rows.consume_ctx.queue)
         state = CSVRowsIteratorState(payload, 1, 0)
+        _skip_missing_rows!(rows, state)
 
         buffer = _get_buffer(rows)
         _fill_row_buffer!(rows, buffer, state)
         row = Row2{V,ST}(buffer, state)
+        state.row += 1
         return row, state
     catch e
         if isa(e, Base.InvalidStateException) # Closing of the channel signal work is done
@@ -397,25 +451,26 @@ _get_buffer(rows::Rows{V,CT,String}) where {V,CT} = similar(rows.buffer)
 
 function Base.iterate(rows::Rows{V,CT,ST}, state::CSVRowsIteratorState) where {V,CT,ST}
     payload = state.payload
-    if state.row == length(payload)
-        ChunkedBase.dec!(payload.chunking_ctx.counter)
-        try
-            payload = take!(rows.consume_ctx.queue)
-        catch e
-            if isa(e, Base.InvalidStateException) # Closing of the channel signal work is done
-                return nothing
-            else
-                rethrow(e)
-            end
+    try
+        if state.row == length(payload) + 1
+            ChunkedBase.dec!(payload.chunking_ctx.counter)
+            state.payload = take!(rows.consume_ctx.queue)
+            state.row = 1
+            state.indicators_idx = 0
         end
-        state.row = 1
-    else
-        state.row += 1
+        _skip_missing_rows!(rows, state)
+    catch e
+        if isa(e, Base.InvalidStateException) # Closing of the channel signal work is done
+            return nothing
+        else
+            rethrow(e)
+        end
     end
-    state.payload = payload
+
     buffer = _get_buffer(rows)
     _fill_row_buffer!(rows, buffer, state)
     row = Row2{V,ST}(buffer, state)
+    state.row += 1
     return row, state
 end
 

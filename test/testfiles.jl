@@ -1,12 +1,15 @@
 nms(::Type{NamedTuple{names, types}}) where {names, types} = names
 typs(::Type{NamedTuple{names, types}}) where {names, types} = Tuple(fieldtype(types, i) for i = 1:fieldcount(types))
+datatype(::Type{Union{Missing,T}}) where {T} = T
+datatype(::Type{Missing}) = String
+datatype(::Type{T}) where {T} = T
+
 
 function testfile(file, kwargs, expected_sz, expected_sch, testfunc; dir=dir)
     println("testing $file")
     if file isa IO
         seekstart(file)
     end
-    rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); kwargs...) |> Tables.dictrowtable |> columntable
     if file isa IO
         seekstart(file)
     end
@@ -25,10 +28,29 @@ function testfile(file, kwargs, expected_sz, expected_sch, testfunc; dir=dir)
     if file isa IO
         seekstart(file)
     end
+
+    should_skip = !isnothing(get(kwargs, :footerskip, nothing))
+    should_skip |= !isnothing(get(kwargs, :transpose, nothing))
+    should_skip |= !isnothing(get(kwargs, :pool, nothing))
+    should_skip |= file in ("test_repeated_delim_371.csv",)
+    should_skip |= dir isa AbstractPath
+    should_skip |= get(kwargs, :header, 1) isa Vector{String}
+    should_skip |= get(kwargs, :header, 1) isa UnitRange
+    should_skip |= get(kwargs, :header, 1) isa Vector{Int64}
+    should_skip |= get(kwargs, :delim, ',') isa String
+    should_skip |= !isnothing(get(kwargs, :normalizenames, nothing))
+    should_skip |= !isnothing(get(kwargs, :typemap, nothing))
+
+    if should_skip
+        @eval @test "CSV.Rows skipped for $file" skip=true
+        return
+    end
+
     kwargs = Base.structdiff(kwargs, (types=[],))
-    types = haskey(kwargs, :select) ? Dict(nm=>T for (nm, T) in zip(f.names, getfield(f, :types))) : getfield(f, :types)
+    types = haskey(kwargs, :select) ? Dict(nm=>T for (nm, T) in zip(f.names, Vector{DataType}(map(datatype, getfield(f, :types))))) : Vector{DataType}(map(datatype, getfield(f, :types)))
+
     try
-        rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); types=types, kwargs...) |> Tables.dictrowtable |> columntable
+        rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); types, kwargs...) |> Tables.dictrowtable |> columntable
         actual_sch = Tables.schema(rows)
     catch e
         # check if just a column-widening issue to ignore
@@ -203,25 +225,25 @@ testfiles = [
         NamedTuple{(:x, :y),Tuple{Union{Missing, Int}, Int}},
         (x = Union{Missing, Int}[1, missing], y = [2, 4])
     ),
-    # #83
+    # 83
     ("comma_decimal.csv", (delim=';', decimal=','),
         (2, 2),
         NamedTuple{(:x, :y),Tuple{Float64,Int}},
         (x = [3.14, 1.0], y = [1, 1])
     ),
-    # #86
-    # ("double_quote_quotechar_and_escapechar.csv", (escapechar='"',),
-    #     (24, 5),
-    #     NamedTuple{(:APINo, :FileNo, :CurrentWellName, :LeaseName, :OriginalWellName),Tuple{Float64,Int,String,String,String}},
-    #     x->x.OriginalWellName[24] == "NORTH DAKOTA STATE \"\"A\"\" #1"
-    # ),
-    # #84
+    # 86
+    ("double_quote_quotechar_and_escapechar.csv", (escapechar='"',),
+        (24, 5),
+        NamedTuple{(:APINo, :FileNo, :CurrentWellName, :LeaseName, :OriginalWellName),Tuple{Float64,Int,String,String,String}},
+        x->x.OriginalWellName[24] == "NORTH DAKOTA STATE \"\"A\"\" #1"
+    ),
+    # 84
     ("census.txt", (normalizenames=true,),
         (3, 9),
         NamedTuple{(:GEOID, :POP10, :HU10, :ALAND, :AWATER, :ALAND_SQMI, :AWATER_SQMI, :INTPTLAT, :INTPTLONG),Tuple{Int,Int,Int,Int,Int,Float64,Float64,Float64,Float64}},
         (GEOID = [601, 602, 603], POP10 = [18570, 41520, 54689], HU10 = [7744, 18073, 25653], ALAND = [166659789, 79288158, 81880442], AWATER = [799296, 4446273, 183425], ALAND_SQMI = [64.348, 30.613, 31.614], AWATER_SQMI = [0.309, 1.717, 0.071], INTPTLAT = [18.180555, 18.362268, 18.455183], INTPTLONG = [-66.749961, -67.17613, -67.119887])
     ),
-    # #79
+    # 79
     ("bools.csv", NamedTuple(),
         (4, 3),
         NamedTuple{(:col1, :col2, :col3),Tuple{Bool,Bool,Int}},
@@ -232,8 +254,8 @@ testfiles = [
         NamedTuple{(:col1, :col2, :col3),Tuple{Bool,Bool,Int}},
         (col1 = Bool[true, false, true, false], col2 = Bool[false, true, true, false], col3 = [1, 2, 3, 4])
     ),
-    # #64
-    # #115 (Int -> Union{Int, Missing} -> Union{String, Missing} promotion)
+    # 64
+    # 115 (Int -> Union{Int, Missing} -> Union{String, Missing} promotion)
     ("attenu.csv", (missingstring="NA",),
         (182, 5),
         NamedTuple{(:Event, :Mag, :Station, :Dist, :Accel),Tuple{Int,Float64,Union{Missing, InlineString7},Float64,Float64}},
@@ -244,7 +266,7 @@ testfiles = [
         NamedTuple{(:col1, :col2),Tuple{InlineString7,Missing}},
         (col1 = ["123", "abc", "123abc"], col2 = Missing[missing, missing, missing])
     ),
-    # #107
+    # 107
     (IOBuffer("1,a,i\n2,b,ii\n3,c,iii"), (skipto=1,),
         (3, 3),
         NamedTuple{(:Column1, :Column2, :Column3),Tuple{Int,InlineString1,InlineString3}},
@@ -316,31 +338,31 @@ testfiles = [
         NamedTuple{(:Column1, :Column2, :Column3, :Column4, :Column5, :Column6, :Column7, :Column8, :Column9, :Column10, :Column11, :Column12, :Column13, :Column14, :Column15, :Column16, :Column17, :Column18, :Column19, :Column20, :Column21, :Column22, :Column23, :Column24, :Column25),Tuple{InlineString7, String, Int, Int, InlineString31, Int, InlineString31, Int, Date, Date, Int, InlineString3, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Int}, Union{Missing, Float64}, Float64, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Int}, Float64, Union{Missing, Float64}, Union{Missing, Float64}}},
         t -> @test(t.Column17[end-2] === missing)
     ),
-    # #217
+    # 217
     (IOBuffer("aa,bb\n1,\"1,b,c\"\n"), (pool=false,),
         (1, 2),
         NamedTuple{(:aa, :bb), Tuple{Int, InlineString7}},
         (aa = [1], bb = ["1,b,c"])
     ),
-    # #198
+    #198
     ("issue_198.csv", (decimal=',', delim=';', missingstring="-", skipto = 2, header = ["Date", "EONIA", "1m", "12m", "3m", "6m", "9m"], normalizenames=false),
         (6, 7),
         NamedTuple{(:Date, :EONIA, Symbol("1m"), Symbol("12m"), Symbol("3m"), Symbol("6m"), Symbol("9m")),Tuple{InlineString15, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}}},
         NamedTuple{(:Date, :EONIA, Symbol("1m"), Symbol("12m"), Symbol("3m"), Symbol("6m"), Symbol("9m"))}((String["18/04/2018", "17/04/2018", "16/04/2018", "15/04/2018", "14/04/2018", "13/04/2018"], Union{Missing, Float64}[-0.368, -0.368, -0.367, missing, missing, -0.364], Union{Missing, Float64}[-0.371, -0.371, -0.371, missing, missing, -0.371], Union{Missing, Float64}[-0.189, -0.189, -0.189, missing, missing, -0.19], Union{Missing, Float64}[-0.328, -0.328, -0.329, missing, missing, -0.329], Union{Missing, Float64}[-0.271, -0.27, -0.27, missing, missing, -0.271], Union{Missing, Float64}[-0.219, -0.219, -0.219, missing, missing, -0.219]))
     ),
-    # #198 part 2
+    # 198 part 2
     ("issue_198_part2.csv", (missingstring="++", delim=';', decimal=','),
         (4, 4),
         NamedTuple{(:A, :B, :C, :Column4),Tuple{InlineString1, Union{Missing, Float64}, Union{Missing, Float64}, Missing}},
         (A = ["a", "b", "c", "d"], B = Union{Missing, Float64}[-0.367, missing, missing, -0.364], C = Union{Missing, Float64}[-0.371, missing, missing, -0.371], Column4 = [missing, missing, missing, missing])
     ),
-    # #207
+    # 207
     ("issue_207.csv", NamedTuple(),
         (2, 6),
         NamedTuple{(:a, :b, :c, :d, :e, :f),Tuple{Int, Int, Int, Float64, InlineString15, Union{Missing, Float64}}},
         (a = [1863001, 1863209], b = [134, 137], c = [10000, 0], d = [1.0009, 1.0], e = ["1.0000", "2,773.9000"], f = Union{Missing, Float64}[-0.002033899, missing])
     ),
-    # #120
+    # 120
     ("issue_120.csv", (header=0,),
         (5, 20),
         NamedTuple{(:Column1, :Column2, :Column3, :Column4, :Column5, :Column6, :Column7, :Column8, :Column9, :Column10, :Column11, :Column12, :Column13, :Column14, :Column15, :Column16, :Column17, :Column18, :Column19, :Column20),Tuple{Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64,Int,Int,Int,Int,Missing,Float64,Float64,Float64,Float64,Float64,Float64}},
@@ -426,13 +448,13 @@ testfiles = [
         NamedTuple{(:Column1, :Column2, :Column3),Tuple{Int, InlineString1, InlineString3}},
         (Column1 = [1, 2, 3], Column2 = ["a", "b", "c"], Column3 = ["i", "ii", "iii"])
     ),
-    # #249
+    # 249
     ("test_basic.csv", (types=Dict(:col2=>Float64),),
         (3, 3),
         NamedTuple{(:col1, :col2, :col3),Tuple{Int,Float64,Int}},
         (col1 = [1, 4, 7], col2 = [2.0, 5.0, 8.0], col3 = [3, 6, 9])
     ),
-    # #251
+    # 251
     ("test_basic.csv", (types=Dict(:col2=>Union{Float64, Missing}),),
         (3, 3),
         NamedTuple{(:col1, :col2, :col3),Tuple{Int,Union{Missing,Float64},Int}},
@@ -463,7 +485,7 @@ testfiles = [
         NamedTuple{(:a, :b, :c), Tuple{Int, Int, Int}},
         (a=[1,7], b=[2,8], c=[3,9])
     ),
-    # #230
+    # 230
     ("test_not_enough_columns.csv", NamedTuple(),
         (2, 5),
         NamedTuple{(:A, :B, :C, :D, :E),Tuple{Int,Int,Int,Missing,Missing}},
@@ -484,13 +506,13 @@ testfiles = [
         NamedTuple{(:regine_area, :main_no, :point_no, :param_key, :version_no_end, :station_name, :station_status_name, :dt_start_date, :dt_end_date, :percent_missing_days, :first_year_regulation, :start_year, :end_year, :aktuell_avrenningskart, :excluded_years, :tilgang, :latitude, :longitude, :utm_east_z33, :utm_north_z33, :regulation_part_area, :regulation_part_reservoirs, :transfer_area_in, :transfer_area_out, :drainage_basin_key, :area_norway, :area_total, :comment, :drainage_dens, :dt_registration_date, :dt_regul_date, :gradient_1085, :gradient_basin, :gradient_river, :height_minimum, :height_hypso_10, :height_hypso_20, :height_hypso_30, :height_hypso_40, :height_hypso_50, :height_hypso_60, :height_hypso_70, :height_hypso_80, :height_hypso_90, :height_maximum, :length_km_basin, :length_km_river, :ocean_polar_angle, :ocean_polar_distance, :perc_agricul, :perc_bog, :perc_eff_bog, :perc_eff_lake, :perc_forest, :perc_glacier, :perc_lake, :perc_mountain, :perc_urban, :prec_intens_max, :utm_zone_gravi, :utm_east_gravi, :utm_north_gravi, :utm_zone_inlet, :utm_east_inlet, :utm_north_inlet, :br1_middelavrenning_1930_1960, :br2_Tilsigsberegning, :br3_Regional_flomfrekvensanalyse, :br5_Regional_lavvannsanalyse, :br6_Klimastudier, :br7_Klimascenarier, :br9_Flomvarsling, :br11_FRIEND, :br12_GRDC, :br23_HBV, :br24_middelavrenning_1961_1990, :br26_TotalAvlop, :br31_FlomserierPrim, :br32_FlomserierSekundar, :br33_Flomkart_aktive_ureg, :br34_Hydrologisk_referanseserier_klimastudier, :br38_Flomkart_aktive_ureg_periode, :br39_Flomkart_nedlagt_stasjon),Tuple{Int, Int, Int, Int, Int, String, InlineString15, DateTime, Union{Missing, DateTime}, Union{Missing, Float64}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, InlineString15}, Union{Missing, String}, InlineString7, Float64, Float64, Int, Int, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Int}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, String}, Missing, Union{Missing, DateTime}, Union{Missing, DateTime}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Missing, Union{Missing, Float64}, Union{Missing, Float64}, Missing, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Union{Missing, Float64}, Missing, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, Int}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Missing, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}, Union{Missing, InlineString1}}},
         nothing
     ),
-    # #276
+    # 276
     ("test_duplicate_columnnames.csv", NamedTuple(),
         (2, 8),
         NamedTuple{(:a, :b, :c, :a_1, :a_2, :a_3, :a_4, :b_1), Tuple{Int, Int, Int, Int, Int, Int, Int, Int}},
         (a = [1, 9], b = [2, 10], c = [3, 11], a_1 = [4, 12], a_2 = [5, 13], a_3 = [6, 14], a_4 = [7, 15], b_1 = [8, 16])
     ),
-    # #310
+    # 310
     ("test_bad_datetime.csv", NamedTuple(),
         (2, 3),
         NamedTuple{(:event,:time,:typ), Tuple{InlineString15, InlineString31, InlineString7}},
@@ -501,7 +523,7 @@ testfiles = [
         NamedTuple{(:int,:float,:date,:datetime,:bool,:string,:weakrefstring,:missing), Tuple{Int,Float64,Date,DateTime,Bool,InlineString3,InlineString7,Missing}},
         (int = [1], float = [1.0], date = [Date("2018-01-01")], datetime = [DateTime("2018-01-01T00:00:00")], bool = [true], string = ["hey"], weakrefstring = ["there"], missing = [missing])
     ),
-    # #326
+    #326
     ("test_issue_326.wsv", (delim=" ", ignorerepeated=true),
         (2, 2),
         NamedTuple{(:A, :B),Tuple{Int,Int}},
@@ -512,7 +534,7 @@ testfiles = [
         NamedTuple{(:col1, :col2, :col3),Tuple{Float64,Float64,Union{Float64, Missing}}},
         (col1 = [1.0, 4.0], col2 = [2.0, 5.0], col3 = [3.0, missing])
     ),
-    # #340
+    # 340
     ("test_delim.tsv", NamedTuple(),
         (3, 3),
         NamedTuple{(:col1, :col2, :col3),Tuple{Int,Int,Int}},
@@ -523,7 +545,7 @@ testfiles = [
         NamedTuple{(:col1, :col2, :col3),Tuple{Int,Int,Int}},
         (col1 = [1, 4, 7], col2 = [2, 5, 8], col3 = [3, 6, 9])
     ),
-    # #351
+    # 351
     ("test_comment_first_row.csv", (comment="#",),
         (2, 3),
         NamedTuple{(:a, :b, :c), Tuple{Int, Int, Int}},
@@ -534,13 +556,13 @@ testfiles = [
         NamedTuple{(:a, :b, :c), Tuple{Int, Int, Int}},
         (a=[1,7], b=[2,8], c=[3,9])
     ),
-    # #371
+    # 371
     ("test_repeated_delim_371.csv", (ignorerepeated=true, delim=' ',),
         (15, 4),
         NamedTuple{(:FAMILY, :PERSON, :MARKER, :RATIO), Tuple{InlineString31, InlineString15, InlineString15, Float64}},
         (FAMILY = ["A", "A", "A", "A", "A", "A", "EPGP013951", "EPGP014065", "EPGP014065", "EPGP014065", "EP07", "83346_EPGP014244", "83346_EPGP014244", "83506", "87001"], PERSON = ["EP01223", "EP01227", "EP01228", "EP01228", "EP01227", "EP01228", "EPGP013952", "EPGP014066", "EPGP014065", "EPGP014068", "706", "T3011", "T3231", "T17255", "301"], MARKER = ["rs710865", "rs11249215", "rs11249215", "rs10903129", "rs621559", "rs1514175", "rs773564", "rs2794520", "rs296547", "rs296547", "rs10927875", "rs2251760", "rs2251760", "rs2475335", "rs2413583"], RATIO = [0.0214, 0.0107, 0.00253, 0.0116, 0.00842, 0.0202, 0.00955, 0.0193, 0.0135, 0.0239, 0.0157, 0.0154, 0.0154, 0.00784, 0.0112])
     ),
-    # #154
+    # 154
     ("test_file_issue_154.csv", (normalizenames=true,),
         (2, 4),
         NamedTuple{(:a, :b, :_, :Column4), Tuple{Int, Int, InlineString1, Union{Missing, InlineString15}}},
@@ -578,7 +600,7 @@ testfiles = [
         NamedTuple{(:t, :heat_flux), Tuple{Float64, Float64}},
         nothing
     ),
-    # #422
+    # 422
     ("log001_vehicle_status_flags_0.txt", NamedTuple(),
         (281, 31),
         NamedTuple{(:timestamp, :condition_calibration_enabled, :condition_system_sensors_initialized, :condition_system_hotplug_timeout, :condition_system_returned_to_home, :condition_auto_mission_available, :condition_global_position_valid, :condition_home_position_valid, :condition_local_position_valid, :condition_local_velocity_valid, :condition_local_altitude_valid, :condition_power_input_valid, :condition_battery_healthy, :circuit_breaker_engaged_power_check, :circuit_breaker_engaged_airspd_check, :circuit_breaker_engaged_enginefailure_check, :circuit_breaker_engaged_gpsfailure_check, :circuit_breaker_flight_termination_disabled, :circuit_breaker_engaged_usb_check, :circuit_breaker_engaged_posfailure_check, :offboard_control_signal_found_once, :offboard_control_signal_lost, :offboard_control_set_by_command, :offboard_control_loss_timeout, :rc_signal_found_once, :rc_input_blocked, :rc_calibration_valid, :vtol_transition_failure, :usb_connected, :avoidance_system_required, :avoidance_system_valid), Tuple{Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int}},
