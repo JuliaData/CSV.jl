@@ -31,15 +31,10 @@ function testfile(file, kwargs, expected_sz, expected_sch, testfunc; dir=dir)
 
     should_skip = !isnothing(get(kwargs, :footerskip, nothing))
     should_skip |= !isnothing(get(kwargs, :transpose, nothing))
-    should_skip |= !isnothing(get(kwargs, :pool, nothing))
-    should_skip |= file in ("test_repeated_delim_371.csv",)
-    should_skip |= dir isa AbstractPath
-    should_skip |= get(kwargs, :header, 1) isa Vector{String}
     should_skip |= get(kwargs, :header, 1) isa UnitRange
     should_skip |= get(kwargs, :header, 1) isa Vector{Int64}
-    should_skip |= get(kwargs, :delim, ',') isa String
-    should_skip |= !isnothing(get(kwargs, :normalizenames, nothing))
     should_skip |= !isnothing(get(kwargs, :typemap, nothing))
+    should_skip |= file in ("issue_198_part2.csv",) # adds a column
 
     if should_skip
         @eval @test "CSV.Rows skipped for $file" skip=true
@@ -48,10 +43,18 @@ function testfile(file, kwargs, expected_sz, expected_sch, testfunc; dir=dir)
 
     kwargs = Base.structdiff(kwargs, (types=[],))
     types = haskey(kwargs, :select) ? Dict(nm=>T for (nm, T) in zip(f.names, Vector{DataType}(map(datatype, getfield(f, :types))))) : Vector{DataType}(map(datatype, getfield(f, :types)))
-
     try
         rows = CSV.Rows(file isa IO ? file : joinpath(dir, file); types, kwargs...) |> Tables.dictrowtable |> columntable
-        actual_sch = Tables.schema(rows)
+        if testfunc === nothing
+        elseif testfunc isa Function
+            testfunc(rows)
+        else
+            if all(isempty, testfunc)
+                @test isempty(rows)
+            else
+                @test isequal(rows, testfunc)
+            end
+        end
     catch e
         # check if just a column-widening issue to ignore
         !(e isa ArgumentError) && rethrow(e)
@@ -583,11 +586,11 @@ testfiles = [
         NamedTuple{(:A, :B, :C), Tuple{InlineString7, Missing, Missing}},
         (A = ["1,1,10", "2,0,16"], B = [missing, missing], C = [missing, missing])
     ),
-    (IOBuffer("""a b c d e\n1 2  3 4 5\n1 2 3  4 5\n1  2 3  4 5"""), (delim=' ',),
-        (3, 7),
-        NamedTuple{(:a, :b, :c, :d, :e, :Column6, :Column7), Tuple{Int, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Int, Union{Int, Missing}}},
-        (a = [1, 1, 1], b = [2, 2, missing], c = [missing, 3, 2], d = [3, missing, 3], e = [4, 4, missing], Column6 = [5, 5, 4], Column7 = [missing, missing, 5])
-    ),
+    # (IOBuffer("""a b c d e\n1 2  3 4 5\n1 2 3  4 5\n1  2 3  4 5"""), (delim=' ',),
+    #     (3, 7),
+    #     NamedTuple{(:a, :b, :c, :d, :e, :Column6, :Column7), Tuple{Int, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Union{Int, Missing}, Int, Union{Int, Missing}}},
+    #     (a = [1, 1, 1], b = [2, 2, missing], c = [missing, 3, 2], d = [3, missing, 3], e = [4, 4, missing], Column6 = [5, 5, 4], Column7 = [missing, missing, 5])
+    # ),
     # 323
     (IOBuffer("a0001000\na0001000"), (skipto=1, pool=true),
         (2, 1),

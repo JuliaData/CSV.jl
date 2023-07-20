@@ -4,60 +4,6 @@ using SentinelArrays
 using Parsers: PosLen31
 using Tables: Schema
 
-_subset_columns!(_, ::Nothing, ::Nothing) = nothing
-_subset_columns!(parsing_ctx, select::T, ::Nothing) where {T} = __subset_columns!(parsing_ctx, true, select)
-_subset_columns!(parsing_ctx, ::Nothing, drop::T) where {T} = __subset_columns!(parsing_ctx, false, drop)
-_subset_columns!(_, ::T, ::S) where {T,S} = throw(ArgumentError("cannot specify both select and drop"))
-
-function _drop_col!(ctx, idx)
-    deleteat!(ctx.header, idx)
-    deleteat!(ctx.schema, idx)
-    ctx.enum_schema[idx] = ChunkedCSV.Enums.SKIP
-    return nothing
-end
-
-function __subset_columns!(ctx, flip::Bool, cols::Function)
-    idx = length(ctx.header)
-    for name in Iterators.reverse(ctx.header)
-        xor(flip, cols(idx, name)) && _drop_col!(ctx, idx)
-        idx -= 1
-    end
-    return nothing
-end
-function __subset_columns!(ctx, flip::Bool, cols::AbstractVector{Bool})
-    idx = length(ctx.header)
-    idx != length(cols) && throw(ArgumentError("invalid number of columns: $(length(cols))"))
-    for flag in Iterators.reverse(cols)
-        xor(flip, flag) && _drop_col!(ctx, idx)
-        idx -= 1
-    end
-    return nothing
-end
-function __subset_columns!(ctx, flip::Bool, cols::AbstractVector{<:Integer})
-    isempty(cols) && throw(ArgumentError("empty column index"))
-    cols = sort(cols)
-    last_idx = length(ctx.header)
-    cols[begin] < 1 && throw(ArgumentError("invalid column index: $(cols[begin])"))
-    cols[end] > last_idx && throw(ArgumentError("invalid column index: $(cols[end])"))
-
-    for idx in last_idx:-1:1
-        xor(flip, insorted(idx, cols)) && _drop_col!(ctx, idx)
-    end
-    return nothing
-end
-function __subset_columns!(ctx, flip::Bool, cols::AbstractVector{Symbol})
-    isempty(cols) && throw(ArgumentError("empty column name"))
-    s = Set(cols)
-    idx = length(ctx.header)
-    for name in Iterators.reverse(ctx.header)
-        xor(flip, !isnothing(pop!(s, name, nothing))) && _drop_col!(ctx, idx)
-        idx -= 1
-    end
-    !isempty(s) && throw(ArgumentError("invalid column names: $(collect(s))"))
-    return nothing
-end
-__subset_columns!(ctx, flip::Bool, cols::AbstractVector{<:AbstractString}) = __subset_columns!(ctx, flip, map(Symbol, cols))
-
 # TODO: this is a WIP
 _sentinel(ms::Missing, mss::Missing) = missing
 _sentinel(ms::Missing, mss::String) = [mss]
@@ -82,16 +28,24 @@ end
 
 # The return type of `Base.iterate(iter::Rows, state::CSVRowsIteratorState)`
 struct Row2{V,StringType} <: Tables.AbstractRow
+    names_to_pos::Dict{Symbol,Int}
     values::Vector{V}
     state::CSVRowsIteratorState
+    _bytes_age::Tuple{Int,Int}
 end
 
+function isvalid(r::Row2)
+    chunking_ctx = getfield(r, :state).payload.chunking_ctx
+    age = getfield(r, :_bytes_age)
+    return age == (chunking_ctx.id, chunking_ctx.buffer_refills[])
+end
 # What we return to the user when that user calls CSV.CSVRows
 struct Rows{V,CustomTypes,StringType}
     name::String
     consume_ctx::CSVRowsContext
     bufferschema::Vector{DataType}
     names::Vector{Symbol}
+    names_to_pos::Dict{Symbol,Int}
     buffer::Vector{V}
     options::Parsers.Options # needed for detect/parse in Row2
 end
@@ -113,6 +67,7 @@ Base.show(io::IO, s::PosLen31String) = print(io, "pls$(repr(Parsers.getstring(s.
 Base.collect(s::PosLen31String) = Parsers.getstring(s.buf, s.poslen, s.e)
 
 # The `AbstractRow` overides `getproperty` to allow for field access
+getlookup(r::Row2) = getfield(r, :names_to_pos)
 getnames(r::Row2) = getfield(r, :state).payload.parsing_ctx.header
 getschema(r::Row2) = getfield(r, :state).payload.parsing_ctx.schema
 getvalues(r::Row2) = getfield(r, :values)
@@ -120,26 +75,16 @@ getbuf(r::Row2) = getfield(r, :state).payload.chunking_ctx.bytes
 getescapechar(r::Row2) = getfield(r, :state).payload.parsing_ctx.escapechar
 getoptions(r::Row2) = getfield(r, :state).payload.parsing_ctx.options
 
-Base.checkbounds(r::Row2, i) = 0 < i < length(r)
+Base.checkbounds(r::Row2, i) = 0 < i <= length(r)
 
 # Tables.jl interface
 Tables.columnnames(r::Row2) = getnames(r)
-
-Tables.getcolumn(r::Row2, nm::Symbol) = Tables.getcolumn(r, @something(findfirst(==(nm), getnames(r)), throw(KeyError(nm))))
-Base.@propagate_inbounds function Tables.getcolumn(r::Row2, i::Int)
+Tables.getcolumn(r::Row2, nm::Symbol) = Tables.getcolumn(r, getlookup(r)[nm])
+Base.@propagate_inbounds function Tables.getcolumn(r::Row2{S,ST}, ::Type{T}, i::Int, nm::Symbol) where {S,T,ST}
     @boundscheck checkbounds(r, i)
-    type = @inbounds getschema(r)[i]
-    return unsafe_getcolumn(r, type, i)
-end
-Base.@propagate_inbounds function Tables.getcolumn(r::Row2{S}, ::Type{T}, i::Int, nm::Symbol) where {S,T <: S}
-    @boundscheck checkbounds(r, i)
-    return unsafe_getcolumn(r, T, i)
-end
-
-function unsafe_getcolumn(r::Row2{Union{PosLen31,Missing},ST}, @nospecialize(type), i::Int) where {ST}
-    @inbounds if type === PosLen31
-        pl = getvalues(r)[i]::Union{Missing,PosLen31}
-        ismissing(pl) && return missing
+    val = @inbounds getvalues(r)[i]
+    if val isa PosLen31
+        pl = getvalues(r)[i]::PosLen31
         buf = getbuf(r)
         e = getescapechar(r)
         if ST === String
@@ -148,16 +93,15 @@ function unsafe_getcolumn(r::Row2{Union{PosLen31,Missing},ST}, @nospecialize(typ
             return PosLen31String(buf, pl::PosLen31, e)::ST
         end
     else
-        return missing
+        return val
     end
 end
-function unsafe_getcolumn(r::Row2{Union{T,S,Missing}}, @nospecialize(type), i::Int) where {T,S}
-    return @inbounds getvalues(r)[i]
-end
-function unsafe_getcolumn(r::Row2{Union{PosLen31,S,Missing},ST}, @nospecialize(type), i::Int) where {S,ST}
-    @inbounds if type === PosLen31
-        pl = getvalues(r)[i]::Union{Missing,PosLen31}
-        ismissing(pl) && return missing
+Base.@propagate_inbounds function Tables.getcolumn(r::Row2{T,ST}, i::Int) where {T,ST}
+    @boundscheck checkbounds(r, i)
+    @inbounds val = getvalues(r)[i]
+    ismissing(val) && return missing
+    @inbounds if val isa PosLen31
+        pl = val::PosLen31
         buf = getbuf(r)
         e = getescapechar(r)
         if ST === String
@@ -165,69 +109,37 @@ function unsafe_getcolumn(r::Row2{Union{PosLen31,S,Missing},ST}, @nospecialize(t
         else
             return PosLen31String(buf, pl::PosLen31, e)::ST
         end
-    elseif type === Missing
-        return missing
     else
-        return getvalues(r)[i]::S
+        return val
     end
 end
 
-stringsonly() = throw(ArgumentError("only strings are allowed in this column"))
+stringsonly() = throw(ArgumentError("Only string columns can be parsed"))
 
-Base.@propagate_inbounds function Parsers.parse(::Type{T}, r::Row2{V,String}, i::Int) where {T,V}
+Base.@propagate_inbounds function Parsers.parse(::Type{T}, r::Row2, i::Int) where {T}
     @boundscheck checkbounds(r, i)
     @inbounds begin
-        val = Tables.getcolumn(r, i)
-        val isa String || stringsonly()
-        res = Parsers.xparse(T, val, 1, ncodeunits(val), getoptions(r))
-    end
-    return Parsers.ok(res.code) ? (res.val::T) : missing
-end
-Base.@propagate_inbounds function Parsers.parse(::Type{T}, r::Row2{V,PosLen31String}, i::Int) where {T,V}
-    @boundscheck checkbounds(r, i)
-    @inbounds begin
-        val = Tables.getcolumn(r, i)
-        val isa PosLen31String || stringsonly()
-        poslen = val.poslen
-        poslen.missingvalue && return missing
-        pos = poslen.pos
-        res = Parsers.xparse(T, getbuf(r), pos, pos + poslen.len - 1, getoptions(r))
+        val = getvalues(r)[i]
+        val.missingvalue && return missing
+        val isa Parsers.PosLen31 || stringsonly()
+        res = Parsers.xparse(T, getbuf(r), val.pos, val.pos + val.len - 1, getoptions(r))
     end
     return Parsers.ok(res.code) ? (res.val::T) : missing
 end
 
-
-Base.@propagate_inbounds function detect(r::Row2{V,String}, i::Int) where {V}
+Base.@propagate_inbounds function detect(r::Row2, i::Int)
     @boundscheck checkbounds(r, i)
     @inbounds begin
-        val = Tables.getcolumn(r, i)
-        val isa String || stringsonly()
-        code, tlen, x, xT = detect(pass, val, 1, ncodeunits(val), getoptions(r))
-        return x === nothing ? r[i] : x
-    end
-end
-Base.@propagate_inbounds function detect(r::Row2{V,PosLen31String}, i::Int) where {V}
-    @boundscheck checkbounds(r, i)
-    @inbounds begin
-        val = Tables.getcolumn(r, i)
-        val isa PosLen31String || stringsonly()
-        poslen = val.poslen
-        poslen.missingvalue && return missing
-        pos = poslen.pos
-        code, tlen, x, xT = detect(pass, val, pos, pos + poslen.len - 1, getoptions(r))
+        val = getvalues(r)[i]
+        val isa Parsers.PosLen31 || stringsonly()
+        val.missingvalue && return missing
+        code, tlen, x, xT = detect(pass, getbuf(r), val.pos, val.pos + val.len - 1, getoptions(r))
         return x === nothing ? r[i] : x
     end
 end
 
-function Parsers.parse(::Type{T}, r::Row2, nm::Symbol) where {T}
-    @inbounds x = Parsers.parse(T, r, @something(findfirst(==(nm), getnames(r)), throw(KeyError(nm))))
-    return x
-end
-
-function detect(r::Row2, nm::Symbol)
-    @inbounds x = detect(r, @something(findfirst(==(nm), getnames(r)), throw(KeyError(nm))))
-    return x
-end
+Parsers.parse(::Type{T}, r::Row2, nm::Symbol) where {T} = @inbounds Parsers.parse(T, r, getlookup(r)[nm])
+detect(r::Row2, nm::Symbol) = @inbounds detect(r, getlookup(r)[nm])
 
 # We do our own ntask decrements in the iterate function
 ChunkedCSV.task_done!(::CSVRowsContext, ::ChunkedCSV.ChunkingContext) = nothing
@@ -278,29 +190,47 @@ function Rows(
     types=nothing,
     _force::Symbol=:default,
     reusebuffer::Bool=false,
+    delim=nothing,
+    newlinechar=nothing,
     select=nothing,
     drop=nothing,
     transpose::Bool=false,
-    pool::Bool=false,
+    pool::Union{Bool,AbstractFloat,AbstractDict}=false,
     footerskip::Int=0,
     missingstring=missing,
     missingstrings=missing,
+    debug=false, # ignored
+    normalizenames::Bool=false,
+    default_colname_prefix="Column",
+    stringtype=nothing,
     kwargs...,
 )
-    transpose && throw(ArgumentError("transpose is not supported for CSV.Rows"))
-    pool && throw(ArgumentError("pool is not supported for CSV.Rows"))
-    footerskip > 0 && throw(ArgumentError("footerskip is not supported for CSV.Rows"))
+    transpose && throw(ArgumentError("`transpose` argument is not supported for CSV.Rows"))
+    !(pool isa Bool && !pool) && (@warn "`pool` argument is not supported for CSV.Rows")
+    footerskip > 0 && throw(ArgumentError("`footerskip` argument is not supported for CSV.Rows"))
+    stringtype !== nothing && (@warn "`stringtype` argument is not supported for CSV.Rows")
+    sentinel = _sentinel(missingstring, missingstrings)
     should_close, parsing_ctx, chunking_ctx, lexer = try
-        ChunkedCSV.setup_parser(input, types; kwargs..., sentinel=_sentinel(missingstring, missingstrings))
+        input = input isa IO ? input : string(input)
+        ChunkedCSV.setup_parser(
+            input, types;
+            kwargs..., delim, newlinechar, sentinel, default_colname_prefix, deduplicate_names=true
+        )
     catch e
         if e isa ChunkedBase.FatalLexingError
             e = Error(e.msg)
         end
         rethrow(e)
     end
-    _subset_columns!(parsing_ctx, select, drop)
+    normalizenames && (parsing_ctx.header .= normalizename.(string.(parsing_ctx.header)))
+    ChunkedCSV._subset_columns!(parsing_ctx, select, drop)
 
-    bufferschema = ChunkedCSV._translate_to_buffer_type.(parsing_ctx.schema, reusebuffer)
+    bufferschema = [
+        #=type === Parsers.PosLen31 && !reusebuffer ? String :=#
+        ChunkedCSV._translate_to_buffer_type(type)
+        for type
+        in parsing_ctx.schema
+    ]
     unique_types = unique(bufferschema)
     V = length(unique_types) > 2 ? Any : Union{unique_types..., Missing}
     CT = ChunkedCSV._custom_types(parsing_ctx.schema)
@@ -308,16 +238,18 @@ function Rows(
     consume_ctx = CSVRowsContext(CSVPayloadOrderer())
 
     Base.errormonitor(Threads.@spawn begin
+        _lexer = $lexer
+        _consume_ctx = $consume_ctx
         try
-            ChunkedCSV.parse_file(lexer, parsing_ctx, consume_ctx, chunking_ctx, _force)
+            ChunkedCSV.parse_file(_lexer, $parsing_ctx, _consume_ctx, $chunking_ctx, $_force)
         catch e
             if e isa ChunkedBase.FatalLexingError
                 e = Error(e.msg)
             end
             rethrow(e)
         finally
-            should_close && close(lexer.io)
-            close(consume_ctx.queue)
+            $should_close && close(_lexer.io)
+            close(_consume_ctx.queue)
         end
     end)
 
@@ -326,6 +258,7 @@ function Rows(
         consume_ctx,
         bufferschema,
         parsing_ctx.header,
+        Dict{Symbol,Int}(k => i for (i, k) in enumerate(parsing_ctx.header)),
         Vector{V}(undef, length(parsing_ctx.schema)),
         parsing_ctx.options,
     )
@@ -396,6 +329,9 @@ end
             elseif dsttype === Parsers.PosLen31
                 pl = (cols[col]::BufferedVector{Parsers.PosLen31})[row]::Parsers.PosLen31
                 buffer[col] = pl
+            # elseif dsttype === String
+            #     pl = (cols[col]::BufferedVector{Parsers.PosLen31})[row]::Parsers.PosLen31
+            #     buffer[col] = Parsers.getstring(payload.chunking_ctx.bytes, pl, payload.parsing_ctx.escapechar)
             else
                 setcustom!(CT, buffer, cols, col, row, dsttype)
             end
@@ -434,7 +370,7 @@ function Base.iterate(rows::Rows{V,CT,ST}) where {V,CT,ST}
 
         buffer = _get_buffer(rows)
         _fill_row_buffer!(rows, buffer, state)
-        row = Row2{V,ST}(buffer, state)
+        row = Row2{V,ST}(rows.names_to_pos, buffer, state, (payload.chunking_ctx.id, payload.chunking_ctx.buffer_refills[]))
         state.row += 1
         return row, state
     catch e
@@ -469,7 +405,7 @@ function Base.iterate(rows::Rows{V,CT,ST}, state::CSVRowsIteratorState) where {V
 
     buffer = _get_buffer(rows)
     _fill_row_buffer!(rows, buffer, state)
-    row = Row2{V,ST}(buffer, state)
+    row = Row2{V,ST}(rows.names_to_pos, buffer, state, (payload.chunking_ctx.id, payload.chunking_ctx.buffer_refills[]))
     state.row += 1
     return row, state
 end
@@ -478,6 +414,65 @@ Base.eltype(::Rows{V,CT,ST}) where {V,CT,ST} = Row2{V,ST}
 Base.IteratorSize(::Type{<:Rows}) = Base.SizeUnknown()
 Base.IteratorEltype(::Rows) = Base.HasEltype()
 Tables.isrowtable(::Type{<:Rows}) = true
-_coltype(::Type{T}) where {T} = Union{T,Missing}
-_coltype(::Type{Any}) = Any
-Tables.schema(r::Rows) = Tables.Schema(r.names, map(_coltype, r.bufferschema))
+_coltype(::Type{T}, ::Type{ST}) where {T,ST} = Union{T,Missing}
+_coltype(::Type{Parsers.PosLen31}, ::Type{ST}) where {ST} = Union{ST,Missing}
+_coltype(::Type{Any}, ::Type{ST}) where {ST} = Any
+Tables.schema(r::Rows{T,CT,ST}) where {T,CT,ST} = Tables.Schema(r.names, map(type->_coltype(type, ST), r.bufferschema))
+
+
+function foo()
+    out = 0
+    itr = CSV.Rows("../../../_proj/datasets/tst_4xint_big.csv", types=[Int,Int,Int,Int], reusebuffer=true)
+    for row in itr
+        out += 1
+    end
+    return out
+end
+
+
+function baz(iter)
+    out = 0
+    next = iterate(iter)
+    while next !== nothing
+        (item, state) = next
+        out += 1
+        next = iterate(iter, state)
+    end
+    return out
+end
+
+function bar0()
+    iter = CSV.Rows("../../../_proj/datasets/tst_4xint_big.csv", types=[Int,Int,Int,Int], reusebuffer=true, no_quoted_newlines=true)
+    return baz(iter)
+end
+
+
+function bar1()
+    iter = CSV.Rows("../../../_proj/datasets/tst_4xint_big.csv", types=[Int,Int,Int,Int], reusebuffer=true)
+    return baz(iter)
+end
+
+function bar2()
+    iter = CSV.Rows("../../../_proj/datasets/tst_4xint_big.csv", types=[Int,Int,Int,Int], reusebuffer=true)
+    out = 0
+    next = iterate(iter)
+    while next !== nothing
+        (item, state) = next
+        # out += item.a
+        next = iterate(iter, state)
+    end
+    return out
+end
+
+
+function bar3()
+    iter = CSV.Rows{Union{Missing,Int}}("../../../_proj/datasets/tst_4xint_big.csv", types=[Int,Int,Int,Int], reusebuffer=true)
+    out = 0
+    next = iterate(iter)
+    while next !== nothing
+        (item, state) = next
+        out += item.a
+        next = iterate(iter, state)
+    end
+    return out
+end
