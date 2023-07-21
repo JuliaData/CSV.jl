@@ -23,32 +23,30 @@ CSV.write("ExampleOutputFile.csv", ExampleOutputDF)
 """
 module CSV
 
-if !isdefined(Base, :contains)
-    contains(haystack, needle) = occursin(needle, haystack)
-end
+using ChunkedBase
 
 # stdlib
-using Mmap, Dates, Unicode
+# using Mmap, Dates, Unicode
 # Parsers.jl is used for core type parsing from byte buffers
 # and all other parsing options (quoted fields, delimiters, dateformats etc.)
-using Parsers
+# using Parsers
 # Tables.jl allows integration with all other table/data file formats
 using Tables
 # PooledArrays.jl is used for materializing pooled columns
-using PooledArrays
+# using PooledArrays
 # SentinelArrays.jl allow efficient conversion from Vector{Union{T, Missing}} to Vector{T}
 # it also provides the MissingVector and ChainedVector array types
-using SentinelArrays
+# using SentinelArrays
 # InlineStrings and WeakRefStrings provide the InlineString and PosLenString types for more gc-friendly string types
-using InlineStrings, WeakRefStrings
+# using InlineStrings, WeakRefStrings
 export PosLenString, InlineString
 export String1, String3, String7, String15, String31, String63, String127, String255
 # CodecZlib is used for unzipping gzip files
-using CodecZlib
+# using CodecZlib
 # FilePathsBase allows more structured file path types
-using FilePathsBase
+# using FilePathsBase
 # WorkerUtilities for lock/spawn utilities
-using WorkerUtilities
+# using WorkerUtilities
 
 struct Error <: Exception
     msg::String
@@ -57,25 +55,19 @@ end
 Base.showerror(io::IO, e::Error) = println(io, e.msg)
 
 # constants
-const DEFAULT_STRINGTYPE = InlineString
-const DEFAULT_POOL = (0.2, 500)
-const DEFAULT_ROWS_TO_CHECK = 30
-const DEFAULT_MAX_WARNINGS = 100
-const DEFAULT_MAX_INLINE_STRING_LENGTH = 32
-const TRUE_STRINGS = ["true", "True", "TRUE", "T", "1"]
-const FALSE_STRINGS = ["false", "False", "FALSE", "F", "0"]
-const StringCodeUnits = Base.CodeUnits{UInt8, String}
-const ValidSources = Union{Vector{UInt8}, SubArray{UInt8, 1, Vector{UInt8}}, StringCodeUnits, IO, Cmd, AbstractString, AbstractPath}
-const MAX_INPUT_SIZE = Int === Int64 ? 2^42 : typemax(Int32)
-const EMPTY_INT_ARRAY = Int[]
+# const DEFAULT_STRINGTYPE = InlineString
+# const DEFAULT_POOL = (0.2, 500)
+# const DEFAULT_ROWS_TO_CHECK = 30
+# const DEFAULT_MAX_WARNINGS = 100
+# const DEFAULT_MAX_INLINE_STRING_LENGTH = 32
+# const TRUE_STRINGS = ["true", "True", "TRUE", "T", "1"]
+# const FALSE_STRINGS = ["false", "False", "FALSE", "F", "0"]
+# const StringCodeUnits = Base.CodeUnits{UInt8, String}
+# const ValidSources = Union{Vector{UInt8}, SubArray{UInt8, 1, Vector{UInt8}}, StringCodeUnits, IO, Cmd, AbstractString, AbstractPath}
+# const MAX_INPUT_SIZE = Int === Int64 ? 2^42 : typemax(Int32)
+# const EMPTY_INT_ARRAY = Int[]
 
 include("keyworddocs.jl")
-include("utils.jl")
-include("detection.jl")
-include("context.jl")
-include("file.jl")
-include("chunks.jl")
-include("rows.jl")
 include("write.jl")
 
 """
