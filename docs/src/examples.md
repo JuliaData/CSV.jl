@@ -506,7 +506,6 @@ file = CSV.File(IOBuffer(data); quotechar='"', escapechar='"')
 file = CSV.File(IOBuffer(data); openquotechar='"' closequotechar='"', escapechar='"')
 ```
 
-
 ## [DateFormat](@id dateformat_example)
 
 ```julia
@@ -542,7 +541,7 @@ col1;col2;col3
 file = CSV.File(IOBuffer(data); delim=';', decimal=',')
 ```
 
-## [Thousands separator](@ref thousands_example)
+## [Thousands separator](@id thousands_example)
 
 ```julia
 using CSV
@@ -560,7 +559,7 @@ x y
 file = CSV.File(IOBuffer(data); groupmark=',')
 ```
 
-## [Custom groupmarks](@ref groupmark_example)
+## [Custom groupmarks](@id groupmark_example)
 
 ```julia
 using CSV
