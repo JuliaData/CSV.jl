@@ -6,6 +6,7 @@
 [![deps](https://juliahub.com/docs/CSV/deps.svg)](https://juliahub.com/ui/Packages/CSV/HHBkp?t=2)
 [![version](https://juliahub.com/docs/CSV/version.svg)](https://juliahub.com/ui/Packages/CSV/HHBkp)
 [![pkgeval](https://juliahub.com/docs/CSV/pkgeval.svg)](https://juliahub.com/ui/Packages/CSV/HHBkp)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.8004128.svg)](https://doi.org/10.5281/zenodo.8004128)
 
 *A fast, flexible delimited file reader/writer for Julia.*
 
