@@ -566,7 +566,7 @@ function parsefilechunk!(ctx::Context, pos, len, rowsguess, rowoffset, columns, 
         end
         if !ctx.threaded && ctx.ntasks > 1 && !ctx.silencewarnings
             # !ctx.threaded && ctx.ntasks > 1 indicate that multithreaded parsing failed.
-            # Thes messages echo the corresponding debug statement in the definition of ctx
+            # These messages echo the corresponding debug statement in the definition of ctx
             if numwarnings[] > 0
                 @warn "Multithreaded parsing failed and fell back to single-threaded parsing, check previous warnings for possible reasons."
             else
