@@ -229,7 +229,7 @@ h,i,j
 # note this isn't required, but can be convenient in certain cases
 file = CSV.File(IOBuffer(data); normalizenames=true)
 
-# we can acces the first column like
+# we can access the first column like
 file._1
 
 # another example where we may want to normalize is column names with spaces in them
@@ -491,7 +491,7 @@ using CSV
 # In this data, we have a few "quoted" fields, which means the field's value starts and ends with `quotechar` (or
 # `openquotechar` and `closequotechar`, respectively). Quoted fields allow the field to contain characters that would otherwise
 # be significant to parsing, such as delimiters or newline characters. When quoted, parsing will ignore these otherwise
-# signficant characters until the closing quote character is found. For quoted fields that need to also include the quote
+# significant characters until the closing quote character is found. For quoted fields that need to also include the quote
 # character itself, an escape character is provided to tell parsing to ignore the next character when looking for a close quote
 # character. In the syntax examples, the keyword arguments are passed explicitly, but these also happen to be the default
 # values, so just doing `CSV.File(IOBuffer(data))` would result in successful parsing.
