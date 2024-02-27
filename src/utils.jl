@@ -261,8 +261,7 @@ consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 
             x = x.data
             return parent(x), first(x.indices), last(x.indices), tfile
         else #support from IOBuffer containing Memory
-            _x = take!(x)
-            return _x, 1, length(_x), tfile
+            return take!(x), x.ptr, x.size, tfile
         end
     elseif x isa Cmd || x isa IO
         if buffer_in_memory
