@@ -245,6 +245,12 @@ end
 # one-liner suggested from ScottPJones
 consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 0xbb && buf[pos + 2] == 0xbf) ? pos + 3 : pos
 
+if isdefined(Base,:wrap)
+    __wrap(x,pos) = Base.wrap(Array,x,pos)
+else
+    __wrap(x,pos) = x
+end
+
 # whatever input is given, turn it into an AbstractVector{UInt8} we can parse with
 @inline function getbytebuffer(x, buffer_in_memory)
     tfile = nothing
@@ -260,6 +266,9 @@ consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 
         elseif x.data isa SubArray{UInt8}
             x = x.data
             return parent(x), first(x.indices), last(x.indices), tfile
+        else #support from IOBuffer containing Memory
+            y = __wrap(x.data,length(x.data)) #generates a Vector{UInt8} from Memory{UInt8}
+            return y, x.ptr, x.size, tfile
         end
     elseif x isa Cmd || x isa IO
         if buffer_in_memory
