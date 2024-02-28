@@ -12,6 +12,7 @@ makedocs(;
     repo="https://github.com/JuliaData/CSV.jl/blob/{commit}{path}#{line}",
     sitename="CSV.jl",
     authors="Jacob Quinn",
+    warnonly = Documenter.except(),
 )
 
 deploydocs(;
