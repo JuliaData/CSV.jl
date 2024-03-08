@@ -10,30 +10,40 @@ jobs:
     env:
       JULIA_NUM_THREADS: 2
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         version:
-          - '1.6'
-          - '1' # automatically expands to the latest stable 1.x release of Julia
-          - 'nightly'
+          - '1'    # Current stable version
         os:
           - ubuntu-latest
+          - windows-latest
+          - macOS-latest
         arch:
           - x64
-          - x86
         include:
-          - os: windows-latest
+          - os: macOS-14
+            arch: aarch64
             version: '1'
+          - os: ubuntu-latest
+            arch: x86
+            version: '1'
+          - os: ubuntu-latest
             arch: x64
+            version: '1.6'
+          - os: ubuntu-latest
+            arch: x64
+            version: 'nightly'
+
     steps:
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v1
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
-      - uses: actions/cache@v1
+      - uses: actions/cache@v4
         env:
           cache-name: cache-artifacts
         with:
@@ -46,14 +56,16 @@ jobs:
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
       - uses: julia-actions/julia-processcoverage@v1
-      - uses: codecov/codecov-action@v1
+      - uses: codecov/codecov-action@v4
         with:
           file: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+
   docs:
     name: Documentation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - uses: julia-actions/julia-buildpkg@latest
       - uses: julia-actions/julia-docdeploy@latest
         env:
