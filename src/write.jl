@@ -454,9 +454,16 @@ function writecell(buf, pos, len, io, x::AbstractFloat, opts)
     bytes = codeunits(string(x))
     sz = sizeof(bytes)
     @check sz
-    for i = 1:sz
-        @inbounds buf[pos] = bytes[i]
-        pos += 1
+    if opts.decimal != UInt8('.')
+        for i = 1:sz
+            @inbounds buf[pos] = bytes[i] == UInt8('.') ? opts.decimal : bytes[i]
+            pos += 1
+        end
+    else
+        for i = 1:sz
+            @inbounds buf[pos] = bytes[i]
+            pos += 1
+        end
     end
     return pos
 end
