@@ -245,10 +245,11 @@ end
 # one-liner suggested from ScottPJones
 consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 0xbb && buf[pos + 2] == 0xbf) ? pos + 3 : pos
 
-if isdefined(Base,:wrap)
-    __wrap(x,pos) = Base.wrap(Array,x,pos)
+if isdefined(Base, :Memory)
+    __wrap(x) = view(x,Base.OneTo(length(x)))
+    __wrap(x::Array) = x
 else
-    __wrap(x,pos) = x
+    __wrap(x) = x
 end
 
 # whatever input is given, turn it into an AbstractVector{UInt8} we can parse with
@@ -267,7 +268,7 @@ end
             x = x.data
             return parent(x), first(x.indices), last(x.indices), tfile
         else #support from IOBuffer containing Memory
-            y = __wrap(x.data,length(x.data)) #generates a Vector{UInt8} from Memory{UInt8}
+            y = __wrap(x.data) #generates a Vector{UInt8} from Memory{UInt8}
             return y, x.ptr, x.size, tfile
         end
     elseif x isa Cmd || x isa IO
