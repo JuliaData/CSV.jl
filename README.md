@@ -1,7 +1,7 @@
 
 # CSV
 
-[![CI](https://github.com/JuliaData/CSV.jl/workflows/CI/badge.svg)](https://github.com/JuliaData/CSV.jl/actions?query=workflow%3ACI)
+[![CI](https://github.com/JuliaData/CSV.jl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/JuliaData/CSV.jl/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/JuliaData/CSV.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/JuliaData/CSV.jl)
 [![deps](https://juliahub.com/docs/CSV/deps.svg)](https://juliahub.com/ui/Packages/CSV/HHBkp?t=2)
 [![version](https://juliahub.com/docs/CSV/version.svg)](https://juliahub.com/ui/Packages/CSV/HHBkp)
