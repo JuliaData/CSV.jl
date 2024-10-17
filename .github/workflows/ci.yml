@@ -35,6 +35,9 @@ jobs:
           - os: ubuntu-latest
             arch: x64
             version: 'nightly'
+          - os: windows-latest
+            arch: x64
+            version: 'lts'
 
     steps:
       - run: git config --global core.autocrlf false
