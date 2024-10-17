@@ -336,8 +336,14 @@ function File(ctx::Context, @nospecialize(chunking::Bool=false))
     ctx.debug && println("types after parsing: $types, pool = $(ctx.pool)")
     # for windows, it's particularly finicky about throwing errors when you try to modify an mmapped file
     # so we just want to make sure we finalize the input buffer so users don't run into surprises
+    # on Julia 1.11 the underlying memory needs to be finalized to unmmap the file.
+    # Ref: https://github.com/JuliaLang/julia/pull/54210
     if !chunking && Sys.iswindows() && ctx.stringtype !== PosLenString
-        finalize(ctx.buf)
+        if VERSION ≥ v"1.11"
+            finalize(ctx.buf.ref.mem)
+        else
+            finalize(ctx.buf)
+        end
     end
     # check if a temp file was generated for parsing
     if !chunking && ctx.tempfile !== nothing && ctx.stringtype !== PosLenString
