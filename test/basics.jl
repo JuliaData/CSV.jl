@@ -378,21 +378,8 @@ f = CSV.File(IOBuffer("a,b,c\n1,2,3\n\n"))
 f = CSV.File(IOBuffer("zip\n11111-1111\n"), dateformat = "y-m-dTH:M:S.s")
 @test (length(f), length(f.names)) == (1, 1)
 
-# Supporting commands across multiple platforms cribbed from julia/test/spawn.jl
-catcmd = `cat`
-havebb = false
-if Sys.iswindows()
-    busybox = download("https://frippery.org/files/busybox/busybox.exe", joinpath(tempdir(), "busybox.exe"))
-    havebb = try # use busybox-w32 on windows, if available
-        success(`$busybox`)
-        true
-    catch
-        false
-    end
-    if havebb
-        catcmd = `$busybox cat`
-    end
-end
+# `cat` isn't always available on Windows
+catcmd = `$(Base.julia_cmd()) --eval "write(stdout, open(ARGS[1]))"`
 f = CSV.File(`$(catcmd) $(joinpath(dir, "test_basic.csv"))`)
 @test columntable(f) == columntable(CSV.File(joinpath(dir, "test_basic.csv")))
 
