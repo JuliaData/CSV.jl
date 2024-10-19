@@ -352,7 +352,7 @@ Base.string(x::AF) = string(x.f)
     CSV.write(io, Tuple[(1,), (2,)], header=false)
     @test String(take!(io)) == "1\n2\n"
 
-    # parition writing
+    # partition writing
     io = IOBuffer()
     io2 = IOBuffer()
     CSV.write([io, io2], Tables.partitioner((default_table, default_table)); partition=true)

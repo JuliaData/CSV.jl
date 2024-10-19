@@ -23,7 +23,7 @@ Any delimited input is ultimately converted to a byte buffer (`Vector{UInt8}`) f
 
 ## [`header`](@id header)
 
-The `header` keyword argument controls how column names are treated when processing files. By default, it is assumed that the column names are the first row/line of the input, i.e. `header=1`. Alternative valid aguments for `header` include:
+The `header` keyword argument controls how column names are treated when processing files. By default, it is assumed that the column names are the first row/line of the input, i.e. `header=1`. Alternative valid augments for `header` include:
   * `Integer`, e.g. `header=2`: provide the row number as an `Integer` where the column names can be found
   * `Bool`, e.g. `header=false`: no column names exist in the data; column names will be auto-generated depending on the # of columns, like `Column1`, `Column2`, etc.
   * `Vector{String}` or `Vector{Symbol}`: manually provide column names as strings or symbols; should match the # of columns in the data. A copy of the `Vector` will be made and converted to `Vector{Symbol}`
@@ -79,7 +79,7 @@ This argument specifies whether "empty rows", where consecutive [newlines](@ref 
 
 ## [`select` / `drop`](@id select)
 
-Arguments that control which columns from the input data will actually be parsed and available after processing. `select` controls which columns _will_ be accessible after parsing while `drop` controls which columns to _ignore_. Either argument can be provided as a vector of `Integer`, `String`, or `Symbol`, specifing the column numbers or names to include/exclude. A vector of `Bool` matching the number of columns in the input data can also be provided, where each element specifies whether the corresponding column should be included/excluded. Finally, these arguments can also be given as boolean functions, of the form `(i, name) -> Bool`, where each column number and name will be given as arguments and the result of the function will determine if the column will be included/excluded.
+Arguments that control which columns from the input data will actually be parsed and available after processing. `select` controls which columns _will_ be accessible after parsing while `drop` controls which columns to _ignore_. Either argument can be provided as a vector of `Integer`, `String`, or `Symbol`, specifying the column numbers or names to include/exclude. A vector of `Bool` matching the number of columns in the input data can also be provided, where each element specifies whether the corresponding column should be included/excluded. Finally, these arguments can also be given as boolean functions, of the form `(i, name) -> Bool`, where each column number and name will be given as arguments and the result of the function will determine if the column will be included/excluded.
 
 ### Examples
   * [Including/excluding columns](@ref select_example)
