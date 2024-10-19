@@ -23,6 +23,10 @@ struct StructType
     aumber::Union{Real, Nothing}
 end
 
+struct AF <: AbstractFloat
+    f::Float64
+end
+Base.string(x::AF) = string(x.f)
 
 @testset "CSV.write" begin
 
@@ -153,6 +157,12 @@ end
         # custom float decimal: #385
         (
             (col1=[1.1,2.2,3.3], col2=[4,5,6], col3=[7,8,9]),
+            (delim='\t', decimal=','),
+            "col1\tcol2\tcol3\n1,1\t4\t7\n2,2\t5\t8\n3,3\t6\t9\n"
+        ),
+        # custom abstract float decimal: #1108
+        (
+            (col1=AF.([1.1,2.2,3.3]), col2=[4,5,6], col3=[7,8,9]),
             (delim='\t', decimal=','),
             "col1\tcol2\tcol3\n1,1\t4\t7\n2,2\t5\t8\n3,3\t6\t9\n"
         ),
