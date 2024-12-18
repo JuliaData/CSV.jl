@@ -195,6 +195,12 @@ Base.string(x::AF) = string(x.f)
             [StructType(Date("2021-12-01"), "string 1", 123.45), StructType(Date("2021-12-02"), "string 2", 456.78)],
             (header=["Date Column", "String Column", "Number Column"],),
             "Date Column,String Column,Number Column\n2021-12-01,string 1,123.45\n2021-12-02,string 2,456.78\n"
+        ),
+        # 1151
+        (
+            [(a=Int128(-170141183460469231731687303715884105728),)],
+            NamedTuple(),
+            "a\n-170141183460469231731687303715884105728\n"
         )
     ]
 
