@@ -435,7 +435,7 @@ end
 
 function writecell(buf, pos, len, io, x::Integer, opts)
     if x < 0
-        x *= -1
+        x = Base.uabs(x)
         @check 1
         @inbounds buf[pos] = UInt8('-')
         pos += 1
