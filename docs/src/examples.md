@@ -106,7 +106,7 @@ file = CSV.File(http_response)
 ## [Reading from a zip file](@id zip_example)
 
 ```julia
-using ZipFile, CSV, DataFrames
+using ZipArchives, Mmap, CSV, DataFrames
 
 a = DataFrame(a = 1:3)
 CSV.write("a.csv", a)
@@ -116,22 +116,18 @@ CSV.write("a.csv", a)
 ;zip a.zip a.csv
 
 # alternatively, write directly into the zip archive (without creating an unzipped csv file first)
-z = ZipFile.Writer("a2.zip")
-f = ZipFile.addfile(z, "a.csv", method=ZipFile.Deflate)
-a |> CSV.write(f)
-close(z)
+ZipWriter("a2.zip") do z
+    zip_newfile(z, "a.csv"; compress=true)
+    a |> CSV.write(z)
+end
 
 # read file from zip archive
-z = ZipFile.Reader("a.zip") # or "a2.zip"
+z = ZipReader(mmap(open("a.zip"))) # or "a2.zip"
 
 # identify the right file in zip
-a_file_in_zip = filter(x->x.name == "a.csv", z.files)[1]
-
-a_copy = CSV.File(a_file_in_zip) |> DataFrame
+a_copy = CSV.File(zip_openentry(z, "a.csv")) |> DataFrame
 
 a == a_copy
-
-close(z)
 ```
 
 ## [Column names on 2nd row](@id second_row_header)
