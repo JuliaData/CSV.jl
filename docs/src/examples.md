@@ -106,7 +106,7 @@ file = CSV.File(http_response)
 ## [Reading from a zip file](@id zip_example)
 
 ```julia
-using ZipArchives, Mmap, CSV, DataFrames
+using ZipArchives, CSV, DataFrames
 
 a = DataFrame(a = 1:3)
 CSV.write("a.csv", a)
@@ -122,10 +122,14 @@ ZipWriter("a2.zip") do z
 end
 
 # read file from zip archive
-z = ZipReader(mmap(open("a.zip"))) # or "a2.zip"
+z = ZipReader(read("a.zip")) # or "a2.zip"
+# This `read` here buffers the archive into memory.
+# Mmap.jl or the code in
+# https://github.com/JuliaIO/ZipArchives.jl/blob/v2.5.1/test/test_file-array.jl#L66
+# can be used if the archive is larger than memory.
 
 # identify the right file in zip
-a_copy = CSV.File(zip_openentry(z, "a.csv")) |> DataFrame
+a_copy = CSV.File(zip_readentry(z, "a.csv")) |> DataFrame
 
 a == a_copy
 ```
