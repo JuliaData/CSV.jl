@@ -578,9 +578,11 @@ struct PointerString
     len::Int
 end
 
-function Base.hash(s::PointerString, h::UInt)
-    h += Base.memhash_seed
-    ccall(Base.memhash, UInt, (Ptr{UInt8}, Csize_t, UInt32), s.ptr, s.len, h % UInt32) + h
+if isdefined(Base, :memhash)
+    function Base.hash(s::PointerString, h::UInt)
+        h += Base.memhash_seed
+        ccall(Base.memhash, UInt, (Ptr{UInt8}, Csize_t, UInt32), s.ptr, s.len, h % UInt32) + h
+    end
 end
 
 import Base: ==
