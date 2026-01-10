@@ -1,8 +1,8 @@
 .DS_Store
-docs/build/
-docs/site/
+**/docs/build/
+**/docs/site/
 *.jl.cov
 *.jl.*.cov
 *.jl.mem
-precompile
-Manifest.toml
+**/precompile
+**/Manifest.toml

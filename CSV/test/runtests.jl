@@ -1,6 +1,6 @@
 using Test, CSV, Mmap, Dates, Tables, PooledArrays, CodecZlib, FilePathsBase, SentinelArrays, Parsers, WeakRefStrings, InlineStrings
 
-const dir = joinpath(dirname(pathof(CSV)), "..", "test", "testfiles")
+const dir = joinpath(dirname(pathof(CSV)), "..", "..", "testfiles")
 
 @eval macro $(:try)(ex)
     quote

@@ -1,7 +1,7 @@
 # generates precompile.jl files
 using CSV, Parsers, SentinelArrays, SnoopCompile
 
-const dir = joinpath(dirname(pathof(CSV)), "..", "test", "testfiles")
+const dir = joinpath(dirname(pathof(CSV)), "..", "..", "testfiles")
 
 timings = @snoopi tmin=0.001 begin
 
