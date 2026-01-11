@@ -51,6 +51,8 @@ jobs:
           arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@latest
+        with:
+          project: CSV
       - uses: julia-actions/julia-runtest@latest
         with:
           project: CSV
@@ -68,6 +70,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: julia-actions/julia-buildpkg@latest
+        with:
+          project: CSV
       - uses: julia-actions/julia-docdeploy@master
         with:
           project: CSV
