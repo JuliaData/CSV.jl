@@ -367,11 +367,20 @@ Base.string(x::AF) = string(x.f)
     @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
     @test String(take!(io2)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
 
-    # compressed writing
+    # uncompressed writing
     io = IOBuffer()
-    CSV.write(io, default_table; compress=true)
+    CSV.write(io, default_table)
+    seekstart(io)  # <-- needed
     ct = CSV.read(io, Tables.columntable)
     @test ct == default_table
+
+    # compressed writing
+    mktemp() do path, io
+        CSV.write(io, default_table; compress=true)
+        # io is now closed
+        ct = CSV.read(path, Tables.columntable)
+        @test ct == default_table
+    end
 
     # CSV.writerow
     row = (a=1, b=2.3, c="hey", d=Date(2022, 5, 4))
