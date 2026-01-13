@@ -888,17 +888,38 @@ end
 end
 
 @noinline function promotetostring!(ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, ::Type{customtypes}, column_to_promote, numwarnings, limit, stringtype) where {customtypes}
-    cols = [i == column_to_promote ? columns[i] : Column(Missing, columns[i].options) for i = 1:length(columns)]
+    # Create columns array, copying transpose positions for non-promoted columns
+    cols = Vector{Column}(undef, length(columns))
+    for i in 1:length(columns)
+        if i == column_to_promote
+            cols[i] = columns[i]
+        else
+            col = Column(Missing, columns[i].options)
+            if ctx.transpose
+                col.position = columns[i].originalposition
+                col.endposition = columns[i].endposition
+                col.originalposition = columns[i].originalposition
+            end
+            cols[i] = col
+        end
+    end
     col = cols[column_to_promote]
     col.column = allocate(stringtype, rowsguess)
     col.type = stringtype
+    # For transpose mode, reset all positions to original starting positions
+    if ctx.transpose
+        for c in cols
+            c.position = c.originalposition
+        end
+    end
     row = 0
     startpos = pos
     if pos <= len && len > 0
         while row < limit
             row += 1
             @inbounds pos = parserow(startpos, row, numwarnings, ctx, buf, pos, len, rowsguess, rowoffset, cols, customtypes)
-            pos > len && break
+            # For transpose, check if all columns have reached their end; for non-transpose, check buffer end
+            (ctx.transpose ? all(c -> c.position >= c.endposition, cols) : pos > len) && break
         end
     end
     return

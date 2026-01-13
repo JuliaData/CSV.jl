@@ -12,6 +12,7 @@ Fields:
   * `lock`: in multithreaded parsing, we have a top-level set of `Vector{Column}`, then each threaded parsing task makes its own copy to parse its own chunk; when synchronizing column types/pooled refs, the task-local `Column` will `lock(col.lock)` to make changes to the parent `Column`; each task-local `Column` shares the same `lock` of the top-level `Column`
   * `position`: for transposed reading, the current column position
   * `endposition`: for transposed reading, the expected ending position for this column
+  * `originalposition`: for transposed reading, the original starting position (used for type promotion re-parsing)
 """
 mutable struct Column
     # fields that are copied per task when parsing
@@ -27,6 +28,7 @@ mutable struct Column
     lock::ReentrantLock
     position::Int
     endposition::Int
+    originalposition::Int
     options::Parsers.Options
 
     Column(type::Type, anymissing::Bool, userprovidedtype::Bool, willdrop::Bool, pool::Union{Float64, Tuple{Float64, Int}}, columnspecificpool::Bool) =
@@ -486,6 +488,7 @@ end
             col = columns[i]
             col.position = positions[i]
             col.endposition = endpositions[i]
+            col.originalposition = positions[i]
         end
     end
     # check for nonstandard types in typemap
