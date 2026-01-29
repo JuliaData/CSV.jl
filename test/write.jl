@@ -368,10 +368,12 @@ Base.string(x::AF) = string(x.f)
     @test String(take!(io2)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
 
     # compressed writing
-    io = IOBuffer()
-    CSV.write(io, default_table; compress=true)
-    ct = CSV.read(io, Tables.columntable)
-    @test ct == default_table
+    mktempdir() do dir
+        gz_path = joinpath(dir, "compressed.csv.gz")
+        CSV.write(gz_path, default_table; compress=true)
+        ct = CSV.read(gz_path, Tables.columntable)
+        @test ct == default_table
+    end
 
     # CSV.writerow
     row = (a=1, b=2.3, c="hey", d=Date(2022, 5, 4))

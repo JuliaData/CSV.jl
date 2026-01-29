@@ -15,7 +15,9 @@ jobs:
       fail-fast: false
       matrix:
         version:
-          - '1'    # Current stable version
+          - '1.9'    # Minimum supported version
+          - '1'      # Current stable version
+          - 'nightly'
         os:
           - ubuntu-latest
           - windows-latest
@@ -28,21 +30,12 @@ jobs:
             version: '1'
           - os: ubuntu-latest
             arch: x86
-            version: '1'
-          - os: ubuntu-latest
-            arch: x64
-            version: '1.6'
-          - os: ubuntu-latest
-            arch: x64
-            version: 'nightly'
-          - os: windows-latest
-            arch: x64
-            version: 'lts'
+            version: '1.9'
 
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@v2
+      - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
@@ -69,8 +62,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: julia-actions/julia-buildpkg@latest
-      - uses: julia-actions/julia-docdeploy@latest
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-docdeploy@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
