@@ -1,0 +1,6 @@
+[testfiles]
+git-tree-sha1 = "d24c9e978a3e64af0d80251ca2ac49388d942e9d"
+
+    [[testfiles.download]]
+    url = "https://github.com/JuliaData/CSV.jl/releases/download/testdata-full-1/testfiles-artifact.tar.gz"
+    sha256 = "19c34ee846861d81989314ff87ca4e3ac175c10e7c0eeb2c0094ef97151629f9"

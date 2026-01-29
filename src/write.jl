@@ -278,6 +278,7 @@ _seekstart(io::T) where {T <: IO} = hasmethod(seek, Tuple{T, Integer}) ? seeksta
 
 function with(f::Function, @nospecialize(io), append, compress)
     needtoclose = false
+    opened_stream = false
     if io isa Union{Base.TTY, Base.Pipe, Base.PipeEndpoint, Base.DevNull}
         # pass, can't seek these
     elseif io isa IO
@@ -285,9 +286,13 @@ function with(f::Function, @nospecialize(io), append, compress)
     else
         io = open(io, append ? "a" : "w")
         needtoclose = true
+        opened_stream = true
     end
     if compress
-        io = GzipCompressorStream(io)
+        # Use stop_on_end=true if we didn't open the underlying stream ourselves.
+        # This prevents the GzipCompressorStream from closing the user's IO when
+        # the compressor is closed, allowing take!(io) to work on IOBuffer, etc.
+        io = GzipCompressorStream(io; stop_on_end=!opened_stream)
         needtoclose = true
     end
     try

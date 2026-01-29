@@ -367,11 +367,25 @@ Base.string(x::AF) = string(x.f)
     @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
     @test String(take!(io2)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
 
-    # compressed writing
+    # compressed writing to IOBuffer
+    # Verify that data is written (issue #1177 fix)
     io = IOBuffer()
     CSV.write(io, default_table; compress=true)
-    ct = CSV.read(io, Tables.columntable)
-    @test ct == default_table
+    @test isopen(io)  # IOBuffer should not be closed
+    data = take!(io)
+    @test length(data) > 0  # data should be written
+    @test data[1] == 0x1f && data[2] == 0x8b  # gzip magic bytes
+    # Verify data decompresses correctly
+    decompressed = transcode(GzipDecompressor, data)
+    @test String(decompressed) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
+
+    # compressed writing to file
+    mktempdir() do dir
+        path = joinpath(dir, "test.csv.gz")
+        CSV.write(path, default_table; compress=true)
+        ct = CSV.read(path, Tables.columntable)
+        @test ct == default_table
+    end
 
     # CSV.writerow
     row = (a=1, b=2.3, c="hey", d=Date(2022, 5, 4))

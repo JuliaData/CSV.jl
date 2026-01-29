@@ -1,6 +1,7 @@
 using Test, CSV, Mmap, Dates, Tables, PooledArrays, CodecZlib, FilePathsBase, SentinelArrays, Parsers, WeakRefStrings, InlineStrings
+using LazyArtifacts
 
-const dir = joinpath(dirname(pathof(CSV)), "..", "test", "testfiles")
+const dir = artifact"testfiles"
 
 @eval macro $(:try)(ex)
     quote

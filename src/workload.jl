@@ -9,14 +9,10 @@ const PRECOMPILE_DATA = """"int,float,date,datetime,bool,null,str,catg,int_float
     CSV.Context(IOBuffer(PRECOMPILE_DATA))
     collect(CSV.Rows(IOBuffer(PRECOMPILE_DATA)))
 
-    for basename in ["precompile_small.csv", "promotions.csv"]
-        collect(CSV.File(joinpath(dirname(pathof(CSV)), "..", "test", "testfiles", basename)))
-    end
+    # Use promotions.csv from src/ directory for precompilation
+    collect(CSV.File(joinpath(dirname(pathof(CSV)), "promotions.csv")))
 
-    CSV.read(
-        joinpath(dirname(pathof(CSV)), "..", "test", "testfiles", "precompile_small.csv"),
-        Tables.dictcolumntable
-    )
+    CSV.read(IOBuffer(PRECOMPILE_DATA), Tables.dictcolumntable)
 
     table = Tables.dictcolumntable(Dict(
         :a => ["foo", "bar"],
