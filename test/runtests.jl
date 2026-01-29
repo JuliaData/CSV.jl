@@ -1,5 +1,5 @@
 using Test, CSV, Mmap, Dates, Tables, PooledArrays, CodecZlib, FilePathsBase, SentinelArrays, Parsers, WeakRefStrings, InlineStrings
-using Pkg.Artifacts
+using LazyArtifacts
 
 const dir = artifact"testfiles"
 

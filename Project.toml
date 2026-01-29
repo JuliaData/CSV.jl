@@ -32,8 +32,9 @@ WorkerUtilities = "1.6"
 julia = "1.6"
 
 [extras]
+LazyArtifacts = "4af54fe1-edd0-5ae7-80ca-9b3b87aca5d6"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test", "Random"]
+test = ["Test", "Random", "LazyArtifacts"]
