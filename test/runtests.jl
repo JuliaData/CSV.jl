@@ -1,6 +1,7 @@
-using Test, CSV, Mmap, Dates, Tables, PooledArrays, CodecZlib, FilePathsBase, SentinelArrays, Parsers, WeakRefStrings, InlineStrings
+using Test, CSV, Mmap, Dates, Tables, PooledArrays, CodecZlib, FilePathsBase, SentinelArrays, Parsers, WeakRefStrings, InlineStrings, Pkg.Artifacts
 
-const dir = joinpath(dirname(pathof(CSV)), "..", "test", "testfiles")
+# Test fixtures live in an artifact to avoid shipping 28MB of data with the package.
+const dir = artifact"testfiles"
 
 @eval macro $(:try)(ex)
     quote
