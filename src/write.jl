@@ -306,6 +306,7 @@ end
 
 macro check(n)
     esc(quote
+        @assert @isdefined(io) "internal error: `io` not defined in scope of `@check` macrocall"
         $n > length(buf) && buffertoosmall(pos + $n - 1, length(buf))
         if (pos + $n - 1) > len
             Base.write(io, view(buf, 1:(pos - 1)))
