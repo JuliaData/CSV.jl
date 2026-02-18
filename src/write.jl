@@ -142,7 +142,7 @@ function Base.iterate(r::RowWriter)
     colnames = isempty(r.header) ? Tables.columnnames(row) : r.header
     pos = 1
     if r.options.bom
-        pos = writebom(r.buf, pos, length(r.buf))
+        pos = writebom(r.buf, pos, length(r.buf), DummyIO())
     end
     cols = length(colnames)
     !r.writeheader && return iterate(r, (state, cols))
@@ -215,7 +215,7 @@ function write(sch::Tables.Schema, rows, file, opts;
     with(file, append, compress) do io
         Base.@_inline_meta
         if !append && opts.bom
-            pos = writebom(buf, pos, len)
+            pos = writebom(buf, pos, len, io)
         end
         if header === true || (header isa Vector && !append)
             pos = writenames(buf, pos, len, io, colnames, cols, opts)
@@ -244,7 +244,7 @@ function write(::Nothing, rows, file, opts;
     if state === nothing
         if header isa Vector && !isempty(header)
             with(file, append, compress) do io
-                !append && opts.bom && (pos = writebom(buf, pos, len) )
+                !append && opts.bom && (pos = writebom(buf, pos, len, io) )
                 pos = writenames(buf, pos, len, io, header, length(header), opts)
                 Base.write(io, resize!(buf, pos - 1))
             end
@@ -257,7 +257,7 @@ function write(::Nothing, rows, file, opts;
     cols = length(names)
     with(file, append, compress) do io
         if !append && opts.bom
-            pos = writebom(buf, pos, len)
+            pos = writebom(buf, pos, len, io)
         end
         if header === true || (header isa Vector && !append)
             pos = writenames(buf, pos, len, io, names, cols, opts)
@@ -306,6 +306,7 @@ end
 
 macro check(n)
     esc(quote
+        @assert @isdefined(io) "internal error: `io` not defined in scope of `@check` macrocall"
         $n > length(buf) && buffertoosmall(pos + $n - 1, length(buf))
         if (pos + $n - 1) > len
             Base.write(io, view(buf, 1:(pos - 1)))
@@ -314,7 +315,7 @@ macro check(n)
     end)
 end
 
-function writebom(buf, pos, len)
+function writebom(buf, pos, len, io)
     @check 3
     @inbounds buf[pos] = 0xEF
     @inbounds buf[pos+1] = 0xBB

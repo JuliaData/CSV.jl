@@ -397,4 +397,8 @@ Base.string(x::AF) = string(x.f)
     str = CSV.writerow(row; delim='\t')
     @test str == "1\t2.3\they\t2022-05-04\n"
 
+    # CSV.writebom
+    # https://github.com/JuliaData/CSV.jl/pull/1179
+    @test CSV.writebom(UInt8[1,2,3], 2, 1, IOBuffer()) isa Int
+
 end # @testset "CSV.write"
