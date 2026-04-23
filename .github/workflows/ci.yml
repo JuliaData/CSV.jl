@@ -19,10 +19,12 @@ jobs:
         os:
           - ubuntu-latest
           - windows-latest
-          - macOS-latest
         arch:
           - x64
         include:
+          - os: macOS-latest
+            arch: aarch64
+            version: '1'
           - os: macOS-14
             arch: aarch64
             version: '1'
