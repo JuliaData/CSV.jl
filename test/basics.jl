@@ -483,6 +483,14 @@ f = CSV.File(IOBuffer("col1\nhey\nthere\nsailor"); stringtype=PosLenString)
 @test columntable(f) == columntable(collect(f))
 show(f)
 
+let str = "hash me", seed = UInt(0x1234)
+    GC.@preserve str begin
+        ptrstr = CSV.PointerString(pointer(str), ncodeunits(str))
+        @test hash(ptrstr, seed) == hash(str, seed)
+        @test hash(ptrstr) isa UInt
+    end
+end
+
 f = CSV.File(joinpath(dir, "big_types.csv"); stringtype=PosLenString, pool=false)
 @test eltype(f.time) == Dates.Time
 @test eltype(f.bool) == Bool
