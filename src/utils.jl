@@ -579,8 +579,14 @@ struct PointerString
 end
 
 function Base.hash(s::PointerString, h::UInt)
-    h += Base.memhash_seed
-    ccall(Base.memhash, UInt, (Ptr{UInt8}, Csize_t, UInt32), s.ptr, s.len, h % UInt32) + h
+    @static if isdefined(Base, :memhash_seed)
+        h += Base.memhash_seed
+        return ccall(Base.memhash, UInt, (Ptr{UInt8}, Csize_t, UInt32), s.ptr, s.len, h % UInt32) + h
+    elseif isdefined(Base, :hash_bytes) && isdefined(Base, :HASH_SECRET)
+        return Base.hash_bytes(s.ptr, s.len, UInt64(h), Base.HASH_SECRET) % UInt
+    else
+        return hash(String(s), h)
+    end
 end
 
 import Base: ==

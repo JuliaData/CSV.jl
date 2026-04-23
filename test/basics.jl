@@ -456,6 +456,22 @@ f = CSV.File(joinpath(dir, "escape_row_starts.csv"); ntasks=2)
 @test eltype(f.col1) == String
 @test eltype(f.col2) == Int
 
+mktempdir() do tmp
+    # 1139: multiline quoted fields should still parse correctly when a chunk
+    # boundary initially lands inside the quoted field body.
+    n = 4000
+    path = joinpath(tmp, "issue1139.csv")
+    text = "123\nabc"
+    CSV.write(path, (id=1:n, text=fill(text, n)))
+    ctx = CSV.Context(path; ntasks=2)
+    @test ctx.threaded
+    f = CSV.File(path; ntasks=2)
+    @test length(f) == n
+    @test all(==(text), f.text)
+    @test map(x -> parse(Int, string(x)), f.id[2038:2040]) == [2038, 2039, 2040]
+    @test f.text[2038:2040] == fill(text, 3)
+end
+
 f = CSV.File(IOBuffer("col1\nhey\nthere\nsailor"); stringtype=PosLenString)
 @test f.col1 isa PosLenStringVector
 @test Tables.columnnames(f) == [:col1]
@@ -466,6 +482,14 @@ f = CSV.File(IOBuffer("col1\nhey\nthere\nsailor"); stringtype=PosLenString)
 @test f.col1 === Tables.getcolumn(f, 1)
 @test columntable(f) == columntable(collect(f))
 show(f)
+
+let str = "hash me", seed = UInt(0x1234)
+    GC.@preserve str begin
+        ptrstr = CSV.PointerString(pointer(str), ncodeunits(str))
+        @test hash(ptrstr, seed) == hash(str, seed)
+        @test hash(ptrstr) isa UInt
+    end
+end
 
 f = CSV.File(joinpath(dir, "big_types.csv"); stringtype=PosLenString, pool=false)
 @test eltype(f.time) == Dates.Time
