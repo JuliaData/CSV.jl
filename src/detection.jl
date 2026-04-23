@@ -361,6 +361,7 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
         # now we read the next `rows_to_check` rows and see if we get the roughly the right # of columns
         rowstartpos = pos
         parsedncols = rowsparsed = 0
+        matchedncols = true
         columnprops = Vector{ColumnProperties}(undef, ncols)
         for i = 1:ncols
             if origcoltypes[i] === NeedsTypeDetection
@@ -398,6 +399,7 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
             end
             rowsparsed += ((pos < len) | (numcolsthisrow != 0)) # trailing newline does not count
             parsedncols += numcolsthisrow
+            matchedncols &= numcolsthisrow == ncols
         end
         parsedncols += addtrailingcolumn
         lock(columnlock) do
@@ -414,7 +416,7 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
             end
         end
         f40 = ncols * 0.025
-        if (ncols - f40) <= (parsedncols / rowsparsed) <= (ncols + f40)
+        if matchedncols && (ncols - f40) <= (parsedncols / rowsparsed) <= (ncols + f40)
             # ok, seems like we figured out the right start for parsing on this chunk
             Threads.atomic_add!(totalbytes, Int(pos - rowstartpos))
             Threads.atomic_add!(totalrows, rowsparsed)
