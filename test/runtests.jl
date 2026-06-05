@@ -520,6 +520,25 @@ f = CSV.File(map(IOBuffer, data); source=:source=>["1", "2", "3"])
 @test eltype(f.source) == String
 @test f.source isa PooledArray
 
+# single-element source vector keeps the source column (#1146)
+onefile = tempname() * ".csv"
+write(onefile, "a,b,c\n1,2,3\n4,5,6\n")
+
+f = CSV.File([onefile]; source=:source)
+@test :source in propertynames(f)
+@test f.source isa PooledArray
+@test all(==(onefile), f.source)
+
+f = CSV.File([onefile]; source="src")
+@test :src in propertynames(f)
+
+f = CSV.File([onefile]; source=:src=>["tag"])
+@test f.src == ["tag", "tag"]
+
+f = CSV.File([onefile])
+@test :source ∉ propertynames(f)
+@test propertynames(f) == propertynames(CSV.File(onefile))
+
 end
 
 end

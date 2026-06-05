@@ -912,7 +912,7 @@ function File(sources::Vector;
     if source isa Pair
         length(source.second) == length(sources) || throw(ArgumentError("source pair keyword argument list ($(length(source.second))) must match length of input vector ($(length(sources)))"))
     end
-    length(sources) == 1 && return File(sources[1]; kw...)
+    source === nothing && length(sources) == 1 && return File(sources[1]; kw...)
     all(x -> x isa ValidSources, sources) || throw(ArgumentError("all provided sources must be one of: `$ValidSources`"))
     kws = merge(values(kw), (ntasks=1,))
     f = File(sources[1]; kws...)
