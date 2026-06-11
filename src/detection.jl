@@ -119,12 +119,25 @@ function detectdelimandguessrows(buf, headerpos, datapos, len, oq, eq, cq, @nosp
     if delim == UInt8('\n')
         if nlines > 0
             d = UInt8('\n')
-            for attempted_delim in (UInt8(','), UInt8('\t'), UInt8(' '), UInt8('|'), UInt8(';'), UInt8(':'))
-                cnt = bvc.counts[Int(attempted_delim) + 1]
-                # @show Char(attempted_delim), cnt, nlines
-                if cnt > 0 && cnt % nlines == 0
-                    d = attempted_delim
-                    break
+            if headerpos > 0
+                # Prefer delimiters represented in the header over incidental data characters.
+                for attempted_delim in (UInt8(','), UInt8('\t'), UInt8(' '), UInt8('|'), UInt8(';'), UInt8(':'))
+                    hcnt = headerbvc.counts[Int(attempted_delim) + 1]
+                    cnt = bvc.counts[Int(attempted_delim) + 1]
+                    if hcnt > 0 && cnt > 0 && cnt % nlines == 0
+                        d = attempted_delim
+                        break
+                    end
+                end
+            end
+            if d == UInt8('\n')
+                for attempted_delim in (UInt8(','), UInt8('\t'), UInt8(' '), UInt8('|'), UInt8(';'), UInt8(':'))
+                    cnt = bvc.counts[Int(attempted_delim) + 1]
+                    # @show Char(attempted_delim), cnt, nlines
+                    if cnt > 0 && cnt % nlines == 0
+                        d = attempted_delim
+                        break
+                    end
                 end
             end
             if d == UInt8('\n')
