@@ -525,9 +525,9 @@ file = CSV.File(IOBuffer(data); dateformat="yyyy/mm/dd")
 ```julia
 using CSV
 
-# In many places in the world, floating point number decimals are separated with a comma instead of a period (`3,14` vs. `3.14`)
-# . We can correctly parse these numbers by passing in the `decimal=','` keyword argument. Note that we probably need to
-# explicitly pass `delim=';'` in this case, since the parser will probably think that it detected `','` as the delimiter.
+# In many places in the world, floating point number decimals are separated with a comma instead of a period (`3,14` vs. `3.14`).
+# We can correctly parse these numbers by passing in the `decimal=','` keyword argument. If the file has no header or
+# delimiter detection is otherwise ambiguous, pass `delim=';'` explicitly so commas are treated only as decimal markers.
 data = """
 col1;col2;col3
 1,01;2,02;3,03

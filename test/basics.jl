@@ -132,6 +132,12 @@ f = CSV.File(IOBuffer("x\ty\n1\t\n2\t\n"))
 f = CSV.File(IOBuffer("x|y\n1|\n2|\n"))
 @test (length(f), length(f.names)) == (2, 2)
 
+f = CSV.File(IOBuffer("a;b;c\n1,1;2,2;3,3\n4,4;5,5;6,6\n"); decimal=',')
+@test (length(f), length(f.names)) == (2, 3)
+@test f.a == [1.1, 4.4]
+@test f.b == [2.2, 5.5]
+@test f.c == [3.3, 6.6]
+
 # type promotion
 # int => float
 f = CSV.File(IOBuffer("x\n1\n3.14"))
