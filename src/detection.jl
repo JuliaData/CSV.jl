@@ -320,6 +320,32 @@ function checkcommentandemptyline(buf, pos, len, @nospecialize(cmt), ignoreempty
     return pos
 end
 
+function countcomments(buf, pos, len, oq, eq, cq, @nospecialize(cmt))
+    cmt === nothing && return 0
+    cmtptr, cmtlen = cmt
+    comments = 0
+    while pos <= len
+        if cmtlen > 0 && (pos + cmtlen - 1) <= len && Parsers.memcmp(pointer(buf, pos), cmtptr, cmtlen)
+            comments += 1
+            pos += cmtlen
+            while pos <= len
+                @inbounds b = buf[pos]
+                pos += 1
+                if b == UInt8('\n')
+                    break
+                elseif b == UInt8('\r')
+                    pos <= len && buf[pos] == UInt8('\n') && (pos += 1)
+                    break
+                end
+            end
+        else
+            newpos = skiptorow(buf, pos, len, oq, eq, cq, nothing, false, 0, 1)
+            pos = newpos > pos ? newpos : len + 1
+        end
+    end
+    return comments
+end
+
 struct ColumnProperties
     typecode::UInt8
     maxstringsize::UInt8

@@ -449,6 +449,15 @@ f = CSV.File(IOBuffer("x\r\n1\r\n2\r\n3\r\n4\r\n5\r\n"), footerskip=3)
 @test length(f) == 2
 @test f[1][1] == 1
 
+# Comment rows do not count towards footerskip.
+for newline in ("\n", "\r\n", "\r")
+    csv = join(("a,b", "1,2", "3,4", "# trailing comment 1", "# trailing comment 2"), newline) * newline
+    f = CSV.File(IOBuffer(csv); comment="#", footerskip=1)
+    @test Tables.rowtable(f) == [(a=1, b=2)]
+    rows = CSV.Rows(IOBuffer(csv); comment="#", footerskip=1, types=Int)
+    @test Tables.rowtable(rows) == [(a=1, b=2)]
+end
+
 # 578
 f = CSV.File(IOBuffer("h1234567890123456\t"^2262 * "lasthdr\r\n" * "dummy dummy dummy\r\n" * ("1.23\t"^2262 * "2.46\r\n")^10), skipto=3, ntasks=1);
 @test (length(f), length(f.names)) == (10, 2263)
@@ -736,6 +745,37 @@ data = Vector{UInt8}(""""column_name","data_type","is_nullable"\nfoobar,string,Y
 f = CSV.File(@view(data[:]))
 @test length(f) == 2
 @test f.column_name == ["foobar", "bazbat"]
+
+# Preprocessing must honor SubArray and IOBuffer source bounds.
+data = Vector{UInt8}("a,b\n1,2\n3,4\n")
+compressed = transcode(GzipCompressor, data)
+prefix = Vector{UInt8}("ignored prefix")
+suffix = Vector{UInt8}("ignored suffix")
+
+parent = vcat(prefix, compressed, suffix)
+firstbyte = length(prefix) + 1
+lastbyte = firstbyte + length(compressed) - 1
+for buffer_in_memory in (false, true)
+    f = CSV.File(@view(parent[firstbyte:lastbyte]); buffer_in_memory)
+    @test Tables.rowtable(f) == [(a=1, b=2), (a=3, b=4)]
+end
+
+io = IOBuffer(vcat(prefix, compressed))
+seek(io, length(prefix))
+f = CSV.File(io)
+@test Tables.rowtable(f) == [(a=1, b=2), (a=3, b=4)]
+
+parent = vcat(compressed, data)
+firstbyte = length(compressed) + 1
+f = CSV.File(@view(parent[firstbyte:end]))
+@test Tables.rowtable(f) == [(a=1, b=2), (a=3, b=4)]
+
+parent = vcat(prefix, data, suffix)
+firstbyte = length(prefix) + 1
+lastbyte = firstbyte + length(data) - 1
+f = CSV.File(@view(parent[firstbyte:lastbyte]); footerskip=1)
+@test Tables.rowtable(f) == [(a=1, b=2)]
+@test isempty(CSV.File(UInt8[0xef, 0xbb, 0xbf]; footerskip=1))
 
 # 901; nonstandard types passed via types=T
 f = CSV.File(IOBuffer("a,b,c\n1.2,3.4,5.6\n"); types=Float32)
