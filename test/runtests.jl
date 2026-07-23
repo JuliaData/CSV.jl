@@ -240,6 +240,11 @@ state = iterate(chunks, st)
 f, st = state
 @test length(f) == 34914
 
+data = Vector{UInt8}("a,b\n" * join(("$(i),value$(i)" for i in 1:40), "\n") * "X")
+chunks = collect(CSV.Chunks(data; ntasks=2, rows_to_check=5, pool=false))
+@test sum(length, chunks) == 40
+@test last(last(chunks)).b == "value40X"
+
 end
 
 function strs(x::Vector, e=nothing)

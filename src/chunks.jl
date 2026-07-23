@@ -93,7 +93,7 @@ function Base.iterate(x::Chunks, i=1)
     names = copy(x.ctx.names)
     columns = [Column(col) for col in x.ctx.columns]
     datapos = x.ctx.chunkpositions[i]
-    len = x.ctx.chunkpositions[i + 1] - 1
+    len = x.ctx.chunkpositions[i + 1] - (i != x.ctx.ntasks)
     rowsguess = cld(x.ctx.rowsguess, x.ctx.ntasks)
     threaded = false
     ntasks = 1
