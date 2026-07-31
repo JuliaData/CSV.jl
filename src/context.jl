@@ -11,6 +11,7 @@ Fields:
   * `column`: the actual column vector to hold parsed values; field is typed as `AbstractVector` and while parsing, we do switches on `col.type` to assert the column type to make code concretely typed
   * `lock`: in multithreaded parsing, we have a top-level set of `Vector{Column}`, then each threaded parsing task makes its own copy to parse its own chunk; when synchronizing column types/pooled refs, the task-local `Column` will `lock(col.lock)` to make changes to the parent `Column`; each task-local `Column` shares the same `lock` of the top-level `Column`
   * `position`: for transposed reading, the current column position
+  * `startposition`: for transposed reading, the starting position for this column
   * `endposition`: for transposed reading, the expected ending position for this column
 """
 mutable struct Column
@@ -26,6 +27,7 @@ mutable struct Column
     # per top-level column fields (don't need to copy per task when parsing)
     lock::ReentrantLock
     position::Int
+    startposition::Int
     endposition::Int
     options::Parsers.Options
 
@@ -485,6 +487,7 @@ end
         for i = 1:ncols
             col = columns[i]
             col.position = positions[i]
+            col.startposition = positions[i]
             col.endposition = endpositions[i]
         end
     end

@@ -317,6 +317,45 @@ f = CSV.File(IOBuffer(""), transpose=true, header=false)
 f = CSV.File(IOBuffer(""), transpose=true, header=Symbol[])
 @test (length(f), length(f.names)) == (0, 0)
 
+@testset "transpose string promotion (#1172)" begin
+    normalize(x) = map(y -> ismissing(y) ? missing : string(y), x)
+    expected_a = [missing, "1", "x", "3"]
+    expected_b = [missing, 4, 5, 6]
+
+    for value in ("x", "\"x\"")
+        source = "a,,1,$value,3\nb,,4,5,6"
+        f = CSV.File(IOBuffer(source); transpose=true)
+        @test isequal(normalize(f.a), expected_a)
+        @test isequal(f.b, expected_b)
+    end
+
+    source = "a,,1,\"x\",3\nb,,4,5,6"
+    table = CSV.read(IOBuffer(source), Tables.columntable; transpose=true)
+    @test isequal(normalize(table.a), expected_a)
+    @test isequal(table.b, expected_b)
+
+    rows = Tables.rowtable(CSV.Rows(IOBuffer(source); transpose=true))
+    @test isequal([ismissing(row.a) ? missing : string(row.a) for row in rows], expected_a)
+    @test isequal([ismissing(row.b) ? missing : string(row.b) for row in rows],
+        [missing, "4", "5", "6"])
+
+    f = CSV.File(IOBuffer("skip,a,,1,x,3\nskip,b,,4,5,6"); transpose=true, header=2)
+    @test isequal(normalize(f.a), expected_a)
+    @test isequal(f.b, expected_b)
+
+    f = CSV.File(IOBuffer(",1,x,3\n,4,5,6"); transpose=true, header=[:a, :b])
+    @test isequal(normalize(f.a), expected_a)
+    @test isequal(f.b, expected_b)
+
+    f = CSV.File(IOBuffer(source); transpose=true, limit=3)
+    @test isequal(normalize(f.a), expected_a[1:3])
+    @test isequal(f.b, expected_b[1:3])
+
+    f = CSV.File(IOBuffer("a,,1,x,3\nb,4"); transpose=true)
+    @test isequal(normalize(f.a), expected_a)
+    @test isequal(f.b, [4, missing, missing, missing])
+end
+
 # providing empty header vector
 f = CSV.File(IOBuffer("x\nabc\n"), header=Symbol[])
 @test f.names == [:Column1]

@@ -889,6 +889,13 @@ end
 
 @noinline function promotetostring!(ctx::Context, buf, pos, len, rowsguess, rowoffset, columns, ::Type{customtypes}, column_to_promote, numwarnings, limit, stringtype) where {customtypes}
     cols = [i == column_to_promote ? columns[i] : Column(Missing, columns[i].options) for i = 1:length(columns)]
+    if ctx.transpose
+        for (col, source) in zip(cols, columns)
+            col.position = source.startposition
+            col.startposition = source.startposition
+            col.endposition = source.endposition
+        end
+    end
     col = cols[column_to_promote]
     col.column = allocate(stringtype, rowsguess)
     col.type = stringtype
@@ -898,7 +905,7 @@ end
         while row < limit
             row += 1
             @inbounds pos = parserow(startpos, row, numwarnings, ctx, buf, pos, len, rowsguess, rowoffset, cols, customtypes)
-            pos > len && break
+            (ctx.transpose ? all(c -> c.position >= c.endposition, cols) : pos > len) && break
         end
     end
     return
