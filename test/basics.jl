@@ -804,9 +804,15 @@ f = CSV.File(IOBuffer(data); header=false, types=Dict(1 => String), typemap=Dict
 @test f.types == [i == 1 ? String : Int8 for i = 1:60_000]
 
 # 948
-f = CSV.File(IOBuffer("a,b\n1,2\n3,"))
+f = @test_logs CSV.File(IOBuffer("a,b\n1,2\n3,"))
 @test f.a == [1, 3]
 @test isequal(f.b, [2, missing])
+
+# 1190
+for source in ("a,b,c\n1,2,3\n4,5", "a,b,c\n1,2,3\n4,5\n")
+    f = @test_logs (:warn, r"only found 2 / 3 columns around data row: 2") CSV.File(IOBuffer(source))
+    @test isequal(f.c, [3, missing])
+end
 
 # duplicate column names
 f = CSV.File(IOBuffer("a,a,a\n"))
