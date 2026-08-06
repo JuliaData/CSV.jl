@@ -386,7 +386,7 @@ end
         throw(ArgumentError("delimited source to parse too large; must be < $MAX_INPUT_SIZE bytes"))
     end
     # skip over initial BOM character, if present
-    pos = consumeBOM(buf, pos)
+    pos = consumeBOM(buf, pos, len)
 
     oq = something(openquotechar, quotechar) % UInt8
     eq = escapechar % UInt8
@@ -408,11 +408,23 @@ end
     end
     cmt = comment === nothing ? nothing : (pointer(comment), sizeof(comment))
 
-    if footerskip > 0 && len > 0
-        lastbyte = buf[end]
+    if footerskip > 0 && pos <= len
+        lastbyte = buf[len]
         endpos = (lastbyte == UInt8('\r') || lastbyte == UInt8('\n')) +
-            (lastbyte == UInt8('\n') && buf[end - 1] == UInt8('\r'))
-        revlen = skiptorow(ReversedBuf(buf), 1 + endpos, len, oq, eq, cq, cmt, ignoreemptyrows, 0, footerskip) - 2
+            (lastbyte == UInt8('\n') && len > pos && buf[len - 1] == UInt8('\r'))
+        revbuf = ReversedBuf(buf, pos, len)
+        revbuflen = length(revbuf)
+        rows_to_skip = footerskip
+        revlen = 0
+        while true
+            revlen = skiptorow(revbuf, 1 + endpos, revbuflen, oq, eq, cq, nothing, ignoreemptyrows, 0, rows_to_skip) - 2
+            comments = countcomments(buf, len - revlen + 1, len, oq, eq, cq, cmt)
+            adjusted_rows_to_skip = footerskip + comments
+            rows_to_skip == adjusted_rows_to_skip && break
+            rows_to_skip = adjusted_rows_to_skip > rows_to_skip ?
+                max(adjusted_rows_to_skip, 2 * rows_to_skip) :
+                adjusted_rows_to_skip
+        end
         len -= revlen
         debug && println("adjusted for footerskip, len = $(len + revlen - 1) => $len")
     end

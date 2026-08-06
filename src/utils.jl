@@ -243,7 +243,7 @@ function chaincolumns!(@nospecialize(a), @nospecialize(b))
 end
 
 # one-liner suggested from ScottPJones
-consumeBOM(buf, pos) = (length(buf) >= 3 && buf[pos] == 0xef && buf[pos + 1] == 0xbb && buf[pos + 2] == 0xbf) ? pos + 3 : pos
+consumeBOM(buf, pos, len) = (len - pos + 1 >= 3 && buf[pos] == 0xef && buf[pos + 1] == 0xbb && buf[pos + 2] == 0xbf) ? pos + 3 : pos
 
 if isdefined(Base, :Memory)
     if isdefined(Base,:wrap)
@@ -301,15 +301,16 @@ end
 
 function getsource(@nospecialize(x), buffer_in_memory)
     buf, pos, len, tfile = getbytebuffer(x, buffer_in_memory)::Tuple{Vector{UInt8},Int,Int,Union{Nothing,String}}
-    if length(buf) >= 2 && buf[1] == 0x1f && buf[2] == 0x8b
+    if len - pos + 1 >= 2 && buf[pos] == 0x1f && buf[pos + 1] == 0x8b
         # gzipped source, gunzip it
+        compressed = pos == 1 && len == length(buf) ? buf : @view(buf[pos:len])
         if buffer_in_memory
-            buf = transcode(GzipDecompressor, buf)
+            buf = transcode(GzipDecompressor, compressed isa Vector{UInt8} ? compressed : collect(compressed))
         else
             # 917; if we already buffered input to tempfile, make sure the compressed tempfile is
             # cleaned up since we're only passing the *uncompressed* tempfile up for removal post-parsing
             tfile1 = tfile === nothing ? nothing : tfile
-            buf, tfile = buffer_to_tempfile(GzipDecompressor(), IOBuffer(buf))
+            buf, tfile = buffer_to_tempfile(GzipDecompressor(), IOBuffer(compressed))
             if tfile1 !== nothing
                 rm(tfile1; force=true)
             end
@@ -564,12 +565,15 @@ end
 # and skips lines backwards
 struct ReversedBuf <: AbstractVector{UInt8}
     buf::Vector{UInt8}
+    first::Int
+    last::Int
 end
+ReversedBuf(buf::Vector{UInt8}) = ReversedBuf(buf, firstindex(buf), lastindex(buf))
 
-Base.size(a::ReversedBuf) = size(a.buf)
+Base.size(a::ReversedBuf) = (a.last - a.first + 1,)
 Base.IndexStyle(::Type{ReversedBuf}) = Base.IndexLinear()
-Base.getindex(a::ReversedBuf, i::Int) = a.buf[end + 1 - i]
-Base.pointer(a::ReversedBuf, pos::Integer=1) = pointer(a.buf, length(a.buf) + 1 - pos)
+Base.getindex(a::ReversedBuf, i::Int) = a.buf[a.last + 1 - i]
+Base.pointer(a::ReversedBuf, pos::Integer=1) = pointer(a.buf, a.last + 1 - pos)
 
 memset!(ptr, value, num) = ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), ptr, value, num)
 
