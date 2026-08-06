@@ -678,13 +678,12 @@ Base.@propagate_inbounds function parserow(startpos, row, numwarnings, ctx::Cont
         else
             if i < ncols
                 if Parsers.newline(code) || pos > len
-                    # in https://github.com/JuliaData/CSV.jl/issues/948,
-                    # it was noticed that if we reached the EOF right before parsing
-                    # the last expected column, then the warning is a bit spurious.
-                    # The final value is `missing` and the csv writer chose to just
-                    # "close" the file w/o including a final newline
-                    # we can treat this special-case as "valid" and not emit a warning
-                    if !(pos > len && i == (ncols - 1))
+                    # In https://github.com/JuliaData/CSV.jl/issues/948,
+                    # the delimiter for an empty final field was the final byte of
+                    # the input. Treat that explicit empty field as valid even
+                    # without a trailing newline, but still warn if the row ended
+                    # before the final field's delimiter was present.
+                    if !(pos > len && i == (ncols - 1) && Parsers.delimited(code))
                         ctx.silencewarnings || numwarnings[] > ctx.maxwarnings || notenoughcolumns(i, ncols, rowoffset + row)
                         !ctx.silencewarnings && numwarnings[] == ctx.maxwarnings && toomanywwarnings()
                         numwarnings[] += 1
