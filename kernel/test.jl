@@ -407,12 +407,27 @@ end
     end
     @test total == 3
     @test Tables.partitions(E.batches(csv; chunkbytes=8)) isa E.Batches
-    # global sample fixes types even when an early batch is type-ambiguous:
+    # global prepass fixes types even when an early batch is type-ambiguous:
     # first rows are ints, floats only appear later — every batch still Float64
     csv2 = "x\n" * join(1:20, "\n") * "\n3.5\n"
     for batch in E.batches(csv2; chunkbytes=16)
         @test eltype(batch[:x]) == Float64
     end
+    # A sample cannot guarantee a stable schema. Put the only float beyond the
+    # old 128-row sample and put a missing in only one batch; all batches must
+    # still expose the same Union element type.
+    csv3 = "x\n" * join(1:1000, "\n") * "\n\n3.5\n"
+    bs = collect(E.batches(csv3; chunkbytes=256, ignoreemptyrows=false))
+    @test all(eltype(batch[:x]) == Union{Float64, Missing} for batch in bs)
+    @test last(bs)[:x][end] == 3.5
+    # User types are strict in batches, as they are in the eager driver.
+    bs = collect(E.batches("x\n1\nbad\n3\n"; types=Int64, chunkbytes=2))
+    @test all(eltype(batch[:x]) == Union{Int64, Missing} for batch in bs)
+    @test only([p for batch in bs for p in K.problems(batch)]).row == 2
+    # Row-shape problems use global data-row ids across chunks.
+    bs = collect(E.batches("a,b\n1\n2,3,4\n"; chunkbytes=3))
+    probs = [p for batch in bs for p in K.problems(batch)]
+    @test [(p.kind, p.row) for p in probs] == [(:short_row, 1), (:long_row, 2)]
     # row streaming: lazy untyped + on-demand typed access
     rs = collect(E.rows(csv))
     @test length(rs) == 3

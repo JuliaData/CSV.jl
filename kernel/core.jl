@@ -731,7 +731,8 @@ end
 # Returns 0 on success, or the local row of the first conflicting value.
 function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
                         j::Int, rowbase::Int, opts::Parsers.Options,
-                        userprovided::Bool, problems) where {T}
+                        userprovided::Bool, problems,
+                        problemrowbase::Int=rowbase) where {T}
     values, present = col.values, col.present
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
         out = rowbase + (lr - ci.firstdatarow) + 1
@@ -756,7 +757,8 @@ function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
             if Parsers.sentinel(sres.code) && sres.tlen == len
                 # missing; value slot stays absent
             elseif userprovided
-                pushproblem!(problems, out, j, pos, :invalid_value,
+                problemrow = problemrowbase + (lr - ci.firstdatarow) + 1
+                pushproblem!(problems, problemrow, j, pos, :invalid_value,
                              "cannot parse $(T) from " * excerpt(buf, pos, len))
                 # value stays missing under strict=false semantics
             else
@@ -769,7 +771,8 @@ end
 
 function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
                         j::Int, rowbase::Int, opts::Parsers.Options,
-                        userprovided::Bool, problems)
+                        userprovided::Bool, problems,
+                        problemrowbase::Int=rowbase)
     spans = col.spans
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
         out = rowbase + (lr - ci.firstdatarow) + 1
@@ -782,7 +785,8 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
             kind = Parsers.invalidquotedfield(res.code) ? :invalid_quoted_field : :invalid_value
             message = kind === :invalid_quoted_field ? "malformed quoting in " :
                       "string parser did not consume the exact field span "
-            pushproblem!(problems, out, j, pos, kind, message * excerpt(buf, pos, len))
+            problemrow = problemrowbase + (lr - ci.firstdatarow) + 1
+            pushproblem!(problems, problemrow, j, pos, kind, message * excerpt(buf, pos, len))
             continue
         end
         if Parsers.sentinel(res.code)
@@ -1133,14 +1137,23 @@ chunkrowbase(chunks::Vector{ChunkIndex}, target::ChunkIndex) =
 function finalizecolumn(::Type{Missing}, ::Nothing, n::Int)
     return MissingColumn(n)
 end
+finalizecolumn(::Type{Missing}, ::Nothing, n::Int, ::Bool) = MissingColumn(n)
 function finalizecolumn(::Type{String}, col::StringColumn, n::Int)
     anymissing = any(s -> s.len < 0, col.spans)
+    return anymissing ? StringViewVector{Union{String, Missing}}(col.spans, col.buf, col.e, col.cq) :
+                        StringViewVector{String}(col.spans, col.buf, col.e, col.cq)
+end
+function finalizecolumn(::Type{String}, col::StringColumn, n::Int, force_missing::Bool)
+    anymissing = force_missing || any(s -> s.len < 0, col.spans)
     return anymissing ? StringViewVector{Union{String, Missing}}(col.spans, col.buf, col.e, col.cq) :
                         StringViewVector{String}(col.spans, col.buf, col.e, col.cq)
 end
 function finalizecolumn(::Type{T}, col::TypedColumn{T}, n::Int) where {T}
     # no missings ⇒ hand back the raw Vector{T}, zero copies
     return all(col.present) ? col.values : MaybeVector{T}(col.values, col.present)
+end
+function finalizecolumn(::Type{T}, col::TypedColumn{T}, n::Int, force_missing::Bool) where {T}
+    return !force_missing && all(col.present) ? col.values : MaybeVector{T}(col.values, col.present)
 end
 
 """

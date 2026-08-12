@@ -4,8 +4,8 @@
 #
 #   KernelExamples.read     ≈ CSV.read   — eager, parallel, Tables.jl-compatible
 #   KernelExamples.batches  ≈ CSV.Chunks — memory-bounded batch iterator with a
-#                                          STABLE schema across batches (inference
-#                                          samples the whole file once, up front)
+#                                          STABLE schema across batches (a schema
+#                                          prepass visits every indexed field)
 #   KernelExamples.rows     ≈ CSV.Rows   — zero-column-allocation row streaming
 #                                          with lazy string views + on-demand
 #                                          typed access
@@ -58,24 +58,29 @@ read(source; kw...) = K.parse(source; kw...)
 # here; a production StreamSource would index chunk-by-chunk too — same code,
 # different L0).
 #
-# The upgrade over CSV.Chunks: the schema is inferred ONCE from a stratified
-# whole-file sample, so every batch reports the same column types. (CSV.Chunks
-# re-infers per chunk, which is why its docs warn that chunk schemas may
-# differ.) A batch value that still defies the sampled type promotes that
-# batch's column upward — rare by construction, and surfaced in the batch's
-# problems rather than silently.
+# The upgrade over CSV.Chunks: one whole-file prepass computes both value types
+# and missingness, so every batch reports the same column types. (CSV.Chunks
+# re-infers per chunk, which is why its docs warn that chunk schemas may differ.)
+# Sampling cannot prove this property: one unsampled value or one batch-local
+# missing would otherwise change that batch's schema.
 
 struct Batches
     buf::Vector{UInt8}
     chunks::Vector{K.ChunkIndex}
     names::Vector{Symbol}
     seedtypes::Vector{Type}
+    userprovided::Vector{Bool}
+    allowmissing::Vector{Bool}
     opts::Parsers.Options
     d::K.Dialect
     maxproblems::Int
+    unclosedquote::Bool
 end
 
-function batches(source;
+"""Construct stable-schema batches. Row iteration calls `_batches` without a schema prepass."""
+batches(source; kw...) = _batches(source, false; kw...)
+
+function _batches(source, rowmode::Bool;
                  header::Union{Bool, AbstractVector}=true,
                  types=nothing,
                  chunkbytes::Int=1 << 20,
@@ -107,13 +112,43 @@ function batches(source;
     names = K.makeunique!(names)
     ncols = length(names)
     seed = K.resolvetypes(types, names, ncols)
+    userprovided = [T !== nothing for T in seed]
     if any(isnothing, seed)
-        inferred = K.sampletypes(buf, chunks, ncols, opts)
+        # A stable schema requires every value to participate. The eager driver
+        # can sample and promote later; a partition already yielded cannot.
+        total = sum(K.nrows, chunks; init=0)
+        inferred = K.sampletypes(buf, chunks, ncols, opts; nsample=max(1, total))
         for j in 1:ncols
             seed[j] === nothing && (seed[j] = inferred[j])
         end
     end
-    return Batches(buf, chunks, names, Type[T for T in seed], opts, d, maxproblems)
+    seedtypes = Type[T for T in seed]
+    allowmissing = rowmode ? fill(false, ncols) :
+                             schemamissing(buf, chunks, seedtypes, opts)
+    return Batches(buf, chunks, names, seedtypes, userprovided, allowmissing,
+                   opts, d, maxproblems, bi.unclosedquote)
+end
+
+function schemamissing(buf, chunks, types, opts)
+    missing = fill(false, length(types))
+    for ci in chunks, lr in ci.firstdatarow:K.totalrows(ci), j in eachindex(types)
+        missing[j] && continue
+        sp = K.fieldspan(ci, lr, j)
+        if sp === nothing || sp[2] == 0 || types[j] === Missing
+            missing[j] = true
+            continue
+        end
+        pos, len = sp
+        res = types[j] === String ? K.xparsestring(buf, pos, pos + len - 1, opts) :
+                                   Parsers.xparse(types[j], buf, pos, pos + len - 1, opts)
+        if !Parsers.ok(res.code) || res.tlen != len || Parsers.sentinel(res.code)
+            # Numeric parsers report a stripped-to-empty sentinel as invalid.
+            sres = K.xparsestring(buf, pos, pos + len - 1, opts)
+            missing[j] = Parsers.sentinel(sres.code) ||
+                         !Parsers.ok(res.code) || res.tlen != len
+        end
+    end
+    return missing
 end
 
 function headername(buf, ci, hrow, j, opts, cq::UInt8)
@@ -139,29 +174,42 @@ function Base.iterate(b::Batches, i::Int=1)
 end
 
 # One batch = the kernel's column primitives applied to a single chunk. This is
-# the "building blocks compose" claim made concrete: ~30 lines, no new parsing
-# code, no special streaming mode.
+# the "building blocks compose" claim made concrete: no new value parsing code
+# and no special streaming mode.
 function parsebatch(b::Batches, ci::K.ChunkIndex)
     n = K.nrows(ci)
     ncols = length(b.names)
     log = K.ProblemLog(b.maxproblems)
+    rowbase = K.chunkrowbase(b.chunks, ci)
+
+    for lr in ci.firstdatarow:K.totalrows(ci)
+        nf = K.nfields(ci, lr)
+        grow = rowbase + (lr - ci.firstdatarow) + 1
+        if nf < ncols
+            sp = K.fieldspan(ci, lr, 1)::Tuple{Int, Int}
+            K.pushproblem!(log, grow, 0, sp[1], :short_row,
+                           "expected $ncols fields, found $nf (remaining columns set to missing)")
+        elseif nf > ncols
+            sp = K.fieldspan(ci, lr, ncols + 1)::Tuple{Int, Int}
+            K.pushproblem!(log, grow, 0, sp[1], :long_row,
+                           "expected $ncols fields, found $nf (extra fields ignored)")
+        end
+    end
+    b.unclosedquote && ci === last(b.chunks) &&
+        K.pushproblem!(log, 0, 0, length(b.buf), :unclosed_quote,
+                       "input ended inside a quoted field")
+
     cols = Vector{AbstractVector}(undef, ncols)
     for j in 1:ncols
         T = b.seedtypes[j]
-        while true
-            col = K.allocatecolumn(T, n, b.buf, b.opts.e, b.d.cq)
-            conflict = T === Missing ?
-                K.parsecolchunk_missing(b.buf, ci, j, b.opts) :
-                K.parsecolchunk!(col, b.buf, ci, j, 0, b.opts, false, log)
-            if conflict == 0
-                cols[j] = K.finalizecolumn(T, col, n)
-                break
-            end
-            sp = K.fieldspan(ci, conflict, j)::Tuple{Int, Int}
-            newT = K.promote_kernel(T, K.detecttype(b.buf, sp[1], sp[2], b.opts))
-            T = newT === T ? String : newT
-        end
+        col = K.allocatecolumn(T, n, b.buf, b.opts.e, b.d.cq)
+        conflict = T === Missing ?
+            K.parsecolchunk_missing(b.buf, ci, j, rowbase, b.opts, b.userprovided[j], log) :
+            K.parsecolchunk!(col, b.buf, ci, j, 0, b.opts, b.userprovided[j], log, rowbase)
+        conflict == 0 || error("internal error: batch schema prepass disagreed with value parsing")
+        cols[j] = K.finalizecolumn(T, col, n, b.allowmissing[j])
     end
+    K.sortproblems!(log)
     return K.ParsedTable(b.names, cols, n, log.items, log.dropped)
 end
 
@@ -188,10 +236,10 @@ function rows(source; header::Union{Bool, AbstractVector}=true,
               dateformat=nothing, decimal::Char='.',
               truestrings=nothing, falsestrings=nothing,
               chunkbytes::Int=1 << 22, dialectkw...)
-    # types=String makes resolvetypes fill every column, which skips the sampling
-    # pass entirely — row streaming needs the index and names, never a schema.
-    b = batches(source; header, chunkbytes, stripwhitespace, types=String,
-                dateformat, decimal, truestrings, falsestrings, dialectkw...)
+    # types=String skips type inference; rowmode also skips the missingness
+    # prepass. Row streaming needs the structural index and names, never a schema.
+    b = _batches(source, true; header, chunkbytes, stripwhitespace, types=String,
+                 dateformat, decimal, truestrings, falsestrings, dialectkw...)
     return Rows(b.buf, b.chunks, b.names, Dict(nm => j for (j, nm) in enumerate(b.names)),
                 b.opts, b.d)
 end
