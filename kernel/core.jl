@@ -608,7 +608,7 @@ function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::Parsers.Option
     # Missing-first: custom sentinel strings and stripwhitespace-emptied fields are
     # type-neutral. Probed via a String parse because Parsers' numeric parsers
     # report a stripped-to-empty field as INVALID rather than SENTINEL.
-    sres = Parsers.xparse(String, buf, pos, stop, opts)
+    sres = xparsestring(buf, pos, stop, opts)
     Parsers.sentinel(sres.code) && sres.tlen == len && return Missing
     for T in (Int64, Float64, Date, DateTime, Time, Bool)
         res = Parsers.xparse(T, buf, pos, stop, opts)
@@ -650,6 +650,12 @@ mutable struct StringColumn
 end
 StringColumn(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8) =
     StringColumn(fill(STR_MISSING, n), buf, e, cq)
+
+# Parsers.PosLen stores only 20 length bits. Ask Parsers for its 31-bit span
+# result so a long string is not truncated before we copy the span into StrSpan.
+# This result type is available throughout the kernel's supported Parsers range.
+@inline xparsestring(buf::Vector{UInt8}, pos::Int, stop::Int, opts::Parsers.Options) =
+    Parsers.xparse(String, buf, pos, stop, opts, Parsers.PosLen31)
 
 # The kernel's own unescape: `""` collapses to `"` when e == cq; `\X` drops the
 # backslash when e != cq. We do NOT round-trip through Parsers.getstring here
@@ -746,7 +752,7 @@ function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
             # (e.g. whitespace-only with stripwhitespace=true, or a custom
             # missingstring) is missing, not a conflict — Parsers only reports
             # SENTINEL through the String path, so probe it on this cold path.
-            sres = Parsers.xparse(String, buf, pos, pos + len - 1, opts)
+            sres = xparsestring(buf, pos, pos + len - 1, opts)
             if Parsers.sentinel(sres.code) && sres.tlen == len
                 # missing; value slot stays absent
             elseif userprovided
@@ -771,10 +777,12 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
         sp === nothing && continue
         pos, len = sp
         len == 0 && continue                            # unquoted empty ⇒ missing; quoted "" survives below
-        res = Parsers.xparse(String, buf, pos, pos + len - 1, opts)
-        if Parsers.invalidquotedfield(res.code)
-            pushproblem!(problems, out, j, pos, :invalid_quoted_field,
-                         "malformed quoting in " * excerpt(buf, pos, len))
+        res = xparsestring(buf, pos, pos + len - 1, opts)
+        if !Parsers.ok(res.code) || res.tlen != len
+            kind = Parsers.invalidquotedfield(res.code) ? :invalid_quoted_field : :invalid_value
+            message = kind === :invalid_quoted_field ? "malformed quoting in " :
+                      "string parser did not consume the exact field span "
+            pushproblem!(problems, out, j, pos, kind, message * excerpt(buf, pos, len))
             continue
         end
         if Parsers.sentinel(res.code)
@@ -795,8 +803,8 @@ function parsecolchunk_missing(buf::Vector{UInt8}, ci::ChunkIndex, j::Int,
         sp === nothing && continue
         _, len = sp
         len == 0 && continue
-        res = Parsers.xparse(String, buf, sp[1], sp[1] + len - 1, opts)
-        Parsers.sentinel(res.code) || return lr
+        res = xparsestring(buf, sp[1], sp[1] + len - 1, opts)
+        Parsers.ok(res.code) && res.tlen == len && Parsers.sentinel(res.code) || return lr
     end
     return 0
 end
@@ -980,11 +988,17 @@ function parse(buf::Vector{UInt8};
             if len == 0
                 names[j] = Symbol("Column", j)
             else
-                res = Parsers.xparse(String, buf, pos, pos + len - 1, opts)
-                pl = res.val
-                names[j] = Symbol(Parsers.escapedstring(res.code) ?
-                                  _unescape(buf, Int64(pl.pos), Int32(pl.len), opts.e, d.cq) :
-                                  unsafe_string(pointer(buf, pl.pos), pl.len))
+                res = xparsestring(buf, pos, pos + len - 1, opts)
+                if Parsers.ok(res.code) && res.tlen == len
+                    pl = res.val
+                    names[j] = Symbol(Parsers.escapedstring(res.code) ?
+                                      _unescape(buf, Int64(pl.pos), Int32(pl.len), opts.e, d.cq) :
+                                      GC.@preserve(buf, unsafe_string(pointer(buf, pl.pos), pl.len)))
+                else
+                    # Keep malformed header bytes exact. The file-level malformed
+                    # quote problem is recorded below when applicable.
+                    names[j] = Symbol(String(buf[pos:pos + len - 1]))
+                end
             end
         end
         ci.firstdatarow = hrow + 1

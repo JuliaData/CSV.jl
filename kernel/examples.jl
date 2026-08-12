@@ -119,11 +119,14 @@ end
 function headername(buf, ci, hrow, j, opts, cq::UInt8)
     pos, len = K.fieldspan(ci, hrow, j)::Tuple{Int, Int}
     len == 0 && return Symbol("Column", j)
-    res = Parsers.xparse(String, buf, pos, pos + len - 1, opts)
-    pl = res.val
-    return Symbol(Parsers.escapedstring(res.code) ?
-                  K._unescape(buf, Int64(pl.pos), Int32(pl.len), opts.e, cq) :
-                  unsafe_string(pointer(buf, pl.pos), pl.len))
+    res = K.xparsestring(buf, pos, pos + len - 1, opts)
+    if Parsers.ok(res.code) && res.tlen == len
+        pl = res.val
+        return Symbol(Parsers.escapedstring(res.code) ?
+                      K._unescape(buf, Int64(pl.pos), Int32(pl.len), opts.e, cq) :
+                      GC.@preserve(buf, unsafe_string(pointer(buf, pl.pos), pl.len)))
+    end
+    return Symbol(String(buf[pos:pos + len - 1]))
 end
 
 Base.length(b::Batches) = length(b.chunks)
@@ -227,7 +230,8 @@ function Base.getindex(row::RowView, j::Int)
     pos, len = sp
     len == 0 && return missing
     buf = row.r.buf
-    res = Parsers.xparse(String, buf, pos, pos + len - 1, row.r.opts)
+    res = K.xparsestring(buf, pos, pos + len - 1, row.r.opts)
+    Parsers.ok(res.code) && res.tlen == len || return missing
     Parsers.sentinel(res.code) && return missing
     pl = res.val
     return Parsers.escapedstring(res.code) ?

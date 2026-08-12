@@ -322,6 +322,10 @@ end
     # empty header cell gets a generated name
     t = K.parse("a,,c\n1,2,3\n")
     @test K.names(t) == [:a, :Column2, :c]
+    # A malformed header must not be silently truncated at a delimiter that the
+    # structural quote rule assigned to the same field.
+    t = K.parse("ab\"cd,e\"f,g\n1,2\n")
+    @test K.names(t) == [Symbol("ab\"cd,e\"f"), :g]
 end
 
 @testset "typed: dialect passthrough" begin
@@ -357,6 +361,17 @@ end
     # materialize detaches from the buffer
     v = K.materialize(t[:a])
     @test v == ["x\"y"] && v isa Vector{String}
+    # String spans use Parsers.PosLen31, not PosLen's 20-bit length. The old
+    # path silently returned only the final 7 bytes for this value.
+    longvalue = repeat("x", (1 << 20) + 7)
+    t = K.parse("a\n" * longvalue * "\n"; types=String, chunkbytes=1 << 16)
+    @test t[:a][1] == longvalue
+    # Every value parser must consume the full structural span. A bare quote is
+    # structurally valid by design, but it makes this value malformed for
+    # Parsers' field-start quote rule; report it instead of returning a prefix.
+    t = K.parse("a,b\nab\"cd,e\"f,g\n"; types=String)
+    @test isequal(collect(t[:a]), [missing])
+    @test any(p -> p.kind == :invalid_value && p.row == 1 && p.col == 1, K.problems(t))
 end
 
 @testset "examples: the layered APIs" begin
