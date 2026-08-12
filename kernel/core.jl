@@ -794,24 +794,32 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
     return 0
 end
 
-# A column believed all-missing: cheap scan that only *verifies*; the first
-# non-empty field reports a conflict so the driver can detect + promote.
+# A column believed all-missing: inferred columns report the first conflict so
+# the driver can promote; explicit Missing columns report every present value.
 function parsecolchunk_missing(buf::Vector{UInt8}, ci::ChunkIndex, j::Int,
-                               opts::Parsers.Options)
+                               rowbase::Int, opts::Parsers.Options,
+                               userprovided::Bool, problems)
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
         sp = fieldspan(ci, lr, j)
         sp === nothing && continue
         _, len = sp
         len == 0 && continue
         res = xparsestring(buf, sp[1], sp[1] + len - 1, opts)
-        Parsers.ok(res.code) && res.tlen == len && Parsers.sentinel(res.code) || return lr
+        ismissing = Parsers.ok(res.code) && res.tlen == len && Parsers.sentinel(res.code)
+        if !ismissing
+            userprovided || return lr
+            out = rowbase + (lr - ci.firstdatarow) + 1
+            pushproblem!(problems, out, j, sp[1], :invalid_value,
+                         "column typed Missing contains " * excerpt(buf, sp[1], len))
+        end
     end
     return 0
 end
 
 # ---------------------------------------------------------------------------
 # Problems: errors as data. Bounded (maxproblems) so a pathological file cannot
-# exhaust memory; the count of dropped reports is itself recorded.
+# exhaust memory. Retention and final order use source order, not task arrival
+# order; the count of omitted reports is itself recorded.
 # ---------------------------------------------------------------------------
 
 struct Problem
@@ -826,20 +834,34 @@ mutable struct ProblemLog
     items::Vector{Problem}
     limit::Int
     dropped::Int
+    first::Union{Nothing, Problem}
     lock::ReentrantLock
 end
-ProblemLog(limit::Int) = ProblemLog(Problem[], limit, 0, ReentrantLock())
+function ProblemLog(limit::Int)
+    limit >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $limit)"))
+    return ProblemLog(Problem[], limit, 0, nothing, ReentrantLock())
+end
+
+problemkey(p::Problem) = (p.row, p.col, p.pos, String(p.kind), p.message)
 
 function pushproblem!(log::ProblemLog, row::Int, col::Int, pos::Int, kind::Symbol, msg::String)
+    p = Problem(row, col, pos, kind, msg)
     lock(log.lock) do
+        (log.first === nothing || problemkey(p) < problemkey(log.first)) && (log.first = p)
         if length(log.items) < log.limit
-            push!(log.items, Problem(row, col, pos, kind, msg))
+            push!(log.items, p)
         else
             log.dropped += 1
+            if log.limit > 0
+                _, maxi = findmax(problemkey, log.items)
+                problemkey(p) < problemkey(log.items[maxi]) && (log.items[maxi] = p)
+            end
         end
     end
     return
 end
+
+sortproblems!(log::ProblemLog) = sort!(log.items; by=problemkey)
 
 function excerpt(buf::Vector{UInt8}, pos::Int, len::Int; maxbytes::Int=32)
     n = min(len, maxbytes)
@@ -1031,7 +1053,7 @@ function parse(buf::Vector{UInt8};
         rowbase += nrows(ci)
     end
     bi.unclosedquote &&
-        pushproblem!(log, ndata, 0, length(buf), :unclosed_quote,
+        pushproblem!(log, 0, 0, length(buf), :unclosed_quote,
                      "input ended inside a quoted field")
 
     # -- type seeding ----------------------------------------------------------
@@ -1069,25 +1091,17 @@ function parse(buf::Vector{UInt8};
                 for j in todo
                     T = coltypes[j]
                     conflictrow = if T === Missing
-                        parsecolchunk_missing(buf, ci, j, opts)
+                        parsecolchunk_missing(buf, ci, j, rb, opts, userprovided[j], log)
                     else
                         parsecolchunk!(storage[j], buf, ci, j, rb, opts, userprovided[j], log)
                     end
                     if conflictrow != 0
                         sp = fieldspan(ci, conflictrow, j)::Tuple{Int, Int}
-                        if userprovided[j]
-                            # only the all-Missing verifier reaches here for user types;
-                            # report instead of promoting (strict=false semantics)
-                            pushproblem!(log, rb + (conflictrow - ci.firstdatarow) + 1, j, sp[1],
-                                         :invalid_value,
-                                         "column typed Missing contains " * excerpt(buf, sp[1], sp[2]))
-                        else
-                            newT = promote_kernel(T, detecttype(buf, sp[1], sp[2], opts))
-                            newT = newT === T ? String : newT  # a conflicting value must move the type
-                            lock(promolock) do
-                                promo[j] = promote_kernel(promo[j], newT)
-                                dirty[j] = true
-                            end
+                        newT = promote_kernel(T, detecttype(buf, sp[1], sp[2], opts))
+                        newT = newT === T ? String : newT  # a conflicting value must move the type
+                        lock(promolock) do
+                            promo[j] = promote_kernel(promo[j], newT)
+                            dirty[j] = true
                         end
                     end
                 end
@@ -1100,10 +1114,12 @@ function parse(buf::Vector{UInt8};
     for j in 1:ncols
         cols[j] = finalizecolumn(coltypes[j], storage[j], ndata)
     end
-    if on_error === :error && !isempty(log.items)
-        p = log.items[1]
+    sortproblems!(log)
+    if on_error === :error && log.first !== nothing
+        p = log.first
+        nproblems = length(log.items) + log.dropped
         throw(ErrorException("CSVKernel: $(p.kind) at data row $(p.row), column $(p.col): $(p.message)" *
-                             (length(log.items) > 1 ? " (+$(length(log.items) - 1 + log.dropped) more)" : "")))
+                             (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
     end
     return ParsedTable(names, cols, ndata, log.items, log.dropped)
 end

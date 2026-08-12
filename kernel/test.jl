@@ -292,8 +292,22 @@ end
     @test length(K.problems(t)) == 1
     p = K.problems(t)[1]
     @test p.kind == :invalid_value && p.row == 2 && p.col == 1
+    # Explicit Missing validates every present value, not only the first value in
+    # each chunk. Problem order and bounded retention are deterministic.
+    t = K.parse("a\nx\ny\nz\n"; types=Missing, chunkbytes=2, maxproblems=10)
+    @test isequal(collect(t[:a]), fill(missing, 3))
+    @test [(p.row, p.col) for p in K.problems(t)] == [(1, 1), (2, 1), (3, 1)]
+    bad = "a,b\n" * join(fill("x,y", 5), "\n") * "\n"
+    expected = [(1, 1), (1, 2), (2, 1)]
+    for _ in 1:10
+        t = K.parse(bad; types=Int64, chunkbytes=3, maxproblems=3)
+        @test [(p.row, p.col) for p in K.problems(t)] == expected
+        @test t.droppedproblems == 7
+    end
     # on_error=:error escalates the first problem
     @test_throws ErrorException K.parse("a\n1\nxyz\n"; types=Dict(:a => Int64), on_error=:error)
+    @test_throws ErrorException K.parse("a\nxyz\n"; types=Int64, on_error=:error, maxproblems=0)
+    @test_throws ArgumentError K.parse("a\n1\n"; maxproblems=-1)
     # bad types keyword arguments throw
     @test_throws ArgumentError K.parse("a,b\n1,2\n"; types=[Int64])
     @test_throws ArgumentError K.parse("a,b\n1,2\n"; types=Dict(:nope => Int64))
@@ -353,6 +367,7 @@ end
     # unclosed quote at EOF: recorded as a problem, field still delivered
     t = K.parse("a\n\"unclosed")
     @test any(p -> p.kind == :unclosed_quote, K.problems(t))
+    @test only(filter(p -> p.kind == :unclosed_quote, K.problems(t))).row == 0
     @test any(p -> p.kind == :invalid_quoted_field, K.problems(t))
     @test isequal(collect(t[:a]), [missing])
     # string escape materialization

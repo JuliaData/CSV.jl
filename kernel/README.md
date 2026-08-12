@@ -69,7 +69,7 @@ here because there is nothing to guess.
 **5. Errors are data.** Short/long rows, invalid values under user-provided
 types, malformed quoting, and unclosed-quote EOF all become `Problem` records
 (row, column, byte offset, kind, excerpt) on the result, bounded by
-`maxproblems`, with `on_error=:error` as the fail-fast escalation. No `@warn`
+`maxproblems`, with `on_error=:error` as a post-parse escalation. No `@warn`
 spam, nothing lost to a terminal scrollback.
 
 ## Column storage
