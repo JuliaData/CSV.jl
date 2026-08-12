@@ -248,6 +248,7 @@ end
     # all-missing column
     t4 = K.parse("a,b\n1,\n2,\n")
     @test eltype(t4[:b]) == Missing && length(t4[:b]) == 2
+    @test_throws BoundsError t4[:b][3]
 end
 
 @testset "typed: promotion" begin
@@ -439,6 +440,18 @@ end
     # ragged row: missing beyond the row's fields
     rs2 = collect(E.rows("a,b\n1\n"))
     @test ismissing(rs2[1][:b])
+    @test_throws BoundsError rs2[1][0]
+    @test_throws BoundsError E.typedvalue(Int64, rs2[1], 3)
+    # Rows declares the Tables.jl row interface, including a concrete schema.
+    rows = E.rows(csv)
+    @test Tables.istable(typeof(rows)) && Tables.rowaccess(typeof(rows))
+    @test Tables.rows(rows) === rows
+    @test Tables.schema(rows).types ==
+          (Union{String, Missing}, Union{String, Missing}, Union{String, Missing})
+    @test Tables.rowtable(rows)[1] == (a="1", b="x", c="2.5")
+    # A CSV column name takes priority over RowView's private storage fields.
+    row = first(E.rows("r,rownumber\nvalue,7\n"))
+    @test row.r == "value" && row.rownumber == "7"
 end
 
 @testset "determinism & moderate volume" begin

@@ -231,6 +231,12 @@ struct Rows
     d::K.Dialect
 end
 
+Tables.istable(::Type{Rows}) = true
+Tables.rowaccess(::Type{Rows}) = true
+Tables.rows(r::Rows) = r
+Tables.schema(r::Rows) =
+    Tables.Schema(r.names, fill(Union{String, Missing}, length(r.names)))
+
 function rows(source; header::Union{Bool, AbstractVector}=true,
               stripwhitespace::Bool=false,
               dateformat=nothing, decimal::Char='.',
@@ -244,7 +250,7 @@ function rows(source; header::Union{Bool, AbstractVector}=true,
                 b.opts, b.d)
 end
 
-struct RowView
+struct RowView <: Tables.AbstractRow
     r::Rows
     ci::K.ChunkIndex
     localrow::Int
@@ -268,39 +274,49 @@ function Base.iterate(r::Rows, state=(1, nothing, 1))
     return nothing
 end
 
-Base.length(row::RowView) = length(row.r.names)
-Base.propertynames(row::RowView) = row.r.names
+Base.length(row::RowView) = length(getfield(row, :r).names)
+Base.propertynames(row::RowView) = getfield(row, :r).names
+Tables.columnnames(row::RowView) = getfield(row, :r).names
+Tables.getcolumn(row::RowView, j::Int) = row[j]
+Tables.getcolumn(row::RowView, nm::Symbol) = row[nm]
 
 # Untyped access: Union{String, Missing}, materialized (and unescaped) on demand.
 function Base.getindex(row::RowView, j::Int)
-    sp = K.fieldspan(row.ci, row.localrow, j)
+    r = getfield(row, :r)
+    @boundscheck checkbounds(r.names, j)
+    sp = K.fieldspan(getfield(row, :ci), getfield(row, :localrow), j)
     sp === nothing && return missing
     pos, len = sp
     len == 0 && return missing
-    buf = row.r.buf
-    res = K.xparsestring(buf, pos, pos + len - 1, row.r.opts)
+    buf = r.buf
+    res = K.xparsestring(buf, pos, pos + len - 1, r.opts)
     Parsers.ok(res.code) && res.tlen == len || return missing
     Parsers.sentinel(res.code) && return missing
     pl = res.val
     return Parsers.escapedstring(res.code) ?
-        K._unescape(buf, Int64(pl.pos), Int32(pl.len), row.r.opts.e, row.r.d.cq) :
-        unsafe_string(pointer(buf, pl.pos), pl.len)
+        K._unescape(buf, Int64(pl.pos), Int32(pl.len), r.opts.e, r.d.cq) :
+        GC.@preserve(buf, unsafe_string(pointer(buf, pl.pos), pl.len))
 end
-Base.getindex(row::RowView, nm::Symbol) = row[row.r.lookup[nm]]
-Base.getproperty(row::RowView, nm::Symbol) =
-    nm in (:r, :ci, :localrow, :rownumber) ? getfield(row, nm) : row[nm]
+Base.getindex(row::RowView, nm::Symbol) = row[getfield(row, :r).lookup[nm]]
+function Base.getproperty(row::RowView, nm::Symbol)
+    r = getfield(row, :r)
+    return haskey(r.lookup, nm) ? row[nm] : getfield(row, nm)
+end
 
 # Typed access on demand — the CSV.Rows `Parsers.parse(T, row, i)` pattern.
 function typedvalue(::Type{T}, row::RowView, j::Int) where {T}
-    sp = K.fieldspan(row.ci, row.localrow, j)
+    r = getfield(row, :r)
+    @boundscheck checkbounds(r.names, j)
+    sp = K.fieldspan(getfield(row, :ci), getfield(row, :localrow), j)
     sp === nothing && return missing
     pos, len = sp
     len == 0 && return missing
-    res = Parsers.xparse(T, row.r.buf, pos, pos + len - 1, row.r.opts)
+    res = Parsers.xparse(T, r.buf, pos, pos + len - 1, r.opts)
     Parsers.ok(res.code) && res.tlen == len || return missing
     return Parsers.sentinel(res.code) ? missing : res.val
 end
-typedvalue(::Type{T}, row::RowView, nm::Symbol) where {T} = typedvalue(T, row, row.r.lookup[nm])
+typedvalue(::Type{T}, row::RowView, nm::Symbol) where {T} =
+    typedvalue(T, row, getfield(row, :r).lookup[nm])
 
 # ---------------------------------------------------------------------------
 # demo

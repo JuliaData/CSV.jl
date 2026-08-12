@@ -686,7 +686,10 @@ struct MissingColumn <: AbstractVector{Missing}
     n::Int
 end
 Base.size(c::MissingColumn) = (c.n,)
-Base.getindex(c::MissingColumn, i::Int) = missing
+Base.@propagate_inbounds function Base.getindex(c::MissingColumn, i::Int)
+    @boundscheck checkbounds(c, i)
+    return missing
+end
 
 # The user-facing views. `materialize` (below) converts to plain Vectors when the
 # caller prefers copies over views.
@@ -1159,11 +1162,11 @@ end
 """
     materialize(col) -> Vector
 
-Copy a kernel column into an ordinary `Vector` (`Vector{T}` or
+Convert a kernel column into an ordinary `Vector` (`Vector{T}` or
 `Vector{Union{T,Missing}}`), detaching it from the input buffer. String views
 allocate real `String`s here — the choice between views and copies is the caller's,
 made after parsing instead of before it (this replaces CSV.jl's up-front
-`stringtype=` commitment).
+`stringtype=` commitment). A column that is already a `Vector` is returned as-is.
 """
 materialize(v::AbstractVector) = collect(v)
 materialize(v::Vector) = v
