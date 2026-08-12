@@ -769,13 +769,33 @@ end
 # `detecttype(...) === T`, but probing only the cascade *prefix* for T, because
 # a value that full-span-parses as T can never detect as anything later.
 # Cost control (this guard sits on the hot path of every inferred Bool/temporal
-# column): canonical values fail the numeric probes within a few leading bytes,
-# and alphabetic spellings ("true"/"false"/custom trues) skip probing entirely —
-# only Inf/NaN can spell a number with a leading letter, so those initials stay.
-@inline function _letterfastout(b::UInt8)
+# column): canonical values fail the numeric probes within a few leading bytes.
+# Alphabetic spellings skip the prefix when it is numeric-only, or when temporal
+# parsing uses its numeric-leading default formats. A custom dateformat can start
+# with a letter, so a temporal prefix must still be probed in that case. Inf/NaN
+# and a custom alphabetic decimal byte can spell a number with a leading letter,
+# so those bytes stay out of the fast-out.
+@inline function _letterfastout(b::UInt8, opts::Parsers.Options)
     isletter = (UInt8('a') <= b <= UInt8('z')) | (UInt8('A') <= b <= UInt8('Z'))
     infnan = (b == UInt8('i')) | (b == UInt8('I')) | (b == UInt8('n')) | (b == UInt8('N'))
-    return isletter & !infnan
+    return isletter & !infnan & (b != opts.decimal)
+end
+
+@inline _prefixfastout(::Type{Date}, b::UInt8, opts::Parsers.Options) = _letterfastout(b, opts)
+@inline _prefixfastout(::Type, b::UInt8, opts::Parsers.Options) =
+    opts.dateformat === nothing && _letterfastout(b, opts)
+
+# Missing detection normally stays off this hot path. Parsers' temporal parsers,
+# however, accept a stripped-to-empty field as their zero/default value without
+# setting SENTINEL, while the String probe used by `detecttype` classifies it as
+# Missing. Probe String only for a leading strip-whitespace byte; a nonempty
+# unquoted sentinel must start there under the kernel's fixed sentinel options.
+@inline function _missingconflict(buf::Vector{UInt8}, pos::Int, len::Int,
+                                  opts::Parsers.Options)
+    b = @inbounds buf[pos]
+    (b == UInt8(' ') || b == UInt8('\t')) || return false
+    res = xparsestring(buf, pos, pos + len - 1, opts)
+    return Parsers.sentinel(res.code) && res.tlen == len
 end
 
 @inline function _hitsexact(::Type{S}, buf::Vector{UInt8}, pos::Int, len::Int,
@@ -785,21 +805,25 @@ end
 end
 
 @inline canonicalconflict(::Type{Date}, buf, pos, len, opts) =
-    !_letterfastout(@inbounds buf[pos]) &&
-    (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts))
+    _missingconflict(buf, pos, len, opts) ||
+    (!_prefixfastout(Date, @inbounds(buf[pos]), opts) &&
+     (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts)))
 @inline canonicalconflict(::Type{DateTime}, buf, pos, len, opts) =
-    !_letterfastout(@inbounds buf[pos]) &&
-    (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts) ||
-     _hitsexact(Date, buf, pos, len, opts))
+    _missingconflict(buf, pos, len, opts) ||
+    (!_prefixfastout(DateTime, @inbounds(buf[pos]), opts) &&
+     (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts) ||
+      _hitsexact(Date, buf, pos, len, opts)))
 @inline canonicalconflict(::Type{Time}, buf, pos, len, opts) =
-    !_letterfastout(@inbounds buf[pos]) &&
-    (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts) ||
-     _hitsexact(Date, buf, pos, len, opts) || _hitsexact(DateTime, buf, pos, len, opts))
+    _missingconflict(buf, pos, len, opts) ||
+    (!_prefixfastout(Time, @inbounds(buf[pos]), opts) &&
+     (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts) ||
+      _hitsexact(Date, buf, pos, len, opts) || _hitsexact(DateTime, buf, pos, len, opts)))
 @inline canonicalconflict(::Type{Bool}, buf, pos, len, opts) =
-    !_letterfastout(@inbounds buf[pos]) &&
-    (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts) ||
-     _hitsexact(Date, buf, pos, len, opts) || _hitsexact(DateTime, buf, pos, len, opts) ||
-     _hitsexact(Time, buf, pos, len, opts))
+    _missingconflict(buf, pos, len, opts) ||
+    (!_prefixfastout(Bool, @inbounds(buf[pos]), opts) &&
+     (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts) ||
+      _hitsexact(Date, buf, pos, len, opts) || _hitsexact(DateTime, buf, pos, len, opts) ||
+      _hitsexact(Time, buf, pos, len, opts)))
 @inline canonicalconflict(::Type, buf, pos, len, opts) = false  # Int64/Float64/String: cascade prefix can't claim them
 
 # Returns 0 on success, or the local row of the first conflicting value.

@@ -275,6 +275,36 @@ end
         @test eltype(K.parse("a\n2024-01-02T03:04:05\n2024-01-03\n"; nsample=ns)[:a]) == String
         @test eltype(K.parse("a\n03:04:05\n1\n"; nsample=ns)[:a]) == String
     end
+    # Quoting leaves the opening quote at the structural span's first byte, so
+    # the letter fast-out cannot hide a numeric overlap.
+    @test eltype(K.parse("a\nfalse\n\"1\"\n"; nsample=1)[:a]) == String
+
+    # Pin the prefix guard against the full detection cascade for custom formats.
+    # Numeric date spellings classify as Int64. Textual month spellings classify
+    # as Date even when DateTime or a custom Bool spelling also accepts them.
+    checkconflict = function (T, value, opts, detected)
+        buf = Vector{UInt8}(codeunits(value))
+        @test K._hitsexact(T, buf, 1, length(buf), opts)
+        @test K.detecttype(buf, 1, length(buf), opts) === detected
+        @test K.canonicalconflict(T, buf, 1, length(buf), opts) == (detected !== T)
+    end
+    numericdateopts = K.makeoptions(K.Dialect(); dateformat="yyyymmdd")
+    checkconflict(Date, "20240102", numericdateopts, Int64)
+    letterdecimalopts = K.makeoptions(K.Dialect(delim=';'); decimal='x',
+                                      truestrings=["x5"])
+    checkconflict(Bool, "x5", letterdecimalopts, Float64)
+    textdateopts = K.makeoptions(K.Dialect(); dateformat="u dd yyyy",
+                                truestrings=["Jan 02 2024"])
+    checkconflict(DateTime, "Jan 02 2024", textdateopts, Date)
+    checkconflict(Bool, "Jan 02 2024", textdateopts, Date)
+
+    # A stripped-to-empty field is Missing to detection even though Parsers
+    # reports a successful non-sentinel default Date. The prefix guard must keep
+    # the old conflict result instead of materializing Date(1).
+    stripopts = K.makeoptions(K.Dialect(); stripwhitespace=true)
+    checkconflict(Date, " ", stripopts, Missing)
+    @test eltype(K.parse("a\n2024-01-02\n \n";
+                         stripwhitespace=true, nsample=1)[:a]) == Union{Missing, String}
     # promotion across chunk boundaries with adversarially small chunks: early
     # chunks parse Int64, a late chunk hits a float ⇒ whole column re-parses
     input = "a\n" * join(1:50, "\n") * "\n99.5\n"
