@@ -53,8 +53,8 @@ read(source; kw...) = K.parse(source; kw...)
 # ---------------------------------------------------------------------------
 # 2. Batched reading — CSV.Chunks
 # ---------------------------------------------------------------------------
-# Iterate the file as a sequence of ParsedTables, one per index chunk, holding
-# only one batch's values in memory at a time (the index itself is whole-file
+# Iterate the file as a sequence of ParsedTables, one per nonempty data chunk,
+# holding only one batch's values in memory at a time (the index itself is whole-file
 # here; a production StreamSource would index chunk-by-chunk too — same code,
 # different L0).
 #
@@ -110,6 +110,7 @@ function _batches(source, rowmode::Bool;
             [Symbol("Column", j) for j in 1:K.nfields(chunks[1], chunks[1].firstdatarow)]
     end
     names = K.makeunique!(names)
+    filter!(ci -> K.nrows(ci) > 0, chunks)
     ncols = length(names)
     seed = K.resolvetypes(types, names, ncols)
     userprovided = [T !== nothing for T in seed]

@@ -435,6 +435,7 @@ end
     for batch in E.batches(csv; chunkbytes=8)
         @test K.names(batch) == [:a, :b, :c]
         @test eltype(batch[:a]) == Int64          # global inference ⇒ same type every batch
+        @test batch.nrows > 0
         total += batch.nrows
     end
     @test total == 3
