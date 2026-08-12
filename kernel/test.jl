@@ -357,6 +357,7 @@ end
     # structural quote rule assigned to the same field.
     t = K.parse("ab\"cd,e\"f,g\n1,2\n")
     @test K.names(t) == [Symbol("ab\"cd,e\"f"), :g]
+    @test any(p -> p.row == 0 && p.col == 1 && p.kind == :invalid_value, K.problems(t))
 end
 
 @testset "typed: dialect passthrough" begin
@@ -452,6 +453,7 @@ end
     @test rs[3][:b] == "z,w"
     @test E.typedvalue(Int64, rs[1], :a) == 1
     @test E.typedvalue(Float64, rs[2], 3) == 3.5
+    @test E.typedvalue(String, rs[3], :b) == "z,w"
     @test ismissing(E.typedvalue(Int64, rs[1], :b))  # not parseable as Int
     # ragged row: missing beyond the row's fields
     rs2 = collect(E.rows("a,b\n1\n"))

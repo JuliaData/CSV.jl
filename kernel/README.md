@@ -1,7 +1,7 @@
 # The CSV.jl kernel prove-out
 
 A stand-alone, working implementation of the proposed CSV.jl internals rewrite,
-small enough to read in one sitting (~900 lines of implementation), complete
+small enough to read as one unit, complete
 enough to demonstrate that the architecture holds end-to-end:
 
 - a **structural pass** (branchless SWAR fast path + a scalar reference state
@@ -35,9 +35,9 @@ julia --project=kernel -t8 kernel/bench.jl                 # throughput probe
 
 **1. Structure is separated from values.** One pass finds every field's
 `(offset, len)` and every row boundary (quote-aware); `Parsers.xparse` is then
-applied to *exact field spans*. Nothing downstream ever scans bytes again —
-header extraction, comment/empty-row filtering, sampling, and typed parsing are
-all index operations. This deletes the five hand-rolled, subtly-different
+applied to *exact field spans*. Nothing downstream rediscovers boundaries:
+comment/empty-row filtering uses the index, and header/type/value parsing only
+examines assigned spans. This deletes the five hand-rolled, subtly-different
 quote-skipping byte loops in today's `detection.jl`.
 
 **2. Iteration order becomes ours.** Because the index decouples reading order
@@ -87,7 +87,7 @@ spam, nothing lost to a terminal scrollback.
 
 ## Pinned semantics (deliberate, tested)
 
-- Structural quotes **always toggle** (the Sep/simdcsv/RFC-4180 rule). A bare
+- Structural quotes **always toggle** (the Sep/simdcsv rule). A bare
   quote mid-field opens a quoted region; `test.jl` pins the exact behavior.
   This is the price of composable parallelism; a "quotes only at field start"
   strict mode is possible as a scalar-path dialect if ever needed.

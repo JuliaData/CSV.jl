@@ -42,11 +42,11 @@ kernel/README.md): dialect sniffing, pooled columns, InlineString widths,
 writer. Each has a designed seam here; none requires re-architecting.
 
 Semantics note (pinned by tests): the structural layer treats *every* quote byte as
-toggling quote state, like Sep/simdcsv (RFC-4180-style structure). A bare quote in
-the middle of an unquoted field therefore opens a quoted region. CSV.jl's current
-value-level parser only honors quotes at field start; for such malformed inputs the
-two designs can split rows differently. This is the price of composable parallelism
-and is exactly the tradeoff the fast readers surveyed all take.
+toggling quote state, like Sep/simdcsv. This matches RFC-style well-formed fields. A
+bare quote in the middle of an unquoted field therefore opens a quoted region.
+CSV.jl's current value-level parser only honors quotes at field start; for such
+malformed inputs the two designs can split rows differently. This tradeoff makes
+quote state composable across parallel byte ranges.
 """
 module CSVKernel
 
@@ -600,8 +600,8 @@ promote_kernel(a::Type, b::Type) =
     String
 
 # Detect the type of one raw field span (mirrors CSV.jl's cascade, minus the
-# Int-width games). `opts` carries dateformat/decimal/trues/falses so detection and
-# parsing can never disagree.
+# Int-width games). Detection and parsing use the same options and exact-span
+# checks, so a conflict always advances the finite promotion lattice.
 function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::Parsers.Options)
     len == 0 && return Missing
     stop = pos + len - 1
@@ -753,8 +753,8 @@ function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
             end
         else
             # Invalid for T. A field that is a *sentinel* under the full options
-            # (e.g. whitespace-only with stripwhitespace=true, or a custom
-            # missingstring) is missing, not a conflict — Parsers only reports
+            # (e.g. whitespace-only with stripwhitespace=true) is missing, not a
+            # conflict — Parsers only reports
             # SENTINEL through the String path, so probe it on this cold path.
             sres = xparsestring(buf, pos, pos + len - 1, opts)
             if Parsers.sentinel(sres.code) && sres.tlen == len
@@ -984,8 +984,8 @@ end
 
 Eagerly parse delimited data: index in parallel, infer types from a stratified
 sample, then parse each column of each chunk in a monomorphic loop, promoting
-per-column on conflict. Never throws on malformed *data* (see `on_error`); throws
-only on argument errors.
+per-column on conflict. The default records malformed data as problems;
+`on_error=:error` escalates the source-earliest problem after parsing.
 
 Keywords: `delim`, `quotechar`, `openquotechar`/`closequotechar`, `escapechar`,
 `quoted`, `comment`, `ignoreemptyrows`, `header` (true | false | Vector), `types`
@@ -1038,8 +1038,12 @@ function parse(buf::Vector{UInt8};
                                       GC.@preserve(buf, unsafe_string(pointer(buf, pl.pos), pl.len)))
                 else
                     # Keep malformed header bytes exact. The file-level malformed
-                    # quote problem is recorded below when applicable.
+                    # quote problem is also retained as data.
                     names[j] = Symbol(String(buf[pos:pos + len - 1]))
+                    kind = Parsers.invalidquotedfield(res.code) ? :invalid_quoted_field : :invalid_value
+                    message = kind === :invalid_quoted_field ? "malformed quoting in header " :
+                              "header parser did not consume the exact field span "
+                    pushproblem!(log, 0, j, pos, kind, message * excerpt(buf, pos, len))
                 end
             end
         end

@@ -304,6 +304,7 @@ function Base.getproperty(row::RowView, nm::Symbol)
 end
 
 # Typed access on demand — the CSV.Rows `Parsers.parse(T, row, i)` pattern.
+typedvalue(::Type{String}, row::RowView, j::Int) = row[j]
 function typedvalue(::Type{T}, row::RowView, j::Int) where {T}
     r = getfield(row, :r)
     @boundscheck checkbounds(r.names, j)
