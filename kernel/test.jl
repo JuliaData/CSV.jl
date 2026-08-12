@@ -261,6 +261,15 @@ end
     # date → string on mixed temporals
     t = K.parse("a\n2023-01-15\n10:30:00\n")
     @test eltype(t[:a]) == String
+    # Bool and temporal parsers accept some values classified earlier in the
+    # inference cascade (for example, Bool accepts "1" and DateTime accepts a
+    # date). Those overlaps must still follow the promotion lattice regardless
+    # of which row the sample sees first.
+    for ns in (1, 2, 3)
+        @test eltype(K.parse("a\nfalse\n1\n1\n"; nsample=ns)[:a]) == String
+        @test eltype(K.parse("a\n2024-01-02T03:04:05\n2024-01-03\n"; nsample=ns)[:a]) == String
+        @test eltype(K.parse("a\n03:04:05\n1\n"; nsample=ns)[:a]) == String
+    end
     # promotion across chunk boundaries with adversarially small chunks: early
     # chunks parse Int64, a late chunk hits a float ⇒ whole column re-parses
     input = "a\n" * join(1:50, "\n") * "\n99.5\n"

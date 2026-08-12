@@ -748,6 +748,16 @@ function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
             if Parsers.sentinel(res.code)
                 # user-configured sentinel string ⇒ missing
             else
+                # Parsers intentionally accepts numeric spellings for Bool and
+                # temporal targets. Inference classifies those spellings as
+                # Int64, and the lattice says mixed numeric/bool/temporal data is
+                # String. Reject the wider parse domain for inferred columns so
+                # the final type does not depend on which rows were sampled.
+                if !userprovided &&
+                   (T === Bool || T === Date || T === DateTime || T === Time) &&
+                   detecttype(buf, pos, len, opts) !== T
+                    return lr
+                end
                 values[out] = res.val
                 present[out] = true
             end
