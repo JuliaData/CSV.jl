@@ -761,6 +761,47 @@ end
 # instead of once per cell. A mid-chunk type surprise returns the offending row so
 # the driver can promote and re-run *this column only*.
 
+# Parsers deliberately accepts a wider spelling domain than inference assigns:
+# `xparse(Bool, "1")` succeeds, and `xparse(DateTime, "2024-01-02")` accepts a
+# bare date. An *inferred* column's final type must not depend on which rows the
+# sampler happened to see, so a value only counts as `T` if no type EARLIER in
+# the detection cascade also claims the exact span — precisely
+# `detecttype(...) === T`, but probing only the cascade *prefix* for T, because
+# a value that full-span-parses as T can never detect as anything later.
+# Cost control (this guard sits on the hot path of every inferred Bool/temporal
+# column): canonical values fail the numeric probes within a few leading bytes,
+# and alphabetic spellings ("true"/"false"/custom trues) skip probing entirely —
+# only Inf/NaN can spell a number with a leading letter, so those initials stay.
+@inline function _letterfastout(b::UInt8)
+    isletter = (UInt8('a') <= b <= UInt8('z')) | (UInt8('A') <= b <= UInt8('Z'))
+    infnan = (b == UInt8('i')) | (b == UInt8('I')) | (b == UInt8('n')) | (b == UInt8('N'))
+    return isletter & !infnan
+end
+
+@inline function _hitsexact(::Type{S}, buf::Vector{UInt8}, pos::Int, len::Int,
+                            opts::Parsers.Options) where {S}
+    res = Parsers.xparse(S, buf, pos, pos + len - 1, opts)
+    return Parsers.ok(res.code) && !Parsers.sentinel(res.code) && res.tlen == len
+end
+
+@inline canonicalconflict(::Type{Date}, buf, pos, len, opts) =
+    !_letterfastout(@inbounds buf[pos]) &&
+    (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts))
+@inline canonicalconflict(::Type{DateTime}, buf, pos, len, opts) =
+    !_letterfastout(@inbounds buf[pos]) &&
+    (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts) ||
+     _hitsexact(Date, buf, pos, len, opts))
+@inline canonicalconflict(::Type{Time}, buf, pos, len, opts) =
+    !_letterfastout(@inbounds buf[pos]) &&
+    (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts) ||
+     _hitsexact(Date, buf, pos, len, opts) || _hitsexact(DateTime, buf, pos, len, opts))
+@inline canonicalconflict(::Type{Bool}, buf, pos, len, opts) =
+    !_letterfastout(@inbounds buf[pos]) &&
+    (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts) ||
+     _hitsexact(Date, buf, pos, len, opts) || _hitsexact(DateTime, buf, pos, len, opts) ||
+     _hitsexact(Time, buf, pos, len, opts))
+@inline canonicalconflict(::Type, buf, pos, len, opts) = false  # Int64/Float64/String: cascade prefix can't claim them
+
 # Returns 0 on success, or the local row of the first conflicting value.
 function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
                         j::Int, rowbase::Int, opts::Parsers.Options,
@@ -778,14 +819,9 @@ function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
             if Parsers.sentinel(res.code)
                 # user-configured sentinel string ⇒ missing
             else
-                # Parsers intentionally accepts numeric spellings for Bool and
-                # temporal targets. Inference classifies those spellings as
-                # Int64, and the lattice says mixed numeric/bool/temporal data is
-                # String. Reject the wider parse domain for inferred columns so
-                # the final type does not depend on which rows were sampled.
-                if !userprovided &&
-                   (T === Bool || T === Date || T === DateTime || T === Time) &&
-                   detecttype(buf, pos, len, opts) !== T
+                # Sample-independence guard for inferred Bool/temporal columns:
+                # see `canonicalconflict` above. Free for Int64/Float64/String.
+                if !userprovided && canonicalconflict(T, buf, pos, len, opts)
                     return lr
                 end
                 values[out] = res.val
