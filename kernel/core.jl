@@ -163,8 +163,12 @@ nfields(ci::ChunkIndex, localrow::Int) = Int(ci.rowfirst[localrow + 1] - ci.rowf
 # Absolute (pos, len) of field `col` in local row `localrow`, or `nothing` when the
 # row is too short (ragged input).
 @inline function fieldspan(ci::ChunkIndex, localrow::Int, col::Int)
-    fi = Int(ci.rowfirst[localrow]) + col - 1
-    fi < Int(ci.rowfirst[localrow + 1]) || return nothing
+    @boundscheck 1 <= localrow <= totalrows(ci) || throw(BoundsError(ci, localrow))
+    @boundscheck col >= 1 || throw(BoundsError(ci, (localrow, col)))
+    @inbounds first = Int(ci.rowfirst[localrow])
+    @inbounds nextr = Int(ci.rowfirst[localrow + 1])
+    col <= nextr - first || return nothing
+    fi = first + col - 1
     @inbounds s = ci.fields[fi]
     return (ci.start + Int(s.relpos), Int(s.len))
 end
@@ -456,9 +460,9 @@ function quoteparity(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect)::Bool
     return isodd(n)
 end
 
-# First row start at or after `from`, given the entry quote state. Returns to + 2
-# ("one past a terminator at the very end") capped at to + 1 when no terminator
-# exists — callers treat a result > `to` as "no row starts in this range".
+# First row start after a terminator at or after `from`, given the entry quote
+# state. CRLF returns the byte after LF. Returns `to + 1` when no terminator
+# exists; callers treat a result > `to` as "no row starts in this range".
 function nextrowstart(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect, inquote::Bool)::Int
     pos = from
     cq, oq, e = d.cq, d.oq, d.e
@@ -928,7 +932,8 @@ function sampletypes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncols::Int,
     count = min(total, nsample)
     for k in 1:count
         # Exact integer interpolation includes both ends without duplicates.
-        gr = count == 1 ? 1 : 1 + ((k - 1) * (total - 1)) ÷ (count - 1)
+        gr = count == 1 ? 1 :
+             1 + Int(widemul(k - 1, total - 1) ÷ (count - 1))
         ci, lr = locate(chunks, gr)
         for j in 1:ncols
             sp = fieldspan(ci, lr, j)

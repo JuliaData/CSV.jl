@@ -81,6 +81,11 @@ end
     @test idxall(",,,\n")          == [["","","",""]]
     @test idxall("a,b\n\n\nc,d\n") == [["a","b"], ["c","d"]]
     @test idxall("a,b\n\n\nc,d\n"; ignoreemptyrows=false) == [["a","b"], [""], [""], ["c","d"]]
+    buf = Vector{UInt8}(codeunits("a,b\n"))
+    ci = only(K.index(buf).chunks)
+    @test_throws BoundsError K.fieldspan(ci, 0, 1)
+    @test_throws BoundsError K.fieldspan(ci, 1, 0)
+    @test K.fieldspan(ci, 1, 3) === nothing
 end
 
 @testset "structural: newlines" begin
