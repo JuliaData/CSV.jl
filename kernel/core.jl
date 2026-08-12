@@ -911,11 +911,14 @@ end
 # the root of most "worked until row 2 million" issues.)
 function sampletypes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncols::Int,
                      opts::Parsers.Options; nsample::Int=128)
+    nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
     total = sum(nrows, chunks; init=0)
     total == 0 && return fill(Missing, ncols)
     types = fill(Missing, ncols)
-    step = max(1, total ÷ nsample)
-    for gr in 1:step:total
+    count = min(total, nsample)
+    for k in 1:count
+        # Exact integer interpolation includes both ends without duplicates.
+        gr = count == 1 ? 1 : 1 + ((k - 1) * (total - 1)) ÷ (count - 1)
         ci, lr = locate(chunks, gr)
         for j in 1:ncols
             sp = fieldspan(ci, lr, j)
@@ -946,18 +949,27 @@ allocatecolumn(::Type{T}, n::Int, buf, e, cq) where {T} = TypedColumn{T}(n)
 function resolvetypes(types, names::Vector{Symbol}, ncols::Int)
     seed = Vector{Union{Nothing, Type}}(nothing, ncols)
     types === nothing && return seed
-    strip(T) = T === Missing ? Missing : Base.nonmissingtype(T)
+    function normalize(T)
+        T === nothing && return nothing
+        T isa Type || throw(ArgumentError("column type must be a Type or nothing (got $(repr(T)))"))
+        T = T === Missing ? Missing : Base.nonmissingtype(T)
+        parseable = T === Missing || T === Number ||
+                    (isconcretetype(T) &&
+                     (Parsers.supportedtype(T) || hasmethod(tryparse, Tuple{Type{T}, String})))
+        parseable || throw(ArgumentError("unsupported column type $T"))
+        return T
+    end
     if types isa Type
-        fill!(seed, strip(types))
+        fill!(seed, normalize(types))
     elseif types isa AbstractVector
         length(types) == ncols || throw(ArgumentError("types vector length $(length(types)) != $ncols columns"))
-        seed .= strip.(types)
+        seed .= normalize.(types)
     elseif types isa AbstractDict
         for (k, T) in types
             j = k isa Integer ? Int(k) : findfirst(==(Symbol(k)), names)
             j === nothing && throw(ArgumentError("types key $k does not match any column"))
             1 <= j <= ncols || throw(ArgumentError("types key $k out of range"))
-            seed[j] = strip(T)
+            seed[j] = normalize(T)
         end
     else
         throw(ArgumentError("unsupported types specification: $(typeof(types))"))
@@ -997,6 +1009,7 @@ function parse(buf::Vector{UInt8};
                nsample::Int=128,
                dialectkw...)
     on_error in (:collect, :error) || throw(ArgumentError("on_error must be :collect or :error"))
+    nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
     d = Dialect(; dialectkw...)
     opts = makeoptions(d; dateformat, decimal, truestrings, falsestrings, stripwhitespace)
     datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1  # BOM

@@ -272,6 +272,15 @@ end
     # big integers overflow Int64 and promote to Float64 (documented CSV.jl parity)
     t = K.parse("a\n1\n99999999999999999999999999\n")
     @test t[:a] isa Vector{Float64}
+    # Stratified sampling obeys its limit and includes the final row.
+    input = "a\n" * join(1:999, "\n") * "\n3.5\n"
+    buf = Vector{UInt8}(codeunits(input))
+    bi = K.index(buf, K.Dialect(); chunkbytes=64)
+    bi.chunks[1].firstdatarow += 1
+    opts = K.makeoptions(K.Dialect())
+    @test K.sampletypes(buf, bi.chunks, 1, opts; nsample=2) == [Float64]
+    @test_throws ArgumentError K.sampletypes(buf, bi.chunks, 1, opts; nsample=0)
+    @test_throws ArgumentError K.parse("a\n1\n"; types=Int64, nsample=0)
 end
 
 @testset "typed: user-provided types" begin
@@ -312,6 +321,13 @@ end
     # bad types keyword arguments throw
     @test_throws ArgumentError K.parse("a,b\n1,2\n"; types=[Int64])
     @test_throws ArgumentError K.parse("a,b\n1,2\n"; types=Dict(:nope => Int64))
+    @test_throws ArgumentError K.parse("a\n1\n"; types=Any)
+    @test_throws ArgumentError K.parse("a\n1\n"; types=AbstractString)
+    @test_throws ArgumentError K.parse("a\n1\n"; types=Union{Int64, String})
+    @test_throws ArgumentError K.parse("a\n1\n"; types=["Int64"])
+    # `nothing` leaves selected columns inferred.
+    t = K.parse("a,b\n1,2\n"; types=[Float64, nothing])
+    @test t[:a] == [1.0] && t[:b] == [2]
 end
 
 @testset "typed: ragged rows" begin
