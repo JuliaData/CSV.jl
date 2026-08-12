@@ -185,7 +185,9 @@ function rows(source; header::Union{Bool, AbstractVector}=true,
               dateformat=nothing, decimal::Char='.',
               truestrings=nothing, falsestrings=nothing,
               chunkbytes::Int=1 << 22, dialectkw...)
-    b = batches(source; header, chunkbytes, stripwhitespace,
+    # types=String makes resolvetypes fill every column, which skips the sampling
+    # pass entirely — row streaming needs the index and names, never a schema.
+    b = batches(source; header, chunkbytes, stripwhitespace, types=String,
                 dateformat, decimal, truestrings, falsestrings, dialectkw...)
     return Rows(b.buf, b.chunks, b.names, Dict(nm => j for (j, nm) in enumerate(b.names)),
                 b.opts, b.d)

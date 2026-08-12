@@ -84,6 +84,10 @@ function Dialect(; delim::Union{Char, String}=',',
                    ignoreemptyrows::Bool=true)
     d = delim isa Char ? (isascii(delim) ? delim % UInt8 : Vector{UInt8}(string(delim))) :
         sizeof(delim) == 1 ? codeunit(delim, 1) : Vector{UInt8}(delim)
+    for (nm, c) in (("quotechar", quotechar), ("openquotechar", openquotechar),
+                    ("closequotechar", closequotechar), ("escapechar", escapechar))
+        c === nothing || isascii(c) || throw(ArgumentError("$nm must be ASCII (got $(repr(c)))"))
+    end
     oq = something(openquotechar, quotechar) % UInt8
     cq = something(closequotechar, quotechar) % UInt8
     e  = something(escapechar, Char(cq)) % UInt8
@@ -91,6 +95,8 @@ function Dialect(; delim::Union{Char, String}=',',
         (b == LF || b == CR) && throw(ArgumentError("delimiter may not contain \\r or \\n"))
         quoted && b == oq && throw(ArgumentError("delimiter may not equal the quote character"))
     end
+    quoted && (oq in (LF, CR) || cq in (LF, CR) || e in (LF, CR)) &&
+        throw(ArgumentError("quote/escape characters may not be \\r or \\n"))
     cmt = comment === nothing ? nothing :
           isempty(comment) ? throw(ArgumentError("comment must be non-empty")) : Vector{UInt8}(comment)
     cmt !== nothing && (LF in cmt || CR in cmt) &&
@@ -184,7 +190,10 @@ end
         pop!(ci.fields)
         return
     end
-    # comment row: raw bytes at the row start match the comment prefix
+    # comment row: raw bytes at the row start match the comment prefix. The
+    # comparison can never leak past this row's terminator: comment bytes may not
+    # contain \r or \n (validated in Dialect), so a terminator byte always
+    # mismatches first. Bounded by length(buf) for the unterminated-last-row case.
     cmt = d.comment
     if cmt !== nothing && rowstartabs + length(cmt) - 1 <= length(buf)
         match = true
@@ -694,7 +703,9 @@ Base.@propagate_inbounds function Base.getindex(v::StringViewVector{ELT}, i::Int
     if s.escaped
         return _unescape(v.buf, s.pos, s.len, v.e, v.cq)
     else
-        return unsafe_string(pointer(v.buf, s.pos), s.len)
+        GC.@preserve v begin
+            return unsafe_string(pointer(v.buf, s.pos), s.len)
+        end
     end
 end
 
@@ -837,7 +848,11 @@ end
 Base.names(t::ParsedTable) = t.names
 columns(t::ParsedTable) = t.columns
 problems(t::ParsedTable) = t.problems
-Base.getindex(t::ParsedTable, nm::Symbol) = t.columns[findfirst(==(nm), t.names)::Int]
+function Base.getindex(t::ParsedTable, nm::Symbol)
+    j = findfirst(==(nm), t.names)
+    j === nothing && throw(KeyError(nm))
+    return t.columns[j]
+end
 
 function Base.show(io::IO, t::ParsedTable)
     print(io, "CSVKernel.ParsedTable: $(t.nrows) × $(length(t.names))")
@@ -962,7 +977,7 @@ function parse(buf::Vector{UInt8};
                 res = Parsers.xparse(String, buf, pos, pos + len - 1, opts)
                 pl = res.val
                 names[j] = Symbol(Parsers.escapedstring(res.code) ?
-                                  Parsers.getstring(buf, pl, opts.e) :
+                                  _unescape(buf, Int64(pl.pos), Int32(pl.len), opts.e, d.cq) :
                                   unsafe_string(pointer(buf, pl.pos), pl.len))
             end
         end
