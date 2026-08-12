@@ -82,6 +82,7 @@ function Dialect(; delim::Union{Char, String}=',',
                    quoted::Bool=true,
                    comment::Union{String, Nothing}=nothing,
                    ignoreemptyrows::Bool=true)
+    isempty(delim) && throw(ArgumentError("delimiter must be non-empty"))
     d = delim isa Char ? (isascii(delim) ? delim % UInt8 : Vector{UInt8}(string(delim))) :
         sizeof(delim) == 1 ? codeunit(delim, 1) : Vector{UInt8}(delim)
     for (nm, c) in (("quotechar", quotechar), ("openquotechar", openquotechar),
@@ -117,6 +118,7 @@ swareligible(d::Dialect) = parityclean(d) && d.delim isa UInt8
 function makeoptions(d::Dialect; dateformat=nothing, decimal::Char='.',
                      truestrings=nothing, falsestrings=nothing,
                      stripwhitespace::Bool=false)
+    isascii(decimal) || throw(ArgumentError("decimal must be ASCII (got $(repr(decimal)))"))
     return Parsers.Options(
         sentinel=missing,                    # empty field ⇒ missing
         openquotechar=d.oq, closequotechar=d.cq, escapechar=d.e,
@@ -340,7 +342,10 @@ function indexchunk_swar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
     GC.@preserve buf begin
         p = pointer(buf)
         @inbounds while pos + 7 <= stop
-            w = unsafe_load(Ptr{UInt64}(p + pos - 1))
+            # The movemask constants number bytes from the least-significant end.
+            # Normalize the native load so the mapping is also correct on a
+            # big-endian host.
+            w = ltoh(unsafe_load(Ptr{UInt64}(p + pos - 1)))
             q  = d.quoted ? bytemask8(w, oq) : 0x00
             dm = bytemask8(w, delim)
             lf = bytemask8(w, LF)
@@ -501,6 +506,7 @@ function index(buf::Vector{UInt8}, d::Dialect;
     # No lower bound beyond 1: tests deliberately use tiny chunkbytes to force row
     # boundaries everywhere; production defaults keep chunks cache-sized (~8 MiB).
     chunkbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $chunkbytes)"))
+    datastart >= 1 || throw(ArgumentError("datastart must be ≥ 1 (got $datastart)"))
     datastart > len && return BufferIndex(ChunkIndex[], 0, false)
 
     useswar = fastindex && swareligible(d)

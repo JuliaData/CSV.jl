@@ -141,6 +141,9 @@ end
     @test idxall("\"a\\\"b\",c\n"; escapechar='\\') == [["\"a\\\"b\"","c"]]
     # unicode content passes through untouched (spans are byte-exact)
     @test idxall("α,β\n∀,∃\n") == [["α","β"], ["∀","∃"]]
+    @test_throws ArgumentError K.Dialect(delim="")
+    @test_throws ArgumentError K.makeoptions(K.Dialect(); decimal='é')
+    @test_throws ArgumentError K.index(UInt8[0x61], K.Dialect(); datastart=0)
 end
 
 @testset "structural: randomized property (all scanners × all chunkings agree)" begin
