@@ -107,7 +107,9 @@ spam, nothing lost to a terminal scrollback.
 | InlineString widths, Int downcast, typemap | more entries in the column-builder dispatch + a wider promotion lattice |
 | pooled columns | a pooling `ColumnBuilder` doing dictionary lookups inside `parsecolchunk!` (spans make interning allocation-free) |
 | `select`/`drop` | skip entries in the (column × chunk) task grid — projection is free when parsing is columnar |
-| multi-byte delims, `ignorerepeated`, transpose | scalar-scanner dialects (already routed); transpose stays a utility path |
+| multi-byte delimiters | already routed through the scalar scanner |
+| `ignorerepeated` | delimiter-run suppression in the scalar scanner |
+| transpose | a utility path over the same source and value primitives |
 | SIMD.jl / CLMUL 64-byte scanner | drop-in replacement for `indexchunk_swar!` behind the same emission helpers |
 | `Memory{T}` buffers, word-aligned validity bitmaps | swap inside `TypedColumn` on Julia ≥ 1.11 |
 | writer | untouched by this kernel (separate workstream) |
@@ -120,7 +122,7 @@ spam, nothing lost to a terminal scrollback.
 | `detectdelimandguessrows`, `skiptorow`, `findrowstarts!`, `checkcommentandemptyline`, `ReversedBuf` footer logic | the structural index + row-level hygiene in `endrow!` |
 | `parserow`'s 24-branch type switch | one dynamic dispatch per (column × chunk) into `parsecolchunk!` |
 | `rows.jl` `@unrollcolumns` | gone — `KernelExamples.rows` iterates the index |
-| `@generated parsecustom!` | gone — any `Parsers`-parseable `T` works through the same builder path |
+| `@generated parsecustom!` | gone — validated concrete `Parsers` targets use the same builder path |
 | `promotetostring!` whole-chunk re-parse | per-column re-parse over the retained index |
 | `SentinelVector` / `ChainedVector` columns | `Vector{T}` + presence, written into exact-size slices |
 | `PosLenString` / `stringtype=` commitment | lazy string views + post-hoc `materialize` |

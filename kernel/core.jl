@@ -863,7 +863,7 @@ function ProblemLog(limit::Int)
     return ProblemLog(Problem[], limit, 0, nothing, ReentrantLock())
 end
 
-problemkey(p::Problem) = (p.row, p.col, p.pos, String(p.kind), p.message)
+problemkey(p::Problem) = (p.pos, p.row, p.col, String(p.kind), p.message)
 
 function pushproblem!(log::ProblemLog, row::Int, col::Int, pos::Int, kind::Symbol, msg::String)
     p = Problem(row, col, pos, kind, msg)

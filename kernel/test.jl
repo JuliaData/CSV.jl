@@ -331,6 +331,13 @@ end
     # on_error=:error escalates the first problem
     @test_throws ErrorException K.parse("a\n1\nxyz\n"; types=Dict(:a => Int64), on_error=:error)
     @test_throws ErrorException K.parse("a\nxyz\n"; types=Int64, on_error=:error, maxproblems=0)
+    err = try
+        K.parse("\"unclosed"; header=false, types=String, on_error=:error)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ErrorException && occursin("invalid_quoted_field at data row 1", err.msg)
     @test_throws ArgumentError K.parse("a\n1\n"; maxproblems=-1)
     # bad types keyword arguments throw
     @test_throws ArgumentError K.parse("a,b\n1,2\n"; types=[Int64])
