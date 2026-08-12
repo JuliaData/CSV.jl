@@ -656,11 +656,36 @@ end
 StringColumn(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8) =
     StringColumn(fill(STR_MISSING, n), buf, e, cq)
 
-# Parsers.PosLen stores only 20 length bits. Ask Parsers for its 31-bit span
-# result so a long string is not truncated before we copy the span into StrSpan.
-# This result type is available throughout the kernel's supported Parsers range.
-@inline xparsestring(buf::Vector{UInt8}, pos::Int, stop::Int, opts::Parsers.Options) =
-    Parsers.xparse(String, buf, pos, stop, opts, Parsers.PosLen31)
+# Parsers.PosLen stores only 20 length bits. PosLen31 supports wide fields but
+# only 31-bit absolute positions. Use it directly while the whole field fits that
+# range; later fields parse through a zero-copy local view and translate the
+# content position back to the full source.
+struct KernelPosLen
+    pos::Int64
+    len::Int64
+end
+struct KernelStringResult{C, T}
+    code::C
+    tlen::T
+    val::KernelPosLen
+end
+
+@inline function xparsestring(buf::Vector{UInt8}, pos::Int, stop::Int,
+                              opts::Parsers.Options)
+    stop - pos + 1 <= typemax(Int32) ||
+        throw(ArgumentError("a string field exceeds the kernel's 31-bit span limit"))
+    stop <= 1 << 31 && return Parsers.xparse(String, buf, pos, stop, opts, Parsers.PosLen31)
+    return _xparsestring_local(buf, pos, stop, opts)
+end
+
+@noinline function _xparsestring_local(buf::Vector{UInt8}, pos::Int, stop::Int,
+                                       opts::Parsers.Options)
+    source = @view buf[pos:stop]
+    res = Parsers.xparse(String, source, 1, length(source), opts, Parsers.PosLen31)
+    pl = res.val
+    return KernelStringResult(res.code, res.tlen,
+                              KernelPosLen(pos + Int64(pl.pos) - 1, Int64(pl.len)))
+end
 
 # The kernel's own unescape: `""` collapses to `"` when e == cq; `\X` drops the
 # backslash when e != cq. We do NOT round-trip through Parsers.getstring here

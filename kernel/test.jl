@@ -420,6 +420,12 @@ end
     longvalue = repeat("x", (1 << 20) + 7)
     t = K.parse("a\n" * longvalue * "\n"; types=String, chunkbytes=1 << 16)
     @test t[:a][1] == longvalue
+    # Fields beyond PosLen31's absolute-position range use local coordinates and
+    # translate the content span back. Exercise that translation without a 2 GiB
+    # test allocation by calling the cold helper directly.
+    localbuf = Vector{UInt8}(codeunits("xx\"a\"\"b\""))
+    localres = K._xparsestring_local(localbuf, 3, length(localbuf), K.makeoptions(K.Dialect()))
+    @test localres.val.pos == 4 && localres.val.len == 4 && localres.tlen == 6
     # Every value parser must consume the full structural span. A bare quote is
     # structurally valid by design, but it makes this value malformed for
     # Parsers' field-start quote rule; report it instead of returning a prefix.
