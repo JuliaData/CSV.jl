@@ -57,8 +57,8 @@ export Dialect, index, ParsedTable, Problem
 # ---------------------------------------------------------------------------
 # Dialect: the structural options. Value-level options (sentinels, dateformats,
 # true/false spellings, decimal char) live in `Parsers.Options`, built once in
-# `makeoptions` and applied to exact field spans — the kernel never re-implements
-# value parsing.
+# `makeoptions` and applied to exact field spans — the kernel does not
+# re-implement type or value recognition.
 # ---------------------------------------------------------------------------
 
 struct Dialect
@@ -134,8 +134,9 @@ end
 #
 # A FieldSpan is the *raw* span of one field — everything between two structural
 # delimiters, including any quotes, whitespace, or escapes. Value parsing hands the
-# exact span to Parsers.xparse, which owns unquoting/unescaping/whitespace, so the
-# index never needs to understand values. Offsets are chunk-relative UInt32 (chunks
+# exact span to Parsers.xparse, which identifies content spans and escape state;
+# lazy string access performs the final copy/unescape. The index never needs to
+# understand values. Offsets are chunk-relative UInt32 (chunks
 # are bounded well below 4 GiB), keeping the index at 8 bytes/field.
 # ---------------------------------------------------------------------------
 

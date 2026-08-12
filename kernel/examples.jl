@@ -96,7 +96,8 @@ function _batches(source, rowmode::Bool;
     datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1
     bi = K.index(buf, d; datastart, chunkbytes)
     chunks = bi.chunks
-    # header + names, exactly as the driver does it
+    # Header names use the same extraction and malformed-span preservation rules
+    # as the eager driver. Batch-local problem collection begins during iteration.
     names = if header === true && !isempty(chunks)
         ci = chunks[1]
         hrow = ci.firstdatarow
