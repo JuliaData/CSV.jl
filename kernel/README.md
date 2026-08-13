@@ -85,6 +85,34 @@ spam, nothing lost to a terminal scrollback.
 - exact allocation: the index knows the exact row count before any value is
   parsed — `rowsguess`, `reallocate!`, and growth heuristics have no analog.
 
+## Measured breadth (kernel/bench.jl)
+
+`bench.jl` runs a shape × size matrix (numeric, mixed, string-heavy,
+quoted-with-embedded-newlines, 200-column wide, 2-column long, missing-heavy ×
+10 KiB → 200 MiB) against the installed CSV.jl. Ratios from an M-series laptop,
+8 threads (kernel-lazy / CSV.File; `kernel+str` additionally collects string
+columns to `Vector{String}`):
+
+- **10 KiB: kernel wins every shape, ~1.9–3.9×** (absolute: 56–110 µs vs
+  CSV.File's 112–255 µs) — no Context ceremony, size-aware sampling.
+- **1–200 MiB: a parity band, ~0.85–1.25×** — ahead on sparse/strings-lazy/
+  longnarrow/numeric, behind ~10–15% on `mixed` (the price of the
+  sample-independence guard on Bool/temporal columns) and on `wide`
+  (column-at-a-time wants cache-resident chunks; the 1 MiB `chunkbytes` cap
+  recovered most of it: 623 → 911 MiB/s at 200 MiB × 200 cols).
+- **Single-threaded (20 MiB): kernel ahead on 5/7 shapes (1.1–1.5×)**, ~parity
+  on the rest — the wins are not a threading artifact.
+- **`kernel+str` on string-heavy shapes is ~0.35×**: collecting to
+  `Vector{String}` heap-allocates every cell, vs CSV.jl's unboxed InlineStrings.
+  This is precisely the gap the planned inline-else-view string layout closes;
+  the lazy default is already at/above parity.
+
+Two honest architecture taxes to track: the index is a second pass over the
+bytes (visible on pure-numeric RAM-bound runs), and quote-heavy fields get their
+quotes scanned twice (index + `xparse`) — the designed fixes are pipelined
+chunk index→parse (ChunkedBase-style) and carrying the index's quoted/escaped
+bits into value parsing.
+
 ## Pinned semantics (deliberate, tested)
 
 - Structural quotes **always toggle** (the Sep/simdcsv rule). A bare

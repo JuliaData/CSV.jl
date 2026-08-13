@@ -515,7 +515,12 @@ function index(buf::Vector{UInt8}, d::Dialect;
     datastart > len && return BufferIndex(ChunkIndex[], 0, false)
 
     useswar = fastindex && swareligible(d)
-    nranges = parallel && parityclean(d) ? max(1, cld(len - datastart + 1, chunkbytes)) : 1
+    # Range splitting is gated on the DIALECT (parity composition must be sound),
+    # not on `parallel`: sequential runs also want bounded chunks, because the
+    # column-at-a-time parse re-walks each chunk once per column and needs it
+    # cache-resident. `parallel` only decides whether chunks are indexed/parsed
+    # by tasks or in a plain loop.
+    nranges = parityclean(d) ? max(1, cld(len - datastart + 1, chunkbytes)) : 1
 
     # Step 1+2: entry quote-state per range via parity composition.
     starts = [datastart + (i - 1) * chunkbytes for i in 1:nranges]
@@ -615,6 +620,14 @@ function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::Parsers.Option
     # report a stripped-to-empty field as INVALID rather than SENTINEL.
     sres = xparsestring(buf, pos, stop, opts)
     Parsers.sentinel(sres.code) && sres.tlen == len && return Missing
+    # Letter-led fields can't start a number (Inf/NaN and custom decimal bytes are
+    # excluded from the fast-out) or a default-format temporal, so the cascade
+    # reduces to Bool-then-String — this is the same reasoning as
+    # `canonicalconflict`'s fast-out and it makes sampling cheap on string-heavy
+    # data (a word otherwise pays six failed probes).
+    if opts.dateformat === nothing && _letterfastout(@inbounds(buf[pos]), opts)
+        return _hitsexact(Bool, buf, pos, len, opts) ? Bool : String
+    end
     for T in (Int64, Float64, Date, DateTime, Time, Bool)
         res = Parsers.xparse(T, buf, pos, stop, opts)
         if Parsers.ok(res.code)
@@ -1102,15 +1115,27 @@ function parse(buf::Vector{UInt8};
                truestrings=nothing,
                falsestrings=nothing,
                stripwhitespace::Bool=false,
-               chunkbytes::Int=1 << 23,
+               chunkbytes::Union{Nothing, Int}=nothing,
                parallel::Bool=Threads.nthreads() > 1,
                fastindex::Bool=true,
                maxproblems::Int=10_000,
                on_error::Symbol=:collect,
-               nsample::Int=128,
+               nsample::Union{Nothing, Int}=nothing,
                dialectkw...)
     on_error in (:collect, :error) || throw(ArgumentError("on_error must be :collect or :error"))
-    nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
+    nsample === nothing || nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
+    # Size-aware defaults. chunkbytes: enough chunks to occupy every thread (2×
+    # tasks per thread for load balance), capped at 1 MiB — the column-at-a-time
+    # parse re-walks each chunk once per column, so chunks must stay cache-
+    # resident (measured on a 200 MiB × 200-column file: 8 MiB chunks 623 MiB/s
+    # → 1 MiB chunks 911 MiB/s), with a 64 KiB floor so per-chunk setup never
+    # dominates. nsample: sampled rows pay the full detect cascade and are then
+    # parsed again, so tiny files sample a handful of rows and lean on cheap
+    # per-column promotion instead, while big files keep the 128-row stratified
+    # sample that makes promotion rare.
+    if chunkbytes === nothing
+        chunkbytes = clamp(cld(length(buf), 2 * Threads.nthreads()), 1 << 16, 1 << 20)
+    end
     d = Dialect(; dialectkw...)
     opts = makeoptions(d; dateformat, decimal, truestrings, falsestrings, stripwhitespace)
     datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1  # BOM
@@ -1185,7 +1210,8 @@ function parse(buf::Vector{UInt8};
     seed = resolvetypes(types, names, ncols)
     userprovided = [T !== nothing for T in seed]
     if any(isnothing, seed)
-        inferred = sampletypes(buf, chunks, ncols, opts; nsample)
+        ns = nsample === nothing ? clamp(ndata >> 6, 8, 128) : nsample
+        inferred = sampletypes(buf, chunks, ncols, opts; nsample=ns)
         for j in 1:ncols
             seed[j] === nothing && (seed[j] = inferred[j])
         end
@@ -1210,26 +1236,16 @@ function parse(buf::Vector{UInt8};
             storage[j] = allocatecolumn(coltypes[j], ndata, buf, opts.e, d.cq)
         end
         fill!(dirty, false)
-        @sync for ci in chunks
-            rb = chunkrowbase(chunks, ci)
-            Threads.@spawn begin
-                for j in todo
-                    T = coltypes[j]
-                    conflictrow = if T === Missing
-                        parsecolchunk_missing(buf, ci, j, rb, opts, userprovided[j], log)
-                    else
-                        parsecolchunk!(storage[j], buf, ci, j, rb, opts, userprovided[j], log)
-                    end
-                    if conflictrow != 0
-                        sp = fieldspan(ci, conflictrow, j)::Tuple{Int, Int}
-                        newT = promote_kernel(T, detecttype(buf, sp[1], sp[2], opts))
-                        newT = newT === T ? String : newT  # a conflicting value must move the type
-                        lock(promolock) do
-                            promo[j] = promote_kernel(promo[j], newT)
-                            dirty[j] = true
-                        end
-                    end
-                end
+        # One task per chunk; a single-chunk file (small input or parallel=false)
+        # runs inline to skip task-spawn overhead on the tiny-file path.
+        if length(chunks) == 1
+            parsechunkcols!(chunks[1], 0, todo, coltypes, storage, buf, opts,
+                            userprovided, log, promo, dirty, promolock)
+        else
+            @sync for ci in chunks
+                rb = chunkrowbase(chunks, ci)
+                Threads.@spawn parsechunkcols!(ci, rb, todo, coltypes, storage, buf, opts,
+                                               userprovided, log, promo, dirty, promolock)
             end
         end
     end
@@ -1254,6 +1270,32 @@ parse(io::IO; kw...) = parse(read(io); kw...)
 
 chunkrowbase(chunks::Vector{ChunkIndex}, target::ChunkIndex) =
     sum(nrows(c) for c in chunks if c.start < target.start; init=0)
+
+# One wave-task's work: parse every dirty column of one chunk, recording
+# promotions. Factored out of `parse` so the single-chunk path can call it
+# inline without task-spawn overhead.
+function parsechunkcols!(ci::ChunkIndex, rb::Int, todo, coltypes, storage,
+                         buf::Vector{UInt8}, opts::Parsers.Options,
+                         userprovided, log::ProblemLog, promo, dirty, promolock)
+    for j in todo
+        T = coltypes[j]
+        conflictrow = if T === Missing
+            parsecolchunk_missing(buf, ci, j, rb, opts, userprovided[j], log)
+        else
+            parsecolchunk!(storage[j], buf, ci, j, rb, opts, userprovided[j], log)
+        end
+        if conflictrow != 0
+            sp = fieldspan(ci, conflictrow, j)::Tuple{Int, Int}
+            newT = promote_kernel(T, detecttype(buf, sp[1], sp[2], opts))
+            newT = newT === T ? String : newT  # a conflicting value must move the type
+            lock(promolock) do
+                promo[j] = promote_kernel(promo[j], newT)
+                dirty[j] = true
+            end
+        end
+    end
+    return
+end
 
 function finalizecolumn(::Type{Missing}, ::Nothing, n::Int)
     return MissingColumn(n)
