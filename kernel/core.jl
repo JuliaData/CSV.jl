@@ -153,13 +153,13 @@ mutable struct ChunkIndex
     tape::Vector{UInt32}        # (relpos << 2) | kind, one per field-closing event
     rowfirst::Vector{Int32}     # rowfirst[r]..rowfirst[r+1]-1 index `tape` for row r
     rowstartrel::Vector{UInt32} # chunk-relative byte offset of each surviving row's start
-    delimskip::UInt8            # bytes a delimiter event consumes (multi-byte delims)
+    delimskip::Int              # bytes a delimiter event consumes (multi-byte delims)
     firstdatarow::Int           # local row where data begins (2 when this chunk holds the header row)
     unclosedquote::Bool         # buffer ended while inside a quoted field (malformed input)
 end
 
 ChunkIndex(start::Int, stop::Int) =
-    ChunkIndex(start, stop, UInt32[], Int32[1], UInt32[], 0x01, 1, false)
+    ChunkIndex(start, stop, UInt32[], Int32[1], UInt32[], 1, 1, false)
 
 nrows(ci::ChunkIndex) = length(ci.rowfirst) - 1 - (ci.firstdatarow - 1)
 totalrows(ci::ChunkIndex) = length(ci.rowfirst) - 1
@@ -212,7 +212,7 @@ end
 # rowfirst. Reads input bytes only at row starts (comment prefix check).
 function assemblerows!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int)
     tape = ci.tape
-    ci.delimskip = d.delim isa UInt8 ? 0x01 : UInt8(length(d.delim::Vector{UInt8}))
+    ci.delimskip = d.delim isa UInt8 ? 1 : length(d.delim::Vector{UInt8})
     rowfirst = ci.rowfirst
     rowstartrel = ci.rowstartrel
     resize!(rowfirst, 1); @inbounds rowfirst[1] = Int32(1)

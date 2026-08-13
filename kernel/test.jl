@@ -199,6 +199,8 @@ end
     @test idxall("a\tb\n"; delim='\t')             == [["a","b"]]
     @test idxall("a::b::c\n"; delim="::")          == [["a","b","c"]]   # multi-byte delim (scalar path)
     @test idxall("a:b::c\n"; delim="::")           == [["a:b","c"]]
+    longdelim = "xy"^128
+    @test idxall("left" * longdelim * "right\n"; delim=longdelim) == [["left", "right"]]
     # distinct escape char (backslash) — parity-unclean, scalar/sequential only
     @test idxall("\"a\\\"b\",c\n"; escapechar='\\') == [["\"a\\\"b\"","c"]]
     # unicode content passes through untouched (spans are byte-exact)
