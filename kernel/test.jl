@@ -777,6 +777,37 @@ end
     for gm in ('[', ']', '\\')
         @test_throws ArgumentError K.makevalueopts(asymmetric; groupmark=gm)
     end
+
+    # sentinels (the CSV front end's missingstring): exact content match ⇒
+    # missing, before ANY type machinery sees the span — detection and parsing
+    # agree by construction, so a numeric sentinel cannot destabilize inference.
+    t = K.parse("a,b\nNA,1\n2,NA\n"; sentinels=["NA"])
+    @test isequal(collect(t[:a]), [missing, 2]) && isequal(collect(t[:b]), [1, missing])
+    @test eltype(t[:a]) == Union{Int64, Missing}
+    t = K.parse("a,b\n\"NA\",1\n2,3\n"; sentinels=["NA"])            # quoted matches too
+    @test isequal(collect(t[:a]), [missing, 2])
+    t = K.parse("a,b\nna,1\n2,3\n"; sentinels=["NA"])                # case-sensitive
+    @test collect(String, t[:a]) == ["na", "2"]
+    t = K.parse("a,b\n999,1\n2,999\n"; sentinels=["999"])            # numeric spelling
+    @test isequal(collect(t[:a]), [missing, 2]) && eltype(t[:a]) == Union{Int64, Missing}
+    t = K.parse("a,b\nNA,1\nNA,2\n"; sentinels=["NA"])               # all-sentinel column
+    @test eltype(t[:a]) == Missing
+    t = K.parse("a,b\n  NA  ,1\nx,2\n"; sentinels=["NA"], stripwhitespace=true)
+    @test isequal(collect(t[:a]), [missing, "x"])                    # strip, then match
+    t = K.parse("a,b\nNA,N/A\nx,2\n"; sentinels=["NA", "N/A"])
+    @test isequal(collect(t[:a]), [missing, "x"]) && isequal(collect(t[:b]), [missing, 2])
+    t = K.parse("NA,b\n1,2\n"; sentinels=["NA"])                     # sentinel header auto-names
+    @test K.names(t) == [:Column1, :b]
+    # PINNED DELTA vs CSV.jl: an empty unquoted cell is ALWAYS missing here —
+    # structural, not spelling-dependent. (CSV.jl's custom missingstring
+    # replaces the "" default, turning empties into present empty strings.)
+    t = K.parse("a,b\n,1\nx,2\n"; sentinels=["NA"])
+    @test isequal(collect(t[:a]), [missing, "x"])
+    # a quoted empty is a present empty string even when sentinels are active
+    t = K.parse("a,b\n\"\",1\nx,2\n"; sentinels=["NA"], types=Dict(1 => String))
+    @test collect(String.(coalesce.(t[:a], "∅"))) == ["", "x"]
+    @test_throws ArgumentError K.parse("a\n1\n"; sentinels=[""])
+    @test_throws ArgumentError K.parse("a\n1\n"; sentinels="NA")     # must be a collection
 end
 
 @testset "typed: ignorerepeated end to end" begin

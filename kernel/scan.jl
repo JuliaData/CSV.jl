@@ -73,7 +73,7 @@ function apply(source, scan::Tables.Scan; header::Union{Bool, AbstractVector}=tr
     bi = K.index(buf, d; datastart, chunkbytes=cb, indexkw...)
     opts = K.makevalueopts(d; (k => v for (k, v) in pairs(parsekw)
                                if k in (:dateformat, :decimal, :truestrings, :falsestrings,
-                                        :stripwhitespace, :groupmark))...)
+                                        :sentinels, :stripwhitespace, :groupmark))...)
     headerlog = K.ProblemLog(phasecap)
     names = if header === true && !isempty(bi.chunks)
         ci = first(bi.chunks)

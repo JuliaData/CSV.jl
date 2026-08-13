@@ -130,8 +130,11 @@ swareligible(d::Dialect) = parityclean(d) && d.delim isa UInt8
 # parsing always runs a compiled format program — the ISO trio by default; a
 # user `dateformat` replaces all three (its `hasdate`/`hastime` flags say which
 # single type it detects as). Empty trues/falses ⇒ canonical `true`/`false`.
-# `sentinels` is the (currently empty at this layer) custom-missing-strings
-# seam the CSV front end will feed.
+# `sentinels` is the custom-missing-strings seam (the CSV front end's
+# `missingstring`): spellings whose exact (possibly quoted) content ⇒ missing.
+# Sentinels cannot break sample-independence — `cellcontent` resolves them
+# before ANY type machinery sees the span, so detection and parsing agree by
+# construction (contrast `inferbool`).
 struct ValueOpts
     oq::UInt8
     cq::UInt8
@@ -210,7 +213,8 @@ end
 function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
                        truestrings=nothing, falsestrings=nothing,
                        stripwhitespace::Bool=false,
-                       groupmark::Union{Nothing, Char}=nothing)
+                       groupmark::Union{Nothing, Char}=nothing,
+                       sentinels=nothing)
     isascii(decimal) || throw(ArgumentError("decimal must be ASCII (got $(repr(decimal)))"))
     gm = 0x00
     if groupmark !== nothing
@@ -238,7 +242,7 @@ function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
     falses = _bytelist(falsestrings, :falsestrings)
     inferbool = _validatebools(trues, falses, decimal % UInt8, dp, dtp, tp, custom, gm)
     return ValueOpts(d.oq, d.cq, d.e, d.quoted, delimbytes, decimal % UInt8, stripwhitespace,
-                     Vector{UInt8}[], trues, falses,
+                     _bytelist(sentinels, :sentinels), trues, falses,
                      dp, dtp, tp, custom, inferbool, gm)
 end
 
@@ -2077,7 +2081,8 @@ The default records malformed data as problems;
 Keywords: `delim`, `quotechar`, `openquotechar`/`closequotechar`, `escapechar`,
 `quoted`, `comment`, `ignoreemptyrows`, `ignorerepeated`, `header` (true | false | Vector), `types`
 (Type | Vector | Dict), `dateformat`, `decimal`, `truestrings`/`falsestrings`,
-`stripwhitespace`, `groupmark`, `pool`, `chunkbytes`, `parallel`, `fastindex`, `scanner`
+`sentinels` (spellings that parse as missing), `stripwhitespace`, `groupmark`,
+`pool`, `chunkbytes`, `parallel`, `fastindex`, `scanner`
 (:auto | :vec | :swar | :scalar), `maxproblems`,
 `on_error` (:collect | :error), `nsample`.
 """
@@ -2088,6 +2093,7 @@ function parse(buf::Vector{UInt8};
                decimal::Char='.',
                truestrings=nothing,
                falsestrings=nothing,
+               sentinels=nothing,
                stripwhitespace::Bool=false,
                groupmark::Union{Nothing, Char}=nothing,
                pool::Union{Bool, Real, Tuple{<:Real, <:Integer}}=false,
@@ -2125,8 +2131,8 @@ function parse(buf::Vector{UInt8};
         chunkbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $chunkbytes)"))
     end
     d = Dialect(; dialectkw...)
-    opts = makevalueopts(d; dateformat, decimal, truestrings, falsestrings, stripwhitespace,
-                         groupmark)
+    opts = makevalueopts(d; dateformat, decimal, truestrings, falsestrings, sentinels,
+                         stripwhitespace, groupmark)
     datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1  # BOM
     sc = resolvescanner(d, fastindex, scanner)
     # A caller holding a prebuilt index (the Scan integration indexes once for
