@@ -118,6 +118,8 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "structural: basics" begin
+    @test K.fieldsizehint(64) == 8
+    @test K.fieldsizehint(Int(typemax(UInt32))) == K.MAX_FIELD_SIZEHINT
     @test idxall("a,b,c\n1,2,3\n") == [["a","b","c"], ["1","2","3"]]
     @test idxall("a,b,c\n1,2,3")   == [["a","b","c"], ["1","2","3"]]  # no trailing newline
     @test idxall("a\n")            == [["a"]]

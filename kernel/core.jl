@@ -319,6 +319,9 @@ end
 const ONES8   = 0x0101010101010101
 const LOWS7   = 0x7f7f7f7f7f7f7f7f
 const MOVEMASK_MAGIC = 0x0102040810204080
+const MAX_FIELD_SIZEHINT = 1 << 20
+
+@inline fieldsizehint(nbytes::Int) = min(nbytes >> 3, MAX_FIELD_SIZEHINT)
 
 # Exact per-byte equality marks: 0x80 at each byte of `w` equal to `b`, 0x00
 # elsewhere. Uses the exact zero-byte test (the subtract-borrow variant has false
@@ -355,9 +358,9 @@ function indexchunk_swar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
     lastcr = start - 2 # absolute position of the last structural CR (CRLF pairing);
                        # start-2 can never equal any position's predecessor
     pos = start
-    # ~1 field per 8 bytes is a generous guess; pre-sizing keeps push! growth
-    # checks out of the event loop (exact counts come from the index itself).
-    sizehint!(ci.fields, (stop - start + 1) >> 3)
+    # ~1 field per 8 bytes is a generous guess. Cap the reservation because one
+    # giant row can span many chunk ranges while containing only one field.
+    sizehint!(ci.fields, fieldsizehint(stop - start + 1))
     GC.@preserve buf begin
         p = pointer(buf)
         @inbounds while pos + 63 <= stop
