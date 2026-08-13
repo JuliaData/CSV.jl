@@ -23,7 +23,7 @@ isdefined(Main, :CSVKernel) || include(joinpath(@__DIR__, "core.jl"))
 module KernelExamples
 
 using ..CSVKernel
-using Tables, Parsers, Dates
+using Tables, Dates
 const K = CSVKernel
 
 # ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ struct Batches
     seedtypes::Vector{Type}
     userprovided::Vector{Bool}
     allowmissing::Vector{Bool}
-    opts::Parsers.Options
+    opts::K.ValueOpts
     d::K.Dialect
     maxproblems::Int
     unclosedquote::Bool
@@ -92,7 +92,7 @@ function _batches(source, rowmode::Bool;
     buf = source isa Vector{UInt8} ? source :
           source isa AbstractString ? Vector{UInt8}(codeunits(source)) : Base.read(source)
     d = K.Dialect(; dialectkw...)
-    opts = K.makeoptions(d; dateformat, decimal, truestrings, falsestrings, stripwhitespace)
+    opts = K.makevalueopts(d; dateformat, decimal, truestrings, falsestrings, stripwhitespace)
     datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1
     bi = K.index(buf, d; datastart, chunkbytes)
     chunks = bi.chunks
@@ -141,13 +141,12 @@ function schemamissing(buf, chunks, types, opts)
             continue
         end
         pos, len = sp
-        res = types[j] === String ? K.xparsestring(buf, pos, pos + len - 1, opts) :
-                                   Parsers.xparse(types[j], buf, pos, pos + len - 1, opts)
-        if !Parsers.ok(res.code) || res.tlen != len || Parsers.sentinel(res.code)
-            # Numeric parsers report a stripped-to-empty sentinel as invalid.
-            sres = K.xparsestring(buf, pos, pos + len - 1, opts)
-            missing[j] = Parsers.sentinel(sres.code) ||
-                         !Parsers.ok(res.code) || res.tlen != len
+        cpos, clen, esc, st = K.cellcontent(buf, pos, len, opts)
+        if st != K.CELL_VALUE
+            missing[j] = true
+        elseif types[j] !== String
+            missing[j] = clen == 0 || esc ||
+                         !K.parsevalue(types[j], buf, cpos, cpos + clen - 1, opts)[2]
         end
     end
     return missing
@@ -156,14 +155,11 @@ end
 function headername(buf, ci, hrow, j, opts, cq::UInt8)
     pos, len = K.fieldspan(ci, hrow, j)::Tuple{Int, Int}
     len == 0 && return Symbol("Column", j)
-    res = K.xparsestring(buf, pos, pos + len - 1, opts)
-    if Parsers.ok(res.code) && res.tlen == len
-        pl = res.val
-        return Symbol(Parsers.escapedstring(res.code) ?
-                      K._unescape(buf, Int64(pl.pos), Int32(pl.len), opts.e, cq) :
-                      GC.@preserve(buf, unsafe_string(pointer(buf, pl.pos), pl.len)))
-    end
-    return Symbol(String(buf[pos:pos + len - 1]))
+    cpos, clen, esc, st = K.cellcontent(buf, pos, len, opts)
+    (st != K.CELL_VALUE || clen == 0) && return st == K.CELL_BADQUOTE ?
+        Symbol(String(buf[pos:pos + len - 1])) : Symbol("Column", j)
+    return Symbol(esc ? K._unescape(buf, Int64(cpos), Int32(clen), opts.e, cq) :
+                  GC.@preserve(buf, unsafe_string(pointer(buf, cpos), clen)))
 end
 
 Base.length(b::Batches) = length(b.chunks)
@@ -219,8 +215,8 @@ end
 # 3. Row streaming — CSV.Rows
 # ---------------------------------------------------------------------------
 # No column storage at all: iterating yields lightweight row views over the
-# index; each cell materializes only when accessed. `Parsers.parse`-style typed
-# access reuses the exact same span + options machinery as the columnar path —
+# index; each cell materializes only when accessed. Typed access reuses the
+# exact same span + kernel machinery as the columnar path —
 # CSV.Rows' whole parallel implementation (its own Context mode, its own
 # @unrollcolumns dispatch table) reduces to this.
 
@@ -229,7 +225,7 @@ struct Rows
     chunks::Vector{K.ChunkIndex}
     names::Vector{Symbol}
     lookup::Dict{Symbol, Int}
-    opts::Parsers.Options
+    opts::K.ValueOpts
     d::K.Dialect
 end
 
@@ -291,13 +287,10 @@ function Base.getindex(row::RowView, j::Int)
     pos, len = sp
     len == 0 && return missing
     buf = r.buf
-    res = K.xparsestring(buf, pos, pos + len - 1, r.opts)
-    Parsers.ok(res.code) && res.tlen == len || return missing
-    Parsers.sentinel(res.code) && return missing
-    pl = res.val
-    return Parsers.escapedstring(res.code) ?
-        K._unescape(buf, Int64(pl.pos), Int32(pl.len), r.opts.e, r.d.cq) :
-        GC.@preserve(buf, unsafe_string(pointer(buf, pl.pos), pl.len))
+    cpos, clen, esc, st = K.cellcontent(buf, pos, len, r.opts)
+    st == K.CELL_VALUE || return missing
+    return esc ? K._unescape(buf, Int64(cpos), Int32(clen), r.opts.e, r.d.cq) :
+        GC.@preserve(buf, unsafe_string(pointer(buf, cpos), clen))
 end
 Base.getindex(row::RowView, nm::Symbol) = row[getfield(row, :r).lookup[nm]]
 function Base.getproperty(row::RowView, nm::Symbol)
@@ -305,7 +298,7 @@ function Base.getproperty(row::RowView, nm::Symbol)
     return haskey(r.lookup, nm) ? row[nm] : getfield(row, nm)
 end
 
-# Typed access on demand — the CSV.Rows `Parsers.parse(T, row, i)` pattern.
+# Typed access on demand — the CSV.Rows `parse(T, row, i)` pattern.
 typedvalue(::Type{String}, row::RowView, j::Int) = row[j]
 function typedvalue(::Type{T}, row::RowView, j::Int) where {T}
     r = getfield(row, :r)
@@ -314,9 +307,10 @@ function typedvalue(::Type{T}, row::RowView, j::Int) where {T}
     sp === nothing && return missing
     pos, len = sp
     len == 0 && return missing
-    res = Parsers.xparse(T, r.buf, pos, pos + len - 1, r.opts)
-    Parsers.ok(res.code) && res.tlen == len || return missing
-    return Parsers.sentinel(res.code) ? missing : res.val
+    cpos, clen, esc, st = K.cellcontent(r.buf, pos, len, r.opts)
+    (st == K.CELL_VALUE && clen > 0 && !esc) || return missing
+    v, ok = K.parsevalue(T, r.buf, cpos, cpos + clen - 1, r.opts)
+    return ok ? v : missing
 end
 typedvalue(::Type{T}, row::RowView, nm::Symbol) where {T} =
     typedvalue(T, row, getfield(row, :r).lookup[nm])

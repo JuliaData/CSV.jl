@@ -10,7 +10,7 @@
 # correctness claim (determinism for any chunk geometry), so it is tested
 # exhaustively rather than incidentally.
 
-using Test, Random, Dates, Tables, Parsers
+using Test, Random, Dates, Tables
 
 isdefined(Main, :CSVKernel) || include(joinpath(@__DIR__, "core.jl"))
 using .CSVKernel
@@ -76,22 +76,6 @@ function idxall(input::AbstractString; chunks=(3, 7, 16, 64), kw...)
         got == ref || @info "structural mismatch" input label got ref
     end
     return ref.rows
-end
-
-function detecttype_fullcascade(value::AbstractString, opts::Parsers.Options)
-    buf = Vector{UInt8}(codeunits(value))
-    isempty(buf) && return Missing
-    stop = length(buf)
-    sres = K.xparsestring(buf, 1, stop, opts)
-    Parsers.sentinel(sres.code) && sres.tlen == stop && return Missing
-    for T in (Int64, Float64, Date, DateTime, Time, Bool)
-        res = Parsers.xparse(T, buf, 1, stop, opts)
-        if Parsers.ok(res.code)
-            Parsers.sentinel(res.code) && return Missing
-            res.tlen == stop && return T
-        end
-    end
-    return String
 end
 
 # Top-level (not testset-local) so the allocation probe measures the loop, not
@@ -248,7 +232,7 @@ end
     # unicode content passes through untouched (spans are byte-exact)
     @test idxall("α,β\n∀,∃\n") == [["α","β"], ["∀","∃"]]
     @test_throws ArgumentError K.Dialect(delim="")
-    @test_throws ArgumentError K.makeoptions(K.Dialect(); decimal='é')
+    @test_throws ArgumentError K.makevalueopts(K.Dialect(); decimal='é')
     @test_throws ArgumentError K.index(UInt8[0x61], K.Dialect(); datastart=0)
 end
 
@@ -431,74 +415,70 @@ end
     # date → string on mixed temporals
     t = K.parse("a\n2023-01-15\n10:30:00\n")
     @test eltype(t[:a]) == K.KStr
-    # Bool and temporal parsers accept some values classified earlier in the
-    # inference cascade (for example, Bool accepts "1" and DateTime accepts a
-    # date). Those overlaps must still follow the promotion lattice regardless
-    # of which row the sample sees first.
+    # Strictness principle: each kernel accepts exactly the spellings detection
+    # assigns to it (Bool is true/false only; temporals are pattern-exact), so
+    # values that OLD Parsers accepted more loosely ("1" as Bool, a bare date as
+    # DateTime) now conflict and promote to String — sample-independently.
     for ns in (1, 2, 3)
         @test eltype(K.parse("a\nfalse\n1\n1\n"; nsample=ns)[:a]) == K.KStr
         @test eltype(K.parse("a\n2024-01-02T03:04:05\n2024-01-03\n"; nsample=ns)[:a]) == K.KStr
         @test eltype(K.parse("a\n03:04:05\n1\n"; nsample=ns)[:a]) == K.KStr
     end
-    # Quoting leaves the opening quote at the structural span's first byte, so
-    # the letter fast-out cannot hide a numeric overlap.
+    # Quotes strip before detection AND parsing, so a quoted numeric overlap
+    # follows the same lattice.
     @test eltype(K.parse("a\nfalse\n\"1\"\n"; nsample=1)[:a]) == K.KStr
 
-    # The letter-led fast path must match the original full cascade for custom
-    # Bool spellings, explicit date formats, numeric special values, custom
-    # decimal bytes, and quoted fields.
-    defaultopts = K.makeoptions(K.Dialect())
-    boolopts = K.makeoptions(K.Dialect(); truestrings=["yes"], falsestrings=["no"])
-    dateopts = K.makeoptions(K.Dialect(); dateformat="u dd yyyy",
-                             truestrings=["yes"], falsestrings=["no"])
-    decimalopts = K.makeoptions(K.Dialect(delim=';'); decimal='x')
-    cases = (("yes", boolopts), ("no", boolopts), ("yellow", boolopts),
-             ("Jan 02 2024", dateopts),
-             ("Inf", defaultopts), ("-Inf", defaultopts),
-             ("NaN", defaultopts), ("nan", defaultopts),
-             ("x5", decimalopts), ("\"yes\"", boolopts),
-             ("\"yellow\"", boolopts))
-    for (value, caseopts) in cases
-        buf = Vector{UInt8}(codeunits(value))
-        @test K.detecttype(buf, 1, length(buf), caseopts) ===
-              detecttype_fullcascade(value, caseopts)
-    end
-    @test K.detecttype(Vector{UInt8}(codeunits("yes")), 1, 3, boolopts) === Bool
-    @test K.detecttype(Vector{UInt8}(codeunits("no")), 1, 2, boolopts) === Bool
-    @test dateopts.dateformat !== nothing
-    @test K.detecttype(Vector{UInt8}(codeunits("Jan 02 2024")), 1, 11, dateopts) === Date
-    for b in UInt8['i', 'I', 'n', 'N']
-        @test !K._letterfastout(b, defaultopts)
-    end
-    @test !K._letterfastout(UInt8('x'), decimalopts)
-    @test !K._letterfastout(UInt8('"'), boolopts)
+    # Detection pins across custom Bool spellings, explicit date formats,
+    # numeric special values, custom decimal bytes, and quoted fields.
+    dt(v, o) = K.detecttype(Vector{UInt8}(codeunits(v)), 1, ncodeunits(v), o)
+    defaultopts = K.makevalueopts(K.Dialect())
+    boolopts = K.makevalueopts(K.Dialect(); truestrings=["yes"], falsestrings=["no"])
+    dateopts = K.makevalueopts(K.Dialect(); dateformat="u dd yyyy",
+                               truestrings=["yes"], falsestrings=["no"])
+    decimalopts = K.makevalueopts(K.Dialect(delim=';'); decimal='x')
+    @test dt("yes", boolopts) === Bool
+    @test dt("no", boolopts) === Bool
+    @test dt("yellow", boolopts) === String
+    @test dt("true", boolopts) === String        # user lists REPLACE the defaults
+    @test dt("true", defaultopts) === Bool
+    @test dt("1", defaultopts) === Int64         # strict: never Bool
+    @test dateopts.customfmt
+    @test dt("Jan 02 2024", dateopts) === Date
+    @test dt("Inf", defaultopts) === Float64
+    @test dt("-Inf", defaultopts) === Float64
+    @test dt("NaN", defaultopts) === Float64
+    @test dt("nan", defaultopts) === Float64
+    @test dt("x5", decimalopts) === Float64
+    @test dt("\"yes\"", boolopts) === Bool
+    @test dt("\"yellow\"", boolopts) === String
 
-    # Pin the prefix guard against the full detection cascade for custom formats.
-    # Numeric date spellings classify as Int64. Textual month spellings classify
-    # as Date even when DateTime or a custom Bool spelling also accepts them.
-    checkconflict = function (T, value, opts, detected)
-        buf = Vector{UInt8}(codeunits(value))
-        @test K._hitsexact(T, buf, 1, length(buf), opts)
-        @test K.detecttype(buf, 1, length(buf), opts) === detected
-        @test K.canonicalconflict(T, buf, 1, length(buf), opts) == (detected !== T)
-    end
-    numericdateopts = K.makeoptions(K.Dialect(); dateformat="yyyymmdd")
-    checkconflict(Date, "20240102", numericdateopts, Int64)
-    letterdecimalopts = K.makeoptions(K.Dialect(delim=';'); decimal='x',
-                                      truestrings=["x5"])
-    checkconflict(Bool, "x5", letterdecimalopts, Float64)
-    textdateopts = K.makeoptions(K.Dialect(); dateformat="u dd yyyy",
-                                truestrings=["Jan 02 2024"])
-    checkconflict(DateTime, "Jan 02 2024", textdateopts, Date)
-    checkconflict(Bool, "Jan 02 2024", textdateopts, Date)
+    # A custom format detects as exactly the type its components spell —
+    # but numeric spellings still classify EARLIER in the cascade, and the
+    # strict kernels guarantee parsing agrees with detection either way.
+    numericdateopts = K.makevalueopts(K.Dialect(); dateformat="yyyymmdd")
+    @test dt("20240102", numericdateopts) === Int64
+    @test K.parsevalue(Date, Vector{UInt8}(codeunits("20240102")), 1, 8,
+                       numericdateopts) == (Date(2024, 1, 2), true)
+    dtfmtopts = K.makevalueopts(K.Dialect(); dateformat="yyyy-mm-dd HH:MM")
+    @test dt("2024-01-02 03:04", dtfmtopts) === DateTime
+    timefmtopts = K.makevalueopts(K.Dialect(); dateformat="HHhMM")
+    @test dt("03h04", timefmtopts) === Time
+    letterdecimalopts = K.makevalueopts(K.Dialect(delim=';'); decimal='x',
+                                        truestrings=["x5"])
+    @test dt("x5", letterdecimalopts) === Float64   # cascade order beats the Bool list
+    textdateopts = K.makevalueopts(K.Dialect(); dateformat="u dd yyyy",
+                                   truestrings=["Jan 02 2024"])
+    @test dt("Jan 02 2024", textdateopts) === Date
 
-    # A stripped-to-empty field is Missing to detection even though Parsers
-    # reports a successful non-sentinel default Date. The prefix guard must keep
-    # the old conflict result instead of materializing Date(1).
-    stripopts = K.makeoptions(K.Dialect(); stripwhitespace=true)
-    checkconflict(Date, " ", stripopts, Missing)
-    @test eltype(K.parse("a\n2024-01-02\n \n";
-                         stripwhitespace=true, nsample=1)[:a]) == Union{Missing, K.KStr}
+    # A stripped-to-empty field is Missing to detection and to every kernel —
+    # a Date column keeps its type and the field is cleanly missing. (The old
+    # Parsers-based path materialized a default Date(1) here and needed a
+    # conflict guard that force-promoted the whole column to String.)
+    stripopts = K.makevalueopts(K.Dialect(); stripwhitespace=true)
+    @test dt(" ", stripopts) === Missing
+    tstrip = K.parse("a\n2024-01-02\n \n"; stripwhitespace=true, nsample=1)
+    @test eltype(tstrip[:a]) == Union{Missing, Date}
+    @test isequal(collect(tstrip[:a]), [Date(2024, 1, 2), missing])
     # promotion across chunk boundaries with adversarially small chunks: early
     # chunks parse Int64, a late chunk hits a float ⇒ whole column re-parses
     input = "a\n" * join(1:50, "\n") * "\n99.5\n"
@@ -515,7 +495,7 @@ end
     buf = Vector{UInt8}(codeunits(input))
     bi = K.index(buf, K.Dialect(); chunkbytes=64)
     bi.chunks[1].firstdatarow += 1
-    opts = K.makeoptions(K.Dialect())
+    opts = K.makevalueopts(K.Dialect())
     @test K.sampletypes(buf, bi.chunks, 1, opts; nsample=2) == [Float64]
     @test_throws ArgumentError K.sampletypes(buf, bi.chunks, 1, opts; nsample=0)
     @test_throws ArgumentError K.parse("a\n1\n"; types=Int64, nsample=0)
@@ -658,20 +638,14 @@ end
     # materialize detaches from the buffer
     v = K.materialize(t[:a])
     @test v == ["x\"y"] && v isa Vector{String}
-    # String spans use Parsers.PosLen31, not PosLen's 20-bit length. The old
-    # path silently returned only the final 7 bytes for this value.
+    # Spans are Int64/Int32 end to end — a >2^20-byte field survives exactly
+    # (the old Parsers.PosLen intermediate silently kept only the final 7 bytes).
     longvalue = repeat("x", (1 << 20) + 7)
     t = K.parse("a\n" * longvalue * "\n"; types=String, chunkbytes=1 << 16)
     @test t[:a][1] == longvalue
-    # Fields beyond PosLen31's absolute-position range use local coordinates and
-    # translate the content span back. Exercise that translation without a 2 GiB
-    # test allocation by calling the cold helper directly.
-    localbuf = Vector{UInt8}(codeunits("xx\"a\"\"b\""))
-    localres = K._xparsestring_local(localbuf, 3, length(localbuf), K.makeoptions(K.Dialect()))
-    @test localres.val.pos == 4 && localres.val.len == 4 && localres.tlen == 6
-    # Every value parser must consume the full structural span. A bare quote is
-    # structurally valid by design, but it makes this value malformed for
-    # Parsers' field-start quote rule; report it instead of returning a prefix.
+    # A bare quote is structurally valid by design, but when it protects a
+    # delimiter the value-level reading of the span disagrees with the
+    # structural one; report it instead of silently keeping either reading.
     t = K.parse("a,b\nab\"cd,e\"f,g\n"; types=String)
     @test isequal(collect(t[:a]), [missing])
     @test any(p -> p.kind == :invalid_value && p.row == 1 && p.col == 1, K.problems(t))

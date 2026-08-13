@@ -23,8 +23,9 @@ The pipeline (and the file's layout) is:
     L2  schema        : type inference seeds from a *stratified* sample of the index
                         (evenly spaced rows, not a prefix), then...
     L3  values        : ...each column of each chunk is parsed in its own
-                        *monomorphic* loop over the index (`Parsers.xparse` on exact
-                        field spans). Type conflicts promote through a small lattice
+                        *monomorphic* loop over the index (the self-contained
+                        `KernelValues` kernels on exact field spans). Type
+                        conflicts promote through a small lattice
                         and re-parse ONLY that column — never the whole chunk.
     L4  columns       : plain `Vector{T}` + `Vector{Bool}` presence (no sentinels),
                         string columns as lazy views into the input buffer
@@ -50,15 +51,23 @@ quote state composable across parallel byte ranges.
 """
 module CSVKernel
 
-using Parsers, Dates
+using Dates
+
+# The value layer: self-contained typed parsers (int/float/bool/civil), span
+# utilities (quote/content discovery, sentinels), and format programs. No
+# Parsers.jl — this pair of modules is the Parsers-3.0 release-candidate shape.
+include("values.jl")
+using .KernelValues
+using .KernelValuesDates
+const V = KernelValues
 
 export Dialect, index, ParsedTable, Problem
 
 # ---------------------------------------------------------------------------
 # Dialect: the structural options. Value-level options (sentinels, dateformats,
-# true/false spellings, decimal char) live in `Parsers.Options`, built once in
-# `makeoptions` and applied to exact field spans — the kernel does not
-# re-implement type or value recognition.
+# true/false spellings, decimal char) live in `ValueOpts`, built once in
+# `makevalueopts` and applied to exact field spans by the `KernelValues`
+# kernels.
 # ---------------------------------------------------------------------------
 
 struct Dialect
@@ -115,18 +124,173 @@ parityclean(d::Dialect) = !d.quoted || (d.oq == d.cq && d.e == d.cq)
 # The fast scanners additionally need a single-byte delimiter.
 swareligible(d::Dialect) = parityclean(d) && d.delim isa UInt8
 
-function makeoptions(d::Dialect; dateformat=nothing, decimal::Char='.',
-                     truestrings=nothing, falsestrings=nothing,
-                     stripwhitespace::Bool=false)
+# Value-level options: everything a cell needs beyond structure. Temporal
+# parsing always runs a compiled format program — the ISO trio by default; a
+# user `dateformat` replaces all three (its `hasdate`/`hastime` flags say which
+# single type it detects as). Empty trues/falses ⇒ canonical `true`/`false`.
+# `sentinels` is the (currently empty at this layer) custom-missing-strings
+# seam the CSV front end will feed.
+struct ValueOpts
+    oq::UInt8
+    cq::UInt8
+    e::UInt8
+    quoted::Bool
+    delim::Vector{UInt8}
+    decimal::UInt8
+    stripws::Bool
+    sentinels::Vector{Vector{UInt8}}
+    trues::Vector{Vector{UInt8}}
+    falses::Vector{Vector{UInt8}}
+    datepat::V.DatePattern
+    datetimepat::V.DatePattern
+    timepat::V.DatePattern
+    customfmt::Bool
+end
+
+_bytelist(x) = x === nothing ? Vector{UInt8}[] : [Vector{UInt8}(codeunits(s)) for s in x]
+
+function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
+                       truestrings=nothing, falsestrings=nothing,
+                       stripwhitespace::Bool=false)
     isascii(decimal) || throw(ArgumentError("decimal must be ASCII (got $(repr(decimal)))"))
-    return Parsers.Options(
-        sentinel=missing,                    # empty field ⇒ missing
-        openquotechar=d.oq, closequotechar=d.cq, escapechar=d.e,
-        delim=d.delim isa UInt8 ? d.delim : String(copy(d.delim)),
-        quoted=d.quoted,
-        dateformat=dateformat, decimal=decimal % UInt8,
-        trues=truestrings, falses=falsestrings,
-        stripwhitespace=stripwhitespace)
+    if dateformat === nothing
+        dp, dtp, tp, custom = V.ISO_DATE, V.ISO_DATETIME, V.ISO_TIME, false
+    else
+        dateformat isa AbstractString ||
+            throw(ArgumentError("dateformat must be a format String (got $(typeof(dateformat)))"))
+        p = V.compilepattern(dateformat)
+        dp = dtp = tp = p
+        custom = true
+    end
+    delimbytes = d.delim isa UInt8 ? [d.delim] : copy(d.delim)
+    return ValueOpts(d.oq, d.cq, d.e, d.quoted, delimbytes, decimal % UInt8, stripwhitespace,
+                     Vector{UInt8}[], _bytelist(truestrings), _bytelist(falsestrings),
+                     dp, dtp, tp, custom)
+end
+
+# --- the cell layer -----------------------------------------------------------
+#
+# One function turns a raw field span into a *content* span + disposition:
+#     CELL_VALUE    content [cpos, cpos+clen) is a present value (maybe escaped)
+#     CELL_MISSING  empty / whitespace-stripped-to-empty / sentinel ⇒ missing
+#     CELL_BADQUOTE malformed quoting (unterminated, or bytes after the close)
+# Rules: outer space/tab around a QUOTED field is structural, never content
+# (matching every CSV reader surveyed); unquoted whitespace is significant
+# unless `stripwhitespace`; a quoted empty field is a present empty string,
+# never missing; sentinels match the (possibly unquoted) content exactly.
+const CELL_VALUE    = 0x00
+const CELL_MISSING  = 0x01
+const CELL_BADQUOTE = 0x02
+
+@inline _isot(b::UInt8) = (b == UInt8(' ')) | (b == UInt8('\t'))
+
+@inline function cellcontent(buf::Vector{UInt8}, pos::Int, len::Int, vo::ValueOpts)
+    i, j = pos, pos + len - 1
+    @inbounds begin
+        if vo.stripws
+            while i <= j && _isot(buf[i]); i += 1; end
+            while j >= i && _isot(buf[j]); j -= 1; end
+        end
+        i > j && return (i, 0, false, CELL_MISSING)
+        if vo.quoted
+            ii, jj = i, j
+            while ii <= jj && _isot(buf[ii]); ii += 1; end
+            if ii <= jj && buf[ii] == vo.oq
+                while jj > ii && _isot(buf[jj]); jj -= 1; end
+                cpos, clen, esc, rc = V.findcontent(buf, ii, jj, vo.oq, vo.cq, vo.e)
+                rc == V.RC_OK || return (cpos, clen, esc, CELL_BADQUOTE)
+                if vo.stripws
+                    cj = cpos + clen - 1
+                    while cpos <= cj && _isot(buf[cpos]); cpos += 1; end
+                    while cj >= cpos && _isot(buf[cj]); cj -= 1; end
+                    clen = cj - cpos + 1
+                end
+                clen > 0 && !isempty(vo.sentinels) && !esc &&
+                    V.matchsentinel(buf, cpos, cpos + clen - 1, vo.sentinels) &&
+                    return (cpos, 0, false, CELL_MISSING)
+                return (cpos, clen, esc, CELL_VALUE)
+            end
+        end
+        !isempty(vo.sentinels) && V.matchsentinel(buf, i, j, vo.sentinels) &&
+            return (i, 0, false, CELL_MISSING)
+        return (i, j - i + 1, false, CELL_VALUE)
+    end
+end
+
+# An UNQUOTED span can only contain the delimiter when a bare mid-field quote
+# engaged the indexer's structural protection — the value-level reading of the
+# bytes disagrees with the structural one. String cells and headers surface
+# that as a problem (typed kernels reject such spans naturally); the bytes are
+# still preserved exactly where the caller keeps them.
+function _delimclash(buf::Vector{UInt8}, cpos::Int, clen::Int, delim::Vector{UInt8})
+    n = length(delim)
+    clen < n && return false
+    @inbounds for k in cpos:(cpos + clen - n)
+        if buf[k] == delim[1]
+            m = 2
+            while m <= n && buf[k + m - 1] == delim[m]
+                m += 1
+            end
+            m > n && return true
+        end
+    end
+    return false
+end
+
+# Was this raw span a quoted field? (Re-derives cellcontent's entry condition;
+# only called on cold/string paths.)
+@inline function _wasquoted(buf::Vector{UInt8}, pos::Int, len::Int, vo::ValueOpts)
+    vo.quoted || return false
+    i, j = pos, pos + len - 1
+    @inbounds while i <= j && _isot(buf[i])
+        i += 1
+    end
+    return i <= j && buf[i] == vo.oq
+end
+
+# --- typed value dispatch ------------------------------------------------------
+#
+# `parsevalue(T, buf, i, j, vo) -> (value, ok)` over a CONTENT span. Strictness
+# principle: each kernel accepts exactly the spellings `detecttype` assigns to
+# it (Bool is `true`/`false` or the user lists; temporals are pattern-exact), so
+# parse-set ≡ detect-set and an inferred column's type can never depend on which
+# rows the sampler saw — the property the old per-value canonical-conflict guard
+# existed to enforce, now free by construction.
+const _DATE0 = Date(1)
+const _DATETIME0 = DateTime(1)
+const _TIME0 = Time(0)
+
+@inline function parsevalue(::Type{Int64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    v, rc = V.parseint64(buf, i, j)
+    return (v, rc == V.RC_OK)
+end
+@inline function parsevalue(::Type{Float64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    v, rc = V.parsefloat64(buf, i, j, vo.decimal)
+    return (v, rc == V.RC_OK)
+end
+@inline function parsevalue(::Type{Bool}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    if isempty(vo.trues) && isempty(vo.falses)
+        v, rc = V.parsebool(buf, i, j)
+        return (v, rc == V.RC_OK)
+    end
+    V.matchsentinel(buf, i, j, vo.trues) && return (true, true)
+    V.matchsentinel(buf, i, j, vo.falses) && return (false, true)
+    return (false, false)
+end
+@inline function parsevalue(::Type{Date}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    c, rc = V.parsecivil(buf, i, j, vo.datepat)
+    rc == V.RC_OK || return (_DATE0, false)
+    return (todate(c), true)
+end
+@inline function parsevalue(::Type{DateTime}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    c, rc = V.parsecivil(buf, i, j, vo.datetimepat)
+    rc == V.RC_OK || return (_DATETIME0, false)
+    return (todatetime(c), true)
+end
+@inline function parsevalue(::Type{Time}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    c, rc = V.parsecivil(buf, i, j, vo.timepat)
+    rc == V.RC_OK || return (_TIME0, false)
+    return (totime(c), true)
 end
 
 # ---------------------------------------------------------------------------
@@ -778,31 +942,33 @@ promote_kernel(a::Type, b::Type) =
     String
 
 # Detect the type of one raw field span (mirrors CSV.jl's cascade, minus the
-# Int-width games). Detection and parsing use the same options and exact-span
-# checks, so a conflict always advances the finite promotion lattice.
-function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::Parsers.Options)
+# Int-width games). Detection and parsing run the SAME kernels on the same
+# content span, so detect-set ≡ parse-set exactly and a conflict always
+# advances the finite promotion lattice. The strict kernels reject foreign
+# shapes within a byte or two, so a full cascade probe is cheap.
+function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::ValueOpts)
     len == 0 && return Missing
-    stop = pos + len - 1
-    # Missing-first: custom sentinel strings and stripwhitespace-emptied fields are
-    # type-neutral. Probed via a String parse because Parsers' numeric parsers
-    # report a stripped-to-empty field as INVALID rather than SENTINEL.
-    sres = xparsestring(buf, pos, stop, opts)
-    Parsers.sentinel(sres.code) && sres.tlen == len && return Missing
-    # Letter-led fields can't start a number (Inf/NaN and custom decimal bytes are
-    # excluded from the fast-out) or a default-format temporal, so the cascade
-    # reduces to Bool-then-String — this is the same reasoning as
-    # `canonicalconflict`'s fast-out and it makes sampling cheap on string-heavy
-    # data (a word otherwise pays six failed probes).
-    if opts.dateformat === nothing && _letterfastout(@inbounds(buf[pos]), opts)
-        return _hitsexact(Bool, buf, pos, len, opts) ? Bool : String
-    end
-    for T in (Int64, Float64, Date, DateTime, Time, Bool)
-        res = Parsers.xparse(T, buf, pos, stop, opts)
-        if Parsers.ok(res.code)
-            Parsers.sentinel(res.code) && return Missing
-            res.tlen == len && return T
+    cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
+    st == CELL_MISSING && return Missing
+    st == CELL_BADQUOTE && return String    # malformed quoting reports at parse time
+    (clen == 0 || esc) && return String     # quoted-empty / escape content is stringy
+    cj = cpos + clen - 1
+    rc = V.parseint64(buf, cpos, cj)[2]
+    rc == V.RC_OK && return Int64
+    # RC_OVERFLOW means all-digits beyond Int64 — exactly the Float64 promotion
+    V.parsefloat64(buf, cpos, cj, opts.decimal)[2] == V.RC_OK && return Float64
+    if opts.customfmt
+        # one probe: the user format's own components say which type it detects
+        if V.parsecivil(buf, cpos, cj, opts.datepat)[2] == V.RC_OK
+            p = opts.datepat
+            return p.hasdate ? (p.hastime ? DateTime : Date) : Time
         end
+    else
+        V.parsecivil(buf, cpos, cj, opts.datepat)[2] == V.RC_OK && return Date
+        V.parsecivil(buf, cpos, cj, opts.datetimepat)[2] == V.RC_OK && return DateTime
+        V.parsecivil(buf, cpos, cj, opts.timepat)[2] == V.RC_OK && return Time
     end
+    parsevalue(Bool, buf, cpos, cj, opts)[2] && return Bool
     return String
 end
 
@@ -1083,41 +1249,10 @@ end
 StringColumn(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8) =
     StringColumn(fill(PAYLOAD_MISSING, n), buf, UInt8[], ReentrantLock(), e, cq)
 
-# Parsers.PosLen stores only 20 length bits. PosLen31 supports wide fields but
-# only 31-bit absolute positions. Use it directly while the whole field fits that
-# range; later fields parse through a zero-copy local view and translate the
-# content position back to the full source.
-struct KernelPosLen
-    pos::Int64
-    len::Int64
-end
-struct KernelStringResult{C, T}
-    code::C
-    tlen::T
-    val::KernelPosLen
-end
-
-@inline function xparsestring(buf::Vector{UInt8}, pos::Int, stop::Int,
-                              opts::Parsers.Options)
-    stop - pos + 1 <= typemax(Int32) ||
-        throw(ArgumentError("a string field exceeds the kernel's 31-bit span limit"))
-    stop <= 1 << 31 && return Parsers.xparse(String, buf, pos, stop, opts, Parsers.PosLen31)
-    return _xparsestring_local(buf, pos, stop, opts)
-end
-
-@noinline function _xparsestring_local(buf::Vector{UInt8}, pos::Int, stop::Int,
-                                       opts::Parsers.Options)
-    source = @view buf[pos:stop]
-    res = Parsers.xparse(String, source, 1, length(source), opts, Parsers.PosLen31)
-    pl = res.val
-    return KernelStringResult(res.code, res.tlen,
-                              KernelPosLen(pos + Int64(pl.pos) - 1, Int64(pl.len)))
-end
-
 # The kernel's own unescape: `""` collapses to `"` when e == cq; `\X` drops the
-# backslash when e != cq. We do NOT round-trip through Parsers.getstring here
-# because Parsers.PosLen caps a field's length at 2^20-1 bytes (the root of
-# CSV.jl issue #935); the kernel's spans are Int32 and must stay lossless.
+# backslash when e != cq. Spans are Int64/Int32 end to end, so a single field
+# may be arbitrarily wide (the root cause of CSV.jl issue #935 was a 20-bit
+# length cap in an intermediate representation — there is no intermediate here).
 function _unescape_bytes(buf::Vector{UInt8}, pos::Int64, len::Int32, e::UInt8, cq::UInt8)
     out = Vector{UInt8}(undef, len)
     n = 0
@@ -1224,74 +1359,16 @@ end
 # instead of once per cell. A mid-chunk type surprise returns the offending row so
 # the driver can promote and re-run *this column only*.
 
-# Parsers deliberately accepts a wider spelling domain than inference assigns:
-# `xparse(Bool, "1")` succeeds, and `xparse(DateTime, "2024-01-02")` accepts a
-# bare date. An *inferred* column's final type must not depend on which rows the
-# sampler happened to see, so a value only counts as `T` if no type EARLIER in
-# the detection cascade also claims the exact span — precisely
-# `detecttype(...) === T`, but probing only the cascade *prefix* for T, because
-# a value that full-span-parses as T can never detect as anything later.
-# Cost control (this guard sits on the hot path of every inferred Bool/temporal
-# column): canonical values fail the numeric probes within a few leading bytes.
-# Alphabetic spellings skip the prefix when it is numeric-only, or when temporal
-# parsing uses its numeric-leading default formats. A custom dateformat can start
-# with a letter, so a temporal prefix must still be probed in that case. Inf/NaN
-# and a custom alphabetic decimal byte can spell a number with a leading letter,
-# so those bytes stay out of the fast-out.
-@inline function _letterfastout(b::UInt8, opts::Parsers.Options)
-    isletter = (UInt8('a') <= b <= UInt8('z')) | (UInt8('A') <= b <= UInt8('Z'))
-    infnan = (b == UInt8('i')) | (b == UInt8('I')) | (b == UInt8('n')) | (b == UInt8('N'))
-    return isletter & !infnan & (b != opts.decimal)
-end
-
-@inline _prefixfastout(::Type{Date}, b::UInt8, opts::Parsers.Options) = _letterfastout(b, opts)
-@inline _prefixfastout(::Type, b::UInt8, opts::Parsers.Options) =
-    opts.dateformat === nothing && _letterfastout(b, opts)
-
-# Missing detection normally stays off this hot path. Parsers' temporal parsers,
-# however, accept a stripped-to-empty field as their zero/default value without
-# setting SENTINEL, while the String probe used by `detecttype` classifies it as
-# Missing. Probe String only for a leading strip-whitespace byte; a nonempty
-# unquoted sentinel must start there under the kernel's fixed sentinel options.
-@inline function _missingconflict(buf::Vector{UInt8}, pos::Int, len::Int,
-                                  opts::Parsers.Options)
-    b = @inbounds buf[pos]
-    (b == UInt8(' ') || b == UInt8('\t')) || return false
-    res = xparsestring(buf, pos, pos + len - 1, opts)
-    return Parsers.sentinel(res.code) && res.tlen == len
-end
-
-@inline function _hitsexact(::Type{S}, buf::Vector{UInt8}, pos::Int, len::Int,
-                            opts::Parsers.Options) where {S}
-    res = Parsers.xparse(S, buf, pos, pos + len - 1, opts)
-    return Parsers.ok(res.code) && !Parsers.sentinel(res.code) && res.tlen == len
-end
-
-@inline canonicalconflict(::Type{Date}, buf, pos, len, opts) =
-    _missingconflict(buf, pos, len, opts) ||
-    (!_prefixfastout(Date, @inbounds(buf[pos]), opts) &&
-     (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts)))
-@inline canonicalconflict(::Type{DateTime}, buf, pos, len, opts) =
-    _missingconflict(buf, pos, len, opts) ||
-    (!_prefixfastout(DateTime, @inbounds(buf[pos]), opts) &&
-     (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts) ||
-      _hitsexact(Date, buf, pos, len, opts)))
-@inline canonicalconflict(::Type{Time}, buf, pos, len, opts) =
-    _missingconflict(buf, pos, len, opts) ||
-    (!_prefixfastout(Time, @inbounds(buf[pos]), opts) &&
-     (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts) ||
-      _hitsexact(Date, buf, pos, len, opts) || _hitsexact(DateTime, buf, pos, len, opts)))
-@inline canonicalconflict(::Type{Bool}, buf, pos, len, opts) =
-    _missingconflict(buf, pos, len, opts) ||
-    (!_prefixfastout(Bool, @inbounds(buf[pos]), opts) &&
-     (_hitsexact(Int64, buf, pos, len, opts) || _hitsexact(Float64, buf, pos, len, opts) ||
-      _hitsexact(Date, buf, pos, len, opts) || _hitsexact(DateTime, buf, pos, len, opts) ||
-      _hitsexact(Time, buf, pos, len, opts)))
-@inline canonicalconflict(::Type, buf, pos, len, opts) = false  # Int64/Float64/String: cascade prefix can't claim them
+# Strictness dividend: because every kernel accepts exactly the spellings the
+# detection cascade assigns to it (parse-set ≡ detect-set), a value that parses
+# as an inferred column's type T can never detect as a type earlier in the
+# cascade. The per-value "canonical conflict" guard the Parsers-based kernel
+# needed here — six prefix probes on the hot path of every inferred
+# Bool/temporal column — is free by construction.
 
 # Returns 0 on success, or the local row of the first conflicting value.
 function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
-                        j::Int, rowbase::Int, opts::Parsers.Options,
+                        j::Int, rowbase::Int, opts::ValueOpts,
                         userprovided::Bool, problems,
                         problemrowbase::Int=rowbase) where {T}
     values, present = col.values, col.present
@@ -1300,43 +1377,34 @@ function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
         sp = fieldspan(ci, lr, j)
         sp === nothing && continue                      # short row ⇒ missing (reported once per row by the driver)
         pos, len = sp
-        len == 0 && continue                            # empty ⇒ missing (default sentinel)
-        res = Parsers.xparse(T, buf, pos, pos + len - 1, opts)
-        if Parsers.ok(res.code) && res.tlen == len
-            if Parsers.sentinel(res.code)
-                # user-configured sentinel string ⇒ missing
-            else
-                # Sample-independence guard for inferred Bool/temporal columns:
-                # see `canonicalconflict` above. Free for Int64/Float64/String.
-                if !userprovided && canonicalconflict(T, buf, pos, len, opts)
-                    return lr
-                end
-                values[out] = res.val
+        len == 0 && continue                            # empty ⇒ missing
+        cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
+        st == CELL_MISSING && continue                  # sentinel / stripped-to-empty
+        if st == CELL_VALUE && clen > 0 && !esc
+            v, ok = parsevalue(T, buf, cpos, cpos + clen - 1, opts)
+            if ok
+                values[out] = v
                 present[out] = true
+                continue
             end
+        end
+        # invalid for T (also: malformed quoting, quoted-empty, escaped content)
+        if userprovided
+            problemrow = problemrowbase + (lr - ci.firstdatarow) + 1
+            kind = st == CELL_BADQUOTE ? :invalid_quoted_field : :invalid_value
+            message = st == CELL_BADQUOTE ? "malformed quoting in " :
+                      "cannot parse $(T) from "
+            pushproblem!(problems, problemrow, j, pos, kind, message * excerpt(buf, pos, len))
+            # value stays missing under strict=false semantics
         else
-            # Invalid for T. A field that is a *sentinel* under the full options
-            # (e.g. whitespace-only with stripwhitespace=true) is missing, not a
-            # conflict — Parsers only reports
-            # SENTINEL through the String path, so probe it on this cold path.
-            sres = xparsestring(buf, pos, pos + len - 1, opts)
-            if Parsers.sentinel(sres.code) && sres.tlen == len
-                # missing; value slot stays absent
-            elseif userprovided
-                problemrow = problemrowbase + (lr - ci.firstdatarow) + 1
-                pushproblem!(problems, problemrow, j, pos, :invalid_value,
-                             "cannot parse $(T) from " * excerpt(buf, pos, len))
-                # value stays missing under strict=false semantics
-            else
-                return lr                               # inference conflict ⇒ promote & re-parse column
-            end
+            return lr                                   # inference conflict ⇒ promote & re-parse column
         end
     end
     return 0
 end
 
 function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
-                        j::Int, rowbase::Int, opts::Parsers.Options,
+                        j::Int, rowbase::Int, opts::ValueOpts,
                         userprovided::Bool, problems,
                         problemrowbase::Int=rowbase)
     payloads = col.payloads
@@ -1347,21 +1415,23 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
         sp === nothing && continue
         pos, len = sp
         len == 0 && continue                            # unquoted empty ⇒ missing; quoted "" survives below
-        res = xparsestring(buf, pos, pos + len - 1, opts)
-        if !Parsers.ok(res.code) || res.tlen != len
-            kind = Parsers.invalidquotedfield(res.code) ? :invalid_quoted_field : :invalid_value
-            message = kind === :invalid_quoted_field ? "malformed quoting in " :
-                      "string parser did not consume the exact field span "
+        cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
+        if st == CELL_BADQUOTE
             problemrow = problemrowbase + (lr - ci.firstdatarow) + 1
-            pushproblem!(problems, problemrow, j, pos, kind, message * excerpt(buf, pos, len))
+            pushproblem!(problems, problemrow, j, pos, :invalid_quoted_field,
+                         "malformed quoting in " * excerpt(buf, pos, len))
             continue
         end
-        if Parsers.sentinel(res.code)
+        if st == CELL_MISSING
             continue
         end
-        pl = res.val
-        cpos, clen = Int(pl.pos), Int(pl.len)
-        if Parsers.escapedstring(res.code)
+        if !_wasquoted(buf, pos, len, opts) && _delimclash(buf, cpos, clen, opts.delim)
+            problemrow = problemrowbase + (lr - ci.firstdatarow) + 1
+            pushproblem!(problems, problemrow, j, pos, :invalid_value,
+                         "bare quote engaged structural protection in " * excerpt(buf, pos, len))
+            continue
+        end
+        if esc
             # escaped values are unescaped ONCE, at parse time (KStr needs O(1)
             # codeunit access): short results build inline payloads allocation-
             # free; long ones stage locally and flush to the shared extra buffer
@@ -1403,16 +1473,15 @@ end
 # A column believed all-missing: inferred columns report the first conflict so
 # the driver can promote; explicit Missing columns report every present value.
 function parsecolchunk_missing(buf::Vector{UInt8}, ci::ChunkIndex, j::Int,
-                               rowbase::Int, opts::Parsers.Options,
+                               rowbase::Int, opts::ValueOpts,
                                userprovided::Bool, problems)
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
         sp = fieldspan(ci, lr, j)
         sp === nothing && continue
         _, len = sp
         len == 0 && continue
-        res = xparsestring(buf, sp[1], sp[1] + len - 1, opts)
-        ismissing = Parsers.ok(res.code) && res.tlen == len && Parsers.sentinel(res.code)
-        if !ismissing
+        st = cellcontent(buf, sp[1], len, opts)[4]
+        if st != CELL_MISSING
             userprovided || return lr
             out = rowbase + (lr - ci.firstdatarow) + 1
             pushproblem!(problems, out, j, sp[1], :invalid_value,
@@ -1571,7 +1640,7 @@ end
 # which is what keeps mid-parse promotions rare. (Contrast: prefix-only sampling,
 # the root of most "worked until row 2 million" issues.)
 function sampletypes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncols::Int,
-                     opts::Parsers.Options; nsample::Int=128)
+                     opts::ValueOpts; nsample::Int=128)
     nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
     total = sum(nrows, chunks; init=0)
     total == 0 && return fill(Missing, ncols)
@@ -1616,8 +1685,7 @@ function resolvetypes(types, names::Vector{Symbol}, ncols::Int)
         T isa Type || throw(ArgumentError("column type must be a Type or nothing (got $(repr(T)))"))
         T = T === Missing ? Missing : Base.nonmissingtype(T)
         parseable = T === Missing || T === Number ||
-                    (isconcretetype(T) &&
-                     (Parsers.supportedtype(T) || hasmethod(tryparse, Tuple{Type{T}, String})))
+                    T in (Int64, Float64, Bool, Date, DateTime, Time, String)
         parseable || throw(ArgumentError("unsupported column type $T"))
         return T
     end
@@ -1695,7 +1763,7 @@ function parse(buf::Vector{UInt8};
         chunkbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $chunkbytes)"))
     end
     d = Dialect(; dialectkw...)
-    opts = makeoptions(d; dateformat, decimal, truestrings, falsestrings, stripwhitespace)
+    opts = makevalueopts(d; dateformat, decimal, truestrings, falsestrings, stripwhitespace)
     datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1  # BOM
     sc = resolvescanner(d, fastindex, scanner)
     chunks = chunkplan(buf, d, datastart, chunkbytes, parallel)
@@ -1748,20 +1816,23 @@ function parse(buf::Vector{UInt8};
             if len == 0
                 names[j] = Symbol("Column", j)
             else
-                res = xparsestring(buf, pos, pos + len - 1, opts)
-                if Parsers.ok(res.code) && res.tlen == len
-                    pl = res.val
-                    names[j] = Symbol(Parsers.escapedstring(res.code) ?
-                                      _unescape(buf, Int64(pl.pos), Int32(pl.len), opts.e, d.cq) :
-                                      GC.@preserve(buf, unsafe_string(pointer(buf, pl.pos), pl.len)))
-                else
+                cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
+                if st == CELL_BADQUOTE
                     # Keep malformed header bytes exact. The file-level malformed
                     # quote problem is also retained as data.
                     names[j] = Symbol(String(buf[pos:pos + len - 1]))
-                    kind = Parsers.invalidquotedfield(res.code) ? :invalid_quoted_field : :invalid_value
-                    message = kind === :invalid_quoted_field ? "malformed quoting in header " :
-                              "header parser did not consume the exact field span "
-                    pushproblem!(headerlog, 0, j, pos, kind, message * excerpt(buf, pos, len))
+                    pushproblem!(headerlog, 0, j, pos, :invalid_quoted_field,
+                                 "malformed quoting in header " * excerpt(buf, pos, len))
+                elseif st == CELL_MISSING || clen == 0
+                    names[j] = Symbol("Column", j)
+                elseif !_wasquoted(buf, pos, len, opts) && _delimclash(buf, cpos, clen, opts.delim)
+                    names[j] = Symbol(String(buf[pos:pos + len - 1]))
+                    pushproblem!(headerlog, 0, j, pos, :invalid_value,
+                                 "bare quote engaged structural protection in header " * excerpt(buf, pos, len))
+                else
+                    names[j] = Symbol(esc ?
+                                      _unescape(buf, Int64(cpos), Int32(clen), opts.e, d.cq) :
+                                      GC.@preserve(buf, unsafe_string(pointer(buf, cpos), clen)))
                 end
             end
         end
@@ -1889,7 +1960,7 @@ chunkrowbase(chunks::Vector{ChunkIndex}, target::ChunkIndex) =
 # re-parse while the chunk's bytes are still cache-hot. This is what removes the
 # index-everything-then-parse-everything double pass over RAM.
 function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Symbol,
-                     alreadyindexed::Bool, ncols::Int, opts::Parsers.Options,
+                     alreadyindexed::Bool, ncols::Int, opts::ValueOpts,
                      userprovided, promo, promolock, pendingproblems::PendingProblemLog,
                      segments, segtypes, k::Int)
     alreadyindexed || indexone!(ci, buf, d, scanner)
@@ -1945,7 +2016,7 @@ end
 # closure-capture race. Kernel rule: task bodies are named functions.
 function restale!(chunks, final, segments, segtypes,
                   pendingproblems::PendingProblemLog, buf::Vector{UInt8},
-                  opts::Parsers.Options, d::Dialect, userprovided, k::Int, j::Int)
+                  opts::ValueOpts, d::Dialect, userprovided, k::Int, j::Int)
     ci = chunks[k]
     stg = allocatecolumn(final[j], nrows(ci), buf, opts.e, d.cq)
     log = ProblemLog(pendingproblems.limit)
