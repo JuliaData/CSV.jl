@@ -125,6 +125,10 @@ end
     tt = UInt32[]
     K.tape_room!(tt, 0, 64)
     @test length(tt) >= 64
+    maxci = K.ChunkIndex(1, K.MAX_TAPE_RELPOS)
+    @test K.checktaperange(maxci) === maxci
+    @test UInt32(K.MAX_TAPE_RELPOS) << 2 >> 2 == K.MAX_TAPE_RELPOS
+    @test_throws ArgumentError K.checktaperange(K.ChunkIndex(1, K.MAX_TAPE_RELPOS + 1))
     @test idxall("a,b,c\n1,2,3\n") == [["a","b","c"], ["1","2","3"]]
     @test idxall("a,b,c\n1,2,3")   == [["a","b","c"], ["1","2","3"]]  # no trailing newline
     @test idxall("a\n")            == [["a"]]

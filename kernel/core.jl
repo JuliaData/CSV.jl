@@ -143,7 +143,7 @@ end
 # After assembly, tape kinds become: 0 = delimiter (next field starts
 # `delimskip` bytes later), 1 = row end (+1 byte), 2 = row end (+2 bytes, CRLF).
 # Every event closes exactly one field, so a row's field count is its event count.
-# relpos is chunk-relative and capped at 2^30 (chunks are ~1 MiB; only a single
+# relpos is chunk-relative and capped below 2^30 (chunks are ~1 MiB; only a single
 # giant row can exceed this, and that is rejected up front).
 # ---------------------------------------------------------------------------
 
@@ -196,10 +196,17 @@ end
 
 const MAX_TAPE_HINT = 1 << 20   # initial-capacity cap: a giant single row spans
                                 # many bytes but holds few events
+const MAX_TAPE_RELPOS = Int(typemax(UInt32) >> 2)
 
 @inline function tape_room!(tape::Vector{UInt32}, n::Int, extra::Int)
     length(tape) < n + extra && resize!(tape, max(2 * length(tape), n + extra + 256))
     return tape
+end
+
+@inline function checktaperange(ci::ChunkIndex)
+    ci.stop - ci.start < MAX_TAPE_RELPOS ||
+        throw(ArgumentError("a single row is 1 GiB or larger; not supported by the prove-out kernel"))
+    return ci
 end
 
 # raw event kinds during scanning
@@ -670,10 +677,7 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
     # Tape offsets are chunk-relative and packed as (relpos << 2) in a UInt32. A
     # chunk only exceeds `chunkbytes` when a single row straddles whole ranges, so
     # this bound is about one giant row.
-    for ci in chunks
-        ci.stop - ci.start < (1 << 30) ||
-            throw(ArgumentError("a single row exceeds 1 GiB; not supported by the prove-out kernel"))
-    end
+    foreach(checktaperange, chunks)
     return chunks
 end
 
