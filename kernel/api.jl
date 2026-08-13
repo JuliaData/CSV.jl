@@ -25,8 +25,8 @@
 #   • `stringtype` defaults to the kernel string (KStr / CompactString-to-be);
 #     `stringtype=String` materializes; InlineStrings become an extension
 #   • Bool columns are strictly `true`/`false` unless truestrings/falsestrings
-#   • grouped integer spellings stay exact through Int128 when CSV.jl widens
-#     Int64 overflow to Float64
+#   • integer spellings that fit Int128 stay exact, including initially-wide
+#     and grouped columns where CSV.jl can widen Int64 overflow to Float64
 #
 # Run the demo:  julia --project=kernel kernel/api.jl
 
@@ -281,6 +281,42 @@ function _skiptobyte!(chunks::Vector{K.ChunkIndex}, byteoff::Int)
     end
 end
 
+function _iscommentrow(buf::Vector{UInt8}, rowstart::Int, d::K.Dialect)
+    cmt = d.comment
+    cmt === nothing && return false
+    rowstart + length(cmt) - 1 <= length(buf) || return false
+    @inbounds for j in eachindex(cmt)
+        buf[rowstart + j - 1] == cmt[j] || return false
+    end
+    return true
+end
+
+# Byte start of the first raw footer row. Empty rows count even when hygiene
+# drops them; comment rows do not count, matching CSV.jl's reverse scan.
+function _footeroffset(buf::Vector{UInt8}, d::K.Dialect, rawstart::Int, footerskip::Int)
+    footerskip == 0 && return length(buf) + 1
+    starts = fill(0, footerskip)
+    nrows = 0
+    rowstart = rawstart
+    while rowstart <= length(buf)
+        if !_iscommentrow(buf, rowstart, d)
+            nrows += 1
+            starts[mod1(nrows, footerskip)] = rowstart
+        end
+        rowstart = K.nextrowstart(buf, rowstart, length(buf), d, false)
+    end
+    footerskip >= nrows && return rawstart
+    return starts[mod1(nrows - footerskip + 1, footerskip)]
+end
+
+function _rowsbefore(chunks::Vector{K.ChunkIndex}, byteoff::Int)
+    n = 0
+    for ci in chunks, lr in ci.firstdatarow:K.totalrows(ci)
+        ci.start + Int(ci.rowstartrel[lr]) < byteoff && (n += 1)
+    end
+    return n
+end
+
 function _limitrows!(chunks::Vector{K.ChunkIndex}, limit::Int)
     remaining = limit
     for ci in chunks
@@ -406,8 +442,8 @@ function _prepare(source;
             throw(ArgumentError("skipto=$skipto must be past the header (row $headerrow)"))
         _skiptobyte!(chunks, _rawrowoffset(buf, d, rawstart, Int(skipto)))
     end
-    total = sum(K.nrows, chunks; init=0)
-    keep = max(total - Int(footerskip), 0)
+    footer = _footeroffset(buf, d, rawstart, Int(footerskip))
+    keep = footerskip == 0 ? sum(K.nrows, chunks; init=0) : _rowsbefore(chunks, footer)
     lim = limit === nothing ? (footerskip > 0 ? keep : nothing) : min(Int(limit), keep)
 
     # engine + diagnostics kwargs the kernel driver consumes directly
@@ -590,8 +626,9 @@ function Base.show(io::IO, f::File)
     println(io, "CSVApi.File($(repr(getfield(f, :name)))):")
     println(io, "Size: $(t.nrows) x $(length(K.names(t)))")
     show(io, Tables.schema(t))
-    isempty(t.problems) ||
-        print(io, "\n$(length(t.problems)) problem(s) recorded — see problems(f)")
+    nproblems = length(t.problems) + t.droppedproblems
+    nproblems > 0 &&
+        print(io, "\n$nproblems problem(s) recorded — $(length(t.problems)) retained by problems(f)")
 end
 
 """

@@ -11,7 +11,7 @@
 #   • long rows do not widen the schema (extra fields ⇒ problem, not Column4)
 #   • warnings are data (problems(f)), not log lines
 #   • function-typed select/drop retired
-#   • grouped Int64 overflow remains exact Int128 instead of widening to Float64
+#   • Int64 overflow that fits Int128 remains exact where CSV.jl widens to Float64
 
 using Test, Dates, Tables
 using CSV
@@ -57,6 +57,13 @@ end
     @test collect(big.p) == Int128[1, 99999999999999999999999999]
     csvbig = CSV.File(IOBuffer("p\n1\n99999999999999999999999999\n"); pool=false)
     @test eltype(csvbig.p) === Int128
+    wideinput = "p\n99999999999999999999999999\n"
+    wide = A.File(IOBuffer(wideinput); pool=false)
+    csvwide = CSV.File(IOBuffer(wideinput); pool=false)
+    @test eltype(wide.p) === Int128
+    @test wide.p[1] == Int128(99999999999999999999999999)
+    @test eltype(csvwide.p) === Float64
+    against("p\n9999999999999999999999999999999999999999\n"; kw=(; pool=false))
     against("q\n\"a,b\"\n\"c\nd\"\n\"e\"\"f\"\n")  # quoted delim/newline/escape
     against("u\nα\n∀\n")                           # unicode passthrough
     against("neg\n-1\n+2\n")
@@ -130,6 +137,10 @@ end
 @testset "row windowing agrees (raw-row semantics)" begin
     against("a,b\n1,2\n3,4\n5,6\n"; kw=(; limit=2))
     against("a,b\n1,2\n3,4\n5,6\n"; kw=(; footerskip=2))
+    against("a\n1\n\n2\n\n3\n"; kw=(; footerskip=2))       # empty rows COUNT
+    against("a\n1\n\n2\n\n3\n"; kw=(; footerskip=2, ignoreemptyrows=false))
+    against("a\n1\n#x\n2\n#y\n3\n"; kw=(; comment="#", footerskip=2))
+    against("a,b\n\"x\ny\",1\nz,2\n"; kw=(; footerskip=1))
     against("a,b\n1,2\n3,4\n5,6\n"; kw=(; skipto=3))
     against("a,b\n1,2\n3,4\n5,6\n7,8\n"; kw=(; skipto=3, limit=1))
     against("a,b\n1,2\n3,4\n5,6\n"; kw=(; skipto=3, footerskip=1))
@@ -262,6 +273,8 @@ end
     @test propertynames(f) == [:name, :score]
     @test collect(f.score) == [1, 2]
     @test A.rownumber(f[2]) == 2
+    @test f[1][1] == "alice" && f[1][:name] == "alice"
+    @test length(f[1]) == 2 && propertynames(f[1]) == [:name, :score]
     @test_throws BoundsError f[3]
     @test occursin("2 x 2", sprint(show, f))
     @test A.problems(f) isa Vector{K.Problem}
@@ -289,6 +302,7 @@ end
     @test getfield(f, :table).droppedproblems == 1
     f0 = A.File(IOBuffer(input); types=Dict(1 => Int64), maxproblems=0)
     @test isempty(A.problems(f0)) && getfield(f0, :table).droppedproblems == 2
+    @test occursin("2 problem(s) recorded — 0 retained", sprint(show, f0))
     err = try
         A.File(IOBuffer(input); types=Dict(1 => Int64), strict=true, maxproblems=0)
         nothing
@@ -346,6 +360,9 @@ end
     @test [_norm(r.a) for r in A.Rows(IOBuffer(quoted))] ==
           [_norm(r.a) for r in CSV.Rows(IOBuffer(quoted))]
     @test length(collect(A.Rows(IOBuffer(input); footerskip=2))) == 1
+    footer = "a\n1\n\n2\n\n3\n"
+    @test [r.a for r in A.Rows(IOBuffer(footer); footerskip=2)] ==
+          [r.a for r in CSV.Rows(IOBuffer(footer); footerskip=2)]
     @test_throws ArgumentError A.Rows(IOBuffer(input); pool=true)
     @test_throws ArgumentError A.Rows(IOBuffer(input); nsample=2)
     @test_throws ArgumentError A.Rows(IOBuffer(input); maxproblems=1)
@@ -367,6 +384,9 @@ end
     @test sum(b -> b.nrows, b2) == 2
     @test isempty(collect(A.Chunks(IOBuffer(input); chunkbytes=32, limit=0)))
     @test isempty(collect(A.Chunks(IOBuffer(input); chunkbytes=32, footerskip=60)))
+    footerparts = collect(A.Chunks(IOBuffer("a\n1\n\n2\n\n3\n");
+                                   chunkbytes=2, footerskip=2))
+    @test reduce(vcat, (collect(b[:a]) for b in footerparts); init=Int[]) == [1, 2]
     # limit and footer windows trim the prepared chunks before the schema pass.
     for kw in ((; limit=17), (; footerskip=17), (; skipto=10, limit=13))
         file = colvalues(A.File(IOBuffer(input); pool=false, kw...))
