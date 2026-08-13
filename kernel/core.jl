@@ -1325,33 +1325,95 @@ mutable struct ProblemLog
     limit::Int
     dropped::Int
     first::Union{Nothing, Problem}
-    lock::ReentrantLock
 end
 function ProblemLog(limit::Int)
     limit >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $limit)"))
-    return ProblemLog(Problem[], limit, 0, nothing, ReentrantLock())
+    return ProblemLog(Problem[], limit, 0, nothing)
 end
 
 problemkey(p::Problem) = (p.pos, p.row, p.col, String(p.kind), p.message)
 
 function pushproblem!(log::ProblemLog, row::Int, col::Int, pos::Int, kind::Symbol, msg::String)
     p = Problem(row, col, pos, kind, msg)
-    lock(log.lock) do
-        (log.first === nothing || problemkey(p) < problemkey(log.first)) && (log.first = p)
-        if length(log.items) < log.limit
-            push!(log.items, p)
-        else
-            log.dropped += 1
-            if log.limit > 0
-                _, maxi = findmax(problemkey, log.items)
-                problemkey(p) < problemkey(log.items[maxi]) && (log.items[maxi] = p)
-            end
+    (log.first === nothing || problemkey(p) < problemkey(log.first)) && (log.first = p)
+    if length(log.items) < log.limit
+        push!(log.items, p)
+    else
+        log.dropped += 1
+        if log.limit > 0
+            _, maxi = findmax(problemkey, log.items)
+            problemkey(p) < problemkey(log.items[maxi]) && (log.items[maxi] = p)
         end
     end
     return
 end
 
 sortproblems!(log::ProblemLog) = sort!(log.items; by=problemkey)
+
+struct LocatedProblem
+    problem::Problem
+    chunk::Int
+end
+
+mutable struct PendingProblemLog
+    items::Vector{LocatedProblem}
+    limit::Int
+    dropped::Int
+    first::Union{Nothing, LocatedProblem}
+    lock::ReentrantLock
+end
+function PendingProblemLog(limit::Int)
+    limit >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $limit)"))
+    return PendingProblemLog(LocatedProblem[], limit, 0, nothing, ReentrantLock())
+end
+
+locatedkey(p::LocatedProblem) = problemkey(p.problem)
+
+# Fold one task-local log into the globally bounded reservoir, then release the
+# local retained entries. Row ids stay chunk-local until every chunk is indexed.
+# Absolute positions are the first problem-key field and chunks do not overlap,
+# so later row rebasing cannot change which problems belong under the cap.
+function mergeproblems!(out::PendingProblemLog, log::ProblemLog, chunk::Int)
+    log.first === nothing && return
+    lock(out.lock) do
+        out.dropped += log.dropped
+        if log.first !== nothing
+            first = LocatedProblem(log.first, chunk)
+            (out.first === nothing || locatedkey(first) < locatedkey(out.first)) &&
+                (out.first = first)
+        end
+        for p in log.items
+            lp = LocatedProblem(p, chunk)
+            if length(out.items) < out.limit
+                push!(out.items, lp)
+            else
+                out.dropped += 1
+                if out.limit > 0
+                    _, maxi = findmax(locatedkey, out.items)
+                    locatedkey(lp) < locatedkey(out.items[maxi]) && (out.items[maxi] = lp)
+                end
+            end
+        end
+    end
+    log.items = Problem[]
+    log.dropped = 0
+    log.first = nothing
+    return
+end
+
+function rebaseproblem(lp::LocatedProblem, rowbases)
+    p = lp.problem
+    p.row == 0 && return p
+    return Problem(p.row + rowbases[lp.chunk], p.col, p.pos, p.kind, p.message)
+end
+
+function finishproblems(log::PendingProblemLog, rowbases)
+    out = ProblemLog(log.limit)
+    out.items = Problem[rebaseproblem(lp, rowbases) for lp in log.items]
+    out.dropped = log.dropped
+    out.first = log.first === nothing ? nothing : rebaseproblem(log.first, rowbases)
+    return out
+end
 
 function excerpt(buf::Vector{UInt8}, pos::Int, len::Int; maxbytes::Int=32)
     n = min(len, maxbytes)
@@ -1607,26 +1669,27 @@ function parse(buf::Vector{UInt8};
     end
 
     # -- fused wave: index + parse each chunk while its bytes are cache-hot ----
-    # Each chunk task indexes (unless probed), reports its ragged rows with
-    # chunk-LOCAL row ids into its own ProblemLog (lock-free; rebased after all
-    # chunk sizes are known), and parses every column into a chunk-local segment,
-    # promoting through the shared `promo` register with an immediate hot
-    # re-parse on conflict.
+    # Each chunk task indexes (unless probed), reports problems with chunk-local
+    # row ids into a lock-free task-local log, then folds that log once into a
+    # globally bounded reservoir. It parses every column into a chunk-local
+    # segment and promotes through the shared `promo` register with an immediate
+    # hot re-parse on conflict.
     promo = Type[T for T in seed]
     promolock = ReentrantLock()
     segments = Vector{Vector{Any}}(undef, nch)
     segtypes = Vector{Vector{Type}}(undef, nch)
-    logs = [ProblemLog(maxproblems) for _ in 1:nch]
+    pendingproblems = PendingProblemLog(maxproblems)
+    mergeproblems!(pendingproblems, headerlog, 0)
     if parallel && nch > 1
         @sync for k in 1:nch
             errormonitor(Threads.@spawn fusedchunk!(chunks[k], buf, d, useswar, indexed[k],
                                                     ncols, opts, userprovided, promo, promolock,
-                                                    logs[k], segments, segtypes, k))
+                                                    pendingproblems, segments, segtypes, k))
         end
     else
         for k in 1:nch
             fusedchunk!(chunks[k], buf, d, useswar, indexed[k], ncols, opts, userprovided,
-                        promo, promolock, logs[k], segments, segtypes, k)
+                        promo, promolock, pendingproblems, segments, segtypes, k)
         end
     end
     for k in 1:(nch - 1)
@@ -1649,12 +1712,13 @@ function parse(buf::Vector{UInt8};
         if parallel && length(stale) > 1
             @sync for (k, j) in stale
                 errormonitor(Threads.@spawn restale!(chunks, final, segments, segtypes,
-                                                     logs, buf, opts, d, userprovided, k, j))
+                                                     pendingproblems, buf, opts, d,
+                                                     userprovided, k, j))
             end
         else
             for (k, j) in stale
-                restale!(chunks, final, segments, segtypes, logs, buf, opts, d,
-                         userprovided, k, j)
+                restale!(chunks, final, segments, segtypes, pendingproblems, buf,
+                         opts, d, userprovided, k, j)
             end
         end
     end
@@ -1676,7 +1740,7 @@ function parse(buf::Vector{UInt8};
     end
 
     # -- problems: rebase chunk-local rows, merge, deterministic cap -----------
-    log = mergeproblems(headerlog, logs, rowbases, maxproblems)
+    log = finishproblems(pendingproblems, rowbases)
     if nch > 0 && last(chunks).unclosedquote
         pushproblem!(log, 0, 0, length(buf), :unclosed_quote,
                      "input ended inside a quoted field")
@@ -1706,10 +1770,11 @@ chunkrowbase(chunks::Vector{ChunkIndex}, target::ChunkIndex) =
 # index-everything-then-parse-everything double pass over RAM.
 function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, useswar::Bool,
                      alreadyindexed::Bool, ncols::Int, opts::Parsers.Options,
-                     userprovided, promo, promolock, log::ProblemLog,
+                     userprovided, promo, promolock, pendingproblems::PendingProblemLog,
                      segments, segtypes, k::Int)
     alreadyindexed || indexone!(ci, buf, d, useswar)
     n = nrows(ci)
+    log = ProblemLog(pendingproblems.limit)
     for lr in ci.firstdatarow:totalrows(ci)
         nf = nfields(ci, lr)
         localrow = lr - ci.firstdatarow + 1
@@ -1749,6 +1814,7 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, useswar::Bo
     end
     segments[k] = segs
     segtypes[k] = st
+    mergeproblems!(pendingproblems, log, k)
     return
 end
 
@@ -1757,15 +1823,18 @@ end
 # `ci = chunks[k]` assignment REBOUND the enclosing function's boxed `ci`
 # variable, silently shared across every concurrent task — the textbook Julia
 # closure-capture race. Kernel rule: task bodies are named functions.
-function restale!(chunks, final, segments, segtypes, logs, buf::Vector{UInt8},
+function restale!(chunks, final, segments, segtypes,
+                  pendingproblems::PendingProblemLog, buf::Vector{UInt8},
                   opts::Parsers.Options, d::Dialect, userprovided, k::Int, j::Int)
     ci = chunks[k]
     stg = allocatecolumn(final[j], nrows(ci), buf, opts.e, d.cq)
+    log = ProblemLog(pendingproblems.limit)
     conflict = final[j] === Missing ? 0 :
-        parsecolchunk!(stg, buf, ci, j, 0, opts, userprovided[j], logs[k])
+        parsecolchunk!(stg, buf, ci, j, 0, opts, userprovided[j], log)
     conflict == 0 || error("internal error: re-parse under the joined type conflicted")
     segments[k][j] = stg
     segtypes[k][j] = final[j]
+    mergeproblems!(pendingproblems, log, k)
     return
 end
 
@@ -1821,36 +1890,6 @@ function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases
         copyto!(present, rb + 1, tcol.present, 1, chunkrows[k])
     end
     return finalizecolumn(T, TypedColumn{T}(values, present), ndata)
-end
-
-# Merge per-chunk problem logs: rebase chunk-local data-row ids to global ones
-# (row 0 = file-level stays), keep the deterministic smallest-key set under the
-# cap, and preserve the true source-first problem for on_error even when it was
-# capped out of a local log.
-function mergeproblems(headerlog::ProblemLog, logs, rowbases, maxproblems::Int)
-    out = ProblemLog(maxproblems)
-    rebase(p::Problem, rb) = p.row == 0 ? p : Problem(p.row + rb, p.col, p.pos, p.kind, p.message)
-    merged = Problem[]
-    append!(merged, headerlog.items)
-    dropped = headerlog.dropped
-    firsts = Problem[]
-    headerlog.first === nothing || push!(firsts, headerlog.first)
-    for (k, lg) in enumerate(logs)
-        rb = rowbases[k]
-        for p in lg.items
-            push!(merged, rebase(p, rb))
-        end
-        dropped += lg.dropped
-        lg.first === nothing || push!(firsts, rebase(lg.first, rb))
-    end
-    sort!(merged; by=problemkey)
-    keep = min(length(merged), maxproblems)
-    out.items = merged[1:keep]
-    out.dropped = dropped + (length(merged) - keep)
-    # `firsts` covers items dropped by per-chunk caps, so the true source-first
-    # problem survives even with maxproblems = 0.
-    out.first = isempty(firsts) ? nothing : argmin(problemkey, firsts)
-    return out
 end
 
 function finalizecolumn(::Type{Missing}, ::Nothing, n::Int)

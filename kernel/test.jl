@@ -440,6 +440,24 @@ end
         @test [(p.row, p.col) for p in K.problems(t)] == expected
         @test t.droppedproblems == 7
     end
+    # Task-local logs must not retain maxproblems entries for every chunk. Each
+    # completed task folds into one globally capped reservoir and releases its
+    # local entries, while retaining the exact total and source-first problem.
+    pending = K.PendingProblemLog(3)
+    for chunk in 1:20
+        local log = K.ProblemLog(3)
+        for j in 1:5
+            K.pushproblem!(log, j, 1, 10 * chunk + j, :invalid_value, "bad")
+        end
+        K.mergeproblems!(pending, log, chunk)
+        @test length(pending.items) <= 3
+        @test isempty(log.items) && log.first === nothing
+    end
+    bounded = K.finishproblems(pending, 100 .* collect(0:19))
+    K.sortproblems!(bounded)
+    @test [p.pos for p in bounded.items] == [11, 12, 13]
+    @test bounded.dropped == 97
+    @test bounded.first == bounded.items[1]
     # on_error=:error escalates the first problem
     @test_throws ErrorException K.parse("a\n1\nxyz\n"; types=Dict(:a => Int64), on_error=:error)
     @test_throws ErrorException K.parse("a\nxyz\n"; types=Int64, on_error=:error, maxproblems=0)
