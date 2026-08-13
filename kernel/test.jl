@@ -499,6 +499,13 @@ end
         # ...while a user-typed Bool column parses them as the lists say
         tu = K.parse("a\n1\n0\n"; types=Bool, truestrings=["1"], falsestrings=["0"], nsample=ns)
         @test tu[:a] == [true, false]
+        # The disabled cascade entry is also stable when only one spelling
+        # collides: inference joins Int64 and String, while typed Bool keeps both.
+        timix = K.parse("a\nNO\n1\n"; truestrings=["1"], falsestrings=["NO"], nsample=ns)
+        @test collect(timix[:a]) == ["NO", "1"]
+        tumix = K.parse("a\nNO\n1\n"; types=Bool, truestrings=["1"],
+                        falsestrings=["NO"], nsample=ns)
+        @test tumix[:a] == [false, true]
     end
 
     # A custom pattern parses only the temporal type named by its components.
