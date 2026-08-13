@@ -2422,7 +2422,11 @@ function poolsegments(segments, j::Int, chunkrows, rowbases, ndata::Int,
     for k in eachindex(chunkrows)
         seg = segments[k][j]
         if seg === nothing                       # all-missing segment
-            mask === nothing && (dest += chunkrows[k])
+            if mask !== nothing
+                @inbounds for i in 1:chunkrows[k]
+                    mask[inbases[k] + i] && (dest += 1)
+                end
+            end
             continue
         end
         scol = seg::StringColumn

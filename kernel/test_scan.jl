@@ -105,6 +105,31 @@ end
     @test any(p -> p.row == 3 && p.col == 1, K.problems(t2))        # row 3 in INPUT numbering
 end
 
+@testset "masked stitch preserves compact positions and escaped strings" begin
+    prows = ["$(i)," * (i <= 20 ? "" : "value_$(i % 3)") for i in 1:80]
+    pcsv = "id,s\n" * join(prows, "\n") * "\n"
+    mask = [i % 4 != 0 for i in 1:80]
+    want = Union{String, Missing}[
+        i <= 20 ? missing : "value_$(i % 3)" for i in 1:80 if mask[i]
+    ]
+    for cb in (8, 16, 32), par in (false, true)
+        t = K.parse(pcsv; select=[:s], rowmask=mask, pool=true, nsample=1,
+                    chunkbytes=cb, parallel=par)
+        @test t[:s] isa K.PooledColumn
+        @test isequal([ismissing(x) ? missing : String(x) for x in t[:s]], want)
+    end
+
+    erows = ["$(i),\"long escaped \"\"value $(i)\"\" tail\"" for i in 1:60]
+    ecsv = "id,s\n" * join(erows, "\n") * "\n"
+    emask = [isodd(i) || i % 7 == 0 for i in 1:60]
+    eplain = K.parse(ecsv; chunkbytes=13, parallel=false)
+    ewant = [String(eplain[:s][i]) for i in eachindex(emask) if emask[i]]
+    for cb in (13, 29), par in (false, true)
+        t = K.parse(ecsv; select=[:s], rowmask=emask, chunkbytes=cb, parallel=par)
+        @test String.(t[:s]) == ewant
+    end
+end
+
 @testset "errors: contradictions, not gaps" begin
     @test_throws ArgumentError S.read(csv, T.Scan(select = :nope))
     @test_throws ArgumentError S.read(csv, T.Scan(select = (:qty => Int64, :qty => Float64)))
