@@ -1523,11 +1523,13 @@ end
 function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
                         j::Int, rowbase::Int, opts::ValueOpts,
                         userprovided::Bool, problems,
-                        problemrowbase::Int=rowbase) where {T}
+                        problemrowbase::Int=rowbase,
+                        mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0) where {T}
     values, present = col.values, col.present
     scratch = _scratchfor(opts)
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
         out = rowbase + (lr - ci.firstdatarow) + 1
+        mask !== nothing && !mask[maskbase + out] && continue   # excluded row: cell never parsed
         sp = fieldspan(ci, lr, j)
         sp === nothing && continue                      # short row ⇒ missing (reported once per row by the driver)
         pos, len = sp
@@ -1560,11 +1562,13 @@ end
 function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
                         j::Int, rowbase::Int, opts::ValueOpts,
                         userprovided::Bool, problems,
-                        problemrowbase::Int=rowbase)
+                        problemrowbase::Int=rowbase,
+                        mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0)
     payloads = col.payloads
     staging::Union{Nothing, NTuple{4, Vector}} = nothing  # (bytes, rows, offs, lens) for escaped-long cells
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
         out = rowbase + (lr - ci.firstdatarow) + 1
+        mask !== nothing && !mask[maskbase + out] && continue   # excluded row: cell never parsed
         sp = fieldspan(ci, lr, j)
         sp === nothing && continue
         pos, len = sp
@@ -1627,8 +1631,10 @@ end
 # the driver can promote; explicit Missing columns report every present value.
 function parsecolchunk_missing(buf::Vector{UInt8}, ci::ChunkIndex, j::Int,
                                rowbase::Int, opts::ValueOpts,
-                               userprovided::Bool, problems)
+                               userprovided::Bool, problems,
+                               mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0)
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
+        mask !== nothing && !mask[maskbase + (lr - ci.firstdatarow) + 1] && continue
         sp = fieldspan(ci, lr, j)
         sp === nothing && continue
         _, len = sp
@@ -1796,7 +1802,8 @@ end
 # which is what keeps mid-parse promotions rare. (Contrast: prefix-only sampling,
 # the root of most "worked until row 2 million" issues.)
 function sampletypes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncols::Int,
-                     opts::ValueOpts; nsample::Int=128)
+                     opts::ValueOpts; nsample::Int=128,
+                     selected::Union{Nothing, Vector{Bool}}=nothing)
     nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
     total = sum(nrows, chunks; init=0)
     total == 0 && return fill(Missing, ncols)
@@ -1807,11 +1814,37 @@ function sampletypes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncols::Int,
         gr = count == 1 ? 1 :
              1 + Int(widemul(k - 1, total - 1) ÷ (count - 1))
         ci, lr = locate(chunks, gr)
-        for j in 1:ncols
-            sp = fieldspan(ci, lr, j)
-            sp === nothing && continue
-            types[j] = promote_kernel(types[j], detecttype(buf, sp[1], sp[2], opts))
-        end
+        sampledetect!(types, buf, ci, lr, ncols, opts, selected)
+    end
+    return types
+end
+
+@inline function sampledetect!(types, buf, ci, lr, ncols, opts, selected)
+    for j in 1:ncols
+        selected !== nothing && !selected[j] && continue
+        sp = fieldspan(ci, lr, j)
+        sp === nothing && continue
+        types[j] = promote_kernel(types[j], detecttype(buf, sp[1], sp[2], opts))
+    end
+    return
+end
+
+# Stratified sampling restricted to a set of qualifying global rows (the
+# filter's two-phase parse: inference must see only rows that will be output).
+function sampletypesrows(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, rowbases0,
+                         qrows::Vector{Int}, ncols::Int, opts::ValueOpts,
+                         selected::Union{Nothing, Vector{Bool}}; nsample::Int=128)
+    types = fill(Missing, ncols)
+    total = length(qrows)
+    total == 0 && return types
+    count = min(total, nsample)
+    for k in 1:count
+        gr = qrows[count == 1 ? 1 : 1 + Int(widemul(k - 1, total - 1) ÷ (count - 1))]
+        # locate via the precomputed bases (all chunks are indexed on this path)
+        ki = searchsortedlast(rowbases0, gr - 1)
+        ci = chunks[ki]
+        lr = ci.firstdatarow + (gr - rowbases0[ki]) - 1
+        sampledetect!(types, buf, ci, lr, ncols, opts, selected)
     end
     return types
 end
@@ -1829,6 +1862,31 @@ end
 allocatecolumn(::Type{Missing}, n::Int, buf, e, cq) = nothing
 allocatecolumn(::Type{String}, n::Int, buf, e, cq) = StringColumn(n, buf, e, cq)
 allocatecolumn(::Type{T}, n::Int, buf, e, cq) where {T} = TypedColumn{T}(n)
+
+# Resolve the `select` keyword against the discovered names: nothing (all) or
+# a vector of Bool (positional mask), Int, Symbol, or String. Unselected
+# columns are never sampled, parsed, or stitched — they simply don't exist to
+# the value layer. Output keeps file order; reordering/renaming is the caller's
+# (the Scan layer permutes the returned columns).
+function resolveselect(select, names::Vector{Symbol}, ncols::Int)
+    select === nothing && return nothing
+    keep = fill(false, ncols)
+    if select isa AbstractVector{Bool}
+        length(select) == ncols ||
+            throw(ArgumentError("select mask length $(length(select)) != $ncols columns"))
+        copyto!(keep, select)
+    elseif select isa AbstractVector
+        for r in select
+            j = r isa Integer ? Int(r) : findfirst(==(Symbol(r)), names)
+            (j isa Int && 1 <= j <= ncols) ||
+                throw(ArgumentError("select reference $(repr(r)) does not match any column"))
+            keep[j] = true
+        end
+    else
+        throw(ArgumentError("select must be a vector of Bool/Int/Symbol/String (got $(typeof(select)))"))
+    end
+    return keep
+end
 
 # Resolve the `types` keyword: nothing | Type | AbstractVector | AbstractDict
 # (by name or index). `Union{T,Missing}` collapses to T (missingness is tracked
@@ -1904,8 +1962,15 @@ function parse(buf::Vector{UInt8};
                maxproblems::Int=10_000,
                on_error::Symbol=:collect,
                nsample::Union{Nothing, Int}=nothing,
+               select=nothing,
+               limit::Union{Nothing, Int}=nothing,
+               rowmask::Union{Nothing, Vector{Bool}}=nothing,
+               index::Union{Nothing, BufferIndex}=nothing,
                dialectkw...)
     on_error in (:collect, :error) || throw(ArgumentError("on_error must be :collect or :error"))
+    limit === nothing || limit >= 0 || throw(ArgumentError("limit must be ≥ 0 (got $limit)"))
+    limit !== nothing && rowmask !== nothing &&
+        throw(ArgumentError("limit and rowmask cannot be combined; bake the limit into the mask"))
     poolspec = _poolpolicy(pool)
     nsample === nothing || nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
     # Size-aware defaults. chunkbytes: enough chunks to occupy every thread (2×
@@ -1927,9 +1992,18 @@ function parse(buf::Vector{UInt8};
                          groupmark)
     datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1  # BOM
     sc = resolvescanner(d, fastindex, scanner)
-    chunks = chunkplan(buf, d, datastart, chunkbytes, parallel)
+    # A caller holding a prebuilt index (the Scan integration indexes once for
+    # header binding and reuses it across the filter's two parse phases) hands
+    # it in; the chunk geometry and dialect must match how it was built.
+    local chunks::Vector{ChunkIndex}
+    if index === nothing
+        chunks = chunkplan(buf, d, datastart, chunkbytes, parallel)
+        indexed = fill(false, length(chunks))
+    else
+        chunks = index.chunks
+        indexed = fill(true, length(chunks))
+    end
     nch = length(chunks)
-    indexed = fill(false, nch)
     headerlog = ProblemLog(maxproblems)
 
     # -- probe phase ----------------------------------------------------------
@@ -1937,6 +2011,7 @@ function parse(buf::Vector{UInt8};
     # extraction and type seeding. Everything else is indexed inside the fused
     # per-chunk task, right before that chunk's columns parse (cache-hot).
     probes = nch == 0 ? Int[] : unique!(sort!([1, max(1, nch ÷ 3), max(1, (2 * nch) ÷ 3), nch]))
+    filter!(k -> !indexed[k], probes)
     if parallel && length(probes) > 1
         @sync for k in probes
             errormonitor(Threads.@spawn begin
@@ -2007,16 +2082,73 @@ function parse(buf::Vector{UInt8};
     names = makeunique!(names)
     ncols = length(names)
 
+    # -- selection & row geometry ----------------------------------------------
+    selected = resolveselect(select, names, ncols)
+    # limit/rowmask need global row bases before any column parses; index the
+    # remaining chunks now (normally chunks index lazily inside their own task)
+    rowbases0 = Int[]
+    if limit !== nothing || rowmask !== nothing
+        toindex = [k for k in 1:nch if !indexed[k]]
+        if parallel && length(toindex) > 1
+            @sync for k in toindex
+                errormonitor(Threads.@spawn begin
+                    indexone!(chunks[k], buf, d, sc)
+                    indexed[k] = true
+                end)
+            end
+        else
+            for k in toindex
+                indexone!(chunks[k], buf, d, sc)
+                indexed[k] = true
+            end
+        end
+        rowbases0 = cumsum([0; Int[nrows(ci) for ci in chunks[1:max(nch - 1, 0)]]])
+        if rowmask !== nothing
+            total = sum(nrows, chunks; init=0)
+            length(rowmask) == total ||
+                throw(ArgumentError("rowmask length $(length(rowmask)) != $total data rows"))
+        end
+        if limit !== nothing
+            # keep whole chunks up to the boundary; the boundary chunk parses in
+            # full but only its first `limit - base` rows stitch/report
+            lastk = 0
+            for k in 1:nch
+                lastk = k
+                rowbases0[k] + nrows(chunks[k]) >= limit && break
+            end
+            keep = 1:lastk
+            chunks = chunks[keep]
+            indexed = indexed[keep]
+            rowbases0 = rowbases0[keep]
+            nch = lastk
+        end
+    end
+
     # -- type seeding (stratified over the probe chunks) -----------------------
     seed = resolvetypes(types, names, ncols)
     userprovided = [T !== nothing for T in seed]
-    if any(isnothing, seed)
-        probechunks = ChunkIndex[chunks[k] for k in 1:nch if indexed[k] && nrows(chunks[k]) > 0]
-        probetotal = sum(nrows, probechunks; init=0)
-        ns = nsample === nothing ? clamp(probetotal >> 6, 8, 128) : nsample
-        inferred = sampletypes(buf, probechunks, ncols, opts; nsample=max(ns, 1))
+    if any(j -> seed[j] === nothing && (selected === nothing || selected[j]), 1:ncols)
+        if rowmask === nothing
+            probechunks = ChunkIndex[chunks[k] for k in 1:nch if indexed[k] && nrows(chunks[k]) > 0]
+            probetotal = sum(nrows, probechunks; init=0)
+            ns = nsample === nothing ? clamp(probetotal >> 6, 8, 128) : nsample
+            inferred = sampletypes(buf, probechunks, ncols, opts; nsample=max(ns, 1), selected)
+        else
+            # inference reflects the rows that will actually be output: a
+            # masked-out malformed value must not promote a qualifying column
+            qrows = findall(rowmask)
+            ns = nsample === nothing ? clamp(length(qrows) >> 6, 8, 128) : nsample
+            inferred = sampletypesrows(buf, chunks, rowbases0, qrows, ncols, opts, selected;
+                                       nsample=max(ns, 1))
+        end
         for j in 1:ncols
             seed[j] === nothing && (seed[j] = inferred[j])
+        end
+    end
+    if selected !== nothing
+        # unselected columns are never parsed; give unseeded ones a placeholder
+        for j in 1:ncols
+            !selected[j] && seed[j] === nothing && (seed[j] = Missing)
         end
     end
 
@@ -2032,16 +2164,19 @@ function parse(buf::Vector{UInt8};
     segtypes = Vector{Vector{Type}}(undef, nch)
     pendingproblems = PendingProblemLog(maxproblems)
     mergeproblems!(pendingproblems, headerlog, 0)
+    mb = k -> rowmask === nothing ? 0 : rowbases0[k]
     if parallel && nch > 1
         @sync for k in 1:nch
             errormonitor(Threads.@spawn fusedchunk!(chunks[k], buf, d, sc, indexed[k],
                                                     ncols, opts, userprovided, promo, promolock,
-                                                    pendingproblems, segments, segtypes, k))
+                                                    pendingproblems, segments, segtypes, k,
+                                                    selected, rowmask, mb(k)))
         end
     else
         for k in 1:nch
             fusedchunk!(chunks[k], buf, d, sc, indexed[k], ncols, opts, userprovided,
-                        promo, promolock, pendingproblems, segments, segtypes, k)
+                        promo, promolock, pendingproblems, segments, segtypes, k,
+                        selected, rowmask, mb(k))
         end
     end
     for k in 1:(nch - 1)
@@ -2065,34 +2200,46 @@ function parse(buf::Vector{UInt8};
             @sync for (k, j) in stale
                 errormonitor(Threads.@spawn restale!(chunks, final, segments, segtypes,
                                                      pendingproblems, buf, opts, d,
-                                                     userprovided, k, j))
+                                                     userprovided, k, j, rowmask, mb(k)))
             end
         else
             for (k, j) in stale
                 restale!(chunks, final, segments, segtypes, pendingproblems, buf,
-                         opts, d, userprovided, k, j)
+                         opts, d, userprovided, k, j, rowmask, mb(k))
             end
         end
     end
 
     # -- stitch: exact-size final columns from the segments --------------------
     chunkrows = Int[nrows(ci) for ci in chunks]
+    if limit !== nothing && nch > 0
+        # the boundary chunk parsed in full; only its first rows stitch
+        chunkrows[end] = min(chunkrows[end], limit - rowbases0[end])
+    end
     rowbases = cumsum([0; chunkrows[1:max(nch - 1, 0)]])
-    ndata = sum(chunkrows; init=0)
+    ndata = rowmask === nothing ? sum(chunkrows; init=0) : count(rowmask)
     cols = Vector{AbstractVector}(undef, ncols)
     stitchcol = j -> (cols[j] = stitchcolumn(final[j], segments, segtypes, j, chunkrows,
-                                             rowbases, ndata, buf, opts.e, d.cq, poolspec))
+                                             rowbases, ndata, buf, opts.e, d.cq, poolspec,
+                                             rowmask, rowbases0))
+    stitchjs = selected === nothing ? collect(1:ncols) : findall(selected)
     # single-chunk stitches are zero-copy finalizes — never worth a task spawn
-    if parallel && ncols > 1 && ndata > 0 && length(chunks) > 1
-        @sync for j in 1:ncols
+    if parallel && length(stitchjs) > 1 && ndata > 0 && length(chunks) > 1
+        @sync for j in stitchjs
             errormonitor(Threads.@spawn stitchcol(j))
         end
     else
-        foreach(stitchcol, 1:ncols)
+        foreach(stitchcol, stitchjs)
     end
 
     # -- problems: rebase chunk-local rows, merge, deterministic cap -----------
-    log = finishproblems(pendingproblems, rowbases)
+    # problem rows always reference INPUT data-row numbers (diagnostics point
+    # at the file, not at the filtered output)
+    log = finishproblems(pendingproblems, rowmask === nothing ? rowbases : rowbases0)
+    if limit !== nothing
+        filter!(p -> p.row == 0 || p.row <= limit, log.items)
+        log.first = isempty(log.items) ? nothing : log.items[1]
+    end
     if nch > 0 && last(chunks).unclosedquote
         pushproblem!(log, 0, 0, length(buf), :unclosed_quote,
                      "input ended inside a quoted field")
@@ -2106,7 +2253,8 @@ function parse(buf::Vector{UInt8};
         throw(ErrorException("CSVKernel: $(p.kind) at data row $(p.row), column $(p.col): $(p.message)" *
                              (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
     end
-    return ParsedTable(names, cols, ndata, log.items, log.dropped)
+    selected === nothing && return ParsedTable(names, cols, ndata, log.items, log.dropped)
+    return ParsedTable(names[stitchjs], cols[stitchjs], ndata, log.items, log.dropped)
 end
 
 parse(str::AbstractString; kw...) = parse(Vector{UInt8}(codeunits(str)); kw...)
@@ -2123,13 +2271,16 @@ chunkrowbase(chunks::Vector{ChunkIndex}, target::ChunkIndex) =
 function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Symbol,
                      alreadyindexed::Bool, ncols::Int, opts::ValueOpts,
                      userprovided, promo, promolock, pendingproblems::PendingProblemLog,
-                     segments, segtypes, k::Int)
+                     segments, segtypes, k::Int,
+                     selected::Union{Nothing, Vector{Bool}}=nothing,
+                     mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0)
     alreadyindexed || indexone!(ci, buf, d, scanner)
     n = nrows(ci)
     log = ProblemLog(pendingproblems.limit)
     for lr in ci.firstdatarow:totalrows(ci)
-        nf = nfields(ci, lr)
         localrow = lr - ci.firstdatarow + 1
+        mask !== nothing && !mask[maskbase + localrow] && continue   # excluded rows don't report
+        nf = nfields(ci, lr)
         if nf < ncols
             sp = fieldspan(ci, lr, 1)::Tuple{Int, Int}
             pushproblem!(log, localrow, 0, sp[1], :short_row,
@@ -2143,14 +2294,20 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Sy
     segs = Vector{Any}(undef, ncols)
     st = Vector{Type}(undef, ncols)
     for j in 1:ncols
+        if selected !== nothing && !selected[j]
+            # unselected columns simply don't exist to the value layer
+            segs[j] = nothing
+            st[j] = Missing
+            continue
+        end
         T = lock(() -> promo[j], promolock)
         attempts = 0
         while true
             (attempts += 1) > 8 && error("internal error: promotion did not converge")
             stg = allocatecolumn(T, n, buf, opts.e, d.cq)
             conflict = T === Missing ?
-                parsecolchunk_missing(buf, ci, j, 0, opts, userprovided[j], log) :
-                parsecolchunk!(stg, buf, ci, j, 0, opts, userprovided[j], log)
+                parsecolchunk_missing(buf, ci, j, 0, opts, userprovided[j], log, mask, maskbase) :
+                parsecolchunk!(stg, buf, ci, j, 0, opts, userprovided[j], log, 0, mask, maskbase)
             if conflict == 0
                 segs[j] = stg
                 st[j] = T
@@ -2177,12 +2334,13 @@ end
 # closure-capture race. Kernel rule: task bodies are named functions.
 function restale!(chunks, final, segments, segtypes,
                   pendingproblems::PendingProblemLog, buf::Vector{UInt8},
-                  opts::ValueOpts, d::Dialect, userprovided, k::Int, j::Int)
+                  opts::ValueOpts, d::Dialect, userprovided, k::Int, j::Int,
+                  mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0)
     ci = chunks[k]
     stg = allocatecolumn(final[j], nrows(ci), buf, opts.e, d.cq)
     log = ProblemLog(pendingproblems.limit)
     conflict = final[j] === Missing ? 0 :
-        parsecolchunk!(stg, buf, ci, j, 0, opts, userprovided[j], log)
+        parsecolchunk!(stg, buf, ci, j, 0, opts, userprovided[j], log, 0, mask, maskbase)
     conflict == 0 || error("internal error: re-parse under the joined type conflicted")
     segments[k][j] = stg
     segtypes[k][j] = final[j]
@@ -2250,7 +2408,8 @@ end
 # count blows the policy bound (caller falls back to the flat stitch).
 function poolsegments(segments, j::Int, chunkrows, rowbases, ndata::Int,
                       buf::Vector{UInt8}, e::UInt8, cq::UInt8,
-                      pool::Tuple{Float64, Int})
+                      pool::Tuple{Float64, Int},
+                      mask::Union{Nothing, Vector{Bool}}=nothing, inbases=nothing)
     # both bounds hold: levels ≤ ratio×rows AND levels ≤ cap
     ratiolevels = pool[1] == 1.0 ? ndata : floor(Int, pool[1] * ndata)
     maxlevels = min(ratiolevels, pool[2], Int(typemax(UInt32)))
@@ -2259,12 +2418,20 @@ function poolsegments(segments, j::Int, chunkrows, rowbases, ndata::Int,
     levelpayloads = KStrPayload[]
     extra = UInt8[]
     npresent = 0
+    dest = 0
     for k in eachindex(chunkrows)
         seg = segments[k][j]
-        seg === nothing && continue              # all-missing segment
+        if seg === nothing                       # all-missing segment
+            mask === nothing && (dest += chunkrows[k])
+            continue
+        end
         scol = seg::StringColumn
         rb = rowbases[k]
         @inbounds for i in 1:chunkrows[k]
+            if mask !== nothing
+                mask[inbases[k] + i] || continue
+            end
+            dest += 1
             p = scol.payloads[i]
             len = Int(kstrlen(p))
             len < 0 && continue                  # missing ⇒ ref 0
@@ -2285,7 +2452,7 @@ function poolsegments(segments, j::Int, chunkrows, rowbases, ndata::Int,
                 ref = UInt32(length(levelpayloads))
                 table[cell] = ref
             end
-            refs[rb + i] = ref
+            refs[mask === nothing ? rb + i : dest] = ref
         end
     end
     levels = KStrVector{KStr}(levelpayloads, buf, extra)
@@ -2300,21 +2467,29 @@ end
 # negative (extra-relative) offsets as they copy.
 function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases,
                       ndata::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8,
-                      pool::Union{Nothing, Tuple{Float64, Int}}=nothing) where {T}
+                      pool::Union{Nothing, Tuple{Float64, Int}}=nothing,
+                      mask::Union{Nothing, Vector{Bool}}=nothing, inbases=nothing) where {T}
     T === Missing && return MissingColumn(ndata)
     if T === String && pool !== nothing && ndata > 0
-        pooled = poolsegments(segments, j, chunkrows, rowbases, ndata, buf, e, cq, pool)
+        pooled = poolsegments(segments, j, chunkrows, rowbases, ndata, buf, e, cq, pool,
+                              mask, inbases)
         pooled !== nothing && return pooled
         # bound exceeded: fall through to the flat stitch below
     end
+    mask === nothing || return _stitchmasked(T, segments, j, chunkrows, ndata, buf, e, cq,
+                                             mask, inbases)
     # Single-chunk files (every input below chunkbytes): the lone segment IS the
     # final column — finalize it directly, zero copies. This keeps the fused
     # driver's small-file cost identical to writing final columns in place.
     if length(chunkrows) == 1
         seg = segments[1][j]
         seg === nothing && return MissingColumn(ndata)
-        return T === String ? finalizecolumn(String, seg::StringColumn, ndata) :
-                              finalizecolumn(T, seg::TypedColumn{T}, ndata)
+        # a limit-clipped boundary segment is larger than the output; only the
+        # untouched case may alias the staging directly
+        if (seg isa StringColumn ? length(seg.payloads) : length((seg::TypedColumn{T}).values)) == ndata
+            return T === String ? finalizecolumn(String, seg::StringColumn, ndata) :
+                                  finalizecolumn(T, seg::TypedColumn{T}, ndata)
+        end
     end
     if T === String
         payloads = fill(PAYLOAD_MISSING, ndata)
@@ -2349,6 +2524,61 @@ function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases
         rb = rowbases[k]
         copyto!(values, rb + 1, tcol.values, 1, chunkrows[k])
         copyto!(present, rb + 1, tcol.present, 1, chunkrows[k])
+    end
+    return finalizecolumn(T, TypedColumn{T}(values, present), ndata)
+end
+
+# Row-filtered stitch: gather only mask-qualifying rows into compact output
+# positions (chunk order, so output order is input order). Cells for excluded
+# rows were never parsed; their staging slots are simply skipped here.
+function _stitchmasked(::Type{T}, segments, j::Int, chunkrows, ndata::Int,
+                       buf::Vector{UInt8}, e::UInt8, cq::UInt8,
+                       mask::Vector{Bool}, inbases) where {T}
+    if T === String
+        payloads = fill(PAYLOAD_MISSING, ndata)
+        extra = UInt8[]
+        dest = 0
+        for k in eachindex(chunkrows)
+            seg = segments[k][j]
+            if seg === nothing
+                @inbounds for i in 1:chunkrows[k]
+                    mask[inbases[k] + i] && (dest += 1)
+                end
+                continue
+            end
+            scol = seg::StringColumn
+            base = Int64(length(extra))
+            isempty(scol.extra) || append!(extra, scol.extra)
+            @inbounds for i in 1:chunkrows[k]
+                mask[inbases[k] + i] || continue
+                dest += 1
+                p = scol.payloads[i]
+                if kstrlen(p) > KSTR_INLINE && kstroff(p) < 0
+                    p = KStrPayload(p.a, reinterpret(UInt64, kstroff(p) - base))
+                end
+                payloads[dest] = p
+            end
+        end
+        return finalizecolumn(String, StringColumn(payloads, buf, extra, ReentrantLock(), e, cq), ndata)
+    end
+    values = Vector{T}(undef, ndata)
+    present = fill(false, ndata)
+    dest = 0
+    for k in eachindex(chunkrows)
+        seg = segments[k][j]
+        if seg === nothing
+            @inbounds for i in 1:chunkrows[k]
+                mask[inbases[k] + i] && (dest += 1)
+            end
+            continue
+        end
+        tcol = seg::TypedColumn{T}
+        @inbounds for i in 1:chunkrows[k]
+            mask[inbases[k] + i] || continue
+            dest += 1
+            values[dest] = tcol.values[i]
+            present[dest] = tcol.present[i]
+        end
     end
     return finalizecolumn(T, TypedColumn{T}(values, present), ndata)
 end
