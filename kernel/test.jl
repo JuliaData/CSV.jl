@@ -3,9 +3,9 @@
 # Run:  julia --project=kernel -t4 kernel/test.jl
 #
 # Strategy: the scalar scanner is the correctness oracle. Every structural case is
-# run through each eligible scanner (scalar / SWAR) both sequentially and in
-# parallel with deliberately tiny chunk sizes (3, 7, 16, 64 bytes) so that range
-# boundaries land inside fields, inside quoted sections, and between the bytes of
+# run through each eligible scanner (scalar / SWAR / vector) both sequentially
+# and in parallel with deliberately tiny chunk sizes (3, 7, 16, 64 bytes), so
+# range boundaries land inside fields, inside quoted sections, and between bytes of
 # CRLF pairs. Results must be identical everywhere — that IS the parallelism
 # correctness claim (determinism for any chunk geometry), so it is tested
 # exhaustively rather than incidentally.
@@ -123,8 +123,15 @@ end
 
 @testset "structural: basics" begin
     tt = UInt32[]
-    K.tape_room!(tt, 0, 64)
-    @test length(tt) >= 64
+    for block in 0:31
+        n = 64 * block
+        K.tape_room!(tt, n, 64)
+        @test length(tt) >= n + 64
+        for j in 1:64
+            tt[n + j] = UInt32(n + j)
+        end
+    end
+    @test tt[1:2048] == UInt32.(1:2048)
     maxci = K.ChunkIndex(1, K.MAX_TAPE_RELPOS)
     @test K.checktaperange(maxci) === maxci
     @test UInt32(K.MAX_TAPE_RELPOS) << 2 >> 2 == K.MAX_TAPE_RELPOS
@@ -138,6 +145,7 @@ end
     @test idxall("\n")             == []                               # empty row dropped by default
     @test idxall("a,\n")           == [["a",""]]                       # trailing delimiter = trailing empty field
     @test idxall("a,")             == [["a",""]]                       # same, at EOF
+    @test idxall(","; ignoreemptyrows=false) == [["",""]]              # only a delimiter at EOF
     @test idxall(",\n")            == [["",""]]                        # two empty fields is not an "empty row"
     @test idxall(",,,\n")          == [["","","",""]]
     @test idxall("a,b\n\n\nc,d\n") == [["a","b"], ["c","d"]]
@@ -152,9 +160,39 @@ end
 @testset "structural: newlines" begin
     @test idxall("a,b\r\n1,2\r\n") == [["a","b"], ["1","2"]]
     @test idxall("a,b\r1,2\r")     == [["a","b"], ["1","2"]]           # lone CR
+    @test idxall("\r"; ignoreemptyrows=false) == [[""]]                  # lone CR at EOF
     @test idxall("a\r\nb\rc\nd")   == [["a"],["b"],["c"],["d"]]       # mixed terminators
     @test idxall("a\r\n\r\nb\r\n") == [["a"],["b"]]
     @test idxall("a\r\n\r\nb\r\n"; ignoreemptyrows=false) == [["a"],[""],["b"]]
+end
+
+@testset "structural: tape assembly geometry" begin
+    for n in (62, 63)
+        firstfield = "x"^n
+        @test idxall(firstfield * "\r\na,b\r\n"; chunks=(63, 64, 65)) ==
+              [[firstfield], ["a", "b"]]
+    end
+    longcomment = "#" * ("drop,"^30)
+    input = longcomment * "\r\n\r\n#second\n\nH1,H2\r\nv1,v2"
+    buf = Vector{UInt8}(codeunits(input))
+    d = K.Dialect(comment="#")
+    bi = K.index(buf, d; parallel=false, chunkbytes=length(buf) + 1)
+    ci = only(bi.chunks)
+    hpos = findfirst(==(UInt8('H')), buf)
+    vpos = findfirst(==(UInt8('v')), buf)
+    @test rawrows(buf, bi) == [["H1", "H2"], ["v1", "v2"]]
+    @test ci.rowstartrel == UInt32[hpos - ci.start, vpos - ci.start]
+    @test K.fieldspan(ci, 1, 1) == (hpos, 2)
+    @test K.fieldspan(ci, 2, 1) == (vpos, 2)
+    for sc in (:scalar, :swar, :vec)
+        t = K.parse(buf; comment="#", chunkbytes=3, parallel=true, scanner=sc)
+        @test K.names(t) == [:H1, :H2]
+        @test t.nrows == 1
+        @test collect(t[:H1]) == ["v1"]
+        @test collect(t[:H2]) == ["v2"]
+    end
+    dense = ","^1024
+    @test idxall(dense; chunks=(64, 65), ignoreemptyrows=false) == [fill("", 1025)]
 end
 
 @testset "structural: quotes" begin
@@ -226,6 +264,56 @@ end
     @test_throws ArgumentError K.index(UInt8[], fast; scanner=:bogus)
     @test_throws ArgumentError K.index(UInt8[0x61], fast; fastindex=false, scanner=:bogus)
     @test_throws ArgumentError K.parse(""; scanner=:bogus)
+
+    input = "a,b\n" * join(("$i,\"value,$i\"" for i in 1:40), '\n') * "\n"
+    ref = tablesnapshot(K.parse(input; chunkbytes=5, parallel=false, scanner=:scalar))
+    for sc in (:auto, :vec, :swar, :scalar), par in (false, true)
+        got = K.parse(input; chunkbytes=5, parallel=par, scanner=sc)
+        @test isequal(tablesnapshot(got), ref)
+    end
+    got = K.parse(input; chunkbytes=5, parallel=true, fastindex=false, scanner=:vec)
+    @test isequal(tablesnapshot(got), ref)
+end
+
+@testset "structural: vector masks and prefix XOR" begin
+    rng = MersenneTwister(0x5a59f65)
+    for _ in 1:1000
+        m = rand(rng, UInt64)
+        @test K.prefix_xor64(m) == K.prefix_xor64_shift(m)
+    end
+    bytes = fill(UInt8('x'), 66)
+    GC.@preserve bytes begin
+        p = pointer(bytes, 2)
+        for bit in 0:63
+            bytes[bit + 2] = UInt8(',')
+            expected = UInt64(1) << bit
+            @test K.byte_mask_vec(p, UInt8(',')) == expected
+            @test K.specials_mask_vec(p, UInt8(',')) == expected
+            bytes[bit + 2] = UInt8('x')
+        end
+    end
+    for _ in 1:256
+        rand!(rng, bytes)
+        quoted = rand(rng, Bool)
+        oq = rand(rng, UInt8)
+        delim = rand(rng, UInt8)
+        GC.@preserve bytes begin
+            p = pointer(bytes, 2)
+            @test K.blockmasks(Val(:vec), p, quoted, oq, delim) ==
+                  K.blockmasks(Val(:swar), p, quoted, oq, delim)
+        end
+    end
+end
+
+@testset "structural: raw-byte scanner differential" begin
+    rng = MersenneTwister(0x30bb1e)
+    alphabet = ['a', 'b', '#', '/', '"', ',', '\r', '\n']
+    lengths = [0:10; 62:66; 126:130; rand(rng, 0:320, 48)]
+    for n in lengths
+        input = String(rand(rng, alphabet, n))
+        idxall(input; chunks=(63, 64, 65), quoted=rand(rng, Bool),
+               comment=rand(rng, (nothing, "#", "//")), ignoreemptyrows=rand(rng, Bool))
+    end
 end
 
 @testset "structural: randomized property (all scanners × all chunkings agree)" begin
