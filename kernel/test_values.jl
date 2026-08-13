@@ -306,13 +306,16 @@ end
         o = parse(BigFloat, s)
         @test (isnan(v) && isnan(o)) || (v == o && signbit(v) == signbit(o))
     end
-    for prec in (53, 113, 256, 1000)
+    for prec in (2, 24, 53, 65, 113, 256, 1000)
         setprecision(BigFloat, prec) do
             # pinned adversaries (halfway cases matter at every precision)
-            for s in ("0.1", "-0.1", "1.5", "2.5", "1e0", "9007199254740993",
+            for s in ("0.1", "-0.1", "1.5", "1.75", "1.7500000000000000000001",
+                      "2.5", "1e0", "9007199254740993",
                       "0." * "5"^400, "1." * "0"^300 * "1",
                       "3.14159265358979323846264338327950288419716939937510582097",
                       "1e300", "1e-300", "123456789.123456789e-45",
+                      "2.2250738585072011e-308", "2.2250738585072014e-308",
+                      "4.9406564584124654e-324", "1.7976931348623157e308",
                       "Inf", "-inf", "NaN", "0.0", "-0.0")
                 check(s)
             end
@@ -345,8 +348,32 @@ end
         end
     end
     # prove-out range bound is explicit, not silent
+    for s in ("1e65535", "1e-65537")
+        v, rc = V.parsebigfloat(b(s), 1, ncodeunits(s); prec=65)
+        o = setprecision(BigFloat, 65) do
+            parse(BigFloat, s)
+        end
+        @test rc == V.RC_OK && v == o
+    end
+    @test V.parsebigfloat(b("1e65536"), 1, 7)[2] == V.RC_OVERFLOW
+    @test V.parsebigfloat(b("1e-65538"), 1, 8)[2] == V.RC_OVERFLOW
     @test V.parsebigfloat(b("1e100000"), 1, 8)[2] == V.RC_OVERFLOW
     @test V.parsebigfloat(b("1e-100000"), 1, 9)[2] == V.RC_OVERFLOW
+    # The gate is based on the full M * 10^q representation. DecParts.exp10
+    # only describes its first 19 digits and used to reject this in-range value.
+    longfraction = "0." * "1"^65_556
+    setprecision(BigFloat, 24) do
+        v, rc = V.parsebigfloat(b(longfraction), 1, ncodeunits(longfraction))
+        @test rc == V.RC_OK && v == parse(BigFloat, longfraction)
+    end
+    # A fixed exponent clamp could be cancelled by a long mantissa at the gate,
+    # after which _bigmantissa reconstructed an enormous q for pow_ui.
+    clamptrap = "1"^50_000 * "e-100000000000000000000"
+    @test V.parsebigfloat(b(clamptrap), 1, ncodeunits(clamptrap); prec=24)[2] == V.RC_OVERFLOW
+    # Zero bypasses scaling and preserves its sign even with a huge exponent.
+    negzero = "-0e100000000000000000000"
+    nz, rc = V.parsebigfloat(b(negzero), 1, ncodeunits(negzero); prec=65)
+    @test rc == V.RC_OK && iszero(nz) && signbit(nz)
     for s in ("", ".", "1..2", "1e", "x")
         @test V.parsebigfloat(b(s), 1, ncodeunits(s))[2] == V.RC_INVALID
     end

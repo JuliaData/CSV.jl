@@ -11,17 +11,18 @@ day one:
     fallback to `Parsers.xparse`, `Base.parse`, or any C routine — exceptional
     cases (768-digit halfway floats, subnormals, huge exponents) are handled by
     self-contained slow paths *inside* the parsers.
-  * **No dependencies in the core.** No GMP/BigInt, no MPFR/BigFloat, no libc.
-    The float slow path is Tao's simple decimal conversion over a fixed-size
-    digit buffer (correct rounding for Float64 never needs more than 768
-    significant digits). The Eisel–Lemire powers-of-five table is computed at
-    precompile time by `_buildpow5` using a minimal little-endian limb array
-    with exactly the operations table generation needs (mul-by-5, shifted
-    compare/subtract, one restoring division) — machinery that never escapes
-    the builder.
-  * **Bootstrap-clean.** No `@generated`, no `eval`, no closures over mutable
-    state, no allocation on any hot path — plain loops and bit ops, compilable
-    early enough for Base adoption and `--trim`.
+  * **No parser dependencies in the core.** The fixed-width kernels do not use
+    GMP, MPFR, libc parsing, or external packages. The float slow path is Tao's
+    simple decimal conversion over a fixed-size digit buffer (correct rounding
+    for Float64 never needs more than 768 significant digits). The
+    Eisel–Lemire powers-of-five table is computed at precompile time by
+    `_buildpow5` using a minimal little-endian limb array. The user-only
+    BigInt/BigFloat kernels use their Base-owned GMP/MPFR arithmetic after this
+    layer has parsed and rounded the input; no string parser receives the span.
+  * **Bootstrap-clean fixed-width paths.** No `@generated`, no `eval`, no
+    closures over mutable state, and no allocation on the fixed-width hot paths
+    — plain loops and bit ops, compilable early enough for Base adoption and
+    `--trim`. The arbitrary-precision result types allocate their own storage.
   * **Strictness: parse-set ≡ detect-set.** Kernels accept exactly the canonical
     spellings (plus explicit user lists for Bool). `Bool` does NOT accept "1";
     `DateTime` does NOT accept a bare date. This eliminates the CSV kernel's
@@ -784,11 +785,12 @@ function parsebigfloat(buf::Vector{UInt8}, i::Int, j::Int,
         z = BigFloat(0; precision=prec)
         return (parts.neg ? -z : z, RC_OK)
     end
-    abs(Int(parts.exp10) + Int(parts.ndig)) > 65536 &&
-        return (BigFloat(0; precision=prec), RC_OVERFLOW)
     # every significant digit into a BigInt (the parsebigint accumulator, with
-    # the decimal byte skipped), tracking the true power of ten
-    M, q = _bigmantissa(buf, i, Int(parts.digstart), j, decimal)
+    # the decimal byte skipped), tracking the true power of ten. The range test
+    # uses the full mantissa exponent, not DecParts.exp10 (which is relative to
+    # its truncated 19-digit mantissa).
+    M, q, inrange = _bigmantissa(buf, i, Int(parts.digstart), j, decimal)
+    inrange || return (BigFloat(0; precision=prec), RC_OVERFLOW)
     # value = M × 10^q = M × 5^q × 2^q — pure integer scaling, one rounding:
     #   q ≥ 0: N = M·5^q is exact and value = N × 2^q
     #   q < 0: N = ⌊M·2^s / 5^-q⌋ with s sized so N keeps ≥ prec+2 bits; the
@@ -837,7 +839,8 @@ end
 
 # All significant digits from `digstart` (first significant digit, per
 # _decompose) through the end of the digit run, skipping the decimal byte.
-# Returns (M, q) with value = M × 10^q. Shape already validated.
+# Returns `(M, q, inrange)` with value `M × 10^q` when `inrange`; the
+# boolean is false when `abs(q + ndig) > 65536`. Shape is already validated.
 function _bigmantissa(buf::Vector{UInt8}, i::Int, digstart::Int, j::Int, decimal::UInt8)
     big = BigInt(0)
     started = false
@@ -848,6 +851,7 @@ function _bigmantissa(buf::Vector{UInt8}, i::Int, digstart::Int, j::Int, decimal
     # and digstart are fractional positions too.
     frac = 0
     infrac = false
+    ndig = 0
     @inbounds for p in i:(digstart - 1)
         if buf[p] == decimal
             infrac = true
@@ -862,6 +866,7 @@ function _bigmantissa(buf::Vector{UInt8}, i::Int, digstart::Int, j::Int, decimal
         if d <= 0x09
             acc = acc * 10 + Int64(d)
             nacc += 1
+            ndig += 1
             infrac && (frac += 1)
             if nacc == 18
                 started = _flushchunk!(big, started, acc, _POW10_18)
@@ -881,14 +886,35 @@ function _bigmantissa(buf::Vector{UInt8}, i::Int, digstart::Int, j::Int, decimal
         k += 1                                       # skip e/E
         eneg = buf[k] == UInt8('-')
         (eneg || buf[k] == UInt8('+')) && (k += 1)
-        while k <= j
-            expv = expv * 10 + Int(buf[k] - UInt8('0'))
-            expv > 1 << 40 && (expv = 1 << 40)       # gate already bounds the real range
-            k += 1
+        offset = ndig - frac
+        if j - k + 1 <= 18
+            # Every 18-digit exponent fits Int64. This branch covers normal
+            # input with no bound arithmetic in the digit loop.
+            while k <= j
+                expv = expv * 10 + Int(buf[k] - UInt8('0'))
+                k += 1
+            end
+        else
+            # Only exponents within this bound can make |q + ndig| <= 65536.
+            # Saturating against a fixed constant is unsafe: a long mantissa can
+            # cancel that constant and let an enormous reconstructed q reach pow_ui.
+            aoff = abs(offset)
+            limit = aoff > typemax(Int) - 65536 ? typemax(Int) : aoff + 65536
+            limit10, limitdigit = divrem(limit, 10)
+            while k <= j
+                d = Int(buf[k] - UInt8('0'))
+                (expv > limit10 || (expv == limit10 && d > limitdigit)) &&
+                    return (big, 0, false)
+                expv = expv * 10 + d
+                k += 1
+            end
         end
-        eneg && (expv = -expv)
+        signedexp = eneg ? -expv : expv
+        abs(Int128(signedexp) + Int128(offset)) > 65536 && return (big, 0, false)
+        return (big, signedexp - frac, true)
     end
-    return (big, expv - frac)
+    abs(ndig - frac) > 65536 && return (big, 0, false)
+    return (big, -frac, true)
 end
 
 """
