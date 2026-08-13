@@ -1529,8 +1529,10 @@ function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
     values, present = col.values, col.present
     scratch = _scratchfor(opts)
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
-        out = rowbase + (lr - ci.firstdatarow) + 1
+        localrow = lr - ci.firstdatarow + 1
+        out = rowbase + localrow
         mask !== nothing && !mask[maskbase + out] && continue   # excluded row: cell never parsed
+        localrow > reportlimit && continue
         sp = fieldspan(ci, lr, j)
         sp === nothing && continue                      # short row ⇒ missing (reported once per row by the driver)
         pos, len = sp
@@ -1547,8 +1549,7 @@ function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
         end
         # invalid for T (also: malformed quoting, quoted-empty, escaped content)
         if userprovided
-            lr - ci.firstdatarow + 1 > reportlimit && continue
-            problemrow = problemrowbase + (lr - ci.firstdatarow) + 1
+            problemrow = problemrowbase + localrow
             kind = st == CELL_BADQUOTE ? :invalid_quoted_field : :invalid_value
             message = st == CELL_BADQUOTE ? "malformed quoting in " :
                       "cannot parse $(T) from "
@@ -1570,32 +1571,28 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
     payloads = col.payloads
     staging::Union{Nothing, NTuple{4, Vector}} = nothing  # (bytes, rows, offs, lens) for escaped-long cells
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
-        out = rowbase + (lr - ci.firstdatarow) + 1
+        localrow = lr - ci.firstdatarow + 1
+        out = rowbase + localrow
         mask !== nothing && !mask[maskbase + out] && continue   # excluded row: cell never parsed
+        localrow > reportlimit && continue
         sp = fieldspan(ci, lr, j)
         sp === nothing && continue
         pos, len = sp
         len == 0 && continue                            # unquoted empty ⇒ missing; quoted "" survives below
         cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
         if st == CELL_BADQUOTE
-            localrow = lr - ci.firstdatarow + 1
-            if localrow <= reportlimit
-                problemrow = problemrowbase + localrow
-                pushproblem!(problems, problemrow, j, pos, :invalid_quoted_field,
-                             "malformed quoting in " * excerpt(buf, pos, len))
-            end
+            problemrow = problemrowbase + localrow
+            pushproblem!(problems, problemrow, j, pos, :invalid_quoted_field,
+                         "malformed quoting in " * excerpt(buf, pos, len))
             continue
         end
         if st == CELL_MISSING
             continue
         end
         if !_wasquoted(buf, pos, len, opts) && _delimclash(buf, cpos, clen, opts.delim)
-            localrow = lr - ci.firstdatarow + 1
-            if localrow <= reportlimit
-                problemrow = problemrowbase + localrow
-                pushproblem!(problems, problemrow, j, pos, :invalid_value,
-                             "bare quote engaged structural protection in " * excerpt(buf, pos, len))
-            end
+            problemrow = problemrowbase + localrow
+            pushproblem!(problems, problemrow, j, pos, :invalid_value,
+                         "bare quote engaged structural protection in " * excerpt(buf, pos, len))
         end
         if esc
             # escaped values are unescaped ONCE, at parse time (KStr needs O(1)
@@ -1644,7 +1641,9 @@ function parsecolchunk_missing(buf::Vector{UInt8}, ci::ChunkIndex, j::Int,
                                mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
                                reportlimit::Int=typemax(Int))
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
-        mask !== nothing && !mask[maskbase + (lr - ci.firstdatarow) + 1] && continue
+        localrow = lr - ci.firstdatarow + 1
+        mask !== nothing && !mask[maskbase + localrow] && continue
+        localrow > reportlimit && continue
         sp = fieldspan(ci, lr, j)
         sp === nothing && continue
         _, len = sp
@@ -1652,8 +1651,7 @@ function parsecolchunk_missing(buf::Vector{UInt8}, ci::ChunkIndex, j::Int,
         st = cellcontent(buf, sp[1], len, opts)[4]
         if st != CELL_MISSING
             userprovided || return lr
-            lr - ci.firstdatarow + 1 > reportlimit && continue
-            out = rowbase + (lr - ci.firstdatarow) + 1
+            out = rowbase + localrow
             kind = st == CELL_BADQUOTE ? :invalid_quoted_field : :invalid_value
             message = st == CELL_BADQUOTE ? "malformed quoting in " :
                       "column typed Missing contains "
@@ -2168,7 +2166,7 @@ function parse(buf::Vector{UInt8};
             seed[j] === nothing && (seed[j] = inferred[j])
         end
     end
-    if limit !== nothing && limit > 0
+    if limit !== nothing
         for (k, ci) in enumerate(typechunks)
             firstexcluded = max(limit - typerowbases0[k] + 1, 1)
             firstexcluded > nrows(ci) && continue

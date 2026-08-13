@@ -204,6 +204,11 @@ end
     end
     @test any(p -> p.kind == :unclosed_quote,
               K.problems(K.parse(unclosed; limit=3, chunkbytes=100)))
+
+    escaped = "a\nx\ny\n\"long " * repeat("q", 40) * " \"\"escaped\"\" tail\"\n"
+    t = K.parse(escaped; limit=2, chunkbytes=1 << 20, parallel=false)
+    @test String.(t[:a]) == ["x", "y"]
+    @test isempty(t[:a].extra)                                    # excluded row was not materialized
 end
 
 @testset "limit preserves full-parse inference without parsing excluded values" begin
