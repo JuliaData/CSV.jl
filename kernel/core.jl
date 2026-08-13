@@ -1779,6 +1779,39 @@ function excerpt(buf::Vector{UInt8}, pos::Int, len::Int; maxbytes::Int=32)
     return repr(len > maxbytes ? s * "…" : s)
 end
 
+function parseheader!(buf::Vector{UInt8}, ci::ChunkIndex, opts::ValueOpts,
+                      d::Dialect, log::ProblemLog)
+    hrow = ci.firstdatarow
+    nh = nfields(ci, hrow)
+    names = Vector{Symbol}(undef, nh)
+    for j in 1:nh
+        pos, len = fieldspan(ci, hrow, j)::Tuple{Int, Int}
+        if len == 0
+            names[j] = Symbol("Column", j)
+            continue
+        end
+        cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
+        if st == CELL_BADQUOTE
+            names[j] = Symbol(String(buf[pos:pos + len - 1]))
+            pushproblem!(log, 0, j, pos, :invalid_quoted_field,
+                         "malformed quoting in header " * excerpt(buf, pos, len))
+        elseif st == CELL_MISSING || clen == 0
+            names[j] = Symbol("Column", j)
+        elseif !_wasquoted(buf, pos, len, opts) && _delimclash(buf, cpos, clen, opts.delim)
+            names[j] = Symbol(String(buf[pos:pos + len - 1]))
+            pushproblem!(log, 0, j, pos, :invalid_value,
+                         "bare quote engaged structural protection in header " *
+                         excerpt(buf, pos, len))
+        else
+            names[j] = Symbol(esc ?
+                              _unescape(buf, Int64(cpos), Int32(clen), opts.e, d.cq) :
+                              GC.@preserve(buf, unsafe_string(pointer(buf, cpos), clen)))
+        end
+    end
+    ci.firstdatarow = hrow + 1
+    return names
+end
+
 # ---------------------------------------------------------------------------
 # L5: the driver.
 # ---------------------------------------------------------------------------
@@ -1977,6 +2010,7 @@ function parse(buf::Vector{UInt8};
                limit::Union{Nothing, Int}=nothing,
                rowmask::Union{Nothing, Vector{Bool}}=nothing,
                index::Union{Nothing, BufferIndex}=nothing,
+               reportstructural::Bool=true,
                dialectkw...)
     on_error in (:collect, :error) || throw(ArgumentError("on_error must be :collect or :error"))
     limit === nothing || limit >= 0 || throw(ArgumentError("limit must be ≥ 0 (got $limit)"))
@@ -2007,12 +2041,14 @@ function parse(buf::Vector{UInt8};
     # header binding and reuses it across the filter's two parse phases) hands
     # it in; the chunk geometry and dialect must match how it was built.
     local chunks::Vector{ChunkIndex}
+    indexunclosed = false
     if index === nothing
         chunks = chunkplan(buf, d, datastart, chunkbytes, parallel)
         indexed = fill(false, length(chunks))
     else
         chunks = index.chunks
         indexed = fill(true, length(chunks))
+        indexunclosed = index.unclosedquote
     end
     nch = length(chunks)
     headerlog = ProblemLog(maxproblems)
@@ -2054,36 +2090,7 @@ function parse(buf::Vector{UInt8};
     local names::Vector{Symbol}
     if header === true && headerchunk > 0
         ci = chunks[headerchunk]
-        hrow = ci.firstdatarow
-        nh = nfields(ci, hrow)
-        names = Vector{Symbol}(undef, nh)
-        for j in 1:nh
-            sp = fieldspan(ci, hrow, j)::Tuple{Int, Int}
-            pos, len = sp
-            if len == 0
-                names[j] = Symbol("Column", j)
-            else
-                cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
-                if st == CELL_BADQUOTE
-                    # Keep malformed header bytes exact. The file-level malformed
-                    # quote problem is also retained as data.
-                    names[j] = Symbol(String(buf[pos:pos + len - 1]))
-                    pushproblem!(headerlog, 0, j, pos, :invalid_quoted_field,
-                                 "malformed quoting in header " * excerpt(buf, pos, len))
-                elseif st == CELL_MISSING || clen == 0
-                    names[j] = Symbol("Column", j)
-                elseif !_wasquoted(buf, pos, len, opts) && _delimclash(buf, cpos, clen, opts.delim)
-                    names[j] = Symbol(String(buf[pos:pos + len - 1]))
-                    pushproblem!(headerlog, 0, j, pos, :invalid_value,
-                                 "bare quote engaged structural protection in header " * excerpt(buf, pos, len))
-                else
-                    names[j] = Symbol(esc ?
-                                      _unescape(buf, Int64(cpos), Int32(clen), opts.e, d.cq) :
-                                      GC.@preserve(buf, unsafe_string(pointer(buf, cpos), clen)))
-                end
-            end
-        end
-        ci.firstdatarow = hrow + 1
+        names = parseheader!(buf, ci, opts, d, headerlog)
     elseif header isa AbstractVector
         names = Symbol.(header)
     else
@@ -2092,6 +2099,7 @@ function parse(buf::Vector{UInt8};
     end
     names = makeunique!(names)
     ncols = length(names)
+    fullrows = sum(nrows, chunks; init=0)
 
     # -- selection & row geometry ----------------------------------------------
     selected = resolveselect(select, names, ncols)
@@ -2183,13 +2191,14 @@ function parse(buf::Vector{UInt8};
             errormonitor(Threads.@spawn fusedchunk!(chunks[k], buf, d, sc, indexed[k],
                                                     ncols, opts, userprovided, promo, promolock,
                                                     pendingproblems, segments, segtypes, k,
-                                                    selected, rowmask, mb(k), rl(k)))
+                                                    selected, rowmask, mb(k), rl(k),
+                                                    reportstructural))
         end
     else
         for k in 1:nch
             fusedchunk!(chunks[k], buf, d, sc, indexed[k], ncols, opts, userprovided,
                         promo, promolock, pendingproblems, segments, segtypes, k,
-                        selected, rowmask, mb(k), rl(k))
+                        selected, rowmask, mb(k), rl(k), reportstructural)
         end
     end
     for k in 1:(nch - 1)
@@ -2249,7 +2258,8 @@ function parse(buf::Vector{UInt8};
     # problem rows always reference INPUT data-row numbers (diagnostics point
     # at the file, not at the filtered output)
     log = finishproblems(pendingproblems, rowmask === nothing ? rowbases : rowbases0)
-    if nch > 0 && last(chunks).unclosedquote
+    if reportstructural && ((nch > 0 && last(chunks).unclosedquote) ||
+       (indexunclosed && (limit === nothing || limit >= fullrows)))
         pushproblem!(log, 0, 0, length(buf), :unclosed_quote,
                      "input ended inside a quoted field")
     end
@@ -2283,23 +2293,25 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Sy
                      segments, segtypes, k::Int,
                      selected::Union{Nothing, Vector{Bool}}=nothing,
                      mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
-                     reportlimit::Int=typemax(Int))
+                     reportlimit::Int=typemax(Int), reportstructural::Bool=true)
     alreadyindexed || indexone!(ci, buf, d, scanner)
     n = nrows(ci)
     log = ProblemLog(pendingproblems.limit)
-    for lr in ci.firstdatarow:totalrows(ci)
-        localrow = lr - ci.firstdatarow + 1
-        mask !== nothing && !mask[maskbase + localrow] && continue   # excluded rows don't report
-        localrow > reportlimit && continue
-        nf = nfields(ci, lr)
-        if nf < ncols
-            sp = fieldspan(ci, lr, 1)::Tuple{Int, Int}
-            pushproblem!(log, localrow, 0, sp[1], :short_row,
-                         "expected $ncols fields, found $nf (remaining columns set to missing)")
-        elseif nf > ncols
-            sp = fieldspan(ci, lr, ncols + 1)::Tuple{Int, Int}
-            pushproblem!(log, localrow, 0, sp[1], :long_row,
-                         "expected $ncols fields, found $nf (extra fields ignored)")
+    if reportstructural
+        for lr in ci.firstdatarow:totalrows(ci)
+            localrow = lr - ci.firstdatarow + 1
+            mask !== nothing && !mask[maskbase + localrow] && continue
+            localrow > reportlimit && continue
+            nf = nfields(ci, lr)
+            if nf < ncols
+                sp = fieldspan(ci, lr, 1)::Tuple{Int, Int}
+                pushproblem!(log, localrow, 0, sp[1], :short_row,
+                             "expected $ncols fields, found $nf (remaining columns set to missing)")
+            elseif nf > ncols
+                sp = fieldspan(ci, lr, ncols + 1)::Tuple{Int, Int}
+                pushproblem!(log, localrow, 0, sp[1], :long_row,
+                             "expected $ncols fields, found $nf (extra fields ignored)")
+            end
         end
     end
     segs = Vector{Any}(undef, ncols)

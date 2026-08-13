@@ -24,7 +24,6 @@ module KernelScan
 
 using Tables, Dates
 using ..CSVKernel
-using ..KernelExamples: headername
 const K = CSVKernel
 
 """
@@ -47,26 +46,38 @@ function apply(source, scan::Tables.Scan; header::Union{Bool, AbstractVector}=tr
                chunkbytes::Union{Nothing, Int}=nothing, kw...)
     haskey(kw, :types) && throw(ArgumentError("pass column types through the Scan's select items, not types="))
     haskey(kw, :select) && throw(ArgumentError("pass the selection through the Scan, not select="))
+    for key in (:limit, :rowmask, :index)
+        haskey(kw, key) && throw(ArgumentError("$key is managed by the Scan executor"))
+    end
+    haskey(kw, :reportstructural) &&
+        throw(ArgumentError("reportstructural is managed by the Scan executor"))
     buf = source isa Vector{UInt8} ? source :
           source isa AbstractString ? Vector{UInt8}(codeunits(source)) : Base.read(source)
     dialectkw = NamedTuple(k => v for (k, v) in kw if k in _DIALECTKW)
     parsekw = NamedTuple(k => v for (k, v) in kw)   # parse re-validates; dialect keys pass through
+    maxproblems = haskey(parsekw, :maxproblems) ? parsekw.maxproblems : 10_000
+    maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
+    on_error = haskey(parsekw, :on_error) ? parsekw.on_error : :collect
+    on_error in (:collect, :error) ||
+        throw(ArgumentError("on_error must be :collect or :error"))
+    phasecap = max(maxproblems, on_error === :error ? 1 : 0)
+    phasekw = merge(parsekw, (; maxproblems=phasecap, on_error=:collect))
 
     # -- index once; bind the scan against the extracted header ----------------
     cb = chunkbytes === nothing ?
          clamp(cld(length(buf), 2 * Threads.nthreads()), 1 << 16, 1 << 20) : chunkbytes
     datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1
     d = K.Dialect(; dialectkw...)
-    bi = K.index(buf, d; datastart, chunkbytes=cb)
+    indexkw = NamedTuple(k => v for (k, v) in pairs(parsekw)
+                         if k in (:parallel, :fastindex, :scanner))
+    bi = K.index(buf, d; datastart, chunkbytes=cb, indexkw...)
     opts = K.makevalueopts(d; (k => v for (k, v) in pairs(parsekw)
                                if k in (:dateformat, :decimal, :truestrings, :falsestrings,
                                         :stripwhitespace, :groupmark))...)
+    headerlog = K.ProblemLog(phasecap)
     names = if header === true && !isempty(bi.chunks)
         ci = first(bi.chunks)
-        hrow = ci.firstdatarow
-        nms = [headername(buf, ci, hrow, j, opts, d.cq) for j in 1:K.nfields(ci, hrow)]
-        ci.firstdatarow = hrow + 1
-        nms
+        K.parseheader!(buf, ci, opts, d, headerlog)
     elseif header isa AbstractVector
         Symbol.(header)
     else
@@ -94,16 +105,17 @@ function apply(source, scan::Tables.Scan; header::Union{Bool, AbstractVector}=tr
         # single phase: selection + exact row bounds straight into the driver
         lim = b.limit === nothing ? nothing : b.offset + b.limit
         t = K.parse(buf; index=bi, header=names, select=unique(outidx),
-                    types=seedtypes, limit=lim, parsekw...)
+                    types=seedtypes, limit=lim, phasekw...)
         b.offset > 0 && (t = _droprows(t, b.offset))
-        return (_project(t, b, names), Tables.EMPTYSCAN)
+        t = _project(t, b, names)
+        return (_finishproblems(t, maxproblems, on_error, headerlog, t), Tables.EMPTYSCAN)
     end
 
     # -- two-phase masked parse --------------------------------------------------
     # phase 1: only the predicate's columns, every row
     predsel = sort(unique(predidx))
     t1 = K.parse(buf; index=bi, header=names, select=predsel,
-                 types=Dict(i => T for (i, T) in seedtypes if i in predsel), parsekw...)
+                 types=Dict(i => T for (i, T) in seedtypes if i in predsel), phasekw...)
     mask = Tables.filtermask(b.filter, t1)
     # bake offset/limit into the mask: phase 2 parses EXACTLY the output rows
     _cliprows!(mask, b.offset, b.limit)
@@ -113,7 +125,7 @@ function apply(source, scan::Tables.Scan; header::Union{Bool, AbstractVector}=tr
     t2 = isempty(rest) ? nothing :
          K.parse(buf; index=bi, header=names, select=rest,
                  types=Dict(i => T for (i, T) in seedtypes if i in rest),
-                 rowmask=mask, parsekw...)
+                 rowmask=mask, reportstructural=false, phasekw...)
 
     # combine: phase-1 columns compact under the same mask; phase-2 columns are
     # already compact
@@ -131,11 +143,8 @@ function apply(source, scan::Tables.Scan; header::Union{Bool, AbstractVector}=tr
             cols[o] = Tables.getcolumn(Tables.columns(t2), names[c.index])
         end
     end
-    problems = vcat(K.problems(t1), t2 === nothing ? K.Problem[] : K.problems(t2))
-    sort!(problems, by=p -> (p.row, p.col, p.pos))
-    t = K.ParsedTable(outnames, cols, length(kept), problems,
-                      t1.droppedproblems + (t2 === nothing ? 0 : t2.droppedproblems))
-    return (t, Tables.EMPTYSCAN)
+    t = K.ParsedTable(outnames, cols, length(kept), K.Problem[], 0)
+    return (_finishproblems(t, maxproblems, on_error, headerlog, t1, t2), Tables.EMPTYSCAN)
 end
 
 # keep only the first `limit` trues after skipping `offset` trues
@@ -164,6 +173,29 @@ function _project(t::K.ParsedTable, b::Tables.BoundScan, names::Vector{Symbol})
     cols = AbstractVector[K.columns(t)[lookup[names[c.index]]] for c in b.columns]
     return K.ParsedTable([c.name for c in b.columns], cols, t.nrows,
                          K.problems(t), t.droppedproblems)
+end
+
+function _finishproblems(t::K.ParsedTable, maxproblems::Int, on_error::Symbol,
+                         headerlog::K.ProblemLog, phases...)
+    items = copy(headerlog.items)
+    dropped = headerlog.dropped
+    for phase in phases
+        phase === nothing && continue
+        append!(items, K.problems(phase))
+        dropped += phase.droppedproblems
+    end
+    sort!(items; by=K.problemkey)
+    firstproblem = isempty(items) ? nothing : first(items)
+    nkeep = min(length(items), maxproblems)
+    dropped += length(items) - nkeep
+    resize!(items, nkeep)
+    if on_error === :error && firstproblem !== nothing
+        nproblems = length(items) + dropped
+        p = firstproblem
+        throw(ErrorException("CSVKernel: $(p.kind) at data row $(p.row), column $(p.col): $(p.message)" *
+                             (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
+    end
+    return K.ParsedTable(K.names(t), K.columns(t), t.nrows, items, dropped)
 end
 
 end # module KernelScan

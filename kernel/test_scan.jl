@@ -105,6 +105,34 @@ end
     @test any(p -> p.row == 3 && p.col == 1, K.problems(t2))        # row 3 in INPUT numbering
 end
 
+@testset "problem streams merge once under the global cap" begin
+    dirty = "a,b\nbad,1\n1,bad\n2,2\n"
+    scan = T.Scan(select = (:a => Int64, :b => Int64), filter = T.col(:a) > 0)
+    for cap in 0:3
+        t = S.read(dirty, scan; maxproblems=cap, chunkbytes=5, parallel=true)
+        @test length(K.problems(t)) == min(cap, 2)
+        @test t.droppedproblems == 2 - min(cap, 2)
+        @test issorted(K.problems(t); by=K.problemkey)
+    end
+
+    ragged = "a,b\n1\n2,x\n"
+    t = S.read(ragged, T.Scan(select=:b, filter=T.col(:a) > 0); chunkbytes=5)
+    @test count(p -> p.kind == :short_row, K.problems(t)) == 1
+
+    malformed = "\"bad,header\na,b\n"
+    ref = K.parse(malformed; chunkbytes=2, parallel=false)
+    t = S.read(malformed, T.Scan(); chunkbytes=2, parallel=false)
+    @test K.names(t) == K.names(ref)
+    @test K.problemkey.(K.problems(t)) == K.problemkey.(K.problems(ref))
+
+    commentonly = "#\"unterminated"
+    ref = K.parse(commentonly; comment="#", chunkbytes=2)
+    t = S.read(commentonly, T.Scan(); comment="#", chunkbytes=2)
+    @test K.problemkey.(K.problems(t)) == K.problemkey.(K.problems(ref))
+    @test_throws ErrorException S.read(malformed, T.Scan(); maxproblems=0,
+                                       on_error=:error, chunkbytes=2)
+end
+
 @testset "masked stitch preserves compact positions and escaped strings" begin
     prows = ["$(i)," * (i <= 20 ? "" : "value_$(i % 3)") for i in 1:80]
     pcsv = "id,s\n" * join(prows, "\n") * "\n"
@@ -160,6 +188,9 @@ end
     @test_throws ArgumentError S.read(csv, T.Scan(select = :nope))
     @test_throws ArgumentError S.read(csv, T.Scan(select = (:qty => Int64, :qty => Float64)))
     @test_throws ArgumentError S.read(csv, T.Scan(select = :region); types=Dict(:qty => Int64))
+    @test_throws ArgumentError S.read(csv, T.Scan(); limit=3)
+    @test_throws ArgumentError S.read(csv, T.Scan(); rowmask=fill(true, 2_000))
+    @test_throws ArgumentError S.read(csv, T.Scan(); index=nothing)
     # validate=false: unmatched reference quietly drops
     t = S.read(csv, T.Scan(select = (:nope, :qty), validate = false))
     @test K.names(t) == [:qty]
