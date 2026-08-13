@@ -10,7 +10,7 @@
 # correctness claim (determinism for any chunk geometry), so it is tested
 # exhaustively rather than incidentally.
 
-using Test, Random, Dates, Tables
+using Test, Random, Dates, Tables, Parsers
 
 isdefined(Main, :CSVKernel) || include(joinpath(@__DIR__, "core.jl"))
 using .CSVKernel
@@ -37,21 +37,32 @@ function rawrows(buf::Vector{UInt8}, bi::K.BufferIndex)
     return out
 end
 
+indexsnapshot(buf, bi) =
+    (; rows=rawrows(buf, bi), nrows=bi.nrows, unclosedquote=bi.unclosedquote)
+
 # Index `input` every way the kernel supports for this dialect, asserting all ways
 # agree, and return the (single) raw-rows result.
 function idxall(input::AbstractString; chunks=(3, 7, 16, 64), kw...)
     buf = Vector{UInt8}(codeunits(input))
     d = K.Dialect(; kw...)
-    variants = Vector{Pair{String, Vector{Vector{String}}}}()
-    push!(variants, "scalar/seq" => rawrows(buf, K.index(buf, d; parallel=false, fastindex=false)))
+    variants = Pair{String, Any}[]
+    push!(variants, "scalar/seq" =>
+          indexsnapshot(buf, K.index(buf, d; parallel=false, fastindex=false)))
     if K.swareligible(d)
-        push!(variants, "swar/seq" => rawrows(buf, K.index(buf, d; parallel=false, fastindex=true)))
+        push!(variants, "swar/seq" =>
+              indexsnapshot(buf, K.index(buf, d; parallel=false, fastindex=true)))
     end
     if K.parityclean(d)
         for cb in chunks
-            push!(variants, "scalar/par$cb" => rawrows(buf, K.index(buf, d; parallel=true, chunkbytes=cb, fastindex=false)))
+            push!(variants, "scalar/seq$cb" =>
+                  indexsnapshot(buf, K.index(buf, d; parallel=false, chunkbytes=cb, fastindex=false)))
+            push!(variants, "scalar/par$cb" =>
+                  indexsnapshot(buf, K.index(buf, d; parallel=true, chunkbytes=cb, fastindex=false)))
             if K.swareligible(d)
-                push!(variants, "swar/par$cb" => rawrows(buf, K.index(buf, d; parallel=true, chunkbytes=cb, fastindex=true)))
+                push!(variants, "swar/seq$cb" =>
+                      indexsnapshot(buf, K.index(buf, d; parallel=false, chunkbytes=cb, fastindex=true)))
+                push!(variants, "swar/par$cb" =>
+                      indexsnapshot(buf, K.index(buf, d; parallel=true, chunkbytes=cb, fastindex=true)))
             end
         end
     end
@@ -60,7 +71,30 @@ function idxall(input::AbstractString; chunks=(3, 7, 16, 64), kw...)
         @test got == ref
         got == ref || @info "structural mismatch" input label got ref
     end
-    return ref
+    return ref.rows
+end
+
+function detecttype_fullcascade(value::AbstractString, opts::Parsers.Options)
+    buf = Vector{UInt8}(codeunits(value))
+    isempty(buf) && return Missing
+    stop = length(buf)
+    sres = K.xparsestring(buf, 1, stop, opts)
+    Parsers.sentinel(sres.code) && sres.tlen == stop && return Missing
+    for T in (Int64, Float64, Date, DateTime, Time, Bool)
+        res = Parsers.xparse(T, buf, 1, stop, opts)
+        if Parsers.ok(res.code)
+            Parsers.sentinel(res.code) && return Missing
+            res.tlen == stop && return T
+        end
+    end
+    return String
+end
+
+function tablesnapshot(t::K.ParsedTable)
+    probs = [(p.row, p.col, p.pos, p.kind, p.message) for p in K.problems(t)]
+    return (; names=K.names(t), types=map(eltype, K.columns(t)),
+            values=map(collect, K.columns(t)), nrows=t.nrows,
+            problems=probs, droppedproblems=t.droppedproblems)
 end
 
 # ---------------------------------------------------------------------------
@@ -279,6 +313,35 @@ end
     # the letter fast-out cannot hide a numeric overlap.
     @test eltype(K.parse("a\nfalse\n\"1\"\n"; nsample=1)[:a]) == String
 
+    # The letter-led fast path must match the original full cascade for custom
+    # Bool spellings, explicit date formats, numeric special values, custom
+    # decimal bytes, and quoted fields.
+    defaultopts = K.makeoptions(K.Dialect())
+    boolopts = K.makeoptions(K.Dialect(); truestrings=["yes"], falsestrings=["no"])
+    dateopts = K.makeoptions(K.Dialect(); dateformat="u dd yyyy",
+                             truestrings=["yes"], falsestrings=["no"])
+    decimalopts = K.makeoptions(K.Dialect(delim=';'); decimal='x')
+    cases = (("yes", boolopts), ("no", boolopts), ("yellow", boolopts),
+             ("Jan 02 2024", dateopts),
+             ("Inf", defaultopts), ("-Inf", defaultopts),
+             ("NaN", defaultopts), ("nan", defaultopts),
+             ("x5", decimalopts), ("\"yes\"", boolopts),
+             ("\"yellow\"", boolopts))
+    for (value, caseopts) in cases
+        buf = Vector{UInt8}(codeunits(value))
+        @test K.detecttype(buf, 1, length(buf), caseopts) ===
+              detecttype_fullcascade(value, caseopts)
+    end
+    @test K.detecttype(Vector{UInt8}(codeunits("yes")), 1, 3, boolopts) === Bool
+    @test K.detecttype(Vector{UInt8}(codeunits("no")), 1, 2, boolopts) === Bool
+    @test dateopts.dateformat !== nothing
+    @test K.detecttype(Vector{UInt8}(codeunits("Jan 02 2024")), 1, 11, dateopts) === Date
+    for b in UInt8['i', 'I', 'n', 'N']
+        @test !K._letterfastout(b, defaultopts)
+    end
+    @test !K._letterfastout(UInt8('x'), decimalopts)
+    @test !K._letterfastout(UInt8('"'), boolopts)
+
     # Pin the prefix guard against the full detection cascade for custom formats.
     # Numeric date spellings classify as Int64. Textual month spellings classify
     # as Date even when DateTime or a custom Bool spelling also accepts them.
@@ -325,6 +388,7 @@ end
     @test K.sampletypes(buf, bi.chunks, 1, opts; nsample=2) == [Float64]
     @test_throws ArgumentError K.sampletypes(buf, bi.chunks, 1, opts; nsample=0)
     @test_throws ArgumentError K.parse("a\n1\n"; types=Int64, nsample=0)
+    @test_throws ArgumentError K.parse("a\n1\n"; chunkbytes=0)
 end
 
 @testset "typed: user-provided types" begin
@@ -528,6 +592,37 @@ end
     # A CSV column name takes priority over RowView's private storage fields.
     row = first(E.rows("r,rownumber\nvalue,7\n"))
     @test row.r == "value" && row.rownumber == "7"
+end
+
+@testset "sequential multi-chunk driver parity" begin
+    input = "i,mix,txt,strict\n" *
+            "1,1,alpha,10\n" *
+            "2,2,\"line\nbreak\",bad\n" *
+            "3,3.5,beta,30,extra\n" *
+            "4,,\"gamma,delta\",40\n" *
+            "5,word,zeta\n" *
+            "6,6,eta,60\n"
+    kw = (; types=Dict(:strict => Int64), nsample=1, maxproblems=2)
+    buf = Vector{UInt8}(codeunits(input))
+    @test length(K.index(buf; chunkbytes=7, parallel=false).chunks) > 1
+    seq = K.parse(buf; chunkbytes=7, parallel=false, kw...)
+    par = K.parse(buf; chunkbytes=7, parallel=true, kw...)
+    one = K.parse(buf; chunkbytes=length(buf) + 1, parallel=false, kw...)
+    @test isequal(tablesnapshot(seq), tablesnapshot(par))
+    @test isequal(tablesnapshot(seq), tablesnapshot(one))
+    @test K.names(seq) == [:i, :mix, :txt, :strict]
+    @test seq.nrows == 6
+    @test eltype(seq[:mix]) == Union{String, Missing}
+    @test seq.droppedproblems == 1
+
+    malformed = "a\n\"unclosed"
+    malformedseq = K.parse(malformed; types=String, chunkbytes=3, parallel=false)
+    malformedpar = K.parse(malformed; types=String, chunkbytes=3, parallel=true)
+    malformedone = K.parse(malformed; types=String,
+                           chunkbytes=ncodeunits(malformed) + 1, parallel=false)
+    @test isequal(tablesnapshot(malformedseq), tablesnapshot(malformedpar))
+    @test isequal(tablesnapshot(malformedseq), tablesnapshot(malformedone))
+    @test any(p -> p.kind == :unclosed_quote, K.problems(malformedseq))
 end
 
 @testset "determinism & moderate volume" begin

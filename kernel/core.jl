@@ -31,8 +31,9 @@ The pipeline (and the file's layout) is:
                         string columns as lazy views into the input buffer
                         (unescaped on access), sized exactly (the index gives exact
                         row counts — no rowsguess, no reallocation).
-    L5  driver        : `CSVKernel.parse` — eager parallel table materialization
-                        with problems-as-data. `examples.jl` builds batched
+    L5  driver        : `CSVKernel.parse` — eager typed table materialization
+                        with task or plain-loop execution and problems-as-data.
+                        `examples.jl` builds batched
                         (CSV.Chunks-like) and row-streaming (CSV.Rows-like) modes
                         on the same pieces.
 
@@ -509,7 +510,8 @@ function index(buf::Vector{UInt8}, d::Dialect;
                fastindex::Bool=true)
     len = length(buf)
     # No lower bound beyond 1: tests deliberately use tiny chunkbytes to force row
-    # boundaries everywhere; production defaults keep chunks cache-sized (~8 MiB).
+    # boundaries everywhere. The standalone index default is 8 MiB; `parse`
+    # passes its size-aware 64 KiB–1 MiB default.
     chunkbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $chunkbytes)"))
     datastart >= 1 || throw(ArgumentError("datastart must be ≥ 1 (got $datastart)"))
     datastart > len && return BufferIndex(ChunkIndex[], 0, false)
@@ -527,8 +529,15 @@ function index(buf::Vector{UInt8}, d::Dialect;
     entry = falses(nranges)
     if nranges > 1
         par = Vector{Bool}(undef, nranges)
-        @sync for i in 1:nranges
-            Threads.@spawn begin
+        if parallel
+            @sync for i in 1:nranges
+                errormonitor(Threads.@spawn begin
+                    to = i == nranges ? len : starts[i + 1] - 1
+                    par[i] = quoteparity(buf, starts[i], to, d)
+                end)
+            end
+        else
+            for i in 1:nranges
                 to = i == nranges ? len : starts[i + 1] - 1
                 par[i] = quoteparity(buf, starts[i], to, d)
             end
@@ -544,8 +553,14 @@ function index(buf::Vector{UInt8}, d::Dialect;
     bounds = Vector{Int}(undef, nranges)
     bounds[1] = datastart
     if nranges > 1
-        @sync for i in 2:nranges
-            Threads.@spawn begin
+        if parallel
+            @sync for i in 2:nranges
+                errormonitor(Threads.@spawn begin
+                    bounds[i] = nextrowstart(buf, starts[i], len, d, entry[i])
+                end)
+            end
+        else
+            for i in 2:nranges
                 bounds[i] = nextrowstart(buf, starts[i], len, d, entry[i])
             end
         end
@@ -571,7 +586,8 @@ function index(buf::Vector{UInt8}, d::Dialect;
         end
     else
         @sync for ci in chunks
-            Threads.@spawn (useswar ? indexchunk_swar!(ci, buf, d) : indexchunk_scalar!(ci, buf, d))
+            errormonitor(Threads.@spawn (useswar ? indexchunk_swar!(ci, buf, d) :
+                                                   indexchunk_scalar!(ci, buf, d)))
         end
     end
 
@@ -1096,9 +1112,13 @@ end
     CSVKernel.parse(str::AbstractString; kwargs...)
     CSVKernel.parse(io::IO; kwargs...)
 
-Eagerly parse delimited data: index in parallel, infer types from a stratified
-sample, then parse each column of each chunk in a monomorphic loop, promoting
-per-column on conflict. The default records malformed data as problems;
+Eagerly parse delimited data: build a row-aligned index, infer types from a
+stratified sample, then parse each column of each chunk in a monomorphic loop,
+promoting per-column on conflict. `parallel` selects tasks or plain loops without
+changing the chunk layout. The default `chunkbytes` is
+`clamp(cld(length(buf), 2 * Threads.nthreads()), 64 KiB, 1 MiB)`; the default
+`nsample` is `clamp(ndata >> 6, 8, 128)`. Explicit values override both defaults.
+The default records malformed data as problems;
 `on_error=:error` escalates the source-earliest problem after parsing.
 
 Keywords: `delim`, `quotechar`, `openquotechar`/`closequotechar`, `escapechar`,
@@ -1219,8 +1239,8 @@ function parse(buf::Vector{UInt8};
     coltypes = Type[T for T in seed]
 
     # -- parse waves with per-column promotion --------------------------------
-    # Wave: parse every (chunk × column) in parallel (one task per chunk; the
-    # per-column dispatch inside is the once-per-column-chunk dynamic call).
+    # Wave: parse every (chunk × column), using one task per chunk when
+    # parallel. The per-column dispatch inside is the once-per-column-chunk call.
     # Conflicted columns promote and re-parse — only those columns — next wave.
     storage = Vector{Any}(undef, ncols)
     dirty = trues(ncols)   # all columns need (re)allocation+parse in wave 1
@@ -1236,16 +1256,20 @@ function parse(buf::Vector{UInt8};
             storage[j] = allocatecolumn(coltypes[j], ndata, buf, opts.e, d.cq)
         end
         fill!(dirty, false)
-        # One task per chunk; a single-chunk file (small input or parallel=false)
-        # runs inline to skip task-spawn overhead on the tiny-file path.
-        if length(chunks) == 1
-            parsechunkcols!(chunks[1], 0, todo, coltypes, storage, buf, opts,
-                            userprovided, log, promo, dirty, promolock)
+        # Single-chunk and sequential parses run inline. Parallel multi-chunk
+        # parses use one task per chunk.
+        if length(chunks) == 1 || !parallel
+            for ci in chunks
+                rb = chunkrowbase(chunks, ci)
+                parsechunkcols!(ci, rb, todo, coltypes, storage, buf, opts,
+                                userprovided, log, promo, dirty, promolock)
+            end
         else
             @sync for ci in chunks
                 rb = chunkrowbase(chunks, ci)
-                Threads.@spawn parsechunkcols!(ci, rb, todo, coltypes, storage, buf, opts,
-                                               userprovided, log, promo, dirty, promolock)
+                errormonitor(Threads.@spawn parsechunkcols!(ci, rb, todo, coltypes,
+                                                            storage, buf, opts, userprovided,
+                                                            log, promo, dirty, promolock))
             end
         end
     end
