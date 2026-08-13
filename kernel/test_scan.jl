@@ -99,6 +99,17 @@ end
     gscan = T.Scan(filter = T.col(:n) > 1000)
     tg = S.read(gcsv, gscan; delim=';', groupmark=',')
     @test tg[:n] == [1234, 5678] && collect(tg[:a]) == ["x", "z"]
+
+    # ignorerepeated flows through both phases of the masked parse
+    padded = "region   qty\n  east   10\nwest  30 \n east    40\n"
+    irkw = (delim=' ', ignorerepeated=true)
+    irscan = T.Scan(select = (:region,), filter = T.col(:qty) > 25)
+    ref = T.finish(K.parse(padded; irkw...), irscan)
+    for cb in (8, 1 << 20), par in (false, true)
+        t = S.read(padded, irscan; chunkbytes=cb, parallel=par, irkw...)
+        @test sametable(t, ref)
+        @test collect(String, t[:region]) == ["west", "east"]
+    end
 end
 
 @testset "masked inference: excluded garbage cannot degrade a type (pinned divergence)" begin

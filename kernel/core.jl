@@ -78,6 +78,7 @@ struct Dialect
     quoted::Bool                        # false = no quote handling at all
     comment::Union{Nothing, Vector{UInt8}}  # rows beginning with these bytes are dropped
     ignoreemptyrows::Bool
+    ignorerepeated::Bool                # adjacent delimiters collapse into one boundary
 end
 
 const LF = UInt8('\n')
@@ -90,7 +91,8 @@ function Dialect(; delim::Union{Char, String}=',',
                    escapechar::Union{Char, Nothing}=nothing,
                    quoted::Bool=true,
                    comment::Union{String, Nothing}=nothing,
-                   ignoreemptyrows::Bool=true)
+                   ignoreemptyrows::Bool=true,
+                   ignorerepeated::Bool=false)
     isempty(delim) && throw(ArgumentError("delimiter must be non-empty"))
     d = delim isa Char ? (isascii(delim) ? delim % UInt8 : Vector{UInt8}(string(delim))) :
         sizeof(delim) == 1 ? codeunit(delim, 1) : Vector{UInt8}(delim)
@@ -111,7 +113,7 @@ function Dialect(; delim::Union{Char, String}=',',
           isempty(comment) ? throw(ArgumentError("comment must be non-empty")) : Vector{UInt8}(comment)
     cmt !== nothing && (LF in cmt || CR in cmt) &&
         throw(ArgumentError("comment may not contain \\r or \\n"))
-    return Dialect(d, oq, cq, e, quoted, cmt, ignoreemptyrows)
+    return Dialect(d, oq, cq, e, quoted, cmt, ignoreemptyrows, ignorerepeated)
 end
 
 # Quote-toggle parity composes across arbitrary byte ranges only when a quote byte
@@ -460,6 +462,8 @@ mutable struct ChunkIndex
     start::Int                  # absolute (1-based) byte offset of the chunk in buf
     stop::Int                   # absolute offset of the chunk's last byte
     tape::Vector{UInt32}        # (relpos << 2) | kind, one per field-closing event
+    ext::Vector{UInt32}         # ignorerepeated only (else empty): extra delimiters
+                                # each kept delimiter event swallowed (its run - 1)
     rowfirst::Vector{Int32}     # rowfirst[r]..rowfirst[r+1]-1 index `tape` for row r
     rowstartrel::Vector{UInt32} # chunk-relative byte offset of each surviving row's start
     delimskip::Int              # bytes a delimiter event consumes (multi-byte delims)
@@ -468,7 +472,7 @@ mutable struct ChunkIndex
 end
 
 ChunkIndex(start::Int, stop::Int) =
-    ChunkIndex(start, stop, UInt32[], Int32[1], UInt32[], 1, 1, false)
+    ChunkIndex(start, stop, UInt32[], UInt32[], Int32[1], UInt32[], 1, 1, false)
 
 nrows(ci::ChunkIndex) = length(ci.rowfirst) - 1 - (ci.firstdatarow - 1)
 totalrows(ci::ChunkIndex) = length(ci.rowfirst) - 1
@@ -490,7 +494,10 @@ nfields(ci::ChunkIndex, localrow::Int) = Int(ci.rowfirst[localrow + 1] - ci.rowf
     else
         @inbounds e = ci.tape[fi - 1]
         k = e & 0x03
-        s = ci.start + Int(e >> 2) + (k == 0x00 ? Int(ci.delimskip) : Int(k))
+        skip = Int(ci.delimskip)
+        # ignorerepeated: the previous event closed a run of 1 + ext delimiters
+        k == 0x00 && !isempty(ci.ext) && (skip += skip * Int(@inbounds ci.ext[fi - 1]))
+        s = ci.start + Int(e >> 2) + (k == 0x00 ? skip : Int(k))
     end
     return (s, stop - s + 1)
 end
@@ -527,6 +534,7 @@ end
 # (optionally) empty rows, records each surviving row's start offset, and builds
 # rowfirst. Reads input bytes only at row starts (comment prefix check).
 function assemblerows!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int)
+    d.ignorerepeated && return assemblecollapsed!(ci, buf, d, n)
     tape = ci.tape
     ci.delimskip = d.delim isa UInt8 ? 1 : length(d.delim::Vector{UInt8})
     rowfirst = ci.rowfirst
@@ -580,6 +588,92 @@ function assemblerows!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int)
         end
     end
     resize!(tape, w)
+    return ci
+end
+
+# `assemblerows!` under ignorerepeated: adjacent delimiter events collapse into
+# one field boundary. The kept event is the run's FIRST delimiter (so the field
+# before it stops cleanly) and `ext[w]` records how many extra delimiters the
+# run swallowed (so `fieldspan` starts the next field past the whole run). A
+# run at the row start is pure padding — it advances the row's field start and
+# emits nothing. A run touching the row end collapses into it: the kept run
+# event is dropped and the row-end event takes the run's first-delimiter
+# position, excluding the padding from the last field (its kind bits are
+# unread past assembly — only its relpos is, as that field's stop).
+# Hygiene still reads the RAW row start: an all-delimiter row is one empty
+# field (a short row), NOT an empty row, and comment bytes only match at the
+# true line start ("  #x" is data). Both pinned against CSV.jl.
+function assemblecollapsed!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int)
+    tape = ci.tape
+    skip = ci.delimskip = d.delim isa UInt8 ? 1 : length(d.delim::Vector{UInt8})
+    ext = ci.ext
+    length(ext) < n && resize!(ext, n)
+    rowfirst = ci.rowfirst
+    rowstartrel = ci.rowstartrel
+    resize!(rowfirst, 1); @inbounds rowfirst[1] = Int32(1)
+    empty!(rowstartrel)
+    cmt = d.comment
+    w = 0
+    roweventw = 1          # tape index where the current row's events begin
+    rowstart = ci.start    # RAW row start: hygiene (comment / empty-row) anchor
+    fieldstart = ci.start  # row start advanced past leading delimiter padding
+    runend = 0             # absolute byte just past the last kept event's run
+    i = 1
+    @inbounds while i <= n
+        e = tape[i]
+        k = e & 0x03
+        if k == 0x00                       # delimiter
+            pos = ci.start + Int(e >> 2)
+            if w < roweventw && pos == fieldstart
+                fieldstart = pos + skip    # leading padding: no boundary yet
+            elseif w >= roweventw && (tape[w] & 0x03) == 0x00 && pos == runend
+                ext[w] += UInt32(1)        # extends the previous run
+            else
+                w += 1
+                tape[w] = e
+                ext[w] = UInt32(0)
+            end
+            runend = pos + skip
+            i += 1
+        else                               # CR or LF: row end (pair CRLF)
+            pos = ci.start + Int(e >> 2)
+            skip2 = k == 0x01 && i < n && (tape[i + 1] & 0x03) == 0x02 &&
+                    Int(tape[i + 1] >> 2) == Int(e >> 2) + 1
+            endrel = e & ~UInt32(0x03)
+            if w >= roweventw && (tape[w] & 0x03) == 0x00 && pos == runend
+                endrel = tape[w] & ~UInt32(0x03)   # trailing padding: run folds
+                w -= 1                             # into the row end
+            end
+            w += 1
+            tape[w] = endrel | (skip2 ? UInt32(2) : UInt32(1))
+            ext[w] = UInt32(0)
+            i += skip2 ? 2 : 1
+            nextrow = pos + (skip2 ? 2 : 1)
+            drop = false
+            if d.ignoreemptyrows && w == roweventw && pos == rowstart
+                drop = true                # a row that is zero bytes
+            elseif cmt !== nothing && rowstart + length(cmt) - 1 <= length(buf)
+                match = true
+                for c in eachindex(cmt)
+                    if buf[rowstart + c - 1] != cmt[c]
+                        match = false
+                        break
+                    end
+                end
+                drop = match
+            end
+            if drop
+                w = roweventw - 1
+            else
+                push!(rowstartrel, UInt32(fieldstart - ci.start))
+                push!(rowfirst, Int32(w + 1))
+                roweventw = w + 1
+            end
+            rowstart = fieldstart = nextrow
+        end
+    end
+    resize!(tape, w)
+    resize!(ext, w)
     return ci
 end
 
@@ -1981,7 +2075,7 @@ The default records malformed data as problems;
 `on_error=:error` escalates the source-earliest problem after parsing.
 
 Keywords: `delim`, `quotechar`, `openquotechar`/`closequotechar`, `escapechar`,
-`quoted`, `comment`, `ignoreemptyrows`, `header` (true | false | Vector), `types`
+`quoted`, `comment`, `ignoreemptyrows`, `ignorerepeated`, `header` (true | false | Vector), `types`
 (Type | Vector | Dict), `dateformat`, `decimal`, `truestrings`/`falsestrings`,
 `stripwhitespace`, `groupmark`, `pool`, `chunkbytes`, `parallel`, `fastindex`, `scanner`
 (:auto | :vec | :swar | :scalar), `maxproblems`,

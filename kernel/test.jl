@@ -245,6 +245,47 @@ end
     @test_throws ArgumentError K.index(UInt8[0x61], K.Dialect(); datastart=0)
 end
 
+@testset "structural: ignorerepeated" begin
+    # Semantics pinned against CSV.jl (kernel/probe_ignorerepeated.jl):
+    # runs collapse, leading runs are consumed, trailing runs fold into the row
+    # end (also at EOF and before CRLF), an all-delimiter row is ONE empty field
+    # (a short row, not an empty row), and comments only match at the raw line
+    # start — "  #x" is data.
+    sp = (delim=' ', ignorerepeated=true)
+    @test idxall("a b\n1 2\n"; sp...)        == [["a","b"], ["1","2"]]
+    @test idxall("a  b\n1   2\n"; sp...)     == [["a","b"], ["1","2"]]
+    @test idxall("  a b\n   1 2\n"; sp...)   == [["a","b"], ["1","2"]]
+    @test idxall("a b \n1 2  \n"; sp...)     == [["a","b"], ["1","2"]]
+    @test idxall("a b\n1 2   "; sp...)       == [["a","b"], ["1","2"]]
+    @test idxall("1 2 \r\n3 4  \r\n"; sp...) == [["1","2"], ["3","4"]]
+    @test idxall("   a   b   \r\n"; sp...)   == [["a","b"]]
+    @test idxall("a b\n   \n1 2\n"; sp...)   == [["a","b"], [""], ["1","2"]]
+    @test idxall("   "; sp...)               == [[""]]
+    @test idxall("a b\n  #x\n1 2\n"; sp..., comment="#") == [["a","b"], ["#x"], ["1","2"]]
+    @test idxall("#x\na b\n"; sp..., comment="#")        == [["a","b"]]
+    @test idxall("\n \n"; sp..., ignoreemptyrows=false)  == [[""], [""]]
+    @test idxall("\n \n"; sp...)             == [[""]]   # " " is not byte-empty
+    # quotes: padding is structural only outside them; quoted empties survive
+    @test idxall("\"x  y\" 2\n"; sp...)      == [["\"x  y\"","2"]]
+    @test idxall("\"\"  2\n"; sp...)         == [["\"\"","2"]]
+    @test idxall("\"a\"  \"b\"\n"; sp...)    == [["\"a\"","\"b\""]]
+    @test idxall("  \"a\" b\n"; sp...)       == [["\"a\"","b"]]
+    # other delimiters: comma, tab, multi-byte (scalar path)
+    @test idxall("a,,b\n,1,,2,\n"; ignorerepeated=true)  == [["a","b"], ["1","2"]]
+    @test idxall("a\t\tb\n1\t\t\t2\n"; delim='\t', ignorerepeated=true) == [["a","b"], ["1","2"]]
+    @test idxall("a::::b\n1::2\n"; delim="::", ignorerepeated=true)     == [["a","b"], ["1","2"]]
+    @test idxall("::a::b::::\n1::2::::"; delim="::", ignorerepeated=true) == [["a","b"], ["1","2"]]
+    @test idxall("a:::b\n"; delim="::", ignorerepeated=true) == [["a",":b"]]  # odd byte is content
+    # ext bookkeeping: populated only under the flag, run lengths exact
+    buf = Vector{UInt8}(codeunits("a   b  c\n"))
+    ci = only(K.index(buf, K.Dialect(delim=' ', ignorerepeated=true); parallel=false).chunks)
+    @test ci.ext == UInt32[2, 1, 0]          # two runs + the row end's slot
+    @test K.fieldspan(ci, 1, 2) == (5, 1)
+    @test K.fieldspan(ci, 1, 3) == (8, 1)
+    ci = only(K.index(buf, K.Dialect(delim=' '); parallel=false).chunks)
+    @test isempty(ci.ext)
+end
+
 @testset "structural: scanner dispatch" begin
     fast = K.Dialect()
     scalaronly = K.Dialect(delim="::")
@@ -731,6 +772,81 @@ end
     asymmetric = K.Dialect(openquotechar='[', closequotechar=']', escapechar='\\')
     for gm in ('[', ']', '\\')
         @test_throws ArgumentError K.makevalueopts(asymmetric; groupmark=gm)
+    end
+end
+
+@testset "typed: ignorerepeated end to end" begin
+    aligned = "  x    y      z\n  1   2.5   true\n 10  -3.25  false\n"
+    for cb in (8, 16, 1 << 20), par in (false, true)
+        t = K.parse(aligned; delim=' ', ignorerepeated=true, chunkbytes=cb, parallel=par)
+        @test K.names(t) == [:x, :y, :z]
+        @test t[:x] == [1, 10]
+        @test t[:y] == [2.5, -3.25]
+        @test t[:z] == [true, false]
+        @test isempty(K.problems(t))
+    end
+    # an all-delimiter data row is a short row of one missing, not a dropped row
+    t = K.parse("a b\n   \n1 2\n"; delim=' ', ignorerepeated=true)
+    @test t.nrows == 2
+    @test isequal(collect(t[:a]), [missing, 1])
+    @test isequal(collect(t[:b]), [missing, 2])
+    @test [(p.row, p.col, p.kind) for p in K.problems(t)] == [(1, 0, :short_row)]
+    # composes with pool, groupmark, select, limit, header choices
+    pooled = "k v\n" * join(("$(iseven(i) ? "ee" : "oo")   $i" for i in 1:50), '\n') * "\n"
+    t = K.parse(pooled; delim=' ', ignorerepeated=true, pool=true, nsample=1, chunkbytes=32)
+    @test t[:k] isa K.PooledColumn
+    @test collect(t[:k])[1:4] == ["oo", "ee", "oo", "ee"]
+    t = K.parse("a b\n1,234  5\n"; delim=' ', ignorerepeated=true, groupmark=',')
+    @test t[:a] == [1234] && t[:b] == [5]
+    t = K.parse(aligned; delim=' ', ignorerepeated=true, select=[:z], limit=1)
+    @test K.names(t) == [:z] && t.nrows == 1 && t[:z] == [true]
+    t = K.parse(" 1  2\n3 4 \n"; delim=' ', ignorerepeated=true, header=false)
+    @test K.names(t) == [:Column1, :Column2] && t[:Column1] == [1, 3]
+    t = K.parse(" 1  2\n"; delim=' ', ignorerepeated=true, header=[:l, :r])
+    @test K.names(t) == [:l, :r] && t.nrows == 1
+
+    # property: padding with runs (leading / between / trailing) parses
+    # identically to the single-delimiter serialization, and the flag itself is
+    # a no-op on unpadded input
+    rng = MersenneTwister(0x16407474)
+    for (delim, dstr) in ((' ', " "), ('\t', "\t"), ("::", "::"))
+        for trial in 1:25
+            nr, nc = rand(rng, 0:7), rand(rng, 1:4)
+            lines = Vector{String}(undef, nr + 1)
+            padlines = similar(lines)
+            for r in 0:nr
+                cells = String[]
+                for c in 1:nc
+                    kind = r == 0 ? 0 : rand(rng, 1:4)
+                    content = if kind == 0
+                        "h$c"
+                    elseif kind == 1
+                        string(rand(rng, -999:999))
+                    elseif kind == 2
+                        join(rand(rng, 'a':'z', rand(rng, 1:6)))
+                    elseif kind == 3
+                        string(rand(rng) * 100)
+                    else
+                        inner = join(rand(rng, ['x', '"', '\n', ',', ' ', ':'], rand(rng, 0:5)))
+                        "\"" * replace(inner, "\"" => "\"\"") * "\""
+                    end
+                    push!(cells, content)
+                end
+                lines[r + 1] = join(cells, dstr)
+                padlines[r + 1] = dstr^rand(rng, 0:2) * join(cells, dstr^rand(rng, 1:3)) *
+                                  dstr^rand(rng, 0:2)
+            end
+            base = join(lines, "\n") * (rand(rng, Bool) ? "\n" : "")
+            padded = join(padlines, "\n") * (rand(rng, Bool) ? "\n" : "")
+            ref = tablesnapshot(K.parse(base; delim=delim, parallel=false))
+            flagonbase = K.parse(base; delim=delim, ignorerepeated=true, parallel=false)
+            @test isequal(tablesnapshot(flagonbase), ref)
+            for cb in (16, 1 << 20), par in (false, true)
+                got = K.parse(padded; delim=delim, ignorerepeated=true,
+                              chunkbytes=cb, parallel=par)
+                @test isequal(tablesnapshot(got), ref)
+            end
+        end
     end
 end
 

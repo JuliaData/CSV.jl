@@ -40,7 +40,7 @@ function read(source, scan::Tables.Scan; kw...)
 end
 
 const _DIALECTKW = (:delim, :quotechar, :openquotechar, :closequotechar, :escapechar,
-                    :quoted, :comment, :ignoreemptyrows)
+                    :quoted, :comment, :ignoreemptyrows, :ignorerepeated)
 
 function apply(source, scan::Tables.Scan; header::Union{Bool, AbstractVector}=true,
                chunkbytes::Union{Nothing, Int}=nothing, kw...)
