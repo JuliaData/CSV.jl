@@ -197,6 +197,13 @@ end
         @test occursin("data row 1, column 1", sprint(showerror, err))
     end
     @test K.parse(bad; types=Int64, limit=0, on_error=:error).nrows == 0
+
+    unclosed = "a\n1\n2\n\"unterminated"
+    for lim in 0:2
+        @test isempty(K.problems(K.parse(unclosed; limit=lim, chunkbytes=100)))
+    end
+    @test any(p -> p.kind == :unclosed_quote,
+              K.problems(K.parse(unclosed; limit=3, chunkbytes=100)))
 end
 
 @testset "limit preserves full-parse inference without parsing excluded values" begin
