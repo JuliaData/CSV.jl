@@ -693,25 +693,258 @@ struct TypedColumn{T}
 end
 TypedColumn{T}(n::Int) where {T} = TypedColumn{T}(Vector{T}(undef, n), fill(false, n))
 
-# String cells stay in the buffer until someone looks at them. We store the
-# *content* span Parsers reports (quotes stripped) plus whether it contains escape
-# sequences; getindex materializes — and unescapes — on access. `len == -1` marks
-# missing so no separate presence vector is needed.
-struct StrSpan
-    pos::Int64
-    len::Int32
-    escaped::Bool
+# --- inline-else-view strings (the "German strings" / Arrow StringView layout) --
+#
+# Every string cell is one 16-byte payload:
+#   a: bits 0..31 = content length as Int32 (-1 ⇒ missing);
+#      bits 32..63 = content bytes 1..4 (the full bytes when inline, the PREFIX
+#      when a view — prefixes make equality's fast path branch-free)
+#   b: len ≤ 12 ⇒ content bytes 5..12 (zero-padded);
+#      len > 12 ⇒ Int64 byte offset of the content: positive into the input
+#      buffer (zero copy), negative into the column's `extra` buffer (escaped
+#      values are unescaped once at parse time and stored there)
+# Byte packing is by explicit shifts, so the layout is endianness-independent.
+# This maps 1:1 onto Arrow's StringView (12-byte inline, 4-byte prefix; Arrow's
+# int32 buffer offsets correspond to the production plan's <2 GiB chunk-owned
+# buffers) — the strategic bet: string columns that hand off to Arrow zero-copy.
+struct KStrPayload
+    a::UInt64
+    b::UInt64
 end
-const STR_MISSING = StrSpan(0, Int32(-1), false)
+const PAYLOAD_MISSING = KStrPayload(UInt64(0xffffffff), zero(UInt64))
+const KSTR_INLINE = 12
+const EMPTY_BYTES = UInt8[]
 
+@inline kstrlen(p::KStrPayload) = reinterpret(Int32, p.a % UInt32)
+@inline kstroff(p::KStrPayload) = reinterpret(Int64, p.b)
+
+# Two overlapping little-endian loads gather up to 12 content bytes branch-free;
+# the byte-loop fallback only runs within 11 bytes of the buffer's end (loads
+# must not read past it). This sits on the hot path of every short string cell.
+@inline function inline_payload(src::Vector{UInt8}, pos::Int, len::Int)
+    if pos + 11 <= length(src)
+        GC.@preserve src begin
+            p = pointer(src, pos)
+            lo = ltoh(unsafe_load(Ptr{UInt64}(p)))           # content bytes 1..8
+            hi = ltoh(unsafe_load(Ptr{UInt64}(p + 4)))       # content bytes 5..12
+        end
+        m4 = len >= 4 ? 0x00000000ffffffff : (UInt64(1) << (8 * len)) - 1
+        nb = max(len - 4, 0)
+        m8 = nb >= 8 ? typemax(UInt64) : (UInt64(1) << (8 * nb)) - 1
+        return KStrPayload(UInt64(len % UInt32) | ((lo & m4) << 32), hi & m8)
+    end
+    a = UInt64(len % UInt32)
+    b = zero(UInt64)
+    @inbounds for i in 1:min(len, 4)
+        a |= UInt64(src[pos + i - 1]) << (32 + 8 * (i - 1))
+    end
+    @inbounds for i in 5:len
+        b |= UInt64(src[pos + i - 1]) << (8 * (i - 5))
+    end
+    return KStrPayload(a, b)
+end
+
+# Unescape ≤12 result bytes straight into a payload — no allocation; returns
+# `nothing` when the unescaped content exceeds the inline capacity.
+@inline function _unescape_inline(buf::Vector{UInt8}, pos::Int, len::Int, e::UInt8, cq::UInt8)
+    a = zero(UInt64)
+    b = zero(UInt64)
+    n = 0
+    i = pos
+    last = pos + len - 1
+    @inbounds while i <= last
+        c = buf[i]
+        if c == e && i < last && (e != cq || buf[i + 1] == cq)
+            c = e == cq ? cq : buf[i + 1]
+            i += 2
+        else
+            i += 1
+        end
+        n += 1
+        n > KSTR_INLINE && return nothing
+        if n <= 4
+            a |= UInt64(c) << (32 + 8 * (n - 1))
+        else
+            b |= UInt64(c) << (8 * (n - 5))
+        end
+    end
+    return KStrPayload(a | UInt64(n % UInt32), b)
+end
+
+@inline function _unescape_append!(dst::Vector{UInt8}, buf::Vector{UInt8}, pos::Int, len::Int,
+                                   e::UInt8, cq::UInt8)
+    n0 = length(dst)
+    i = pos
+    last = pos + len - 1
+    @inbounds while i <= last
+        c = buf[i]
+        if c == e && i < last && (e != cq || buf[i + 1] == cq)
+            c = e == cq ? cq : buf[i + 1]
+            i += 2
+        else
+            i += 1
+        end
+        push!(dst, c)
+    end
+    return length(dst) - n0
+end
+
+# `off` is the (positive) input-buffer position, or negative for `extra`.
+# len > 12 guarantees the 4-byte prefix load is in-bounds.
+@inline function view_payload(src::Vector{UInt8}, srcpos::Int, len::Int, off::Int64)
+    GC.@preserve src begin
+        pre = ltoh(unsafe_load(Ptr{UInt32}(pointer(src, srcpos))))
+    end
+    a = UInt64(len % UInt32) | (UInt64(pre) << 32)
+    return KStrPayload(a, reinterpret(UInt64, off))
+end
+
+"""
+    KStr <: AbstractString
+
+A kernel string value: 16-byte payload plus the byte vector long values view
+into (a shared empty vector for inline values). Access never allocates —
+comparisons, hashing into Dicts, sorting, and iteration all run over the inline
+bytes or the retained buffer. `String(s)` (or `materialize` on the column)
+copies out. Lifetime: a view pins its buffer, exactly like today's
+`PosLenString` — the production compaction story is `materialize`.
+"""
+struct KStr <: AbstractString
+    p::KStrPayload
+    data::Vector{UInt8}    # dereferenced only when len > KSTR_INLINE
+end
+
+Base.ncodeunits(s::KStr) = Int(kstrlen(s.p))
+Base.codeunit(::KStr) = UInt8
+Base.@propagate_inbounds function Base.codeunit(s::KStr, i::Int)
+    @boundscheck 1 <= i <= ncodeunits(s) || throw(BoundsError(s, i))
+    len = kstrlen(s.p)
+    if len <= KSTR_INLINE
+        return i <= 4 ? (s.p.a >> (32 + 8 * (i - 1))) % UInt8 :
+                        (s.p.b >> (8 * (i - 5))) % UInt8
+    else
+        off = kstroff(s.p)
+        o = off < 0 ? -off : off
+        return @inbounds s.data[o + i - 1]
+    end
+end
+
+Base.isvalid(s::KStr, i::Int) =
+    1 <= i <= ncodeunits(s) && (@inbounds(codeunit(s, i)) & 0xc0) != 0x80
+
+# UTF-8 iteration mirroring `String`'s tolerant behavior: Julia `Char`s ARE the
+# UTF-8 bytes left-aligned in 32 bits, and a malformed sequence yields the bytes
+# consumed so far as an (invalid) Char. Pinned against the String oracle by a
+# randomized test.
+function Base.iterate(s::KStr, i::Int=1)
+    i > ncodeunits(s) && return nothing
+    @inbounds b1 = codeunit(s, i)
+    b1 < 0x80 && return (reinterpret(Char, UInt32(b1) << 24), i + 1)
+    l = b1 < 0xc0 ? 1 : b1 < 0xe0 ? 2 : b1 < 0xf0 ? 3 : b1 < 0xf8 ? 4 : 1
+    n = ncodeunits(s)
+    c = UInt32(b1) << 24
+    j = 1
+    @inbounds while j < l && i + j <= n
+        nb = codeunit(s, i + j)
+        (nb & 0xc0) == 0x80 || break
+        c |= UInt32(nb) << (24 - 8 * j)
+        j += 1
+    end
+    return (reinterpret(Char, c), i + j)
+end
+
+# Base's generic AbstractString length is isvalid-count-based, which undercounts
+# malformed inputs (String yields each bare continuation byte as its own invalid
+# Char). Count by iteration so length/collect agree with the String oracle.
+function Base.length(s::KStr)
+    n = 0
+    for _ in s
+        n += 1
+    end
+    return n
+end
+
+function Base.:(==)(x::KStr, y::KStr)
+    n = ncodeunits(x)
+    n == ncodeunits(y) || return false
+    if n <= KSTR_INLINE
+        return x.p.a == y.p.a && x.p.b == y.p.b   # payload holds the full content
+    end
+    x.p.a == y.p.a || return false                # length + 4-byte prefix reject
+    @inbounds for i in 5:n                        # prefix already compared 1..4
+        codeunit(x, i) == codeunit(y, i) || return false
+    end
+    return true
+end
+# Direct byte comparison against String — Base's generic AbstractString ==
+# decodes chars, which is an order of magnitude slower on this hot path
+# (filtering/grouping compare KStr columns against String literals constantly).
+function Base.:(==)(x::KStr, y::Union{String, SubString{String}})
+    n = ncodeunits(x)
+    n == ncodeunits(y) || return false
+    GC.@preserve x y begin
+        py = pointer(y)
+        if n <= KSTR_INLINE
+            @inbounds for i in 1:n
+                codeunit(x, i) == unsafe_load(py, i) || return false
+            end
+            return true
+        end
+        off = kstroff(x.p)
+        o = off < 0 ? -off : off
+        return ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t),
+                     pointer(x.data, o), py, n) == 0
+    end
+end
+Base.:(==)(y::Union{String, SubString{String}}, x::KStr) = x == y
+
+# Ordering comparisons fall back to Base's generic codeunit-wise `cmp`; hash must
+# agree with `String`'s so mixed Dict{String}/KStr use is sound. Allocating here
+# is the correctness-first choice — the production version shares InlineStrings'
+# memhash approach (which is exactly the private-API exposure CSV.jl #1164 is
+# about, so the kernel does not copy it).
+Base.hash(s::KStr, h::UInt) = hash(String(s), h)
+
+function Base.String(s::KStr)
+    n = ncodeunits(s)
+    if n > KSTR_INLINE
+        # view: one memcpy out of the retained buffer
+        off = kstroff(s.p)
+        o = off < 0 ? -off : off
+        GC.@preserve s begin
+            return unsafe_string(pointer(s.data, o), n)
+        end
+    end
+    out = Vector{UInt8}(undef, n)
+    @inbounds for i in 1:n
+        out[i] = codeunit(s, i)
+    end
+    return String(out)
+end
+Base.convert(::Type{String}, s::KStr) = String(s)
+Base.Symbol(s::KStr) = Symbol(String(s))
+Base.promote_rule(::Type{KStr}, ::Type{String}) = String
+
+function Base.write(io::IO, s::KStr)
+    n = 0
+    @inbounds for i in 1:ncodeunits(s)
+        n += write(io, codeunit(s, i))
+    end
+    return n
+end
+Base.print(io::IO, s::KStr) = (write(io, s); nothing)
+
+# The column builder: payloads + the two buffers views resolve into.
 mutable struct StringColumn
-    spans::Vector{StrSpan}
+    payloads::Vector{KStrPayload}
     buf::Vector{UInt8}
-    e::UInt8            # escape char, needed to unescape on materialization
-    cq::UInt8           # close-quote char (e == cq for RFC ""-doubling)
+    extra::Vector{UInt8}          # unescaped long values (rare); guarded by extralock
+    extralock::ReentrantLock
+    e::UInt8                      # escape char
+    cq::UInt8                     # close-quote char (e == cq for RFC ""-doubling)
 end
 StringColumn(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8) =
-    StringColumn(fill(STR_MISSING, n), buf, e, cq)
+    StringColumn(fill(PAYLOAD_MISSING, n), buf, UInt8[], ReentrantLock(), e, cq)
 
 # Parsers.PosLen stores only 20 length bits. PosLen31 supports wide fields but
 # only 31-bit absolute positions. Use it directly while the whole field fits that
@@ -748,7 +981,7 @@ end
 # backslash when e != cq. We do NOT round-trip through Parsers.getstring here
 # because Parsers.PosLen caps a field's length at 2^20-1 bytes (the root of
 # CSV.jl issue #935); the kernel's spans are Int32 and must stay lossless.
-function _unescape(buf::Vector{UInt8}, pos::Int64, len::Int32, e::UInt8, cq::UInt8)
+function _unescape_bytes(buf::Vector{UInt8}, pos::Int64, len::Int32, e::UInt8, cq::UInt8)
     out = Vector{UInt8}(undef, len)
     n = 0
     i = Int(pos)
@@ -765,8 +998,10 @@ function _unescape(buf::Vector{UInt8}, pos::Int64, len::Int32, e::UInt8, cq::UIn
             i += 1
         end
     end
-    return String(resize!(out, n))
+    return resize!(out, n)
 end
+_unescape(buf::Vector{UInt8}, pos::Int64, len::Int32, e::UInt8, cq::UInt8) =
+    String(_unescape_bytes(buf, pos, len, e, cq))
 
 # All-missing column.
 struct MissingColumn <: AbstractVector{Missing}
@@ -790,25 +1025,59 @@ Base.@propagate_inbounds function Base.getindex(v::MaybeVector, i::Int)
     @inbounds return v.present[i] ? v.values[i] : missing
 end
 
-struct StringViewVector{ELT} <: AbstractVector{ELT}
-    spans::Vector{StrSpan}
+# The user-facing string column. getindex returns a `KStr` (or `missing`) with
+# NO allocation: inline values live in the payload, long values view into `buf`
+# (input) or `extra` (unescaped-at-parse-time). `materialize` copies out to
+# `Vector{String}`, detaching from both buffers.
+struct KStrVector{ELT} <: AbstractVector{ELT}
+    payloads::Vector{KStrPayload}
     buf::Vector{UInt8}
-    e::UInt8
-    cq::UInt8
+    extra::Vector{UInt8}
 end
-Base.size(v::StringViewVector) = size(v.spans)
-Base.@propagate_inbounds function Base.getindex(v::StringViewVector{ELT}, i::Int) where {ELT}
-    @boundscheck checkbounds(v.spans, i)
-    @inbounds s = v.spans[i]
-    s.len < 0 && return missing
-    s.len == 0 && return ""
-    if s.escaped
-        return _unescape(v.buf, s.pos, s.len, v.e, v.cq)
-    else
-        GC.@preserve v begin
-            return unsafe_string(pointer(v.buf, s.pos), s.len)
+Base.size(v::KStrVector) = size(v.payloads)
+Base.@propagate_inbounds @inline function Base.getindex(v::KStrVector{ELT}, i::Int) where {ELT}
+    @boundscheck checkbounds(v.payloads, i)
+    @inbounds p = v.payloads[i]
+    len = kstrlen(p)
+    len < 0 && return missing
+    len <= KSTR_INLINE && return KStr(p, EMPTY_BYTES)
+    return KStr(p, kstroff(p) < 0 ? v.extra : v.buf)
+end
+# All-present columns skip the missing branch entirely — the concrete return
+# type is what lets access compile down to zero allocations.
+Base.@propagate_inbounds @inline function Base.getindex(v::KStrVector{KStr}, i::Int)
+    @boundscheck checkbounds(v.payloads, i)
+    @inbounds p = v.payloads[i]
+    len = kstrlen(p)
+    len <= KSTR_INLINE && return KStr(p, EMPTY_BYTES)
+    return KStr(p, kstroff(p) < 0 ? v.extra : v.buf)
+end
+
+function materialize(v::KStrVector{ELT}) where {ELT}
+    out = Vector{ELT === KStr ? String : Union{String, Missing}}(undef, length(v))
+    scratch = Vector{UInt8}(undef, 16)   # inline payloads reconstruct via two word stores
+    GC.@preserve scratch begin
+        q = pointer(scratch)
+        @inbounds for i in eachindex(v.payloads)
+            p = v.payloads[i]
+            len = kstrlen(p)
+            if len < 0
+                out[i] = missing
+            elseif len <= KSTR_INLINE
+                unsafe_store!(Ptr{UInt64}(q), htol((p.a >> 32) | (p.b << 32)))
+                unsafe_store!(Ptr{UInt64}(q + 8), htol(p.b >> 32))
+                out[i] = unsafe_string(q, len)
+            else
+                off = kstroff(p)
+                o = off < 0 ? -off : off
+                src = off < 0 ? v.extra : v.buf
+                GC.@preserve src begin
+                    out[i] = unsafe_string(pointer(src, o), len)
+                end
+            end
         end
     end
+    return out
 end
 
 # --- per-(column × chunk) parse loops ---------------------------------------
@@ -933,7 +1202,8 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
                         j::Int, rowbase::Int, opts::Parsers.Options,
                         userprovided::Bool, problems,
                         problemrowbase::Int=rowbase)
-    spans = col.spans
+    payloads = col.payloads
+    staging::Union{Nothing, NTuple{4, Vector}} = nothing  # (bytes, rows, offs, lens) for escaped-long cells
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
         out = rowbase + (lr - ci.firstdatarow) + 1
         sp = fieldspan(ci, lr, j)
@@ -953,7 +1223,42 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
             continue
         end
         pl = res.val
-        spans[out] = StrSpan(Int64(pl.pos), Int32(pl.len), Parsers.escapedstring(res.code))
+        cpos, clen = Int(pl.pos), Int(pl.len)
+        if Parsers.escapedstring(res.code)
+            # escaped values are unescaped ONCE, at parse time (KStr needs O(1)
+            # codeunit access): short results build inline payloads allocation-
+            # free; long ones stage locally and flush to the shared extra buffer
+            # under a single lock per (column × chunk), not per cell
+            inl = _unescape_inline(buf, cpos, clen, col.e, col.cq)
+            if inl !== nothing
+                payloads[out] = inl
+            else
+                if staging === nothing
+                    staging = (UInt8[], Int[], Int[], Int[])
+                end
+                sbytes, srows, soffs, slens = staging
+                spos = length(sbytes) + 1
+                n = _unescape_append!(sbytes, buf, cpos, clen, col.e, col.cq)
+                push!(srows, out)
+                push!(soffs, spos)
+                push!(slens, n)
+            end
+        elseif clen <= KSTR_INLINE
+            payloads[out] = inline_payload(buf, cpos, clen)
+        else
+            payloads[out] = view_payload(buf, cpos, clen, Int64(cpos))
+        end
+    end
+    if staging !== nothing
+        sbytes, srows, soffs, slens = staging
+        lock(col.extralock) do
+            base = Int64(length(col.extra))
+            append!(col.extra, sbytes)
+            @inbounds for k in eachindex(srows)
+                payloads[srows[k]] = view_payload(sbytes, soffs[k], slens[k],
+                                                  -(base + Int64(soffs[k])))
+            end
+        end
     end
     return 0
 end
@@ -1354,14 +1659,14 @@ function finalizecolumn(::Type{Missing}, ::Nothing, n::Int)
 end
 finalizecolumn(::Type{Missing}, ::Nothing, n::Int, ::Bool) = MissingColumn(n)
 function finalizecolumn(::Type{String}, col::StringColumn, n::Int)
-    anymissing = any(s -> s.len < 0, col.spans)
-    return anymissing ? StringViewVector{Union{String, Missing}}(col.spans, col.buf, col.e, col.cq) :
-                        StringViewVector{String}(col.spans, col.buf, col.e, col.cq)
+    anymissing = any(p -> kstrlen(p) < 0, col.payloads)
+    return anymissing ? KStrVector{Union{KStr, Missing}}(col.payloads, col.buf, col.extra) :
+                        KStrVector{KStr}(col.payloads, col.buf, col.extra)
 end
 function finalizecolumn(::Type{String}, col::StringColumn, n::Int, force_missing::Bool)
-    anymissing = force_missing || any(s -> s.len < 0, col.spans)
-    return anymissing ? StringViewVector{Union{String, Missing}}(col.spans, col.buf, col.e, col.cq) :
-                        StringViewVector{String}(col.spans, col.buf, col.e, col.cq)
+    anymissing = force_missing || any(p -> kstrlen(p) < 0, col.payloads)
+    return anymissing ? KStrVector{Union{KStr, Missing}}(col.payloads, col.buf, col.extra) :
+                        KStrVector{KStr}(col.payloads, col.buf, col.extra)
 end
 function finalizecolumn(::Type{T}, col::TypedColumn{T}, n::Int) where {T}
     # no missings ⇒ hand back the raw Vector{T}, zero copies

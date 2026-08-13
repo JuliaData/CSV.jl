@@ -141,7 +141,7 @@ fmttime(t) = t >= 1 ? string(round(t, digits=2), " s ") :
              string(round(t * 1e6, digits=0), " µs")
 
 materializestrings(t::K.ParsedTable) =
-    foreach(c -> c isa K.StringViewVector && collect(c), K.columns(t))
+    foreach(c -> c isa K.KStrVector && K.materialize(c), K.columns(t))
 
 function runcell(shape::Symbol, mb::Float64)
     buf = makedata(shape, round(Int, mb * 2^20))

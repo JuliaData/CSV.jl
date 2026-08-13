@@ -90,6 +90,16 @@ function detecttype_fullcascade(value::AbstractString, opts::Parsers.Options)
     return String
 end
 
+# Top-level (not testset-local) so the allocation probe measures the loop, not
+# closure machinery.
+function sumncodeunits(c::K.KStrVector{K.KStr})
+    t = 0
+    for i in eachindex(c)
+        t += ncodeunits(c[i])
+    end
+    return t
+end
+
 function tablesnapshot(t::K.ParsedTable)
     probs = [(p.row, p.col, p.pos, p.kind, p.message) for p in K.problems(t)]
     return (; names=K.names(t), types=map(eltype, K.columns(t)),
@@ -261,7 +271,7 @@ end
     @test t.nrows == 2
     @test K.columns(t)[1] isa Vector{Int64} && t[:a] == [1, 2]
     @test K.columns(t)[2] isa Vector{Float64} && t[:b] == [1.5, 2.5]
-    @test eltype(t[:c]) == String && collect(t[:c]) == ["x", "y"]
+    @test eltype(t[:c]) == K.KStr && collect(t[:c]) == ["x", "y"]
     @test t[:d] == [Date(2023, 1, 15), Date(2023, 1, 16)]
     @test t[:e] == [true, false]
     @test t[:f] == [Time(10, 30), Time(11, 30)]
@@ -272,7 +282,7 @@ end
     t = K.parse("a,b\n1,x\n,\n3,z\n")
     @test eltype(t[:a]) == Union{Int64, Missing}
     @test isequal(collect(t[:a]), [1, missing, 3])
-    @test eltype(t[:b]) == Union{String, Missing}
+    @test eltype(t[:b]) == Union{K.KStr, Missing}
     @test isequal(collect(t[:b]), ["x", missing, "z"])
     # quoted empty is an empty STRING, not missing
     t2 = K.parse("a\n\"\"\nx\n")
@@ -299,19 +309,19 @@ end
     @test collect(t[:a]) == ["1", "2", "xyz"]
     # date → string on mixed temporals
     t = K.parse("a\n2023-01-15\n10:30:00\n")
-    @test eltype(t[:a]) == String
+    @test eltype(t[:a]) == K.KStr
     # Bool and temporal parsers accept some values classified earlier in the
     # inference cascade (for example, Bool accepts "1" and DateTime accepts a
     # date). Those overlaps must still follow the promotion lattice regardless
     # of which row the sample sees first.
     for ns in (1, 2, 3)
-        @test eltype(K.parse("a\nfalse\n1\n1\n"; nsample=ns)[:a]) == String
-        @test eltype(K.parse("a\n2024-01-02T03:04:05\n2024-01-03\n"; nsample=ns)[:a]) == String
-        @test eltype(K.parse("a\n03:04:05\n1\n"; nsample=ns)[:a]) == String
+        @test eltype(K.parse("a\nfalse\n1\n1\n"; nsample=ns)[:a]) == K.KStr
+        @test eltype(K.parse("a\n2024-01-02T03:04:05\n2024-01-03\n"; nsample=ns)[:a]) == K.KStr
+        @test eltype(K.parse("a\n03:04:05\n1\n"; nsample=ns)[:a]) == K.KStr
     end
     # Quoting leaves the opening quote at the structural span's first byte, so
     # the letter fast-out cannot hide a numeric overlap.
-    @test eltype(K.parse("a\nfalse\n\"1\"\n"; nsample=1)[:a]) == String
+    @test eltype(K.parse("a\nfalse\n\"1\"\n"; nsample=1)[:a]) == K.KStr
 
     # The letter-led fast path must match the original full cascade for custom
     # Bool spellings, explicit date formats, numeric special values, custom
@@ -367,7 +377,7 @@ end
     stripopts = K.makeoptions(K.Dialect(); stripwhitespace=true)
     checkconflict(Date, " ", stripopts, Missing)
     @test eltype(K.parse("a\n2024-01-02\n \n";
-                         stripwhitespace=true, nsample=1)[:a]) == Union{Missing, String}
+                         stripwhitespace=true, nsample=1)[:a]) == Union{Missing, K.KStr}
     # promotion across chunk boundaries with adversarially small chunks: early
     # chunks parse Int64, a late chunk hits a float ⇒ whole column re-parses
     input = "a\n" * join(1:50, "\n") * "\n99.5\n"
@@ -528,6 +538,61 @@ end
     @test any(p -> p.kind == :invalid_value && p.row == 1 && p.col == 1, K.problems(t))
 end
 
+@testset "KStr: inline-else-view strings" begin
+    # inline/view boundary: 12 bytes inline, 13 views the buffer
+    t = K.parse("a\n" * "x"^12 * "\n" * "y"^13 * "\n")
+    col = t[:a]
+    @test col isa K.KStrVector{K.KStr}
+    @test col[1] == "x"^12 && col[2] == "y"^13
+    @test ncodeunits(col[1]) == 12 && ncodeunits(col[2]) == 13
+    @test String(col[1]) == "x"^12 && String(col[2]) == "y"^13
+    # equality/hash/Dict interop with String (both directions), sorting
+    @test col[1] == "x"^12 && "x"^12 == col[1]
+    @test isequal(col[1], "x"^12) && hash(col[1]) == hash("x"^12)
+    d = Dict("x"^12 => 1)
+    @test d[col[1]] == 1
+    d2 = Dict(col[2] => 2)
+    @test d2["y"^13] == 2
+    @test sort([col[2], col[1]]) == [col[1], col[2]]
+    @test cmp(col[1], col[2]) == cmp("x"^12, "y"^13)
+    # escaped values: short ones inline, long ones land in the extra buffer
+    t2 = K.parse("a\n\"in\"\"line\"\n\"a long escaped \"\"string\"\" beyond inline\"\n")
+    @test collect(t2[:a]) == ["in\"line", "a long escaped \"string\" beyond inline"]
+    @test !isempty(t2[:a].extra)                      # long unescaped value stored out-of-line
+    @test K.kstroff(t2[:a].payloads[2]) < 0           # negative offset ⇒ extra buffer
+    # quoted empty vs missing, unicode, Symbol
+    t3 = K.parse("a\n\"\"\n\nαβγδεζηθικλμ\n"; ignoreemptyrows=false)
+    @test isequal(collect(t3[:a]), ["", missing, "αβγδεζηθικλμ"])
+    @test Symbol(t3[:a][3]) == :αβγδεζηθικλμ
+    # iteration parity with the String oracle, including invalid UTF-8
+    rng = MersenneTwister(99)
+    for trial in 1:200
+        n = rand(rng, 0:24)
+        bytes = rand(rng, UInt8, n)
+        replace!(b -> b in (UInt8(0x22), UInt8(0x2c), K.LF, K.CR) ? UInt8('x') : b, bytes)
+        s = String(copy(bytes))
+        tt = K.parse("h\n" * "\"" * String(copy(bytes)) * "\"\n"; types=String)
+        v = tt[:h][1]
+        if !ismissing(v)   # n == 0 quoted-empty gives ""
+            @test collect(v) == collect(s)
+            @test v == s && hash(v) == hash(s)
+            @test length(v) == length(s)
+        end
+    end
+    # access is allocation-free for inline AND view strings
+    big = K.parse("a\n" * join(("value$(i)_" * "p"^(i % 20) for i in 1:1000), "\n") * "\n")
+    colv = big[:a]::K.KStrVector{K.KStr}
+    sumncodeunits(colv)  # compile
+    @test @allocated(sumncodeunits(colv)) == 0
+    # materialize detaches to plain Strings
+    m = K.materialize(colv)
+    @test m isa Vector{String} && m[1] == "value1_p"
+    # write/print round-trip
+    io = IOBuffer()
+    print(io, colv[2])
+    @test String(take!(io)) == "value2_pp"
+end
+
 @testset "examples: the layered APIs" begin
     csv = "a,b,c\n1,x,2.5\n2,y,3.5\n3,\"z,w\",4.5\n"
     # eager reader is a Tables.jl table
@@ -612,7 +677,7 @@ end
     @test isequal(tablesnapshot(seq), tablesnapshot(one))
     @test K.names(seq) == [:i, :mix, :txt, :strict]
     @test seq.nrows == 6
-    @test eltype(seq[:mix]) == Union{String, Missing}
+    @test eltype(seq[:mix]) == Union{K.KStr, Missing}
     @test seq.droppedproblems == 1
 
     malformed = "a\n\"unclosed"
