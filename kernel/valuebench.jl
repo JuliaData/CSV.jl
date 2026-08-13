@@ -37,6 +37,7 @@ end
 fmt(x) = lpad(round(x, digits=1), 8)
 
 const OPTS = Parsers.Options()
+const GOPTS = Parsers.Options(groupmark=',', delim=';')
 const DFD = Dates.default_format(Date)
 
 function main()
@@ -51,6 +52,7 @@ function main()
         ("float shortest",   (rng, i) -> string(reinterpret(Float64, rand(rng, UInt64) & 0x7fefffffffffffff)), :float),
         ("float subnormal",  (rng, i) -> string(reinterpret(Float64, max(rand(rng, UInt64) & 0x000fffffffffffff, UInt64(1)))), :float),
         ("float exp form",   (rng, i) -> string(rand(rng, 1:999)) * "." * string(rand(rng, 0:99)) * "e" * string(rand(rng, -30:30)), :float),
+        ("int grouped",      (rng, i) -> replace(string(rand(rng, 1_000_000:999_999_999)), r"(?<=\d)(?=(\d{3})+\$)" => ","), :intg),
         ("date ISO",         (rng, i) -> string(Date(2020, 1, 1) + Day(rand(rng, 0:2000))), :date),
         ("datetime ISO",     (rng, i) -> string(DateTime(2020, 1, 1) + Second(rand(rng, 0:10^7))), :datetime),
         ("bool",             (rng, i) -> rand(rng, ("true", "false")), :bool),
@@ -64,6 +66,11 @@ function main()
             tk = bench((b, ss) -> (a = 0; for (i, j) in ss; v, rc = V.parseint64(b, i, j); a += v; end; a), buf, spans)
             tx = bench((b, ss) -> (a = 0; for (i, j) in ss; r = Parsers.xparse(Int64, b, i, j, OPTS); a += r.val; end; a), buf, spans)
             tb = bench((b, ss) -> (a = 0; for (i, j) in ss; a += parse(Int64, String(b[i:j])); end; a), buf, spans)
+        elseif kind === :intg
+            ko = kernelgroupopts()
+            scratch = Vector{UInt8}(undef, 64)
+            tk = bench((b, ss) -> (a = 0; for (i, j) in ss; v, ok = MainK.parsevalue(Int64, b, i, j, ko, scratch); a += v; end; a), buf, spans)
+            tx = bench((b, ss) -> (a = 0; for (i, j) in ss; r = Parsers.xparse(Int64, b, i, j, GOPTS); a += r.val; end; a), buf, spans)
         elseif kind === :float
             tk = bench((b, ss) -> (a = 0.0; for (i, j) in ss; v, rc = V.parsefloat64(b, i, j); a += v; end; a), buf, spans)
             tx = bench((b, ss) -> (a = 0.0; for (i, j) in ss; r = Parsers.xparse(Float64, b, i, j, OPTS); a += r.val; end; a), buf, spans)
@@ -89,5 +96,10 @@ end
 
 # a minimal xparse-based string probe mirroring what the kernel used to do
 K_xparsestring(b, i, j) = Parsers.xparse(String, b, i, j, OPTS, Parsers.PosLen31)
+
+# the kernel's grouped path goes through core's parsevalue + ValueOpts
+isdefined(Main, :CSVKernel) || include(joinpath(@__DIR__, "core.jl"))
+const MainK = CSVKernel
+kernelgroupopts() = MainK.makevalueopts(MainK.Dialect(delim=';'); groupmark=',')
 
 main()

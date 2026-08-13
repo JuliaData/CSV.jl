@@ -146,6 +146,7 @@ struct ValueOpts
     timepat::V.DatePattern
     customfmt::Bool
     inferbool::Bool   # false when a user Bool spelling collides with an earlier cascade type
+    groupmark::UInt8  # digit-group separator for numeric cells; 0x00 = off
 end
 
 function _bytelist(x, name::Symbol)
@@ -164,8 +165,16 @@ end
 
 function _earlierbooltype(s::Vector{UInt8}, decimal::UInt8,
                           dp::V.DatePattern, dtp::V.DatePattern, tp::V.DatePattern,
-                          customfmt::Bool)
+                          customfmt::Bool, gm::UInt8)
     i, j = 1, length(s)
+    if gm != 0x00
+        scratch = Vector{UInt8}(undef, 64)
+        n = V.degroup!(scratch, s, i, j, gm, decimal)
+        if n >= 0
+            V.parseint64(scratch, 1, n)[2] == V.RC_OK && return Int64
+            V.parsefloat64(scratch, 1, n, decimal)[2] == V.RC_OK && return Float64
+        end
+    end
     V.parseint64(s, i, j)[2] == V.RC_OK && return Int64
     V.parsefloat64(s, i, j, decimal)[2] == V.RC_OK && return Float64
     if customfmt
@@ -186,20 +195,31 @@ end
 # it. Instead of rejecting the (common, legitimate) spellings outright, Bool
 # leaves the INFERENCE cascade: such columns are never inferred as Bool, while
 # user-provided Bool columns still parse the lists — deterministic either way.
-function _validatebools(trues, falses, decimal, dp, dtp, tp, customfmt)
+function _validatebools(trues, falses, decimal, dp, dtp, tp, customfmt, gm)
     for t in trues, f in falses
         t == f && throw(ArgumentError("Bool spelling $(repr(String(t))) is both true and false"))
     end
     for s in Iterators.flatten((trues, falses))
-        _earlierbooltype(s, decimal, dp, dtp, tp, customfmt) === nothing || return false
+        _earlierbooltype(s, decimal, dp, dtp, tp, customfmt, gm) === nothing || return false
     end
     return true
 end
 
 function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
                        truestrings=nothing, falsestrings=nothing,
-                       stripwhitespace::Bool=false)
+                       stripwhitespace::Bool=false,
+                       groupmark::Union{Nothing, Char}=nothing)
     isascii(decimal) || throw(ArgumentError("decimal must be ASCII (got $(repr(decimal)))"))
+    gm = 0x00
+    if groupmark !== nothing
+        isascii(groupmark) || throw(ArgumentError("groupmark must be ASCII (got $(repr(groupmark)))"))
+        gm = groupmark % UInt8
+        (gm - UInt8('0') <= 0x09 || gm == decimal % UInt8 ||
+         gm in (UInt8('e'), UInt8('E'), UInt8('+'), UInt8('-'), d.oq, d.cq, d.e)) &&
+            throw(ArgumentError("groupmark $(repr(groupmark)) conflicts with numeric or quote syntax"))
+        # groupmark == delim is allowed: such fields are only expressible quoted,
+        # which the indexer already handles (the mark is content, not structure)
+    end
     if dateformat === nothing
         dp, dtp, tp, custom = V.ISO_DATE, V.ISO_DATETIME, V.ISO_TIME, false
     else
@@ -214,10 +234,10 @@ function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
     delimbytes = d.delim isa UInt8 ? [d.delim] : copy(d.delim)
     trues = _bytelist(truestrings, :truestrings)
     falses = _bytelist(falsestrings, :falsestrings)
-    inferbool = _validatebools(trues, falses, decimal % UInt8, dp, dtp, tp, custom)
+    inferbool = _validatebools(trues, falses, decimal % UInt8, dp, dtp, tp, custom, gm)
     return ValueOpts(d.oq, d.cq, d.e, d.quoted, delimbytes, decimal % UInt8, stripwhitespace,
                      Vector{UInt8}[], trues, falses,
-                     dp, dtp, tp, custom, inferbool)
+                     dp, dtp, tp, custom, inferbool, gm)
 end
 
 # --- the cell layer -----------------------------------------------------------
@@ -312,14 +332,48 @@ const _DATE0 = Date(1)
 const _DATETIME0 = DateTime(1)
 const _TIME0 = Time(0)
 
-@inline function parsevalue(::Type{Int64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+# Numeric kernels take a scratch buffer so grouped digits (groupmark) degroup
+# without per-cell allocation; the hot loops pass a per-(column × chunk)
+# scratch, and the 5-arg convenience forms below allocate one lazily. With
+# groupmark off, the extra argument is dead and the kernels run untouched.
+@inline function parsevalue(::Type{Int64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
+                            scratch::Vector{UInt8})
+    if vo.groupmark != 0x00
+        n = V.degroup!(scratch, buf, i, j, vo.groupmark, 0xff)  # ints: no fraction to guard
+        n == -2 && return (Int64(0), false)
+        if n >= 0
+            v, rc = V.parseint64(scratch, 1, n)
+            return (v, rc == V.RC_OK)
+        end
+    end
     v, rc = V.parseint64(buf, i, j)
     return (v, rc == V.RC_OK)
 end
-@inline function parsevalue(::Type{Float64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+@inline function parsevalue(::Type{Float64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
+                            scratch::Vector{UInt8})
+    if vo.groupmark != 0x00
+        n = V.degroup!(scratch, buf, i, j, vo.groupmark, vo.decimal)
+        n == -2 && return (0.0, false)
+        if n >= 0
+            v, rc = V.parsefloat64(scratch, 1, n, vo.decimal)
+            return (v, rc == V.RC_OK)
+        end
+    end
     v, rc = V.parsefloat64(buf, i, j, vo.decimal)
     return (v, rc == V.RC_OK)
 end
+@inline parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
+                   scratch::Vector{UInt8}) where {T} = parsevalue(T, buf, i, j, vo)
+_scratchfor(vo::ValueOpts) = vo.groupmark == 0x00 ? EMPTY_BYTES : Vector{UInt8}(undef, 64)
+@inline parsevalue(::Type{Int64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
+    parsevalue(Int64, buf, i, j, vo, _scratchfor(vo))
+@inline function _parsefloat_direct(buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    v, rc = V.parsefloat64(buf, i, j, vo.decimal)
+    return (v, rc == V.RC_OK)
+end
+@inline parsevalue(::Type{Float64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
+    vo.groupmark == 0x00 ? _parsefloat_direct(buf, i, j, vo) :
+                           parsevalue(Float64, buf, i, j, vo, Vector{UInt8}(undef, 64))
 @inline function parsevalue(::Type{Bool}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     if isempty(vo.trues) && isempty(vo.falses)
         v, rc = V.parsebool(buf, i, j)
@@ -1008,10 +1062,17 @@ function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::ValueOpts)
     st == CELL_BADQUOTE && return String    # malformed quoting reports at parse time
     (clen == 0 || esc) && return String     # quoted-empty / escape content is stringy
     cj = cpos + clen - 1
-    rc = V.parseint64(buf, cpos, cj)[2]
-    rc == V.RC_OK && return Int64
-    # RC_OVERFLOW means all-digits beyond Int64 — exactly the Float64 promotion
-    V.parsefloat64(buf, cpos, cj, opts.decimal)[2] == V.RC_OK && return Float64
+    if opts.groupmark != 0x00
+        # sampling is cold: a fresh scratch per call keeps the signature small
+        scratch = Vector{UInt8}(undef, 64)
+        parsevalue(Int64, buf, cpos, cj, opts, scratch)[2] && return Int64
+        parsevalue(Float64, buf, cpos, cj, opts, scratch)[2] && return Float64
+    else
+        rc = V.parseint64(buf, cpos, cj)[2]
+        rc == V.RC_OK && return Int64
+        # RC_OVERFLOW means all-digits beyond Int64 — exactly the Float64 promotion
+        V.parsefloat64(buf, cpos, cj, opts.decimal)[2] == V.RC_OK && return Float64
+    end
     if opts.customfmt
         # one probe: the user format's own components say which type it detects
         if V.parsecivil(buf, cpos, cj, opts.datepat)[2] == V.RC_OK
@@ -1427,6 +1488,7 @@ function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
                         userprovided::Bool, problems,
                         problemrowbase::Int=rowbase) where {T}
     values, present = col.values, col.present
+    scratch = _scratchfor(opts)
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
         out = rowbase + (lr - ci.firstdatarow) + 1
         sp = fieldspan(ci, lr, j)
@@ -1436,7 +1498,7 @@ function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
         cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
         st == CELL_MISSING && continue                  # sentinel / stripped-to-empty
         if st == CELL_VALUE && clen > 0 && !esc
-            v, ok = parsevalue(T, buf, cpos, cpos + clen - 1, opts)
+            v, ok = parsevalue(T, buf, cpos, cpos + clen - 1, opts, scratch)
             if ok
                 values[out] = v
                 present[out] = true
@@ -1794,6 +1856,7 @@ function parse(buf::Vector{UInt8};
                truestrings=nothing,
                falsestrings=nothing,
                stripwhitespace::Bool=false,
+               groupmark::Union{Nothing, Char}=nothing,
                chunkbytes::Union{Nothing, Int}=nothing,
                parallel::Bool=Threads.nthreads() > 1,
                fastindex::Bool=true,
@@ -1819,7 +1882,8 @@ function parse(buf::Vector{UInt8};
         chunkbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $chunkbytes)"))
     end
     d = Dialect(; dialectkw...)
-    opts = makevalueopts(d; dateformat, decimal, truestrings, falsestrings, stripwhitespace)
+    opts = makevalueopts(d; dateformat, decimal, truestrings, falsestrings, stripwhitespace,
+                         groupmark)
     datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1  # BOM
     sc = resolvescanner(d, fastindex, scanner)
     chunks = chunkplan(buf, d, datastart, chunkbytes, parallel)

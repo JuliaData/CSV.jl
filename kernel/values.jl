@@ -40,7 +40,7 @@ reported as OVERFLOW so the CSV type lattice can promote Int64 → Float64.
 """
 module KernelValues
 
-export RC_OK, RC_INVALID, RC_OVERFLOW,
+export RC_OK, RC_INVALID, RC_OVERFLOW, degroup!,
        parseint64, parsefloat64, parsebool, findcontent, matchsentinel,
        CivilParts, parsecivil, daysfromcivil, DatePattern, compilepattern
 
@@ -767,6 +767,46 @@ function matchsentinel(buf::Vector{UInt8}, i::Int, j::Int, sentinels::Vector{Vec
         k > n && return true
     end
     return false
+end
+
+"""
+    degroup!(scratch, buf, i, j, groupmark, decimal) -> n
+
+Copy the numeric span `[i, j]` into `scratch` with digit-group separators
+removed. A separator is valid only BETWEEN two digits in the integer part
+(before the decimal point or exponent); group widths are deliberately not
+enforced — "1,234,567" and Indian-style "12,34,567" both pass, matching the
+lenient behavior CSV consumers expect. Returns the degrouped length, `-1` when
+the span contains no separator at all (parse the original span — the common
+case costs one scan), or `-2` when a separator is misplaced (leading, trailing,
+adjacent to another separator, or in the fraction/exponent).
+"""
+function degroup!(scratch::Vector{UInt8}, buf::Vector{UInt8}, i::Int, j::Int,
+                  gm::UInt8, decimal::UInt8)
+    has = false
+    @inbounds for k in i:j
+        if buf[k] == gm
+            has = true
+            break
+        end
+    end
+    has || return -1
+    n = j - i + 1
+    length(scratch) < n && resize!(scratch, max(n, 64))
+    m = 0
+    intpart = true
+    @inbounds for k in i:j
+        b = buf[k]
+        if b == gm && intpart
+            (k > i && (buf[k-1] - UInt8('0')) <= 0x09 &&
+             k < j && (buf[k+1] - UInt8('0')) <= 0x09) || return -2
+        else
+            (b == decimal || b == UInt8('e') || b == UInt8('E')) && (intpart = false)
+            m += 1
+            scratch[m] = b
+        end
+    end
+    return m
 end
 
 # =============================================================================

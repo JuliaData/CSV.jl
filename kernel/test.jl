@@ -655,6 +655,40 @@ end
     @test collect(t[:a]) == ["  x  ", ""]
     t = K.parse("a\n  \"  x  \"  \n  \"\"  \n"; types=String, stripwhitespace=true)
     @test collect(t[:a]) == ["x", ""]
+
+    # groupmark: separators strip between digits in the integer part; group
+    # widths are deliberately lenient (Indian "12,34,567" is real data). The
+    # marked and unmarked spellings must detect AND parse identically
+    # (parse-set ≡ detect-set extends to grouped digits).
+    gmo = K.makevalueopts(K.Dialect(delim=';'); groupmark=',')
+    dtg(v) = K.detecttype(Vector{UInt8}(codeunits(v)), 1, ncodeunits(v), gmo)
+    @test dtg("1,234") === Int64
+    @test dtg("12,34,567") === Int64
+    @test dtg("1,234.5") === Float64
+    @test dtg("1,234e2") === Float64
+    @test dtg(",123") === String
+    @test dtg("1,23,") === String
+    @test dtg("12,,34") === String
+    @test dtg("1.5,0") === String          # mark in the fraction
+    pvg(T, v) = K.parsevalue(T, Vector{UInt8}(codeunits(v)), 1, ncodeunits(v), gmo)
+    @test pvg(Int64, "1,234") == (1234, true)
+    @test pvg(Int64, "1234") == (1234, true)
+    @test pvg(Float64, "5,678.25") == (5678.25, true)
+    @test !pvg(Int64, ",123")[2] && !pvg(Float64, "1.5,0")[2]
+    # groupmark == delim works through quoting (the mark is content there)
+    for ns in (1, 2, 3)
+        tg = K.parse("a,b\n\"1,234\",x\n\"5,678\",y\n"; groupmark=',', nsample=ns)
+        @test tg[:a] == [1234, 5678]
+    end
+    tg = K.parse("a;b\n1.234.567;2,5\n"; delim=';', groupmark='.', decimal=',')
+    @test tg[:a] == [1234567] && tg[:b] == [2.5]
+    # off ⇒ marked numbers are strings, exactly as before the feature existed
+    tg = K.parse("a;b\n1,234;9\n"; delim=';')
+    @test eltype(tg[:a]) == K.KStr
+    @test_throws ArgumentError K.makevalueopts(K.Dialect(); groupmark='5')
+    @test_throws ArgumentError K.makevalueopts(K.Dialect(); groupmark='.')
+    @test_throws ArgumentError K.makevalueopts(K.Dialect(); groupmark='e')
+    @test_throws ArgumentError K.makevalueopts(K.Dialect(); groupmark='"')
 end
 
 @testset "misc inputs & edges" begin
