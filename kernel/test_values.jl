@@ -16,6 +16,7 @@ const V = KernelValues
 
 b(s) = Vector{UInt8}(codeunits(s))
 pint(s) = V.parseint64(b(s), 1, ncodeunits(s))
+pint128(s) = V.parseint128(b(s), 1, ncodeunits(s))
 pflt(s) = V.parsefloat64(b(s), 1, ncodeunits(s))
 pbool(s) = V.parsebool(b(s), 1, ncodeunits(s))
 
@@ -57,6 +58,29 @@ pbool(s) = V.parsebool(b(s), 1, ncodeunits(s))
         else
             @test rc == V.RC_OK && v == or
         end
+    end
+end
+
+@testset "parseint128: oracle differential" begin
+    for s in ("0", "-0", "+1", "9223372036854775808",
+              string(typemax(Int128)), string(typemin(Int128)),
+              "00099999999999999999999999")
+        v, rc = pint128(s)
+        @test rc == V.RC_OK
+        @test v == parse(Int128, s)
+    end
+    for s in (string(big(typemax(Int128)) + 1), string(big(typemin(Int128)) - 1),
+              "9"^100)
+        @test pint128(s)[2] == V.RC_OVERFLOW
+    end
+    for s in ("", "-", "+", "1.0", "1x", " 1", "1 ")
+        @test pint128(s)[2] == V.RC_INVALID
+    end
+    rng = MersenneTwister(128)
+    for _ in 1:100_000
+        x = rand(rng, Int128)
+        v, rc = pint128(string(x))
+        @test rc == V.RC_OK && v == x
     end
 end
 

@@ -240,9 +240,16 @@ function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
     delimbytes = d.delim isa UInt8 ? [d.delim] : copy(d.delim)
     trues = _bytelist(truestrings, :truestrings)
     falses = _bytelist(falsestrings, :falsestrings)
+    sentinelbytes = _bytelist(sentinels, :sentinels)
+    if d.quoted
+        for s in sentinelbytes, b in s
+            b in (d.oq, d.cq, d.e) &&
+                throw(ArgumentError("sentinels cannot contain quote or escape characters"))
+        end
+    end
     inferbool = _validatebools(trues, falses, decimal % UInt8, dp, dtp, tp, custom, gm)
     return ValueOpts(d.oq, d.cq, d.e, d.quoted, delimbytes, decimal % UInt8, stripwhitespace,
-                     _bytelist(sentinels, :sentinels), trues, falses,
+                     sentinelbytes, trues, falses,
                      dp, dtp, tp, custom, inferbool, gm)
 end
 
@@ -355,6 +362,19 @@ const _TIME0 = Time(0)
     v, rc = V.parseint64(buf, i, j)
     return (v, rc == V.RC_OK)
 end
+@inline function parsevalue(::Type{Int128}, buf::Vector{UInt8}, i::Int, j::Int,
+                            vo::ValueOpts, scratch::Vector{UInt8})
+    if vo.groupmark != 0x00
+        n = V.degroup!(scratch, buf, i, j, vo.groupmark, 0xff)
+        n == -2 && return (Int128(0), false)
+        if n >= 0
+            v, rc = V.parseint128(scratch, 1, n)
+            return (v, rc == V.RC_OK)
+        end
+    end
+    v, rc = V.parseint128(buf, i, j)
+    return (v, rc == V.RC_OK)
+end
 @inline function parsevalue(::Type{Float64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                             scratch::Vector{UInt8})
     if vo.groupmark != 0x00
@@ -404,6 +424,8 @@ end
 _scratchfor(vo::ValueOpts) = vo.groupmark == 0x00 ? EMPTY_BYTES : Vector{UInt8}(undef, 64)
 @inline parsevalue(::Type{Int64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
     parsevalue(Int64, buf, i, j, vo, _scratchfor(vo))
+@inline parsevalue(::Type{Int128}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
+    parsevalue(Int128, buf, i, j, vo, _scratchfor(vo))
 @inline parsevalue(::Type{BigInt}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
     vo.groupmark == 0x00 ? _parsebigint_direct(buf, i, j) :
                            parsevalue(BigInt, buf, i, j, vo, Vector{UInt8}(undef, 64))
@@ -1172,7 +1194,7 @@ index(buf::Vector{UInt8}; kw...) = index(buf, Dialect(); kw...)
 # ---------------------------------------------------------------------------
 
 # The kernel's standard column types. The promotion lattice is intentionally small:
-#   Missing → Int64 → Float64 → String
+#   Missing → Int64 → Int128 → Float64 → String
 #   Missing → (Date | DateTime | Time | Bool) → String
 # Everything else (mixed temporals, bool/number mixes, …) promotes to String.
 # InlineString widths, Int downcasting, and user "typemap"s are API-layer concerns
@@ -1181,8 +1203,10 @@ promote_kernel(a::Type, b::Type) =
     a === b          ? a :
     a === Missing    ? b :
     b === Missing    ? a :
-    a === Int64 && b === Float64 ? Float64 :
-    a === Float64 && b === Int64 ? Float64 :
+    a === Int64 && b === Int128 ? Int128 :
+    a === Int128 && b === Int64 ? Int128 :
+    a in (Int64, Int128) && b === Float64 ? Float64 :
+    a === Float64 && b in (Int64, Int128) ? Float64 :
     String
 
 # Detect the type of one raw field span (mirrors CSV.jl's cascade, minus the
@@ -1201,11 +1225,12 @@ function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::ValueOpts)
         # sampling is cold: a fresh scratch per call keeps the signature small
         scratch = Vector{UInt8}(undef, 64)
         parsevalue(Int64, buf, cpos, cj, opts, scratch)[2] && return Int64
+        parsevalue(Int128, buf, cpos, cj, opts, scratch)[2] && return Int128
         parsevalue(Float64, buf, cpos, cj, opts, scratch)[2] && return Float64
     else
         rc = V.parseint64(buf, cpos, cj)[2]
         rc == V.RC_OK && return Int64
-        # RC_OVERFLOW means all-digits beyond Int64 — exactly the Float64 promotion
+        rc == V.RC_OVERFLOW && V.parseint128(buf, cpos, cj)[2] == V.RC_OK && return Int128
         V.parsefloat64(buf, cpos, cj, opts.decimal)[2] == V.RC_OK && return Float64
     end
     if opts.customfmt
@@ -2039,7 +2064,7 @@ function resolvetypes(types, names::Vector{Symbol}, ncols::Int)
         T isa Type || throw(ArgumentError("column type must be a Type or nothing (got $(repr(T)))"))
         T = T === Missing ? Missing : Base.nonmissingtype(T)
         parseable = T === Missing ||
-                    T in (Int64, Float64, Bool, Date, DateTime, Time, String,
+                    T in (Int64, Int128, Float64, Bool, Date, DateTime, Time, String,
                           BigInt, BigFloat, Base.UUID)
         parseable || throw(ArgumentError("unsupported column type $T"))
         return T

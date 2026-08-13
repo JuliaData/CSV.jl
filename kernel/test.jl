@@ -578,8 +578,11 @@ end
         @test t[:a] isa Vector{Float64}
         @test t[:a] == [collect(1.0:50.0); 99.5]
     end
-    # big integers overflow Int64 and promote to Float64 (documented CSV.jl parity)
+    # big integers within Int128 stay exact; mixed integer/float columns widen
     t = K.parse("a\n1\n99999999999999999999999999\n")
+    @test t[:a] isa Vector{Int128}
+    @test t[:a] == Int128[1, 99999999999999999999999999]
+    t = K.parse("a\n99999999999999999999999999\n1.5\n")
     @test t[:a] isa Vector{Float64}
     # Stratified sampling obeys its limit and includes the final row.
     input = "a\n" * join(1:999, "\n") * "\n3.5\n"
@@ -808,6 +811,9 @@ end
     @test collect(String.(coalesce.(t[:a], "∅"))) == ["", "x"]
     @test_throws ArgumentError K.parse("a\n1\n"; sentinels=[""])
     @test_throws ArgumentError K.parse("a\n1\n"; sentinels="NA")     # must be a collection
+    @test_throws ArgumentError K.parse("a\n1\n"; sentinels=["N\"A"])
+    t = K.parse("a\nN\"A\n"; sentinels=["N\"A"], quoted=false)
+    @test eltype(t[:a]) === Missing
 end
 
 @testset "typed: ignorerepeated end to end" begin

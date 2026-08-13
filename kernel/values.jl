@@ -37,12 +37,12 @@ test_values.jl): whitespace is never consumed (trimming is the caller's layer);
 sentinels/quotes are the caller's layer (`findcontent`/`matchsentinel` below);
 `-0` parses as `Int64(0)`; `Inf`/`Infinity`/`NaN` are case-insensitive; float
 overflow yields `±Inf` with OK (matching `Base.parse`); integer overflow is
-reported as OVERFLOW so the CSV type lattice can promote Int64 → Float64.
+reported as OVERFLOW so the CSV type lattice can promote Int64 → Int128 → Float64.
 """
 module KernelValues
 
 export RC_OK, RC_INVALID, RC_OVERFLOW, degroup!, parsebigint, parsebigfloat, parseuuid,
-       parseint64, parsefloat64, parsebool, findcontent, matchsentinel,
+       parseint64, parseint128, parsefloat64, parsebool, findcontent, matchsentinel,
        CivilParts, parsecivil, daysfromcivil, DatePattern, compilepattern
 
 const RC_OK       = 0x00
@@ -79,8 +79,7 @@ end
 Parse `buf[i:j]` as a base-10 `Int64`: optional single `-`/`+` sign, then one or
 more ASCII digits, nothing else. Leading zeros are accepted (the CSV layer's
 inference policy for zero-padded identifiers lives above this). `rc` is
-OVERFLOW when the digits are well-formed but exceed Int64 (the caller's cue to
-promote to Float64), INVALID otherwise.
+OVERFLOW when the digits are well-formed but exceed Int64, INVALID otherwise.
 """
 function parseint64(buf::Vector{UInt8}, i::Int, j::Int)
     i > j && return (zero(Int64), RC_INVALID)
@@ -118,6 +117,44 @@ function parseint64(buf::Vector{UInt8}, i::Int, j::Int)
         v > lim && return (zero(Int64), RC_OVERFLOW)
     end
     return (neg ? -reinterpret(Int64, v) : reinterpret(Int64, v), RC_OK)
+end
+
+"""
+    parseint128(buf, i, j) -> (Int128, rc)
+
+Parse the strict integer grammar as `Int128`. This is the exact-width fallback
+after `parseint64` reports overflow.
+"""
+function parseint128(buf::Vector{UInt8}, i::Int, j::Int)
+    i > j && return (zero(Int128), RC_INVALID)
+    @inbounds b = buf[i]
+    neg = b == UInt8('-')
+    (neg | (b == UInt8('+'))) && (i += 1)
+    i > j && return (zero(Int128), RC_INVALID)
+    @inbounds while i <= j && buf[i] == UInt8('0')
+        i += 1
+    end
+    i > j && return (zero(Int128), RC_OK)
+    ndig = j - i + 1
+    if ndig > 39
+        return _digitsonly(buf, i, j) ? (zero(Int128), RC_OVERFLOW) :
+                                       (zero(Int128), RC_INVALID)
+    end
+    lim = UInt128(typemax(Int128)) + UInt128(neg)
+    v = zero(UInt128)
+    @inbounds while i <= j
+        d = buf[i] - UInt8('0')
+        d > 0x09 && return (zero(Int128), RC_INVALID)
+        v > (lim - UInt128(d)) ÷ UInt128(10) &&
+            return (zero(Int128), RC_OVERFLOW)
+        v = v * UInt128(10) + UInt128(d)
+        i += 1
+    end
+    if neg
+        v == UInt128(typemax(Int128)) + 1 && return (typemin(Int128), RC_OK)
+        return (-Int128(v), RC_OK)
+    end
+    return (Int128(v), RC_OK)
 end
 
 @inline function _digitsonly(buf::Vector{UInt8}, i::Int, j::Int)
