@@ -706,6 +706,49 @@ const _POW10 = Float64[10.0^k for k in 0:22]
 const _POW10_INT = Int64[Int64(10)^k for k in 0:17]
 const _POW10_18 = Int64(10)^18
 
+# Powers of five for the BigFloat scaling path, built at precompile time.
+# Covers every exponent reachable from ~150 significant digits around the
+# double range; rarer exponents compute fresh. Entries are READ-ONLY — the
+# scaling code must never hand them to an in-place GMP op's output slot.
+for f in (:set_si!, :mul!, :mul_si!, :add_ui!, :mul_2exp!, :tdiv_qr!,
+          :fdiv_q_2exp!, :tstbit, :scan1, :sizeinbase, :pow_ui, :neg!)
+    isdefined(Base.GMP.MPZ, f) ||
+        error("KernelValues requires Base.GMP.MPZ.$f (Julia internals moved?)")
+end
+
+const _POW5BIG = [BigInt(5)^k for k in 0:512]
+@inline _pow5big(k::Int) = k <= 512 ? @inbounds(_POW5BIG[k + 1]) : BigInt(5)^k
+
+"""
+    BigWork()
+
+Reusable workspace for `parsebigfloat`: the two BigInt temporaries (mantissa
+accumulator and division remainder) live here so a column loop allocates them
+once instead of per value — GMP objects are finalizer-registered, and two
+fewer registrations per value is most of the distance to mpfr_strtofr's
+single-allocation profile. Never share one across concurrent tasks.
+"""
+struct BigWork
+    M::BigInt
+    R::BigInt
+end
+BigWork() = BigWork(BigInt(0), BigInt(0))
+
+# One correctly-rounded store into a fresh BigFloat: our prec-bit integer
+# mantissa is exact under mpfr_set_z, the 2^e scale is exact under mul_2si,
+# and the sign flips in place — one MPFR allocation, no ldexp/unary-minus
+# temporaries.
+function _assemble(M::BigInt, e::Int, neg::Bool, prec::Int)
+    v = BigFloat(; precision=prec)
+    ccall((:mpfr_set_z, Base.MPFR.libmpfr), Int32,
+          (Ref{BigFloat}, Ref{BigInt}, Int32), v, M, 0)
+    ccall((:mpfr_mul_2si, Base.MPFR.libmpfr), Int32,
+          (Ref{BigFloat}, Ref{BigFloat}, Clong, Int32), v, v, e, 0)
+    neg && ccall((:mpfr_neg, Base.MPFR.libmpfr), Int32,
+                 (Ref{BigFloat}, Ref{BigFloat}, Int32), v, v, 0)
+    return v
+end
+
 # 18-digit chunks flush through in-place GMP ops — one BigInt allocated per
 # value, zero per chunk (the allocating `big = big*10^18 + acc` form measured
 # ~40% slower than mpz_set_str; this form beats it).
@@ -774,8 +817,12 @@ gets power-of-ten jump tables the way Eisel-Lemire's POW5 works). No
 subnormal handling is needed inside that range — BigFloat's exponent field
 dwarfs it.
 """
+parsebigfloat(buf::Vector{UInt8}, i::Int, j::Int, decimal::UInt8=UInt8('.');
+              prec::Int=precision(BigFloat)) =
+    parsebigfloat(buf, i, j, decimal, BigWork(); prec)
+
 function parsebigfloat(buf::Vector{UInt8}, i::Int, j::Int,
-                       decimal::UInt8=UInt8('.'); prec::Int=precision(BigFloat))
+                       decimal::UInt8, ws::BigWork; prec::Int=precision(BigFloat))
     prec >= 2 || throw(ArgumentError("prec must be ≥ 2"))
     sp, matched = _matchspecial(buf, i, j)
     matched && return (BigFloat(sp; precision=prec), RC_OK)
@@ -789,7 +836,9 @@ function parsebigfloat(buf::Vector{UInt8}, i::Int, j::Int,
     # the decimal byte skipped), tracking the true power of ten. The range test
     # uses the full mantissa exponent, not DecParts.exp10 (which is relative to
     # its truncated 19-digit mantissa).
-    M, q, inrange = _bigmantissa(buf, i, Int(parts.digstart), j, decimal)
+    M = ws.M
+    Base.GMP.MPZ.set_si!(M, 0)
+    q, inrange = _bigmantissa!(M, buf, i, Int(parts.digstart), j, decimal)
     inrange || return (BigFloat(0; precision=prec), RC_OVERFLOW)
     # value = M × 10^q = M × 5^q × 2^q — pure integer scaling, one rounding:
     #   q ≥ 0: N = M·5^q is exact and value = N × 2^q
@@ -800,17 +849,14 @@ function parsebigfloat(buf::Vector{UInt8}, i::Int, j::Int,
     MPZ = Base.GMP.MPZ
     sticky = false
     if q >= 0
-        if q > 0
-            p5 = MPZ.pow_ui(BigInt(5), q % Culong)
-            MPZ.mul!(M, p5)
-        end
+        q > 0 && MPZ.mul!(M, _pow5big(q))
         e2 = q
     else
         k = -q
-        d5 = MPZ.pow_ui(BigInt(5), k % Culong)
+        d5 = _pow5big(k)
         s = max(0, prec + 3 + Int(MPZ.sizeinbase(d5, 2)) - Int(MPZ.sizeinbase(M, 2)))
         MPZ.mul_2exp!(M, s % Culong)
-        R = BigInt(0)
+        R = ws.R
         MPZ.tdiv_qr!(M, R, M, d5)
         sticky = !iszero(R)
         e2 = q - s
@@ -829,20 +875,18 @@ function parsebigfloat(buf::Vector{UInt8}, i::Int, j::Int,
                 drop += 1
             end
         end
-        v = ldexp(BigFloat(M; precision=prec), e2 + drop)
-    else
-        # exact case (only reachable when q ≥ 0, where sticky is impossible)
-        v = ldexp(BigFloat(M; precision=prec), e2)
+        return (_assemble(M, e2 + drop, parts.neg, prec), RC_OK)
     end
-    return (parts.neg ? -v : v, RC_OK)
+    # exact case (only reachable when q ≥ 0, where sticky is impossible)
+    return (_assemble(M, e2, parts.neg, prec), RC_OK)
 end
 
 # All significant digits from `digstart` (first significant digit, per
 # _decompose) through the end of the digit run, skipping the decimal byte.
 # Returns `(M, q, inrange)` with value `M × 10^q` when `inrange`; the
 # boolean is false when `abs(q + ndig) > 65536`. Shape is already validated.
-function _bigmantissa(buf::Vector{UInt8}, i::Int, digstart::Int, j::Int, decimal::UInt8)
-    big = BigInt(0)
+function _bigmantissa!(big::BigInt, buf::Vector{UInt8}, i::Int, digstart::Int, j::Int,
+                       decimal::UInt8)
     started = false
     acc = Int64(0)
     nacc = 0
@@ -904,17 +948,17 @@ function _bigmantissa(buf::Vector{UInt8}, i::Int, digstart::Int, j::Int, decimal
             while k <= j
                 d = Int(buf[k] - UInt8('0'))
                 (expv > limit10 || (expv == limit10 && d > limitdigit)) &&
-                    return (big, 0, false)
+                    return (0, false)
                 expv = expv * 10 + d
                 k += 1
             end
         end
         signedexp = eneg ? -expv : expv
-        abs(Int128(signedexp) + Int128(offset)) > 65536 && return (big, 0, false)
-        return (big, signedexp - frac, true)
+        abs(Int128(signedexp) + Int128(offset)) > 65536 && return (0, false)
+        return (signedexp - frac, true)
     end
-    abs(ndig - frac) > 65536 && return (big, 0, false)
-    return (big, -frac, true)
+    abs(ndig - frac) > 65536 && return (0, false)
+    return (-frac, true)
 end
 
 """

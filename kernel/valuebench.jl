@@ -89,7 +89,8 @@ function main()
             tk = bench((b, ss) -> (a = 0; for (i, j) in ss; v, rc = V.parsebigint(b, i, j); a += v % Int64; end; a), buf, spans)
             tb = bench((b, ss) -> (a = 0; for (i, j) in ss; a += parse(BigInt, String(b[i:j])) % Int64; end; a), buf, spans)
         elseif kind === :bigfloat
-            tk = bench((b, ss) -> (a = 0.0; for (i, j) in ss; v, rc = V.parsebigfloat(b, i, j); a += Float64(v); end; a), buf, spans)
+            ws = V.BigWork()
+            tk = bench((b, ss) -> (a = 0.0; for (i, j) in ss; v, rc = V.parsebigfloat(b, i, j, UInt8('.'), ws); a += Float64(v); end; a), buf, spans)
             tb = bench((b, ss) -> (a = 0.0; for (i, j) in ss; a += Float64(parse(BigFloat, String(b[i:j]))); end; a), buf, spans)
         elseif kind === :uuid
             tk = bench((b, ss) -> (a = UInt128(0); for (i, j) in ss; v, rc = V.parseuuid(b, i, j); a ⊻= v; end; a), buf, spans)

@@ -347,6 +347,20 @@ end
             @test Float64(vb) === vf
         end
     end
+    # a reused workspace must be stateless across values: interleave shapes
+    # (positive/negative q, short/long mantissas, specials, invalids) and
+    # compare against fresh-workspace parses
+    ws = V.BigWork()
+    seq = ["0.1", "1e300", "-2.5", "123456789012345678901234567890.5e-40",
+           "Inf", "9" ^ 40, "bad", "1e-300", "0.0", "-0.0", "3.14"]
+    for _ in 1:3, s in seq
+        vw, rcw = V.parsebigfloat(b(s), 1, ncodeunits(s), UInt8('.'), ws)
+        vf, rcf = V.parsebigfloat(b(s), 1, ncodeunits(s))
+        @test rcw == rcf
+        rcw == V.RC_OK && @test (isnan(vw) && isnan(vf)) ||
+                                (vw == vf && signbit(vw) == signbit(vf))
+    end
+
     # prove-out range bound is explicit, not silent
     for s in ("1e65535", "1e-65537")
         v, rc = V.parsebigfloat(b(s), 1, ncodeunits(s); prec=65)
