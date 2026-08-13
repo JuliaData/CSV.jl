@@ -463,15 +463,18 @@ end
     @test dt("2024-01-02 03:04", dtfmtopts) === DateTime
     timefmtopts = K.makevalueopts(K.Dialect(); dateformat="HHhMM")
     @test dt("03h04", timefmtopts) === Time
-    # A custom Bool spelling may not collide with an earlier cascade type.
-    # Accepting such a spelling as Bool during parsing but as the earlier type
-    # during sampling makes the final schema depend on nsample.
-    @test_throws ArgumentError K.makevalueopts(K.Dialect();
-                                               truestrings=["1"], falsestrings=["NO"])
-    @test_throws ArgumentError K.makevalueopts(K.Dialect(delim=';'); decimal='x',
-                                               truestrings=["x5"])
-    @test_throws ArgumentError K.makevalueopts(K.Dialect(); dateformat="u dd yyyy",
-                                               truestrings=["Jan 02 2024"])
+    # A custom Bool spelling that collides with an earlier cascade type takes
+    # Bool out of the INFERENCE cascade (else the final schema would depend on
+    # nsample); user-provided Bool columns still parse the lists.
+    collideopts = K.makevalueopts(K.Dialect(); truestrings=["1"], falsestrings=["NO"])
+    @test !collideopts.inferbool
+    @test dt("1", collideopts) === Int64
+    @test dt("NO", collideopts) === String        # whole Bool cascade entry is off
+    @test K.parsevalue(Bool, Vector{UInt8}(codeunits("1")), 1, 1, collideopts) == (true, true)
+    @test !K.makevalueopts(K.Dialect(delim=';'); decimal='x', truestrings=["x5"]).inferbool
+    @test !K.makevalueopts(K.Dialect(); dateformat="u dd yyyy",
+                           truestrings=["Jan 02 2024"]).inferbool
+    @test K.makevalueopts(K.Dialect(); truestrings=["YES"], falsestrings=["NO"]).inferbool
     @test_throws ArgumentError K.makevalueopts(K.Dialect();
                                                truestrings=["yes"], falsestrings=["yes"])
     @test_throws ArgumentError K.makevalueopts(K.Dialect(); truestrings="yes")
@@ -479,6 +482,12 @@ end
     for ns in (1, 2)
         tb = K.parse("a\nNO\nYES\n"; truestrings=["YES"], falsestrings=["NO"], nsample=ns)
         @test tb[:a] == [false, true]
+        # colliding lists: inference lands on Int64/String sample-independently...
+        ti = K.parse("a\n1\n0\n"; truestrings=["1"], falsestrings=["0"], nsample=ns)
+        @test ti[:a] isa Vector{Int64}
+        # ...while a user-typed Bool column parses them as the lists say
+        tu = K.parse("a\n1\n0\n"; types=Bool, truestrings=["1"], falsestrings=["0"], nsample=ns)
+        @test tu[:a] == [true, false]
     end
 
     # A custom pattern parses only the temporal type named by its components.

@@ -145,6 +145,7 @@ struct ValueOpts
     datetimepat::V.DatePattern
     timepat::V.DatePattern
     customfmt::Bool
+    inferbool::Bool   # false when a user Bool spelling collides with an earlier cascade type
 end
 
 function _bytelist(x, name::Symbol)
@@ -179,16 +180,20 @@ function _earlierbooltype(s::Vector{UInt8}, decimal::UInt8,
     return nothing
 end
 
+# A user Bool spelling that an EARLIER cascade type also accepts (e.g.
+# truestrings=["1"]) would make an inferred column's type depend on which rows
+# the sampler saw — "1" detects as Int64, but a Bool-seeded column would accept
+# it. Instead of rejecting the (common, legitimate) spellings outright, Bool
+# leaves the INFERENCE cascade: such columns are never inferred as Bool, while
+# user-provided Bool columns still parse the lists — deterministic either way.
 function _validatebools(trues, falses, decimal, dp, dtp, tp, customfmt)
     for t in trues, f in falses
         t == f && throw(ArgumentError("Bool spelling $(repr(String(t))) is both true and false"))
     end
     for s in Iterators.flatten((trues, falses))
-        T = _earlierbooltype(s, decimal, dp, dtp, tp, customfmt)
-        T === nothing ||
-            throw(ArgumentError("Bool spelling $(repr(String(s))) is parsed as $T earlier in the type cascade"))
+        _earlierbooltype(s, decimal, dp, dtp, tp, customfmt) === nothing || return false
     end
-    return
+    return true
 end
 
 function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
@@ -209,10 +214,10 @@ function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
     delimbytes = d.delim isa UInt8 ? [d.delim] : copy(d.delim)
     trues = _bytelist(truestrings, :truestrings)
     falses = _bytelist(falsestrings, :falsestrings)
-    _validatebools(trues, falses, decimal % UInt8, dp, dtp, tp, custom)
+    inferbool = _validatebools(trues, falses, decimal % UInt8, dp, dtp, tp, custom)
     return ValueOpts(d.oq, d.cq, d.e, d.quoted, delimbytes, decimal % UInt8, stripwhitespace,
                      Vector{UInt8}[], trues, falses,
-                     dp, dtp, tp, custom)
+                     dp, dtp, tp, custom, inferbool)
 end
 
 # --- the cell layer -----------------------------------------------------------
@@ -1018,7 +1023,7 @@ function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::ValueOpts)
         V.parsecivil(buf, cpos, cj, opts.datetimepat)[2] == V.RC_OK && return DateTime
         V.parsecivil(buf, cpos, cj, opts.timepat)[2] == V.RC_OK && return Time
     end
-    parsevalue(Bool, buf, cpos, cj, opts)[2] && return Bool
+    opts.inferbool && parsevalue(Bool, buf, cpos, cj, opts)[2] && return Bool
     return String
 end
 
