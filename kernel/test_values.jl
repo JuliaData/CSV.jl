@@ -95,6 +95,15 @@ end
             @test (isnan(v) && isnan(o)) || reinterpret(UInt64, v) == reinterpret(UInt64, o)
         end
     end
+    # Compact subnormals are an Eisel-Lemire case, not an exact-decimal case.
+    # This route pin prevents a few real tier-3 calls from dominating a corpus
+    # benchmark and being mistaken for wrapper/compiler overhead.
+    for s in ("5e-324", "4.9e-324", "2.4703282292062327e-324",
+              "1e-320", "2.2250738585072011e-308")
+        _, rc, done = V._parsefloat_core(b(s), 1, ncodeunits(s), UInt8('.'))
+        @test rc == V.RC_OK
+        @test done
+    end
     for s in ("", ".", "-", "e5", "1e", "1e+", "1..2", "1.2.3", "1f5", " 1.0", "1.0 ", "nanx", "infs")
         @test pflt(s)[2] == V.RC_INVALID
     end

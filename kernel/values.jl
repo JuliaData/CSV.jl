@@ -368,7 +368,18 @@ function _eisel_lemire(mant::UInt64, q::Int)
     m = hi >> (upper + 9)                               # 54 bits: 53 + round bit
     e2 = ((217706 * q) >> 16) + 63 + Int(upper) - lz    # unbiased binary exponent of hi's msb
     e2 += 1023                                          # bias
-    e2 <= 0 && return Int64(-1)                         # subnormal/underflow ⇒ tier 3
+    if e2 <= 0
+        # Shift the guard-bit mantissa into the denormal range, then round it.
+        # A carry can promote the result to the smallest normal. This is the
+        # standard Eisel-Lemire subnormal step; rejecting here made every
+        # shortest subnormal pay the exact-decimal tier's ~1,000 scaling loops.
+        shift = -e2 + 1
+        shift >= 64 && return Int64(0)                  # certain underflow
+        m >>= shift
+        m = (m + (m & 1)) >> 1
+        e2 = m < (UInt64(1) << 52) ? 0 : 1
+        return reinterpret(Int64, (UInt64(e2) << 52) | (m & 0x000fffffffffffff))
+    end
     # round-half-even ambiguity: exactly-halfway needs the discarded bits
     if lo == 0 && (hi & 0x1ff) == 0 && (m & 0b11) == 0b01
         return Int64(-1)
