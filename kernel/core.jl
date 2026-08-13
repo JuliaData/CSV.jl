@@ -303,35 +303,43 @@ function _finishchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect,
     return
 end
 
-# --- SWAR scanner ------------------------------------------------------------
+# --- SWAR/block scanner --------------------------------------------------------
 #
-# Branchless structural classification 8 bytes at a time. Per 8-byte word we build
-# 8-bit "movemask"s for quote/delim/CR/LF, compute the in-quote region mask with a
-# prefix-XOR over the quote mask (carrying parity between words), null out specials
-# inside quotes, pair CRLF, and only then fall back to per-event scalar work — which
-# runs once per *field*, not per byte. This is the word-sized version of the
-# Langdale–Lemire structural pass; a 64-byte SIMD.jl/CLMUL variant drops in behind
-# the same emission helpers (documented in README).
+# Branchless structural classification in 64-byte blocks — the Langdale–Lemire
+# structural pass at word width. Per 8-byte word we compute exact per-byte
+# equality tests in 0x80-mark space; the delim/CR/LF marks are OR'd BEFORE the
+# movemask multiply, so each word costs two multiplies (quote mask + combined
+# specials mask), not four. Eight words assemble two 64-bit block masks; the
+# in-quote region comes from a 64-bit prefix-XOR over the quote mask (six
+# shift-XOR steps — the multiply-free equivalent of the CLMUL trick; a PMULL/
+# PCLMULQDQ llvmcall drops in behind the same seam), and CR-vs-LF-vs-delim is
+# resolved per *event* (events are rare relative to bytes), which also handles
+# CRLF pairing via the last-CR position instead of a per-word suppression mask.
 
 const ONES8   = 0x0101010101010101
-const HIGHS8  = 0x8080808080808080
 const LOWS7   = 0x7f7f7f7f7f7f7f7f
+const MOVEMASK_MAGIC = 0x0102040810204080
 
-# Exact per-byte equality mask, compressed to 8 bits (bit i ⇔ byte i == b).
-# Uses the exact zero-byte test (no false positives, unlike the subtract-borrow
-# trick) then the classic movemask multiply.
-@inline function bytemask8(w::UInt64, b::UInt8)::UInt8
+# Exact per-byte equality marks: 0x80 at each byte of `w` equal to `b`, 0x00
+# elsewhere. Uses the exact zero-byte test (the subtract-borrow variant has false
+# positives) — safe to OR with other classes' marks before compressing.
+@inline function eqmarks(w::UInt64, b::UInt8)::UInt64
     x = w ⊻ (ONES8 * b)
-    z = ~(((x & LOWS7) + LOWS7) | x | LOWS7)   # 0x80 at each zero byte of x
-    return UInt8(((z >> 7) * 0x0102040810204080) >> 56)
+    return ~(((x & LOWS7) + LOWS7) | x | LOWS7)
 end
 
-# prefix_xor8(m) bit i = XOR of m's bits 0..i — i.e. quote-toggle parity up to and
-# including byte i. log2(8)=3 shift-xor steps.
-@inline function prefix_xor8(m::UInt8)::UInt8
+# Compress 0x80-marks to an 8-bit movemask (bit i ⇔ byte i marked).
+@inline movemask(marks::UInt64)::UInt64 = ((marks >> 7) * MOVEMASK_MAGIC) >> 56
+
+# prefix_xor64(m) bit i = XOR of m's bits 0..i — quote-toggle parity up to and
+# including byte i, across the whole 64-byte block.
+@inline function prefix_xor64(m::UInt64)::UInt64
     m ⊻= m << 1
     m ⊻= m << 2
     m ⊻= m << 4
+    m ⊻= m << 8
+    m ⊻= m << 16
+    m ⊻= m << 32
     return m
 end
 
@@ -340,52 +348,72 @@ function indexchunk_swar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
     start, stop = ci.start, ci.stop
     delim = d.delim::UInt8
     oq = d.oq
+    quoted = d.quoted
     fieldstart = start
     rowstart = start
-    inq = false          # quote parity carried between words
-    crcarry = false      # last structural byte of previous word was CR (suppresses a leading LF)
+    inq = false        # quote parity carried between blocks
+    lastcr = start - 2 # absolute position of the last structural CR (CRLF pairing);
+                       # start-2 can never equal any position's predecessor
     pos = start
+    # ~1 field per 8 bytes is a generous guess; pre-sizing keeps push! growth
+    # checks out of the event loop (exact counts come from the index itself).
+    sizehint!(ci.fields, (stop - start + 1) >> 3)
     GC.@preserve buf begin
         p = pointer(buf)
-        @inbounds while pos + 7 <= stop
-            # The movemask constants number bytes from the least-significant end.
-            # Normalize the native load so the mapping is also correct on a
-            # big-endian host.
-            w = ltoh(unsafe_load(Ptr{UInt64}(p + pos - 1)))
-            q  = d.quoted ? bytemask8(w, oq) : 0x00
-            dm = bytemask8(w, delim)
-            lf = bytemask8(w, LF)
-            cr = bytemask8(w, CR)
-            inmask = prefix_xor8(q)
+        @inbounds while pos + 63 <= stop
+            q64 = zero(UInt64)
+            s64 = zero(UInt64)
+            if quoted
+                for k in 0:7   # fixed trip count; unrolled by the compiler
+                    # ltoh: the movemask constants number bytes from the least-
+                    # significant end, matching little-endian loads.
+                    w = ltoh(unsafe_load(Ptr{UInt64}(p + pos - 1 + 8k)))
+                    q64 |= movemask(eqmarks(w, oq)) << (8k)
+                    sm = eqmarks(w, delim) | eqmarks(w, LF) | eqmarks(w, CR)
+                    s64 |= movemask(sm) << (8k)
+                end
+            else
+                for k in 0:7
+                    w = ltoh(unsafe_load(Ptr{UInt64}(p + pos - 1 + 8k)))
+                    sm = eqmarks(w, delim) | eqmarks(w, LF) | eqmarks(w, CR)
+                    s64 |= movemask(sm) << (8k)
+                end
+            end
+            inmask = prefix_xor64(q64)
             inq && (inmask = ~inmask)
-            out = ~inmask
-            sd  = dm & out
-            scr = cr & out
-            slf = lf & out & ~((scr << 1) | (crcarry ? 0x01 : 0x00))  # drop LF of a CRLF pair
-            special = sd | scr | slf
-            while special != 0x00
-                tz = trailing_zeros(special)
+            specials = s64 & ~inmask
+            while specials != zero(UInt64)
+                tz = trailing_zeros(specials)
                 at = pos + tz
                 b = buf[at]
                 if b == delim
                     emitfield!(ci, fieldstart, at - 1)
                     fieldstart = at + 1
-                else # CR or LF row terminator
+                elseif b == LF
+                    if lastcr == at - 1
+                        # LF of a CRLF pair: the CR already ended the row and
+                        # advanced fieldstart past this byte — consume silently.
+                    else
+                        emitfield!(ci, fieldstart, at - 1)
+                        endrow!(ci, buf, d, rowstart)
+                        fieldstart = rowstart = at + 1
+                    end
+                else # CR
                     emitfield!(ci, fieldstart, at - 1)
                     endrow!(ci, buf, d, rowstart)
+                    lastcr = at
                     nxt = at + 1
-                    b == CR && nxt <= stop && buf[nxt] == LF && (nxt += 1)
+                    nxt <= stop && buf[nxt] == LF && (nxt += 1)
                     fieldstart = rowstart = nxt
                 end
-                special &= special - 0x01
+                specials &= specials - one(UInt64)
             end
-            crcarry = (scr & 0x80) != 0x00
-            inq ⊻= isodd(count_ones(q))
-            pos += 8
+            inq ⊻= isodd(count_ones(q64))
+            pos += 64
         end
     end
-    # Scalar tail for the last <8 bytes, continuing the carried state.
-    _swar_tail!(ci, buf, d, pos, fieldstart, rowstart, inq, crcarry)
+    # Scalar tail for the last <64 bytes, continuing the carried state.
+    _swar_tail!(ci, buf, d, pos, fieldstart, rowstart, inq, lastcr == pos - 1)
     return ci
 end
 
