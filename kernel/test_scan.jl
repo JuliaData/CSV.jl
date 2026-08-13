@@ -118,6 +118,11 @@ end
     scan2 = T.Scan(select = (:a => Int64,), filter = T.col(:b) != "y")
     t2 = S.read(dirty, scan2)
     @test any(p -> p.row == 3 && p.col == 1, K.problems(t2))        # row 3 in INPUT numbering
+
+    unclosed = "a\n1\n\"unterminated"
+    @test isempty(K.problems(K.parse(unclosed; rowmask=[true, false])))
+    @test any(p -> p.kind == :unclosed_quote,
+              K.problems(K.parse(unclosed; rowmask=[false, true])))
 end
 
 @testset "problem streams merge once under the global cap" begin

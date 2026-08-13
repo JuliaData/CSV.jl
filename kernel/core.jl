@@ -2274,7 +2274,9 @@ function parse(buf::Vector{UInt8};
     # at the file, not at the filtered output)
     log = finishproblems(pendingproblems, rowmask === nothing ? rowbases : rowbases0)
     hasunclosed = indexunclosed || (nch > 0 && last(chunks).unclosedquote)
-    if reportstructural && hasunclosed && (limit === nothing || limit >= fullrows)
+    unclosedincluded = rowmask === nothing || fullrows == 0 || rowmask[end]
+    if reportstructural && hasunclosed && unclosedincluded &&
+       (limit === nothing || limit >= fullrows)
         pushproblem!(log, 0, 0, length(buf), :unclosed_quote,
                      "input ended inside a quoted field")
     end
