@@ -88,9 +88,9 @@ end
         @test rc == V.RC_OK
         o = tryparse(Float64, s)
         if o === nothing
-            # pinned delta: Base.parse throws on overflow-to-Inf (strtod ERANGE);
-            # this layer returns ±Inf with OK (the CSV/strtod-value semantic)
-            @test isinf(v)
+            # pinned delta: Base rejects ERANGE both directions; this layer
+            # returns ±Inf (overflow) / ±0.0 (underflow) with OK
+            @test isinf(v) || v == 0.0
         else
             @test (isnan(v) && isnan(o)) || reinterpret(UInt64, v) == reinterpret(UInt64, o)
         end

@@ -348,7 +348,7 @@ const POW5HI, POW5LO = _buildpow5()
 
 # Eisel–Lemire core: value = mant × 10^q (mant ≠ 0, not truncated unless
 # `truncated`). Returns reinterpretable bits, or -1 ⇒ tier 3 decides.
-function _eisel_lemire(mant::UInt64, q::Int, truncated::Bool)
+function _eisel_lemire(mant::UInt64, q::Int)
     (q < POW5MIN || q > POW5MAX) && return Int64(-2)   # certain under/overflow, sign applied by caller
     lz = leading_zeros(mant)
     w = mant << lz
@@ -364,7 +364,6 @@ function _eisel_lemire(mant::UInt64, q::Int, truncated::Bool)
         lo < lo0 && (hi += 1)
         (hi & 0x1ff) == 0x1ff && lo + 1 == 0 && return Int64(-1)  # still ambiguous
     end
-    truncated && (hi & 0x1ff) <= 1 && return Int64(-1)  # truncation could flip rounding
     upper = hi >> 63
     m = hi >> (upper + 9)                               # 54 bits: 53 + round bit
     e2 = ((217706 * q) >> 16) + 63 + Int(upper) - lz    # unbiased binary exponent of hi's msb
@@ -654,7 +653,13 @@ minimized upstream Julia issue.
         f = q >= 0 ? f * _POW10[q + 1] : f / _POW10[-q + 1]
         return (parts.neg ? -f : f, RC_OK, true)
     end
-    bits = _eisel_lemire(mant, q, !untrunc)
+    bits = _eisel_lemire(mant, q)
+    if !untrunc && bits >= 0
+        # truncated mantissa: decided only if mant and mant+1 round identically
+        # (the reference fast_float rule); otherwise the digits must speak (tier 3)
+        bits2 = _eisel_lemire(mant + 1, q)
+        bits2 == bits || return (parts.neg ? -1.0 : 1.0, RC_OK, false)
+    end
     bits >= 0 && return (_sign(reinterpret(UInt64, bits), parts.neg), RC_OK, true)
     if bits == Int64(-2)
         return (q < 0 ? (parts.neg ? -0.0 : 0.0) : (parts.neg ? -Inf : Inf), RC_OK, true)
