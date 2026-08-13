@@ -2106,6 +2106,8 @@ function parse(buf::Vector{UInt8};
     # limit/rowmask need global row bases before any column parses; index the
     # remaining chunks now (normally chunks index lazily inside their own task)
     rowbases0 = Int[]
+    typechunks = chunks
+    typerowbases0 = rowbases0
     if limit !== nothing || rowmask !== nothing
         toindex = [k for k in 1:nch if !indexed[k]]
         if parallel && length(toindex) > 1
@@ -2122,14 +2124,16 @@ function parse(buf::Vector{UInt8};
             end
         end
         rowbases0 = cumsum([0; Int[nrows(ci) for ci in chunks[1:max(nch - 1, 0)]]])
+        typechunks = chunks
+        typerowbases0 = rowbases0
         if rowmask !== nothing
             total = sum(nrows, chunks; init=0)
             length(rowmask) == total ||
                 throw(ArgumentError("rowmask length $(length(rowmask)) != $total data rows"))
         end
         if limit !== nothing
-            # keep whole chunks up to the boundary; the boundary chunk parses in
-            # full but only its first `limit - base` rows stitch/report
+            # keep whole chunks up to the boundary; rows after the boundary are
+            # type-detected below but never value-parsed, stitched, or reported
             lastk = 0
             for k in 1:nch
                 lastk = k
@@ -2162,6 +2166,19 @@ function parse(buf::Vector{UInt8};
         end
         for j in 1:ncols
             seed[j] === nothing && (seed[j] = inferred[j])
+        end
+    end
+    if limit !== nothing && limit > 0
+        for (k, ci) in enumerate(typechunks)
+            firstexcluded = max(limit - typerowbases0[k] + 1, 1)
+            firstexcluded > nrows(ci) && continue
+            for lr in (ci.firstdatarow + firstexcluded - 1):totalrows(ci), j in 1:ncols
+                (selected === nothing || selected[j]) && !userprovided[j] || continue
+                seed[j] === String && continue
+                sp = fieldspan(ci, lr, j)
+                sp === nothing && continue
+                seed[j] = promote_kernel(seed[j], detecttype(buf, sp[1], sp[2], opts))
+            end
         end
     end
     if selected !== nothing
@@ -2235,7 +2252,7 @@ function parse(buf::Vector{UInt8};
     # -- stitch: exact-size final columns from the segments --------------------
     chunkrows = Int[nrows(ci) for ci in chunks]
     if limit !== nothing && nch > 0
-        # the boundary chunk parsed in full; only its first rows stitch
+        # only the retained prefix of the boundary chunk stitches
         chunkrows[end] = min(chunkrows[end], limit - rowbases0[end])
     end
     rowbases = cumsum([0; chunkrows[1:max(nch - 1, 0)]])

@@ -74,6 +74,21 @@ end
     @test T.finish(t, residual) === t
 end
 
+@testset "constant filters preserve row counts with no predicate columns" begin
+    for select in (nothing, ())
+        truescan = select === nothing ? T.Scan(filter=T.AlwaysTrue()) :
+                   T.Scan(select=select, filter=T.AlwaysTrue())
+        falsescan = select === nothing ? T.Scan(filter=T.AlwaysFalse()) :
+                    T.Scan(select=select, filter=T.AlwaysFalse())
+        t = S.read(csv, truescan)
+        @test t.nrows == 2_000
+        @test K.names(t) == (select === nothing ? [:region, :price, :qty, :notes, :flag] : Symbol[])
+        t = S.read(csv, falsescan)
+        @test t.nrows == 0
+        @test K.names(t) == (select === nothing ? [:region, :price, :qty, :notes, :flag] : Symbol[])
+    end
+end
+
 @testset "pushdown composes with pool and groupmark" begin
     scan = T.Scan(select = (:region, :qty), filter = T.col(:qty) > 25)
     ref = T.finish(K.parse(csv), scan)
@@ -182,6 +197,16 @@ end
         @test occursin("data row 1, column 1", sprint(showerror, err))
     end
     @test K.parse(bad; types=Int64, limit=0, on_error=:error).nrows == 0
+end
+
+@testset "limit preserves full-parse inference without parsing excluded values" begin
+    dirty = "a,b\n1,x\n2,y\noops,z\n"
+    scan = T.Scan(limit=2)
+    for cb in (8, 16, 1 << 20), par in (false, true)
+        ref = T.finish(K.parse(dirty; chunkbytes=cb, parallel=par), scan)
+        t = S.read(dirty, scan; chunkbytes=cb, parallel=par)
+        @test sametable(t, ref)
+    end
 end
 
 @testset "errors: contradictions, not gaps" begin

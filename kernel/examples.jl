@@ -39,6 +39,7 @@ Tables.columns(t::K.ParsedTable) = t
 Tables.columnnames(t::K.ParsedTable) = K.names(t)
 Tables.getcolumn(t::K.ParsedTable, i::Int) = K.columns(t)[i]
 Tables.getcolumn(t::K.ParsedTable, nm::Symbol) = t[nm]
+Tables.rowcount(t::K.ParsedTable) = t.nrows
 Tables.schema(t::K.ParsedTable) =
     Tables.Schema(K.names(t), Type[eltype(c) for c in K.columns(t)])
 
