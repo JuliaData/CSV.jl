@@ -793,36 +793,44 @@ function parsebigfloat(buf::Vector{UInt8}, i::Int, j::Int,
     #   q ≥ 0: N = M·5^q is exact and value = N × 2^q
     #   q < 0: N = ⌊M·2^s / 5^-q⌋ with s sized so N keeps ≥ prec+2 bits; the
     #          remainder is the sticky. value = N × 2^(q-s)
-    local N::BigInt
+    # in-place GMP throughout: M becomes N; rounding decisions read bits
+    # without materializing masks (tstbit/scan1); ~4 allocations per value
+    MPZ = Base.GMP.MPZ
     sticky = false
     if q >= 0
-        N = M * BigInt(5)^q
+        if q > 0
+            p5 = MPZ.pow_ui(BigInt(5), q % Culong)
+            MPZ.mul!(M, p5)
+        end
         e2 = q
     else
         k = -q
-        d5 = BigInt(5)^k
-        s = max(0, prec + 3 + ndigits(d5, base=2) - ndigits(M, base=2))
-        N, R = divrem(M << s, d5)
+        d5 = MPZ.pow_ui(BigInt(5), k % Culong)
+        s = max(0, prec + 3 + Int(MPZ.sizeinbase(d5, 2)) - Int(MPZ.sizeinbase(M, 2)))
+        MPZ.mul_2exp!(M, s % Culong)
+        R = BigInt(0)
+        MPZ.tdiv_qr!(M, R, M, d5)
         sticky = !iszero(R)
         e2 = q - s
     end
-    nb = ndigits(N, base=2)
+    nb = Int(MPZ.sizeinbase(M, 2))                  # exact for base 2
     if nb > prec
         drop = nb - prec
-        low = N & ((BigInt(1) << drop) - 1)
-        Mp = N >> drop
-        half = BigInt(1) << (drop - 1)
-        if low > half || (low == half && (sticky || isodd(Mp)))
-            Mp += 1
-            if Mp == BigInt(1) << prec              # carry out of the mantissa
-                Mp >>= 1
+        rbit = MPZ.tstbit(M, (drop - 1) % Culong)
+        # sticky below the round bit: lowest set bit sits under it
+        sticky = sticky || (drop > 1 && Int(MPZ.scan1(M, 0)) < drop - 1)
+        MPZ.fdiv_q_2exp!(M, drop % Culong)          # M >>= drop (M ≥ 0 here)
+        if rbit && (sticky || MPZ.tstbit(M, Culong(0)))
+            MPZ.add_ui!(M, 1)
+            if Int(MPZ.sizeinbase(M, 2)) > prec     # carry out of the mantissa
+                MPZ.fdiv_q_2exp!(M, Culong(1))
                 drop += 1
             end
         end
-        v = ldexp(BigFloat(Mp; precision=prec), e2 + drop)
+        v = ldexp(BigFloat(M; precision=prec), e2 + drop)
     else
         # exact case (only reachable when q ≥ 0, where sticky is impossible)
-        v = ldexp(BigFloat(N; precision=prec), e2)
+        v = ldexp(BigFloat(M; precision=prec), e2)
     end
     return (parts.neg ? -v : v, RC_OK)
 end
