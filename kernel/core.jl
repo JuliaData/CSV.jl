@@ -2765,22 +2765,26 @@ made after parsing instead of before it (this replaces CSV.jl's up-front
 materialize(v::AbstractVector) = collect(v)
 materialize(v::Vector) = v
 
+# CSV.jl-compatible: a duplicate takes the smallest `name_k` not used by ANY
+# name — original or already assigned — so `a,a,a_1` becomes `a,a_2,a_1`
+# (renames never collide with an original that appears later).
 function makeunique!(names::Vector{Symbol})
-    seen = Dict{Symbol, Int}()
+    taken = Set(names)
+    seen = Set{Symbol}()
     for i in eachindex(names)
         nm = names[i]
-        if haskey(seen, nm)
-            k = seen[nm]
+        if nm in seen
+            k = 1
             newnm = Symbol(nm, :_, k)
-            while haskey(seen, newnm)
+            while newnm in taken
                 k += 1
                 newnm = Symbol(nm, :_, k)
             end
-            seen[nm] = k + 1
-            seen[newnm] = 1
+            push!(taken, newnm)
             names[i] = newnm
+            push!(seen, newnm)
         else
-            seen[nm] = 1
+            push!(seen, nm)
         end
     end
     return names
