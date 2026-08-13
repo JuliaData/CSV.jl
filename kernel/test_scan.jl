@@ -224,6 +224,9 @@ end
 @testset "errors: contradictions, not gaps" begin
     @test_throws ArgumentError S.read(csv, T.Scan(select = :nope))
     @test_throws ArgumentError S.read(csv, T.Scan(select = (:qty => Int64, :qty => Float64)))
+    normalized = T.Scan(select = (:qty => Int64,
+                                  :qty => Union{Int64, Missing} => :qty2))
+    @test sametable(S.read(csv, normalized), T.finish(K.parse(csv), normalized))
     @test_throws ArgumentError S.read(csv, T.Scan(select = :region); types=Dict(:qty => Int64))
     @test_throws ArgumentError S.read(csv, T.Scan(); limit=3)
     @test_throws ArgumentError S.read(csv, T.Scan(); rowmask=fill(true, 2_000))

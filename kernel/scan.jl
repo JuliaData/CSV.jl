@@ -93,10 +93,11 @@ function apply(source, scan::Tables.Scan; header::Union{Bool, AbstractVector}=tr
     seedtypes = Dict{Int, Type}()
     for c in b.columns
         c.type === nothing && continue
+        newT = c.type === Missing ? Missing : Base.nonmissingtype(c.type)
         T = get(seedtypes, c.index, nothing)
-        T === nothing || T === c.type ||
-            throw(ArgumentError("column $(names[c.index]) selected twice with conflicting types $T and $(c.type)"))
-        seedtypes[c.index] = c.type
+        T === nothing || T === newT ||
+            throw(ArgumentError("column $(names[c.index]) selected twice with conflicting types $T and $newT"))
+        seedtypes[c.index] = newT
     end
     outidx = [c.index for c in b.columns]
     predidx = b.filtercols
