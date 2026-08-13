@@ -88,6 +88,15 @@ function sumncodeunits(c::K.KStrVector{K.KStr})
     return t
 end
 
+function sumgrouped(buf::Vector{UInt8}, opts::K.ValueOpts, scratch::Vector{UInt8})
+    total = Int64(0)
+    for _ in 1:1000
+        v, ok = K.parsevalue(Int64, buf, 1, length(buf), opts, scratch)
+        ok && (total += v)
+    end
+    return total
+end
+
 function kstrfrombytes(bytes::Vector{UInt8})
     p = length(bytes) <= K.KSTR_INLINE ? K.inline_payload(bytes, 1, length(bytes)) :
                                          K.view_payload(bytes, 1, length(bytes), Int64(1))
@@ -474,12 +483,14 @@ end
     @test !K.makevalueopts(K.Dialect(delim=';'); decimal='x', truestrings=["x5"]).inferbool
     @test !K.makevalueopts(K.Dialect(); dateformat="u dd yyyy",
                            truestrings=["Jan 02 2024"]).inferbool
+    @test !K.makevalueopts(K.Dialect(delim=';'); groupmark=',',
+                           truestrings=["1,000"]).inferbool
     @test K.makevalueopts(K.Dialect(); truestrings=["YES"], falsestrings=["NO"]).inferbool
     @test_throws ArgumentError K.makevalueopts(K.Dialect();
                                                truestrings=["yes"], falsestrings=["yes"])
     @test_throws ArgumentError K.makevalueopts(K.Dialect(); truestrings="yes")
     @test_throws ArgumentError K.makevalueopts(K.Dialect(); dateformat="literal")
-    for ns in (1, 2)
+    for ns in (1, 2, 3)
         tb = K.parse("a\nNO\nYES\n"; truestrings=["YES"], falsestrings=["NO"], nsample=ns)
         @test tb[:a] == [false, true]
         # colliding lists: inference lands on Int64/String sample-independently...
@@ -683,6 +694,14 @@ end
     @test pvg(Int64, "1234") == (1234, true)
     @test pvg(Float64, "5,678.25") == (5678.25, true)
     @test !pvg(Int64, ",123")[2] && !pvg(Float64, "1.5,0")[2]
+    scratch = Vector{UInt8}(undef, 64)
+    @test K.V.degroup!(scratch, Vector{UInt8}(codeunits("1.5,0")), 1, 5,
+                       UInt8(','), UInt8('.')) == -2
+    @test K.V.degroup!(scratch, Vector{UInt8}(codeunits("1e1,0")), 1, 5,
+                       UInt8(','), UInt8('.')) == -2
+    groupedbytes = Vector{UInt8}(codeunits("1,234,567"))
+    sumgrouped(groupedbytes, gmo, scratch) # compile before the allocation probe
+    @test @allocated(sumgrouped(groupedbytes, gmo, scratch)) == 0
     # groupmark == delim works through quoting (the mark is content there)
     for ns in (1, 2, 3)
         tg = K.parse("a,b\n\"1,234\",x\n\"5,678\",y\n"; groupmark=',', nsample=ns)
@@ -690,13 +709,22 @@ end
     end
     tg = K.parse("a;b\n1.234.567;2,5\n"; delim=';', groupmark='.', decimal=',')
     @test tg[:a] == [1234567] && tg[:b] == [2.5]
+    # User-only numeric kernels share the same degroup scratch route.
+    tgb = K.parse("a;b\n12,345,678,901,234,567,890;1,234.5\n";
+                  delim=';', groupmark=',', types=[BigInt, BigFloat])
+    @test tgb[:a] == [big"12345678901234567890"]
+    @test tgb[:b] == [BigFloat("1234.5")]
+    @test isempty(K.problems(tgb))
     # off ⇒ marked numbers are strings, exactly as before the feature existed
     tg = K.parse("a;b\n1,234;9\n"; delim=';')
     @test eltype(tg[:a]) == K.KStr
-    @test_throws ArgumentError K.makevalueopts(K.Dialect(); groupmark='5')
-    @test_throws ArgumentError K.makevalueopts(K.Dialect(); groupmark='.')
-    @test_throws ArgumentError K.makevalueopts(K.Dialect(); groupmark='e')
-    @test_throws ArgumentError K.makevalueopts(K.Dialect(); groupmark='"')
+    for gm in ('0', '5', '9', '.', 'e', 'E', '+', '-', '"', '\0')
+        @test_throws ArgumentError K.makevalueopts(K.Dialect(); groupmark=gm)
+    end
+    asymmetric = K.Dialect(openquotechar='[', closequotechar=']', escapechar='\\')
+    for gm in ('[', ']', '\\')
+        @test_throws ArgumentError K.makevalueopts(asymmetric; groupmark=gm)
+    end
 end
 
 @testset "misc inputs & edges" begin

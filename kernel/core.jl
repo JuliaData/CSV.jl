@@ -214,7 +214,7 @@ function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
     if groupmark !== nothing
         isascii(groupmark) || throw(ArgumentError("groupmark must be ASCII (got $(repr(groupmark)))"))
         gm = groupmark % UInt8
-        (gm - UInt8('0') <= 0x09 || gm == decimal % UInt8 ||
+        (gm == 0x00 || gm - UInt8('0') <= 0x09 || gm == decimal % UInt8 ||
          gm in (UInt8('e'), UInt8('E'), UInt8('+'), UInt8('-'), d.oq, d.cq, d.e)) &&
             throw(ArgumentError("groupmark $(repr(groupmark)) conflicts with numeric or quote syntax"))
         # groupmark == delim is allowed: such fields are only expressible quoted,
@@ -365,13 +365,31 @@ end
 @inline parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                    scratch::Vector{UInt8}) where {T} = parsevalue(T, buf, i, j, vo)
 # user-only column types: never inferred, so the cascade and lattice are untouched
-@inline function parsevalue(::Type{BigInt}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+@inline function _parsebigint_direct(buf::Vector{UInt8}, i::Int, j::Int)
     v, rc = V.parsebigint(buf, i, j)
     return (v, rc == V.RC_OK)
 end
-@inline function parsevalue(::Type{BigFloat}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+@inline function parsevalue(::Type{BigInt}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
+                            scratch::Vector{UInt8})
+    if vo.groupmark != 0x00
+        n = V.degroup!(scratch, buf, i, j, vo.groupmark, 0xff)
+        n == -2 && return (BigInt(0), false)
+        n >= 0 && return _parsebigint_direct(scratch, 1, n)
+    end
+    return _parsebigint_direct(buf, i, j)
+end
+@inline function _parsebigfloat_direct(buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     v, rc = V.parsebigfloat(buf, i, j, vo.decimal)
     return (v, rc == V.RC_OK)
+end
+@inline function parsevalue(::Type{BigFloat}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
+                            scratch::Vector{UInt8})
+    if vo.groupmark != 0x00
+        n = V.degroup!(scratch, buf, i, j, vo.groupmark, vo.decimal)
+        n == -2 && return (BigFloat(0), false)
+        n >= 0 && return _parsebigfloat_direct(scratch, 1, n, vo)
+    end
+    return _parsebigfloat_direct(buf, i, j, vo)
 end
 @inline function parsevalue(::Type{Base.UUID}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     u, rc = V.parseuuid(buf, i, j)
@@ -380,6 +398,9 @@ end
 _scratchfor(vo::ValueOpts) = vo.groupmark == 0x00 ? EMPTY_BYTES : Vector{UInt8}(undef, 64)
 @inline parsevalue(::Type{Int64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
     parsevalue(Int64, buf, i, j, vo, _scratchfor(vo))
+@inline parsevalue(::Type{BigInt}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
+    vo.groupmark == 0x00 ? _parsebigint_direct(buf, i, j) :
+                           parsevalue(BigInt, buf, i, j, vo, Vector{UInt8}(undef, 64))
 @inline function _parsefloat_direct(buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     v, rc = V.parsefloat64(buf, i, j, vo.decimal)
     return (v, rc == V.RC_OK)
@@ -387,6 +408,9 @@ end
 @inline parsevalue(::Type{Float64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
     vo.groupmark == 0x00 ? _parsefloat_direct(buf, i, j, vo) :
                            parsevalue(Float64, buf, i, j, vo, Vector{UInt8}(undef, 64))
+@inline parsevalue(::Type{BigFloat}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
+    vo.groupmark == 0x00 ? _parsebigfloat_direct(buf, i, j, vo) :
+                           parsevalue(BigFloat, buf, i, j, vo, Vector{UInt8}(undef, 64))
 @inline function parsevalue(::Type{Bool}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     if isempty(vo.trues) && isempty(vo.falses)
         v, rc = V.parsebool(buf, i, j)

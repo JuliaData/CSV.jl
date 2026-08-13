@@ -1048,7 +1048,8 @@ function degroup!(scratch::Vector{UInt8}, buf::Vector{UInt8}, i::Int, j::Int,
     intpart = true
     @inbounds for k in i:j
         b = buf[k]
-        if b == gm && intpart
+        if b == gm
+            intpart || return -2
             (k > i && (buf[k-1] - UInt8('0')) <= 0x09 &&
              k < j && (buf[k+1] - UInt8('0')) <= 0x09) || return -2
         else
