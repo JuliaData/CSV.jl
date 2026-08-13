@@ -89,29 +89,27 @@ spam, nothing lost to a terminal scrollback.
 
 `bench.jl` runs a shape × size matrix (numeric, mixed, string-heavy,
 quoted-with-embedded-newlines, 200-column wide, 2-column long, missing-heavy ×
-10 KiB → 200 MiB) against the installed CSV.jl. Ratios from an M-series laptop,
-8 threads (kernel-lazy / CSV.File; `kernel+str` additionally collects string
-columns to `Vector{String}`):
+10 KiB → 200 MiB) against the installed CSV.jl. With the three deep pieces in
+(64-byte block scanner, KStr inline-else-view strings, fused index→parse
+pipeline), on an M-series laptop at 8 threads (kernel ÷ CSV.File, kernel's
+string columns being the zero-copy KStr default):
 
-- **10 KiB: kernel wins every shape, ~1.9–3.9×** (absolute: 56–110 µs vs
-  CSV.File's 112–255 µs) — no Context ceremony, size-aware sampling.
-- **1–200 MiB: a parity band, ~0.85–1.25×** — ahead on sparse/strings-lazy/
-  longnarrow/numeric, behind ~10–15% on `mixed` (the price of the
-  sample-independence guard on Bool/temporal columns) and on `wide`
-  (column-at-a-time wants cache-resident chunks; the 1 MiB `chunkbytes` cap
-  recovered most of it: 623 → 911 MiB/s at 200 MiB × 200 cols).
-- **Single-threaded (20 MiB): kernel ahead on 5/7 shapes (1.1–1.5×)**, ~parity
-  on the rest — the wins are not a threading artifact.
-- **`kernel+str` on string-heavy shapes is ~0.35×**: collecting to
-  `Vector{String}` heap-allocates every cell, vs CSV.jl's unboxed InlineStrings.
-  This is precisely the gap the planned inline-else-view string layout closes;
-  the lazy default is already at/above parity.
+- **10 KiB: kernel wins every shape, ~1.7–2.3×** (51–112 µs vs 100–255 µs).
+- **20–200 MiB: wins or ties 5–6 of 7 shapes** — numeric 1.25–1.31×, sparse
+  1.55–1.67×, strings 1.2×, longnarrow 1.1×, wide ~parity (was 0.54× before
+  the fused pipeline); `mixed` 0.88–0.97× and `quoted` ~0.93× remain the
+  honest gaps (the Bool/temporal sample-independence guard, and quotes being
+  scanned by both the index and xparse — the FieldSpan quote-bits seam).
+- **Single-threaded (20 MiB): wins 6 of 7 (1.03–1.58×)** — not a threading
+  artifact.
+- `kernel+str` (detaching to `Vector{String}`) is allocation-bound by
+  definition; the KStr columns are the intended interface (zero-alloc access,
+  2× faster length/iteration than InlineString columns, direct ==(·,String)).
 
-Two honest architecture taxes to track: the index is a second pass over the
-bytes (visible on pure-numeric RAM-bound runs), and quote-heavy fields get their
-quotes scanned twice (index + `xparse`) — the designed fixes are pipelined
-chunk index→parse (ChunkedBase-style) and carrying the index's quoted/escaped
-bits into value parsing.
+The fused driver indexes each chunk and parses all its columns while the bytes
+are cache-hot (segments stitched into exact-size finals; single-chunk files
+finalize the segment in place, zero copies), which is what removed the former
+second-pass-over-RAM tax on numeric/wide at scale.
 
 ## Pinned semantics (deliberate, tested)
 

@@ -671,10 +671,14 @@ end
     buf = Vector{UInt8}(codeunits(input))
     @test length(K.index(buf; chunkbytes=7, parallel=false).chunks) > 1
     seq = K.parse(buf; chunkbytes=7, parallel=false, kw...)
-    par = K.parse(buf; chunkbytes=7, parallel=true, kw...)
     one = K.parse(buf; chunkbytes=length(buf) + 1, parallel=false, kw...)
-    @test isequal(tablesnapshot(seq), tablesnapshot(par))
     @test isequal(tablesnapshot(seq), tablesnapshot(one))
+    # repeated: the fused wave promotes this input across chunks, so hammer the
+    # parallel path for scheduling-order races
+    for _ in 1:25
+        par = K.parse(buf; chunkbytes=7, parallel=true, kw...)
+        @test isequal(tablesnapshot(seq), tablesnapshot(par))
+    end
     @test K.names(seq) == [:i, :mix, :txt, :strict]
     @test seq.nrows == 6
     @test eltype(seq[:mix]) == Union{K.KStr, Missing}
