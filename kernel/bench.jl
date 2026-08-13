@@ -4,8 +4,8 @@
 # performance is broadly applicable rather than tuned to one shape. Caveats on
 # comparability, stated up front:
 #   * CSV.File materializes columns eagerly (incl. InlineString/pooled string
-#     columns); the kernel returns lazy views for strings. The "kernel+str"
-#     column therefore ALSO collects every string column into Vector{String} —
+#     columns); the kernel returns inline-or-view KStr columns. The "kernel+str"
+#     column therefore ALSO materializes every string column to Vector{String} —
 #     that is the fair "owned data" comparison. Non-string columns are directly
 #     comparable (both engines hand back materialized values).
 #   * CSV.File is run with silencewarnings=true (the quoted shape triggers its

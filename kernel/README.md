@@ -19,7 +19,7 @@ enough to demonstrate that the architecture holds end-to-end:
 | file | contents |
 |---|---|
 | `core.jl` | the kernel: `Dialect`, structural index (scalar + SWAR scanners), parallel indexing, type detection & promotion lattice, column builders, `CSVKernel.parse` driver, `Problem` log |
-| `test.jl` | ~4100 assertions: pinned structural cases, a randomized round-trip property test run across every scanner × chunk-geometry combination, typed-layer tests, examples-layer tests |
+| `test.jl` | ~6200 assertions: pinned structural cases, randomized scanner and string properties, typed-layer tests, driver determinism stress, examples-layer tests |
 | `examples.jl` | `KernelExamples.read` / `.batches` / `.rows` — the CSV.jl API surfaces as compositions of kernel blocks, plus Tables.jl integration |
 | `bench.jl` | rough throughput probe (index vs full-parse split; optional CSV.jl comparison) |
 | `Project.toml` | standalone environment (Parsers, Tables, Dates + test deps) |
@@ -51,9 +51,10 @@ custom-type kernels — all three collapse into `parsecolchunk!`.
 promotes through a small lattice (`Missing → Int64 → Float64 → String`,
 temporals/Bool → `String`), and re-runs *that column* over the retained index.
 Today's `promotetostring!` re-parses every column of the chunk from its start.
-Inference seeds from a **stratified sample** (evenly spaced rows across the
-whole index — late-file surprises are as visible as early ones), which is what
-makes mid-parse promotion rare in the first place.
+Inference seeds from a **stratified set of probe chunks** spanning the file,
+which makes mid-parse promotion rare. Any unsampled conflict still joins the
+shared promotion register, and stale segments re-parse under the frozen final
+type, so the result does not depend on the sample.
 
 **4. Parallelism is deterministic, not speculative.** Quote-toggle parity is
 associative, so a parallel per-range popcount plus an exclusive XOR-scan gives
@@ -77,13 +78,15 @@ spam, nothing lost to a terminal scrollback.
 - isbits columns: `Vector{T}` + `Vector{Bool}` presence — no sentinel
   arithmetic (retires the SentinelArrays dependency for this purpose); columns
   with no missings hand back the raw `Vector{T}` zero-copy.
-- string columns: content spans into the input buffer, materialized (and
-  unescaped) lazily on `getindex`; `materialize(col)` copies out. The
-  view-vs-copy choice moves to *after* parsing instead of CSV.jl's up-front
-  `stringtype=` commitment. Escaped-length is `Int32`, deliberately not
-  Parsers' `PosLen` (whose 20-bit length cap is the root of CSV.jl #935).
-- exact allocation: the index knows the exact row count before any value is
-  parsed — `rowsguess`, `reallocate!`, and growth heuristics have no analog.
+- string columns: 16-byte `KStr` payloads hold up to 12 bytes inline and view
+  longer content in the retained input buffer. Long escaped values are
+  unescaped once into a column-owned extra buffer. `getindex` returns a `KStr`
+  without allocating; `materialize(col)` copies to plain `String`s. Length is
+  `Int32`, deliberately not Parsers' `PosLen` (whose 20-bit length cap is the
+  root of CSV.jl #935).
+- exact allocation: each indexed chunk knows its row count before segment
+  parsing, and the stitch phase knows the exact global row count. `rowsguess`,
+  `reallocate!`, and growth heuristics have no analog.
 
 ## Measured breadth (kernel/bench.jl)
 

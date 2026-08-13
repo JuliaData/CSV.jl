@@ -812,11 +812,12 @@ end
     KStr <: AbstractString
 
 A kernel string value: 16-byte payload plus the byte vector long values view
-into (a shared empty vector for inline values). Access never allocates —
-comparisons, hashing into Dicts, sorting, and iteration all run over the inline
-bytes or the retained buffer. `String(s)` (or `materialize` on the column)
-copies out. Lifetime: a view pins its buffer, exactly like today's
-`PosLenString` — the production compaction story is `materialize`.
+into (a shared empty vector for inline values). Byte access, direct comparisons,
+and iteration do not allocate; they use the inline bytes or retained buffer.
+Hashing currently delegates through `String(s)` for contract correctness and
+therefore allocates. `String(s)` (or `materialize` on the column) copies out.
+Lifetime: a view pins its buffer, exactly like today's `PosLenString` — the
+production compaction story is `materialize`.
 """
 struct KStr <: AbstractString
     p::KStrPayload
@@ -1528,12 +1529,14 @@ end
     CSVKernel.parse(str::AbstractString; kwargs...)
     CSVKernel.parse(io::IO; kwargs...)
 
-Eagerly parse delimited data: build a row-aligned index, infer types from a
-stratified sample, then parse each column of each chunk in a monomorphic loop,
-promoting per-column on conflict. `parallel` selects tasks or plain loops without
-changing the chunk layout. The default `chunkbytes` is
+Eagerly parse delimited data: plan row-aligned chunks, probe a stratified set for
+the header and initial types, then fuse each chunk's index and monomorphic column
+loops. Conflicts promote per column and stale segments re-parse under the joined
+final type. `parallel` selects tasks or plain loops without changing the chunk
+layout. The default `chunkbytes` is
 `clamp(cld(length(buf), 2 * Threads.nthreads()), 64 KiB, 1 MiB)`; the default
-`nsample` is `clamp(ndata >> 6, 8, 128)`. Explicit values override both defaults.
+`nsample` is `clamp(probe_rows >> 6, 8, 128)`. Explicit values override both
+defaults.
 The default records malformed data as problems;
 `on_error=:error` escalates the source-earliest problem after parsing.
 
