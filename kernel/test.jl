@@ -210,6 +210,20 @@ end
     @test_throws ArgumentError K.index(UInt8[0x61], K.Dialect(); datastart=0)
 end
 
+@testset "structural: scanner dispatch" begin
+    fast = K.Dialect()
+    scalaronly = K.Dialect(delim="::")
+    @test K.resolvescanner(fast, true, :auto) === :vec
+    @test K.resolvescanner(fast, true, :vec) === :vec
+    @test K.resolvescanner(fast, true, :swar) === :swar
+    @test K.resolvescanner(fast, true, :scalar) === :scalar
+    @test K.resolvescanner(fast, false, :vec) === :scalar
+    @test K.resolvescanner(scalaronly, true, :vec) === :scalar
+    @test_throws ArgumentError K.index(UInt8[], fast; scanner=:bogus)
+    @test_throws ArgumentError K.index(UInt8[0x61], fast; fastindex=false, scanner=:bogus)
+    @test_throws ArgumentError K.parse(""; scanner=:bogus)
+end
+
 @testset "structural: randomized property (all scanners × all chunkings agree)" begin
     rng = MersenneTwister(20260812)
     specials = ['"', ',', '\n', '\r']

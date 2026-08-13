@@ -686,12 +686,16 @@ end
 # Resolve the scanner: exotic dialects need the scalar reference machine; the
 # vector engine is the default fast path everywhere (LLVM lowers its generic IR
 # per host), with :swar as the no-SIMD-assumptions fallback and for testing.
-resolvescanner(d::Dialect, fastindex::Bool, scanner::Symbol) =
-    !(fastindex && swareligible(d)) ? :scalar :
-    scanner === :auto ? :vec : scanner
+function resolvescanner(d::Dialect, fastindex::Bool, scanner::Symbol)
+    scanner in (:auto, :vec, :swar, :scalar) ||
+        throw(ArgumentError("scanner must be :auto, :vec, :swar, or :scalar (got $(repr(scanner)))"))
+    return !(fastindex && swareligible(d)) ? :scalar :
+           scanner === :auto ? :vec : scanner
+end
 
 """
-    index(buf, d::Dialect; datastart=1, chunkbytes=2^23, parallel=true, fastindex=true)
+    index(buf, d::Dialect; datastart=1, chunkbytes=2^23, parallel=true,
+          fastindex=true, scanner=:auto)
 
 Build the structural index for `buf[datastart:end]`: row-aligned chunks, each with
 per-field spans. Deterministic for any `chunkbytes`/thread count (pinned by tests).
@@ -708,9 +712,9 @@ function index(buf::Vector{UInt8}, d::Dialect;
     # passes its size-aware 64 KiB–1 MiB default.
     chunkbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $chunkbytes)"))
     datastart >= 1 || throw(ArgumentError("datastart must be ≥ 1 (got $datastart)"))
+    sc = resolvescanner(d, fastindex, scanner)
     datastart > len && return BufferIndex(ChunkIndex[], 0, false)
 
-    sc = resolvescanner(d, fastindex, scanner)
     chunks = chunkplan(buf, d, datastart, chunkbytes, parallel)
     if length(chunks) == 1 || !parallel
         for ci in chunks
@@ -1637,7 +1641,8 @@ The default records malformed data as problems;
 Keywords: `delim`, `quotechar`, `openquotechar`/`closequotechar`, `escapechar`,
 `quoted`, `comment`, `ignoreemptyrows`, `header` (true | false | Vector), `types`
 (Type | Vector | Dict), `dateformat`, `decimal`, `truestrings`/`falsestrings`,
-`stripwhitespace`, `chunkbytes`, `parallel`, `fastindex`, `maxproblems`,
+`stripwhitespace`, `chunkbytes`, `parallel`, `fastindex`, `scanner`
+(:auto | :vec | :swar | :scalar), `maxproblems`,
 `on_error` (:collect | :error), `nsample`.
 """
 function parse(buf::Vector{UInt8};
