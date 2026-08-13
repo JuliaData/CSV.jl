@@ -40,7 +40,7 @@ reported as OVERFLOW so the CSV type lattice can promote Int64 → Float64.
 """
 module KernelValues
 
-export RC_OK, RC_INVALID, RC_OVERFLOW, degroup!,
+export RC_OK, RC_INVALID, RC_OVERFLOW, degroup!, parsebigint, parsebigfloat, parseuuid,
        parseint64, parsefloat64, parsebool, findcontent, matchsentinel,
        CivilParts, parsecivil, daysfromcivil, DatePattern, compilepattern
 
@@ -645,12 +645,11 @@ then simple-decimal-conversion for the rare ambiguous/subnormal cases.
 Accepts sign, digits, one `decimal` byte, optional e/E exponent, and the
 case-insensitive spellings Inf/Infinity/NaN. Overflow → ±Inf with OK.
 
-Structured as an @inline hot core plus a thin wrapper owning the cold tail:
-with everything in one body, the presence of the tier-3 call site pessimized
-the hot path ~7x (28ns → 203ns measured; neither @noinline on the callee nor
-an inference barrier recovered it — a signature-identical dummy callee showed
-no penalty). The split shape measures at the composed-pipeline floor. Worth a
-minimized upstream Julia issue.
+Structured as an @inline hot core plus a thin wrapper owning the cold tier-3
+tail. (A once-suspected compiler pessimization here turned out to be real
+tier-3 work: random-bit benchmarks include ~0.05%% subnormals, which cost ~1ms
+each until Eisel-Lemire grew the standard denormal shift. See
+probe_float_anomaly.jl for the post-mortem.)
 """
 @inline function _parsefloat_core(buf::Vector{UInt8}, i::Int, j::Int, decimal::UInt8)
     sp, matched = _matchspecial(buf, i, j)
@@ -692,6 +691,224 @@ parsefloat64(buf::Vector{UInt8}, i::Int, j::Int; decimal::UInt8=UInt8('.')) =
     parsefloat64(buf, i, j, decimal)
 
 const _POW10 = Float64[10.0^k for k in 0:22]
+
+# =============================================================================
+# arbitrary precision & identifiers — BigInt / BigFloat / UUID
+#
+# The self-contained mandate covers the PARSING: span validation, digit
+# decomposition, binary extraction, and rounding are all ours. BigInt/BigFloat
+# are Base types whose arithmetic is GMP/MPFR by definition — we hand them a
+# finished, correctly-rounded value (never a string), so mpz_set_str /
+# mpfr_strtofr are never involved.
+# =============================================================================
+
+const _POW10_INT = Int64[Int64(10)^k for k in 0:17]
+const _POW10_18 = Int64(10)^18
+
+# 18-digit chunks flush through in-place GMP ops — one BigInt allocated per
+# value, zero per chunk (the allocating `big = big*10^18 + acc` form measured
+# ~40% slower than mpz_set_str; this form beats it).
+@inline function _flushchunk!(big::BigInt, started::Bool, acc::Int64, mult::Int64)
+    if started
+        Base.GMP.MPZ.mul_si!(big, mult)
+        Base.GMP.MPZ.add_ui!(big, acc % UInt64)
+    else
+        Base.GMP.MPZ.set_si!(big, acc)
+    end
+    return true
+end
+
+"""
+    parsebigint(buf, i, j) -> (BigInt, rc)
+
+Exact-span BigInt: sign and decimal digits only (the strict integer grammar,
+same as `parseint64` without the width limit). Digits accumulate through
+18-digit Int64 chunks, so the big-number work is O(n/18) multiply-adds on the
+result type rather than per-digit ops or a string round-trip.
+"""
+function parsebigint(buf::Vector{UInt8}, i::Int, j::Int)
+    i > j && return (BigInt(0), RC_INVALID)
+    neg = false
+    @inbounds begin
+        b = buf[i]
+        if b == UInt8('-') || b == UInt8('+')
+            neg = b == UInt8('-')
+            i += 1
+        end
+    end
+    i > j && return (BigInt(0), RC_INVALID)
+    acc = Int64(0)
+    nacc = 0
+    big = BigInt(0)
+    started = false
+    @inbounds for k in i:j
+        d = buf[k] - UInt8('0')
+        d > 0x09 && return (BigInt(0), RC_INVALID)
+        acc = acc * 10 + Int64(d)
+        nacc += 1
+        if nacc == 18
+            started = _flushchunk!(big, started, acc, _POW10_18)
+            acc = 0
+            nacc = 0
+        end
+    end
+    nacc > 0 && (started = _flushchunk!(big, started, acc, @inbounds(_POW10_INT[nacc + 1])))
+    neg && Base.GMP.MPZ.neg!(big)
+    return (big, RC_OK)
+end
+
+"""
+    parsebigfloat(buf, i, j, decimal=UInt8('.'); prec=precision(BigFloat)) -> (BigFloat, rc)
+
+Correctly rounded (round-half-even) BigFloat at `prec` bits, same grammar and
+special spellings as `parsefloat64`. The high-precision decimal machinery from
+tier 3 generalizes: scale the exact decimal into [1, 2), generate `prec`
+binary digits, round once with the sticky bit. MPFR only STORES the result —
+the value is assembled from an exactly-representable prec-bit integer and an
+exact `ldexp`, so this layer performs the single rounding itself.
+
+Prove-out range bound: decimal magnitudes beyond ~10^±65536 return
+RC_OVERFLOW (binary scaling is bit-at-a-time here; the upstream Parsers form
+gets power-of-ten jump tables the way Eisel-Lemire's POW5 works). No
+subnormal handling is needed inside that range — BigFloat's exponent field
+dwarfs it.
+"""
+function parsebigfloat(buf::Vector{UInt8}, i::Int, j::Int,
+                       decimal::UInt8=UInt8('.'); prec::Int=precision(BigFloat))
+    prec >= 2 || throw(ArgumentError("prec must be ≥ 2"))
+    sp, matched = _matchspecial(buf, i, j)
+    matched && return (BigFloat(sp; precision=prec), RC_OK)
+    parts, rc = _decompose(buf, i, j, decimal)
+    rc == RC_OK || return (BigFloat(0; precision=prec), rc)
+    if parts.mant == 0
+        z = BigFloat(0; precision=prec)
+        return (parts.neg ? -z : z, RC_OK)
+    end
+    abs(Int(parts.exp10) + Int(parts.ndig)) > 65536 &&
+        return (BigFloat(0; precision=prec), RC_OVERFLOW)
+    # every significant digit into a BigInt (the parsebigint accumulator, with
+    # the decimal byte skipped), tracking the true power of ten
+    M, q = _bigmantissa(buf, i, Int(parts.digstart), j, decimal)
+    # value = M × 10^q = M × 5^q × 2^q — pure integer scaling, one rounding:
+    #   q ≥ 0: N = M·5^q is exact and value = N × 2^q
+    #   q < 0: N = ⌊M·2^s / 5^-q⌋ with s sized so N keeps ≥ prec+2 bits; the
+    #          remainder is the sticky. value = N × 2^(q-s)
+    local N::BigInt
+    sticky = false
+    if q >= 0
+        N = M * BigInt(5)^q
+        e2 = q
+    else
+        k = -q
+        d5 = BigInt(5)^k
+        s = max(0, prec + 3 + ndigits(d5, base=2) - ndigits(M, base=2))
+        N, R = divrem(M << s, d5)
+        sticky = !iszero(R)
+        e2 = q - s
+    end
+    nb = ndigits(N, base=2)
+    if nb > prec
+        drop = nb - prec
+        low = N & ((BigInt(1) << drop) - 1)
+        Mp = N >> drop
+        half = BigInt(1) << (drop - 1)
+        if low > half || (low == half && (sticky || isodd(Mp)))
+            Mp += 1
+            if Mp == BigInt(1) << prec              # carry out of the mantissa
+                Mp >>= 1
+                drop += 1
+            end
+        end
+        v = ldexp(BigFloat(Mp; precision=prec), e2 + drop)
+    else
+        # exact case (only reachable when q ≥ 0, where sticky is impossible)
+        v = ldexp(BigFloat(N; precision=prec), e2)
+    end
+    return (parts.neg ? -v : v, RC_OK)
+end
+
+# All significant digits from `digstart` (first significant digit, per
+# _decompose) through the end of the digit run, skipping the decimal byte.
+# Returns (M, q) with value = M × 10^q. Shape already validated.
+function _bigmantissa(buf::Vector{UInt8}, i::Int, digstart::Int, j::Int, decimal::UInt8)
+    big = BigInt(0)
+    started = false
+    acc = Int64(0)
+    nacc = 0
+    # A decimal point BEFORE the first significant digit ("0.001") puts the
+    # whole mantissa in the fraction, and the skipped zeros between the point
+    # and digstart are fractional positions too.
+    frac = 0
+    infrac = false
+    @inbounds for p in i:(digstart - 1)
+        if buf[p] == decimal
+            infrac = true
+            frac = digstart - p - 1
+            break
+        end
+    end
+    k = digstart
+    @inbounds while k <= j
+        b = buf[k]
+        d = b - UInt8('0')
+        if d <= 0x09
+            acc = acc * 10 + Int64(d)
+            nacc += 1
+            infrac && (frac += 1)
+            if nacc == 18
+                started = _flushchunk!(big, started, acc, _POW10_18)
+                acc = 0
+                nacc = 0
+            end
+        elseif b == decimal
+            infrac = true
+        else
+            break                                    # e/E exponent
+        end
+        k += 1
+    end
+    nacc > 0 && (started = _flushchunk!(big, started, acc, @inbounds(_POW10_INT[nacc + 1])))
+    expv = 0
+    @inbounds if k <= j                              # exponent (validated shape)
+        k += 1                                       # skip e/E
+        eneg = buf[k] == UInt8('-')
+        (eneg || buf[k] == UInt8('+')) && (k += 1)
+        while k <= j
+            expv = expv * 10 + Int(buf[k] - UInt8('0'))
+            expv > 1 << 40 && (expv = 1 << 40)       # gate already bounds the real range
+            k += 1
+        end
+        eneg && (expv = -expv)
+    end
+    return (big, expv - frac)
+end
+
+"""
+    parseuuid(buf, i, j) -> (UInt128, rc)
+
+The canonical 8-4-4-4-12 dashed hex form, case-insensitive — exactly the
+spellings `Base.tryparse(UUID, s)` accepts. Returns the raw UInt128; thin
+adapters construct `Base.UUID` (mirroring the CivilParts/Dates split).
+"""
+function parseuuid(buf::Vector{UInt8}, i::Int, j::Int)
+    j - i + 1 == 36 || return (UInt128(0), RC_INVALID)
+    u = UInt128(0)
+    @inbounds for off in 0:35
+        b = buf[i + off]
+        if off == 8 || off == 13 || off == 18 || off == 23
+            b == UInt8('-') || return (UInt128(0), RC_INVALID)
+        else
+            d = b - UInt8('0')
+            if d > 0x09
+                d = _lower(b) - UInt8('a')
+                d > 0x05 && return (UInt128(0), RC_INVALID)
+                d += 0x0a
+            end
+            u = (u << 4) | UInt128(d)
+        end
+    end
+    return (u, RC_OK)
+end
 
 # =============================================================================
 # bool — exactly true/false (or the caller's explicit lists, matched above)

@@ -595,6 +595,14 @@ end
     @test_throws ArgumentError K.parse("a,b\n1,2\n"; types=Dict(:nope => Int64))
     @test_throws ArgumentError K.parse("a\n1\n"; types=Any)
     @test_throws ArgumentError K.parse("a\n1\n"; types=Number)
+    # user-only arbitrary-precision & identifier columns (never inferred)
+    tb = K.parse("u,n,x\n123e4567-e89b-12d3-a456-426614174000,123456789012345678901234567890,0.1\n,,\n";
+                 types=Dict(:u => Base.UUID, :n => BigInt, :x => BigFloat))
+    @test isequal(collect(tb[:u]), [Base.UUID("123e4567-e89b-12d3-a456-426614174000"), missing])
+    @test isequal(collect(tb[:n]), [parse(BigInt, "123456789012345678901234567890"), missing])
+    @test isequal(collect(tb[:x]), [parse(BigFloat, "0.1"), missing])
+    ti = K.parse("u\n123e4567-e89b-12d3-a456-426614174000\n")
+    @test eltype(ti[:u]) == K.KStr    # inference never yields UUID/Big types
     @test_throws ArgumentError K.parse("a\n1\n"; types=AbstractString)
     @test_throws ArgumentError K.parse("a\n1\n"; types=Union{Int64, String})
     @test_throws ArgumentError K.parse("a\n1\n"; types=["Int64"])

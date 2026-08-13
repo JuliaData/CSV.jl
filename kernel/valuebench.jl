@@ -11,6 +11,17 @@ const V = KernelValues
 
 # Each case: many same-shape values concatenated; we time parsing all of them
 # through precomputed spans so the measurement is pure value-parse cost.
+function _group3(s::String)
+    out = IOBuffer()
+    n = length(s)
+    for (k, c) in enumerate(s)
+        print(out, c)
+        r = n - k
+        r > 0 && r % 3 == 0 && print(out, ',')
+    end
+    return String(take!(out))
+end
+
 function makecorpus(gen, n)
     rng = MersenneTwister(1234)
     vals = [gen(rng, i) for i in 1:n]
@@ -52,7 +63,10 @@ function main()
         ("float shortest",   (rng, i) -> string(reinterpret(Float64, rand(rng, UInt64) & 0x7fefffffffffffff)), :float),
         ("float subnormal",  (rng, i) -> string(reinterpret(Float64, max(rand(rng, UInt64) & 0x000fffffffffffff, UInt64(1)))), :float),
         ("float exp form",   (rng, i) -> string(rand(rng, 1:999)) * "." * string(rand(rng, 0:99)) * "e" * string(rand(rng, -30:30)), :float),
-        ("int grouped",      (rng, i) -> replace(string(rand(rng, 1_000_000:999_999_999)), r"(?<=\d)(?=(\d{3})+\$)" => ","), :intg),
+        ("int grouped",      (rng, i) -> _group3(string(rand(rng, 1_000_000:999_999_999))), :intg),
+        ("bigint 30 digits", (rng, i) -> String(rand(rng, '1':'9', 30)), :bigint),
+        ("bigfloat (256b)",  (rng, i) -> string(rand(rng, 1:999999)) * "." * String(rand(rng, '0':'9', 40)) * "e" * string(rand(rng, -100:100)), :bigfloat),
+        ("uuid",             (rng, i) -> string(Base.UUID(rand(rng, UInt128))), :uuid),
         ("date ISO",         (rng, i) -> string(Date(2020, 1, 1) + Day(rand(rng, 0:2000))), :date),
         ("datetime ISO",     (rng, i) -> string(DateTime(2020, 1, 1) + Second(rand(rng, 0:10^7))), :datetime),
         ("bool",             (rng, i) -> rand(rng, ("true", "false")), :bool),
@@ -71,6 +85,15 @@ function main()
             scratch = Vector{UInt8}(undef, 64)
             tk = bench((b, ss) -> (a = 0; for (i, j) in ss; v, ok = MainK.parsevalue(Int64, b, i, j, ko, scratch); a += v; end; a), buf, spans)
             tx = bench((b, ss) -> (a = 0; for (i, j) in ss; r = Parsers.xparse(Int64, b, i, j, GOPTS); a += r.val; end; a), buf, spans)
+        elseif kind === :bigint
+            tk = bench((b, ss) -> (a = 0; for (i, j) in ss; v, rc = V.parsebigint(b, i, j); a += v % Int64; end; a), buf, spans)
+            tb = bench((b, ss) -> (a = 0; for (i, j) in ss; a += parse(BigInt, String(b[i:j])) % Int64; end; a), buf, spans)
+        elseif kind === :bigfloat
+            tk = bench((b, ss) -> (a = 0.0; for (i, j) in ss; v, rc = V.parsebigfloat(b, i, j); a += Float64(v); end; a), buf, spans)
+            tb = bench((b, ss) -> (a = 0.0; for (i, j) in ss; a += Float64(parse(BigFloat, String(b[i:j]))); end; a), buf, spans)
+        elseif kind === :uuid
+            tk = bench((b, ss) -> (a = UInt128(0); for (i, j) in ss; v, rc = V.parseuuid(b, i, j); a ⊻= v; end; a), buf, spans)
+            tb = bench((b, ss) -> (a = UInt128(0); for (i, j) in ss; a ⊻= Base.tryparse(Base.UUID, String(b[i:j])).value; end; a), buf, spans)
         elseif kind === :float
             tk = bench((b, ss) -> (a = 0.0; for (i, j) in ss; v, rc = V.parsefloat64(b, i, j); a += v; end; a), buf, spans)
             tx = bench((b, ss) -> (a = 0.0; for (i, j) in ss; r = Parsers.xparse(Float64, b, i, j, OPTS); a += r.val; end; a), buf, spans)

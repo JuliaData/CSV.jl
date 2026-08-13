@@ -281,4 +281,96 @@ end
     end
 end
 
+@testset "parsebigint: oracle differential" begin
+    rng = MersenneTwister(23)
+    for len in (1, 5, 17, 18, 19, 20, 37, 100, 300), _ in 1:500
+        s = (rand(rng, Bool) ? "-" : "") * String(rand(rng, '0':'9', len))
+        v, rc = V.parsebigint(b(s), 1, ncodeunits(s))
+        @test rc == V.RC_OK
+        @test v == parse(BigInt, s)
+    end
+    for s in ("0", "-0", "+7", "00042", "9" ^ 1000)
+        v, rc = V.parsebigint(b(s), 1, ncodeunits(s))
+        @test rc == V.RC_OK && v == parse(BigInt, s)
+    end
+    for s in ("", "-", "+", "1.5", "1e5", " 1", "1 ", "0x10", "--1")
+        @test V.parsebigint(b(s), 1, ncodeunits(s))[2] == V.RC_INVALID
+    end
+end
+
+@testset "parsebigfloat: oracle differential (mpfr_strtofr)" begin
+    rng = MersenneTwister(29)
+    check(s) = begin
+        v, rc = V.parsebigfloat(b(s), 1, ncodeunits(s))
+        @test rc == V.RC_OK
+        o = parse(BigFloat, s)
+        @test (isnan(v) && isnan(o)) || (v == o && signbit(v) == signbit(o))
+    end
+    for prec in (53, 113, 256, 1000)
+        setprecision(BigFloat, prec) do
+            # pinned adversaries (halfway cases matter at every precision)
+            for s in ("0.1", "-0.1", "1.5", "2.5", "1e0", "9007199254740993",
+                      "0." * "5"^400, "1." * "0"^300 * "1",
+                      "3.14159265358979323846264338327950288419716939937510582097",
+                      "1e300", "1e-300", "123456789.123456789e-45",
+                      "Inf", "-inf", "NaN", "0.0", "-0.0")
+                check(s)
+            end
+            # random decimal strings
+            for _ in 1:4_000
+                mant = String(rand(rng, '0':'9', rand(rng, 1:60)))
+                frac = rand(rng, Bool) ? "." * String(rand(rng, '0':'9', rand(rng, 1:60))) : ""
+                ex = rand(rng, Bool) ? "e" * string(rand(rng, -320:320)) : ""
+                check((rand(rng, Bool) ? "-" : "") * mant * frac * ex)
+            end
+            # round-trips of random values at this precision
+            for _ in 1:1_000
+                x = ldexp(BigFloat(rand(rng, UInt64)) + rand(rng), rand(rng, -200:200))
+                rand(rng, Bool) && (x = -x)
+                check(string(x))
+            end
+        end
+    end
+    # Float64 consistency: at 53 bits the two independent pipelines must agree
+    # bit-for-bit on normal-range values (BigFloat has no subnormals)
+    setprecision(BigFloat, 53) do
+        for _ in 1:20_000
+            bits = rand(rng, UInt64)
+            x = reinterpret(Float64, bits)
+            (isnan(x) || isinf(x) || issubnormal(x) || x == 0) && continue
+            s = string(x)
+            vb, _ = V.parsebigfloat(b(s), 1, ncodeunits(s))
+            vf, _ = V.parsefloat64(b(s), 1, ncodeunits(s))
+            @test Float64(vb) === vf
+        end
+    end
+    # prove-out range bound is explicit, not silent
+    @test V.parsebigfloat(b("1e100000"), 1, 8)[2] == V.RC_OVERFLOW
+    @test V.parsebigfloat(b("1e-100000"), 1, 9)[2] == V.RC_OVERFLOW
+    for s in ("", ".", "1..2", "1e", "x")
+        @test V.parsebigfloat(b(s), 1, ncodeunits(s))[2] == V.RC_INVALID
+    end
+end
+
+@testset "parseuuid: oracle differential" begin
+    rng = MersenneTwister(31)
+    for _ in 1:20_000
+        u = rand(rng, UInt128)
+        s = string(Base.UUID(u))
+        s = rand(rng, Bool) ? uppercase(s) : s
+        v, rc = V.parseuuid(b(s), 1, 36)
+        @test rc == V.RC_OK
+        @test Base.UUID(v) == Base.tryparse(Base.UUID, s)
+    end
+    for s in ("123e4567-e89b-12d3-a456-42661417400",    # 35 chars
+              "123e4567-e89b-12d3-a456-4266141740000",  # 37 chars
+              "123e4567xe89b-12d3-a456-426614174000",   # bad dash
+              "123e4567-e89b-12d3-a456-42661417400g",   # bad hex
+              "{123e4567-e89b-12d3-a456-426614174000}", # braces
+              "")
+        @test V.parseuuid(b(s), 1, ncodeunits(s))[2] == V.RC_INVALID
+        @test Base.tryparse(Base.UUID, s) === nothing
+    end
+end
+
 end # testset

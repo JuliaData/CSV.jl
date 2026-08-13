@@ -364,6 +364,19 @@ end
 end
 @inline parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                    scratch::Vector{UInt8}) where {T} = parsevalue(T, buf, i, j, vo)
+# user-only column types: never inferred, so the cascade and lattice are untouched
+@inline function parsevalue(::Type{BigInt}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    v, rc = V.parsebigint(buf, i, j)
+    return (v, rc == V.RC_OK)
+end
+@inline function parsevalue(::Type{BigFloat}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    v, rc = V.parsebigfloat(buf, i, j, vo.decimal)
+    return (v, rc == V.RC_OK)
+end
+@inline function parsevalue(::Type{Base.UUID}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    u, rc = V.parseuuid(buf, i, j)
+    return (Base.UUID(u), rc == V.RC_OK)
+end
 _scratchfor(vo::ValueOpts) = vo.groupmark == 0x00 ? EMPTY_BYTES : Vector{UInt8}(undef, 64)
 @inline parsevalue(::Type{Int64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
     parsevalue(Int64, buf, i, j, vo, _scratchfor(vo))
@@ -1803,7 +1816,9 @@ function resolvetypes(types, names::Vector{Symbol}, ncols::Int)
         T === nothing && return nothing
         T isa Type || throw(ArgumentError("column type must be a Type or nothing (got $(repr(T)))"))
         T = T === Missing ? Missing : Base.nonmissingtype(T)
-        parseable = T === Missing || T in (Int64, Float64, Bool, Date, DateTime, Time, String)
+        parseable = T === Missing ||
+                    T in (Int64, Float64, Bool, Date, DateTime, Time, String,
+                          BigInt, BigFloat, Base.UUID)
         parseable || throw(ArgumentError("unsupported column type $T"))
         return T
     end
