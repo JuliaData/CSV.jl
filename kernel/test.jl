@@ -259,10 +259,12 @@ end
     @test idxall("a b\n1 2   "; sp...)       == [["a","b"], ["1","2"]]
     @test idxall("1 2 \r\n3 4  \r\n"; sp...) == [["1","2"], ["3","4"]]
     @test idxall("   a   b   \r\n"; sp...)   == [["a","b"]]
+    @test idxall("a  b  \r  c   d \r"; sp...) == [["a","b"], ["c","d"]]
     @test idxall("a b\n   \n1 2\n"; sp...)   == [["a","b"], [""], ["1","2"]]
     @test idxall("   "; sp...)               == [[""]]
     @test idxall("a b\n  #x\n1 2\n"; sp..., comment="#") == [["a","b"], ["#x"], ["1","2"]]
     @test idxall("#x\na b\n"; sp..., comment="#")        == [["a","b"]]
+    @test idxall("#  dropped\rx   y\r"; sp..., comment="#") == [["x","y"]]
     @test idxall("\n \n"; sp..., ignoreemptyrows=false)  == [[""], [""]]
     @test idxall("\n \n"; sp...)             == [[""]]   # " " is not byte-empty
     # quotes: padding is structural only outside them; quoted empties survive
@@ -270,6 +272,8 @@ end
     @test idxall("\"\"  2\n"; sp...)         == [["\"\"","2"]]
     @test idxall("\"a\"  \"b\"\n"; sp...)    == [["\"a\"","\"b\""]]
     @test idxall("  \"a\" b\n"; sp...)       == [["\"a\"","b"]]
+    @test idxall("a b c\r\"x  y\"   2\r"; sp..., quoted=false) ==
+          [["a","b","c"], ["\"x","y\"","2"]]
     # other delimiters: comma, tab, multi-byte (scalar path)
     @test idxall("a,,b\n,1,,2,\n"; ignorerepeated=true)  == [["a","b"], ["1","2"]]
     @test idxall("a\t\tb\n1\t\t\t2\n"; delim='\t', ignorerepeated=true) == [["a","b"], ["1","2"]]
@@ -798,12 +802,33 @@ end
     @test collect(t[:k])[1:4] == ["oo", "ee", "oo", "ee"]
     t = K.parse("a b\n1,234  5\n"; delim=' ', ignorerepeated=true, groupmark=',')
     @test t[:a] == [1234] && t[:b] == [5]
+    t = K.parse("a b\r\"1 234\"   5\r"; delim=' ', ignorerepeated=true, groupmark=' ')
+    @test t[:a] == [1234] && t[:b] == [5]
     t = K.parse(aligned; delim=' ', ignorerepeated=true, select=[:z], limit=1)
     @test K.names(t) == [:z] && t.nrows == 1 && t[:z] == [true]
-    t = K.parse(" 1  2\n3 4 \n"; delim=' ', ignorerepeated=true, header=false)
+    t = K.parse(" 1  2 \r3   4\r"; delim=' ', ignorerepeated=true, header=false)
     @test K.names(t) == [:Column1, :Column2] && t[:Column1] == [1, 3]
     t = K.parse(" 1  2\n"; delim=' ', ignorerepeated=true, header=[:l, :r])
     @test K.names(t) == [:l, :r] && t.nrows == 1
+    # rowmask length and selection count use surviving post-collapse data rows:
+    # the comment and byte-empty row drop, while the all-delimiter row remains.
+    masked = "a b\r# drop\r\r   \r1  2\r3   4 \r"
+    mkw = (delim=' ', ignorerepeated=true, comment="#", rowmask=[false, true, false])
+    mref = K.parse(masked; mkw..., chunkbytes=1 << 20, parallel=false)
+    @test mref.nrows == 1 && mref[:a] == [1] && mref[:b] == [2] && isempty(K.problems(mref))
+    for cb in (3, 1 << 20), par in (false, true)
+        @test isequal(tablesnapshot(K.parse(masked; mkw..., chunkbytes=cb, parallel=par)),
+                      tablesnapshot(mref))
+    end
+    @test_throws ArgumentError K.parse(masked; delim=' ', ignorerepeated=true,
+                                       comment="#", rowmask=fill(true, 4))
+    # A late type conflict re-parses old segments through the same collapsed spans.
+    promoted = "a b\r1   x\r2  y\r3.5    z\r"
+    for cb in (4, 1 << 20), par in (false, true)
+        t = K.parse(promoted; delim=' ', ignorerepeated=true, nsample=1,
+                    chunkbytes=cb, parallel=par)
+        @test t[:a] == [1.0, 2.0, 3.5] && collect(t[:b]) == ["x", "y", "z"]
+    end
 
     # property: padding with runs (leading / between / trailing) parses
     # identically to the single-delimiter serialization, and the flag itself is
@@ -827,17 +852,37 @@ end
                     elseif kind == 3
                         string(rand(rng) * 100)
                     else
-                        inner = join(rand(rng, ['x', '"', '\n', ',', ' ', ':'], rand(rng, 0:5)))
+                        inner = join(rand(rng, ['x', '"', '\n', '\r', '\t', ',', ' ', ':'],
+                                          rand(rng, 0:5)))
                         "\"" * replace(inner, "\"" => "\"\"") * "\""
                     end
                     push!(cells, content)
                 end
                 lines[r + 1] = join(cells, dstr)
-                padlines[r + 1] = dstr^rand(rng, 0:2) * join(cells, dstr^rand(rng, 1:3)) *
-                                  dstr^rand(rng, 0:2)
+                io = IOBuffer()
+                print(io, dstr^rand(rng, 0:3))
+                for c in eachindex(cells)
+                    c > 1 && print(io, dstr^rand(rng, 1:4))
+                    print(io, cells[c])
+                end
+                print(io, dstr^rand(rng, 0:3))
+                padlines[r + 1] = String(take!(io))
             end
-            base = join(lines, "\n") * (rand(rng, Bool) ? "\n" : "")
-            padded = join(padlines, "\n") * (rand(rng, Bool) ? "\n" : "")
+            # Use identical, mixed row terminators for each pair. Only delimiter
+            # padding differs, so a failure cannot come from EOF-row geometry.
+            baseio, paddedio = IOBuffer(), IOBuffer()
+            for r in eachindex(lines)
+                print(baseio, lines[r]); print(paddedio, padlines[r])
+                if r < length(lines)
+                    term = rand(rng, ("\n", "\r", "\r\n"))
+                    print(baseio, term); print(paddedio, term)
+                end
+            end
+            if rand(rng, Bool)
+                term = rand(rng, ("\n", "\r", "\r\n"))
+                print(baseio, term); print(paddedio, term)
+            end
+            base, padded = String(take!(baseio)), String(take!(paddedio))
             ref = tablesnapshot(K.parse(base; delim=delim, parallel=false))
             flagonbase = K.parse(base; delim=delim, ignorerepeated=true, parallel=false)
             @test isequal(tablesnapshot(flagonbase), ref)
@@ -1087,6 +1132,10 @@ end
     end
     @test total == 3
     @test Tables.partitions(E.batches(csv; chunkbytes=8)) isa E.Batches
+    padded = "a   b\r 1  2 \r3   4\r"
+    pbs = collect(E.batches(padded; delim=' ', ignorerepeated=true, chunkbytes=3))
+    @test reduce(vcat, (collect(batch[:a]) for batch in pbs)) == [1, 3]
+    @test reduce(vcat, (collect(batch[:b]) for batch in pbs)) == [2, 4]
     # global prepass fixes types even when an early batch is type-ambiguous:
     # first rows are ints, floats only appear later — every batch still Float64
     csv2 = "x\n" * join(1:20, "\n") * "\n3.5\n"
@@ -1117,6 +1166,9 @@ end
     @test E.typedvalue(Float64, rs[2], 3) == 3.5
     @test E.typedvalue(String, rs[3], :b) == "z,w"
     @test ismissing(E.typedvalue(Int64, rs[1], :b))  # not parseable as Int
+    prs = collect(E.rows(padded; delim=' ', ignorerepeated=true, chunkbytes=3))
+    @test [row.a for row in prs] == ["1", "3"]
+    @test [E.typedvalue(Int64, row, :b) for row in prs] == [2, 4]
     # ragged row: missing beyond the row's fields
     rs2 = collect(E.rows("a,b\n1\n"))
     @test ismissing(rs2[1][:b])

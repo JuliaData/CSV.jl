@@ -39,8 +39,8 @@ The pipeline (and the file's layout) is:
 
 What this kernel deliberately does NOT include (extensions documented in
 kernel/README.md): dialect sniffing, pooled columns, InlineString widths,
-`ignorerepeated`, transposed reading, multi-file, incremental IO sources, and the
-writer. Each has a designed seam here; none requires re-architecting.
+transposed reading, multi-file, incremental IO sources, and the writer. Each has
+a designed seam here; none requires re-architecting.
 
 Semantics note (pinned by tests): the structural layer treats *every* quote byte as
 toggling quote state, like Sep/simdcsv. This matches RFC-style well-formed fields. A

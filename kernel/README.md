@@ -19,7 +19,7 @@ enough to demonstrate that the architecture holds end-to-end:
 | file | contents |
 |---|---|
 | `core.jl` | the kernel: `Dialect`, tape index (vector + SWAR + scalar scanners), parallel indexing, type detection & promotion lattice, column builders, `CSVKernel.parse` driver, `Problem` log |
-| `test.jl` | 10,666 assertions: pinned structural cases, randomized scanner and string properties, typed-layer tests, driver determinism stress, examples-layer tests |
+| `test.jl` | 11,890 assertions: pinned structural cases, randomized scanner and string properties, typed-layer tests, driver determinism stress, examples-layer tests |
 | `examples.jl` | `KernelExamples.read` / `.batches` / `.rows` — the CSV.jl API surfaces as compositions of kernel blocks, plus Tables.jl integration |
 | `bench.jl` | rough throughput probe (index vs full-parse split; optional CSV.jl comparison) |
 | `Project.toml` | standalone environment (Parsers, Tables, Dates + test deps) |
@@ -139,7 +139,7 @@ second-pass-over-RAM tax on numeric/wide at scale.
 | pooled columns | a pooling `ColumnBuilder` doing dictionary lookups inside `parsecolchunk!` (spans make interning allocation-free) |
 | `select`/`drop` | skip entries in the (column × chunk) task grid — projection is free when parsing is columnar |
 | multi-byte delimiters | already routed through the scalar scanner |
-| `ignorerepeated` | delimiter-run suppression in the scalar scanner |
+| `ignorerepeated` | assembly-time delimiter-run suppression shared by every scanner; `fieldspan` advances over each collapsed run in O(1) |
 | transpose | a utility path over the same source and value primitives |
 | additional scanner tuning | new `blockmasks` / `prefix_xor64` methods; tape emission and assembly stay unchanged |
 | `Memory{T}` buffers, word-aligned validity bitmaps | swap inside `TypedColumn` on Julia ≥ 1.11 |
