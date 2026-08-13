@@ -104,6 +104,21 @@ end
         @test rc == V.RC_OK
         @test done
     end
+    # Exact midpoint between zero and the minimum subnormal is 2^-1075.
+    # Put the deciding ±1 decimal digit beyond HPD's 800 stored significant
+    # digits. This pins both the 768-digit decision bound and sticky-tail use.
+    decfrac(n, scale) = (d = string(n); "0." * "0"^(scale - length(d)) * d)
+    midpoint = big(5)^1075 * big(10)^49
+    for (n, bits) in ((midpoint - 1, UInt64(0)),
+                      (midpoint, UInt64(0)),
+                      (midpoint + 1, UInt64(1)))
+        s = decfrac(n, 1124)
+        buf = b(s)
+        @test !V._parsefloat_core(buf, 1, length(buf), UInt8('.'))[3]
+        v, rc = V.parsefloat64(buf, 1, length(buf))
+        @test rc == V.RC_OK
+        @test reinterpret(UInt64, v) == bits
+    end
     for s in ("", ".", "-", "e5", "1e", "1e+", "1..2", "1.2.3", "1f5", " 1.0", "1.0 ", "nanx", "infs")
         @test pflt(s)[2] == V.RC_INVALID
     end
@@ -144,7 +159,8 @@ end
     end
     # long-mantissa SDC pressure
     for _ in 1:2_000
-        s = "0." * String(rand(rng, '0':'9', rand(rng, 100:790))) * "e" * string(rand(rng, -300:300))
+        # Cross the 800-digit storage cap in the general differential corpus.
+        s = "0." * String(rand(rng, '0':'9', rand(rng, 100:1_200))) * "e" * string(rand(rng, -300:300))
         v, rc = pflt(s)
         o = tryparse(Float64, s)
         @test rc == V.RC_OK
@@ -176,6 +192,11 @@ end
     @test fc("\"\"") == (2, 0, false, V.RC_OK)
     @test fc("\"unterminated")[4] == V.RC_INVALID
     @test fc("\"x\"y")[4] == V.RC_INVALID
+    bs = UInt8('\\')
+    fce(s) = V.findcontent(b(s), 1, ncodeunits(s), q, q, bs)
+    @test fce("\"a\\\"b\"") == (2, 4, true, V.RC_OK)
+    @test fce("\"a\\\"")[4] == V.RC_INVALID       # escaped close, no true close
+    @test fce("\"a\"tail")[4] == V.RC_INVALID     # bytes after true close
     sents = [b("NA"), b("NULL")]
     @test V.matchsentinel(b("NA"), 1, 2, sents)
     @test V.matchsentinel(b("NULL"), 1, 4, sents)
@@ -184,7 +205,8 @@ end
 end
 
 @testset "civil: daysfromcivil vs Dates oracle" begin
-    for y in (1, 100, 1583, 1600, 1900, 1970, 2000, 2020, 2024, 2100, 2400, 9999)
+    for y in (-4000, -1900, -400, -100, -4, -1, 0,
+              1, 100, 1583, 1600, 1900, 1970, 2000, 2020, 2024, 2100, 2400, 9999)
         for m in 1:12, d in (1, 15, 28)
             @test V.daysfromcivil(y, m, d) == Dates.value(Date(y, m, d))
         end
@@ -217,6 +239,9 @@ end
     c, rc = V.parsecivil(b(s), 1, ncodeunits(s), V.ISO_TIME)
     @test rc == V.RC_OK && totime(c) == Time(10, 30, 0) + Nanosecond(1)
     @test V.parsecivil(b("25:00:00"), 1, 8, V.ISO_TIME)[2] == V.RC_INVALID
+    @test V.parsecivil(b("23:60:00"), 1, 8, V.ISO_TIME)[2] == V.RC_INVALID
+    @test V.parsecivil(b("23:59:60"), 1, 8, V.ISO_TIME)[2] == V.RC_INVALID
+    @test V.parsecivil(b("23:59:59.1234567890"), 1, 19, V.ISO_TIME)[2] == V.RC_INVALID
     # whole-span rule
     @test V.parsecivil(b("2024-01-02x"), 1, 11, V.ISO_DATE)[2] == V.RC_INVALID
 end
@@ -235,6 +260,12 @@ end
     @test rc == V.RC_OK && todate(c) == Date(1776, 7, 4)
     @test V.parsecivil(b("Foo 02 2024"), 1, 11, p)[2] == V.RC_INVALID
     @test_throws ArgumentError V.compilepattern("yyyy-Qq")
+    @test_throws ArgumentError V.compilepattern("y"^256)
+    # Large year fields are invalid data, not conversion exceptions.
+    pwide = V.compilepattern("yyyyyyyyyy")
+    @test V.parsecivil(b("9999999999"), 1, 10, pwide)[2] == V.RC_INVALID
+    phuge = V.compilepattern("y"^19)
+    @test V.parsecivil(b("9999999999999999999"), 1, 19, phuge)[2] == V.RC_INVALID
     # differential against Dates for a spread of dates and formats
     for (fmt, dfmt) in (("yyyy-mm-dd", dateformat"yyyy-mm-dd"),
                         ("dd/mm/yyyy", dateformat"dd/mm/yyyy"),

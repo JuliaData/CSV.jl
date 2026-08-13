@@ -463,12 +463,31 @@ end
     @test dt("2024-01-02 03:04", dtfmtopts) === DateTime
     timefmtopts = K.makevalueopts(K.Dialect(); dateformat="HHhMM")
     @test dt("03h04", timefmtopts) === Time
-    letterdecimalopts = K.makevalueopts(K.Dialect(delim=';'); decimal='x',
-                                        truestrings=["x5"])
-    @test dt("x5", letterdecimalopts) === Float64   # cascade order beats the Bool list
-    textdateopts = K.makevalueopts(K.Dialect(); dateformat="u dd yyyy",
-                                   truestrings=["Jan 02 2024"])
-    @test dt("Jan 02 2024", textdateopts) === Date
+    # A custom Bool spelling may not collide with an earlier cascade type.
+    # Accepting such a spelling as Bool during parsing but as the earlier type
+    # during sampling makes the final schema depend on nsample.
+    @test_throws ArgumentError K.makevalueopts(K.Dialect();
+                                               truestrings=["1"], falsestrings=["NO"])
+    @test_throws ArgumentError K.makevalueopts(K.Dialect(delim=';'); decimal='x',
+                                               truestrings=["x5"])
+    @test_throws ArgumentError K.makevalueopts(K.Dialect(); dateformat="u dd yyyy",
+                                               truestrings=["Jan 02 2024"])
+    @test_throws ArgumentError K.makevalueopts(K.Dialect();
+                                               truestrings=["yes"], falsestrings=["yes"])
+    @test_throws ArgumentError K.makevalueopts(K.Dialect(); truestrings="yes")
+    @test_throws ArgumentError K.makevalueopts(K.Dialect(); dateformat="literal")
+    for ns in (1, 2)
+        tb = K.parse("a\nNO\nYES\n"; truestrings=["YES"], falsestrings=["NO"], nsample=ns)
+        @test tb[:a] == [false, true]
+    end
+
+    # A custom pattern parses only the temporal type named by its components.
+    bd = Vector{UInt8}(codeunits("2024-01-02 03:04"))
+    @test !K.parsevalue(Date, bd, 1, length(bd), dtfmtopts)[2]
+    @test K.parsevalue(DateTime, bd, 1, length(bd), dtfmtopts)[2]
+    bt = Vector{UInt8}(codeunits("03h04"))
+    @test !K.parsevalue(Date, bt, 1, length(bt), timefmtopts)[2]
+    @test K.parsevalue(Time, bt, 1, length(bt), timefmtopts)[2]
 
     # A stripped-to-empty field is Missing to detection and to every kernel —
     # a Date column keeps its type and the field is cleanly missing. (The old
@@ -566,6 +585,7 @@ end
     @test_throws ArgumentError K.parse("a,b\n1,2\n"; types=[Int64])
     @test_throws ArgumentError K.parse("a,b\n1,2\n"; types=Dict(:nope => Int64))
     @test_throws ArgumentError K.parse("a\n1\n"; types=Any)
+    @test_throws ArgumentError K.parse("a\n1\n"; types=Number)
     @test_throws ArgumentError K.parse("a\n1\n"; types=AbstractString)
     @test_throws ArgumentError K.parse("a\n1\n"; types=Union{Int64, String})
     @test_throws ArgumentError K.parse("a\n1\n"; types=["Int64"])
@@ -607,10 +627,25 @@ end
 @testset "typed: dialect passthrough" begin
     t = K.parse("a;b\n1,5;2\n"; delim=';', decimal=',')
     @test t[:a] == [1.5]
+    for ns in (1, 2, 3)
+        t = K.parse("a\n1,5\n2\n3,25e1\n"; delim=';', decimal=',', nsample=ns)
+        @test t[:a] == [1.5, 2.0, 32.5]
+    end
     t = K.parse("a\n15/01/2023\n"; dateformat="dd/mm/yyyy")
     @test t[:a] == [Date(2023, 1, 15)]
+    for ns in (1, 2, 3)
+        t = K.parse("a\n15/01/2023\noops\n16/01/2023\n";
+                    dateformat="dd/mm/yyyy", nsample=ns)
+        @test collect(t[:a]) == ["15/01/2023", "oops", "16/01/2023"]
+    end
     t = K.parse("a\nYES\nNO\n"; truestrings=["YES"], falsestrings=["NO"])
     @test t[:a] == [true, false]
+    # Outer whitespace around quotes is structural. Inner whitespace is content
+    # unless stripwhitespace asks the cell layer to remove it.
+    t = K.parse("a\n  \"  x  \"  \n  \"\"  \n"; types=String)
+    @test collect(t[:a]) == ["  x  ", ""]
+    t = K.parse("a\n  \"  x  \"  \n  \"\"  \n"; types=String, stripwhitespace=true)
+    @test collect(t[:a]) == ["x", ""]
 end
 
 @testset "misc inputs & edges" begin
@@ -645,10 +680,16 @@ end
     @test t[:a][1] == longvalue
     # A bare quote is structurally valid by design, but when it protects a
     # delimiter the value-level reading of the span disagrees with the
-    # structural one; report it instead of silently keeping either reading.
+    # structural one; report it and preserve the exact structural-span bytes.
     t = K.parse("a,b\nab\"cd,e\"f,g\n"; types=String)
-    @test isequal(collect(t[:a]), [missing])
+    @test collect(t[:a]) == ["ab\"cd,e\"f"]
     @test any(p -> p.kind == :invalid_value && p.row == 1 && p.col == 1, K.problems(t))
+    t = K.parse("a::b\nab\"cd::ef\"gh::z\n"; delim="::", types=String)
+    @test collect(t[:a]) == ["ab\"cd::ef\"gh"]
+    @test any(p -> p.kind == :invalid_value && p.row == 1 && p.col == 1, K.problems(t))
+    # Explicit Missing keeps malformed-quote diagnostics specific.
+    t = K.parse("a\n\"unclosed"; types=Missing)
+    @test any(p -> p.kind == :invalid_quoted_field && p.row == 1, K.problems(t))
 end
 
 @testset "KStr: inline-else-view strings" begin

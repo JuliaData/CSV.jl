@@ -49,6 +49,7 @@ function main()
         ("int 10-18 digits", (rng, i) -> string(rand(rng, Int64(10)^10:Int64(10)^17)), :int),
         ("float short (x.y)",(rng, i) -> string(round(rand(rng) * 1000, digits=3)), :float),
         ("float shortest",   (rng, i) -> string(reinterpret(Float64, rand(rng, UInt64) & 0x7fefffffffffffff)), :float),
+        ("float subnormal",  (rng, i) -> string(reinterpret(Float64, max(rand(rng, UInt64) & 0x000fffffffffffff, UInt64(1)))), :float),
         ("float exp form",   (rng, i) -> string(rand(rng, 1:999)) * "." * string(rand(rng, 0:99)) * "e" * string(rand(rng, -30:30)), :float),
         ("date ISO",         (rng, i) -> string(Date(2020, 1, 1) + Day(rand(rng, 0:2000))), :date),
         ("datetime ISO",     (rng, i) -> string(DateTime(2020, 1, 1) + Second(rand(rng, 0:10^7))), :datetime),

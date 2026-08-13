@@ -365,7 +365,8 @@ function _eisel_lemire(mant::UInt64, q::Int)
         (hi & 0x1ff) == 0x1ff && lo + 1 == 0 && return Int64(-1)  # still ambiguous
     end
     upper = hi >> 63
-    m = hi >> (upper + 9)                               # 54 bits: 53 + round bit
+    shift = Int(upper) + 9
+    m = hi >> shift                                     # 54 bits: 53 + round bit
     e2 = ((217706 * q) >> 16) + 63 + Int(upper) - lz    # unbiased binary exponent of hi's msb
     e2 += 1023                                          # bias
     if e2 <= 0
@@ -380,8 +381,10 @@ function _eisel_lemire(mant::UInt64, q::Int)
         e2 = m < (UInt64(1) << 52) ? 0 : 1
         return reinterpret(Int64, (UInt64(e2) << 52) | (m & 0x000fffffffffffff))
     end
-    # round-half-even ambiguity: exactly-halfway needs the discarded bits
-    if lo == 0 && (hi & 0x1ff) == 0 && (m & 0b11) == 0b01
+    # Exact halfway values in the small-power range need the discarded bits.
+    # Keep the fast_float condition exact; this tier delegates instead of
+    # repairing the low bit because SDC already owns all ambiguous answers.
+    if lo <= 1 && -4 <= q <= 23 && (m & 0b11) == 0b01 && (m << shift) == hi
         return Int64(-1)
     end
     m = (m + (m & 1)) >> 1                              # round to nearest, ties away resolved below
@@ -857,6 +860,8 @@ function compilepattern(fmt::AbstractString)
             n += 1
         end
         if c == 'y' || c == 'Y'
+            n <= typemax(UInt8) ||
+                throw(ArgumentError("year token run exceeds 255 bytes in \"$fmt\""))
             push!(ops, PatternOp(1, UInt8(max(n, 4)), n >= 4)); hasdate = true
         elseif c == 'm'
             push!(ops, PatternOp(2, UInt8(2), n >= 2)); hasdate = true
@@ -903,6 +908,7 @@ const ISO_DATETIME = compilepattern("yyyy-mm-ddTHH:MM:SS.s")
     @inbounds while k <= lim
         d = buf[k] - UInt8('0')
         d > 0x09 && break
+        v > (typemax(Int) - Int(d)) ÷ 10 && return (0, k, false)
         v = v * 10 + Int(d)
         k += 1
     end
@@ -985,6 +991,7 @@ function parsecivil(buf::Vector{UInt8}, i::Int, j::Int, pat::DatePattern)
     k <= j && return (CivilParts(), RC_INVALID)          # unconsumed bytes
     pat.hasdate && !_validymd(y, mo, dy) && return (CivilParts(), RC_INVALID)
     pat.hastime && !_validhms(h, mi, s) && return (CivilParts(), RC_INVALID)
+    typemin(Int32) <= y <= typemax(Int32) || return (CivilParts(), RC_INVALID)
     return (CivilParts(Int32(y), Int8(mo), Int8(dy), Int8(h), Int8(mi), Int8(s), Int32(ns)), RC_OK)
 end
 

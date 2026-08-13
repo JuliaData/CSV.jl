@@ -147,7 +147,49 @@ struct ValueOpts
     customfmt::Bool
 end
 
-_bytelist(x) = x === nothing ? Vector{UInt8}[] : [Vector{UInt8}(codeunits(s)) for s in x]
+function _bytelist(x, name::Symbol)
+    x === nothing && return Vector{UInt8}[]
+    x isa AbstractString &&
+        throw(ArgumentError("$name must be a collection of strings, not one string"))
+    out = Vector{Vector{UInt8}}()
+    for s in x
+        s isa AbstractString ||
+            throw(ArgumentError("$name entries must be strings (got $(typeof(s)))"))
+        isempty(s) && throw(ArgumentError("$name cannot contain an empty spelling"))
+        push!(out, Vector{UInt8}(codeunits(s)))
+    end
+    return out
+end
+
+function _earlierbooltype(s::Vector{UInt8}, decimal::UInt8,
+                          dp::V.DatePattern, dtp::V.DatePattern, tp::V.DatePattern,
+                          customfmt::Bool)
+    i, j = 1, length(s)
+    V.parseint64(s, i, j)[2] == V.RC_OK && return Int64
+    V.parsefloat64(s, i, j, decimal)[2] == V.RC_OK && return Float64
+    if customfmt
+        if V.parsecivil(s, i, j, dp)[2] == V.RC_OK
+            return dp.hasdate ? (dp.hastime ? DateTime : Date) : Time
+        end
+    else
+        V.parsecivil(s, i, j, dp)[2] == V.RC_OK && return Date
+        V.parsecivil(s, i, j, dtp)[2] == V.RC_OK && return DateTime
+        V.parsecivil(s, i, j, tp)[2] == V.RC_OK && return Time
+    end
+    return nothing
+end
+
+function _validatebools(trues, falses, decimal, dp, dtp, tp, customfmt)
+    for t in trues, f in falses
+        t == f && throw(ArgumentError("Bool spelling $(repr(String(t))) is both true and false"))
+    end
+    for s in Iterators.flatten((trues, falses))
+        T = _earlierbooltype(s, decimal, dp, dtp, tp, customfmt)
+        T === nothing ||
+            throw(ArgumentError("Bool spelling $(repr(String(s))) is parsed as $T earlier in the type cascade"))
+    end
+    return
+end
 
 function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
                        truestrings=nothing, falsestrings=nothing,
@@ -159,12 +201,17 @@ function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
         dateformat isa AbstractString ||
             throw(ArgumentError("dateformat must be a format String (got $(typeof(dateformat)))"))
         p = V.compilepattern(dateformat)
+        (p.hasdate || p.hastime) ||
+            throw(ArgumentError("dateformat must contain a date or time token"))
         dp = dtp = tp = p
         custom = true
     end
     delimbytes = d.delim isa UInt8 ? [d.delim] : copy(d.delim)
+    trues = _bytelist(truestrings, :truestrings)
+    falses = _bytelist(falsestrings, :falsestrings)
+    _validatebools(trues, falses, decimal % UInt8, dp, dtp, tp, custom)
     return ValueOpts(d.oq, d.cq, d.e, d.quoted, delimbytes, decimal % UInt8, stripwhitespace,
-                     Vector{UInt8}[], _bytelist(truestrings), _bytelist(falsestrings),
+                     Vector{UInt8}[], trues, falses,
                      dp, dtp, tp, custom)
 end
 
@@ -278,16 +325,19 @@ end
     return (false, false)
 end
 @inline function parsevalue(::Type{Date}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    vo.customfmt && (!vo.datepat.hasdate || vo.datepat.hastime) && return (_DATE0, false)
     c, rc = V.parsecivil(buf, i, j, vo.datepat)
     rc == V.RC_OK || return (_DATE0, false)
     return (todate(c), true)
 end
 @inline function parsevalue(::Type{DateTime}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    vo.customfmt && (!vo.datetimepat.hasdate || !vo.datetimepat.hastime) && return (_DATETIME0, false)
     c, rc = V.parsecivil(buf, i, j, vo.datetimepat)
     rc == V.RC_OK || return (_DATETIME0, false)
     return (todatetime(c), true)
 end
 @inline function parsevalue(::Type{Time}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    vo.customfmt && (vo.timepat.hasdate || !vo.timepat.hastime) && return (_TIME0, false)
     c, rc = V.parsecivil(buf, i, j, vo.timepat)
     rc == V.RC_OK || return (_TIME0, false)
     return (totime(c), true)
@@ -1429,7 +1479,6 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
             problemrow = problemrowbase + (lr - ci.firstdatarow) + 1
             pushproblem!(problems, problemrow, j, pos, :invalid_value,
                          "bare quote engaged structural protection in " * excerpt(buf, pos, len))
-            continue
         end
         if esc
             # escaped values are unescaped ONCE, at parse time (KStr needs O(1)
@@ -1484,8 +1533,11 @@ function parsecolchunk_missing(buf::Vector{UInt8}, ci::ChunkIndex, j::Int,
         if st != CELL_MISSING
             userprovided || return lr
             out = rowbase + (lr - ci.firstdatarow) + 1
-            pushproblem!(problems, out, j, sp[1], :invalid_value,
-                         "column typed Missing contains " * excerpt(buf, sp[1], len))
+            kind = st == CELL_BADQUOTE ? :invalid_quoted_field : :invalid_value
+            message = st == CELL_BADQUOTE ? "malformed quoting in " :
+                      "column typed Missing contains "
+            pushproblem!(problems, out, j, sp[1], kind,
+                         message * excerpt(buf, sp[1], len))
         end
     end
     return 0
@@ -1684,8 +1736,7 @@ function resolvetypes(types, names::Vector{Symbol}, ncols::Int)
         T === nothing && return nothing
         T isa Type || throw(ArgumentError("column type must be a Type or nothing (got $(repr(T)))"))
         T = T === Missing ? Missing : Base.nonmissingtype(T)
-        parseable = T === Missing || T === Number ||
-                    T in (Int64, Float64, Bool, Date, DateTime, Time, String)
+        parseable = T === Missing || T in (Int64, Float64, Bool, Date, DateTime, Time, String)
         parseable || throw(ArgumentError("unsupported column type $T"))
         return T
     end
