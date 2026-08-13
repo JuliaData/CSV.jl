@@ -835,8 +835,20 @@ Base.@propagate_inbounds function Base.codeunit(s::KStr, i::Int)
     end
 end
 
-Base.isvalid(s::KStr, i::Int) =
-    1 <= i <= ncodeunits(s) && (@inbounds(codeunit(s, i)) & 0xc0) != 0x80
+function Base.isvalid(s::KStr, i::Int)
+    1 <= i <= ncodeunits(s) || return false
+    @inbounds b = codeunit(s, i)
+    b & 0xc0 == 0x80 || return true
+    i > 1 || return true
+    @inbounds b = codeunit(s, i - 1)
+    0xc0 <= b <= 0xf7 && return false
+    b & 0xc0 == 0x80 && i > 2 || return true
+    @inbounds b = codeunit(s, i - 2)
+    0xe0 <= b <= 0xf7 && return false
+    b & 0xc0 == 0x80 && i > 3 || return true
+    @inbounds b = codeunit(s, i - 3)
+    return !(0xf0 <= b <= 0xf7)
+end
 
 # UTF-8 iteration mirroring `String`'s tolerant behavior: Julia `Char`s ARE the
 # UTF-8 bytes left-aligned in 32 bits, and a malformed sequence yields the bytes

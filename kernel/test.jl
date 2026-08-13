@@ -100,6 +100,12 @@ function sumncodeunits(c::K.KStrVector{K.KStr})
     return t
 end
 
+function kstrfrombytes(bytes::Vector{UInt8})
+    p = length(bytes) <= K.KSTR_INLINE ? K.inline_payload(bytes, 1, length(bytes)) :
+                                         K.view_payload(bytes, 1, length(bytes), Int64(1))
+    return K.KStr(p, length(bytes) <= K.KSTR_INLINE ? K.EMPTY_BYTES : bytes)
+end
+
 function tablesnapshot(t::K.ParsedTable)
     probs = [(p.row, p.col, p.pos, p.kind, p.message) for p in K.problems(t)]
     return (; names=K.names(t), types=map(eltype, K.columns(t)),
@@ -577,6 +583,34 @@ end
             @test collect(v) == collect(s)
             @test v == s && hash(v) == hash(s)
             @test length(v) == length(s)
+        end
+    end
+    # Character-index APIs must use the same tolerant partition as String.
+    # A bare continuation byte is its own invalid Char and therefore starts at a
+    # valid index; a continuation consumed by a preceding lead byte does not.
+    invalidcases = (UInt8[0x80], UInt8[0x61, 0x80, 0x62], UInt8[0xc2],
+                    UInt8[0xc2, 0x41], UInt8[0xe0, 0x80],
+                    UInt8[0xf0, 0x80, 0x41], UInt8[0xc2, 0x80])
+    result(f) = try
+        (:value, f())
+    catch e
+        (:error, typeof(e))
+    end
+    for bytes in invalidcases
+        s = String(copy(bytes))
+        v = kstrfrombytes(copy(bytes))
+        @test collect(eachindex(v)) == collect(eachindex(s))
+        @test lastindex(v) == lastindex(s)
+        for i in 0:(length(bytes) + 1)
+            @test isvalid(v, i) == isvalid(s, i)
+            @test result(() -> thisind(v, i)) == result(() -> thisind(s, i))
+            @test result(() -> nextind(v, i)) == result(() -> nextind(s, i))
+            @test result(() -> prevind(v, i)) == result(() -> prevind(s, i))
+            @test result(() -> v[i]) == result(() -> s[i])
+        end
+        for i in 1:length(bytes), j in i:length(bytes)
+            @test result(() -> String(SubString(v, i, j))) ==
+                  result(() -> String(SubString(s, i, j)))
         end
     end
     # access is allocation-free for inline AND view strings
