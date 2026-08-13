@@ -25,6 +25,8 @@
 #   • `stringtype` defaults to the kernel string (KStr / CompactString-to-be);
 #     `stringtype=String` materializes; InlineStrings become an extension
 #   • Bool columns are strictly `true`/`false` unless truestrings/falsestrings
+#   • grouped integer spellings stay exact through Int128 when CSV.jl widens
+#     Int64 overflow to Float64
 #
 # Run the demo:  julia --project=kernel kernel/api.jl
 
@@ -41,6 +43,48 @@ const E = KernelExamples
 export sniff, Spec
 
 const DEFAULT_POOL = (0.2, 500)   # CSV.jl's default: pool strings ≤20% unique, ≤500 levels
+
+const _DIALECTKW = (:quotechar, :openquotechar, :closequotechar, :escapechar,
+                    :quoted, :comment, :ignoreemptyrows, :ignorerepeated)
+const _VALUEKW = (:dateformat, :decimal, :truestrings, :falsestrings,
+                  :stripwhitespace, :groupmark)
+const _INDEXKW = (:fastindex, :scanner)
+const _DRIVERKW = (:maxproblems, :nsample)
+
+function _pickkwargs(kw, allowed)
+    return NamedTuple(p for p in pairs(kw) if p.first in allowed)
+end
+
+function _checkkwargs(context::AbstractString, kw, allowed)
+    for k in keys(kw)
+        k in allowed || throw(ArgumentError("unsupported $context keyword $k"))
+    end
+    return
+end
+
+function _sentinels(missingstring)
+    missingstring === nothing && return nothing
+    if missingstring isa AbstractString
+        return isempty(missingstring) ? nothing : [String(missingstring)]
+    end
+    sentinels = String[]
+    for s in missingstring
+        s isa AbstractString ||
+            throw(ArgumentError("missingstring entries must be strings (got $(typeof(s)))"))
+        isempty(s) || push!(sentinels, String(s))
+    end
+    return isempty(sentinels) ? nothing : sentinels
+end
+
+function _probedelim(dialectkw)
+    quotechar = haskey(dialectkw, :quotechar) ? dialectkw.quotechar : '"'
+    openquotechar = haskey(dialectkw, :openquotechar) ? dialectkw.openquotechar : nothing
+    oq = something(openquotechar, quotechar)
+    for c in ('\x1f', '\x1e', '\x1d')
+        c == oq || return c
+    end
+    return '\x1c'
+end
 
 # ---------------------------------------------------------------------------
 # sources
@@ -80,8 +124,8 @@ end
 # ---------------------------------------------------------------------------
 # The kernel index IS the detector: for each candidate delimiter, index a
 # bounded quote-aware sample and score how consistent the per-row field counts
-# are. That subsumes CSV.jl's byte-count-divisibility heuristic (which cannot
-# see quotes spanning rows) while agreeing with it on unambiguous files.
+# are. Candidates represented in the first surviving row win before data-only
+# punctuation, which prevents Time values from making `:` look like a delimiter.
 # Candidate order is CSV.jl's, and breaks score ties.
 
 const DELIM_CANDIDATES = (',', '\t', ' ', '|', ';', ':')
@@ -110,28 +154,57 @@ function Base.show(io::IO, s::Spec)
     end
 end
 
-# quote-aware sample clip: index the prefix and keep whole rows only
-function _sample(buf::Vector{UInt8}, samplebytes::Int)
+# Quote-aware sample clip. When bounded, discard the final raw row because it
+# may be cut. Row boundaries depend on quote syntax, not on the delimiter.
+function _sample(buf::Vector{UInt8}, samplebytes::Int; dialectkw...)
+    samplebytes >= 1 || throw(ArgumentError("samplebytes must be ≥ 1 (got $samplebytes)"))
     length(buf) <= samplebytes && return buf
-    return buf[1:samplebytes]   # candidate scoring drops each sample's last (possibly cut) row
+    sample = buf[1:samplebytes]
+    d = K.Dialect(; delim=_probedelim(dialectkw), dialectkw...)
+    datastart = _datastart(sample)
+    rowstart = datastart
+    while rowstart <= length(sample)
+        next = K.nextrowstart(sample, rowstart, length(sample), d, false)
+        next > length(sample) && break
+        rowstart = next
+    end
+    return rowstart <= 1 ? UInt8[] : sample[1:rowstart - 1]
 end
 
-function _scoredelim(buf::Vector{UInt8}, delim::Char, datastart::Int, clipped::Bool; kw...)
-    d = K.Dialect(; delim, kw...)
-    bi = try
-        K.index(buf, d; datastart, parallel=false)
-    catch
-        return (0.0, 0)
-    end
+function _scoredelim(buf::Vector{UInt8}, delim::Char, datastart::Int,
+                     dialectkw::NamedTuple, indexkw::NamedTuple)
+    quoted = haskey(dialectkw, :quoted) ? dialectkw.quoted : true
+    quotechar = haskey(dialectkw, :quotechar) ? dialectkw.quotechar : '"'
+    openquotechar = haskey(dialectkw, :openquotechar) ? dialectkw.openquotechar : nothing
+    quoted && delim == something(openquotechar, quotechar) && return (0.0, 0, 0)
+    d = K.Dialect(; delim, dialectkw...)
+    bi = K.index(buf, d; datastart, parallel=false, indexkw...)
     counts = Int[]
     for ci in bi.chunks, lr in 1:K.totalrows(ci)
         push!(counts, K.nfields(ci, lr))
         length(counts) >= 11 && break
     end
-    clipped && length(counts) > 1 && pop!(counts)   # drop the possibly-cut row
-    isempty(counts) && return (0.0, 0)
+    isempty(counts) && return (0.0, 0, 0)
     modal = argmax(c -> count(==(c), counts), unique(counts))
-    return (count(==(modal), counts) / length(counts), modal)
+    return (count(==(modal), counts) / length(counts), modal, first(counts))
+end
+
+function _detectdelim(sample::Vector{UInt8}, dialectkw::NamedTuple, indexkw::NamedTuple)
+    # Validate user syntax once. Candidate-only quote collisions are skipped in
+    # `_scoredelim`; all other invalid options must reach the caller.
+    K.Dialect(; delim=_probedelim(dialectkw), dialectkw...)
+    datastart = _datastart(sample)
+    best, bestdelim = (false, 0.0, 1), first(DELIM_CANDIDATES)
+    for c in DELIM_CANDIDATES
+        consistency, fields, firstfields = _scoredelim(sample, c, datastart,
+                                                       dialectkw, indexkw)
+        represented = firstfields > 1
+        score = represented ? (true, consistency, fields) : (false, 0.0, 1)
+        if score > best
+            best, bestdelim = score, c
+        end
+    end
+    return bestdelim
 end
 
 """
@@ -140,52 +213,42 @@ end
 Detect the delimiter (quote-aware field-count consistency over a bounded
 sample, candidates $(DELIM_CANDIDATES) in CSV.jl's order), whether a header
 row is likely (row 1 all text while later rows type differently), and the
-resulting names/types. `kw` may pin dialect pieces (`quotechar`, `comment`,
-...) that sniffing should take as given.
+resulting names/types. `kw` may pin dialect, value, and index pieces
+(`quotechar`, `comment`, `decimal`, `scanner`, ...) that sniffing should use.
 """
-function sniff(source; samplebytes::Int=1 << 16, kw...)
+function sniff(source; samplebytes::Int=1 << 16, missingstring=nothing, kw...)
+    allowed = (_DIALECTKW..., _VALUEKW..., _INDEXKW..., _DRIVERKW...)
+    _checkkwargs("sniff", kw, allowed)
+    dialectkw = _pickkwargs(kw, _DIALECTKW)
+    valuekw = _pickkwargs(kw, _VALUEKW)
+    indexkw = _pickkwargs(kw, _INDEXKW)
+    driverkw = _pickkwargs(kw, _DRIVERKW)
     buf = resolvesource(source)
-    sample = _sample(buf, samplebytes)
-    clipped = length(sample) < length(buf)
-    datastart = _datastart(sample)
-    best, bestdelim = (-1.0, 0), first(DELIM_CANDIDATES)
-    for c in DELIM_CANDIDATES
-        consistency, fields = _scoredelim(sample, c, datastart, clipped; kw...)
-        score = (consistency * (fields > 1), fields)   # single-field parses rank last
-        if score > best
-            best, bestdelim = score, c
-        end
-    end
+    sample = _sample(buf, samplebytes; dialectkw...)
+    bestdelim = _detectdelim(sample, dialectkw, indexkw)
+    sentinels = _sentinels(missingstring)
+    parsekw = merge(dialectkw, valuekw, indexkw, driverkw,
+                    (; delim=bestdelim, sentinels, limit=100, parallel=false))
     # header detection: parse the sample twice — types with row 1 as data vs
     # header. A likely header = row 1 headerless-types degrade to String while
     # the with-header types do not (numbers under a text row 1).
-    limit = 100
-    theader = K.parse(sample; delim=bestdelim, header=true, limit, parallel=false, kw...)
-    tnoheader = K.parse(sample; delim=bestdelim, header=false, limit, parallel=false, kw...)
+    theader = K.parse(sample; header=true, parsekw...)
+    tnoheader = K.parse(sample; header=false, parsekw...)
     headerlikely = tnoheader.nrows > theader.nrows &&
         any(zip(K.columns(theader), K.columns(tnoheader))) do (ch, cnh)
             Base.nonmissingtype(eltype(ch)) !== String && eltype(ch) !== Missing &&
                 Base.nonmissingtype(eltype(cnh)) in (String, K.KStr)
         end
     t = headerlikely ? theader : tnoheader
-    return Spec(bestdelim, get(kw, :quoted, true), headerlikely,
+    return Spec(bestdelim, get(dialectkw, :quoted, true), headerlikely,
                 length(K.names(t)), copy(K.names(t)), Type[eltype(c) for c in K.columns(t)])
 end
 
 # delimiter-only sniff for File(delim=nothing) — no second parse
-function _sniffdelim(buf::Vector{UInt8}, samplebytes::Int; kw...)
-    sample = _sample(buf, samplebytes)
-    clipped = length(sample) < length(buf)
-    datastart = _datastart(sample)
-    best, bestdelim = (-1.0, 0), first(DELIM_CANDIDATES)
-    for c in DELIM_CANDIDATES
-        consistency, fields = _scoredelim(sample, c, datastart, clipped; kw...)
-        score = (consistency * (fields > 1), fields)
-        if score > best
-            best, bestdelim = score, c
-        end
-    end
-    return bestdelim
+function _sniffdelim(buf::Vector{UInt8}, samplebytes::Int,
+                     dialectkw::NamedTuple, indexkw::NamedTuple)
+    sample = _sample(buf, samplebytes; dialectkw...)
+    return _detectdelim(sample, dialectkw, indexkw)
 end
 
 # ---------------------------------------------------------------------------
@@ -202,8 +265,7 @@ end
 function _rawrowoffset(buf::Vector{UInt8}, d::K.Dialect, datastart::Int, n::Int)
     off = datastart
     for _ in 1:(n - 1)
-        off > length(buf) &&
-            throw(ArgumentError("row $n is past the end of the data"))
+        off > length(buf) && return length(buf) + 1
         off = K.nextrowstart(buf, off, length(buf), d, false)
     end
     return off
@@ -217,6 +279,25 @@ function _skiptobyte!(chunks::Vector{K.ChunkIndex}, byteoff::Int)
             ci.firstdatarow += 1
         end
     end
+end
+
+function _limitrows!(chunks::Vector{K.ChunkIndex}, limit::Int)
+    remaining = limit
+    for ci in chunks
+        n = K.nrows(ci)
+        if remaining >= n
+            remaining -= n
+        elseif remaining > 0
+            lastrow = ci.firstdatarow + remaining - 1
+            resize!(ci.rowfirst, lastrow + 1)
+            resize!(ci.rowstartrel, lastrow)
+            remaining = 0
+        else
+            ci.firstdatarow = K.totalrows(ci) + 1
+        end
+    end
+    filter!(ci -> K.nrows(ci) > 0, chunks)
+    return chunks
 end
 
 _firstlive(chunks) = findfirst(ci -> K.nrows(ci) > 0, chunks)
@@ -233,9 +314,6 @@ struct Prepared
     parsekw::NamedTuple   # dialect + value + engine kwargs, ready to splat into K.parse
 end
 
-const _VALUEKW = (:dateformat, :decimal, :truestrings, :falsestrings, :sentinels,
-                  :stripwhitespace, :groupmark)
-
 function _prepare(source;
                   header::Union{Bool, Integer, AbstractVector}=1,
                   normalizenames::Bool=false,
@@ -249,23 +327,22 @@ function _prepare(source;
                   parallel::Bool=Threads.nthreads() > 1,
                   kw...)
     footerskip >= 0 || throw(ArgumentError("footerskip must be ≥ 0 (got $footerskip)"))
+    limit === nothing || limit >= 0 || throw(ArgumentError("limit must be ≥ 0 (got $limit)"))
+    samplebytes >= 1 || throw(ArgumentError("samplebytes must be ≥ 1 (got $samplebytes)"))
+    allowed = (_DIALECTKW..., _VALUEKW..., _INDEXKW..., _DRIVERKW...)
+    _checkkwargs("File/Rows/Chunks", kw, allowed)
     buf = resolvesource(source)
-    dialectonly = NamedTuple(p for p in pairs(kw)
-                             if p.first in (:quotechar, :openquotechar, :closequotechar,
-                                            :escapechar, :quoted, :comment,
-                                            :ignoreemptyrows, :ignorerepeated))
+    dialectonly = _pickkwargs(kw, _DIALECTKW)
+    indexonly = _pickkwargs(kw, _INDEXKW)
     if delim === nothing
         get(kw, :ignorerepeated, false) &&
             throw(ArgumentError("auto-delimiter detection is not supported with " *
                                 "ignorerepeated=true; pass delim explicitly"))
-        delim = _sniffdelim(buf, samplebytes; dialectonly...)
+        delim = _sniffdelim(buf, samplebytes, dialectonly, indexonly)
     end
     # missingstring → kernel sentinels ("" entries are inert: empty is always missing)
-    sentinels = missingstring === nothing ? nothing :
-                missingstring isa AbstractString ? (isempty(missingstring) ? nothing : [String(missingstring)]) :
-                [String(s) for s in missingstring if !isempty(s)]
-    sentinels !== nothing && isempty(sentinels) && (sentinels = nothing)
-    valuekw = NamedTuple(p for p in pairs(kw) if p.first in _VALUEKW)
+    sentinels = _sentinels(missingstring)
+    valuekw = _pickkwargs(kw, _VALUEKW)
     d = K.Dialect(; delim, dialectonly...)
     opts = K.makevalueopts(d; sentinels, valuekw...)
     cb = chunkbytes === nothing ?
@@ -286,8 +363,7 @@ function _prepare(source;
     rawstart = _datastart(buf)
     datastart = isempty(headerrows) || first(headerrows) == 1 ? rawstart :
                 _rawrowoffset(buf, d, rawstart, first(headerrows))
-    bi = K.index(buf, d; datastart, chunkbytes=cb, parallel,
-                 (p for p in pairs(kw) if p.first in (:fastindex, :scanner))...)
+    bi = K.index(buf, d; datastart, chunkbytes=cb, parallel, indexonly...)
     chunks = bi.chunks
     headerlog = K.ProblemLog(get(kw, :maxproblems, 10_000))
 
@@ -304,14 +380,23 @@ function _prepare(source;
         # multi-row header: every part participates in the join (blank cells
         # resolve to ColumnN first) — pinned against CSV.jl
         parts = Vector{Vector{Symbol}}()
+        firstrows = Int[ci.firstdatarow for ci in chunks]
         for _ in headerrows
             k = _firstlive(chunks)
-            k === nothing && throw(ArgumentError("header rows $header past the end of the data"))
+            k === nothing && break
             push!(parts, K.parseheader!(buf, chunks[k], opts, d, headerlog))
         end
-        n = maximum(length, parts)
-        [Symbol(join((j <= length(p) ? String(p[j]) : "Column$j" for p in parts), "_"))
-         for j in 1:n]
+        for (ci, firstrow) in zip(chunks, firstrows)
+            ci.firstdatarow = firstrow
+        end
+        _skiptobyte!(chunks, _rawrowoffset(buf, d, rawstart, headerrow + 1))
+        if isempty(parts)
+            Symbol[]
+        else
+            n = maximum(length, parts)
+            [Symbol(join((j <= length(p) ? String(p[j]) : "Column$j" for p in parts), "_"))
+             for j in 1:n]
+        end
     end
     normalizenames && (names = [normalizename(String(nm)) for nm in names])
     names = K.makeunique!(names)
@@ -326,13 +411,7 @@ function _prepare(source;
     lim = limit === nothing ? (footerskip > 0 ? keep : nothing) : min(Int(limit), keep)
 
     # engine + diagnostics kwargs the kernel driver consumes directly
-    passthrough = NamedTuple(p for p in pairs(kw)
-                             if p.first in (:quotechar, :openquotechar, :closequotechar,
-                                            :escapechar, :quoted, :comment, :ignoreemptyrows,
-                                            :ignorerepeated, :dateformat, :decimal,
-                                            :truestrings, :falsestrings, :stripwhitespace,
-                                            :groupmark, :fastindex, :scanner, :maxproblems,
-                                            :nsample))
+    passthrough = _pickkwargs(kw, allowed)
     parsekw = merge(passthrough, (; delim, sentinels, chunkbytes=cb, parallel))
     return Prepared(buf, bi, names, length(names), lim, opts, d, headerlog, parsekw)
 end
@@ -403,28 +482,50 @@ function File(source;
               ntasks::Union{Nothing, Int}=nothing,
               parallel::Bool=ntasks === nothing ? Threads.nthreads() > 1 : ntasks > 1,
               kw...)
-    p = _prepare(source; parallel, maxproblems, kw...)
+    ntasks === nothing || ntasks >= 1 ||
+        throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
+    maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
+    stringtype in (K.KStr, String) ||
+        throw(ArgumentError("stringtype must be CSVKernel.KStr or String (got $stringtype)"))
+    on_error in (:collect, :error) ||
+        throw(ArgumentError("on_error must be :collect or :error"))
+    capturecap = max(maxproblems, 1)
+    p = _prepare(source; parallel, maxproblems=capturecap, kw...)
     sel = _resolveselect(select, drop, p.names)
-    t = K.parse(p.buf; index=p.bi, header=p.names, types, select=sel, limit=p.limit,
-                pool, maxproblems, on_error, p.parsekw...)
-    t = _mergeheaderlog(t, p.headerlog, maxproblems)
+    parsetypes = if p.limit == 0
+        Type[T === nothing ? Missing : T for T in K.resolvetypes(types, p.names, p.ncols)]
+    else
+        types
+    end
+    t = K.parse(p.buf; index=p.bi, header=p.names, types=parsetypes, select=sel, limit=p.limit,
+                pool, on_error=:collect, p.parsekw...)
+    t, firstproblem = _mergeproblems(t, p.headerlog, maxproblems)
+    if on_error === :error && firstproblem !== nothing
+        pr = firstproblem
+        nproblems = length(t.problems) + t.droppedproblems
+        throw(ErrorException("CSVKernel: $(pr.kind) at data row $(pr.row), column $(pr.col): " *
+                             pr.message * (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
+    end
     stringtype === String && (t = _materializestrings(t))
     nm = source isa AbstractString ? String(source) : "<$(nameof(typeof(source)))>"
     return File(nm, t, Dict(n => j for (j, n) in enumerate(K.names(t))))
 end
 
-function _mergeheaderlog(t::K.ParsedTable, headerlog::K.ProblemLog, cap::Int)
-    isempty(headerlog.items) && return t
+function _mergeproblems(t::K.ParsedTable, headerlog::Union{Nothing, K.ProblemLog}, cap::Int)
     log = K.ProblemLog(cap)
-    for pr in headerlog.items
-        K.pushproblem!(log, pr.row, pr.col, pr.pos, pr.kind, pr.message)
+    if headerlog !== nothing
+        for pr in headerlog.items
+            K.pushproblem!(log, pr.row, pr.col, pr.pos, pr.kind, pr.message)
+        end
     end
     for pr in t.problems
         K.pushproblem!(log, pr.row, pr.col, pr.pos, pr.kind, pr.message)
     end
+    log.dropped += t.droppedproblems +
+                   (headerlog === nothing ? 0 : headerlog.dropped)
     K.sortproblems!(log)
-    return K.ParsedTable(t.names, t.columns, t.nrows, log.items,
-                         log.dropped + t.droppedproblems)
+    table = K.ParsedTable(t.names, t.columns, t.nrows, log.items, log.dropped)
+    return table, log.first
 end
 
 function _materializestrings(t::K.ParsedTable)
@@ -447,7 +548,9 @@ end
 # reach internals via getfield — a column named `table` must not shadow them.
 Tables.istable(::Type{File}) = true
 Tables.columnaccess(::Type{File}) = true
+Tables.rowaccess(::Type{File}) = true
 Tables.columns(f::File) = getfield(f, :table)
+Tables.rows(f::File) = f
 Tables.columnnames(f::File) = K.names(getfield(f, :table))
 Tables.getcolumn(f::File, i::Int) = K.columns(getfield(f, :table))[i]
 Tables.getcolumn(f::File, nm::Symbol) = getfield(f, :table)[nm]
@@ -475,7 +578,7 @@ Base.eltype(::Type{File}) = FileRow
 Base.iterate(f::File, i::Int=1) = i > length(f) ? nothing : (FileRow(f, i), i + 1)
 Base.getindex(f::File, i::Int) = (1 <= i <= length(f) || throw(BoundsError(f, i)); FileRow(f, i))
 
-Tables.columnnames(r::FileRow) = K.names(getfield(r, :f).table)
+Tables.columnnames(r::FileRow) = K.names(getfield(getfield(r, :f), :table))
 Tables.getcolumn(r::FileRow, j::Int) =
     K.columns(getfield(getfield(r, :f), :table))[j][getfield(r, :row)]
 Tables.getcolumn(r::FileRow, nm::Symbol) =
@@ -519,13 +622,8 @@ struct Rows
 end
 
 function Rows(source; types=nothing, kw...)
-    for k in keys(kw)
-        k in _PREPKW || k in (:quotechar, :openquotechar, :closequotechar,
-              :escapechar, :quoted, :comment, :ignoreemptyrows, :ignorerepeated,
-              :dateformat, :decimal, :truestrings, :falsestrings, :stripwhitespace,
-              :groupmark, :fastindex, :scanner, :maxproblems, :nsample) ||
-            throw(ArgumentError("unsupported Rows keyword $k"))
-    end
+    allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...)
+    _checkkwargs("Rows", kw, allowed)
     p = _prepare(source; kw...)
     seed = types === nothing ? nothing :
            Type[T === nothing ? String : T
@@ -577,21 +675,48 @@ rownumber(row::Row) = getfield(getfield(row, :view), :rownumber)
     CSVApi.Chunks(source; ntasks=Threads.nthreads(), kw...)
 
 `CSV.Chunks` analog: iterate the file as a sequence of `File`-shaped tables.
-Unlike `CSV.Chunks`, every batch reports the SAME column types — a whole-file
+Unlike `CSV.Chunks`, every batch reports the SAME column types — a whole-window
 schema prepass over the index makes the batch schema stable by construction.
 `ntasks` sizes the batches (or pass `chunkbytes` directly).
 """
-function Chunks(source; ntasks::Union{Nothing, Int}=nothing, kw...)
+struct Chunks
+    inner::E.Batches
+    headerlog::K.ProblemLog
+    maxproblems::Int
+end
+
+Base.length(c::Chunks) = length(getfield(c, :inner))
+Base.eltype(::Type{Chunks}) = K.ParsedTable
+Tables.partitions(c::Chunks) = c
+
+function Base.iterate(c::Chunks, state::Int=1)
+    it = iterate(getfield(c, :inner), state)
+    it === nothing && return nothing
+    t, next = it
+    headerlog = state == 1 ? getfield(c, :headerlog) : nothing
+    t, _ = _mergeproblems(t, headerlog, getfield(c, :maxproblems))
+    return t, next
+end
+
+function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
+                maxproblems::Int=10_000, kw...)
     nt = something(ntasks, Threads.nthreads())
     nt >= 1 || throw(ArgumentError("ntasks must be ≥ 1 (got $nt)"))
+    maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
+    allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...)
+    _checkkwargs("Chunks", kw, allowed)
     if !haskey(kw, :chunkbytes)
         buf = resolvesource(source)
         kw = (; kw..., chunkbytes=clamp(cld(length(buf), nt), 1 << 10, 1 << 22))
         source = buf
     end
-    types = get(kw, :types, nothing)
-    p = _prepare(source; (pr for pr in pairs(kw) if pr.first !== :types)...)
-    chunks = filter(ci -> K.nrows(ci) > 0, p.bi.chunks)
+    haskey(kw, :parallel) || (kw = (; kw..., parallel=nt > 1))
+    capturecap = max(maxproblems, 1)
+    p = _prepare(source; maxproblems=capturecap, kw...)
+    chunks = p.bi.chunks
+    fullrows = sum(K.nrows, chunks; init=0)
+    p.limit === nothing || _limitrows!(chunks, p.limit)
+    filter!(ci -> K.nrows(ci) > 0, chunks)
     seed = K.resolvetypes(types, p.names, p.ncols)
     userprovided = [T !== nothing for T in seed]
     if any(isnothing, seed)
@@ -603,8 +728,10 @@ function Chunks(source; ntasks::Union{Nothing, Int}=nothing, kw...)
     end
     seedtypes = Type[T for T in seed]
     allowmissing = E.schemamissing(p.buf, chunks, seedtypes, p.opts)
-    return E.Batches(p.buf, chunks, p.names, seedtypes, userprovided, allowmissing,
-                     p.opts, p.d, get(kw, :maxproblems, 10_000), p.bi.unclosedquote)
+    unclosedquote = p.bi.unclosedquote && (p.limit === nothing || p.limit >= fullrows)
+    inner = E.Batches(p.buf, chunks, p.names, seedtypes, userprovided, allowmissing,
+                      p.opts, p.d, capturecap, unclosedquote)
+    return Chunks(inner, p.headerlog, maxproblems)
 end
 
 # ---------------------------------------------------------------------------

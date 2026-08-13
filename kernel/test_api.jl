@@ -11,6 +11,7 @@
 #   • long rows do not widen the schema (extra fields ⇒ problem, not Column4)
 #   • warnings are data (problems(f)), not log lines
 #   • function-typed select/drop retired
+#   • grouped Int64 overflow remains exact Int128 instead of widening to Float64
 
 using Test, Dates, Tables
 using CSV
@@ -51,6 +52,11 @@ end
     against("m,x\n,1\n,2\n")                       # all-missing column
     against("p\n1\n2.5\n")                         # int → float promotion
     against("p\n1\nx\n")                           # int → string promotion
+    big = against("p\n1\n99999999999999999999999999\n"; kw=(; pool=false))
+    @test eltype(big.p) === Int128
+    @test collect(big.p) == Int128[1, 99999999999999999999999999]
+    csvbig = CSV.File(IOBuffer("p\n1\n99999999999999999999999999\n"); pool=false)
+    @test eltype(csvbig.p) === Int128
     against("q\n\"a,b\"\n\"c\nd\"\n\"e\"\"f\"\n")  # quoted delim/newline/escape
     against("u\nα\n∀\n")                           # unicode passthrough
     against("neg\n-1\n+2\n")
@@ -85,6 +91,16 @@ end
     # quoted delimiters cannot fool the quote-aware scorer
     spec = A.sniff(IOBuffer("a;b\n\"1;2;3;4;5\";6\n\"7;8\";9\n"))
     @test spec.delim == ';'
+    # A colon repeated in Time values is not a delimiter when the header does
+    # not contain it. Both front doors retain one Time column.
+    against("t\n12:34:56\n13:45:00\n")
+    @test A.sniff(IOBuffer("t\n12:34:56\n13:45:00\n")).delim == ','
+    # Value and index options reach the post-detection parse without being sent
+    # to Dialect, and a quote-cut bounded sample remains safe.
+    spec = A.sniff(IOBuffer("a;b\n1,5;2\n3,5;4\n"); decimal=',', scanner=:scalar)
+    @test spec.delim == ';' && spec.types == [Float64, Int64]
+    spec = A.sniff(IOBuffer("a;b\n\"x\ny\";1\nz;2\n"); samplebytes=12)
+    @test spec.delim == ';'
     @test A.sniff(IOBuffer("n\n1\n2\n")).header === true   # single col, text over ints
     @test A.sniff(IOBuffer("1,2\n3,4\n")).header === false # numbers all the way down
     @test_throws ArgumentError A.File(IOBuffer("a b\n1  2\n"); ignorerepeated=true)
@@ -96,6 +112,10 @@ end
     against("junk\na,b\n1,2\n"; kw=(; header=2))
     against("h1,h2\nx,y\n1,2\n"; kw=(; header=[1, 2]))
     against("h1,\nx,y\n1,2\n"; kw=(; header=[1, 2]))          # blank part → ColumnN_y
+    # CSV.jl skips the comment while reading merged name parts, but starts data
+    # at the raw row after `last(header)`, so the second part is also data.
+    against("a,b\n#middle\nx,y\n1,2\n"; kw=(; header=[1, 2], comment="#"))
+    against("a,b\n"; kw=(; header=[1, 2]))                    # partial header at EOF
     against("1,2\n3,4\n"; kw=(; header=["l", "r"]))
     against("1,2\n3,4\n"; kw=(; header=[:l, :r]))
     against("my col,2x,for,,my col\n1,2,3,4,5\n"; kw=(; normalizenames=true))
@@ -104,6 +124,7 @@ end
     # header row consumed even when it is the only content in early chunks
     f = A.File(IOBuffer("a,b\n1,2\n"); chunkbytes=4)
     @test collect(f.a) == [1]
+    @test_throws ArgumentError A.File(IOBuffer("a,b\nx,y\n1,2\n"); header=[1, 3])
 end
 
 @testset "row windowing agrees (raw-row semantics)" begin
@@ -115,7 +136,16 @@ end
     against("a,b\n#skip\n1,2\n3,4\n"; kw=(; comment="#", skipto=3))   # comments COUNT
     against("junk\nmore junk\na,b\n1,2\n"; kw=(; header=3))
     against("a,b\n1,2\n"; kw=(; limit=0))
+    against("a\n1\n2\n"; kw=(; limit=0, footerskip=1))
+    fa0 = A.File(IOBuffer("a\n1\n2\n"); limit=0, footerskip=1)
+    fc0 = CSV.File(IOBuffer("a\n1\n2\n"); limit=0, footerskip=1)
+    @test Tables.schema(fa0).types == Tables.schema(fc0).types == (Missing,)
+    against("﻿junk\n#ignore\na,b\n1,2\n3,4\n";
+            kw=(; header=3, comment="#", skipto=5))
+    against("a,b\n1,2\n"; kw=(; skipto=100))
+    against("a,b\n1,2\n"; kw=(; header=100))
     @test_throws ArgumentError A.File(IOBuffer("a,b\n1,2\n"); skipto=1)
+    @test_throws ArgumentError A.File(IOBuffer("a,b\n1,2\n"); limit=-1)
     @test A.File(IOBuffer("a,b\n1,2\n"); footerskip=5).table.nrows == 0
 end
 
@@ -125,6 +155,8 @@ end
     against("a,b\nNA,N/A\nx,2\n"; api=(; missingstring=["NA", "N/A"]),
             csv=(; missingstring=["NA", "N/A", ""]))
     against("a\n999\n1\n"; api=(; missingstring="999"), csv=(; missingstring=["999", ""]))
+    @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); missingstring="N\"A")
+    @test_throws ArgumentError CSV.File(IOBuffer("a\n1\n"); missingstring="N\"A")
     # the PINNED DELTA itself: ours keeps empties missing; CSV.jl makes them ""
     fa = A.File(IOBuffer("a\n\nx\n"); missingstring="NA", ignoreemptyrows=false)
     fc = CSV.File(IOBuffer("a\n\nx\n"); missingstring="NA", ignoreemptyrows=false,
@@ -138,6 +170,7 @@ end
     against("a,b\n1,2\n"; kw=(; types=Dict(1 => Float64)))
     against("a,b\n1,2\n"; kw=(; types=[Float64, String]))
     against("a,b\n1,2\n"; kw=(; types=String))
+    against("a,b\n1,2\n,3\n"; kw=(; types=Dict(:a => Union{Int64, Missing})))
     against("a\n1\nbad\n2\n"; kw=(; types=Int64))              # invalid → missing + diagnostic
     f = A.File(IOBuffer("a\n1\nbad\n"); types=Int64)
     @test any(p -> p.kind == :invalid_value, A.problems(f))
@@ -149,6 +182,7 @@ end
     input = "a,b,c\n1,2,3\n4,5,6\n"
     against(input; kw=(; select=[:a, :c]))
     against(input; kw=(; select=[1, 3]))
+    against(input; kw=(; select=[1, 1, 3]))                  # duplicates collapse
     against(input; kw=(; select=[true, false, true]))
     against(input; kw=(; drop=[:b]))
     against(input; kw=(; drop=[2]))
@@ -156,6 +190,8 @@ end
     @test_throws ArgumentError A.File(IOBuffer(input); select=[:a], drop=[:b])
     @test_throws ArgumentError A.File(IOBuffer(input); select=(nm, i) -> i == 1)
     @test_throws ArgumentError A.File(IOBuffer(input); select=[:nope])
+    f = against("my col,b\n1,2\n"; kw=(; normalizenames=true, select=[:my_col]))
+    @test Base.names(f) == [:my_col]
 end
 
 @testset "pooling agrees on values" begin
@@ -174,6 +210,12 @@ end
     against("x;y\n1,5;2\n"; kw=(; delim=';', decimal=','))
     against("b\nYES\nNO\n"; kw=(; truestrings=["YES"], falsestrings=["NO"]))
     against("n;m\n1,234;5\n"; kw=(; delim=';', groupmark=','))
+    groupedinput = "n;m\n99,999,999,999,999,999,999,999,999;5\n"
+    grouped = A.File(IOBuffer(groupedinput); delim=';', groupmark=',')
+    csvgrouped = CSV.File(IOBuffer(groupedinput); delim=';', groupmark=',')
+    @test eltype(grouped.n) === Int128
+    @test grouped.n[1] == Int128(99999999999999999999999999)
+    @test eltype(csvgrouped.n) === Float64
     against("s,t\n  x  ,1\n"; kw=(; delim=',', stripwhitespace=true))
     # NOTE: without an explicit delim, "s\n  x  \n" splits on ' ' under CSV.jl's
     # byte-divisibility detector (5 ragged columns); our sniffer requires
@@ -189,6 +231,7 @@ end
 
 @testset "structural edge cases agree" begin
     against("a,b\r\n1,2\r\n3,4\r\n")                          # CRLF
+    against("a,b\r1,2\r3,4\r")                              # CR-only
     against("﻿a,b\n1,2\n")                               # BOM
     against("a,b\n1,2")                                       # no trailing newline
     against("a,b\n\"x\ny\",2\n")                              # quoted newline
@@ -223,6 +266,7 @@ end
     @test occursin("2 x 2", sprint(show, f))
     @test A.problems(f) isa Vector{K.Problem}
     @test Tables.schema(f).names == (:name, :score)
+    @test Tables.rowaccess(A.File) && Tables.rows(f) === f
     fbad = A.File(IOBuffer("a\n\"unterminated"))
     @test any(p -> p.kind == :unclosed_quote, A.problems(fbad))
     @test occursin("problem", sprint(show, fbad))
@@ -231,6 +275,28 @@ end
     @test collect(fsh.table) == [1] && collect(fsh.lookup) == [3]
     @test Tables.rowcount(fsh) == 1 && length(fsh) == 1
     @test fsh[1].name == 2
+    @test Tables.columnnames(fsh[1]) == [:table, :name, :lookup]
+    @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); ntasks=0)
+    @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); stringtype=SubString{String})
+    @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); silencewarnings=true)
+end
+
+@testset "header diagnostics merge before strict/capping" begin
+    input = "\"bad\"x,a\nBAD,2\n"
+    f = A.File(IOBuffer(input); types=Dict(1 => Int64), maxproblems=1)
+    @test length(A.problems(f)) == 1
+    @test first(A.problems(f)).kind == :invalid_quoted_field
+    @test getfield(f, :table).droppedproblems == 1
+    f0 = A.File(IOBuffer(input); types=Dict(1 => Int64), maxproblems=0)
+    @test isempty(A.problems(f0)) && getfield(f0, :table).droppedproblems == 2
+    err = try
+        A.File(IOBuffer(input); types=Dict(1 => Int64), strict=true, maxproblems=0)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ErrorException
+    @test occursin("invalid_quoted_field", sprint(showerror, err))
 end
 
 @testset "read into sinks" begin
@@ -265,12 +331,25 @@ end
     typed = A.Rows(IOBuffer(input); types=Dict(:a => Int64))
     @test [r.a for r in typed] == [1, 2, 3]
     @test Tables.schema(typed).types[1] == Union{Int64, Missing}
+    typedbad = A.Rows(IOBuffer("a\n1\nbad\n"); types=Union{Int64, Missing})
+    csvbad = CSV.Rows(IOBuffer("a\n1\nbad\n"); types=Union{Int64, Missing},
+                      silencewarnings=true)
+    @test isequal([r.a for r in typedbad], [r.a for r in csvbad])
     # windowing composes
     @test length(collect(A.Rows(IOBuffer(input); limit=2))) == 2
     @test [r.a for r in A.Rows(IOBuffer(input); skipto=3)] == ["2", "3"]
+    windowed = collect(A.Rows(IOBuffer(input); skipto=3, limit=1))
+    @test [r.a for r in windowed] == ["2"] && A.rownumber(only(windowed)) == 1
     @test isequal([r.a for r in A.Rows(IOBuffer("a\nNA\n1\n"); missingstring="NA")],
                   [missing, "1"])
+    quoted = "a,b\n\"x\ny\",1\nz,2\n"
+    @test [_norm(r.a) for r in A.Rows(IOBuffer(quoted))] ==
+          [_norm(r.a) for r in CSV.Rows(IOBuffer(quoted))]
+    @test length(collect(A.Rows(IOBuffer(input); footerskip=2))) == 1
     @test_throws ArgumentError A.Rows(IOBuffer(input); pool=true)
+    @test_throws ArgumentError A.Rows(IOBuffer(input); nsample=2)
+    @test_throws ArgumentError A.Rows(IOBuffer(input); maxproblems=1)
+    @test_throws ArgumentError A.Rows(IOBuffer(input); select=[:a])
 end
 
 @testset "Chunks: stable schema, values concat to File" begin
@@ -286,6 +365,30 @@ end
     # windowing composes with batching
     b2 = collect(A.Chunks(IOBuffer("a,b\n1,2\n3,4\n5,6\n"); chunkbytes=8, skipto=3))
     @test sum(b -> b.nrows, b2) == 2
+    @test isempty(collect(A.Chunks(IOBuffer(input); chunkbytes=32, limit=0)))
+    @test isempty(collect(A.Chunks(IOBuffer(input); chunkbytes=32, footerskip=60)))
+    # limit and footer windows trim the prepared chunks before the schema pass.
+    for kw in ((; limit=17), (; footerskip=17), (; skipto=10, limit=13))
+        file = colvalues(A.File(IOBuffer(input); pool=false, kw...))
+        parts = collect(A.Chunks(IOBuffer(input); chunkbytes=32, kw...))
+        got = [reduce(vcat, (Any[_norm(x) for x in b[j]] for b in parts); init=Any[])
+               for j in (:a, :b)]
+        @test isequal(got, file[2])
+    end
+    routed = "a;b\n1,5;NA\n2,5;3\n"
+    file = colvalues(A.File(IOBuffer(routed); delim=';', decimal=',',
+                            missingstring="NA", pool=false, scanner=:scalar))
+    parts = collect(A.Chunks(IOBuffer(routed); delim=';', decimal=',',
+                             missingstring="NA", chunkbytes=8, scanner=:scalar))
+    got = [reduce(vcat, (Any[_norm(x) for x in b[j]] for b in parts); init=Any[])
+           for j in (:a, :b)]
+    @test isequal(got, file[2])
+    bad = first(A.Chunks(IOBuffer("a\nBAD\nNOPE\n"); types=Int64,
+                         chunkbytes=64, maxproblems=0))
+    @test isempty(A.problems(bad)) && bad.droppedproblems == 2
+    @test_throws ArgumentError A.Chunks(IOBuffer(input); pool=true)
+    @test_throws ArgumentError A.Chunks(IOBuffer(input); select=[:a])
+    @test_throws ArgumentError A.Chunks(IOBuffer(input); strict=true)
 end
 
 @testset "spec replays" begin
