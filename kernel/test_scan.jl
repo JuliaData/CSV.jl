@@ -130,6 +130,32 @@ end
     end
 end
 
+@testset "limit trims diagnostics deterministically" begin
+    bad = "a\n" * join(fill("bad", 20), "\n") * "\n"
+    expected = Dict(0 => (0, 0), 1 => (1, 0), 2 => (1, 1), 20 => (1, 19))
+    for (lim, (nitems, ndropped)) in expected
+        t = K.parse(bad; types=Int64, limit=lim, maxproblems=1,
+                    chunkbytes=8, parallel=true)
+        @test length(K.problems(t)) == nitems
+        @test t.droppedproblems == ndropped
+        @test all(p -> p.row <= lim, K.problems(t))
+    end
+
+    bad2 = "a,b\n" * join(("x,y" for _ in 1:500), "\n") * "\n"
+    for _ in 1:20
+        err = try
+            K.parse(bad2; types=Int64, limit=500, maxproblems=10_000,
+                    chunkbytes=16, parallel=true, on_error=:error)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ErrorException
+        @test occursin("data row 1, column 1", sprint(showerror, err))
+    end
+    @test K.parse(bad; types=Int64, limit=0, on_error=:error).nrows == 0
+end
+
 @testset "errors: contradictions, not gaps" begin
     @test_throws ArgumentError S.read(csv, T.Scan(select = :nope))
     @test_throws ArgumentError S.read(csv, T.Scan(select = (:qty => Int64, :qty => Float64)))

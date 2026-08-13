@@ -1524,7 +1524,8 @@ function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
                         j::Int, rowbase::Int, opts::ValueOpts,
                         userprovided::Bool, problems,
                         problemrowbase::Int=rowbase,
-                        mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0) where {T}
+                        mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
+                        reportlimit::Int=typemax(Int)) where {T}
     values, present = col.values, col.present
     scratch = _scratchfor(opts)
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
@@ -1546,6 +1547,7 @@ function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
         end
         # invalid for T (also: malformed quoting, quoted-empty, escaped content)
         if userprovided
+            lr - ci.firstdatarow + 1 > reportlimit && continue
             problemrow = problemrowbase + (lr - ci.firstdatarow) + 1
             kind = st == CELL_BADQUOTE ? :invalid_quoted_field : :invalid_value
             message = st == CELL_BADQUOTE ? "malformed quoting in " :
@@ -1563,7 +1565,8 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
                         j::Int, rowbase::Int, opts::ValueOpts,
                         userprovided::Bool, problems,
                         problemrowbase::Int=rowbase,
-                        mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0)
+                        mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
+                        reportlimit::Int=typemax(Int))
     payloads = col.payloads
     staging::Union{Nothing, NTuple{4, Vector}} = nothing  # (bytes, rows, offs, lens) for escaped-long cells
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
@@ -1575,18 +1578,24 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
         len == 0 && continue                            # unquoted empty ⇒ missing; quoted "" survives below
         cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
         if st == CELL_BADQUOTE
-            problemrow = problemrowbase + (lr - ci.firstdatarow) + 1
-            pushproblem!(problems, problemrow, j, pos, :invalid_quoted_field,
-                         "malformed quoting in " * excerpt(buf, pos, len))
+            localrow = lr - ci.firstdatarow + 1
+            if localrow <= reportlimit
+                problemrow = problemrowbase + localrow
+                pushproblem!(problems, problemrow, j, pos, :invalid_quoted_field,
+                             "malformed quoting in " * excerpt(buf, pos, len))
+            end
             continue
         end
         if st == CELL_MISSING
             continue
         end
         if !_wasquoted(buf, pos, len, opts) && _delimclash(buf, cpos, clen, opts.delim)
-            problemrow = problemrowbase + (lr - ci.firstdatarow) + 1
-            pushproblem!(problems, problemrow, j, pos, :invalid_value,
-                         "bare quote engaged structural protection in " * excerpt(buf, pos, len))
+            localrow = lr - ci.firstdatarow + 1
+            if localrow <= reportlimit
+                problemrow = problemrowbase + localrow
+                pushproblem!(problems, problemrow, j, pos, :invalid_value,
+                             "bare quote engaged structural protection in " * excerpt(buf, pos, len))
+            end
         end
         if esc
             # escaped values are unescaped ONCE, at parse time (KStr needs O(1)
@@ -1632,7 +1641,8 @@ end
 function parsecolchunk_missing(buf::Vector{UInt8}, ci::ChunkIndex, j::Int,
                                rowbase::Int, opts::ValueOpts,
                                userprovided::Bool, problems,
-                               mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0)
+                               mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
+                               reportlimit::Int=typemax(Int))
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
         mask !== nothing && !mask[maskbase + (lr - ci.firstdatarow) + 1] && continue
         sp = fieldspan(ci, lr, j)
@@ -1642,6 +1652,7 @@ function parsecolchunk_missing(buf::Vector{UInt8}, ci::ChunkIndex, j::Int,
         st = cellcontent(buf, sp[1], len, opts)[4]
         if st != CELL_MISSING
             userprovided || return lr
+            lr - ci.firstdatarow + 1 > reportlimit && continue
             out = rowbase + (lr - ci.firstdatarow) + 1
             kind = st == CELL_BADQUOTE ? :invalid_quoted_field : :invalid_value
             message = st == CELL_BADQUOTE ? "malformed quoting in " :
@@ -2165,18 +2176,20 @@ function parse(buf::Vector{UInt8};
     pendingproblems = PendingProblemLog(maxproblems)
     mergeproblems!(pendingproblems, headerlog, 0)
     mb = k -> rowmask === nothing ? 0 : rowbases0[k]
+    rl = k -> limit === nothing ? typemax(Int) :
+              clamp(limit - rowbases0[k], 0, nrows(chunks[k]))
     if parallel && nch > 1
         @sync for k in 1:nch
             errormonitor(Threads.@spawn fusedchunk!(chunks[k], buf, d, sc, indexed[k],
                                                     ncols, opts, userprovided, promo, promolock,
                                                     pendingproblems, segments, segtypes, k,
-                                                    selected, rowmask, mb(k)))
+                                                    selected, rowmask, mb(k), rl(k)))
         end
     else
         for k in 1:nch
             fusedchunk!(chunks[k], buf, d, sc, indexed[k], ncols, opts, userprovided,
                         promo, promolock, pendingproblems, segments, segtypes, k,
-                        selected, rowmask, mb(k))
+                        selected, rowmask, mb(k), rl(k))
         end
     end
     for k in 1:(nch - 1)
@@ -2200,12 +2213,12 @@ function parse(buf::Vector{UInt8};
             @sync for (k, j) in stale
                 errormonitor(Threads.@spawn restale!(chunks, final, segments, segtypes,
                                                      pendingproblems, buf, opts, d,
-                                                     userprovided, k, j, rowmask, mb(k)))
+                                                     userprovided, k, j, rowmask, mb(k), rl(k)))
             end
         else
             for (k, j) in stale
                 restale!(chunks, final, segments, segtypes, pendingproblems, buf,
-                         opts, d, userprovided, k, j, rowmask, mb(k))
+                         opts, d, userprovided, k, j, rowmask, mb(k), rl(k))
             end
         end
     end
@@ -2236,10 +2249,6 @@ function parse(buf::Vector{UInt8};
     # problem rows always reference INPUT data-row numbers (diagnostics point
     # at the file, not at the filtered output)
     log = finishproblems(pendingproblems, rowmask === nothing ? rowbases : rowbases0)
-    if limit !== nothing
-        filter!(p -> p.row == 0 || p.row <= limit, log.items)
-        log.first = isempty(log.items) ? nothing : log.items[1]
-    end
     if nch > 0 && last(chunks).unclosedquote
         pushproblem!(log, 0, 0, length(buf), :unclosed_quote,
                      "input ended inside a quoted field")
@@ -2273,13 +2282,15 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Sy
                      userprovided, promo, promolock, pendingproblems::PendingProblemLog,
                      segments, segtypes, k::Int,
                      selected::Union{Nothing, Vector{Bool}}=nothing,
-                     mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0)
+                     mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
+                     reportlimit::Int=typemax(Int))
     alreadyindexed || indexone!(ci, buf, d, scanner)
     n = nrows(ci)
     log = ProblemLog(pendingproblems.limit)
     for lr in ci.firstdatarow:totalrows(ci)
         localrow = lr - ci.firstdatarow + 1
         mask !== nothing && !mask[maskbase + localrow] && continue   # excluded rows don't report
+        localrow > reportlimit && continue
         nf = nfields(ci, lr)
         if nf < ncols
             sp = fieldspan(ci, lr, 1)::Tuple{Int, Int}
@@ -2306,8 +2317,10 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Sy
             (attempts += 1) > 8 && error("internal error: promotion did not converge")
             stg = allocatecolumn(T, n, buf, opts.e, d.cq)
             conflict = T === Missing ?
-                parsecolchunk_missing(buf, ci, j, 0, opts, userprovided[j], log, mask, maskbase) :
-                parsecolchunk!(stg, buf, ci, j, 0, opts, userprovided[j], log, 0, mask, maskbase)
+                parsecolchunk_missing(buf, ci, j, 0, opts, userprovided[j], log, mask,
+                                      maskbase, reportlimit) :
+                parsecolchunk!(stg, buf, ci, j, 0, opts, userprovided[j], log, 0, mask,
+                               maskbase, reportlimit)
             if conflict == 0
                 segs[j] = stg
                 st[j] = T
@@ -2335,12 +2348,14 @@ end
 function restale!(chunks, final, segments, segtypes,
                   pendingproblems::PendingProblemLog, buf::Vector{UInt8},
                   opts::ValueOpts, d::Dialect, userprovided, k::Int, j::Int,
-                  mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0)
+                  mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
+                  reportlimit::Int=typemax(Int))
     ci = chunks[k]
     stg = allocatecolumn(final[j], nrows(ci), buf, opts.e, d.cq)
     log = ProblemLog(pendingproblems.limit)
     conflict = final[j] === Missing ? 0 :
-        parsecolchunk!(stg, buf, ci, j, 0, opts, userprovided[j], log, 0, mask, maskbase)
+        parsecolchunk!(stg, buf, ci, j, 0, opts, userprovided[j], log, 0, mask,
+                       maskbase, reportlimit)
     conflict == 0 || error("internal error: re-parse under the joined type conflicted")
     segments[k][j] = stg
     segtypes[k][j] = final[j]
