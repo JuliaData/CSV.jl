@@ -4,8 +4,8 @@ A stand-alone, working implementation of the proposed CSV.jl internals rewrite,
 small enough to read as one unit, complete
 enough to demonstrate that the architecture holds end-to-end:
 
-- a **structural pass** (branchless SWAR fast path + a scalar reference state
-  machine) that produces a field-offset index,
+- a **structural pass** (width-generic vector default + portable SWAR fallback +
+  a scalar reference state machine) that produces a compact event tape,
 - **deterministic parallel chunking** — chunk entry quote-states are *computed*
   by parity composition, not guessed-and-retried,
 - **typed parsing over the index**, column by column, in monomorphic loops,
@@ -18,8 +18,8 @@ enough to demonstrate that the architecture holds end-to-end:
 
 | file | contents |
 |---|---|
-| `core.jl` | the kernel: `Dialect`, structural index (scalar + SWAR scanners), parallel indexing, type detection & promotion lattice, column builders, `CSVKernel.parse` driver, `Problem` log |
-| `test.jl` | ~6200 assertions: pinned structural cases, randomized scanner and string properties, typed-layer tests, driver determinism stress, examples-layer tests |
+| `core.jl` | the kernel: `Dialect`, tape index (vector + SWAR + scalar scanners), parallel indexing, type detection & promotion lattice, column builders, `CSVKernel.parse` driver, `Problem` log |
+| `test.jl` | 10,666 assertions: pinned structural cases, randomized scanner and string properties, typed-layer tests, driver determinism stress, examples-layer tests |
 | `examples.jl` | `KernelExamples.read` / `.batches` / `.rows` — the CSV.jl API surfaces as compositions of kernel blocks, plus Tables.jl integration |
 | `bench.jl` | rough throughput probe (index vs full-parse split; optional CSV.jl comparison) |
 | `Project.toml` | standalone environment (Parsers, Tables, Dates + test deps) |
@@ -33,12 +33,14 @@ julia --project=kernel -t8 kernel/bench.jl                 # throughput probe
 
 ## The architecture, in five decisions
 
-**1. Structure is separated from values.** One pass finds every field's
-`(offset, len)` and every row boundary (quote-aware); `Parsers.xparse` is then
-applied to *exact field spans*. Nothing downstream rediscovers boundaries:
-comment/empty-row filtering uses the index, and header/type/value parsing only
-examines assigned spans. This deletes the five hand-rolled, subtly-different
-quote-skipping byte loops in today's `detection.jl`.
+**1. Structure is separated from values.** One scan emits every quote-aware
+delimiter and row-end position to a flat tape. A compact assembly pass applies
+row hygiene and records row starts; `fieldspan` then reconstructs `(offset, len)`
+in O(1). `Parsers.xparse` is applied to those *exact field spans*. Nothing
+downstream rediscovers boundaries:
+comment/empty-row filtering is centralized in assembly, and header/type/value
+parsing only examines assigned spans. This deletes the five hand-rolled,
+subtly-different quote-skipping byte loops in today's `detection.jl`.
 
 **2. Iteration order becomes ours.** Because the index decouples reading order
 from file order, typed parsing runs **column-at-a-time within each chunk**: one
@@ -93,7 +95,7 @@ spam, nothing lost to a terminal scrollback.
 `bench.jl` runs a shape × size matrix (numeric, mixed, string-heavy,
 quoted-with-embedded-newlines, 200-column wide, 2-column long, missing-heavy ×
 10 KiB → 200 MiB) against the installed CSV.jl. With the three deep pieces in
-(64-byte block scanner, KStr inline-else-view strings, fused index→parse
+(width-generic 64-byte vector scanner, KStr inline-else-view strings, fused index→parse
 pipeline), on an M-series laptop at 8 threads (kernel ÷ CSV.File, kernel's
 string columns being the zero-copy KStr default):
 
@@ -102,7 +104,7 @@ string columns being the zero-copy KStr default):
   1.55–1.67×, strings 1.2×, longnarrow 1.1×, wide ~parity (was 0.54× before
   the fused pipeline); `mixed` 0.88–0.97× and `quoted` ~0.93× remain the
   honest gaps (the Bool/temporal sample-independence guard, and quotes being
-  scanned by both the index and xparse — the FieldSpan quote-bits seam).
+  scanned by both the structural and value layers).
 - **Single-threaded (20 MiB): wins 6 of 7 (1.03–1.58×)** — not a threading
   artifact.
 - `kernel+str` (detaching to `Vector{String}`) is allocation-bound by
@@ -139,7 +141,7 @@ second-pass-over-RAM tax on numeric/wide at scale.
 | multi-byte delimiters | already routed through the scalar scanner |
 | `ignorerepeated` | delimiter-run suppression in the scalar scanner |
 | transpose | a utility path over the same source and value primitives |
-| SIMD.jl / CLMUL 64-byte scanner | drop-in replacement for `indexchunk_swar!` behind the same emission helpers |
+| additional scanner tuning | new `blockmasks` / `prefix_xor64` methods; tape emission and assembly stay unchanged |
 | `Memory{T}` buffers, word-aligned validity bitmaps | swap inside `TypedColumn` on Julia ≥ 1.11 |
 | writer | untouched by this kernel (separate workstream) |
 
@@ -148,7 +150,7 @@ second-pass-over-RAM tax on numeric/wide at scale.
 | CSV.jl today | kernel |
 |---|---|
 | `Context` (700-line constructor) | `Dialect` + `index()` + driver kwargs (separable, testable) |
-| `detectdelimandguessrows`, `skiptorow`, `findrowstarts!`, `checkcommentandemptyline`, `ReversedBuf` footer logic | the structural index + row-level hygiene in `endrow!` |
+| `detectdelimandguessrows`, `skiptorow`, `findrowstarts!`, `checkcommentandemptyline`, `ReversedBuf` footer logic | tape scan + row-level hygiene in `assemblerows!` |
 | `parserow`'s 24-branch type switch | one dynamic dispatch per (column × chunk) into `parsecolchunk!` |
 | `rows.jl` `@unrollcolumns` | gone — `KernelExamples.rows` iterates the index |
 | `@generated parsecustom!` | gone — validated concrete `Parsers` targets use the same builder path |

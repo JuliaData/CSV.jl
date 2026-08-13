@@ -9,12 +9,11 @@ The pipeline (and the file's layout) is:
     L0  bytes         : a `Vector{UInt8}` covering the whole input (mmap/read/gunzip
                         live above this file; the kernel only sees bytes)
     L1  structural    : a quote-aware scan producing a `ChunkIndex` per row-aligned
-        index           chunk — every field's (offset, length) plus row boundaries.
-                        Two interchangeable scanners: a scalar reference state
-                        machine (handles every dialect, doubles as the test oracle)
-                        and a branchless SWAR fast path (8 bytes/iteration,
-                        prefix-XOR quote masks — the Langdale/Lemire technique,
-                        word-sized).
+        index           chunk — a compact event tape plus assembled row boundaries.
+                        Three interchangeable scanners: a scalar reference state
+                        machine (all dialects and the test oracle), a width-generic
+                        vector default, and a portable SWAR fallback. The fast
+                        scanners share 64-byte prefix-XOR quote masks.
     L1' parallelism   : chunk entry quote-states are *computed*, not guessed:
                         quote-toggle parity is associative, so a parallel per-range
                         parity count + an exclusive XOR scan gives every range its
@@ -113,7 +112,7 @@ end
 # on the sequential scalar path.
 parityclean(d::Dialect) = !d.quoted || (d.oq == d.cq && d.e == d.cq)
 
-# The SWAR scanner additionally needs a single-byte delimiter.
+# The fast scanners additionally need a single-byte delimiter.
 swareligible(d::Dialect) = parityclean(d) && d.delim isa UInt8
 
 function makeoptions(d::Dialect; dateformat=nothing, decimal::Char='.',
