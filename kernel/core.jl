@@ -428,11 +428,21 @@ else
 end
 
 # vector mask kernels (width-generic IR; unaligned loads; element 0 = bit 0 on
-# the little-endian targets this kernel supports)
-@inline function specials_mask_vec(p::Ptr{UInt8}, d::UInt8)::UInt64
-    Base.llvmcall(("""
-        define i64 @entry(ptr %p, i8 %d, i8 %cr, i8 %lf) #0 {
-            %x = load <64 x i8>, ptr %p, align 1
+# the little-endian targets this kernel supports). Julia 1.10's LLVM parser uses
+# typed pointers; Julia 1.11+ uses opaque pointers.
+@static if VERSION < v"1.11"
+    const LLVM_BYTE_PTR = "i8*"
+    const LLVM_LOAD64 = """
+            %vp = bitcast i8* %p to <64 x i8>*
+            %x = load <64 x i8>, <64 x i8>* %vp, align 1"""
+else
+    const LLVM_BYTE_PTR = "ptr"
+    const LLVM_LOAD64 = "%x = load <64 x i8>, ptr %p, align 1"
+end
+
+const SPECIALS_MASK_VEC_IR = """
+        define i64 @entry($LLVM_BYTE_PTR %p, i8 %d, i8 %cr, i8 %lf) #0 {
+$LLVM_LOAD64
             %d0 = insertelement <64 x i8> undef, i8 %d, i32 0
             %dv = shufflevector <64 x i8> %d0, <64 x i8> undef, <64 x i32> zeroinitializer
             %c0 = insertelement <64 x i8> undef, i8 %cr, i32 0
@@ -447,22 +457,26 @@ end
             %m = bitcast <64 x i1> %o2 to i64
             ret i64 %m
         }
-        attributes #0 = { alwaysinline }""", "entry"),
-        UInt64, Tuple{Ptr{UInt8}, UInt8, UInt8, UInt8}, p, d, CR, LF)
-end
+        attributes #0 = { alwaysinline }"""
 
-@inline function byte_mask_vec(p::Ptr{UInt8}, b::UInt8)::UInt64
-    Base.llvmcall(("""
-        define i64 @entry(ptr %p, i8 %b) #0 {
-            %x = load <64 x i8>, ptr %p, align 1
+const BYTE_MASK_VEC_IR = """
+        define i64 @entry($LLVM_BYTE_PTR %p, i8 %b) #0 {
+$LLVM_LOAD64
             %b0 = insertelement <64 x i8> undef, i8 %b, i32 0
             %bv = shufflevector <64 x i8> %b0, <64 x i8> undef, <64 x i32> zeroinitializer
             %c = icmp eq <64 x i8> %x, %bv
             %m = bitcast <64 x i1> %c to i64
             ret i64 %m
         }
-        attributes #0 = { alwaysinline }""", "entry"),
-        UInt64, Tuple{Ptr{UInt8}, UInt8}, p, b)
+        attributes #0 = { alwaysinline }"""
+
+@inline function specials_mask_vec(p::Ptr{UInt8}, d::UInt8)::UInt64
+    Base.llvmcall((SPECIALS_MASK_VEC_IR, "entry"),
+        UInt64, Tuple{Ptr{UInt8}, UInt8, UInt8, UInt8}, p, d, CR, LF)
+end
+
+@inline function byte_mask_vec(p::Ptr{UInt8}, b::UInt8)::UInt64
+    Base.llvmcall((BYTE_MASK_VEC_IR, "entry"), UInt64, Tuple{Ptr{UInt8}, UInt8}, p, b)
 end
 
 @inline function blockmasks(::Val{:vec}, p::Ptr{UInt8}, quoted::Bool, oq::UInt8, delim::UInt8)
