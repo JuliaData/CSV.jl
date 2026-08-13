@@ -131,39 +131,43 @@ function makeoptions(d::Dialect; dateformat=nothing, decimal::Char='.',
 end
 
 # ---------------------------------------------------------------------------
-# L1: the structural index.
+# L1: the structural index — tape edition.
 #
-# A FieldSpan is the *raw* span of one field — everything between two structural
-# delimiters, including any quotes, whitespace, or escapes. Value parsing hands the
-# exact span to Parsers.xparse, which identifies content spans and escape state;
-# lazy string access performs the final copy/unescape. The index never needs to
-# understand values. Offsets are chunk-relative UInt32 (chunks
-# are bounded well below 4 GiB), keeping the index at 8 bytes/field.
+# The scanners emit ONE UInt32 per structural event into a flat tape:
+#     (relpos << 2) | kind      kind: 0 = delimiter, 1 = CR, 2 = LF
+# and nothing else — no field structs, no row bookkeeping, no hygiene. Everything
+# row-shaped (CRLF pairing, comment/empty-row dropping, row boundaries) happens in
+# `assemblerows!`, one cheap pass over the compact tape (4 bytes/event ≈ 1/10th of
+# the input bytes) instead of inside the byte loop. This is the Sep/simdcsv tape
+# design: the hot loop's only per-event work is one store and a cursor bump.
+# After assembly, tape kinds become: 0 = delimiter (next field starts
+# `delimskip` bytes later), 1 = row end (+1 byte), 2 = row end (+2 bytes, CRLF).
+# Every event closes exactly one field, so a row's field count is its event count.
+# relpos is chunk-relative and capped at 2^30 (chunks are ~1 MiB; only a single
+# giant row can exceed this, and that is rejected up front).
 # ---------------------------------------------------------------------------
-
-struct FieldSpan
-    relpos::UInt32   # 0-based offset of the field's first byte from the chunk start
-    len::UInt32      # raw byte length (0 = empty field)
-end
 
 mutable struct ChunkIndex
     start::Int                  # absolute (1-based) byte offset of the chunk in buf
     stop::Int                   # absolute offset of the chunk's last byte
-    fields::Vector{FieldSpan}
-    rowfirst::Vector{Int32}     # rowfirst[r]..rowfirst[r+1]-1 index `fields` for row r; length nrows+1
+    tape::Vector{UInt32}        # (relpos << 2) | kind, one per field-closing event
+    rowfirst::Vector{Int32}     # rowfirst[r]..rowfirst[r+1]-1 index `tape` for row r
+    rowstartrel::Vector{UInt32} # chunk-relative byte offset of each surviving row's start
+    delimskip::UInt8            # bytes a delimiter event consumes (multi-byte delims)
     firstdatarow::Int           # local row where data begins (2 when this chunk holds the header row)
     unclosedquote::Bool         # buffer ended while inside a quoted field (malformed input)
 end
 
 ChunkIndex(start::Int, stop::Int) =
-    ChunkIndex(start, stop, FieldSpan[], Int32[1], 1, false)
+    ChunkIndex(start, stop, UInt32[], Int32[1], UInt32[], 0x01, 1, false)
 
 nrows(ci::ChunkIndex) = length(ci.rowfirst) - 1 - (ci.firstdatarow - 1)
 totalrows(ci::ChunkIndex) = length(ci.rowfirst) - 1
 nfields(ci::ChunkIndex, localrow::Int) = Int(ci.rowfirst[localrow + 1] - ci.rowfirst[localrow])
 
 # Absolute (pos, len) of field `col` in local row `localrow`, or `nothing` when the
-# row is too short (ragged input).
+# row is too short (ragged input). Field col is closed by the row's col-th event;
+# it starts at the row start (col == 1) or just past the previous event.
 @inline function fieldspan(ci::ChunkIndex, localrow::Int, col::Int)
     @boundscheck 1 <= localrow <= totalrows(ci) || throw(BoundsError(ci, localrow))
     @boundscheck col >= 1 || throw(BoundsError(ci, (localrow, col)))
@@ -171,8 +175,15 @@ nfields(ci::ChunkIndex, localrow::Int) = Int(ci.rowfirst[localrow + 1] - ci.rowf
     @inbounds nextr = Int(ci.rowfirst[localrow + 1])
     col <= nextr - first || return nothing
     fi = first + col - 1
-    @inbounds s = ci.fields[fi]
-    return (ci.start + Int(s.relpos), Int(s.len))
+    @inbounds stop = ci.start + Int(ci.tape[fi] >> 2) - 1
+    if col == 1
+        @inbounds s = ci.start + Int(ci.rowstartrel[localrow])
+    else
+        @inbounds e = ci.tape[fi - 1]
+        k = e & 0x03
+        s = ci.start + Int(e >> 2) + (k == 0x00 ? Int(ci.delimskip) : Int(k))
+    end
+    return (s, stop - s + 1)
 end
 
 struct BufferIndex
@@ -181,62 +192,116 @@ struct BufferIndex
     unclosedquote::Bool         # input ended inside a quoted field (captured before empty-chunk filtering)
 end
 
-# --- shared row-emission hygiene -------------------------------------------
-#
-# Comment rows and (optionally) empty rows are dropped here — at row granularity,
-# after structure is known — which is what lets the byte-level scanners stay
-# oblivious to both concepts. This one helper replaces CSV.jl's five separate
-# comment/empty-row-aware byte loops.
-#
-# The scanners emit fields into `ci.fields` and call `endrow!` after the row's last
-# field has been pushed. `rowstartabs` is the absolute offset of the row's first byte.
-@inline function endrow!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, rowstartabs::Int)
-    firstfield = Int(ci.rowfirst[end])
-    nf = length(ci.fields) - firstfield + 1
-    # empty row: exactly one zero-length field
-    if d.ignoreemptyrows && nf == 1 && @inbounds(ci.fields[end].len) == 0x00000000
-        pop!(ci.fields)
-        return
-    end
-    # comment row: raw bytes at the row start match the comment prefix. The
-    # comparison can never leak past this row's terminator: comment bytes may not
-    # contain \r or \n (validated in Dialect), so a terminator byte always
-    # mismatches first. Bounded by length(buf) for the unterminated-last-row case.
-    cmt = d.comment
-    if cmt !== nothing && rowstartabs + length(cmt) - 1 <= length(buf)
-        match = true
-        @inbounds for k in eachindex(cmt)
-            if buf[rowstartabs + k - 1] != cmt[k]
-                match = false
-                break
-            end
-        end
-        if match
-            resize!(ci.fields, firstfield - 1)
-            return
-        end
-    end
-    push!(ci.rowfirst, Int32(length(ci.fields) + 1))
-    return
+# --- tape plumbing -----------------------------------------------------------
+
+const MAX_TAPE_HINT = 1 << 20   # initial-capacity cap: a giant single row spans
+                                # many bytes but holds few events
+
+@inline function tape_room!(tape::Vector{UInt32}, n::Int, extra::Int)
+    length(tape) < n + extra && resize!(tape, max(2 * length(tape), n + extra + 256))
+    return tape
 end
 
-@inline emitfield!(ci::ChunkIndex, fieldstart::Int, fieldstop::Int) =
-    push!(ci.fields, FieldSpan(UInt32(fieldstart - ci.start), UInt32(fieldstop - fieldstart + 1)))
+# raw event kinds during scanning
+@inline rawkind(b::UInt8) = UInt32((b == CR) + 2 * (b == LF))   # 0 delim, 1 CR, 2 LF
+
+# --- row assembly (the deferred hygiene pass) --------------------------------
+#
+# Consumes raw events in place: pairs CR+LF into one row end, drops comment and
+# (optionally) empty rows, records each surviving row's start offset, and builds
+# rowfirst. Reads input bytes only at row starts (comment prefix check).
+function assemblerows!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int)
+    tape = ci.tape
+    ci.delimskip = d.delim isa UInt8 ? 0x01 : UInt8(length(d.delim::Vector{UInt8}))
+    rowfirst = ci.rowfirst
+    rowstartrel = ci.rowstartrel
+    resize!(rowfirst, 1); @inbounds rowfirst[1] = Int32(1)
+    empty!(rowstartrel)
+    cmt = d.comment
+    w = 0
+    roweventw = 1          # tape index where the current row's events begin
+    rowstart = ci.start    # absolute byte where the current row begins
+    i = 1
+    @inbounds while i <= n
+        e = tape[i]
+        k = e & 0x03
+        if k == 0x00                       # delimiter: field boundary, row continues
+            w += 1
+            tape[w] = e
+            i += 1
+        else                               # CR or LF: row end (pair CRLF)
+            pos = ci.start + Int(e >> 2)
+            skip2 = k == 0x01 && i < n && (tape[i + 1] & 0x03) == 0x02 &&
+                    Int(tape[i + 1] >> 2) == Int(e >> 2) + 1
+            w += 1
+            tape[w] = (e & ~UInt32(0x03)) | (skip2 ? UInt32(2) : UInt32(1))
+            i += skip2 ? 2 : 1
+            nextrow = pos + (skip2 ? 2 : 1)
+            # hygiene, at row granularity, over the tape (never re-scanning bytes)
+            drop = false
+            if d.ignoreemptyrows && w == roweventw && pos == rowstart
+                drop = true                # a row that is one empty field
+            elseif cmt !== nothing && rowstart + length(cmt) - 1 <= length(buf)
+                # a terminator byte can never match a comment byte (validated in
+                # Dialect), so this compare cannot leak past the row
+                match = true
+                for c in eachindex(cmt)
+                    if buf[rowstart + c - 1] != cmt[c]
+                        match = false
+                        break
+                    end
+                end
+                drop = match
+            end
+            if drop
+                w = roweventw - 1
+            else
+                push!(rowstartrel, UInt32(rowstart - ci.start))
+                push!(rowfirst, Int32(w + 1))
+                roweventw = w + 1
+            end
+            rowstart = nextrow
+        end
+    end
+    resize!(tape, w)
+    return ci
+end
+
+# End-of-chunk: synthesize a row end when the chunk does not finish on one — a
+# trailing unterminated row ("a,b"), a trailing empty field ("a,b,"), or an
+# unclosed quote running to EOF.
+function finishscan!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int, inquote::Bool)
+    start, stop = ci.start, ci.stop
+    needsend = if n == 0
+        stop >= start
+    else
+        e = @inbounds ci.tape[n]
+        (e & 0x03) == 0x00 || ci.start + Int(e >> 2) < stop
+    end
+    if needsend
+        tape_room!(ci.tape, n, 1)
+        n += 1
+        @inbounds ci.tape[n] = (UInt32(stop + 1 - start) << 2) | UInt32(2)  # LF-kind at EOF
+    end
+    ci.unclosedquote = inquote
+    assemblerows!(ci, buf, d, n)
+    return ci
+end
 
 # --- scalar reference scanner ----------------------------------------------
 #
 # A direct state machine over bytes. Handles every dialect (multi-byte delimiters,
-# distinct escape chars, asymmetric quotes) and is the correctness oracle the SWAR
-# path is property-tested against. Entry state is always "outside quotes" because
-# chunk starts are true row starts by construction (§ parallel indexing below).
+# distinct escape chars, asymmetric quotes) and is the correctness oracle the fast
+# paths are property-tested against. Entry state is always "outside quotes"
+# because chunk starts are true row starts by construction.
 
 function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
     start, stop = ci.start, ci.stop
     oq, cq, e, quoted = d.oq, d.cq, d.e, d.quoted
     delim = d.delim
+    tape = ci.tape
+    n = 0
     pos = start
-    fieldstart = start
-    rowstart = start
     inquote = false
     @inbounds while pos <= stop
         b = buf[pos]
@@ -258,26 +323,20 @@ function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
             pos += 1
         elseif delim isa UInt8 ? b == delim :
                (b == delim[1] && pos + length(delim) - 1 <= stop && _matchbytes(buf, pos, delim))
-            emitfield!(ci, fieldstart, pos - 1)
+            tape_room!(tape, n, 1)
+            n += 1
+            tape[n] = UInt32(pos - start) << 2         # kind 0
             pos += delim isa UInt8 ? 1 : length(delim)
-            fieldstart = pos
-        elseif b == LF
-            emitfield!(ci, fieldstart, pos - 1)
-            endrow!(ci, buf, d, rowstart)
+        elseif b == LF || b == CR
+            tape_room!(tape, n, 1)
+            n += 1
+            tape[n] = (UInt32(pos - start) << 2) | rawkind(b)
             pos += 1
-            fieldstart = rowstart = pos
-        elseif b == CR
-            emitfield!(ci, fieldstart, pos - 1)
-            endrow!(ci, buf, d, rowstart)
-            pos += 1
-            pos <= stop && buf[pos] == LF && (pos += 1)
-            fieldstart = rowstart = pos
         else
             pos += 1
         end
     end
-    _finishchunk!(ci, buf, d, fieldstart, rowstart, inquote)
-    return ci
+    return finishscan!(ci, buf, d, n, inquote)
 end
 
 @inline function _matchbytes(buf::Vector{UInt8}, pos::Int, bytes::Vector{UInt8})
@@ -287,56 +346,39 @@ end
     return true
 end
 
-# Shared end-of-chunk logic: emit a trailing row when the chunk doesn't end in a
-# row terminator ("a,b" with no final newline), including the trailing-empty-field
-# case ("a,b," parses as three fields). An EOF while inside a quoted field is
-# recorded as malformed rather than throwing — the driver reports it as a Problem.
-function _finishchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect,
-                       fieldstart::Int, rowstart::Int, inquote::Bool)
-    stop = ci.stop
-    pendinginrow = length(ci.fields) - (Int(ci.rowfirst[end]) - 1)
-    if fieldstart <= stop || pendinginrow > 0
-        emitfield!(ci, fieldstart, stop)  # zero-length when fieldstart == stop + 1
-        endrow!(ci, buf, d, rowstart)
-    end
-    ci.unclosedquote = inquote
-    return
-end
-
-# --- SWAR/block scanner --------------------------------------------------------
+# --- fast scanners: SWAR and vector block-mask engines -----------------------
 #
-# Branchless structural classification in 64-byte blocks — the Langdale–Lemire
-# structural pass at word width. Per 8-byte word we compute exact per-byte
-# equality tests in 0x80-mark space; the delim/CR/LF marks are OR'd BEFORE the
-# movemask multiply, so each word costs two multiplies (quote mask + combined
-# specials mask), not four. Eight words assemble two 64-bit block masks; the
-# in-quote region comes from a 64-bit prefix-XOR over the quote mask (six
-# shift-XOR steps — the multiply-free equivalent of the CLMUL trick; a PMULL/
-# PCLMULQDQ llvmcall drops in behind the same seam), and CR-vs-LF-vs-delim is
-# resolved per *event* (events are rare relative to bytes), which also handles
-# CRLF pairing via the last-CR position instead of a per-word suppression mask.
+# Both produce, per 64-byte block, a quote bitmask and a specials
+# (delim|CR|LF) bitmask; a shared branch-light event loop turns the masked
+# specials into tape entries. The engines differ only in how the masks are built:
+#
+#   :swar — portable 8-bytes-per-word marks + movemask multiplies (no SIMD
+#           assumptions at all; the fallback everywhere).
+#   :vec  — width-generic LLVM vector IR (<64 x i8> compare → <64 x i1> →
+#           bitcast i64). LLVM lowers this per HOST: one vpcmpeqb into a mask
+#           register on AVX-512, paired 32-byte compares + vpmovmskb on AVX2,
+#           and compare + bit-select reductions on NEON. One implementation,
+#           no per-platform intrinsics, optimal where the hardware has direct
+#           support — this is deliberately not tuned to any single machine.
+#
+# The in-quote region mask is a prefix-XOR over the quote mask; on x86_64 and
+# Apple aarch64 it uses the carry-less multiply instruction (PCLMULQDQ / PMULL),
+# elsewhere the 6-step shift-XOR ladder.
 
 const ONES8   = 0x0101010101010101
 const LOWS7   = 0x7f7f7f7f7f7f7f7f
 const MOVEMASK_MAGIC = 0x0102040810204080
-const MAX_FIELD_SIZEHINT = 1 << 20
 
-@inline fieldsizehint(nbytes::Int) = min(nbytes >> 3, MAX_FIELD_SIZEHINT)
-
-# Exact per-byte equality marks: 0x80 at each byte of `w` equal to `b`, 0x00
-# elsewhere. Uses the exact zero-byte test (the subtract-borrow variant has false
-# positives) — safe to OR with other classes' marks before compressing.
+# Exact per-byte equality marks: 0x80 at each byte of `w` equal to `b` (the
+# subtract-borrow variant has false positives) — safe to OR across classes.
 @inline function eqmarks(w::UInt64, b::UInt8)::UInt64
     x = w ⊻ (ONES8 * b)
     return ~(((x & LOWS7) + LOWS7) | x | LOWS7)
 end
 
-# Compress 0x80-marks to an 8-bit movemask (bit i ⇔ byte i marked).
 @inline movemask(marks::UInt64)::UInt64 = ((marks >> 7) * MOVEMASK_MAGIC) >> 56
 
-# prefix_xor64(m) bit i = XOR of m's bits 0..i — quote-toggle parity up to and
-# including byte i, across the whole 64-byte block.
-@inline function prefix_xor64(m::UInt64)::UInt64
+@inline function prefix_xor64_shift(m::UInt64)::UInt64
     m ⊻= m << 1
     m ⊻= m << 2
     m ⊻= m << 4
@@ -346,91 +388,139 @@ end
     return m
 end
 
-function indexchunk_swar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
+@static if Sys.ARCH === :x86_64
+    @inline function prefix_xor64(m::UInt64)::UInt64
+        # clmul(m, ~0) = prefix XOR; PCLMULQDQ ships on every x86_64 CPU since ~2010
+        v = Base.llvmcall(("""
+            declare <2 x i64> @llvm.x86.pclmulqdq(<2 x i64>, <2 x i64>, i8)
+            define i64 @entry(i64 %m) #0 {
+                %a0 = insertelement <2 x i64> zeroinitializer, i64 %m, i32 0
+                %b0 = insertelement <2 x i64> zeroinitializer, i64 -1, i32 0
+                %r = call <2 x i64> @llvm.x86.pclmulqdq(<2 x i64> %a0, <2 x i64> %b0, i8 0)
+                %lo = extractelement <2 x i64> %r, i32 0
+                ret i64 %lo
+            }
+            attributes #0 = { alwaysinline }""", "entry"), UInt64, Tuple{UInt64}, m)
+        return v
+    end
+elseif Sys.ARCH === :aarch64 && Sys.isapple()
+    @inline function prefix_xor64(m::UInt64)::UInt64
+        # PMULL (crypto extension — present on all Apple silicon)
+        v = Base.llvmcall(("""
+            declare <16 x i8> @llvm.aarch64.neon.pmull64(i64, i64)
+            define i64 @entry(i64 %m) #0 {
+                %r = call <16 x i8> @llvm.aarch64.neon.pmull64(i64 %m, i64 -1)
+                %v = bitcast <16 x i8> %r to <2 x i64>
+                %lo = extractelement <2 x i64> %v, i32 0
+                ret i64 %lo
+            }
+            attributes #0 = { alwaysinline }""", "entry"), UInt64, Tuple{UInt64}, m)
+        return v
+    end
+else
+    @inline prefix_xor64(m::UInt64) = prefix_xor64_shift(m)
+end
+
+# vector mask kernels (width-generic IR; unaligned loads; element 0 = bit 0 on
+# the little-endian targets this kernel supports)
+@inline function specials_mask_vec(p::Ptr{UInt8}, d::UInt8)::UInt64
+    Base.llvmcall(("""
+        define i64 @entry(ptr %p, i8 %d, i8 %cr, i8 %lf) #0 {
+            %x = load <64 x i8>, ptr %p, align 1
+            %d0 = insertelement <64 x i8> undef, i8 %d, i32 0
+            %dv = shufflevector <64 x i8> %d0, <64 x i8> undef, <64 x i32> zeroinitializer
+            %c0 = insertelement <64 x i8> undef, i8 %cr, i32 0
+            %cv = shufflevector <64 x i8> %c0, <64 x i8> undef, <64 x i32> zeroinitializer
+            %l0 = insertelement <64 x i8> undef, i8 %lf, i32 0
+            %lv = shufflevector <64 x i8> %l0, <64 x i8> undef, <64 x i32> zeroinitializer
+            %e1 = icmp eq <64 x i8> %x, %dv
+            %e2 = icmp eq <64 x i8> %x, %cv
+            %e3 = icmp eq <64 x i8> %x, %lv
+            %o1 = or <64 x i1> %e1, %e2
+            %o2 = or <64 x i1> %o1, %e3
+            %m = bitcast <64 x i1> %o2 to i64
+            ret i64 %m
+        }
+        attributes #0 = { alwaysinline }""", "entry"),
+        UInt64, Tuple{Ptr{UInt8}, UInt8, UInt8, UInt8}, p, d, CR, LF)
+end
+
+@inline function byte_mask_vec(p::Ptr{UInt8}, b::UInt8)::UInt64
+    Base.llvmcall(("""
+        define i64 @entry(ptr %p, i8 %b) #0 {
+            %x = load <64 x i8>, ptr %p, align 1
+            %b0 = insertelement <64 x i8> undef, i8 %b, i32 0
+            %bv = shufflevector <64 x i8> %b0, <64 x i8> undef, <64 x i32> zeroinitializer
+            %c = icmp eq <64 x i8> %x, %bv
+            %m = bitcast <64 x i1> %c to i64
+            ret i64 %m
+        }
+        attributes #0 = { alwaysinline }""", "entry"),
+        UInt64, Tuple{Ptr{UInt8}, UInt8}, p, b)
+end
+
+@inline function blockmasks(::Val{:vec}, p::Ptr{UInt8}, quoted::Bool, oq::UInt8, delim::UInt8)
+    q64 = quoted ? byte_mask_vec(p, oq) : zero(UInt64)
+    return q64, specials_mask_vec(p, delim)
+end
+
+@inline function blockmasks(::Val{:swar}, p::Ptr{UInt8}, quoted::Bool, oq::UInt8, delim::UInt8)
+    q64 = zero(UInt64)
+    s64 = zero(UInt64)
+    if quoted
+        for k in 0:7   # fixed trip count; unrolled by the compiler
+            # ltoh: the movemask constants number bytes from the least-
+            # significant end, matching little-endian loads.
+            w = ltoh(unsafe_load(Ptr{UInt64}(p + 8k)))
+            q64 |= movemask(eqmarks(w, oq)) << (8k)
+            sm = eqmarks(w, delim) | eqmarks(w, LF) | eqmarks(w, CR)
+            s64 |= movemask(sm) << (8k)
+        end
+    else
+        for k in 0:7
+            w = ltoh(unsafe_load(Ptr{UInt64}(p + 8k)))
+            sm = eqmarks(w, delim) | eqmarks(w, LF) | eqmarks(w, CR)
+            s64 |= movemask(sm) << (8k)
+        end
+    end
+    return q64, s64
+end
+
+function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{S}) where {S}
     @assert swareligible(d)
     start, stop = ci.start, ci.stop
     delim = d.delim::UInt8
     oq = d.oq
     quoted = d.quoted
-    fieldstart = start
-    rowstart = start
+    tape = ci.tape
+    length(tape) < 256 && resize!(tape, min(max((stop - start + 1) >> 3, 256), MAX_TAPE_HINT))
+    n = 0
     inq = false        # quote parity carried between blocks
-    lastcr = start - 2 # absolute position of the last structural CR (CRLF pairing);
-                       # start-2 can never equal any position's predecessor
     pos = start
-    # ~1 field per 8 bytes is a generous guess. Cap the reservation because one
-    # giant row can span many chunk ranges while containing only one field.
-    sizehint!(ci.fields, fieldsizehint(stop - start + 1))
     GC.@preserve buf begin
         p = pointer(buf)
         @inbounds while pos + 63 <= stop
-            q64 = zero(UInt64)
-            s64 = zero(UInt64)
-            if quoted
-                for k in 0:7   # fixed trip count; unrolled by the compiler
-                    # ltoh: the movemask constants number bytes from the least-
-                    # significant end, matching little-endian loads.
-                    w = ltoh(unsafe_load(Ptr{UInt64}(p + pos - 1 + 8k)))
-                    q64 |= movemask(eqmarks(w, oq)) << (8k)
-                    sm = eqmarks(w, delim) | eqmarks(w, LF) | eqmarks(w, CR)
-                    s64 |= movemask(sm) << (8k)
-                end
-            else
-                for k in 0:7
-                    w = ltoh(unsafe_load(Ptr{UInt64}(p + pos - 1 + 8k)))
-                    sm = eqmarks(w, delim) | eqmarks(w, LF) | eqmarks(w, CR)
-                    s64 |= movemask(sm) << (8k)
-                end
-            end
+            q64, s64 = blockmasks(Val(S), p + pos - 1, quoted, oq, delim)
             inmask = prefix_xor64(q64)
             inq && (inmask = ~inmask)
             specials = s64 & ~inmask
-            while specials != zero(UInt64)
-                tz = trailing_zeros(specials)
-                at = pos + tz
-                b = buf[at]
-                if b == delim
-                    emitfield!(ci, fieldstart, at - 1)
-                    fieldstart = at + 1
-                elseif b == LF
-                    if lastcr == at - 1
-                        # LF of a CRLF pair: the CR already ended the row and
-                        # advanced fieldstart past this byte — consume silently.
-                    else
-                        emitfield!(ci, fieldstart, at - 1)
-                        endrow!(ci, buf, d, rowstart)
-                        fieldstart = rowstart = at + 1
-                    end
-                else # CR
-                    emitfield!(ci, fieldstart, at - 1)
-                    endrow!(ci, buf, d, rowstart)
-                    lastcr = at
-                    nxt = at + 1
-                    nxt <= stop && buf[nxt] == LF && (nxt += 1)
-                    fieldstart = rowstart = nxt
+            if specials != zero(UInt64)
+                tape = tape_room!(tape, n, 64)
+                base = UInt32(pos - start)
+                while specials != zero(UInt64)
+                    tz = trailing_zeros(specials)
+                    b = buf[pos + tz]
+                    n += 1
+                    tape[n] = ((base + UInt32(tz)) << 2) | rawkind(b)
+                    specials &= specials - one(UInt64)
                 end
-                specials &= specials - one(UInt64)
             end
             inq ⊻= isodd(count_ones(q64))
             pos += 64
         end
     end
-    # Scalar tail for the last <64 bytes, continuing the carried state.
-    _swar_tail!(ci, buf, d, pos, fieldstart, rowstart, inq, lastcr == pos - 1)
-    return ci
-end
-
-function _swar_tail!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, pos::Int,
-                     fieldstart::Int, rowstart::Int, inq::Bool, crcarry::Bool)
-    stop = ci.stop
-    delim = d.delim::UInt8
-    # A CRLF pair split exactly at a word boundary: the CR (last byte of the previous
-    # word) already terminated the row and advanced fieldstart past this LF; skip it
-    # so the scalar loop doesn't emit a spurious empty row.
-    if crcarry && pos <= stop && @inbounds(buf[pos]) == LF
-        pos += 1
-        fieldstart = rowstart = pos
-    end
+    ci.tape = tape
+    # Scalar tail for the last <64 bytes, continuing the carried quote state.
     @inbounds while pos <= stop
         b = buf[pos]
         if inq
@@ -444,31 +534,23 @@ function _swar_tail!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, pos::Int,
             else
                 pos += 1
             end
-        elseif d.quoted && b == d.oq
+        elseif quoted && b == oq
             inq = true
             pos += 1
-        elseif b == delim
-            emitfield!(ci, fieldstart, pos - 1)
+        elseif b == delim || b == LF || b == CR
+            tape_room!(tape, n, 1)
+            n += 1
+            tape[n] = (UInt32(pos - start) << 2) | rawkind(b)
             pos += 1
-            fieldstart = pos
-        elseif b == LF
-            emitfield!(ci, fieldstart, pos - 1)
-            endrow!(ci, buf, d, rowstart)
-            pos += 1
-            fieldstart = rowstart = pos
-        elseif b == CR
-            emitfield!(ci, fieldstart, pos - 1)
-            endrow!(ci, buf, d, rowstart)
-            pos += 1
-            pos <= stop && buf[pos] == LF && (pos += 1)
-            fieldstart = rowstart = pos
         else
             pos += 1
         end
     end
-    _finishchunk!(ci, buf, d, fieldstart, rowstart, inq)
-    return
+    return finishscan!(ci, buf, d, n, inq)
 end
+
+indexchunk_swar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect) =
+    indexchunk_fast!(ci, buf, d, Val(:swar))
 
 # --- parallel indexing -------------------------------------------------------
 #
@@ -585,17 +667,28 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
         b0, b1 = bounds[i], bounds[i + 1]
         b0 < b1 && push!(chunks, ChunkIndex(b0, b1 - 1))
     end
-    # FieldSpan offsets are chunk-relative UInt32. A chunk only exceeds `chunkbytes`
-    # when a single row straddles whole ranges, so this bound is about one giant row.
+    # Tape offsets are chunk-relative and packed as (relpos << 2) in a UInt32. A
+    # chunk only exceeds `chunkbytes` when a single row straddles whole ranges, so
+    # this bound is about one giant row.
     for ci in chunks
-        ci.stop - ci.start < typemax(UInt32) ||
-            throw(ArgumentError("a single row exceeds 4 GiB; not supported by the prove-out kernel"))
+        ci.stop - ci.start < (1 << 30) ||
+            throw(ArgumentError("a single row exceeds 1 GiB; not supported by the prove-out kernel"))
     end
     return chunks
 end
 
-indexone!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, useswar::Bool) =
-    useswar ? indexchunk_swar!(ci, buf, d) : indexchunk_scalar!(ci, buf, d)
+function indexone!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Symbol)
+    scanner === :scalar ? indexchunk_scalar!(ci, buf, d) :
+    scanner === :swar   ? indexchunk_fast!(ci, buf, d, Val(:swar)) :
+                          indexchunk_fast!(ci, buf, d, Val(:vec))
+end
+
+# Resolve the scanner: exotic dialects need the scalar reference machine; the
+# vector engine is the default fast path everywhere (LLVM lowers its generic IR
+# per host), with :swar as the no-SIMD-assumptions fallback and for testing.
+resolvescanner(d::Dialect, fastindex::Bool, scanner::Symbol) =
+    !(fastindex && swareligible(d)) ? :scalar :
+    scanner === :auto ? :vec : scanner
 
 """
     index(buf, d::Dialect; datastart=1, chunkbytes=2^23, parallel=true, fastindex=true)
@@ -607,7 +700,8 @@ function index(buf::Vector{UInt8}, d::Dialect;
                datastart::Int=1,
                chunkbytes::Int=1 << 23,
                parallel::Bool=Threads.nthreads() > 1,
-               fastindex::Bool=true)
+               fastindex::Bool=true,
+               scanner::Symbol=:auto)
     len = length(buf)
     # No lower bound beyond 1: tests deliberately use tiny chunkbytes to force row
     # boundaries everywhere. The standalone index default is 8 MiB; `parse`
@@ -616,15 +710,15 @@ function index(buf::Vector{UInt8}, d::Dialect;
     datastart >= 1 || throw(ArgumentError("datastart must be ≥ 1 (got $datastart)"))
     datastart > len && return BufferIndex(ChunkIndex[], 0, false)
 
-    useswar = fastindex && swareligible(d)
+    sc = resolvescanner(d, fastindex, scanner)
     chunks = chunkplan(buf, d, datastart, chunkbytes, parallel)
     if length(chunks) == 1 || !parallel
         for ci in chunks
-            indexone!(ci, buf, d, useswar)
+            indexone!(ci, buf, d, sc)
         end
     else
         @sync for ci in chunks
-            errormonitor(Threads.@spawn indexone!(ci, buf, d, useswar))
+            errormonitor(Threads.@spawn indexone!(ci, buf, d, sc))
         end
     end
 
@@ -1557,6 +1651,7 @@ function parse(buf::Vector{UInt8};
                chunkbytes::Union{Nothing, Int}=nothing,
                parallel::Bool=Threads.nthreads() > 1,
                fastindex::Bool=true,
+               scanner::Symbol=:auto,
                maxproblems::Int=10_000,
                on_error::Symbol=:collect,
                nsample::Union{Nothing, Int}=nothing,
@@ -1580,7 +1675,7 @@ function parse(buf::Vector{UInt8};
     d = Dialect(; dialectkw...)
     opts = makeoptions(d; dateformat, decimal, truestrings, falsestrings, stripwhitespace)
     datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1  # BOM
-    useswar = fastindex && swareligible(d)
+    sc = resolvescanner(d, fastindex, scanner)
     chunks = chunkplan(buf, d, datastart, chunkbytes, parallel)
     nch = length(chunks)
     indexed = fill(false, nch)
@@ -1594,13 +1689,13 @@ function parse(buf::Vector{UInt8};
     if parallel && length(probes) > 1
         @sync for k in probes
             errormonitor(Threads.@spawn begin
-                indexone!(chunks[k], buf, d, useswar)
+                indexone!(chunks[k], buf, d, sc)
                 indexed[k] = true
             end)
         end
     else
         for k in probes
-            indexone!(chunks[k], buf, d, useswar)
+            indexone!(chunks[k], buf, d, sc)
             indexed[k] = true
         end
     end
@@ -1609,7 +1704,7 @@ function parse(buf::Vector{UInt8};
     headerchunk = 0
     for k in 1:nch
         if !indexed[k]
-            indexone!(chunks[k], buf, d, useswar)
+            indexone!(chunks[k], buf, d, sc)
             indexed[k] = true
         end
         if totalrows(chunks[k]) > 0
@@ -1685,13 +1780,13 @@ function parse(buf::Vector{UInt8};
     mergeproblems!(pendingproblems, headerlog, 0)
     if parallel && nch > 1
         @sync for k in 1:nch
-            errormonitor(Threads.@spawn fusedchunk!(chunks[k], buf, d, useswar, indexed[k],
+            errormonitor(Threads.@spawn fusedchunk!(chunks[k], buf, d, sc, indexed[k],
                                                     ncols, opts, userprovided, promo, promolock,
                                                     pendingproblems, segments, segtypes, k))
         end
     else
         for k in 1:nch
-            fusedchunk!(chunks[k], buf, d, useswar, indexed[k], ncols, opts, userprovided,
+            fusedchunk!(chunks[k], buf, d, sc, indexed[k], ncols, opts, userprovided,
                         promo, promolock, pendingproblems, segments, segtypes, k)
         end
     end
@@ -1771,11 +1866,11 @@ chunkrowbase(chunks::Vector{ChunkIndex}, target::ChunkIndex) =
 # segment storage, promoting through the shared register with an immediate
 # re-parse while the chunk's bytes are still cache-hot. This is what removes the
 # index-everything-then-parse-everything double pass over RAM.
-function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, useswar::Bool,
+function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Symbol,
                      alreadyindexed::Bool, ncols::Int, opts::Parsers.Options,
                      userprovided, promo, promolock, pendingproblems::PendingProblemLog,
                      segments, segtypes, k::Int)
-    alreadyindexed || indexone!(ci, buf, d, useswar)
+    alreadyindexed || indexone!(ci, buf, d, scanner)
     n = nrows(ci)
     log = ProblemLog(pendingproblems.limit)
     for lr in ci.firstdatarow:totalrows(ci)

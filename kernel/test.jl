@@ -49,8 +49,10 @@ function idxall(input::AbstractString; chunks=(3, 7, 16, 64), kw...)
     push!(variants, "scalar/seq" =>
           indexsnapshot(buf, K.index(buf, d; parallel=false, fastindex=false)))
     if K.swareligible(d)
-        push!(variants, "swar/seq" =>
-              indexsnapshot(buf, K.index(buf, d; parallel=false, fastindex=true)))
+        for sc in (:swar, :vec)
+            push!(variants, "$sc/seq" =>
+                  indexsnapshot(buf, K.index(buf, d; parallel=false, scanner=sc)))
+        end
     end
     if K.parityclean(d)
         for cb in chunks
@@ -59,10 +61,12 @@ function idxall(input::AbstractString; chunks=(3, 7, 16, 64), kw...)
             push!(variants, "scalar/par$cb" =>
                   indexsnapshot(buf, K.index(buf, d; parallel=true, chunkbytes=cb, fastindex=false)))
             if K.swareligible(d)
-                push!(variants, "swar/seq$cb" =>
-                      indexsnapshot(buf, K.index(buf, d; parallel=false, chunkbytes=cb, fastindex=true)))
-                push!(variants, "swar/par$cb" =>
-                      indexsnapshot(buf, K.index(buf, d; parallel=true, chunkbytes=cb, fastindex=true)))
+                for sc in (:swar, :vec)
+                    push!(variants, "$sc/seq$cb" =>
+                          indexsnapshot(buf, K.index(buf, d; parallel=false, chunkbytes=cb, scanner=sc)))
+                    push!(variants, "$sc/par$cb" =>
+                          indexsnapshot(buf, K.index(buf, d; parallel=true, chunkbytes=cb, scanner=sc)))
+                end
             end
         end
     end
@@ -118,8 +122,9 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "structural: basics" begin
-    @test K.fieldsizehint(64) == 8
-    @test K.fieldsizehint(Int(typemax(UInt32))) == K.MAX_FIELD_SIZEHINT
+    tt = UInt32[]
+    K.tape_room!(tt, 0, 64)
+    @test length(tt) >= 64
     @test idxall("a,b,c\n1,2,3\n") == [["a","b","c"], ["1","2","3"]]
     @test idxall("a,b,c\n1,2,3")   == [["a","b","c"], ["1","2","3"]]  # no trailing newline
     @test idxall("a\n")            == [["a"]]
