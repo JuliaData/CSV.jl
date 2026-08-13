@@ -803,6 +803,9 @@ end
     # cap forms and validation
     @test_throws ArgumentError K.parse("a\nx\n"; pool=1.5)
     @test_throws ArgumentError K.parse("a\nx\n"; pool=(-0.1, 10))
+    @test_throws ArgumentError K.parse("a\nx\n"; pool=(1.0, -1))
+    # The ratio is a strict level/row bound: 2 levels exceed 0.5 * 3 rows.
+    @test K.parse("a\nx\ny\nx\n"; types=String, pool=0.5)[:a] isa K.KStrVector
     # all-present column gets the concrete eltype; missing goes Union + ref 0
     tp = K.parse("a,b\nx,1\nx,2\n"; pool=true)
     @test tp[:a] isa K.PooledColumn{K.KStr}
@@ -811,6 +814,50 @@ end
     @test K.poolrefs(tm[:a]) == UInt32[1, 0, 2, 1]
     @test isequal(K.materialize(tm[:a]), ["x", missing, "y", "x"])
     @test K.materialize(tp[:a]) == ["x", "x"]
+    # Generic AbstractVector operations must work without custom methods.
+    firstvalue, iterstate = iterate(tp[:a])
+    @test firstvalue == tp[:a][1]
+    @test first(iterate(tp[:a], iterstate)) == tp[:a][2]
+    @test similar(tp[:a]) isa Vector{K.KStr}
+    @test collect(copy(tp[:a])) == collect(tp[:a])
+    @test occursin("x", sprint(show, tp[:a]))
+    # Header-only typed strings stay a valid empty vector; there is no pool to build.
+    emptycol = K.parse("a\n"; types=String, pool=true)[:a]
+    @test emptycol isa K.KStrVector{K.KStr} && isempty(emptycol)
+    # Long escaped values live in per-chunk `extra` buffers. Pooling must intern
+    # equal bytes across those buffers, copy one level, and keep negative offsets.
+    longescaped = "a long \"escaped\" categorical value"
+    inlineescaped = "abcdefghij\"k"             # 12 bytes after unescaping
+    quote_csv(s) = "\"" * replace(s, "\"" => "\"\"") * "\""
+    escapedcsv = "a\n" * join((quote_csv(longescaped), quote_csv(inlineescaped),
+                                quote_csv(longescaped), quote_csv(inlineescaped)), "\n") * "\n"
+    escapedplain = K.parse(escapedcsv; types=String, chunkbytes=16, parallel=false)
+    for par in (false, true)
+        escapedpool = K.parse(escapedcsv; types=String, pool=true,
+                              chunkbytes=16, parallel=par)[:a]
+        @test escapedpool isa K.PooledColumn{K.KStr}
+        @test collect(escapedpool) == collect(escapedplain[:a])
+        @test K.poolrefs(escapedpool) == UInt32[1, 2, 1, 2]
+        levels = K.poollevels(escapedpool)
+        @test K.kstroff(levels.payloads[1]) < 0
+        @test K.kstrlen(levels.payloads[2]) == K.KSTR_INLINE
+        dict = Dict(levels[1] => 7)
+        @test dict[escapedplain[:a][1]] == 7
+    end
+    # A promotion to String must still pool after stale numeric segments reparse.
+    promocsv = "a\n1\n2\nword\n1\n"
+    promoref = K.parse(promocsv; nsample=1, pool=true, chunkbytes=3, parallel=false)[:a]
+    @test promoref isa K.PooledColumn{K.KStr}
+    for _ in 1:10
+        promoc = K.parse(promocsv; nsample=1, pool=true, chunkbytes=3, parallel=true)[:a]
+        @test K.poolrefs(promoc) == K.poolrefs(promoref)
+        @test collect(K.poollevels(promoc)) == collect(K.poollevels(promoref))
+    end
+    # Abandoning after an extra-backed level must leave flat stitching untouched.
+    abandoned = K.parse(escapedcsv; types=String, pool=(1.0, 1),
+                        chunkbytes=16, parallel=true)[:a]
+    @test abandoned isa K.KStrVector
+    @test collect(abandoned) == collect(escapedplain[:a])
     # non-string columns ignore pool
     @test K.parse("a\n1\n2\n"; pool=true)[:a] isa Vector{Int64}
 end

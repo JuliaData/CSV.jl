@@ -1883,7 +1883,7 @@ The default records malformed data as problems;
 Keywords: `delim`, `quotechar`, `openquotechar`/`closequotechar`, `escapechar`,
 `quoted`, `comment`, `ignoreemptyrows`, `header` (true | false | Vector), `types`
 (Type | Vector | Dict), `dateformat`, `decimal`, `truestrings`/`falsestrings`,
-`stripwhitespace`, `chunkbytes`, `parallel`, `fastindex`, `scanner`
+`stripwhitespace`, `groupmark`, `pool`, `chunkbytes`, `parallel`, `fastindex`, `scanner`
 (:auto | :vec | :swar | :scalar), `maxproblems`,
 `on_error` (:collect | :error), `nsample`.
 """
@@ -1906,12 +1906,7 @@ function parse(buf::Vector{UInt8};
                nsample::Union{Nothing, Int}=nothing,
                dialectkw...)
     on_error in (:collect, :error) || throw(ArgumentError("on_error must be :collect or :error"))
-    poolspec = pool === false ? nothing :
-               pool === true  ? (1.0, typemax(Int)) :
-               pool isa Real  ? (0.0 <= pool <= 1.0 ? (Float64(pool), typemax(Int)) :
-                                 throw(ArgumentError("pool ratio must be in [0, 1] (got $pool)"))) :
-               (0.0 <= pool[1] <= 1.0 ? (Float64(pool[1]), Int(pool[2])) :
-                throw(ArgumentError("pool ratio must be in [0, 1] (got $(pool[1]))")))
+    poolspec = _poolpolicy(pool)
     nsample === nothing || nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
     # Size-aware defaults. chunkbytes: enough chunks to occupy every thread (2×
     # tasks per thread for load balance), capped at 1 MiB — the column-at-a-time
@@ -2200,8 +2195,8 @@ end
 # Pooling is a STITCH-TIME transformation: the per-chunk StringColumn segments
 # already hold every content span, so the builder walks them in chunk order
 # (deterministic level ids: first occurrence in row order), interning each cell
-# in a Dict{KStr, UInt32} — KStr hashing/equality are content-based and
-# allocation-free, so the table needs no custom machinery. The gamble is
+# in a Dict{KStr, UInt32} — KStr hashing/equality are content-based, so the
+# table needs no custom equality machinery. The gamble is
 # abandoned the moment the level count exceeds the policy bound, and the caller
 # falls back to the ordinary flat stitch: a failed gamble costs one hashing
 # pass, never a re-parse. Level payloads that view a chunk-local extra buffer
@@ -2225,6 +2220,22 @@ end
 poolrefs(c::PooledColumn) = c.refs
 poollevels(c::PooledColumn) = c.levels
 
+function _poolpolicy(pool)
+    pool === false && return nothing
+    pool === true && return (1.0, typemax(Int))
+    if pool isa Real
+        0.0 <= pool <= 1.0 ||
+            throw(ArgumentError("pool ratio must be in [0, 1] (got $pool)"))
+        return (Float64(pool), typemax(Int))
+    end
+    ratio = pool[1]
+    0.0 <= ratio <= 1.0 ||
+        throw(ArgumentError("pool ratio must be in [0, 1] (got $ratio)"))
+    cap = Int(pool[2])
+    cap >= 0 || throw(ArgumentError("pool cap must be nonnegative (got $cap)"))
+    return (Float64(ratio), cap)
+end
+
 function materialize(c::PooledColumn{ELT}) where {ELT}
     lv = materialize(c.levels)
     out = Vector{ELT === KStr ? String : Union{String, Missing}}(undef, length(c.refs))
@@ -2241,7 +2252,8 @@ function poolsegments(segments, j::Int, chunkrows, rowbases, ndata::Int,
                       buf::Vector{UInt8}, e::UInt8, cq::UInt8,
                       pool::Tuple{Float64, Int})
     # both bounds hold: levels ≤ ratio×rows AND levels ≤ cap
-    maxlevels = min(ceil(Int, pool[1] * ndata), pool[2])
+    ratiolevels = pool[1] == 1.0 ? ndata : floor(Int, pool[1] * ndata)
+    maxlevels = min(ratiolevels, pool[2], Int(typemax(UInt32)))
     refs = zeros(UInt32, ndata)
     table = Dict{KStr, UInt32}()
     levelpayloads = KStrPayload[]
@@ -2254,7 +2266,7 @@ function poolsegments(segments, j::Int, chunkrows, rowbases, ndata::Int,
         rb = rowbases[k]
         @inbounds for i in 1:chunkrows[k]
             p = scol.payloads[i]
-            len = kstrlen(p)
+            len = Int(kstrlen(p))
             len < 0 && continue                  # missing ⇒ ref 0
             npresent += 1
             cell = len <= KSTR_INLINE ? KStr(p, EMPTY_BYTES) :
