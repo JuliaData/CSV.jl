@@ -1872,6 +1872,7 @@ function parse(buf::Vector{UInt8};
                falsestrings=nothing,
                stripwhitespace::Bool=false,
                groupmark::Union{Nothing, Char}=nothing,
+               pool::Union{Bool, Real, Tuple{<:Real, <:Integer}}=false,
                chunkbytes::Union{Nothing, Int}=nothing,
                parallel::Bool=Threads.nthreads() > 1,
                fastindex::Bool=true,
@@ -1881,6 +1882,12 @@ function parse(buf::Vector{UInt8};
                nsample::Union{Nothing, Int}=nothing,
                dialectkw...)
     on_error in (:collect, :error) || throw(ArgumentError("on_error must be :collect or :error"))
+    poolspec = pool === false ? nothing :
+               pool === true  ? (1.0, typemax(Int)) :
+               pool isa Real  ? (0.0 <= pool <= 1.0 ? (Float64(pool), typemax(Int)) :
+                                 throw(ArgumentError("pool ratio must be in [0, 1] (got $pool)"))) :
+               (0.0 <= pool[1] <= 1.0 ? (Float64(pool[1]), Int(pool[2])) :
+                throw(ArgumentError("pool ratio must be in [0, 1] (got $(pool[1]))")))
     nsample === nothing || nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
     # Size-aware defaults. chunkbytes: enough chunks to occupy every thread (2×
     # tasks per thread for load balance), capped at 1 MiB — the column-at-a-time
@@ -2055,7 +2062,7 @@ function parse(buf::Vector{UInt8};
     ndata = sum(chunkrows; init=0)
     cols = Vector{AbstractVector}(undef, ncols)
     stitchcol = j -> (cols[j] = stitchcolumn(final[j], segments, segtypes, j, chunkrows,
-                                             rowbases, ndata, buf, opts.e, d.cq))
+                                             rowbases, ndata, buf, opts.e, d.cq, poolspec))
     # single-chunk stitches are zero-copy finalizes — never worth a task spawn
     if parallel && ncols > 1 && ndata > 0 && length(chunks) > 1
         @sync for j in 1:ncols
@@ -2164,14 +2171,106 @@ function restale!(chunks, final, segments, segtypes,
     return
 end
 
+# --- pooled (dictionary-encoded) string columns --------------------------------
+#
+# Pooling is a STITCH-TIME transformation: the per-chunk StringColumn segments
+# already hold every content span, so the builder walks them in chunk order
+# (deterministic level ids: first occurrence in row order), interning each cell
+# in a Dict{KStr, UInt32} — KStr hashing/equality are content-based and
+# allocation-free, so the table needs no custom machinery. The gamble is
+# abandoned the moment the level count exceeds the policy bound, and the caller
+# falls back to the ordinary flat stitch: a failed gamble costs one hashing
+# pass, never a re-parse. Level payloads that view a chunk-local extra buffer
+# are copied into the pooled column's own extra (levels are few); buf-view and
+# inline payloads pass through untouched.
+struct PooledColumn{ELT} <: AbstractVector{ELT}
+    refs::Vector{UInt32}          # 0 = missing (ELT includes Missing then)
+    levels::KStrVector{KStr}
+end
+Base.size(c::PooledColumn) = size(c.refs)
+Base.@propagate_inbounds function Base.getindex(c::PooledColumn{ELT}, i::Int) where {ELT}
+    @boundscheck checkbounds(c.refs, i)
+    @inbounds r = c.refs[i]
+    r == 0 && return missing
+    return c.levels[Int(r)]
+end
+Base.@propagate_inbounds function Base.getindex(c::PooledColumn{KStr}, i::Int)
+    @boundscheck checkbounds(c.refs, i)
+    @inbounds return c.levels[Int(c.refs[i])]
+end
+poolrefs(c::PooledColumn) = c.refs
+poollevels(c::PooledColumn) = c.levels
+
+function materialize(c::PooledColumn{ELT}) where {ELT}
+    lv = materialize(c.levels)
+    out = Vector{ELT === KStr ? String : Union{String, Missing}}(undef, length(c.refs))
+    @inbounds for i in eachindex(c.refs)
+        r = c.refs[i]
+        out[i] = r == 0 ? missing : lv[Int(r)]
+    end
+    return out
+end
+
+# Build refs+levels from String segments, or return nothing when the level
+# count blows the policy bound (caller falls back to the flat stitch).
+function poolsegments(segments, j::Int, chunkrows, rowbases, ndata::Int,
+                      buf::Vector{UInt8}, e::UInt8, cq::UInt8,
+                      pool::Tuple{Float64, Int})
+    # both bounds hold: levels ≤ ratio×rows AND levels ≤ cap
+    maxlevels = min(ceil(Int, pool[1] * ndata), pool[2])
+    refs = zeros(UInt32, ndata)
+    table = Dict{KStr, UInt32}()
+    levelpayloads = KStrPayload[]
+    extra = UInt8[]
+    npresent = 0
+    for k in eachindex(chunkrows)
+        seg = segments[k][j]
+        seg === nothing && continue              # all-missing segment
+        scol = seg::StringColumn
+        rb = rowbases[k]
+        @inbounds for i in 1:chunkrows[k]
+            p = scol.payloads[i]
+            len = kstrlen(p)
+            len < 0 && continue                  # missing ⇒ ref 0
+            npresent += 1
+            cell = len <= KSTR_INLINE ? KStr(p, EMPTY_BYTES) :
+                   KStr(p, kstroff(p) < 0 ? scol.extra : buf)
+            ref = get(table, cell, UInt32(0))
+            if ref == 0
+                length(levelpayloads) >= maxlevels && return nothing
+                if len > KSTR_INLINE && kstroff(p) < 0
+                    # chunk-local extra bytes: copy into the pooled extra
+                    off = Int(-kstroff(p))
+                    base = length(extra)
+                    append!(extra, @view scol.extra[off:off + len - 1])
+                    p = view_payload(extra, base + 1, len, -(Int64(base) + 1))
+                end
+                push!(levelpayloads, p)
+                ref = UInt32(length(levelpayloads))
+                table[cell] = ref
+            end
+            refs[rb + i] = ref
+        end
+    end
+    levels = KStrVector{KStr}(levelpayloads, buf, extra)
+    return npresent == ndata ? PooledColumn{KStr}(refs, levels) :
+                               PooledColumn{Union{KStr, Missing}}(refs, levels)
+end
+
 # Assemble one final exact-size column from its per-chunk segments. Segment
 # copies are plain value memmoves (cheap relative to re-reading text from RAM);
 # a Missing segment under a wider final type contributes all-absent rows with no
 # re-parse. String segments concatenate their extra buffers, rebasing the
 # negative (extra-relative) offsets as they copy.
 function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases,
-                      ndata::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8) where {T}
+                      ndata::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8,
+                      pool::Union{Nothing, Tuple{Float64, Int}}=nothing) where {T}
     T === Missing && return MissingColumn(ndata)
+    if T === String && pool !== nothing && ndata > 0
+        pooled = poolsegments(segments, j, chunkrows, rowbases, ndata, buf, e, cq, pool)
+        pooled !== nothing && return pooled
+        # bound exceeded: fall through to the flat stitch below
+    end
     # Single-chunk files (every input below chunkbytes): the lone segment IS the
     # final column — finalize it directly, zero copies. This keeps the fused
     # driver's small-file cost identical to writing final columns in place.

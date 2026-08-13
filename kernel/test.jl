@@ -743,6 +743,50 @@ end
     @test any(p -> p.kind == :invalid_quoted_field && p.row == 1, K.problems(t))
 end
 
+@testset "pooled string columns" begin
+    # pooling must be invisible to values: differential vs the plain parse
+    # across chunk geometries, parallelism, escaped levels, and missings
+    rng = Random.MersenneTwister(77)
+    cats = ["aa", "bb", "a much longer categorical value", "q\"\"z"]
+    rows = String[]
+    for i in 1:500
+        c = rand(rng, cats)
+        cell = c == "q\"\"z" ? "\"q\"\"z\"" : c
+        push!(rows, (rand(rng, 1:10) == 1 ? "" : cell) * "," * string(i))
+    end
+    csv = "cat,val\n" * join(rows, "\n") * "\n"
+    plain = K.parse(csv)
+    for cb in (64, 256, 1 << 20), par in (false, true)
+        t = K.parse(csv; pool=true, chunkbytes=cb, parallel=par)
+        c = t[:cat]
+        @test c isa K.PooledColumn
+        @test isequal(collect(c), collect(plain[:cat]))
+        # deterministic level ids: first occurrence in row order
+        lv = collect(K.poollevels(c))
+        @test lv == unique([x for x in collect(plain[:cat]) if !ismissing(x)])
+        @test all(lv .!== missing)
+    end
+    # ratio policy: 4 levels / 500 rows ⇒ pooled at 0.05, plain at 0.005
+    @test K.parse(csv; pool=0.05)[:cat] isa K.PooledColumn
+    @test K.parse(csv; pool=0.005)[:cat] isa K.KStrVector
+    # absolute cap abandons early
+    tall = K.parse("a\n" * join(1:200, "\n") * "\n"; types=String, pool=(1.0, 8))
+    @test tall[:a] isa K.KStrVector
+    # cap forms and validation
+    @test_throws ArgumentError K.parse("a\nx\n"; pool=1.5)
+    @test_throws ArgumentError K.parse("a\nx\n"; pool=(-0.1, 10))
+    # all-present column gets the concrete eltype; missing goes Union + ref 0
+    tp = K.parse("a,b\nx,1\nx,2\n"; pool=true)
+    @test tp[:a] isa K.PooledColumn{K.KStr}
+    tm = K.parse("a,b\nx,1\n,2\ny,3\nx,4\n"; pool=true)
+    @test tm[:a] isa K.PooledColumn{Union{K.KStr, Missing}}
+    @test K.poolrefs(tm[:a]) == UInt32[1, 0, 2, 1]
+    @test isequal(K.materialize(tm[:a]), ["x", missing, "y", "x"])
+    @test K.materialize(tp[:a]) == ["x", "x"]
+    # non-string columns ignore pool
+    @test K.parse("a\n1\n2\n"; pool=true)[:a] isa Vector{Int64}
+end
+
 @testset "KStr: inline-else-view strings" begin
     # inline/view boundary: 12 bytes inline, 13 views the buffer
     t = K.parse("a\n" * "x"^12 * "\n" * "y"^13 * "\n")
