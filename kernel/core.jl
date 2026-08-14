@@ -2463,7 +2463,7 @@ the header and initial types, then fuse each chunk's index and monomorphic colum
 loops. Conflicts promote per column and stale segments re-parse under the joined
 final type. `parallel` selects tasks or plain loops without changing the chunk
 layout. The default `chunkbytes` is
-`clamp(cld(length(buf), 2 * Threads.nthreads()), 64 KiB, 1 MiB)`; the default
+`clamp(cld(length(buf), 4 * Threads.nthreads()), 64 KiB, 1 MiB)`; the default
 `nsample` is `clamp(probe_rows >> 6, 8, 128)`. Explicit values override both
 defaults.
 The default records malformed data as problems;
@@ -2507,8 +2507,9 @@ function parse(buf::Vector{UInt8};
         throw(ArgumentError("limit and rowmask cannot be combined; bake the limit into the mask"))
     poolspec = _poolpolicy(pool)
     nsample === nothing || nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
-    # Size-aware defaults. chunkbytes: enough chunks to occupy every thread (2×
-    # tasks per thread for load balance), capped at 1 MiB — the column-at-a-time
+    # Size-aware defaults. chunkbytes: enough chunks to occupy every thread (4×
+    # tasks per thread: at 20 MiB the straggler tail of 2×/thread measured
+    # 10-17% across shapes; the 1 MiB cap keeps large-file geometry identical), capped at 1 MiB — the column-at-a-time
     # parse re-walks each chunk once per column, so chunks must stay cache-
     # resident (measured on a 200 MiB × 200-column file: 8 MiB chunks 623 MiB/s
     # → 1 MiB chunks 911 MiB/s), with a 64 KiB floor so per-chunk setup never
@@ -2517,7 +2518,7 @@ function parse(buf::Vector{UInt8};
     # per-column promotion instead, while big files keep the 128-row stratified
     # sample that makes promotion rare.
     if chunkbytes === nothing
-        chunkbytes = clamp(cld(length(buf), 2 * Threads.nthreads()), 1 << 16, 1 << 20)
+        chunkbytes = clamp(cld(length(buf), 4 * Threads.nthreads()), 1 << 16, 1 << 20)
     else
         chunkbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $chunkbytes)"))
     end

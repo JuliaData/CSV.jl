@@ -406,7 +406,7 @@ function _prepare(source;
     d = K.Dialect(; delim, dialectonly...)
     opts = K.makevalueopts(d; sentinels, valuekw...)
     cb = chunkbytes === nothing ?
-         clamp(cld(length(buf), 2 * Threads.nthreads()), 1 << 16, 1 << 20) : chunkbytes
+         clamp(cld(length(buf), 4 * Threads.nthreads()), 1 << 16, 1 << 20) : chunkbytes
 
     # -- the row window, in RAW rows: header rows, skipto, footerskip ---------
     header isa Integer && header < 0 &&
