@@ -119,6 +119,23 @@ function kstrfrombytes(bytes::Vector{UInt8})
     return K.KStr(p, length(bytes) <= K.KSTR_INLINE ? K.EMPTY_BYTES : bytes)
 end
 
+function inlinekey(s::AbstractString)
+    bytes = Vector{UInt8}(codeunits(s))
+    p = K.inline_payload(bytes, 1, length(bytes))
+    return (UInt128(p.a) << 64) | p.b
+end
+
+function itprobes(t::K.InlineTable, k::UInt128)
+    i = K._itmix(k) & t.mask
+    probes = 1
+    @inbounds while t.refs[i + 1] != 0
+        t.slots[i + 1] === k && return probes
+        i = (i + 1) & t.mask
+        probes += 1
+    end
+    return probes
+end
+
 function tablesnapshot(t::K.ParsedTable)
     probs = [(p.row, p.col, p.pos, p.kind, p.message) for p in K.problems(t)]
     return (; names=K.names(t), types=map(eltype, K.columns(t)),
@@ -1104,6 +1121,43 @@ end
 end
 
 @testset "pooled string columns" begin
+    # The inline table stays at or below half full. A missing colliding key
+    # terminates at an empty slot even at exactly 50% load. The 129th insert
+    # grows 256 -> 1024 once; recursive rehash does not grow again.
+    colliders = UInt128[]
+    candidate = UInt128(0)
+    while length(colliders) < 129
+        K._itmix(candidate) & UInt64(0xff) == 0 && push!(colliders, candidate)
+        candidate += 1
+    end
+    for order in (collect(1:129), collect(129:-1:1))
+        it = K.InlineTable()
+        for (ref, k) in enumerate(colliders[order[1:128]])
+            K.itset!(it, k, UInt32(ref))
+        end
+        @test length(it.refs) == 256
+        @test it.count == 128
+        @test it.count << 1 <= length(it.refs)
+        missingkey = colliders[order[129]]
+        @test K.itget(it, missingkey) == 0
+        K.itset!(it, missingkey, UInt32(129))
+        @test length(it.refs) == 1024
+        @test it.count == 129
+        @test K.itget(it, missingkey) == 129
+    end
+
+    # Short categorical payloads share a length and prefix. Every payload byte
+    # must affect the initial slot before linear probing starts.
+    realistic = [inlinekey("lvl$(lpad(i, 4, '0'))") for i in 1:400]
+    it = K.InlineTable()
+    for (ref, k) in enumerate(realistic)
+        K.itset!(it, k, UInt32(ref))
+    end
+    probes = [itprobes(it, k) for k in realistic]
+    @test length(unique(K._itmix(k) & it.mask for k in realistic)) >= 300
+    @test sum(probes) / length(probes) <= 2
+    @test maximum(probes) <= 12
+
     # pooling must be invisible to values: differential vs the plain parse
     # across chunk geometries, parallelism, escaped levels, and missings
     rng = Random.MersenneTwister(77)
@@ -1176,6 +1230,17 @@ end
         dict = Dict(levels[1] => 7)
         @test dict[escapedplain[:a][1]] == 7
     end
+    # ViewKey equality and hashing depend only on codeunits. Positive input
+    # offsets and negative extra-buffer offsets must interoperate.
+    viewcontent = Vector{UInt8}(codeunits("abcdefghijklmnop"))
+    extrabuf = [UInt8(0xff); viewcontent; UInt8(0xee)]
+    inputkey = K.ViewKey(K.KStr(K.view_payload(viewcontent, 1, length(viewcontent), 1),
+                               viewcontent))
+    extrakey = K.ViewKey(K.KStr(K.view_payload(extrabuf, 2, length(viewcontent), -2),
+                               extrabuf))
+    @test inputkey == extrakey
+    @test hash(inputkey, UInt(17)) == hash(extrakey, UInt(17))
+    @test Dict(inputkey => UInt32(7))[extrakey] == 7
     # A promotion to String must still pool after stale numeric segments reparse.
     promocsv = "a\n1\n2\nword\n1\n"
     promoref = K.parse(promocsv; nsample=1, pool=true, chunkbytes=3, parallel=false)[:a]
@@ -1219,7 +1284,7 @@ end
     @test K.poollevels(dup).extra == Vector{UInt8}(codeunits(longescaped))
     # The inline scan stays exact at its 16-level boundary. This sequence mixes
     # empty, escaped-inline, inline, and view levels. It then grows to level 17,
-    # where duplicate lookup switches to the still-complete Dict.
+    # where duplicate lookup switches to the still-complete InlineTable.
     scanlevels = ["", "a\"b", ["v$(lpad(i, 2, '0'))" for i in 3:15]...,
                   "a long view-backed level"]
     scancells = ["\"\"", "\"a\"\"b\"", ["v$(lpad(i, 2, '0'))" for i in 3:15]...,
@@ -1229,6 +1294,20 @@ end
     @test scantable isa K.PooledColumn{K.KStr}
     @test String.(K.poollevels(scantable)) == [scanlevels; "v17"]
     @test K.poolrefs(scantable) == UInt32[collect(1:16); 2; 17; 17; 1]
+
+    # The all-zero inline key is also valid when it first appears at level 17.
+    # More than 400 levels force table growth before the final empty duplicate.
+    growcells = ["v$(lpad(i, 3, '0'))" for i in 1:16]
+    push!(growcells, "\"\"")
+    append!(growcells, ["v$(lpad(i, 3, '0'))" for i in 17:400])
+    push!(growcells, "\"\"")
+    grown = K.parse("a\n" * join(growcells, '\n') * "\n";
+                    types=String, pool=(1.0, 500), chunkbytes=1 << 20,
+                    parallel=false)[:a]
+    @test grown isa K.PooledColumn{K.KStr}
+    @test length(K.poollevels(grown)) == 401
+    @test String(K.poollevels(grown)[17]) == ""
+    @test K.poolrefs(grown)[end] == 17
 end
 
 @testset "KStr: inline-else-view strings" begin

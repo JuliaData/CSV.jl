@@ -1631,9 +1631,15 @@ mutable struct InlineTable
 end
 InlineTable() = InlineTable(zeros(UInt128, 64), zeros(UInt32, 64), 0, UInt64(63))
 
-@inline _itmix(k::UInt128) =
-    (UInt64(k & typemax(UInt64)) * 0x9e3779b97f4a7c15) ⊻
-    (UInt64(k >> 64) * 0xc6a4a7935bd1e995)
+@inline function _itmix(k::UInt128)
+    # Payload suffix bytes occupy progressively higher bits. Mix both words,
+    # then avalanche so a power-of-two table does not see only byte 5.
+    x = UInt64(k & typemax(UInt64)) ⊻
+        UInt64(k >> 64) * UInt64(0x9e3779b97f4a7c15)
+    x = (x ⊻ (x >> 30)) * UInt64(0xbf58476d1ce4e5b9)
+    x = (x ⊻ (x >> 27)) * UInt64(0x94d049bb133111eb)
+    return x ⊻ (x >> 31)
+end
 
 @inline function itget(t::InlineTable, k::UInt128)
     i = _itmix(k) & t.mask
