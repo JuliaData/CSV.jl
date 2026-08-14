@@ -225,6 +225,36 @@ end
     t = K.parse(escaped; limit=2, chunkbytes=1 << 20, parallel=false)
     @test String.(t[:a]) == ["x", "y"]
     @test isempty(t[:a].extra)                                    # excluded row was not materialized
+
+    # Direct String chunks own private escaped buffers. A limit inside a chunk
+    # must concatenate and rebase only included rows, including with a reused
+    # prebuilt index.
+    directvalues = [isodd(i) ? "escaped value $i with \"quote\" tail" :
+                               "plain view-backed value $i tail" for i in 1:40]
+    directcells = [occursin('\"', v) ? "\"" * replace(v, "\"" => "\"\"") * "\"" : v
+                   for v in directvalues]
+    directcsv = "id,s\n" * join(("$i,$(directcells[i])" for i in 1:40), "\n") * "\n"
+    directbuf = Vector{UInt8}(codeunits(directcsv))
+    directindex = K.index(directbuf, K.Dialect(); chunkbytes=256, parallel=false)
+    directindex.chunks[1].firstdatarow += 1
+    directcounts = K.nrows.(directindex.chunks)
+    directbases = cumsum([0; directcounts[1:end - 1]])
+    boundary = findfirst(k -> k < length(directcounts) && directcounts[k] > 1,
+                         eachindex(directcounts))
+    @test boundary !== nothing
+    directlimit = directbases[boundary] + directcounts[boundary] - 1
+    @test directlimit > 0 && directlimit < sum(directcounts)
+    @test directlimit ∉ cumsum(directcounts)
+    escapedincluded = [v for v in directvalues[1:directlimit] if occursin('\"', v)]
+    expectedextra = Vector{UInt8}(codeunits(join(escapedincluded)))
+    for par in (false, true)
+        t = K.parse(directbuf; index=directindex, header=[:id, :s], select=[:s],
+                    limit=directlimit, parallel=par, nsample=1)
+        @test String.(t[:s]) == directvalues[1:directlimit]
+        @test t[:s].extra == expectedextra
+        @test all(i -> signbit(K.kstroff(t[:s].payloads[i])) == occursin('\"', directvalues[i]),
+                  1:directlimit)
+    end
 end
 
 @testset "limit preserves full-parse inference without parsing excluded values" begin

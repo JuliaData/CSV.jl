@@ -578,6 +578,19 @@ end
         @test t[:a] isa Vector{Float64}
         @test t[:a] == [collect(1.0:50.0); 99.5]
     end
+    # Direct finals converge under concurrent, different promotions. The third
+    # column starts Missing, then upgrades without reparsing its missing chunks.
+    storm = "a,b,c\n" * join(("1,1,", "99999999999999999999999999,2,",
+                               "3.5,2024-01-02,7", "word,4,", "5,5,",
+                               "6.25,6,", "2024-02-03,7,", "8,8,"), "\n") * "\n"
+    stormref = K.parse(storm; nsample=1, chunkbytes=1, parallel=false)
+    for _ in 1:25
+        t = K.parse(storm; nsample=1, chunkbytes=1, parallel=true)
+        @test String.(t[:a]) == String.(stormref[:a])
+        @test String.(t[:b]) == String.(stormref[:b])
+        @test isequal(collect(t[:c]), [missing, missing, 7, missing, missing,
+                                      missing, missing, missing])
+    end
     # big integers within Int128 stay exact; mixed integer/float columns widen
     t = K.parse("a\n1\n99999999999999999999999999\n")
     @test t[:a] isa Vector{Int128}
@@ -1117,6 +1130,18 @@ end
     @test dup isa K.PooledColumn{K.KStr}
     @test length(K.poollevels(dup)) == 1
     @test K.poollevels(dup).extra == Vector{UInt8}(codeunits(longescaped))
+    # The inline scan stays exact at its 16-level boundary. This sequence mixes
+    # empty, escaped-inline, inline, and view levels. It then grows to level 17,
+    # where duplicate lookup switches to the still-complete Dict.
+    scanlevels = ["", "a\"b", ["v$(lpad(i, 2, '0'))" for i in 3:15]...,
+                  "a long view-backed level"]
+    scancells = ["\"\"", "\"a\"\"b\"", ["v$(lpad(i, 2, '0'))" for i in 3:15]...,
+                 "a long view-backed level", "\"a\"\"b\"", "v17", "v17", "\"\""]
+    scantable = K.parse("a\n" * join(scancells, "\n") * "\n";
+                        types=String, pool=true, chunkbytes=1 << 20, parallel=false)[:a]
+    @test scantable isa K.PooledColumn{K.KStr}
+    @test String.(K.poollevels(scantable)) == [scanlevels; "v17"]
+    @test K.poolrefs(scantable) == UInt32[collect(1:16); 2; 17; 17; 1]
 end
 
 @testset "KStr: inline-else-view strings" begin
