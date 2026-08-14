@@ -2806,12 +2806,25 @@ end
 # the (type, destination) pair for column j, read/updated under `promolock`
 @inline _directref(finals, promo, j) = (promo[j], finals[j])
 
+# Direct finals allocate UNDEF: each chunk task fills its own slice right
+# before parsing it (one page touch, in the task that writes it, parallel at
+# chunk granularity instead of column granularity). The rewave fills the
+# slices of promoted finals — including fill-only for chunks whose Missing
+# parse upgrades for free.
 function _allocdirect(::Type{T}, ndata::Int, buf::Vector{UInt8}, opts::ValueOpts,
                       d::Dialect, poolctx) where {T}
     T === Missing && return nothing
     T === String && poolctx !== nothing && return nothing   # pooled: chunk staging
-    return allocatecolumn(T, ndata, buf, opts.e, d.cq)
+    T === String && return StringColumn(Vector{KStrPayload}(undef, ndata), buf,
+                                        UInt8[], ReentrantLock(), opts.e, d.cq)
+    return TypedColumn{T}(Vector{T}(undef, ndata), Vector{Bool}(undef, ndata))
 end
+
+_fillslice!(::Nothing, lo::Int, hi::Int) = nothing
+_fillslice!(col::StringColumn, lo::Int, hi::Int) =
+    (fill!(view(col.payloads, lo:hi), PAYLOAD_MISSING); nothing)
+_fillslice!(col::TypedColumn, lo::Int, hi::Int) =
+    (fill!(view(col.present, lo:hi), false); nothing)
 
 function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOpts,
                      ncols::Int, userprovided, promo, promolock,
@@ -2822,17 +2835,8 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
     nch = length(chunks)
     finals = Vector{Any}(nothing, ncols)
     allocjs = [j for j in 1:ncols if selected === nothing || selected[j]]
-    # the fills (present=false, payloads=MISSING) are the columns' only full
-    # zeroing pass — do them in parallel, like the staged driver's per-task fills
-    if parallel && length(allocjs) > 1
-        @sync for j in allocjs
-            errormonitor(Threads.@spawn (finals[j] = _allocdirect(promo[j], ndata, buf,
-                                                                  opts, d, poolctx)))
-        end
-    else
-        for j in allocjs
-            finals[j] = _allocdirect(promo[j], ndata, buf, opts, d, poolctx)
-        end
+    for j in allocjs
+        finals[j] = _allocdirect(promo[j], ndata, buf, opts, d, poolctx)
     end
     if parallel && nch > 1
         @sync for k in 1:nch
@@ -2859,20 +2863,40 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
         scol = finals[j]
         scol isa StringColumn || continue
         payloads = scol.payloads
-        for k in 1:nch
-            seg = segments[k][j]
-            seg isa StringColumn || continue
-            isempty(seg.extra) && continue
-            base = Int64(length(scol.extra))
-            append!(scol.extra, seg.extra)
-            hi = k < nch ? rowbases[k + 1] : ndata
-            @inbounds for r in (rowbases[k] + 1):hi
-                p = payloads[r]
-                if kstrlen(p) > KSTR_INLINE && kstroff(p) < 0
-                    payloads[r] = KStrPayload(p.a, reinterpret(UInt64, kstroff(p) - base))
+        ks = [k for k in 1:nch if segments[k][j] isa StringColumn &&
+                                  !isempty((segments[k][j]::StringColumn).extra)]
+        isempty(ks) && continue
+        # reserve every chunk's region serially (bases are order-dependent),
+        # then copy bytes and rebase each chunk's rows in parallel — regions
+        # and row ranges are disjoint
+        base0 = Int64(length(scol.extra))
+        bases = Vector{Int64}(undef, length(ks))
+        total = Int64(0)
+        for (x, k) in enumerate(ks)
+            bases[x] = base0 + total
+            total += length((segments[k][j]::StringColumn).extra)
+        end
+        resize!(scol.extra, base0 + total)
+        rebaseone = x -> begin
+            k = ks[x]
+            seg = segments[k][j]::StringColumn
+            base = bases[x]
+            copyto!(scol.extra, base + 1, seg.extra, 1, length(seg.extra))
+            rhi = k < nch ? rowbases[k + 1] : ndata
+            @inbounds for r in (rowbases[k] + 1):rhi
+                pl = payloads[r]
+                if kstrlen(pl) > KSTR_INLINE && kstroff(pl) < 0
+                    payloads[r] = KStrPayload(pl.a, reinterpret(UInt64, kstroff(pl) - base))
                 end
             end
             segments[k][j] = nothing
+        end
+        if parallel && length(ks) > 1
+            @sync for x in eachindex(ks)
+                errormonitor(Threads.@spawn rebaseone(x))
+            end
+        else
+            foreach(rebaseone, eachindex(ks))
         end
     end
 
@@ -2883,11 +2907,21 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
     stale = Tuple{Int, Int}[]
     for k in 1:nch, j in 1:ncols
         T = segtypes[k][j]
-        T !== final[j] && T !== Missing && push!(stale, (k, j))
+        T === final[j] && continue
+        if T === Missing
+            # the free Missing upgrade still needs the promoted final's UNDEF
+            # slice filled with the missing pattern
+            (final[j] === Missing || (final[j] === String && poolctx !== nothing)) && continue
+        end
+        push!(stale, (k, j))
     end
     if !isempty(stale)
         redo = (k, j) -> begin
-            if final[j] === String && poolctx !== nothing
+            if segtypes[k][j] === Missing
+                lo = rowbases[k] + 1
+                hi = rowbases[k] + min(nrows(chunks[k]), rl(k))
+                hi >= lo && _fillslice!(finals[j], lo, hi)
+            elseif final[j] === String && poolctx !== nothing
                 restale!(chunks, final, segments, segtypes, pendingproblems, buf,
                          opts, d, userprovided, k, j, nothing, 0, rl(k), poolctx)
             else
@@ -2961,6 +2995,8 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
         while true
             (attempts += 1) > 8 && error("internal error: promotion did not converge")
             local conflict::Int
+            lo = rowbase + 1
+            hi = rowbase + min(n, reportlimit)
             if T === Missing
                 segs[j] = nothing
                 conflict = parsecolchunk_missing(buf, ci, j, 0, opts, userprovided[j],
@@ -2975,6 +3011,7 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
                 # uncontended, and the driver concatenates + rebases the (rare)
                 # chunk extras in chunk order after the wave
                 scol = dest::StringColumn
+                hi >= lo && _fillslice!(scol, lo, hi)
                 chunkcol = StringColumn(scol.payloads, buf, UInt8[], ReentrantLock(),
                                         scol.e, scol.cq)
                 conflict = parsecolchunk!(chunkcol, buf, ci, j, rowbase, opts,
@@ -2982,6 +3019,7 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
                 segs[j] = isempty(chunkcol.extra) ? nothing : chunkcol
             else
                 segs[j] = nothing
+                hi >= lo && _fillslice!(dest, lo, hi)
                 conflict = parsecolchunk!(dest, buf, ci, j, rowbase, opts, userprovided[j],
                                           log, 0, nothing, 0, reportlimit)
             end
@@ -3017,6 +3055,10 @@ function redirect!(chunks, final, finals, segtypes,
                    rowbase::Int, reportlimit::Int)
     ci = chunks[k]
     log = ProblemLog(pendingproblems.limit)
+    if final[j] !== Missing
+        hi = rowbase + min(nrows(ci), reportlimit)
+        hi > rowbase && _fillslice!(finals[j], rowbase + 1, hi)
+    end
     conflict = final[j] === Missing ? 0 :
         parsecolchunk!(finals[j], buf, ci, j, rowbase, opts, userprovided[j], log,
                        0, nothing, 0, reportlimit)
