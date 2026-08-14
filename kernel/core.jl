@@ -1019,8 +1019,20 @@ function quoteparity(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect)::Bool
     d.quoted || return false
     q = d.oq
     n = 0
-    @inbounds @simd for i in from:to
+    i = from
+    # word-at-a-time: the byte loop's autovectorization ran at ~7 GB/s; the
+    # SWAR eq-mask popcount streams at memory speed
+    GC.@preserve buf begin
+        p = pointer(buf)
+        @inbounds while i + 7 <= to
+            w = ltoh(unsafe_load(Ptr{UInt64}(p + i - 1)))
+            n += count_ones(movemask(eqmarks(w, q)))
+            i += 8
+        end
+    end
+    @inbounds while i <= to
         n += buf[i] == q
+        i += 1
     end
     return isodd(n)
 end
@@ -2861,14 +2873,21 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
         end
     end
 
-    # finalize the direct columns in place (pooled ones merge in the caller)
-    for j in 1:ncols
-        (selected === nothing || selected[j]) || continue
+    # finalize the direct columns in place (pooled ones merge in the caller);
+    # the presence scans are per-column independent — spread them
+    finalizeone = j -> begin
         T = final[j]
-        T === String && poolctx !== nothing && continue
         cols[j] = T === Missing ? MissingColumn(ndata) :
                   T === String ? finalizecolumn(String, finals[j]::StringColumn, ndata) :
                   finalizecolumn(T, finals[j]::TypedColumn{T}, ndata)
+    end
+    finjs = [j for j in allocjs if !(final[j] === String && poolctx !== nothing)]
+    if parallel && length(finjs) > 1 && ndata > (1 << 18)
+        @sync for j in finjs
+            errormonitor(Threads.@spawn finalizeone(j))
+        end
+    else
+        foreach(finalizeone, finjs)
     end
     return final
 end
@@ -3280,12 +3299,17 @@ function finalizecolumn(::Type{String}, col::StringColumn, n::Int, force_missing
     return anymissing ? KStrVector{Union{KStr, Missing}}(col.payloads, col.buf, col.extra) :
                         KStrVector{KStr}(col.payloads, col.buf, col.extra)
 end
+# `all(::Vector{Bool})` short-circuits, so it compiles to a branchy scalar
+# loop — 1.2 ms per 4M-row column. `count` vectorizes; missing-free columns
+# (the common case) full-scan either way, 8× faster here.
+_allpresent(present::Vector{Bool}) = count(present) == length(present)
 function finalizecolumn(::Type{T}, col::TypedColumn{T}, n::Int) where {T}
     # no missings ⇒ hand back the raw Vector{T}, zero copies
-    return all(col.present) ? col.values : MaybeVector{T}(col.values, col.present)
+    return _allpresent(col.present) ? col.values : MaybeVector{T}(col.values, col.present)
 end
 function finalizecolumn(::Type{T}, col::TypedColumn{T}, n::Int, force_missing::Bool) where {T}
-    return !force_missing && all(col.present) ? col.values : MaybeVector{T}(col.values, col.present)
+    return !force_missing && _allpresent(col.present) ? col.values :
+           MaybeVector{T}(col.values, col.present)
 end
 
 """
