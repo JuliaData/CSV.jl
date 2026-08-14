@@ -2376,38 +2376,30 @@ function parse(buf::Vector{UInt8};
     nch = length(chunks)
     headerlog = ProblemLog(maxproblems)
 
-    # -- probe phase ----------------------------------------------------------
-    # Index a stratified handful of chunks up front — enough for header
-    # extraction and type seeding. Everything else is indexed inside the fused
-    # per-chunk task, right before that chunk's columns parse (cache-hot).
-    probes = nch == 0 ? Int[] : unique!(sort!([1, max(1, nch ÷ 3), max(1, (2 * nch) ÷ 3), nch]))
-    filter!(k -> !indexed[k], probes)
-    if parallel && length(probes) > 1
-        @sync for k in probes
+    # -- index wave -----------------------------------------------------------
+    # Index EVERY chunk up front. Row counts and bases are then known before
+    # any value work, which is what lets the unmasked driver write parsed
+    # values straight into exact-size final columns — no per-chunk staging, no
+    # stitch copies, no transient 2×-file-size allocation churn. The index pass
+    # is a streaming scan (multi-GiB/s per core); giving up the fused
+    # index-then-parse cache warmth on ONE column costs less than the copies.
+    toindex = [k for k in 1:nch if !indexed[k]]
+    if parallel && length(toindex) > 1
+        @sync for k in toindex
             errormonitor(Threads.@spawn begin
                 indexone!(chunks[k], buf, d, sc)
                 indexed[k] = true
             end)
         end
     else
-        for k in probes
+        for k in toindex
             indexone!(chunks[k], buf, d, sc)
             indexed[k] = true
         end
     end
     # the header lives in the first chunk that still has rows after comment/empty
-    # hygiene; walk forward (indexing as needed) until one is found
-    headerchunk = 0
-    for k in 1:nch
-        if !indexed[k]
-            indexone!(chunks[k], buf, d, sc)
-            indexed[k] = true
-        end
-        if totalrows(chunks[k]) > 0
-            headerchunk = k
-            break
-        end
-    end
+    # hygiene
+    headerchunk = something(findfirst(k -> totalrows(chunks[k]) > 0, 1:nch), 0)
 
     # -- header & column names ------------------------------------------------
     local names::Vector{Symbol}
@@ -2426,48 +2418,28 @@ function parse(buf::Vector{UInt8};
 
     # -- selection & row geometry ----------------------------------------------
     selected = resolveselect(select, names, ncols)
-    # limit/rowmask need global row bases before any column parses; index the
-    # remaining chunks now (normally chunks index lazily inside their own task)
-    rowbases0 = Int[]
+    # every chunk is indexed: global row bases are simply known
+    rowbases0 = cumsum([0; Int[nrows(ci) for ci in chunks[1:max(nch - 1, 0)]]])
     typechunks = chunks
     typerowbases0 = rowbases0
-    if limit !== nothing || rowmask !== nothing
-        toindex = [k for k in 1:nch if !indexed[k]]
-        if parallel && length(toindex) > 1
-            @sync for k in toindex
-                errormonitor(Threads.@spawn begin
-                    indexone!(chunks[k], buf, d, sc)
-                    indexed[k] = true
-                end)
-            end
-        else
-            for k in toindex
-                indexone!(chunks[k], buf, d, sc)
-                indexed[k] = true
-            end
+    if rowmask !== nothing
+        total = sum(nrows, chunks; init=0)
+        length(rowmask) == total ||
+            throw(ArgumentError("rowmask length $(length(rowmask)) != $total data rows"))
+    end
+    if limit !== nothing
+        # keep whole chunks up to the boundary; rows after the boundary are
+        # type-detected below but never value-parsed, written, or reported
+        lastk = 0
+        for k in 1:nch
+            lastk = k
+            rowbases0[k] + nrows(chunks[k]) >= limit && break
         end
-        rowbases0 = cumsum([0; Int[nrows(ci) for ci in chunks[1:max(nch - 1, 0)]]])
-        typechunks = chunks
-        typerowbases0 = rowbases0
-        if rowmask !== nothing
-            total = sum(nrows, chunks; init=0)
-            length(rowmask) == total ||
-                throw(ArgumentError("rowmask length $(length(rowmask)) != $total data rows"))
-        end
-        if limit !== nothing
-            # keep whole chunks up to the boundary; rows after the boundary are
-            # type-detected below but never value-parsed, stitched, or reported
-            lastk = 0
-            for k in 1:nch
-                lastk = k
-                rowbases0[k] + nrows(chunks[k]) >= limit && break
-            end
-            keep = 1:lastk
-            chunks = chunks[keep]
-            indexed = indexed[keep]
-            rowbases0 = rowbases0[keep]
-            nch = lastk
-        end
+        keep = 1:lastk
+        chunks = chunks[keep]
+        indexed = indexed[keep]
+        rowbases0 = rowbases0[keep]
+        nch = lastk
     end
 
     # -- type seeding (stratified over the probe chunks) -----------------------
@@ -2530,76 +2502,102 @@ function parse(buf::Vector{UInt8};
     segtypes = Vector{Vector{Type}}(undef, nch)
     pendingproblems = PendingProblemLog(maxproblems)
     mergeproblems!(pendingproblems, headerlog, 0)
-    mb = k -> rowmask === nothing ? 0 : rowbases0[k]
-    rl = k -> limit === nothing ? typemax(Int) :
-              clamp(limit - rowbases0[k], 0, nrows(chunks[k]))
-    if parallel && nch > 1
-        @sync for k in 1:nch
-            errormonitor(Threads.@spawn fusedchunk!(chunks[k], buf, d, sc, indexed[k],
-                                                    ncols, opts, userprovided, promo, promolock,
-                                                    pendingproblems, segments, segtypes, k,
-                                                    selected, rowmask, mb(k), rl(k),
-                                                    reportstructural, poolctx))
-        end
-    else
-        for k in 1:nch
-            fusedchunk!(chunks[k], buf, d, sc, indexed[k], ncols, opts, userprovided,
-                        promo, promolock, pendingproblems, segments, segtypes, k,
-                        selected, rowmask, mb(k), rl(k), reportstructural, poolctx)
-        end
-    end
-    for k in 1:(nch - 1)
-        chunks[k].unclosedquote &&
-            error("internal error: chunk $(k) ended inside a quoted field despite parity pre-scan")
-    end
-
-    # -- unify: re-parse the (rare) segments parsed under a stale type ---------
-    # `promo` is frozen now. A segment parsed as Missing upgrades without work
-    # (all-absent under any type, handled at stitch); every other stale segment
-    # re-parses under the final type — which cannot conflict, because the final
-    # type joined every conflict any chunk reported.
-    final = Type[promo[j] for j in 1:ncols]
-    stale = Tuple{Int, Int}[]
-    for k in 1:nch, j in 1:ncols
-        T = segtypes[k][j]
-        T !== final[j] && T !== Missing && push!(stale, (k, j))
-    end
-    if !isempty(stale)
-        if parallel && length(stale) > 1
-            @sync for (k, j) in stale
-                errormonitor(Threads.@spawn restale!(chunks, final, segments, segtypes,
-                                                     pendingproblems, buf, opts, d,
-                                                     userprovided, k, j, rowmask, mb(k), rl(k),
-                                                     poolctx))
-            end
-        else
-            for (k, j) in stale
-                restale!(chunks, final, segments, segtypes, pendingproblems, buf,
-                         opts, d, userprovided, k, j, rowmask, mb(k), rl(k), poolctx)
-            end
-        end
-    end
-
-    # -- stitch: exact-size final columns from the segments --------------------
     chunkrows = Int[nrows(ci) for ci in chunks]
     if limit !== nothing && nch > 0
-        # only the retained prefix of the boundary chunk stitches
+        # only the retained prefix of the boundary chunk is written/reported
         chunkrows[end] = min(chunkrows[end], limit - rowbases0[end])
     end
     rowbases = cumsum([0; chunkrows[1:max(nch - 1, 0)]])
     ndata = rowmask === nothing ? sum(chunkrows; init=0) : count(rowmask)
     cols = Vector{AbstractVector}(undef, ncols)
-    stitchcol = j -> (cols[j] = stitchcolumn(final[j], segments, segtypes, j, chunkrows,
-                                             rowbases, ndata, buf, opts.e, d.cq, poolspec,
-                                             rowmask, rowbases0))
     stitchjs = selected === nothing ? collect(1:ncols) : findall(selected)
-    # single-chunk stitches are zero-copy finalizes — never worth a task spawn
-    if parallel && length(stitchjs) > 1 && ndata > 0 && length(chunks) > 1
-        @sync for j in stitchjs
-            errormonitor(Threads.@spawn stitchcol(j))
+    mb = k -> rowmask === nothing ? 0 : rowbases0[k]
+    rl = k -> limit === nothing ? typemax(Int) :
+              clamp(limit - rowbases0[k], 0, nrows(chunks[k]))
+
+    if rowmask === nothing
+        # -- direct wave: parse straight into exact-size final columns --------
+        # Row bases are known (everything is indexed), so every chunk writes
+        # its values at its global offsets — no per-chunk staging and no stitch
+        # copies. Pooled String columns are the one exception: they keep
+        # chunk-local interning staging (levels must merge in chunk order) and
+        # flow through the existing pooled merge below.
+        final = directwave!(cols, chunks, buf, d, opts, ncols, userprovided, promo,
+                            promolock, pendingproblems, segments, segtypes, selected,
+                            rowbases, ndata, rl, reportstructural, parallel, poolctx)
+        for k in 1:(nch - 1)
+            chunks[k].unclosedquote &&
+                error("internal error: chunk $(k) ended inside a quoted field despite parity pre-scan")
+        end
+        # pooled columns merge chunk staging exactly as before
+        pooljs = [j for j in stitchjs if final[j] === String && poolctx !== nothing]
+        pstitch = j -> (cols[j] = stitchcolumn(String, segments, segtypes, j, chunkrows,
+                                               rowbases, ndata, buf, opts.e, d.cq, poolspec,
+                                               nothing, rowbases0))
+        if parallel && length(pooljs) > 1
+            @sync for j in pooljs
+                errormonitor(Threads.@spawn pstitch(j))
+            end
+        else
+            foreach(pstitch, pooljs)
         end
     else
-        foreach(stitchcol, stitchjs)
+        # -- masked wave: chunk-local staging + compacting stitch --------------
+        # (the two-phase filter path; excluded rows never parse, output
+        # positions gather compactly)
+        if parallel && nch > 1
+            @sync for k in 1:nch
+                errormonitor(Threads.@spawn fusedchunk!(chunks[k], buf, d, sc, indexed[k],
+                                                        ncols, opts, userprovided, promo, promolock,
+                                                        pendingproblems, segments, segtypes, k,
+                                                        selected, rowmask, mb(k), rl(k),
+                                                        reportstructural, poolctx))
+            end
+        else
+            for k in 1:nch
+                fusedchunk!(chunks[k], buf, d, sc, indexed[k], ncols, opts, userprovided,
+                            promo, promolock, pendingproblems, segments, segtypes, k,
+                            selected, rowmask, mb(k), rl(k), reportstructural, poolctx)
+            end
+        end
+        for k in 1:(nch - 1)
+            chunks[k].unclosedquote &&
+                error("internal error: chunk $(k) ended inside a quoted field despite parity pre-scan")
+        end
+        # unify: re-parse the (rare) segments parsed under a stale type.
+        # `promo` is frozen now; a Missing segment upgrades without work.
+        final = Type[promo[j] for j in 1:ncols]
+        stale = Tuple{Int, Int}[]
+        for k in 1:nch, j in 1:ncols
+            T = segtypes[k][j]
+            T !== final[j] && T !== Missing && push!(stale, (k, j))
+        end
+        if !isempty(stale)
+            if parallel && length(stale) > 1
+                @sync for (k, j) in stale
+                    errormonitor(Threads.@spawn restale!(chunks, final, segments, segtypes,
+                                                         pendingproblems, buf, opts, d,
+                                                         userprovided, k, j, rowmask, mb(k), rl(k),
+                                                         poolctx))
+                end
+            else
+                for (k, j) in stale
+                    restale!(chunks, final, segments, segtypes, pendingproblems, buf,
+                             opts, d, userprovided, k, j, rowmask, mb(k), rl(k), poolctx)
+                end
+            end
+        end
+        stitchcol = j -> (cols[j] = stitchcolumn(final[j], segments, segtypes, j, chunkrows,
+                                                 rowbases, ndata, buf, opts.e, d.cq, poolspec,
+                                                 rowmask, rowbases0))
+        # single-chunk stitches are zero-copy finalizes — never worth a task spawn
+        if parallel && length(stitchjs) > 1 && ndata > 0 && length(chunks) > 1
+            @sync for j in stitchjs
+                errormonitor(Threads.@spawn stitchcol(j))
+            end
+        else
+            foreach(stitchcol, stitchjs)
+        end
     end
 
     # -- problems: rebase chunk-local rows, merge, deterministic cap -----------
@@ -2726,6 +2724,235 @@ function restale!(chunks, final, segments, segtypes,
                        maskbase, reportlimit)
     conflict == 0 || error("internal error: re-parse under the joined type conflicted")
     segments[k][j] = stg
+    segtypes[k][j] = final[j]
+    mergeproblems!(pendingproblems, log, k)
+    return
+end
+
+# --- the direct wave ---------------------------------------------------------
+#
+# The unmasked driver: every chunk writes its parsed values straight into
+# exact-size final columns at its global row base (the parse loops always
+# supported an offset `rowbase`; the staged driver simply passed 0). What this
+# removes: per-(column × chunk) staging allocation (~2× the file size of
+# transient churn per parse), the stitch's copy pass, and the GC pressure both
+# fed. What it costs: on the rare promotion, completed chunks re-parse the
+# column instead of stitch-time converting — promotions are what stratified
+# sampling exists to make rare. Pooled String columns are the one carve-out:
+# they keep chunk-local interning staging (levels must merge in chunk order)
+# and the existing merge; only their `segments` slots are populated here.
+
+# the (type, destination) pair for column j, read/updated under `promolock`
+@inline _directref(finals, promo, j) = (promo[j], finals[j])
+
+function _allocdirect(::Type{T}, ndata::Int, buf::Vector{UInt8}, opts::ValueOpts,
+                      d::Dialect, poolctx) where {T}
+    T === Missing && return nothing
+    T === String && poolctx !== nothing && return nothing   # pooled: chunk staging
+    return allocatecolumn(T, ndata, buf, opts.e, d.cq)
+end
+
+function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOpts,
+                     ncols::Int, userprovided, promo, promolock,
+                     pendingproblems::PendingProblemLog, segments, segtypes,
+                     selected::Union{Nothing, Vector{Bool}},
+                     rowbases::Vector{Int}, ndata::Int, rl,
+                     reportstructural::Bool, parallel::Bool, poolctx)
+    nch = length(chunks)
+    finals = Vector{Any}(nothing, ncols)
+    allocjs = [j for j in 1:ncols if selected === nothing || selected[j]]
+    # the fills (present=false, payloads=MISSING) are the columns' only full
+    # zeroing pass — do them in parallel, like the staged driver's per-task fills
+    if parallel && length(allocjs) > 1
+        @sync for j in allocjs
+            errormonitor(Threads.@spawn (finals[j] = _allocdirect(promo[j], ndata, buf,
+                                                                  opts, d, poolctx)))
+        end
+    else
+        for j in allocjs
+            finals[j] = _allocdirect(promo[j], ndata, buf, opts, d, poolctx)
+        end
+    end
+    if parallel && nch > 1
+        @sync for k in 1:nch
+            errormonitor(Threads.@spawn directchunk!(chunks[k], buf, d, opts, ncols,
+                                                     userprovided, promo, promolock, finals,
+                                                     pendingproblems, segments, segtypes, k,
+                                                     selected, rowbases[k], rl(k), ndata,
+                                                     reportstructural, poolctx))
+        end
+    else
+        for k in 1:nch
+            directchunk!(chunks[k], buf, d, opts, ncols, userprovided, promo, promolock,
+                         finals, pendingproblems, segments, segtypes, k, selected,
+                         rowbases[k], rl(k), ndata, reportstructural, poolctx)
+        end
+    end
+
+    # fold the chunks' private escaped-string extras into each final column, in
+    # chunk order (before the rewave, so stale re-parses append consistently)
+    final = Type[promo[j] for j in 1:ncols]
+    for j in allocjs
+        final[j] === String || continue
+        poolctx !== nothing && continue
+        scol = finals[j]
+        scol isa StringColumn || continue
+        payloads = scol.payloads
+        for k in 1:nch
+            seg = segments[k][j]
+            seg isa StringColumn || continue
+            isempty(seg.extra) && continue
+            base = Int64(length(scol.extra))
+            append!(scol.extra, seg.extra)
+            hi = k < nch ? rowbases[k + 1] : ndata
+            @inbounds for r in (rowbases[k] + 1):hi
+                p = payloads[r]
+                if kstrlen(p) > KSTR_INLINE && kstroff(p) < 0
+                    payloads[r] = KStrPayload(p.a, reinterpret(UInt64, kstroff(p) - base))
+                end
+            end
+            segments[k][j] = nothing
+        end
+    end
+
+    # promo is frozen: chunks that wrote under a stale type re-parse against the
+    # final column. A Missing-parsed chunk upgrades for free (its rows are
+    # already absent in the final); a stale chunk under a pooled final restales
+    # into pooled staging for the merge.
+    stale = Tuple{Int, Int}[]
+    for k in 1:nch, j in 1:ncols
+        T = segtypes[k][j]
+        T !== final[j] && T !== Missing && push!(stale, (k, j))
+    end
+    if !isempty(stale)
+        redo = (k, j) -> begin
+            if final[j] === String && poolctx !== nothing
+                restale!(chunks, final, segments, segtypes, pendingproblems, buf,
+                         opts, d, userprovided, k, j, nothing, 0, rl(k), poolctx)
+            else
+                redirect!(chunks, final, finals, segtypes, pendingproblems, buf,
+                          opts, userprovided, k, j, rowbases[k], rl(k))
+            end
+        end
+        if parallel && length(stale) > 1
+            @sync for (k, j) in stale
+                errormonitor(Threads.@spawn redo(k, j))
+            end
+        else
+            for (k, j) in stale
+                redo(k, j)
+            end
+        end
+    end
+
+    # finalize the direct columns in place (pooled ones merge in the caller)
+    for j in 1:ncols
+        (selected === nothing || selected[j]) || continue
+        T = final[j]
+        T === String && poolctx !== nothing && continue
+        cols[j] = T === Missing ? MissingColumn(ndata) :
+                  T === String ? finalizecolumn(String, finals[j]::StringColumn, ndata) :
+                  finalizecolumn(T, finals[j]::TypedColumn{T}, ndata)
+    end
+    return final
+end
+
+function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::ValueOpts,
+                      ncols::Int, userprovided, promo, promolock, finals,
+                      pendingproblems::PendingProblemLog, segments, segtypes, k::Int,
+                      selected::Union{Nothing, Vector{Bool}}, rowbase::Int,
+                      reportlimit::Int, ndata::Int, reportstructural::Bool, poolctx)
+    n = nrows(ci)
+    log = ProblemLog(pendingproblems.limit)
+    if reportstructural
+        for lr in ci.firstdatarow:totalrows(ci)
+            localrow = lr - ci.firstdatarow + 1
+            localrow > reportlimit && continue
+            nf = nfields(ci, lr)
+            if nf < ncols
+                sp = fieldspan(ci, lr, 1)::Tuple{Int, Int}
+                pushproblem!(log, localrow, 0, sp[1], :short_row,
+                             "expected $ncols fields, found $nf (remaining columns set to missing)")
+            elseif nf > ncols
+                sp = fieldspan(ci, lr, ncols + 1)::Tuple{Int, Int}
+                pushproblem!(log, localrow, 0, sp[1], :long_row,
+                             "expected $ncols fields, found $nf (extra fields ignored)")
+            end
+        end
+    end
+    segs = Vector{Any}(undef, ncols)
+    st = Vector{Type}(undef, ncols)
+    for j in 1:ncols
+        if selected !== nothing && !selected[j]
+            segs[j] = nothing
+            st[j] = Missing
+            continue
+        end
+        T, dest = lock(() -> _directref(finals, promo, j), promolock)
+        attempts = 0
+        while true
+            (attempts += 1) > 8 && error("internal error: promotion did not converge")
+            local conflict::Int
+            if T === Missing
+                segs[j] = nothing
+                conflict = parsecolchunk_missing(buf, ci, j, 0, opts, userprovided[j],
+                                                 log, nothing, 0, reportlimit)
+            elseif T === String && poolctx !== nothing
+                ps = PoolSegment(n, buf, opts.e, d.cq, poolctx.maxlevels, poolctx.aborted[j])
+                segs[j] = ps
+                conflict = parsecolchunk!(ps, buf, ci, j, 0, opts, userprovided[j],
+                                          log, 0, nothing, 0, reportlimit)
+            elseif T === String
+                # shared payloads, PRIVATE extra: escaped-cell flushes stay
+                # uncontended, and the driver concatenates + rebases the (rare)
+                # chunk extras in chunk order after the wave
+                scol = dest::StringColumn
+                chunkcol = StringColumn(scol.payloads, buf, UInt8[], ReentrantLock(),
+                                        scol.e, scol.cq)
+                conflict = parsecolchunk!(chunkcol, buf, ci, j, rowbase, opts,
+                                          userprovided[j], log, 0, nothing, 0, reportlimit)
+                segs[j] = isempty(chunkcol.extra) ? nothing : chunkcol
+            else
+                segs[j] = nothing
+                conflict = parsecolchunk!(dest, buf, ci, j, rowbase, opts, userprovided[j],
+                                          log, 0, nothing, 0, reportlimit)
+            end
+            if conflict == 0
+                st[j] = T
+                break
+            end
+            sp = fieldspan(ci, conflict, j)::Tuple{Int, Int}
+            detected = promote_kernel(T, detecttype(buf, sp[1], sp[2], opts))
+            # single assignment: promoT is captured by the lock closure below,
+            # and a captured-and-reassigned local boxes (the staging war story)
+            promoT = detected === T ? String : detected
+            T, dest = lock(promolock) do
+                joined = promote_kernel(promo[j], promoT)
+                if joined !== promo[j]
+                    promo[j] = joined
+                    finals[j] = _allocdirect(joined, ndata, buf, opts, d, poolctx)
+                end
+                (promo[j], finals[j])
+            end
+        end
+    end
+    segments[k] = segs
+    segtypes[k] = st
+    mergeproblems!(pendingproblems, log, k)
+    return
+end
+
+# re-parse one stale (chunk, column) straight into the final column
+function redirect!(chunks, final, finals, segtypes,
+                   pendingproblems::PendingProblemLog, buf::Vector{UInt8},
+                   opts::ValueOpts, userprovided, k::Int, j::Int,
+                   rowbase::Int, reportlimit::Int)
+    ci = chunks[k]
+    log = ProblemLog(pendingproblems.limit)
+    conflict = final[j] === Missing ? 0 :
+        parsecolchunk!(finals[j], buf, ci, j, rowbase, opts, userprovided[j], log,
+                       0, nothing, 0, reportlimit)
+    conflict == 0 || error("internal error: re-parse under the joined type conflicted")
     segtypes[k][j] = final[j]
     mergeproblems!(pendingproblems, log, k)
     return
