@@ -322,6 +322,15 @@ end
 end
 
 @testset "header diagnostics merge before strict/capping" begin
+    clean = K.ParsedTable(Symbol[], AbstractVector[], 0, K.Problem[], 0)
+    same, firstproblem = A._mergeproblems(clean, nothing, 0)
+    @test same === clean && firstproblem === nothing
+    droppedheader = K.ProblemLog(0)
+    K.pushproblem!(droppedheader, 0, 1, 1, :invalid_value, "header")
+    merged, firstproblem = A._mergeproblems(clean, droppedheader, 0)
+    @test isempty(merged.problems) && merged.droppedproblems == 1
+    @test firstproblem !== nothing && firstproblem.kind == :invalid_value
+
     input = "\"bad\"x,a\nBAD,2\n"
     f = A.File(IOBuffer(input); types=Dict(1 => Int64), maxproblems=1)
     @test length(A.problems(f)) == 1

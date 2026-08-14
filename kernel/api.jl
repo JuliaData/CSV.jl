@@ -588,6 +588,10 @@ function _mergeproblems(t::K.ParsedTable, headerlog::Union{Nothing, K.ProblemLog
     end
     log = K.ProblemLog(cap)
     if headerlog !== nothing
+        if headerlog.first !== nothing
+            first = headerlog.first
+            (log.first === nothing || K.problemless(first, log.first)) && (log.first = first)
+        end
         for pr in headerlog.items
             K.pushproblem!(log, pr.row, pr.col, pr.pos, pr.kind, pr.message)
         end
