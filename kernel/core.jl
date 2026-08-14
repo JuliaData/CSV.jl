@@ -2691,11 +2691,9 @@ parse(io::IO; kw...) = parse(read(io); kw...)
 chunkrowbase(chunks::Vector{ChunkIndex}, target::ChunkIndex) =
     sum(nrows(c) for c in chunks if c.start < target.start; init=0)
 
-# One fused task: index the chunk (unless a probe already did), report its
-# ragged rows with chunk-LOCAL row ids, and parse every column into chunk-local
-# segment storage, promoting through the shared register with an immediate
-# re-parse while the chunk's bytes are still cache-hot. This is what removes the
-# index-everything-then-parse-everything double pass over RAM.
+# One masked-driver task: report ragged rows with chunk-local row ids and parse
+# every selected column into chunk-local segment storage. All chunks are indexed
+# by the unconditional index wave before this function can run.
 function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ncols::Int,
                      opts::ValueOpts,
                      userprovided, promo, promolock, pendingproblems::PendingProblemLog,
@@ -2816,7 +2814,6 @@ function _allocdirect(::Type{T}, ndata::Int, buf::Vector{UInt8}, opts::ValueOpts
     return TypedColumn{T}(Vector{T}(undef, ndata), Vector{Bool}(undef, ndata))
 end
 
-_fillslice!(::Nothing, lo::Int, hi::Int) = nothing
 # indexed @simd loops, not fill!(view(...)): the SubArray fill does not lower
 # to a memset-class loop, and the missing-dense shapes (most rows per byte,
 # most fill work per input byte) measurably paid for it
@@ -2914,7 +2911,7 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
     # already absent in the final); a stale chunk under a pooled final restales
     # into pooled staging for the merge.
     stale = Tuple{Int, Int}[]
-    for k in 1:nch, j in 1:ncols
+    for k in 1:nch, j in allocjs
         T = segtypes[k][j]
         T === final[j] && continue
         if T === Missing
@@ -3001,11 +2998,11 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
         end
         T, dest = lock(() -> (promo[j], finals[j]), promolock)
         attempts = 0
+        lo = rowbase + 1
+        hi = rowbase + min(n, reportlimit)
         while true
             (attempts += 1) > 8 && error("internal error: promotion did not converge")
             local conflict::Int
-            lo = rowbase + 1
-            hi = rowbase + min(n, reportlimit)
             if T === Missing
                 segs[j] = nothing
                 conflict = parsecolchunk_missing(buf, ci, j, 0, opts, userprovided[j],
@@ -3064,13 +3061,10 @@ function redirect!(chunks, final, finals, segtypes,
                    rowbase::Int, reportlimit::Int)
     ci = chunks[k]
     log = ProblemLog(pendingproblems.limit)
-    if final[j] !== Missing
-        hi = rowbase + min(nrows(ci), reportlimit)
-        hi > rowbase && _fillslice!(finals[j], rowbase + 1, hi)
-    end
-    conflict = final[j] === Missing ? 0 :
-        parsecolchunk!(finals[j], buf, ci, j, rowbase, opts, userprovided[j], log,
-                       0, nothing, 0, reportlimit)
+    hi = rowbase + min(nrows(ci), reportlimit)
+    hi > rowbase && _fillslice!(finals[j], rowbase + 1, hi)
+    conflict = parsecolchunk!(finals[j], buf, ci, j, rowbase, opts, userprovided[j], log,
+                              0, nothing, 0, reportlimit)
     conflict == 0 || error("internal error: re-parse under the joined type conflicted")
     segtypes[k][j] = final[j]
     mergeproblems!(pendingproblems, log, k)
@@ -3079,16 +3073,10 @@ end
 
 # --- pooled (dictionary-encoded) string columns --------------------------------
 #
-# Pooling is a STITCH-TIME transformation: the per-chunk StringColumn segments
-# already hold every content span, so the builder walks them in chunk order
-# (deterministic level ids: first occurrence in row order), interning each cell
-# in a Dict{KStr, UInt32} — KStr hashing/equality are content-based, so the
-# table needs no custom equality machinery. The gamble is
-# abandoned the moment the level count exceeds the policy bound, and the caller
-# falls back to the ordinary flat stitch: a failed gamble costs one hashing
-# pass, never a re-parse. Level payloads that view a chunk-local extra buffer
-# are copied into the pooled column's own extra (levels are few); buf-view and
-# inline payloads pass through untouched.
+# Each chunk interns strings during parsing. The stitch merges those local level
+# tables in chunk order, which preserves first-occurrence order. If the merged
+# level count exceeds the policy, the caller degrades the staging and performs a
+# flat string stitch without reparsing.
 struct PooledColumn{ELT} <: AbstractVector{ELT}
     refs::Vector{UInt32}          # 0 = missing (ELT includes Missing then)
     levels::KStrVector{KStr}
@@ -3135,10 +3123,8 @@ end
 
 # Build refs+levels from the per-chunk segments, or return nothing when the
 # level count blows the policy bound (caller falls back to the flat stitch).
-# PoolSegment chunks interned during parse: only their LEVELS hash here (few);
-# their refs remap in a flat integer pass. Degraded/plain StringColumn chunks
-# intern per cell (the pre-existing path). Level order is first occurrence in
-# chunk order = first occurrence in file order, identical to the serial pass.
+# Only each PoolSegment's levels hash here; refs remap in a flat integer pass.
+# Level order is first occurrence in chunk order, which is file order.
 function poolsegments(segments, j::Int, chunkrows, rowbases, ndata::Int,
                       buf::Vector{UInt8}, e::UInt8, cq::UInt8,
                       pool::Tuple{Float64, Int},

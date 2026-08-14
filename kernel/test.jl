@@ -1422,6 +1422,75 @@ end
     @test any(p -> p.kind == :unclosed_quote, K.problems(malformedseq))
 end
 
+@testset "direct final slice coverage" begin
+    quote_csv(s) = "\"" * replace(s, "\"" => "\"\"") * "\""
+    nums = Union{Int64, Missing}[]
+    texts = Union{String, Missing}[]
+    escaped = Bool[]
+    lines = String[]
+    for i in 1:80
+        i % 11 == 0 && push!(lines, "# dropped row $i")
+        i % 13 == 0 && push!(lines, "")
+        n = i % 5 == 0 ? "" : string(i)
+        push!(nums, isempty(n) ? missing : i)
+        if i % 7 == 0
+            s = ""
+            push!(texts, missing)
+            push!(escaped, false)
+        elseif isodd(i)
+            s = "escaped value $i with \"quote\" tail"
+            push!(texts, s)
+            push!(escaped, true)
+            s = quote_csv(s)
+        else
+            s = "plain view-backed value $i tail"
+            push!(texts, s)
+            push!(escaped, false)
+        end
+        push!(lines, "$n,$s")
+    end
+    input = join(lines, '\n') * "\n"
+    buf = Vector{UInt8}(codeunits(input))
+    cb = 96
+    d = K.Dialect(comment="#")
+    bi = K.index(buf, d; chunkbytes=cb, parallel=false)
+    counts = K.nrows.(bi.chunks)
+    bases = cumsum([0; counts[1:end - 1]])
+    boundaries = cumsum(counts)
+    boundary = first(b for b in boundaries if 0 < b < length(nums))
+    midchunk = findfirst(>(2), counts)::Int
+    mid = bases[midchunk] + 1
+    @test mid ∉ boundaries
+    @test sum(counts) == length(nums) && length(counts) > 2
+    limits = unique([0, boundary, mid, length(nums), length(nums) + 5])
+    for useindex in (false, true), par in (false, true), lim in limits
+        kw = useindex ? (; index=bi) : (; chunkbytes=cb)
+        t = K.parse(buf; header=[:num, :txt], types=[Int64, String], comment="#",
+                    limit=lim, parallel=par, kw...)
+        n = min(lim, length(nums))
+        @test isequal(collect(t[:num]), nums[1:n])
+        @test isequal(K.materialize(t[:txt]), texts[1:n])
+        expectedextra = Vector{UInt8}(codeunits(join(texts[i] for i in 1:n if escaped[i])))
+        @test t[:txt].extra == expectedextra
+    end
+    one = K.parse(buf; header=[:num, :txt], types=[Int64, String], comment="#",
+                  chunkbytes=length(buf) + 1, parallel=false)
+    @test isequal(collect(one[:num]), nums)
+    @test isequal(K.materialize(one[:txt]), texts)
+
+    # nsample=1 seeds Missing from the first row. Sequential chunks complete as
+    # Missing before the final value promotes the UNDEF direct final to Int64.
+    missingfirst = join([fill("", 30); "7"], '\n') * "\n"
+    for par in (false, true)
+        for _ in 1:(par ? 5 : 1)
+            t = K.parse(missingfirst; header=[:x], ignoreemptyrows=false, nsample=1,
+                        chunkbytes=1, parallel=par)
+            @test isequal(collect(t[:x]), [fill(missing, 30); 7])
+            @test isempty(K.problems(t))
+        end
+    end
+end
+
 @testset "determinism & moderate volume" begin
     # ~40k cells with quoted newlines sprinkled in, parsed under several chunk
     # geometries: identical results, exact row count, no reallocation guesswork.
