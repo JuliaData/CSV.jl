@@ -1381,9 +1381,7 @@ const EMPTY_BYTES = UInt8[]
     return KStrPayload(a, b)
 end
 
-# Unescape ≤12 result bytes straight into a payload — no allocation; returns
-# `nothing` when the unescaped content exceeds the inline capacity.
-# next `""` pair at or after i (RFC doubling; the span passed findcontent, so
+# Next `""` pair at or after i (RFC doubling; the span passed findcontent, so
 # quotes only occur doubled) — word-scan for the quote byte, verify adjacency
 @inline function _nextpair(buf::Vector{UInt8}, i::Int, last::Int, cq::UInt8)
     GC.@preserve buf begin
@@ -1414,23 +1412,8 @@ end
     return (x - 0x0101010101010101) & ~x & 0x8080808080808080
 end
 
-# merge `cnt` bytes starting at buf[i] into the inline registers at output
-# position n (1-based); returns the new n. Word-loads with masking — callers
-# guarantee i+7 readable OR fall back byte-wise near the buffer end.
-@inline function _mergebytes(a::UInt64, b::UInt64, n::Int, buf::Vector{UInt8},
-                             i::Int, cnt::Int)
-    @inbounds for k in 0:(cnt - 1)
-        c = buf[i + k]
-        m = n + k
-        if m <= 4
-            a |= UInt64(c) << (32 + 8 * (m - 1))
-        else
-            b |= UInt64(c) << (8 * (m - 5))
-        end
-    end
-    return (a, b, n + cnt)
-end
-
+# Unescape ≤12 result bytes straight into a payload — no allocation; returns
+# `nothing` when the unescaped content exceeds the inline capacity.
 @inline function _unescape_inline(buf::Vector{UInt8}, pos::Int, len::Int, e::UInt8, cq::UInt8)
     a = zero(UInt64)
     b = zero(UInt64)
@@ -1681,15 +1664,11 @@ StringColumn(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8) =
 # hash(::KStr) = hash(String(s)) and made pooling 3× the cost of the parse
 # on 400-level columns.
 # Open-addressing table for INLINE level keys: canonical payload bits are the
-# key, a full-word mix picks the slot, linear probing resolves. ref 0
-# marks an empty slot (the key array is meaningless there, so the all-zero
-# payload — a quoted empty string — needs no reserved value). This is the
-# per-cell interning hot path; Dict{UInt128,…} machinery measured 3-5× slower
-# and made the pooled columns of the escaped/pooled_high sweep shapes the
-# dominant cost.
-# Empty slots hold key sentinel typemax(UInt128) — impossible as a payload
-# (the length field can never be all-ones) — so probing touches ONLY the key
-# array: one cache line per probe; refs load on hit alone.
+# key, a full-word mix picks the slot, and linear probing resolves. Empty slots
+# hold typemax(UInt128), which is impossible as a payload because the length
+# field cannot be all-ones. The all-zero quoted-empty key remains valid. Probes
+# touch only the key array and load refs on hits. This is the per-cell interning
+# hot path; Dict{UInt128,…} machinery measured 3-5× slower.
 const IT_EMPTY = typemax(UInt128)
 
 mutable struct InlineTable

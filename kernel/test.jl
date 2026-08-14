@@ -128,12 +128,12 @@ end
 function itprobes(t::K.InlineTable, k::UInt128)
     i = K._itmix(k) & t.mask
     probes = 1
-    @inbounds while t.refs[i + 1] != 0
-        t.slots[i + 1] === k && return probes
+    @inbounds while true
+        s = t.slots[i + 1]
+        (s === k || s === K.IT_EMPTY) && return probes
         i = (i + 1) & t.mask
         probes += 1
     end
-    return probes
 end
 
 function tablesnapshot(t::K.ParsedTable)
