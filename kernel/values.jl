@@ -689,7 +689,76 @@ tier-3 work: random-bit benchmarks include ~0.05%% subnormals, which cost ~1ms
 each until Eisel-Lemire grew the standard denormal shift. See
 probe_float_anomaly.jl for the post-mortem.)
 """
+# byte-equality marks (0x80 at each matching byte) — SWAR zero-byte test
+@inline function _eqmask8(w::UInt64, b::UInt8)
+    x = w ⊻ (0x0101010101010101 * b)
+    return (x - 0x0101010101010101) & ~x & 0x8080808080808080
+end
+
+# Validate-and-gather the low `len` bytes of `w` as digits: left-align so high
+# garbage falls off, back-fill ASCII zeros, one _alldigits8 + one _digits8.
+@inline function _rundigits(w::UInt64, len::Int)
+    s = (8 - len) << 3
+    w = (w << s) | (0x3030303030303030 >>> (64 - s))
+    return (_digits8(w), _alldigits8(w))
+end
+
+const _P10U = (UInt64(1), UInt64(10), UInt64(100), UInt64(1000), UInt64(10_000),
+               UInt64(100_000), UInt64(1_000_000), UInt64(10_000_000), UInt64(100_000_000))
+
+# The dominant float shape — [sign] up-to-8 digits [decimal up-to-8 digits],
+# no exponent — resolves from two word loads: the decimal locates via an eq
+# mask, both digit runs extract from the loaded registers (never re-reading
+# the buffer, so nothing reads past the guard), and the mantissa packs with
+# the same SWAR gather integers use. Any other spelling — exponents, >8-digit
+# runs, specials, spans within 16 bytes of the buffer's end — returns
+# handled=false and the general state machine decides, so the accepted set is
+# unchanged by construction. Undecided Eisel-Lemire edges also fall back.
+@inline function _float_fast(buf::Vector{UInt8}, i::Int, j::Int, decimal::UInt8)
+    neg = false
+    @inbounds if i <= j
+        b = buf[i]
+        neg = b == UInt8('-')
+        (neg | (b == UInt8('+'))) && (i += 1)
+    end
+    n = j - i + 1
+    (1 <= n <= 15 && i + 15 <= length(buf)) || return (0.0, false)
+    w1 = _load8(buf, i)
+    w2 = _load8(buf, i + 8)
+    mk1 = _eqmask8(w1, decimal)
+    mk2 = _eqmask8(w2, decimal)
+    n < 8 && (mk1 &= (UInt64(1) << (n << 3)) - UInt64(1))
+    mk2 &= n <= 8 ? zero(UInt64) : (UInt64(1) << ((n - 8) << 3)) - UInt64(1)
+    count_ones(mk1) + count_ones(mk2) <= 1 || return (0.0, false)
+    p = mk1 != 0 ? (trailing_zeros(mk1) >> 3) :
+        mk2 != 0 ? 8 + (trailing_zeros(mk2) >> 3) : n   # 0-based decimal position
+    intlen = p
+    fraclen = p == n ? 0 : n - p - 1
+    (intlen <= 8 && fraclen <= 8 && intlen + fraclen >= 1) || return (0.0, false)
+    iv, iok = _rundigits(w1, intlen)             # int run = low bytes of w1
+    fv, fok = fraclen == 0 ? (zero(UInt64), true) : begin
+        off = p + 1                              # 1 ≤ off ≤ 8 by the bounds above
+        wf = (w1 >>> (off << 3)) | (w2 << ((8 - off) << 3))
+        _rundigits(wf, fraclen)
+    end
+    (iok & fok) || return (0.0, false)
+    mant = iv * (@inbounds _P10U[fraclen + 1]) + fv
+    q = -fraclen
+    mant == zero(UInt64) && return (neg ? -0.0 : 0.0, true)
+    if mant <= 9007199254740992                  # ≤16 digits can still exceed 2^53
+        # tier 1: mant and 10^|q| exactly representable ⇒ one rounding
+        f = Float64(mant)
+        f = q == 0 ? f : f / _POW10[-q + 1]
+        return (neg ? -f : f, true)
+    end
+    bits = _eisel_lemire(mant, q)
+    bits >= 0 && return (_sign(reinterpret(UInt64, bits), neg), true)
+    return (0.0, false)
+end
+
 @inline function _parsefloat_core(buf::Vector{UInt8}, i::Int, j::Int, decimal::UInt8)
+    v, handled = _float_fast(buf, i, j, decimal)
+    handled && return (v, RC_OK, true)
     sp, matched = _matchspecial(buf, i, j)
     matched && return (sp, RC_OK, true)
     parts, rc = _decompose(buf, i, j, decimal)
