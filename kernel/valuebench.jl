@@ -109,7 +109,7 @@ function main()
         elseif kind === :bool
             tk = bench((b, ss) -> (a = 0; for (i, j) in ss; v, rc = V.parsebool(b, i, j); a += v; end; a), buf, spans)
             tx = bench((b, ss) -> (a = 0; for (i, j) in ss; r = Parsers.xparse(Bool, b, i, j, OPTS); a += r.val; end; a), buf, spans)
-        else # :str — content discovery (the KStr payload feed)
+        else # :str — content discovery (the CompactString payload feed)
             q = UInt8('"')
             tk = bench((b, ss) -> (a = 0; for (i, j) in ss; c, l, e, rc = V.findcontent(b, i, j, q, q, q); a += l; end; a), buf, spans)
             tx = bench((b, ss) -> (a = 0; for (i, j) in ss; r = K_xparsestring(b, i, j); a += Int(r.val.len); end; a), buf, spans)

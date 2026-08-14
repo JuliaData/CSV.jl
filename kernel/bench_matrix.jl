@@ -3,11 +3,11 @@
 #
 # Extends bench.jl's breadth probe up to the API layer and across many more
 # type combinations: pooling tiers (low/high/over-cap), temporal/bool columns,
-# missing-density and quote/escape-density sweeps, long text (KStr view path),
+# missing-density and quote/escape-density sweeps, long text (CompactString view path),
 # very wide, grouped digits, ignorerepeated, CRLF, dirty/ragged, sentinels.
 # Same honesty rules as bench.jl: CSV.File runs silencewarnings=true; string
 # columns stay in their native containers on both sides (CSV materializes
-# InlineStrings/pooled, we return KStr/PooledColumn) — per-cell work is what
+# InlineStrings/pooled, we return CompactString/PooledColumn) — per-cell work is what
 # is being compared, and the `api_str` config adds stringtype=String where the
 # owned-data comparison matters.
 #
@@ -91,7 +91,7 @@ function genrows(io, shape::Symbol, targetbytes::Int, rng)
             println(io, "\"a\"\"b$(i % 97)\"\"c\",\"\"\"lead$(i % 89)\",\"tail$(i % 83)\"\"\",", i)
         end
     elseif shape === :longtext
-        # 80–240 byte fields: every string takes the KStr view (non-inline) path
+        # 80–240 byte fields: every string takes the CompactString view (non-inline) path
         println(io, "id,doc1,doc2")
         i = 0
         while position(io) < targetbytes
@@ -302,7 +302,7 @@ function runcell(label, shape::Symbol, mb::Float64; core::Bool)
     push!(cells, (; config="api", t, al))
     record(label, shape, mb, "api", bytes, nrows, t, al)
 
-    if any(c -> eltype(c) <: Union{K.KStr, Missing} || c isa K.PooledColumn,
+    if any(c -> eltype(c) <: Union{K.CompactString, Missing} || c isa K.PooledColumn,
            K.columns(Tables.columns(fa)))
         t2, al2 = besttime(() -> A.File(copy(buf); pool=false, apikw...))
         push!(cells, (; config="api_nopool", t=t2, al=al2))

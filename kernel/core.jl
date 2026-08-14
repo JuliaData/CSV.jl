@@ -1344,16 +1344,16 @@ TypedColumn{T}(n::Int) where {T} = TypedColumn{T}(Vector{T}(undef, n), fill(fals
 # This maps 1:1 onto Arrow's StringView (12-byte inline, 4-byte prefix; Arrow's
 # int32 buffer offsets correspond to the production plan's <2 GiB chunk-owned
 # buffers) — the strategic bet: string columns that hand off to Arrow zero-copy.
-struct KStrPayload
+struct CompactStringPayload
     a::UInt64
     b::UInt64
 end
-const PAYLOAD_MISSING = KStrPayload(UInt64(0xffffffff), zero(UInt64))
-const KSTR_INLINE = 12
+const PAYLOAD_MISSING = CompactStringPayload(UInt64(0xffffffff), zero(UInt64))
+const COMPACTSTRING_INLINE = 12
 const EMPTY_BYTES = UInt8[]
 
-@inline kstrlen(p::KStrPayload) = reinterpret(Int32, p.a % UInt32)
-@inline kstroff(p::KStrPayload) = reinterpret(Int64, p.b)
+@inline cslen(p::CompactStringPayload) = reinterpret(Int32, p.a % UInt32)
+@inline csoff(p::CompactStringPayload) = reinterpret(Int64, p.b)
 
 # Two overlapping little-endian loads gather up to 12 content bytes branch-free;
 # the byte-loop fallback only runs within 11 bytes of the buffer's end (loads
@@ -1368,7 +1368,7 @@ const EMPTY_BYTES = UInt8[]
         m4 = len >= 4 ? 0x00000000ffffffff : (UInt64(1) << (8 * len)) - 1
         nb = max(len - 4, 0)
         m8 = nb >= 8 ? typemax(UInt64) : (UInt64(1) << (8 * nb)) - 1
-        return KStrPayload(UInt64(len % UInt32) | ((lo & m4) << 32), hi & m8)
+        return CompactStringPayload(UInt64(len % UInt32) | ((lo & m4) << 32), hi & m8)
     end
     a = UInt64(len % UInt32)
     b = zero(UInt64)
@@ -1378,7 +1378,7 @@ const EMPTY_BYTES = UInt8[]
     @inbounds for i in 5:len
         b |= UInt64(src[pos + i - 1]) << (8 * (i - 5))
     end
-    return KStrPayload(a, b)
+    return CompactStringPayload(a, b)
 end
 
 # Next `""` pair at or after i (RFC doubling; the span passed findcontent, so
@@ -1429,14 +1429,14 @@ end
             i += 1
         end
         n += 1
-        n > KSTR_INLINE && return nothing
+        n > COMPACTSTRING_INLINE && return nothing
         if n <= 4
             a |= UInt64(c) << (32 + 8 * (n - 1))
         else
             b |= UInt64(c) << (8 * (n - 5))
         end
     end
-    return KStrPayload(a | UInt64(n % UInt32), b)
+    return CompactStringPayload(a | UInt64(n % UInt32), b)
 end
 
 @inline function _unescape_append!(dst::Vector{UInt8}, buf::Vector{UInt8}, pos::Int, len::Int,
@@ -1482,11 +1482,11 @@ end
         pre = ltoh(unsafe_load(Ptr{UInt32}(pointer(src, srcpos))))
     end
     a = UInt64(len % UInt32) | (UInt64(pre) << 32)
-    return KStrPayload(a, reinterpret(UInt64, off))
+    return CompactStringPayload(a, reinterpret(UInt64, off))
 end
 
 """
-    KStr <: AbstractString
+    CompactString <: AbstractString
 
 A kernel string value: 16-byte payload plus the byte vector long values view
 into (a shared empty vector for inline values). Byte access, direct comparisons,
@@ -1496,27 +1496,27 @@ therefore allocates. `String(s)` (or `materialize` on the column) copies out.
 Lifetime: a view pins its buffer, exactly like today's `PosLenString` — the
 production compaction story is `materialize`.
 """
-struct KStr <: AbstractString
-    p::KStrPayload
-    data::Vector{UInt8}    # dereferenced only when len > KSTR_INLINE
+struct CompactString <: AbstractString
+    p::CompactStringPayload
+    data::Vector{UInt8}    # dereferenced only when len > COMPACTSTRING_INLINE
 end
 
-Base.ncodeunits(s::KStr) = Int(kstrlen(s.p))
-Base.codeunit(::KStr) = UInt8
-Base.@propagate_inbounds function Base.codeunit(s::KStr, i::Int)
+Base.ncodeunits(s::CompactString) = Int(cslen(s.p))
+Base.codeunit(::CompactString) = UInt8
+Base.@propagate_inbounds function Base.codeunit(s::CompactString, i::Int)
     @boundscheck 1 <= i <= ncodeunits(s) || throw(BoundsError(s, i))
-    len = kstrlen(s.p)
-    if len <= KSTR_INLINE
+    len = cslen(s.p)
+    if len <= COMPACTSTRING_INLINE
         return i <= 4 ? (s.p.a >> (32 + 8 * (i - 1))) % UInt8 :
                         (s.p.b >> (8 * (i - 5))) % UInt8
     else
-        off = kstroff(s.p)
+        off = csoff(s.p)
         o = off < 0 ? -off : off
         return @inbounds s.data[o + i - 1]
     end
 end
 
-function Base.isvalid(s::KStr, i::Int)
+function Base.isvalid(s::CompactString, i::Int)
     1 <= i <= ncodeunits(s) || return false
     @inbounds b = codeunit(s, i)
     b & 0xc0 == 0x80 || return true
@@ -1535,7 +1535,7 @@ end
 # UTF-8 bytes left-aligned in 32 bits, and a malformed sequence yields the bytes
 # consumed so far as an (invalid) Char. Pinned against the String oracle by a
 # randomized test.
-function Base.iterate(s::KStr, i::Int=1)
+function Base.iterate(s::CompactString, i::Int=1)
     i > ncodeunits(s) && return nothing
     @inbounds b1 = codeunit(s, i)
     b1 < 0x80 && return (reinterpret(Char, UInt32(b1) << 24), i + 1)
@@ -1555,7 +1555,7 @@ end
 # Base's generic AbstractString length is isvalid-count-based, which undercounts
 # malformed inputs (String yields each bare continuation byte as its own invalid
 # Char). Count by iteration so length/collect agree with the String oracle.
-function Base.length(s::KStr)
+function Base.length(s::CompactString)
     n = 0
     for _ in s
         n += 1
@@ -1563,10 +1563,10 @@ function Base.length(s::KStr)
     return n
 end
 
-function Base.:(==)(x::KStr, y::KStr)
+function Base.:(==)(x::CompactString, y::CompactString)
     n = ncodeunits(x)
     n == ncodeunits(y) || return false
-    if n <= KSTR_INLINE
+    if n <= COMPACTSTRING_INLINE
         return x.p.a == y.p.a && x.p.b == y.p.b   # payload holds the full content
     end
     x.p.a == y.p.a || return false                # length + 4-byte prefix reject
@@ -1577,38 +1577,38 @@ function Base.:(==)(x::KStr, y::KStr)
 end
 # Direct byte comparison against String — Base's generic AbstractString ==
 # decodes chars, which is an order of magnitude slower on this hot path
-# (filtering/grouping compare KStr columns against String literals constantly).
-function Base.:(==)(x::KStr, y::Union{String, SubString{String}})
+# (filtering/grouping compare CompactString columns against String literals constantly).
+function Base.:(==)(x::CompactString, y::Union{String, SubString{String}})
     n = ncodeunits(x)
     n == ncodeunits(y) || return false
     GC.@preserve x y begin
         py = pointer(y)
-        if n <= KSTR_INLINE
+        if n <= COMPACTSTRING_INLINE
             @inbounds for i in 1:n
                 codeunit(x, i) == unsafe_load(py, i) || return false
             end
             return true
         end
-        off = kstroff(x.p)
+        off = csoff(x.p)
         o = off < 0 ? -off : off
         return ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t),
                      pointer(x.data, o), py, n) == 0
     end
 end
-Base.:(==)(y::Union{String, SubString{String}}, x::KStr) = x == y
+Base.:(==)(y::Union{String, SubString{String}}, x::CompactString) = x == y
 
 # Ordering comparisons fall back to Base's generic codeunit-wise `cmp`; hash must
-# agree with `String`'s so mixed Dict{String}/KStr use is sound. Allocating here
+# agree with `String`'s so mixed Dict{String}/CompactString use is sound. Allocating here
 # is the correctness-first choice — the production version shares InlineStrings'
 # memhash approach (which is exactly the private-API exposure CSV.jl #1164 is
 # about, so the kernel does not copy it).
-Base.hash(s::KStr, h::UInt) = hash(String(s), h)
+Base.hash(s::CompactString, h::UInt) = hash(String(s), h)
 
-function Base.String(s::KStr)
+function Base.String(s::CompactString)
     n = ncodeunits(s)
-    if n > KSTR_INLINE
+    if n > COMPACTSTRING_INLINE
         # view: one memcpy out of the retained buffer
-        off = kstroff(s.p)
+        off = csoff(s.p)
         o = off < 0 ? -off : off
         GC.@preserve s begin
             return unsafe_string(pointer(s.data, o), n)
@@ -1620,22 +1620,22 @@ function Base.String(s::KStr)
     end
     return String(out)
 end
-Base.convert(::Type{String}, s::KStr) = String(s)
-Base.Symbol(s::KStr) = Symbol(String(s))
-Base.promote_rule(::Type{KStr}, ::Type{String}) = String
+Base.convert(::Type{String}, s::CompactString) = String(s)
+Base.Symbol(s::CompactString) = Symbol(String(s))
+Base.promote_rule(::Type{CompactString}, ::Type{String}) = String
 
-function Base.write(io::IO, s::KStr)
+function Base.write(io::IO, s::CompactString)
     n = 0
     @inbounds for i in 1:ncodeunits(s)
         n += write(io, codeunit(s, i))
     end
     return n
 end
-Base.print(io::IO, s::KStr) = (write(io, s); nothing)
+Base.print(io::IO, s::CompactString) = (write(io, s); nothing)
 
 # The column builder: payloads + the two buffers views resolve into.
 mutable struct StringColumn
-    payloads::Vector{KStrPayload}
+    payloads::Vector{CompactStringPayload}
     buf::Vector{UInt8}
     extra::Vector{UInt8}          # unescaped long values (rare); guarded by extralock
     extralock::ReentrantLock
@@ -1660,8 +1660,8 @@ StringColumn(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8) =
 # Interning table keys never allocate: inline payloads ARE their identity
 # (canonical two-word bits ⇒ a UInt128 key), and view/extra payloads wrap in
 # ViewKey, whose hash walks codeunits (FNV-1a) instead of materializing a
-# String — the old Dict{KStr,…} paid TWO allocations per cell lookup through
-# hash(::KStr) = hash(String(s)) and made pooling 3× the cost of the parse
+# String — the old Dict{CompactString,…} paid TWO allocations per cell lookup through
+# hash(::CompactString) = hash(String(s)) and made pooling 3× the cost of the parse
 # on 400-level columns.
 # Open-addressing table for INLINE level keys: canonical payload bits are the
 # key, a full-word mix picks the slot, and linear probing resolves. Empty slots
@@ -1679,7 +1679,7 @@ mutable struct InlineTable
 end
 InlineTable() = InlineTable(fill(IT_EMPTY, 64), Vector{UInt32}(undef, 64), 0, UInt64(63))
 
-@inline _inlinekey(p::KStrPayload) = (UInt128(p.a) << 64) | p.b
+@inline _inlinekey(p::CompactStringPayload) = (UInt128(p.a) << 64) | p.b
 
 @inline function _itmix(k::UInt128)
     # Payload suffix bytes occupy progressively higher bits. Mix both words,
@@ -1724,7 +1724,7 @@ function itset!(t::InlineTable, k::UInt128, ref::UInt32)
 end
 
 struct ViewKey
-    s::KStr
+    s::CompactString
 end
 function Base.hash(k::ViewKey, h::UInt)
     s = k.s
@@ -1740,7 +1740,7 @@ mutable struct PoolSegment
     refs::Vector{UInt32}                 # 0 = missing/not-yet-parsed
     itable::InlineTable                  # inline levels: payload bits are the key
     vtable::Dict{ViewKey, UInt32}        # view/extra levels: content hash, no alloc
-    levelpayloads::Vector{KStrPayload}
+    levelpayloads::Vector{CompactStringPayload}
     extra::Vector{UInt8}                 # unescaped bytes for NEW levels only
     buf::Vector{UInt8}
     e::UInt8
@@ -1752,7 +1752,7 @@ end
 PoolSegment(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8, maxlevels::Int,
             aborted::Threads.Atomic{Bool}) =
     PoolSegment(zeros(UInt32, n), InlineTable(), Dict{ViewKey, UInt32}(),
-                KStrPayload[], UInt8[], buf, e, cq, maxlevels, aborted, nothing)
+                CompactStringPayload[], UInt8[], buf, e, cq, maxlevels, aborted, nothing)
 
 # per-column pooling context the driver threads through chunk tasks
 struct PoolCtx
@@ -1761,9 +1761,9 @@ struct PoolCtx
     skip::Vector{Bool}   # sample proved the policy bound must fail: never attempt
 end
 
-_levelcell(ps::PoolSegment, p::KStrPayload) =
-    Int(kstrlen(p)) <= KSTR_INLINE ? KStr(p, EMPTY_BYTES) :
-    KStr(p, kstroff(p) < 0 ? ps.extra : ps.buf)
+_levelcell(ps::PoolSegment, p::CompactStringPayload) =
+    Int(cslen(p)) <= COMPACTSTRING_INLINE ? CompactString(p, EMPTY_BYTES) :
+    CompactString(p, csoff(p) < 0 ? ps.extra : ps.buf)
 
 # refs so far become payloads; the extra buffer moves across untouched
 function _degradepool!(ps::PoolSegment)
@@ -1825,50 +1825,50 @@ Base.@propagate_inbounds function Base.getindex(v::MaybeVector, i::Int)
     @inbounds return v.present[i] ? v.values[i] : missing
 end
 
-# The user-facing string column. getindex returns a `KStr` (or `missing`) with
+# The user-facing string column. getindex returns a `CompactString` (or `missing`) with
 # NO allocation: inline values live in the payload, long values view into `buf`
 # (input) or `extra` (unescaped-at-parse-time). `materialize` copies out to
 # `Vector{String}`, detaching from both buffers.
-struct KStrVector{ELT} <: AbstractVector{ELT}
-    payloads::Vector{KStrPayload}
+struct CompactStringVector{ELT} <: AbstractVector{ELT}
+    payloads::Vector{CompactStringPayload}
     buf::Vector{UInt8}
     extra::Vector{UInt8}
 end
-Base.size(v::KStrVector) = size(v.payloads)
-Base.@propagate_inbounds @inline function Base.getindex(v::KStrVector{ELT}, i::Int) where {ELT}
+Base.size(v::CompactStringVector) = size(v.payloads)
+Base.@propagate_inbounds @inline function Base.getindex(v::CompactStringVector{ELT}, i::Int) where {ELT}
     @boundscheck checkbounds(v.payloads, i)
     @inbounds p = v.payloads[i]
-    len = kstrlen(p)
+    len = cslen(p)
     len < 0 && return missing
-    len <= KSTR_INLINE && return KStr(p, EMPTY_BYTES)
-    return KStr(p, kstroff(p) < 0 ? v.extra : v.buf)
+    len <= COMPACTSTRING_INLINE && return CompactString(p, EMPTY_BYTES)
+    return CompactString(p, csoff(p) < 0 ? v.extra : v.buf)
 end
 # All-present columns skip the missing branch entirely — the concrete return
 # type is what lets access compile down to zero allocations.
-Base.@propagate_inbounds @inline function Base.getindex(v::KStrVector{KStr}, i::Int)
+Base.@propagate_inbounds @inline function Base.getindex(v::CompactStringVector{CompactString}, i::Int)
     @boundscheck checkbounds(v.payloads, i)
     @inbounds p = v.payloads[i]
-    len = kstrlen(p)
-    len <= KSTR_INLINE && return KStr(p, EMPTY_BYTES)
-    return KStr(p, kstroff(p) < 0 ? v.extra : v.buf)
+    len = cslen(p)
+    len <= COMPACTSTRING_INLINE && return CompactString(p, EMPTY_BYTES)
+    return CompactString(p, csoff(p) < 0 ? v.extra : v.buf)
 end
 
-function materialize(v::KStrVector{ELT}) where {ELT}
-    out = Vector{ELT === KStr ? String : Union{String, Missing}}(undef, length(v))
+function materialize(v::CompactStringVector{ELT}) where {ELT}
+    out = Vector{ELT === CompactString ? String : Union{String, Missing}}(undef, length(v))
     scratch = Vector{UInt8}(undef, 16)   # inline payloads reconstruct via two word stores
     GC.@preserve scratch begin
         q = pointer(scratch)
         @inbounds for i in eachindex(v.payloads)
             p = v.payloads[i]
-            len = kstrlen(p)
+            len = cslen(p)
             if len < 0
                 out[i] = missing
-            elseif len <= KSTR_INLINE
+            elseif len <= COMPACTSTRING_INLINE
                 unsafe_store!(Ptr{UInt64}(q), htol((p.a >> 32) | (p.b << 32)))
                 unsafe_store!(Ptr{UInt64}(q + 8), htol(p.b >> 32))
                 out[i] = unsafe_string(q, len)
             else
-                off = kstroff(p)
+                off = csoff(p)
                 o = off < 0 ? -off : off
                 src = off < 0 ? v.extra : v.buf
                 GC.@preserve src begin
@@ -1970,7 +1970,7 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
                          "bare quote engaged structural protection in " * excerpt(buf, pos, len))
         end
         if esc
-            # escaped values are unescaped ONCE, at parse time (KStr needs O(1)
+            # escaped values are unescaped ONCE, at parse time (CompactString needs O(1)
             # codeunit access): short results build inline payloads allocation-
             # free; long ones stage locally and flush to the shared extra buffer
             # under a single lock per (column × chunk), not per cell
@@ -1983,7 +1983,7 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
                 end
                 _stageescaped!(staging, buf, cpos, clen, out, col.e, col.cq)
             end
-        elseif clen <= KSTR_INLINE
+        elseif clen <= COMPACTSTRING_INLINE
             payloads[out] = inline_payload(buf, cpos, clen)
         else
             payloads[out] = view_payload(buf, cpos, clen, Int64(cpos))
@@ -2008,7 +2008,7 @@ end
     return
 end
 
-function _flushstaging!(col::StringColumn, payloads::Vector{KStrPayload},
+function _flushstaging!(col::StringColumn, payloads::Vector{CompactStringPayload},
                         staging::NTuple{4, Vector})
     sbytes = staging[1]::Vector{UInt8}
     srows = staging[2]::Vector{Int}
@@ -2075,7 +2075,7 @@ function parsecolchunk!(ps::PoolSegment, buf::Vector{UInt8}, ci::ChunkIndex,
                 n = _unescape_append!(ps.extra, buf, cpos, clen, ps.e, ps.cq)
                 p = view_payload(ps.extra, rewind + 1, n, -(Int64(rewind) + 1))
             end
-        elseif clen <= KSTR_INLINE
+        elseif clen <= COMPACTSTRING_INLINE
             p = inline_payload(buf, cpos, clen)
         else
             p = view_payload(buf, cpos, clen, Int64(cpos))
@@ -2088,7 +2088,7 @@ function parsecolchunk!(ps::PoolSegment, buf::Vector{UInt8}, ci::ChunkIndex,
         ref = UInt32(0)
         lp = ps.levelpayloads
         llen = length(lp)
-        isinline = Int(kstrlen(p)) <= KSTR_INLINE
+        isinline = Int(cslen(p)) <= COMPACTSTRING_INLINE
         if isinline && llen <= 16
             @inbounds for l in 1:llen
                 if lp[l].a === p.a && lp[l].b === p.b
@@ -3129,7 +3129,7 @@ function _allocdirect(::Type{T}, ndata::Int, buf::Vector{UInt8}, opts::ValueOpts
     T === Missing && return nothing
     T === String && poolctx !== nothing && !poolctx.skip[j] &&
         return nothing   # pooled: chunk staging
-    T === String && return StringColumn(Vector{KStrPayload}(undef, ndata), buf,
+    T === String && return StringColumn(Vector{CompactStringPayload}(undef, ndata), buf,
                                         UInt8[], ReentrantLock(), opts.e, d.cq)
     return TypedColumn{T}(Vector{T}(undef, ndata), Vector{Bool}(undef, ndata))
 end
@@ -3211,8 +3211,8 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
             rhi = k < nch ? rowbases[k + 1] : ndata
             @inbounds for r in (rowbases[k] + 1):rhi
                 pl = payloads[r]
-                if kstrlen(pl) > KSTR_INLINE && kstroff(pl) < 0
-                    payloads[r] = KStrPayload(pl.a, reinterpret(UInt64, kstroff(pl) - base))
+                if cslen(pl) > COMPACTSTRING_INLINE && csoff(pl) < 0
+                    payloads[r] = CompactStringPayload(pl.a, reinterpret(UInt64, csoff(pl) - base))
                 end
             end
             segments[k][j] = nothing
@@ -3401,7 +3401,7 @@ end
 # flat string stitch without reparsing.
 struct PooledColumn{ELT} <: AbstractVector{ELT}
     refs::Vector{UInt32}          # 0 = missing (ELT includes Missing then)
-    levels::KStrVector{KStr}
+    levels::CompactStringVector{CompactString}
 end
 Base.size(c::PooledColumn) = size(c.refs)
 Base.@propagate_inbounds function Base.getindex(c::PooledColumn{ELT}, i::Int) where {ELT}
@@ -3410,7 +3410,7 @@ Base.@propagate_inbounds function Base.getindex(c::PooledColumn{ELT}, i::Int) wh
     r == 0 && return missing
     return c.levels[Int(r)]
 end
-Base.@propagate_inbounds function Base.getindex(c::PooledColumn{KStr}, i::Int)
+Base.@propagate_inbounds function Base.getindex(c::PooledColumn{CompactString}, i::Int)
     @boundscheck checkbounds(c.refs, i)
     @inbounds return c.levels[Int(c.refs[i])]
 end
@@ -3435,7 +3435,7 @@ end
 
 function materialize(c::PooledColumn{ELT}) where {ELT}
     lv = materialize(c.levels)
-    out = Vector{ELT === KStr ? String : Union{String, Missing}}(undef, length(c.refs))
+    out = Vector{ELT === CompactString ? String : Union{String, Missing}}(undef, length(c.refs))
     @inbounds for i in eachindex(c.refs)
         r = c.refs[i]
         out[i] = r == 0 ? missing : lv[Int(r)]
@@ -3461,8 +3461,8 @@ function poolsegments(segments, j::Int, chunkrows, rowbases, ndata::Int,
         seg isa PoolSegment && (seg.aborted[] || seg.degraded !== nothing) && return nothing
     end
     refs = zeros(UInt32, ndata)
-    table = Dict{KStr, UInt32}()
-    levelpayloads = KStrPayload[]
+    table = Dict{CompactString, UInt32}()
+    levelpayloads = CompactStringPayload[]
     extra = UInt8[]
     npresent = 0
     dest = 0
@@ -3480,14 +3480,14 @@ function poolsegments(segments, j::Int, chunkrows, rowbases, ndata::Int,
             # merge the chunk's level table, then remap refs without hashing
             remap = Vector{UInt32}(undef, length(seg.levelpayloads))
             for (l, p) in enumerate(seg.levelpayloads)
-                len = Int(kstrlen(p))
-                cell = len <= KSTR_INLINE ? KStr(p, EMPTY_BYTES) :
-                       KStr(p, kstroff(p) < 0 ? seg.extra : buf)
+                len = Int(cslen(p))
+                cell = len <= COMPACTSTRING_INLINE ? CompactString(p, EMPTY_BYTES) :
+                       CompactString(p, csoff(p) < 0 ? seg.extra : buf)
                 gref = get(table, cell, UInt32(0))
                 if gref == 0
                     length(levelpayloads) >= maxlevels && return nothing
-                    if len > KSTR_INLINE && kstroff(p) < 0
-                        off = Int(-kstroff(p))
+                    if len > COMPACTSTRING_INLINE && csoff(p) < 0
+                        off = Int(-csoff(p))
                         base = length(extra)
                         append!(extra, @view seg.extra[off:off + len - 1])
                         p = view_payload(extra, base + 1, len, -(Int64(base) + 1))
@@ -3517,9 +3517,9 @@ function poolsegments(segments, j::Int, chunkrows, rowbases, ndata::Int,
         error("internal error: pooled merge expects PoolSegment staging, got " *
               string(typeof(seg)))
     end
-    levels = KStrVector{KStr}(levelpayloads, buf, extra)
-    return npresent == ndata ? PooledColumn{KStr}(refs, levels) :
-                               PooledColumn{Union{KStr, Missing}}(refs, levels)
+    levels = CompactStringVector{CompactString}(levelpayloads, buf, extra)
+    return npresent == ndata ? PooledColumn{CompactString}(refs, levels) :
+                               PooledColumn{Union{CompactString, Missing}}(refs, levels)
 end
 
 # Assemble one final exact-size column from its per-chunk segments. Segment
@@ -3576,8 +3576,8 @@ function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases
                 append!(extra, scol.extra)
                 @inbounds for i in 1:chunkrows[k]
                     p = scol.payloads[i]
-                    if kstrlen(p) > KSTR_INLINE && kstroff(p) < 0
-                        p = KStrPayload(p.a, reinterpret(UInt64, kstroff(p) - base))
+                    if cslen(p) > COMPACTSTRING_INLINE && csoff(p) < 0
+                        p = CompactStringPayload(p.a, reinterpret(UInt64, csoff(p) - base))
                     end
                     payloads[rb + i] = p
                     end
@@ -3623,8 +3623,8 @@ function _stitchmasked(::Type{T}, segments, j::Int, chunkrows, ndata::Int,
                 mask[inbases[k] + i] || continue
                 dest += 1
                 p = scol.payloads[i]
-                if kstrlen(p) > KSTR_INLINE && kstroff(p) < 0
-                    p = KStrPayload(p.a, reinterpret(UInt64, kstroff(p) - base))
+                if cslen(p) > COMPACTSTRING_INLINE && csoff(p) < 0
+                    p = CompactStringPayload(p.a, reinterpret(UInt64, csoff(p) - base))
                 end
                 payloads[dest] = p
             end
@@ -3658,14 +3658,14 @@ function finalizecolumn(::Type{Missing}, ::Nothing, n::Int)
 end
 finalizecolumn(::Type{Missing}, ::Nothing, n::Int, ::Bool) = MissingColumn(n)
 function finalizecolumn(::Type{String}, col::StringColumn, n::Int)
-    anymissing = any(p -> kstrlen(p) < 0, col.payloads)
-    return anymissing ? KStrVector{Union{KStr, Missing}}(col.payloads, col.buf, col.extra) :
-                        KStrVector{KStr}(col.payloads, col.buf, col.extra)
+    anymissing = any(p -> cslen(p) < 0, col.payloads)
+    return anymissing ? CompactStringVector{Union{CompactString, Missing}}(col.payloads, col.buf, col.extra) :
+                        CompactStringVector{CompactString}(col.payloads, col.buf, col.extra)
 end
 function finalizecolumn(::Type{String}, col::StringColumn, n::Int, force_missing::Bool)
-    anymissing = force_missing || any(p -> kstrlen(p) < 0, col.payloads)
-    return anymissing ? KStrVector{Union{KStr, Missing}}(col.payloads, col.buf, col.extra) :
-                        KStrVector{KStr}(col.payloads, col.buf, col.extra)
+    anymissing = force_missing || any(p -> cslen(p) < 0, col.payloads)
+    return anymissing ? CompactStringVector{Union{CompactString, Missing}}(col.payloads, col.buf, col.extra) :
+                        CompactStringVector{CompactString}(col.payloads, col.buf, col.extra)
 end
 # `all(::Vector{Bool})` short-circuits, so it compiles to a branchy scalar
 # loop — 1.2 ms per 4M-row column. `count` vectorizes; missing-free columns

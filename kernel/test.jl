@@ -80,7 +80,7 @@ end
 
 # Top-level (not testset-local) so the allocation probe measures the loop, not
 # closure machinery.
-function sumncodeunits(c::K.KStrVector{K.KStr})
+function sumncodeunits(c::K.CompactStringVector{K.CompactString})
     t = 0
     for i in eachindex(c)
         t += ncodeunits(c[i])
@@ -113,10 +113,10 @@ function scalar_delimclash(buf::Vector{UInt8}, cpos::Int, clen::Int,
     return false
 end
 
-function kstrfrombytes(bytes::Vector{UInt8})
-    p = length(bytes) <= K.KSTR_INLINE ? K.inline_payload(bytes, 1, length(bytes)) :
+function csfrombytes(bytes::Vector{UInt8})
+    p = length(bytes) <= K.COMPACTSTRING_INLINE ? K.inline_payload(bytes, 1, length(bytes)) :
                                          K.view_payload(bytes, 1, length(bytes), Int64(1))
-    return K.KStr(p, length(bytes) <= K.KSTR_INLINE ? K.EMPTY_BYTES : bytes)
+    return K.CompactString(p, length(bytes) <= K.COMPACTSTRING_INLINE ? K.EMPTY_BYTES : bytes)
 end
 
 function inlinekey(s::AbstractString)
@@ -528,7 +528,7 @@ end
     @test t.nrows == 2
     @test K.columns(t)[1] isa Vector{Int64} && t[:a] == [1, 2]
     @test K.columns(t)[2] isa Vector{Float64} && t[:b] == [1.5, 2.5]
-    @test eltype(t[:c]) == K.KStr && collect(t[:c]) == ["x", "y"]
+    @test eltype(t[:c]) == K.CompactString && collect(t[:c]) == ["x", "y"]
     @test t[:d] == [Date(2023, 1, 15), Date(2023, 1, 16)]
     @test t[:e] == [true, false]
     @test t[:f] == [Time(10, 30), Time(11, 30)]
@@ -583,7 +583,7 @@ end
     t = K.parse("a,b\n1,x\n,\n3,z\n")
     @test eltype(t[:a]) == Union{Int64, Missing}
     @test isequal(collect(t[:a]), [1, missing, 3])
-    @test eltype(t[:b]) == Union{K.KStr, Missing}
+    @test eltype(t[:b]) == Union{K.CompactString, Missing}
     @test isequal(collect(t[:b]), ["x", missing, "z"])
     # quoted empty is an empty STRING, not missing
     t2 = K.parse("a\n\"\"\nx\n")
@@ -610,19 +610,19 @@ end
     @test collect(t[:a]) == ["1", "2", "xyz"]
     # date → string on mixed temporals
     t = K.parse("a\n2023-01-15\n10:30:00\n")
-    @test eltype(t[:a]) == K.KStr
+    @test eltype(t[:a]) == K.CompactString
     # Strictness principle: each kernel accepts exactly the spellings detection
     # assigns to it (Bool is true/false only; temporals are pattern-exact), so
     # values that OLD Parsers accepted more loosely ("1" as Bool, a bare date as
     # DateTime) now conflict and promote to String — sample-independently.
     for ns in (1, 2, 3)
-        @test eltype(K.parse("a\nfalse\n1\n1\n"; nsample=ns)[:a]) == K.KStr
-        @test eltype(K.parse("a\n2024-01-02T03:04:05\n2024-01-03\n"; nsample=ns)[:a]) == K.KStr
-        @test eltype(K.parse("a\n03:04:05\n1\n"; nsample=ns)[:a]) == K.KStr
+        @test eltype(K.parse("a\nfalse\n1\n1\n"; nsample=ns)[:a]) == K.CompactString
+        @test eltype(K.parse("a\n2024-01-02T03:04:05\n2024-01-03\n"; nsample=ns)[:a]) == K.CompactString
+        @test eltype(K.parse("a\n03:04:05\n1\n"; nsample=ns)[:a]) == K.CompactString
     end
     # Quotes strip before detection AND parsing, so a quoted numeric overlap
     # follows the same lattice.
-    @test eltype(K.parse("a\nfalse\n\"1\"\n"; nsample=1)[:a]) == K.KStr
+    @test eltype(K.parse("a\nfalse\n\"1\"\n"; nsample=1)[:a]) == K.CompactString
 
     # Detection pins across custom Bool spellings, explicit date formats,
     # numeric special values, custom decimal bytes, and quoted fields.
@@ -850,7 +850,7 @@ end
     @test isequal(collect(tb[:n]), [parse(BigInt, "123456789012345678901234567890"), missing])
     @test isequal(collect(tb[:x]), [parse(BigFloat, "0.1"), missing])
     ti = K.parse("u\n123e4567-e89b-12d3-a456-426614174000\n")
-    @test eltype(ti[:u]) == K.KStr    # inference never yields UUID/Big types
+    @test eltype(ti[:u]) == K.CompactString    # inference never yields UUID/Big types
     @test_throws ArgumentError K.parse("a\n1\n"; types=AbstractString)
     @test_throws ArgumentError K.parse("a\n1\n"; types=Union{Int64, String})
     @test_throws ArgumentError K.parse("a\n1\n"; types=["Int64"])
@@ -954,7 +954,7 @@ end
     @test isempty(K.problems(tgb))
     # off ⇒ marked numbers are strings, exactly as before the feature existed
     tg = K.parse("a;b\n1,234;9\n"; delim=';')
-    @test eltype(tg[:a]) == K.KStr
+    @test eltype(tg[:a]) == K.CompactString
     for gm in ('0', '5', '9', '.', 'e', 'E', '+', '-', '"', '\0')
         @test_throws ArgumentError K.makevalueopts(K.Dialect(); groupmark=gm)
     end
@@ -1237,7 +1237,7 @@ end
     end
     # ratio policy: 4 levels / 500 rows ⇒ pooled at 0.05, plain at 0.005
     @test K.parse(csv; pool=0.05)[:cat] isa K.PooledColumn
-    @test K.parse(csv; pool=0.005)[:cat] isa K.KStrVector
+    @test K.parse(csv; pool=0.005)[:cat] isa K.CompactStringVector
     # Equal-stride sampling aliases this periodic layout: 6000 / 128 is nearly
     # coprime to 400. Jittered draws must find repeats and preserve pooling.
     periodicvalues = ["level$(i % 400)" for i in 1:6000]
@@ -1275,18 +1275,18 @@ end
     @test K.materialize(limited) == fill("cat", 31)
     # absolute cap abandons early
     tall = K.parse("a\n" * join(1:200, "\n") * "\n"; types=String, pool=(1.0, 8))
-    @test tall[:a] isa K.KStrVector
+    @test tall[:a] isa K.CompactStringVector
     # cap forms and validation
     @test_throws ArgumentError K.parse("a\nx\n"; pool=1.5)
     @test_throws ArgumentError K.parse("a\nx\n"; pool=(-0.1, 10))
     @test_throws ArgumentError K.parse("a\nx\n"; pool=(1.0, -1))
     # The ratio is a strict level/row bound: 2 levels exceed 0.5 * 3 rows.
-    @test K.parse("a\nx\ny\nx\n"; types=String, pool=0.5)[:a] isa K.KStrVector
+    @test K.parse("a\nx\ny\nx\n"; types=String, pool=0.5)[:a] isa K.CompactStringVector
     # all-present column gets the concrete eltype; missing goes Union + ref 0
     tp = K.parse("a,b\nx,1\nx,2\n"; pool=true)
-    @test tp[:a] isa K.PooledColumn{K.KStr}
+    @test tp[:a] isa K.PooledColumn{K.CompactString}
     tm = K.parse("a,b\nx,1\n,2\ny,3\nx,4\n"; pool=true)
-    @test tm[:a] isa K.PooledColumn{Union{K.KStr, Missing}}
+    @test tm[:a] isa K.PooledColumn{Union{K.CompactString, Missing}}
     @test K.poolrefs(tm[:a]) == UInt32[1, 0, 2, 1]
     @test isequal(K.materialize(tm[:a]), ["x", missing, "y", "x"])
     @test K.materialize(tp[:a]) == ["x", "x"]
@@ -1294,12 +1294,12 @@ end
     firstvalue, iterstate = iterate(tp[:a])
     @test firstvalue == tp[:a][1]
     @test first(iterate(tp[:a], iterstate)) == tp[:a][2]
-    @test similar(tp[:a]) isa Vector{K.KStr}
+    @test similar(tp[:a]) isa Vector{K.CompactString}
     @test collect(copy(tp[:a])) == collect(tp[:a])
     @test occursin("x", sprint(show, tp[:a]))
     # Header-only typed strings stay a valid empty vector; there is no pool to build.
     emptycol = K.parse("a\n"; types=String, pool=true)[:a]
-    @test emptycol isa K.KStrVector{K.KStr} && isempty(emptycol)
+    @test emptycol isa K.CompactStringVector{K.CompactString} && isempty(emptycol)
     # Long escaped values live in per-chunk `extra` buffers. Pooling must intern
     # equal bytes across those buffers, copy one level, and keep negative offsets.
     longescaped = "a long \"escaped\" categorical value"
@@ -1311,12 +1311,12 @@ end
     for par in (false, true)
         escapedpool = K.parse(escapedcsv; types=String, pool=true,
                               chunkbytes=16, parallel=par)[:a]
-        @test escapedpool isa K.PooledColumn{K.KStr}
+        @test escapedpool isa K.PooledColumn{K.CompactString}
         @test collect(escapedpool) == collect(escapedplain[:a])
         @test K.poolrefs(escapedpool) == UInt32[1, 2, 1, 2]
         levels = K.poollevels(escapedpool)
-        @test K.kstroff(levels.payloads[1]) < 0
-        @test K.kstrlen(levels.payloads[2]) == K.KSTR_INLINE
+        @test K.csoff(levels.payloads[1]) < 0
+        @test K.cslen(levels.payloads[2]) == K.COMPACTSTRING_INLINE
         dict = Dict(levels[1] => 7)
         @test dict[escapedplain[:a][1]] == 7
     end
@@ -1324,9 +1324,9 @@ end
     # offsets and negative extra-buffer offsets must interoperate.
     viewcontent = Vector{UInt8}(codeunits("abcdefghijklmnop"))
     extrabuf = [UInt8(0xff); viewcontent; UInt8(0xee)]
-    inputkey = K.ViewKey(K.KStr(K.view_payload(viewcontent, 1, length(viewcontent), 1),
+    inputkey = K.ViewKey(K.CompactString(K.view_payload(viewcontent, 1, length(viewcontent), 1),
                                viewcontent))
-    extrakey = K.ViewKey(K.KStr(K.view_payload(extrabuf, 2, length(viewcontent), -2),
+    extrakey = K.ViewKey(K.CompactString(K.view_payload(extrabuf, 2, length(viewcontent), -2),
                                extrabuf))
     @test inputkey == extrakey
     @test hash(inputkey, UInt(17)) == hash(extrakey, UInt(17))
@@ -1334,7 +1334,7 @@ end
     # A promotion to String must still pool after stale numeric segments reparse.
     promocsv = "a\n1\n2\nword\n1\n"
     promoref = K.parse(promocsv; nsample=1, pool=true, chunkbytes=3, parallel=false)[:a]
-    @test promoref isa K.PooledColumn{K.KStr}
+    @test promoref isa K.PooledColumn{K.CompactString}
     for _ in 1:10
         promoc = K.parse(promocsv; nsample=1, pool=true, chunkbytes=3, parallel=true)[:a]
         @test K.poolrefs(promoc) == K.poolrefs(promoref)
@@ -1349,17 +1349,17 @@ end
     for par in (false, true)
         promoted = K.parse(skipcsv; nsample=1, pool=0.05,
                            chunkbytes=31, parallel=par)[:a]
-        @test promoted isa K.KStrVector
+        @test promoted isa K.CompactStringVector
         @test K.materialize(promoted) == skipvalues
         maskedpromoted = K.parse(skipcsv; nsample=1, rowmask=skipmask, pool=0.05,
                                  chunkbytes=31, parallel=par)[:a]
-        @test maskedpromoted isa K.KStrVector
+        @test maskedpromoted isa K.CompactStringVector
         @test K.materialize(maskedpromoted) == skipvalues[skipmask]
     end
     # Abandoning after an extra-backed level must leave flat stitching untouched.
     abandoned = K.parse(escapedcsv; types=String, pool=(1.0, 1),
                         chunkbytes=16, parallel=true)[:a]
-    @test abandoned isa K.KStrVector
+    @test abandoned isa K.CompactStringVector
     @test collect(abandoned) == collect(escapedplain[:a])
     # non-string columns ignore pool
     @test K.parse("a\n1\n2\n"; pool=true)[:a] isa Vector{Int64}
@@ -1375,7 +1375,7 @@ end
     manyplain = collect(K.parse(manycsv; types=String, pool=false)[:a])
     for cap in (1, 5, 39), cb in (32, 256, 1 << 20), par in (false, true)
         c = K.parse(manycsv; types=String, pool=(1.0, cap), chunkbytes=cb, parallel=par)[:a]
-        @test c isa K.KStrVector          # 40 levels always exceed the cap
+        @test c isa K.CompactStringVector          # 40 levels always exceed the cap
         @test collect(c) == manyplain
     end
     c = K.parse(manycsv; types=String, pool=(1.0, 40), chunkbytes=64, parallel=true)[:a]
@@ -1385,7 +1385,7 @@ end
     # of one long escaped value stores its bytes ONCE per chunk at most
     dupcsv = "a\n" * join((quote_csv(longescaped) for _ in 1:200), "\n") * "\n"
     dup = K.parse(dupcsv; types=String, pool=true, chunkbytes=1 << 20, parallel=false)[:a]
-    @test dup isa K.PooledColumn{K.KStr}
+    @test dup isa K.PooledColumn{K.CompactString}
     @test length(K.poollevels(dup)) == 1
     @test K.poollevels(dup).extra == Vector{UInt8}(codeunits(longescaped))
     # The inline scan stays exact at its 16-level boundary. This sequence mixes
@@ -1397,7 +1397,7 @@ end
                  "a long view-backed level", "\"a\"\"b\"", "v17", "v17", "\"\""]
     scantable = K.parse("a\n" * join(scancells, "\n") * "\n";
                         types=String, pool=true, chunkbytes=1 << 20, parallel=false)[:a]
-    @test scantable isa K.PooledColumn{K.KStr}
+    @test scantable isa K.PooledColumn{K.CompactString}
     @test String.(K.poollevels(scantable)) == [scanlevels; "v17"]
     @test K.poolrefs(scantable) == UInt32[collect(1:16); 2; 17; 17; 1]
 
@@ -1410,17 +1410,17 @@ end
     grown = K.parse("a\n" * join(growcells, '\n') * "\n";
                     types=String, pool=(1.0, 500), chunkbytes=1 << 20,
                     parallel=false)[:a]
-    @test grown isa K.PooledColumn{K.KStr}
+    @test grown isa K.PooledColumn{K.CompactString}
     @test length(K.poollevels(grown)) == 401
     @test String(K.poollevels(grown)[17]) == ""
     @test K.poolrefs(grown)[end] == 17
 end
 
-@testset "KStr: inline-else-view strings" begin
+@testset "CompactString: inline-else-view strings" begin
     # inline/view boundary: 12 bytes inline, 13 views the buffer
     t = K.parse("a\n" * "x"^12 * "\n" * "y"^13 * "\n")
     col = t[:a]
-    @test col isa K.KStrVector{K.KStr}
+    @test col isa K.CompactStringVector{K.CompactString}
     @test col[1] == "x"^12 && col[2] == "y"^13
     @test ncodeunits(col[1]) == 12 && ncodeunits(col[2]) == 13
     @test String(col[1]) == "x"^12 && String(col[2]) == "y"^13
@@ -1437,7 +1437,7 @@ end
     t2 = K.parse("a\n\"in\"\"line\"\n\"a long escaped \"\"string\"\" beyond inline\"\n")
     @test collect(t2[:a]) == ["in\"line", "a long escaped \"string\" beyond inline"]
     @test !isempty(t2[:a].extra)                      # long unescaped value stored out-of-line
-    @test K.kstroff(t2[:a].payloads[2]) < 0           # negative offset ⇒ extra buffer
+    @test K.csoff(t2[:a].payloads[2]) < 0           # negative offset ⇒ extra buffer
     # quoted empty vs missing, unicode, Symbol
     t3 = K.parse("a\n\"\"\n\nαβγδεζηθικλμ\n"; ignoreemptyrows=false)
     @test isequal(collect(t3[:a]), ["", missing, "αβγδεζηθικλμ"])
@@ -1470,7 +1470,7 @@ end
     end
     for bytes in invalidcases
         s = String(copy(bytes))
-        v = kstrfrombytes(copy(bytes))
+        v = csfrombytes(copy(bytes))
         @test collect(eachindex(v)) == collect(eachindex(s))
         @test lastindex(v) == lastindex(s)
         for i in 0:(length(bytes) + 1)
@@ -1487,7 +1487,7 @@ end
     end
     # access is allocation-free for inline AND view strings
     big = K.parse("a\n" * join(("value$(i)_" * "p"^(i % 20) for i in 1:1000), "\n") * "\n")
-    colv = big[:a]::K.KStrVector{K.KStr}
+    colv = big[:a]::K.CompactStringVector{K.CompactString}
     sumncodeunits(colv)  # compile
     @test @allocated(sumncodeunits(colv)) == 0
     # materialize detaches to plain Strings
@@ -1594,7 +1594,7 @@ end
     end
     @test K.names(seq) == [:i, :mix, :txt, :strict]
     @test seq.nrows == 6
-    @test eltype(seq[:mix]) == Union{K.KStr, Missing}
+    @test eltype(seq[:mix]) == Union{K.CompactString, Missing}
     @test seq.droppedproblems == 1
 
     malformed = "a\n\"unclosed"

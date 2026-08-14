@@ -22,7 +22,7 @@
 #     (CSV.jl replaces the "" default, turning empties into present "" values)
 #   • function-typed `select`/`drop`/`types` are retired (Tables.Scan is the
 #     expression channel); list/Dict forms keep working
-#   • `stringtype` defaults to the kernel string (KStr / CompactString-to-be);
+#   • `stringtype` defaults to the kernel string (CompactString);
 #     `stringtype=String` materializes; InlineStrings become an extension
 #   • Bool columns are strictly `true`/`false` unless truestrings/falsestrings
 #   • integer spellings that fit Int128 stay exact, including initially-wide
@@ -269,7 +269,7 @@ function sniff(source; samplebytes::Int=1 << 16, missingstring=nothing,
     headerlikely = tnoheader.nrows > theader.nrows &&
         any(zip(K.columns(theader), K.columns(tnoheader))) do (ch, cnh)
             Base.nonmissingtype(eltype(ch)) !== String && eltype(ch) !== Missing &&
-                Base.nonmissingtype(eltype(cnh)) in (String, K.KStr)
+                Base.nonmissingtype(eltype(cnh)) in (String, K.CompactString)
         end
     t = headerlikely ? theader : tnoheader
     return Spec(bestdelim, get(dialectkw, :quoted, true), headerlikely,
@@ -544,7 +544,7 @@ end
 function File(source;
               types=nothing, select=nothing, drop=nothing,
               pool=DEFAULT_POOL,
-              stringtype::Type=K.KStr,
+              stringtype::Type=K.CompactString,
               strict::Bool=false, on_error::Symbol=strict ? :error : :collect,
               maxwarnings::Union{Nothing, Int}=nothing,
               maxproblems::Int=something(maxwarnings, 10_000),
@@ -554,8 +554,8 @@ function File(source;
     ntasks === nothing || ntasks >= 1 ||
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
     maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
-    stringtype in (K.KStr, String) ||
-        throw(ArgumentError("stringtype must be CSVKernel.KStr or String (got $stringtype)"))
+    stringtype in (K.CompactString, String) ||
+        throw(ArgumentError("stringtype must be CSVKernel.CompactString or String (got $stringtype)"))
     on_error in (:collect, :error) ||
         throw(ArgumentError("on_error must be :collect or :error"))
     capturecap = max(maxproblems, 1)
@@ -611,7 +611,7 @@ end
 # this replaces ran the generic AbstractString path and was the measured
 # 55–110 MiB/s cliff on string-heavy shapes.
 function _materializestrings(t::K.ParsedTable)
-    cols = AbstractVector[col isa K.KStrVector ? K.materialize(col) : col
+    cols = AbstractVector[col isa K.CompactStringVector ? K.materialize(col) : col
                           for col in t.columns]
     return K.ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
 end

@@ -4,7 +4,7 @@
 # performance is broadly applicable rather than tuned to one shape. Caveats on
 # comparability, stated up front:
 #   * CSV.File materializes columns eagerly (incl. InlineString/pooled string
-#     columns); the kernel returns inline-or-view KStr columns. The "kernel+str"
+#     columns); the kernel returns inline-or-view CompactString columns. The "kernel+str"
 #     column therefore ALSO materializes every string column to Vector{String} —
 #     that is the fair "owned data" comparison. Non-string columns are directly
 #     comparable (both engines hand back materialized values).
@@ -141,7 +141,7 @@ fmttime(t) = t >= 1 ? string(round(t, digits=2), " s ") :
              string(round(t * 1e6, digits=0), " µs")
 
 materializestrings(t::K.ParsedTable) =
-    foreach(c -> c isa K.KStrVector && K.materialize(c), K.columns(t))
+    foreach(c -> c isa K.CompactStringVector && K.materialize(c), K.columns(t))
 
 function runcell(shape::Symbol, mb::Float64)
     buf = makedata(shape, round(Int, mb * 2^20))
