@@ -36,7 +36,7 @@ isdefined(Main, :KernelExamples) || include(joinpath(@__DIR__, "examples.jl"))
 module CSVApi
 
 using ..CSVKernel, ..KernelExamples
-using Tables, Dates, Unicode
+using Tables, Dates, Unicode, Mmap
 const K = CSVKernel
 const E = KernelExamples
 
@@ -93,12 +93,28 @@ end
 # codeunits for literal data). Everything becomes one in-memory byte buffer —
 # the prove-out's L0; mmap/gzip/multi-file live behind this seam as extensions.
 
-resolvesource(buf::Vector{UInt8}) = buf
-resolvesource(io::IO) = Base.read(io)
-resolvesource(cmd::Base.AbstractCmd) = Base.read(cmd)
-resolvesource(s::AbstractString) = isfile(s) ? Base.read(s) :
-    throw(ArgumentError("no file at $(repr(String(s))) — a String source is a " *
-                        "file path; wrap literal data in IOBuffer"))
+# Files at or above the threshold memory-map instead of copying: the kernel
+# never writes to `buf`, columns retain a reference to the mapping (unmapped
+# when the table is collected), and page faults amortize over the parallel
+# chunk sweep. Small files still read() — one small copy beats fault setup.
+# `buffer_in_memory=true` forces the copy (CSV.jl parity; e.g. when the file
+# may be replaced while the table is alive).
+const MMAP_THRESHOLD = 1 << 19
+
+resolvesource(buf::Vector{UInt8}; buffer_in_memory::Bool=false) = buf
+resolvesource(io::IO; buffer_in_memory::Bool=false) = Base.read(io)
+resolvesource(cmd::Base.AbstractCmd; buffer_in_memory::Bool=false) = Base.read(cmd)
+function resolvesource(s::AbstractString; buffer_in_memory::Bool=false)
+    isfile(s) || throw(ArgumentError("no file at $(repr(String(s))) — a String " *
+                                     "source is a file path; wrap literal data in IOBuffer"))
+    sz = filesize(s)
+    (buffer_in_memory || sz < MMAP_THRESHOLD) && return Base.read(s)
+    m = Mmap.mmap(s, Vector{UInt8}, sz)
+    # async readahead: faulting overlaps the parallel parse (measured 22% on a
+    # warm 200 MiB file; larger when cold). madvise is a Unix API.
+    @static Sys.isunix() && Mmap.madvise!(m, Mmap.MADV_WILLNEED)
+    return m
+end
 
 _datastart(buf) = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1
 
@@ -216,14 +232,15 @@ row is likely (row 1 all text while later rows type differently), and the
 resulting names/types. `kw` may pin dialect, value, and index pieces
 (`quotechar`, `comment`, `decimal`, `scanner`, ...) that sniffing should use.
 """
-function sniff(source; samplebytes::Int=1 << 16, missingstring=nothing, kw...)
+function sniff(source; samplebytes::Int=1 << 16, missingstring=nothing,
+               buffer_in_memory::Bool=false, kw...)
     allowed = (_DIALECTKW..., _VALUEKW..., _INDEXKW..., _DRIVERKW...)
     _checkkwargs("sniff", kw, allowed)
     dialectkw = _pickkwargs(kw, _DIALECTKW)
     valuekw = _pickkwargs(kw, _VALUEKW)
     indexkw = _pickkwargs(kw, _INDEXKW)
     driverkw = _pickkwargs(kw, _DRIVERKW)
-    buf = resolvesource(source)
+    buf = resolvesource(source; buffer_in_memory)
     sample = _sample(buf, samplebytes; dialectkw...)
     bestdelim = _detectdelim(sample, dialectkw, indexkw)
     sentinels = _sentinels(missingstring)
@@ -361,13 +378,14 @@ function _prepare(source;
                   samplebytes::Int=1 << 16,
                   chunkbytes::Union{Nothing, Int}=nothing,
                   parallel::Bool=Threads.nthreads() > 1,
+                  buffer_in_memory::Bool=false,
                   kw...)
     footerskip >= 0 || throw(ArgumentError("footerskip must be ≥ 0 (got $footerskip)"))
     limit === nothing || limit >= 0 || throw(ArgumentError("limit must be ≥ 0 (got $limit)"))
     samplebytes >= 1 || throw(ArgumentError("samplebytes must be ≥ 1 (got $samplebytes)"))
     allowed = (_DIALECTKW..., _VALUEKW..., _INDEXKW..., _DRIVERKW...)
     _checkkwargs("File/Rows/Chunks", kw, allowed)
-    buf = resolvesource(source)
+    buf = resolvesource(source; buffer_in_memory)
     dialectonly = _pickkwargs(kw, _DIALECTKW)
     indexonly = _pickkwargs(kw, _INDEXKW)
     if delim === nothing
@@ -454,7 +472,8 @@ end
 
 # kwargs _prepare consumes itself (not forwarded to the kernel driver)
 const _PREPKW = (:header, :normalizenames, :skipto, :footerskip, :missingstring,
-                 :delim, :limit, :samplebytes, :chunkbytes, :parallel)
+                 :delim, :limit, :samplebytes, :chunkbytes, :parallel,
+                 :buffer_in_memory)
 
 # select/drop: list forms only (function forms retired — Tables.Scan is the
 # expression channel). Returns a kernel `select` Int vector or nothing.
@@ -564,17 +583,13 @@ function _mergeproblems(t::K.ParsedTable, headerlog::Union{Nothing, K.ProblemLog
     return table, log.first
 end
 
+# Bulk materialization through K.materialize — one shared scratch, word-store
+# inline reconstruction, unsafe_string per cell. The per-cell String() broadcast
+# this replaces ran the generic AbstractString path and was the measured
+# 55–110 MiB/s cliff on string-heavy shapes.
 function _materializestrings(t::K.ParsedTable)
-    cols = AbstractVector[
-        if !(eltype(col) <: Union{K.KStr, Missing}) || eltype(col) === Missing ||
-           col isa K.PooledColumn
-            col
-        elseif Missing <: eltype(col)
-            Union{String, Missing}[ismissing(x) ? missing : String(x) for x in col]
-        else
-            String[String(x) for x in col]
-        end
-        for col in t.columns]
+    cols = AbstractVector[col isa K.KStrVector ? K.materialize(col) : col
+                          for col in t.columns]
     return K.ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
 end
 
@@ -743,7 +758,7 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...)
     _checkkwargs("Chunks", kw, allowed)
     if !haskey(kw, :chunkbytes)
-        buf = resolvesource(source)
+        buf = resolvesource(source; buffer_in_memory=get(kw, :buffer_in_memory, false))
         kw = (; kw..., chunkbytes=clamp(cld(length(buf), nt), 1 << 10, 1 << 22))
         source = buf
     end

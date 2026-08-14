@@ -329,6 +329,19 @@ end
     @test collect(A.File(`cat $path`).a) == [1]
     @test_throws ArgumentError A.File("definitely-not-a-file.csv")
     rm(path)
+    # a file across the mmap threshold parses identically mapped or buffered,
+    # and the mapping stays alive through the column views
+    bigpath, bigio = mktemp()
+    write(bigio, "s,n\n" * join(("word$(i % 977),$(i)" for i in 1:60_000), "\n") * "\n")
+    close(bigio)
+    @test filesize(bigpath) >= A.MMAP_THRESHOLD
+    fm = A.File(bigpath)
+    fb = A.File(bigpath; buffer_in_memory=true)
+    @test collect(String, Tables.getcolumn(fm, :s)) == collect(String, Tables.getcolumn(fb, :s))
+    @test collect(Tables.getcolumn(fm, :n)) == collect(Tables.getcolumn(fb, :n))
+    GC.gc()
+    @test String(Tables.getcolumn(fm, :s)[1]) == "word1"    # views valid post-GC
+    rm(bigpath)
 end
 
 @testset "Rows agrees with CSV.Rows" begin
