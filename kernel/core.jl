@@ -1758,6 +1758,7 @@ PoolSegment(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8, maxlevels::Int,
 struct PoolCtx
     maxlevels::Int
     aborted::Vector{Threads.Atomic{Bool}}   # one per column
+    skip::Vector{Bool}   # sample proved the policy bound must fail: never attempt
 end
 
 _levelcell(ps::PoolSegment, p::KStrPayload) =
@@ -2417,6 +2418,63 @@ end
     return
 end
 
+# Content fingerprint of a sampled cell (FNV-1a over the raw span, capped).
+# Only ever compared against fingerprints from the same column's sample: a
+# collision manufactures a repeat, which merely lets pooling be attempted —
+# the parse-time bound still decides for real.
+@inline function _cellhash(buf::Vector{UInt8}, pos::Int, len::Int)
+    h = 0xcbf29ce484222325 ⊻ UInt64(len)
+    @inbounds for i in pos:(pos + min(len, 64) - 1)
+        h = (h ⊻ buf[i]) * 0x00000100000001b3
+    end
+    return h
+end
+
+@inline function _splitmix64(x::UInt64)
+    x += 0x9e3779b97f4a7c15
+    x = (x ⊻ (x >> 30)) * 0xbf58476d1ce4e5b9
+    x = (x ⊻ (x >> 27)) * 0x94d049bb133111eb
+    return x ⊻ (x >> 31)
+end
+
+# Cell fingerprints for the pooling pre-skip, sampled at deterministically
+# JITTERED positions: one draw per equal-width row bucket, offset by splitmix.
+# Equal-stride sampling (the type sampler) would visit all-distinct residues
+# of a periodic column whose period is coprime to the stride — jitter restores
+# the birthday bound the repeat test relies on. `qrows` restricts the draw to
+# qualifying rows (the masked driver's output-rows-only contract).
+function samplerepeathashes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncols::Int,
+                            selected::Union{Nothing, Vector{Bool}},
+                            qrows::Union{Nothing, Vector{Int}}=nothing,
+                            rowbases0=nothing; nsample::Int=128)
+    total = qrows === nothing ? sum(nrows, chunks; init=0) : length(qrows)
+    hashes = [UInt64[] for _ in 1:ncols]
+    total == 0 && return hashes
+    count = min(total, nsample)
+    x = UInt64(total)
+    for k in 1:count
+        lo = 1 + Int(widemul(k - 1, total) ÷ count)
+        hi = Int(widemul(k, total) ÷ count)
+        x = _splitmix64(x)
+        r = lo + Int(x % UInt64(max(hi - lo + 1, 1)))
+        if qrows === nothing
+            ci, lr = locate(chunks, r)
+        else
+            gr = qrows[r]
+            ki = searchsortedlast(rowbases0, gr - 1)
+            ci = chunks[ki]
+            lr = ci.firstdatarow + (gr - rowbases0[ki]) - 1
+        end
+        for j in 1:ncols
+            selected !== nothing && !selected[j] && continue
+            sp = fieldspan(ci, lr, j)
+            (sp === nothing || sp[2] == 0) && continue
+            push!(hashes[j], _cellhash(buf, sp[1], sp[2]))
+        end
+    end
+    return hashes
+end
+
 # Stratified sampling restricted to a set of qualifying global rows (the
 # filter's two-phase parse: inference must see only rows that will be output).
 function sampletypesrows(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, rowbases0,
@@ -2724,7 +2782,8 @@ function parse(buf::Vector{UInt8};
     # where ndata is exact.
     poolctx = poolspec === nothing ? nothing :
               PoolCtx(min(poolspec[2], Int(typemax(UInt32))),
-                      [Threads.Atomic{Bool}(false) for _ in 1:ncols])
+                      [Threads.Atomic{Bool}(false) for _ in 1:ncols],
+                      fill(false, ncols))
     segments = Vector{Vector{Any}}(undef, nch)
     segtypes = Vector{Vector{Type}}(undef, nch)
     pendingproblems = PendingProblemLog(maxproblems)
@@ -2736,6 +2795,27 @@ function parse(buf::Vector{UInt8};
     end
     rowbases = cumsum([0; chunkrows[1:max(nch - 1, 0)]])
     ndata = rowmask === nothing ? sum(chunkrows; init=0) : count(rowmask)
+    # pooling pre-skip: a column whose ≥32-cell jittered sample repeats NOTHING
+    # has (by the birthday bound) far more levels than any binding policy bound
+    # admits — a ≤cap-level column repeats within 128 draws with probability
+    # ≈ 1 - exp(-m²/2K), > 1 - 1e-7 at cap 500. Skipped columns take the plain
+    # direct String path: no segments, no interning, no degrade, no stitch.
+    # Errors in either direction stay safe: a manufactured repeat just attempts
+    # pooling (the parse-time bound still decides), and a missed repeat is the
+    # ~1e-7 tail. Only applies when the bound can fail at all (binding).
+    if poolctx !== nothing
+        ratiolevels = poolspec[1] == 1.0 ? ndata : floor(Int, poolspec[1] * ndata)
+        if min(ratiolevels, poolspec[2]) < ndata
+            srh = rowmask === nothing ?
+                  samplerepeathashes(buf, chunks, ncols, selected) :
+                  samplerepeathashes(buf, chunks, ncols, selected, findall(rowmask), rowbases0)
+            for j in 1:ncols
+                selected === nothing || selected[j] || continue
+                h = srh[j]
+                length(h) >= 32 && allunique(h) && (poolctx.skip[j] = true)
+            end
+        end
+    end
     cols = Vector{AbstractVector}(undef, ncols)
     stitchjs = selected === nothing ? collect(1:ncols) : findall(selected)
     mb = k -> rowmask === nothing ? 0 : rowbases0[k]
@@ -2757,7 +2837,8 @@ function parse(buf::Vector{UInt8};
                 error("internal error: chunk $(k) ended inside a quoted field despite parity pre-scan")
         end
         # pooled columns merge chunk staging exactly as before
-        pooljs = [j for j in stitchjs if final[j] === String && poolctx !== nothing]
+        pooljs = [j for j in stitchjs
+                  if final[j] === String && poolctx !== nothing && !poolctx.skip[j]]
         pstitch = j -> (cols[j] = stitchcolumn(String, segments, segtypes, j, chunkrows,
                                                rowbases, ndata, buf, opts.e, d.cq, poolspec,
                                                nothing, rowbases0))
@@ -2815,7 +2896,9 @@ function parse(buf::Vector{UInt8};
             end
         end
         stitchcol = j -> (cols[j] = stitchcolumn(final[j], segments, segtypes, j, chunkrows,
-                                                 rowbases, ndata, buf, opts.e, d.cq, poolspec,
+                                                 rowbases, ndata, buf, opts.e, d.cq,
+                                                 poolctx !== nothing && poolctx.skip[j] ?
+                                                     nothing : poolspec,
                                                  rowmask, rowbases0))
         # single-chunk stitches are zero-copy finalizes — never worth a task spawn
         if parallel && length(stitchjs) > 1 && ndata > 0 && length(chunks) > 1
@@ -2900,7 +2983,7 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ncols::Int,
         attempts = 0
         while true
             (attempts += 1) > 8 && error("internal error: promotion did not converge")
-            stg = T === String && poolctx !== nothing ?
+            stg = T === String && poolctx !== nothing && !poolctx.skip[j] ?
                   PoolSegment(n, buf, opts.e, d.cq, poolctx.maxlevels, poolctx.aborted[j]) :
                   allocatecolumn(T, n, buf, opts.e, d.cq)
             conflict = T === Missing ?
@@ -2939,7 +3022,7 @@ function restale!(chunks, final, segments, segtypes,
                   reportlimit::Int=typemax(Int),
                   poolctx::Union{Nothing, PoolCtx}=nothing)
     ci = chunks[k]
-    stg = final[j] === String && poolctx !== nothing ?
+    stg = final[j] === String && poolctx !== nothing && !poolctx.skip[j] ?
           PoolSegment(nrows(ci), buf, opts.e, d.cq, poolctx.maxlevels, poolctx.aborted[j]) :
           allocatecolumn(final[j], nrows(ci), buf, opts.e, d.cq)
     log = ProblemLog(pendingproblems.limit)
@@ -2972,9 +3055,10 @@ end
 # slices of promoted finals — including fill-only for chunks whose Missing
 # parse upgrades for free.
 function _allocdirect(::Type{T}, ndata::Int, buf::Vector{UInt8}, opts::ValueOpts,
-                      d::Dialect, poolctx) where {T}
+                      d::Dialect, poolctx, j::Int) where {T}
     T === Missing && return nothing
-    T === String && poolctx !== nothing && return nothing   # pooled: chunk staging
+    T === String && poolctx !== nothing && !poolctx.skip[j] &&
+        return nothing   # pooled: chunk staging
     T === String && return StringColumn(Vector{KStrPayload}(undef, ndata), buf,
                                         UInt8[], ReentrantLock(), opts.e, d.cq)
     return TypedColumn{T}(Vector{T}(undef, ndata), Vector{Bool}(undef, ndata))
@@ -3008,7 +3092,7 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
     finals = Vector{Any}(nothing, ncols)
     allocjs = [j for j in 1:ncols if selected === nothing || selected[j]]
     for j in allocjs
-        finals[j] = _allocdirect(promo[j], ndata, buf, opts, d, poolctx)
+        finals[j] = _allocdirect(promo[j], ndata, buf, opts, d, poolctx, j)
     end
     if parallel && nch > 1
         @sync for k in 1:nch
@@ -3031,7 +3115,7 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
     final = Type[promo[j] for j in 1:ncols]
     for j in allocjs
         final[j] === String || continue
-        poolctx !== nothing && continue
+        poolctx !== nothing && !poolctx.skip[j] && continue
         scol = finals[j]
         scol isa StringColumn || continue
         payloads = scol.payloads
@@ -3083,7 +3167,8 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
         if T === Missing
             # the free Missing upgrade still needs the promoted final's UNDEF
             # slice filled with the missing pattern
-            (final[j] === Missing || (final[j] === String && poolctx !== nothing)) && continue
+            (final[j] === Missing ||
+             (final[j] === String && poolctx !== nothing && !poolctx.skip[j])) && continue
         end
         push!(stale, (k, j))
     end
@@ -3093,7 +3178,7 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
                 lo = rowbases[k] + 1
                 hi = rowbases[k] + min(nrows(chunks[k]), rl(k))
                 hi >= lo && _fillslice!(finals[j], lo, hi)
-            elseif final[j] === String && poolctx !== nothing
+            elseif final[j] === String && poolctx !== nothing && !poolctx.skip[j]
                 restale!(chunks, final, segments, segtypes, pendingproblems, buf,
                          opts, d, userprovided, k, j, nothing, 0, rl(k), poolctx)
             else
@@ -3120,7 +3205,8 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
                   T === String ? finalizecolumn(String, finals[j]::StringColumn, ndata) :
                   finalizecolumn(T, finals[j]::TypedColumn{T}, ndata)
     end
-    finjs = [j for j in allocjs if !(final[j] === String && poolctx !== nothing)]
+    finjs = [j for j in allocjs
+             if !(final[j] === String && poolctx !== nothing && !poolctx.skip[j])]
     if parallel && length(finjs) > 1 && ndata > (1 << 18)
         @sync for j in finjs
             errormonitor(Threads.@spawn finalizeone(j))
@@ -3173,7 +3259,7 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
                 segs[j] = nothing
                 conflict = parsecolchunk_missing(buf, ci, j, 0, opts, userprovided[j],
                                                  log, nothing, 0, reportlimit)
-            elseif T === String && poolctx !== nothing
+            elseif T === String && poolctx !== nothing && !poolctx.skip[j]
                 ps = PoolSegment(n, buf, opts.e, d.cq, poolctx.maxlevels, poolctx.aborted[j])
                 segs[j] = ps
                 conflict = parsecolchunk!(ps, buf, ci, j, 0, opts, userprovided[j],
@@ -3208,7 +3294,7 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
                 joined = promote_kernel(promo[j], promoT)
                 if joined !== promo[j]
                     promo[j] = joined
-                    finals[j] = _allocdirect(joined, ndata, buf, opts, d, poolctx)
+                    finals[j] = _allocdirect(joined, ndata, buf, opts, d, poolctx, j)
                 end
                 (promo[j], finals[j])
             end

@@ -213,11 +213,20 @@ end
 function _detectdelim(sample::Vector{UInt8}, dialectkw::NamedTuple, indexkw::NamedTuple)
     # Validate user syntax once. Candidate-only quote collisions are skipped in
     # `_scoredelim`; all other invalid options must reach the caller.
-    K.Dialect(; delim=_probedelim(dialectkw), dialectkw...)
+    d0 = K.Dialect(; delim=_probedelim(dialectkw), dialectkw...)
     datastart = _datastart(sample)
+    # scoring reads at most 11 rows per candidate, but indexes whatever it is
+    # given — trim to the first 12 rows once (row boundaries are quote-aware
+    # and delimiter-independent) so candidates don't each index the full sample
+    stop, rows = datastart, 0
+    while stop <= length(sample) && rows < 12
+        stop = K.nextrowstart(sample, stop, length(sample), d0, false)
+        rows += 1
+    end
+    scoresample = stop > length(sample) ? sample : sample[1:stop - 1]
     best, bestdelim = (false, 0.0, 1), first(DELIM_CANDIDATES)
     for c in DELIM_CANDIDATES
-        consistency, fields, firstfields = _scoredelim(sample, c, datastart,
+        consistency, fields, firstfields = _scoredelim(scoresample, c, datastart,
                                                        dialectkw, indexkw)
         represented = firstfields > 1
         score = represented ? (true, consistency, fields) : (false, 0.0, 1)
@@ -572,6 +581,11 @@ function File(source;
 end
 
 function _mergeproblems(t::K.ParsedTable, headerlog::Union{Nothing, K.ProblemLog}, cap::Int)
+    # clean parse: nothing to merge, sort, or cap — return the table as-is
+    if isempty(t.problems) && t.droppedproblems == 0 &&
+       (headerlog === nothing || (isempty(headerlog.items) && headerlog.dropped == 0))
+        return t, nothing
+    end
     log = K.ProblemLog(cap)
     if headerlog !== nothing
         for pr in headerlog.items
