@@ -2821,10 +2821,23 @@ function _allocdirect(::Type{T}, ndata::Int, buf::Vector{UInt8}, opts::ValueOpts
 end
 
 _fillslice!(::Nothing, lo::Int, hi::Int) = nothing
-_fillslice!(col::StringColumn, lo::Int, hi::Int) =
-    (fill!(view(col.payloads, lo:hi), PAYLOAD_MISSING); nothing)
-_fillslice!(col::TypedColumn, lo::Int, hi::Int) =
-    (fill!(view(col.present, lo:hi), false); nothing)
+# indexed @simd loops, not fill!(view(...)): the SubArray fill does not lower
+# to a memset-class loop, and the missing-dense shapes (most rows per byte,
+# most fill work per input byte) measurably paid for it
+function _fillslice!(col::StringColumn, lo::Int, hi::Int)
+    payloads = col.payloads
+    @inbounds @simd for r in lo:hi
+        payloads[r] = PAYLOAD_MISSING
+    end
+    return nothing
+end
+function _fillslice!(col::TypedColumn, lo::Int, hi::Int)
+    present = col.present
+    @inbounds @simd for r in lo:hi
+        present[r] = false
+    end
+    return nothing
+end
 
 function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOpts,
                      ncols::Int, userprovided, promo, promolock,
