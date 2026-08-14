@@ -238,6 +238,33 @@ end
     @test Tables.getcolumn(Tables.columns(f), :s) isa Vector{String}
     @test eltype(Tables.getcolumn(Tables.columns(f), :m)) == Union{String, Missing}
     @test isequal(collect(f.m), [missing, "z"])
+
+    # The bulk path must reconstruct every inline length byte for byte. It must
+    # also preserve embedded NULs, malformed UTF-8, and view-size boundaries.
+    payloads = [fill(UInt8('a') + UInt8(n), n) for n in 0:12]
+    append!(payloads, [fill(UInt8('p'), n) for n in (15, 16, 17)])
+    push!(payloads, UInt8[0x61, 0x00, 0x62])
+    push!(payloads, UInt8[0x61, 0xff, 0x62])
+    input = UInt8[]
+    append!(input, codeunits("s,m\n"))
+    for bytes in payloads
+        isempty(bytes) ? append!(input, codeunits("\"\"")) : append!(input, bytes)
+        append!(input, codeunits(",ok\n"))
+    end
+    escaped = "a long \"escaped\" value"
+    append!(input, codeunits("\"a long \"\"escaped\"\" value\",\n"))
+    f = A.File(IOBuffer(input); types=String, pool=false, stringtype=String)
+    expected = String[String(copy(bytes)) for bytes in payloads]
+    push!(expected, escaped)
+    @test [collect(codeunits(x)) for x in f.s] == [collect(codeunits(x)) for x in expected]
+    @test isequal(collect(f.m), [fill("ok", length(payloads)); missing])
+
+    # Differential coverage must use the same String materialization route with
+    # escaped long cells and missing values in one parse.
+    differential = "s,m\n\"a long \"\"escaped\"\" value\",NA\nplain,\n"
+    against(differential;
+            api=(; stringtype=String, pool=false, missingstring="NA"),
+            csv=(; stringtype=String, pool=false, missingstring=["NA", ""]))
 end
 
 @testset "structural edge cases agree" begin
@@ -329,18 +356,63 @@ end
     @test collect(A.File(`cat $path`).a) == [1]
     @test_throws ArgumentError A.File("definitely-not-a-file.csv")
     rm(path)
-    # a file across the mmap threshold parses identically mapped or buffered,
-    # and the mapping stays alive through the column views
+    # Zero-byte files use the read path. Directories and FIFOs fail before a
+    # read or mmap. A file exactly at the threshold uses the mmap branch.
+    zeropath, zeroio = mktemp()
+    close(zeroio)
+    @test isempty(A.resolvesource(zeropath))
+    rm(zeropath)
+    dirpath = mktempdir()
+    @test_throws ArgumentError A.resolvesource(dirpath)
+    rm(dirpath)
+    @static if Sys.isunix()
+        fifodir = mktempdir()
+        fifopath = joinpath(fifodir, "source.fifo")
+        run(`mkfifo $fifopath`)
+        @test_throws ArgumentError A.resolvesource(fifopath)
+        rm(fifodir; recursive=true)
+    end
+    edgepath, edgeio = mktemp()
+    write(edgeio, fill(UInt8('x'), A.MMAP_THRESHOLD))
+    close(edgeio)
+    @test length(A.resolvesource(edgepath)) == A.MMAP_THRESHOLD
+    rm(edgepath)
+
+    # A file across the mmap threshold parses identically when mapped or
+    # buffered. Every lazy public surface must keep the mapping alive.
     bigpath, bigio = mktemp()
-    write(bigio, "s,n\n" * join(("word$(i % 977),$(i)" for i in 1:60_000), "\n") * "\n")
+    write(bigio, "s,n\n" *
+                 join(("word$(i % 977)_abcdefghijklmnop,$(i)" for i in 1:60_000), "\n") *
+                 "\n")
     close(bigio)
     @test filesize(bigpath) >= A.MMAP_THRESHOLD
-    fm = A.File(bigpath)
+    mappedcol = let f = A.File(bigpath; pool=false)
+        f.s
+    end
+    pooledcol = let f = A.File(bigpath; pool=true)
+        f.s
+    end
+    mappedrow = first(A.Rows(bigpath))
+    mappedbatch = first(A.Chunks(bigpath; ntasks=2))
     fb = A.File(bigpath; buffer_in_memory=true)
-    @test collect(String, Tables.getcolumn(fm, :s)) == collect(String, Tables.getcolumn(fb, :s))
-    @test collect(Tables.getcolumn(fm, :n)) == collect(Tables.getcolumn(fb, :n))
+    @test first(A.Rows(bigpath; buffer_in_memory=true)).s == mappedrow.s
+    bufferedbatch = first(A.Chunks(bigpath; ntasks=2, buffer_in_memory=true))
+    @test colvalues(bufferedbatch) == colvalues(mappedbatch)
+    sm = A.sniff(bigpath)
+    sb = A.sniff(bigpath; buffer_in_memory=true)
+    @test (sm.delim, sm.header, sm.names, sm.types) ==
+          (sb.delim, sb.header, sb.names, sb.types)
+    @test collect(String, mappedcol) == collect(String, Tables.getcolumn(fb, :s))
+    @test pooledcol isa K.PooledColumn
+    @test collect(Tables.getcolumn(mappedbatch, :n)) == collect(fb.n)[1:mappedbatch.nrows]
+    # This also runs K.materialize while its source is a read-only mapping.
+    fm = A.File(bigpath; pool=false, stringtype=String)
+    @test fm.s == collect(String, mappedcol)
     GC.gc()
-    @test String(Tables.getcolumn(fm, :s)[1]) == "word1"    # views valid post-GC
+    @test String(mappedcol[1]) == "word1_abcdefghijklmnop"
+    @test String(pooledcol[1]) == "word1_abcdefghijklmnop"
+    @test mappedrow.s == "word1_abcdefghijklmnop"
+    @test String(Tables.getcolumn(mappedbatch, :s)[1]) == "word1_abcdefghijklmnop"
     rm(bigpath)
 end
 

@@ -90,8 +90,8 @@ end
 # sources
 # ---------------------------------------------------------------------------
 # CSV.jl semantics: an AbstractString is a FILE PATH (use IOBuffer(str) or
-# codeunits for literal data). Everything becomes one in-memory byte buffer —
-# the prove-out's L0; mmap/gzip/multi-file live behind this seam as extensions.
+# codeunits for literal data). Everything becomes one byte buffer at this seam;
+# large regular files use a read-only mapping while other sources use a copy.
 
 # Files at or above the threshold memory-map instead of copying: the kernel
 # never writes to `buf`, columns retain a reference to the mapping (unmapped
@@ -107,13 +107,18 @@ resolvesource(cmd::Base.AbstractCmd; buffer_in_memory::Bool=false) = Base.read(c
 function resolvesource(s::AbstractString; buffer_in_memory::Bool=false)
     isfile(s) || throw(ArgumentError("no file at $(repr(String(s))) — a String " *
                                      "source is a file path; wrap literal data in IOBuffer"))
-    sz = filesize(s)
-    (buffer_in_memory || sz < MMAP_THRESHOLD) && return Base.read(s)
-    m = Mmap.mmap(s, Vector{UInt8}, sz)
-    # async readahead: faulting overlaps the parallel parse (measured 22% on a
-    # warm 200 MiB file; larger when cold). madvise is a Unix API.
-    @static Sys.isunix() && Mmap.madvise!(m, Mmap.MADV_WILLNEED)
-    return m
+    return open(s, "r") do io
+        isfile(io) || throw(ArgumentError("no regular file at $(repr(String(s)))"))
+        sz = filesize(io)
+        (buffer_in_memory || sz < MMAP_THRESHOLD) && return Base.read(io)
+        # Use the descriptor that supplied `sz`. This prevents a path replacement
+        # between filesize and mmap from mapping a different file at the old size.
+        m = Mmap.mmap(io, Vector{UInt8}, sz; grow=false)
+        # async readahead: faulting overlaps the parallel parse (measured 22% on a
+        # warm 200 MiB file; larger when cold). madvise is a Unix API.
+        @static Sys.isunix() && Mmap.madvise!(m, Mmap.MADV_WILLNEED)
+        return m
+    end
 end
 
 _datastart(buf) = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1
@@ -231,6 +236,7 @@ sample, candidates $(DELIM_CANDIDATES) in CSV.jl's order), whether a header
 row is likely (row 1 all text while later rows type differently), and the
 resulting names/types. `kw` may pin dialect, value, and index pieces
 (`quotechar`, `comment`, `decimal`, `scanner`, ...) that sniffing should use.
+`buffer_in_memory=true` copies a file source instead of mapping it.
 """
 function sniff(source; samplebytes::Int=1 << 16, missingstring=nothing,
                buffer_in_memory::Bool=false, kw...)
@@ -519,7 +525,7 @@ Keywords (CSV.jl names): `header` (row number | Bool | names | rows-to-merge),
 `types` (Type | Vector | Dict), `select`/`drop` (lists), `pool`
 (default `(0.2, 500)` — CSV.jl's), `stringtype` (kernel string | `String`),
 `strict`/`on_error`, `maxwarnings`/`maxproblems`, `ntasks`/`parallel`,
-`nsample`. Diagnostics are data: [`problems`](@ref)`(f)`.
+`nsample`, `buffer_in_memory`. Diagnostics are data: [`problems`](@ref)`(f)`.
 """
 struct File
     name::String
