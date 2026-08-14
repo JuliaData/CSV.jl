@@ -405,8 +405,7 @@ function _prepare(source;
     valuekw = _pickkwargs(kw, _VALUEKW)
     d = K.Dialect(; delim, dialectonly...)
     opts = K.makevalueopts(d; sentinels, valuekw...)
-    cb = chunkbytes === nothing ?
-         clamp(cld(length(buf), 4 * Threads.nthreads()), 1 << 16, 1 << 20) : chunkbytes
+    cb = chunkbytes === nothing ? K._defaultchunkbytes(length(buf)) : chunkbytes
 
     # -- the row window, in RAW rows: header rows, skipto, footerskip ---------
     header isa Integer && header < 0 &&

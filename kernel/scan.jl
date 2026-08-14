@@ -64,8 +64,7 @@ function apply(source, scan::Tables.Scan; header::Union{Bool, AbstractVector}=tr
     phasekw = merge(parsekw, (; maxproblems=phasecap, on_error=:collect))
 
     # -- index once; bind the scan against the extracted header ----------------
-    cb = chunkbytes === nothing ?
-         clamp(cld(length(buf), 4 * Threads.nthreads()), 1 << 16, 1 << 20) : chunkbytes
+    cb = chunkbytes === nothing ? K._defaultchunkbytes(length(buf)) : chunkbytes
     datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1
     d = K.Dialect(; dialectkw...)
     indexkw = NamedTuple(k => v for (k, v) in pairs(parsekw)

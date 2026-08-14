@@ -515,11 +515,12 @@ end
 # L1: the structural index — tape edition.
 #
 # The scanners emit ONE UInt32 per structural event into a flat tape:
-#     (relpos << 2) | kind      kind: 0 = delimiter, 1 = CR, 2 = LF
+#     (relpos << 2) | kind
+#     kind: 0 = delimiter, 1 = CR, 2 = LF, 3 = CRLF at the CR
 # and nothing else — no field structs, no row bookkeeping, no hygiene. Everything
-# row-shaped (CRLF pairing, comment/empty-row dropping, row boundaries) happens in
-# `assemblerows!`, one cheap pass over the compact tape (4 bytes/event ≈ 1/10th of
-# the input bytes) instead of inside the byte loop. This is the Sep/simdcsv tape
+# else that is row-shaped (comment/empty-row dropping and row boundaries) happens
+# in `assemblerows!`, one cheap pass over the compact tape (4 bytes/event ≈ 1/10th
+# of the input bytes) instead of inside the byte loop. This is the Sep/simdcsv tape
 # design: the hot loop's only per-event work is one store and a cursor bump.
 # After assembly, tape kinds become: 0 = delimiter (next field starts
 # `delimskip` bytes later), 1 = row end (+1 byte), 2 = row end (+2 bytes, CRLF).
@@ -600,9 +601,9 @@ end
 
 # --- row assembly (the deferred hygiene pass) --------------------------------
 #
-# Consumes raw events in place: pairs CR+LF into one row end, drops comment and
-# (optionally) empty rows, records each surviving row's start offset, and builds
-# rowfirst. Reads input bytes only at row starts (comment prefix check).
+# Consumes pre-paired raw events in place, drops comment and (optionally) empty
+# rows, records each surviving row's start offset, and builds rowfirst. Reads
+# input bytes only at row starts (comment prefix check).
 function assemblerows!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int)
     d.ignorerepeated && return assemblecollapsed!(ci, buf, d, n)
     tape = ci.tape
@@ -1059,9 +1060,6 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
     end
     return finishscan!(ci, buf, d, n, inq)
 end
-
-indexchunk_swar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect) =
-    indexchunk_fast!(ci, buf, d, Val(:swar))
 
 # --- parallel indexing -------------------------------------------------------
 #
@@ -1617,7 +1615,7 @@ StringColumn(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8) =
 # hash(::KStr) = hash(String(s)) and made pooling 3× the cost of the parse
 # on 400-level columns.
 # Open-addressing table for INLINE level keys: canonical payload bits are the
-# key, a multiplicative mix picks the slot, linear probing resolves. ref 0
+# key, a full-word mix picks the slot, linear probing resolves. ref 0
 # marks an empty slot (the key array is meaningless there, so the all-zero
 # payload — a quoted empty string — needs no reserved value). This is the
 # per-cell interning hot path; Dict{UInt128,…} machinery measured 3-5× slower
@@ -1630,6 +1628,8 @@ mutable struct InlineTable
     mask::UInt64
 end
 InlineTable() = InlineTable(zeros(UInt128, 64), zeros(UInt32, 64), 0, UInt64(63))
+
+@inline _inlinekey(p::KStrPayload) = (UInt128(p.a) << 64) | p.b
 
 @inline function _itmix(k::UInt128)
     # Payload suffix bytes occupy progressively higher bits. Mix both words,
@@ -2037,15 +2037,16 @@ function parsecolchunk!(ps::PoolSegment, buf::Vector{UInt8}, ci::ChunkIndex,
         ref = UInt32(0)
         lp = ps.levelpayloads
         llen = length(lp)
-        if Int(kstrlen(p)) <= KSTR_INLINE && llen <= 16
+        isinline = Int(kstrlen(p)) <= KSTR_INLINE
+        if isinline && llen <= 16
             @inbounds for l in 1:llen
                 if lp[l].a === p.a && lp[l].b === p.b
                     ref = UInt32(l)
                     break
                 end
             end
-        elseif Int(kstrlen(p)) <= KSTR_INLINE
-            ref = itget(ps.itable, (UInt128(p.a) << 64) | p.b)
+        elseif isinline
+            ref = itget(ps.itable, _inlinekey(p))
         else
             ref = get(ps.vtable, ViewKey(_levelcell(ps, p)), UInt32(0))
         end
@@ -2059,8 +2060,8 @@ function parsecolchunk!(ps::PoolSegment, buf::Vector{UInt8}, ci::ChunkIndex,
             end
             push!(ps.levelpayloads, p)
             ref = UInt32(llen + 1)
-            if Int(kstrlen(p)) <= KSTR_INLINE
-                itset!(ps.itable, (UInt128(p.a) << 64) | p.b, ref)
+            if isinline
+                itset!(ps.itable, _inlinekey(p), ref)
             else
                 ps.vtable[ViewKey(_levelcell(ps, p))] = ref
             end
@@ -2459,6 +2460,9 @@ function resolvetypes(types, names::Vector{Symbol}, ncols::Int)
     return seed
 end
 
+@inline _defaultchunkbytes(nbytes::Int, nthreads::Int=Threads.nthreads()) =
+    clamp(cld(nbytes, 4 * nthreads), 1 << 16, 1 << 20)
+
 """
     CSVKernel.parse(buf::Vector{UInt8}; kwargs...) -> ParsedTable
     CSVKernel.parse(str::AbstractString; kwargs...)
@@ -2524,7 +2528,7 @@ function parse(buf::Vector{UInt8};
     # per-column promotion instead, while big files keep the 128-row stratified
     # sample that makes promotion rare.
     if chunkbytes === nothing
-        chunkbytes = clamp(cld(length(buf), 4 * Threads.nthreads()), 1 << 16, 1 << 20)
+        chunkbytes = _defaultchunkbytes(length(buf))
     else
         chunkbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $chunkbytes)"))
     end

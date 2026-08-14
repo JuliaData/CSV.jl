@@ -162,6 +162,12 @@ end
     @test K.checktaperange(maxci) === maxci
     @test UInt32(K.MAX_TAPE_RELPOS) << 2 >> 2 == K.MAX_TAPE_RELPOS
     @test_throws ArgumentError K.checktaperange(K.ChunkIndex(1, K.MAX_TAPE_RELPOS + 1))
+    @test K._defaultchunkbytes(0, 8) == 1 << 16
+    @test K._defaultchunkbytes(20 << 20, 10) == 1 << 19
+    for nthreads in (1, 4, 8)
+        old = clamp(cld(200 << 20, 2 * nthreads), 1 << 16, 1 << 20)
+        @test K._defaultchunkbytes(200 << 20, nthreads) == old == 1 << 20
+    end
     @test idxall("a,b,c\n1,2,3\n") == [["a","b","c"], ["1","2","3"]]
     @test idxall("a,b,c\n1,2,3")   == [["a","b","c"], ["1","2","3"]]  # no trailing newline
     @test idxall("a\n")            == [["a"]]
