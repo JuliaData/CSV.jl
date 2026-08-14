@@ -1123,23 +1123,51 @@ function findcontent(buf::Vector{UInt8}, i::Int, j::Int, oq::UInt8, cq::UInt8, e
     @inbounds if i > j || buf[i] != oq
         return (i, j - i + 1, false, RC_OK)
     end
-    # quoted: walk interior honoring escapes to find the true close
+    # quoted: walk interior honoring escapes to find the true close. For the
+    # RFC dialect (e == cq) the walk word-scans for the quote byte — runs of
+    # ordinary content skip 8 bytes per iteration, which is most of every
+    # quoted cell's bytes (this walk runs on EVERY quoted cell, escaped or
+    # not). Distinct-escape dialects take the byte walk below.
     k = i + 1
     escaped = false
+    if e == cq
+        GC.@preserve buf begin
+            p = pointer(buf)
+            @inbounds while k <= j
+                if k + 7 <= j
+                    mk = _eqmask8(ltoh(unsafe_load(Ptr{UInt64}(p + k - 1))), cq)
+                    if mk == 0
+                        k += 8
+                        continue
+                    end
+                    k += trailing_zeros(mk) >> 3
+                else
+                    while k <= j && buf[k] != cq
+                        k += 1
+                    end
+                    k > j && break
+                end
+                # buf[k] == cq: pair ⇒ escaped content, else the close
+                if k < j && buf[k + 1] == cq
+                    escaped = true
+                    k += 2
+                else
+                    return k == j ? (i + 1, j - i - 1, escaped, RC_OK) :
+                                    (i + 1, j - i - 1, escaped, RC_INVALID)
+                end
+            end
+        end
+        return (i + 1, j - i, escaped, RC_INVALID)   # unterminated
+    end
     @inbounds while k <= j
         b = buf[k]
         if b == e && e != cq
             escaped = true
             k += 2
         elseif b == cq
-            if e == cq && k < j && buf[k + 1] == cq
-                escaped = true
-                k += 2
-            else
-                # close found: valid only if it is the final byte
-                return k == j ? (i + 1, j - i - 1, escaped, RC_OK) :
-                                (i + 1, j - i - 1, escaped, RC_INVALID)
-            end
+            # close found: valid only if it is the final byte
+            return k == j ? (i + 1, j - i - 1, escaped, RC_OK) :
+                            (i + 1, j - i - 1, escaped, RC_INVALID)
         else
             k += 1
         end

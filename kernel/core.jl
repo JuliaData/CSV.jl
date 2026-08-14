@@ -1383,6 +1383,50 @@ end
 
 # Unescape ≤12 result bytes straight into a payload — no allocation; returns
 # `nothing` when the unescaped content exceeds the inline capacity.
+# next `""` pair at or after i (RFC doubling; the span passed findcontent, so
+# quotes only occur doubled) — word-scan for the quote byte, verify adjacency
+@inline function _nextpair(buf::Vector{UInt8}, i::Int, last::Int, cq::UInt8)
+    GC.@preserve buf begin
+        p = pointer(buf)
+        @inbounds while i + 7 <= last
+            mk = _eqmask8_c(ltoh(unsafe_load(Ptr{UInt64}(p + i - 1))), cq)
+            while mk != 0
+                k = i + (trailing_zeros(mk) >> 3)
+                k < last && buf[k + 1] == cq && return k
+                mk &= mk - one(UInt64)   # a lone quote here means k+1 starts the
+            end                          # pair's first byte in the next word
+            i += 8
+        end
+    end
+    @inbounds while i < last
+        buf[i] == cq && buf[i + 1] == cq && return i
+        i += 1
+    end
+    return 0
+end
+
+@inline function _eqmask8_c(w::UInt64, b::UInt8)
+    x = w ⊻ (0x0101010101010101 * b)
+    return (x - 0x0101010101010101) & ~x & 0x8080808080808080
+end
+
+# merge `cnt` bytes starting at buf[i] into the inline registers at output
+# position n (1-based); returns the new n. Word-loads with masking — callers
+# guarantee i+7 readable OR fall back byte-wise near the buffer end.
+@inline function _mergebytes(a::UInt64, b::UInt64, n::Int, buf::Vector{UInt8},
+                             i::Int, cnt::Int)
+    @inbounds for k in 0:(cnt - 1)
+        c = buf[i + k]
+        m = n + k
+        if m <= 4
+            a |= UInt64(c) << (32 + 8 * (m - 1))
+        else
+            b |= UInt64(c) << (8 * (m - 5))
+        end
+    end
+    return (a, b, n + cnt)
+end
+
 @inline function _unescape_inline(buf::Vector{UInt8}, pos::Int, len::Int, e::UInt8, cq::UInt8)
     a = zero(UInt64)
     b = zero(UInt64)
@@ -1411,6 +1455,24 @@ end
 @inline function _unescape_append!(dst::Vector{UInt8}, buf::Vector{UInt8}, pos::Int, len::Int,
                                    e::UInt8, cq::UInt8)
     n0 = length(dst)
+    if e == cq
+        # run-copy: reserve the upper bound once, bulk-copy the bytes between
+        # "" pairs, trim to the actual size — no per-byte push!/branch
+        resize!(dst, n0 + len)
+        w = n0
+        i = pos
+        last = pos + len - 1
+        @inbounds while i <= last
+            k = _nextpair(buf, i, last, cq)
+            run = (k == 0 ? last + 1 : k + 1) - i    # keep one quote of the pair
+            copyto!(dst, w + 1, buf, i, run)
+            w += run
+            k == 0 && break
+            i = k + 2
+        end
+        resize!(dst, w)
+        return w - n0
+    end
     i = pos
     last = pos + len - 1
     @inbounds while i <= last
@@ -1621,13 +1683,18 @@ StringColumn(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8) =
 # per-cell interning hot path; Dict{UInt128,…} machinery measured 3-5× slower
 # and made the pooled columns of the escaped/pooled_high sweep shapes the
 # dominant cost.
+# Empty slots hold key sentinel typemax(UInt128) — impossible as a payload
+# (the length field can never be all-ones) — so probing touches ONLY the key
+# array: one cache line per probe; refs load on hit alone.
+const IT_EMPTY = typemax(UInt128)
+
 mutable struct InlineTable
     slots::Vector{UInt128}
     refs::Vector{UInt32}
     count::Int
     mask::UInt64
 end
-InlineTable() = InlineTable(zeros(UInt128, 64), zeros(UInt32, 64), 0, UInt64(63))
+InlineTable() = InlineTable(fill(IT_EMPTY, 64), Vector{UInt32}(undef, 64), 0, UInt64(63))
 
 @inline _inlinekey(p::KStrPayload) = (UInt128(p.a) << 64) | p.b
 
@@ -1644,9 +1711,9 @@ end
 @inline function itget(t::InlineTable, k::UInt128)
     i = _itmix(k) & t.mask
     @inbounds while true
-        r = t.refs[i + 1]
-        r == 0 && return UInt32(0)
-        t.slots[i + 1] === k && return r
+        s = t.slots[i + 1]
+        s === k && return t.refs[i + 1]
+        s === IT_EMPTY && return UInt32(0)
         i = (i + 1) & t.mask
     end
 end
@@ -1655,16 +1722,16 @@ function itset!(t::InlineTable, k::UInt128, ref::UInt32)
     if (t.count + 1) << 1 > length(t.refs)          # ≤50% load
         oldslots, oldrefs = t.slots, t.refs
         n = length(oldrefs) << 2
-        t.slots = zeros(UInt128, n)
-        t.refs = zeros(UInt32, n)
+        t.slots = fill(IT_EMPTY, n)
+        t.refs = Vector{UInt32}(undef, n)
         t.mask = UInt64(n - 1)
         t.count = 0
         for x in eachindex(oldrefs)
-            oldrefs[x] == 0 || itset!(t, oldslots[x], oldrefs[x])
+            oldslots[x] === IT_EMPTY || itset!(t, oldslots[x], oldrefs[x])
         end
     end
     i = _itmix(k) & t.mask
-    @inbounds while t.refs[i + 1] != 0
+    @inbounds while t.slots[i + 1] !== IT_EMPTY
         i = (i + 1) & t.mask
     end
     @inbounds t.slots[i + 1] = k
