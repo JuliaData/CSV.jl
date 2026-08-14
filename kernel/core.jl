@@ -596,7 +596,7 @@ end
 end
 
 # raw event kinds during scanning
-@inline rawkind(b::UInt8) = UInt32((b == CR) + 2 * (b == LF))   # 0 delim, 1 CR, 2 LF
+@inline rawkind(b::UInt8) = UInt32((b == CR) + 2 * (b == LF))   # 0 delim, 1 CR, 2 LF, 3 CRLF (pre-paired)
 
 # --- row assembly (the deferred hygiene pass) --------------------------------
 #
@@ -623,14 +623,13 @@ function assemblerows!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int)
             w += 1
             tape[w] = e
             i += 1
-        else                               # CR or LF: row end (pair CRLF)
+        else                               # row end: scanners pre-pair CRLF (kind 3)
             pos = ci.start + Int(e >> 2)
-            skip2 = k == 0x01 && i < n && (tape[i + 1] & 0x03) == 0x02 &&
-                    Int(tape[i + 1] >> 2) == Int(e >> 2) + 1
+            wide = k == 0x03
             w += 1
-            tape[w] = (e & ~UInt32(0x03)) | (skip2 ? UInt32(2) : UInt32(1))
-            i += skip2 ? 2 : 1
-            nextrow = pos + (skip2 ? 2 : 1)
+            tape[w] = (e & ~UInt32(0x03)) | (wide ? UInt32(2) : UInt32(1))
+            i += 1
+            nextrow = pos + (wide ? 2 : 1)
             # hygiene, at row granularity, over the tape (never re-scanning bytes)
             drop = false
             if d.ignoreemptyrows && w == roweventw && pos == rowstart
@@ -705,20 +704,19 @@ function assemblecollapsed!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::I
             end
             runend = pos + skip
             i += 1
-        else                               # CR or LF: row end (pair CRLF)
+        else                               # row end: scanners pre-pair CRLF (kind 3)
             pos = ci.start + Int(e >> 2)
-            skip2 = k == 0x01 && i < n && (tape[i + 1] & 0x03) == 0x02 &&
-                    Int(tape[i + 1] >> 2) == Int(e >> 2) + 1
+            wide = k == 0x03
             endrel = e & ~UInt32(0x03)
             if w >= roweventw && (tape[w] & 0x03) == 0x00 && pos == runend
                 endrel = tape[w] & ~UInt32(0x03)   # trailing padding: run folds
                 w -= 1                             # into the row end
             end
             w += 1
-            tape[w] = endrel | (skip2 ? UInt32(2) : UInt32(1))
+            tape[w] = endrel | (wide ? UInt32(2) : UInt32(1))
             ext[w] = UInt32(0)
-            i += skip2 ? 2 : 1
-            nextrow = pos + (skip2 ? 2 : 1)
+            i += 1
+            nextrow = pos + (wide ? 2 : 1)
             drop = false
             if d.ignoreemptyrows && w == roweventw && pos == rowstart
                 drop = true                # a row that is zero bytes
@@ -756,7 +754,9 @@ function finishscan!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int, inq
         stop >= start
     else
         e = @inbounds ci.tape[n]
-        (e & 0x03) == 0x00 || ci.start + Int(e >> 2) < stop
+        # a pre-paired CRLF event sits at the CR; its row end is the LF byte
+        (e & 0x03) == 0x00 ||
+            ci.start + Int(e >> 2) + ((e & 0x03) == 0x03 ? 1 : 0) < stop
     end
     if needsend
         tape_room!(ci.tape, n, 1)
@@ -808,10 +808,13 @@ function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
             tape[n] = UInt32(pos - start) << 2         # kind 0
             pos += delim isa UInt8 ? 1 : length(delim)
         elseif b == LF || b == CR
+            # CR immediately followed by LF emits ONE pre-paired event (kind 3):
+            # half the row-end tape traffic, and assembly needs no pairing pass
+            crlf = b == CR && pos < stop && buf[pos + 1] == LF
             tape_room!(tape, n, 1)
             n += 1
-            tape[n] = (UInt32(pos - start) << 2) | rawkind(b)
-            pos += 1
+            tape[n] = (UInt32(pos - start) << 2) | (crlf ? UInt32(3) : rawkind(b))
+            pos += crlf ? 2 : 1
         else
             pos += 1
         end
@@ -990,6 +993,7 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
     length(tape) < 256 && resize!(tape, min(max((stop - start + 1) >> 3, 256), MAX_TAPE_HINT))
     n = 0
     inq = false        # quote parity carried between blocks
+    pairskip = false   # CR at a block's last bit already consumed the next LF
     pos = start
     GC.@preserve buf begin
         p = pointer(buf)
@@ -998,6 +1002,8 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
             inmask = prefix_xor64(q64)
             inq && (inmask = ~inmask)
             specials = s64 & ~inmask
+            pairskip && (specials &= ~one(UInt64))   # LF of a CRLF split across blocks
+            pairskip = false
             if specials != zero(UInt64)
                 tape = tape_room!(tape, n, 64)
                 base = UInt32(pos - start)
@@ -1005,7 +1011,12 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
                     tz = trailing_zeros(specials)
                     b = buf[pos + tz]
                     n += 1
-                    tape[n] = ((base + UInt32(tz)) << 2) | rawkind(b)
+                    if b == CR && pos + tz < stop && buf[pos + tz + 1] == LF
+                        tape[n] = ((base + UInt32(tz)) << 2) | UInt32(3)
+                        tz < 63 ? (specials &= ~(UInt64(1) << (tz + 1))) : (pairskip = true)
+                    else
+                        tape[n] = ((base + UInt32(tz)) << 2) | rawkind(b)
+                    end
                     specials &= specials - one(UInt64)
                 end
             end
@@ -1032,10 +1043,16 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
             inq = true
             pos += 1
         elseif b == delim || b == LF || b == CR
-            tape_room!(tape, n, 1)
-            n += 1
-            tape[n] = (UInt32(pos - start) << 2) | rawkind(b)
-            pos += 1
+            if pairskip
+                pairskip = false
+                pos += 1                             # the LF a block-final CR consumed
+            else
+                crlf = b == CR && pos < stop && buf[pos + 1] == LF
+                tape_room!(tape, n, 1)
+                n += 1
+                tape[n] = (UInt32(pos - start) << 2) | (crlf ? UInt32(3) : rawkind(b))
+                pos += crlf ? 2 : 1
+            end
         else
             pos += 1
         end
@@ -1599,6 +1616,57 @@ StringColumn(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8) =
 # String — the old Dict{KStr,…} paid TWO allocations per cell lookup through
 # hash(::KStr) = hash(String(s)) and made pooling 3× the cost of the parse
 # on 400-level columns.
+# Open-addressing table for INLINE level keys: canonical payload bits are the
+# key, a multiplicative mix picks the slot, linear probing resolves. ref 0
+# marks an empty slot (the key array is meaningless there, so the all-zero
+# payload — a quoted empty string — needs no reserved value). This is the
+# per-cell interning hot path; Dict{UInt128,…} machinery measured 3-5× slower
+# and made the pooled columns of the escaped/pooled_high sweep shapes the
+# dominant cost.
+mutable struct InlineTable
+    slots::Vector{UInt128}
+    refs::Vector{UInt32}
+    count::Int
+    mask::UInt64
+end
+InlineTable() = InlineTable(zeros(UInt128, 64), zeros(UInt32, 64), 0, UInt64(63))
+
+@inline _itmix(k::UInt128) =
+    (UInt64(k & typemax(UInt64)) * 0x9e3779b97f4a7c15) ⊻
+    (UInt64(k >> 64) * 0xc6a4a7935bd1e995)
+
+@inline function itget(t::InlineTable, k::UInt128)
+    i = _itmix(k) & t.mask
+    @inbounds while true
+        r = t.refs[i + 1]
+        r == 0 && return UInt32(0)
+        t.slots[i + 1] === k && return r
+        i = (i + 1) & t.mask
+    end
+end
+
+function itset!(t::InlineTable, k::UInt128, ref::UInt32)
+    if (t.count + 1) << 1 > length(t.refs)          # ≤50% load
+        oldslots, oldrefs = t.slots, t.refs
+        n = length(oldrefs) << 2
+        t.slots = zeros(UInt128, n)
+        t.refs = zeros(UInt32, n)
+        t.mask = UInt64(n - 1)
+        t.count = 0
+        for x in eachindex(oldrefs)
+            oldrefs[x] == 0 || itset!(t, oldslots[x], oldrefs[x])
+        end
+    end
+    i = _itmix(k) & t.mask
+    @inbounds while t.refs[i + 1] != 0
+        i = (i + 1) & t.mask
+    end
+    @inbounds t.slots[i + 1] = k
+    @inbounds t.refs[i + 1] = ref
+    t.count += 1
+    return t
+end
+
 struct ViewKey
     s::KStr
 end
@@ -1614,7 +1682,7 @@ Base.:(==)(a::ViewKey, b::ViewKey) = a.s == b.s
 
 mutable struct PoolSegment
     refs::Vector{UInt32}                 # 0 = missing/not-yet-parsed
-    itable::Dict{UInt128, UInt32}        # inline levels: payload bits are the key
+    itable::InlineTable                  # inline levels: payload bits are the key
     vtable::Dict{ViewKey, UInt32}        # view/extra levels: content hash, no alloc
     levelpayloads::Vector{KStrPayload}
     extra::Vector{UInt8}                 # unescaped bytes for NEW levels only
@@ -1627,7 +1695,7 @@ mutable struct PoolSegment
 end
 PoolSegment(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8, maxlevels::Int,
             aborted::Threads.Atomic{Bool}) =
-    PoolSegment(zeros(UInt32, n), Dict{UInt128, UInt32}(), Dict{ViewKey, UInt32}(),
+    PoolSegment(zeros(UInt32, n), InlineTable(), Dict{ViewKey, UInt32}(),
                 KStrPayload[], UInt8[], buf, e, cq, maxlevels, aborted, nothing)
 
 # per-column pooling context the driver threads through chunk tasks
@@ -1971,7 +2039,7 @@ function parsecolchunk!(ps::PoolSegment, buf::Vector{UInt8}, ci::ChunkIndex,
                 end
             end
         elseif Int(kstrlen(p)) <= KSTR_INLINE
-            ref = get(ps.itable, (UInt128(p.a) << 64) | p.b, UInt32(0))
+            ref = itget(ps.itable, (UInt128(p.a) << 64) | p.b)
         else
             ref = get(ps.vtable, ViewKey(_levelcell(ps, p)), UInt32(0))
         end
@@ -1986,7 +2054,7 @@ function parsecolchunk!(ps::PoolSegment, buf::Vector{UInt8}, ci::ChunkIndex,
             push!(ps.levelpayloads, p)
             ref = UInt32(llen + 1)
             if Int(kstrlen(p)) <= KSTR_INLINE
-                ps.itable[(UInt128(p.a) << 64) | p.b] = ref
+                itset!(ps.itable, (UInt128(p.a) << 64) | p.b, ref)
             else
                 ps.vtable[ViewKey(_levelcell(ps, p))] = ref
             end
