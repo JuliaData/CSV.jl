@@ -1780,12 +1780,7 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
                 if staging === nothing
                     staging = (UInt8[], Int[], Int[], Int[])
                 end
-                sbytes, srows, soffs, slens = staging
-                spos = length(sbytes) + 1
-                n = _unescape_append!(sbytes, buf, cpos, clen, col.e, col.cq)
-                push!(srows, out)
-                push!(soffs, spos)
-                push!(slens, n)
+                _stageescaped!(staging, buf, cpos, clen, out, col.e, col.cq)
             end
         elseif clen <= KSTR_INLINE
             payloads[out] = inline_payload(buf, cpos, clen)
@@ -1793,18 +1788,43 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
             payloads[out] = view_payload(buf, cpos, clen, Int64(cpos))
         end
     end
-    if staging !== nothing
-        sbytes, srows, soffs, slens = staging
-        lock(col.extralock) do
-            base = Int64(length(col.extra))
-            append!(col.extra, sbytes)
-            @inbounds for k in eachindex(srows)
-                payloads[srows[k]] = view_payload(sbytes, soffs[k], slens[k],
-                                                  -(base + Int64(soffs[k])))
-            end
-        end
-    end
+    staging === nothing || _flushstaging!(col, payloads, staging)
     return 0
+end
+
+# Named top-level helpers, NOT closures: the previous do-block flush captured
+# locals that were also reassigned in the parse loop, so Julia boxed them —
+# every staged cell then paid allocating Any arithmetic (~2M boxed Ints on a
+# 200 MiB mixed file). Same bug class as the task-body war story; same rule.
+@inline function _stageescaped!(staging::NTuple{4, Vector}, buf::Vector{UInt8},
+                                cpos::Int, clen::Int, out::Int, e::UInt8, cq::UInt8)
+    sbytes = staging[1]::Vector{UInt8}
+    spos = length(sbytes) + 1
+    n = _unescape_append!(sbytes, buf, cpos, clen, e, cq)
+    push!(staging[2]::Vector{Int}, out)
+    push!(staging[3]::Vector{Int}, spos)
+    push!(staging[4]::Vector{Int}, n)
+    return
+end
+
+function _flushstaging!(col::StringColumn, payloads::Vector{KStrPayload},
+                        staging::NTuple{4, Vector})
+    sbytes = staging[1]::Vector{UInt8}
+    srows = staging[2]::Vector{Int}
+    soffs = staging[3]::Vector{Int}
+    slens = staging[4]::Vector{Int}
+    lock(col.extralock)
+    try
+        base = Int64(length(col.extra))
+        append!(col.extra, sbytes)
+        @inbounds for k in eachindex(srows)
+            payloads[srows[k]] = view_payload(sbytes, soffs[k], slens[k],
+                                              -(base + Int64(soffs[k])))
+        end
+    finally
+        unlock(col.extralock)
+    end
+    return
 end
 
 # The pooled twin of the String path: identical span/hygiene handling, but
