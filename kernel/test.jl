@@ -630,21 +630,48 @@ end
     # Task-local logs must not retain maxproblems entries for every chunk. Each
     # completed task folds into one globally capped reservoir and releases its
     # local entries, while retaining the exact total and source-first problem.
-    pending = K.PendingProblemLog(3)
-    for chunk in 1:20
-        local log = K.ProblemLog(3)
-        for j in 1:5
-            K.pushproblem!(log, j, 1, 10 * chunk + j, :invalid_value, "bad")
+    for cap in (0, 1, 3)
+        pending = K.PendingProblemLog(cap)
+        for chunk in 20:-1:1
+            local log = K.ProblemLog(cap)
+            for j in 5:-1:1
+                K.pushproblem!(log, j, 1, 10 * chunk + j, :invalid_value, "bad")
+            end
+            K.mergeproblems!(pending, log, chunk)
+            @test length(pending.items) <= cap
+            @test isempty(log.items) && log.first === nothing && !log.heaped
         end
-        K.mergeproblems!(pending, log, chunk)
-        @test length(pending.items) <= 3
-        @test isempty(log.items) && log.first === nothing
+        bounded = K.finishproblems(pending, 100 .* collect(0:19))
+        K.sortproblems!(bounded)
+        @test [p.pos for p in bounded.items] == collect(11:(10 + cap))
+        @test bounded.dropped == 100 - cap
+        @test bounded.first.pos == 11
     end
-    bounded = K.finishproblems(pending, 100 .* collect(0:19))
-    K.sortproblems!(bounded)
-    @test [p.pos for p in bounded.items] == [11, 12, 13]
-    @test bounded.dropped == 97
-    @test bounded.first == bounded.items[1]
+    # Heap retention matches a full stable sort for descending input, key ties,
+    # and identical problems. Kind ties must stay allocation-free.
+    tiea = K.Problem(1, 1, 1, :alpha, "same")
+    tieb = K.Problem(1, 1, 1, :zeta, "same")
+    K.problemless(tiea, tieb)
+    @test (@allocated K.problemless(tiea, tieb)) == 0
+    adversarial = K.Problem[
+        K.Problem(pos, pos % 3, pos, :invalid_value, "bad $pos") for pos in 40:-1:1
+    ]
+    append!(adversarial, [K.Problem(2, 1, 20, kind, msg)
+                          for kind in (:zeta, :alpha), msg in ("z", "a")])
+    append!(adversarial, fill(K.Problem(2, 1, 20, :same, "same"), 10))
+    expected = sort(copy(adversarial); by=K.problemkey)
+    for cap in (0, 1, 7, length(adversarial))
+        log = K.ProblemLog(cap)
+        for p in adversarial
+            K.pushproblem!(log, p.row, p.col, p.pos, p.kind, p.message)
+        end
+        K.sortproblems!(log)
+        nkeep = min(cap, length(expected))
+        @test K.problemkey.(log.items) == K.problemkey.(expected[1:nkeep])
+        @test log.dropped == length(expected) - nkeep
+        @test K.problemkey(log.first) == K.problemkey(first(expected))
+        @test !log.heaped
+    end
     # on_error=:error escalates the first problem
     @test_throws ErrorException K.parse("a\n1\nxyz\n"; types=Dict(:a => Int64), on_error=:error)
     @test_throws ErrorException K.parse("a\nxyz\n"; types=Int64, on_error=:error, maxproblems=0)

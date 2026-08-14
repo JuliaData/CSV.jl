@@ -1937,14 +1937,13 @@ end
 
 problemkey(p::Problem) = (p.pos, p.row, p.col, String(p.kind), p.message)
 
-# problemkey's order without its allocations: the tuple eagerly builds
-# String(kind) even though pos/row/col decide almost every comparison.
+# problemkey's order without its allocations: Symbol comparison uses the same
+# lexical strcmp order as String(Symbol) without materializing either string.
 @inline function problemless(a::Problem, b::Problem)
     a.pos != b.pos && return a.pos < b.pos
     a.row != b.row && return a.row < b.row
     a.col != b.col && return a.col < b.col
-    ka, kb = String(a.kind), String(b.kind)
-    ka != kb && return ka < kb
+    a.kind != b.kind && return isless(a.kind, b.kind)
     return a.message < b.message
 end
 
@@ -1993,7 +1992,11 @@ function pushproblem!(log::ProblemLog, row::Int, col::Int, pos::Int, kind::Symbo
     return
 end
 
-sortproblems!(log::ProblemLog) = (log.heaped = false; sort!(log.items; lt=problemless))
+function sortproblems!(log::ProblemLog)
+    log.heaped = false
+    sort!(log.items; lt=problemless)
+    return log.items
+end
 
 struct LocatedProblem
     problem::Problem
@@ -2013,7 +2016,6 @@ function PendingProblemLog(limit::Int)
     return PendingProblemLog(LocatedProblem[], limit, 0, nothing, ReentrantLock(), false)
 end
 
-locatedkey(p::LocatedProblem) = problemkey(p.problem)
 @inline locatedless(a::LocatedProblem, b::LocatedProblem) = problemless(a.problem, b.problem)
 
 # Fold one task-local log into the globally bounded reservoir, then release the
