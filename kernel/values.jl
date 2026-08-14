@@ -1321,7 +1321,9 @@ end
         y0 = _dig(buf[i]); y1 = _dig(buf[i + 1]); y2 = _dig(buf[i + 2]); y3 = _dig(buf[i + 3])
         m0 = _dig(buf[i + 5]); m1 = _dig(buf[i + 6])
         d0 = _dig(buf[i + 8]); d1 = _dig(buf[i + 9])
-        (y0 | y1 | y2 | y3 | m0 | m1 | d0 | d1) <= 0x09 || return (0, 0, 0, false)
+        (y0 <= 0x09) & (y1 <= 0x09) & (y2 <= 0x09) & (y3 <= 0x09) &
+        (m0 <= 0x09) & (m1 <= 0x09) & (d0 <= 0x09) & (d1 <= 0x09) ||
+            return (0, 0, 0, false)
         return (Int(y0) * 1000 + Int(y1) * 100 + Int(y2) * 10 + Int(y3),
                 Int(m0) * 10 + Int(m1), Int(d0) * 10 + Int(d1), true)
     end
@@ -1333,7 +1335,8 @@ end
         h0 = _dig(buf[i]); h1 = _dig(buf[i + 1])
         m0 = _dig(buf[i + 3]); m1 = _dig(buf[i + 4])
         s0 = _dig(buf[i + 6]); s1 = _dig(buf[i + 7])
-        (h0 | h1 | m0 | m1 | s0 | s1) <= 0x09 || return (0, 0, 0, false)
+        (h0 <= 0x09) & (h1 <= 0x09) & (m0 <= 0x09) & (m1 <= 0x09) &
+        (s0 <= 0x09) & (s1 <= 0x09) || return (0, 0, 0, false)
         return (Int(h0) * 10 + Int(h1), Int(m0) * 10 + Int(m1), Int(s0) * 10 + Int(s1), true)
     end
 end

@@ -97,6 +97,22 @@ function sumgrouped(buf::Vector{UInt8}, opts::K.ValueOpts, scratch::Vector{UInt8
     return total
 end
 
+function scalar_delimclash(buf::Vector{UInt8}, cpos::Int, clen::Int,
+                           delim::Vector{UInt8})
+    n = length(delim)
+    clen < n && return false
+    @inbounds for k in cpos:(cpos + clen - n)
+        if buf[k] == delim[1]
+            m = 2
+            while m <= n && buf[k + m - 1] == delim[m]
+                m += 1
+            end
+            m > n && return true
+        end
+    end
+    return false
+end
+
 function kstrfrombytes(bytes::Vector{UInt8})
     p = length(bytes) <= K.KSTR_INLINE ? K.inline_payload(bytes, 1, length(bytes)) :
                                          K.view_payload(bytes, 1, length(bytes), Int64(1))
@@ -148,6 +164,33 @@ end
     @test_throws BoundsError K.fieldspan(ci, 0, 1)
     @test_throws BoundsError K.fieldspan(ci, 1, 0)
     @test K.fieldspan(ci, 1, 3) === nothing
+end
+
+@testset "structural: delimiter-clash SWAR differential" begin
+    rng = MersenneTwister(0xd311)
+    for align in 0:15, len in 0:64
+        cpos = align + 1
+        # A match immediately after the content span must never be observed.
+        boundary = fill(UInt8(0x00), align + len + 8)
+        boundary[cpos + len] = 0xff
+        @test !K._delimclash(boundary, cpos, len, UInt8[0xff])
+
+        for _ in 1:32
+            buf = rand(rng, UInt8, align + len + 8)
+            delim = UInt8[rand(rng, UInt8)]
+            @test K._delimclash(buf, cpos, len, delim) ==
+                  scalar_delimclash(buf, cpos, len, delim)
+        end
+    end
+
+    # The multi-byte branch is the original scalar algorithm and stays exact.
+    for delim in (UInt8[0x61, 0x62], UInt8[0xff, 0x00, 0xff])
+        for align in 0:15, len in 0:64, _ in 1:4
+            buf = rand(rng, UInt8, align + len + 8)
+            @test K._delimclash(buf, align + 1, len, delim) ==
+                  scalar_delimclash(buf, align + 1, len, delim)
+        end
+    end
 end
 
 @testset "structural: newlines" begin
@@ -435,6 +478,50 @@ end
     @test t[:e] == [true, false]
     @test t[:f] == [Time(10, 30), Time(11, 30)]
     @test isempty(K.problems(t))
+end
+
+@testset "typed: ISO fast paths preserve interpreter sets" begin
+    opts = K.makevalueopts(K.Dialect())
+    function checktemporal(T, pat, adapt, s)
+        buf = Vector{UInt8}(codeunits(s))
+        c, rc = K.V.parsecivil(buf, 1, length(buf), pat)
+        value, ok = K.parsevalue(T, buf, 1, length(buf), opts)
+        @test ok == (rc == K.V.RC_OK)
+        @test (K.detecttype(buf, 1, length(buf), opts) === T) == ok
+        ok && @test value == adapt(c)
+    end
+
+    for s in ("0000-01-01", "9999-12-31", "2000-02-29", "1900-02-29",
+              "2400-02-29", "2020-1-01", "2020-1-01x", "2020/01-01")
+        checktemporal(Date, K.V.ISO_DATE, K.todate, s)
+    end
+    for s in ("2024-01-02T03:04:05", "2024-01-02 03:04:05",
+              "2024-01-02T03:04:05.", "2024-01-02T03:04:05.1")
+        checktemporal(DateTime, K.V.ISO_DATETIME, K.todatetime, s)
+    end
+    for s in ("00:00:00", "23:59:59", "24:00:00")
+        checktemporal(Time, K.V.ISO_TIME, K.totime, s)
+    end
+
+    # A user format identical to a default is still custom. It must use the
+    # compiled interpreter and retain the custom-format early type gates.
+    customdate = K.makevalueopts(K.Dialect(); dateformat="yyyy-mm-dd")
+    customdt = K.makevalueopts(K.Dialect(); dateformat="yyyy-mm-ddTHH:MM:SS.s")
+    customtime = K.makevalueopts(K.Dialect(); dateformat="HH:MM:SS.s")
+    @test customdate.customfmt && customdt.customfmt && customtime.customfmt
+    bd = Vector{UInt8}(codeunits("2024-02-29"))
+    bdt = Vector{UInt8}(codeunits("2024-02-29T03:04:05"))
+    bt = Vector{UInt8}(codeunits("03:04:05"))
+    @test K.parsevalue(Date, bd, 1, length(bd), customdate) == (Date(2024, 2, 29), true)
+    @test !K.parsevalue(DateTime, bd, 1, length(bd), customdate)[2]
+    @test K.detecttype(bd, 1, length(bd), customdate) === Date
+    @test K.parsevalue(DateTime, bdt, 1, length(bdt), customdt) ==
+          (DateTime(2024, 2, 29, 3, 4, 5), true)
+    @test !K.parsevalue(Date, bdt, 1, length(bdt), customdt)[2]
+    @test K.detecttype(bdt, 1, length(bdt), customdt) === DateTime
+    @test K.parsevalue(Time, bt, 1, length(bt), customtime) == (Time(3, 4, 5), true)
+    @test !K.parsevalue(Date, bt, 1, length(bt), customtime)[2]
+    @test K.detecttype(bt, 1, length(bt), customtime) === Time
 end
 
 @testset "typed: missing values" begin

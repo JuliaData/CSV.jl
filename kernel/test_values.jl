@@ -270,6 +270,53 @@ end
     @test V.parsecivil(b("2024-01-02x"), 1, 11, V.ISO_DATE)[2] == V.RC_INVALID
 end
 
+@testset "civil: fixed-width ISO fast-path differential" begin
+    function checkfast(fast, pat, bytes)
+        for pad in (0, 1, 7)
+            buf = vcat(fill(UInt8(0xa5), pad), bytes, fill(UInt8(0x5a), 8))
+            i = pad + 1
+            @test fast(buf, i) == V.parsecivil(buf, i, i + length(bytes) - 1, pat)
+        end
+    end
+
+    for s in ("0000-01-01", "9999-12-31", "2000-02-29", "1900-02-29",
+              "2400-02-29", "2020-1-01x", "2020/01-01", "2020-01/01")
+        checkfast(V.parseiso10, V.ISO_DATE, b(s))
+    end
+    for s in ("2024-01-02T03:04:05", "2024-01-02 03:04:05",
+              "2024-01-02t03:04:05", "1900-02-29T03:04:05")
+        checkfast(V.parseiso19, V.ISO_DATETIME, b(s))
+    end
+    for s in ("00:00:00", "23:59:59", "24:00:00")
+        checkfast(V.parseiso8, V.ISO_TIME, b(s))
+    end
+    c, rc = V.parseiso8(b("03:04:05"), 1)
+    @test (c, rc) == (V.CivilParts(1, 1, 1, 3, 4, 5, 0), V.RC_OK)
+
+    # Every one-byte mutation checks separators and every possible byte at each
+    # digit position. This includes the UInt8-underflow cases '/' and 0xff.
+    for (fast, pat, base) in (
+        (V.parseiso10, V.ISO_DATE, b("2024-02-29")),
+        (V.parseiso19, V.ISO_DATETIME, b("2024-02-29T23:59:59")),
+        (V.parseiso8, V.ISO_TIME, b("23:59:59")),
+    )
+        for pos in eachindex(base), byte in UInt8(0):UInt8(255)
+            bytes = copy(base)
+            bytes[pos] = byte
+            checkfast(fast, pat, bytes)
+        end
+    end
+
+    rng = MersenneTwister(0x15)
+    for (fast, pat, n) in ((V.parseiso10, V.ISO_DATE, 10),
+                           (V.parseiso19, V.ISO_DATETIME, 19),
+                           (V.parseiso8, V.ISO_TIME, 8))
+        for _ in 1:10_000
+            checkfast(fast, pat, rand(rng, UInt8, n))
+        end
+    end
+end
+
 @testset "civil: custom patterns (the kernel's test formats)" begin
     p = V.compilepattern("yyyymmdd")
     c, rc = V.parsecivil(b("20240102"), 1, 8, p)
