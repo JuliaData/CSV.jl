@@ -1525,6 +1525,57 @@ end
 StringColumn(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8) =
     StringColumn(fill(PAYLOAD_MISSING, n), buf, UInt8[], ReentrantLock(), e, cq)
 
+# Parse-time pooling staging: one per (column × chunk), single-task-owned.
+# Cells intern into a chunk-local table as they parse — the hash work rides the
+# parallel per-chunk loops instead of a serial post-pass, and the stitch merge
+# hashes only LEVELS (few) before remapping refs as a flat integer pass.
+# `maxlevels` is the whole-column policy bound (a chunk exceeding it locally
+# proves the column exceeds it globally); `aborted` is shared by every chunk of
+# the column so one abandon stops the others' interning — checked only on the
+# new-level slow path, never per cell. On abandon the segment DEGRADES in
+# place: payloads reconstruct from levels (refs are dense indices into them),
+# the extra buffer transfers whole (offsets already extra-relative), and the
+# remaining rows parse through the plain string path. A failed gamble costs
+# nothing but the interning already done.
+mutable struct PoolSegment
+    refs::Vector{UInt32}                 # 0 = missing/not-yet-parsed
+    table::Dict{KStr, UInt32}
+    levelpayloads::Vector{KStrPayload}
+    extra::Vector{UInt8}                 # unescaped bytes for NEW levels only
+    buf::Vector{UInt8}
+    e::UInt8
+    cq::UInt8
+    maxlevels::Int
+    aborted::Threads.Atomic{Bool}
+    degraded::Union{Nothing, StringColumn}
+end
+PoolSegment(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8, maxlevels::Int,
+            aborted::Threads.Atomic{Bool}) =
+    PoolSegment(zeros(UInt32, n), Dict{KStr, UInt32}(), KStrPayload[], UInt8[],
+                buf, e, cq, maxlevels, aborted, nothing)
+
+# per-column pooling context the driver threads through chunk tasks
+struct PoolCtx
+    maxlevels::Int
+    aborted::Vector{Threads.Atomic{Bool}}   # one per column
+end
+
+_levelcell(ps::PoolSegment, p::KStrPayload) =
+    Int(kstrlen(p)) <= KSTR_INLINE ? KStr(p, EMPTY_BYTES) :
+    KStr(p, kstroff(p) < 0 ? ps.extra : ps.buf)
+
+# refs so far become payloads; the extra buffer moves across untouched
+function _degradepool!(ps::PoolSegment)
+    payloads = fill(PAYLOAD_MISSING, length(ps.refs))
+    @inbounds for i in eachindex(ps.refs)
+        r = ps.refs[i]
+        r == 0 || (payloads[i] = ps.levelpayloads[Int(r)])
+    end
+    scol = StringColumn(payloads, ps.buf, ps.extra, ReentrantLock(), ps.e, ps.cq)
+    ps.degraded = scol
+    return scol
+end
+
 # The kernel's own unescape: `""` collapses to `"` when e == cq; `\X` drops the
 # backslash when e != cq. Spans are Int64/Int32 end to end, so a single field
 # may be arbitrarily wide (the root cause of CSV.jl issue #935 was a 20-bit
@@ -1690,10 +1741,10 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
                         userprovided::Bool, problems,
                         problemrowbase::Int=rowbase,
                         mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
-                        reportlimit::Int=typemax(Int))
+                        reportlimit::Int=typemax(Int), fromrow::Int=0)
     payloads = col.payloads
     staging::Union{Nothing, NTuple{4, Vector}} = nothing  # (bytes, rows, offs, lens) for escaped-long cells
-    @inbounds for lr in ci.firstdatarow:totalrows(ci)
+    @inbounds for lr in max(fromrow, ci.firstdatarow):totalrows(ci)
         localrow = lr - ci.firstdatarow + 1
         out = rowbase + localrow
         mask !== nothing && !mask[maskbase + out] && continue   # excluded row: cell never parsed
@@ -1752,6 +1803,79 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
                                                   -(base + Int64(soffs[k])))
             end
         end
+    end
+    return 0
+end
+
+# The pooled twin of the String path: identical span/hygiene handling, but
+# cells intern into the chunk-local table instead of materializing payloads.
+# Escaped cells unescape into the segment extra and REWIND it when the level
+# already exists — dedup storage for free. The new-level slow path is the only
+# place the policy bound and the shared abort flag are consulted; on abandon
+# the segment degrades and the remaining rows run the plain string loop.
+function parsecolchunk!(ps::PoolSegment, buf::Vector{UInt8}, ci::ChunkIndex,
+                        j::Int, rowbase::Int, opts::ValueOpts,
+                        userprovided::Bool, problems,
+                        problemrowbase::Int=rowbase,
+                        mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
+                        reportlimit::Int=typemax(Int))
+    refs = ps.refs
+    @inbounds for lr in ci.firstdatarow:totalrows(ci)
+        localrow = lr - ci.firstdatarow + 1
+        out = rowbase + localrow
+        mask !== nothing && !mask[maskbase + out] && continue   # excluded row: cell never parsed
+        localrow > reportlimit && continue
+        sp = fieldspan(ci, lr, j)
+        sp === nothing && continue
+        pos, len = sp
+        len == 0 && continue                            # unquoted empty ⇒ missing; quoted "" survives below
+        cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
+        if st == CELL_BADQUOTE
+            problemrow = problemrowbase + localrow
+            pushproblem!(problems, problemrow, j, pos, :invalid_quoted_field,
+                         "malformed quoting in " * excerpt(buf, pos, len))
+            continue
+        end
+        if st == CELL_MISSING
+            continue
+        end
+        if !_wasquoted(buf, pos, len, opts) && _delimclash(buf, cpos, clen, opts.delim)
+            problemrow = problemrowbase + localrow
+            pushproblem!(problems, problemrow, j, pos, :invalid_value,
+                         "bare quote engaged structural protection in " * excerpt(buf, pos, len))
+        end
+        rewind = -1
+        if esc
+            inl = _unescape_inline(buf, cpos, clen, ps.e, ps.cq)
+            if inl !== nothing
+                p = inl
+            else
+                rewind = length(ps.extra)
+                n = _unescape_append!(ps.extra, buf, cpos, clen, ps.e, ps.cq)
+                p = view_payload(ps.extra, rewind + 1, n, -(Int64(rewind) + 1))
+            end
+        elseif clen <= KSTR_INLINE
+            p = inline_payload(buf, cpos, clen)
+        else
+            p = view_payload(buf, cpos, clen, Int64(cpos))
+        end
+        cell = _levelcell(ps, p)
+        ref = get(ps.table, cell, UInt32(0))
+        if ref == 0
+            if length(ps.levelpayloads) >= ps.maxlevels || ps.aborted[]
+                ps.aborted[] = true
+                scol = _degradepool!(ps)
+                return parsecolchunk!(scol, buf, ci, j, rowbase, opts, userprovided,
+                                      problems, problemrowbase, mask, maskbase,
+                                      reportlimit, lr)
+            end
+            push!(ps.levelpayloads, p)
+            ref = UInt32(length(ps.levelpayloads))
+            ps.table[cell] = ref
+        elseif rewind >= 0
+            resize!(ps.extra, rewind)              # duplicate escaped level: drop its bytes
+        end
+        refs[out] = ref
     end
     return 0
 end
@@ -2319,6 +2443,13 @@ function parse(buf::Vector{UInt8};
     # hot re-parse on conflict.
     promo = Type[T for T in seed]
     promolock = ReentrantLock()
+    # parse-time pooling: chunk tasks intern String cells as they parse. The
+    # cap bounds chunk-local levels (exceeding it locally proves the column
+    # exceeds it globally); the ratio×rows bound is enforced at the merge,
+    # where ndata is exact.
+    poolctx = poolspec === nothing ? nothing :
+              PoolCtx(min(poolspec[2], Int(typemax(UInt32))),
+                      [Threads.Atomic{Bool}(false) for _ in 1:ncols])
     segments = Vector{Vector{Any}}(undef, nch)
     segtypes = Vector{Vector{Type}}(undef, nch)
     pendingproblems = PendingProblemLog(maxproblems)
@@ -2332,13 +2463,13 @@ function parse(buf::Vector{UInt8};
                                                     ncols, opts, userprovided, promo, promolock,
                                                     pendingproblems, segments, segtypes, k,
                                                     selected, rowmask, mb(k), rl(k),
-                                                    reportstructural))
+                                                    reportstructural, poolctx))
         end
     else
         for k in 1:nch
             fusedchunk!(chunks[k], buf, d, sc, indexed[k], ncols, opts, userprovided,
                         promo, promolock, pendingproblems, segments, segtypes, k,
-                        selected, rowmask, mb(k), rl(k), reportstructural)
+                        selected, rowmask, mb(k), rl(k), reportstructural, poolctx)
         end
     end
     for k in 1:(nch - 1)
@@ -2362,12 +2493,13 @@ function parse(buf::Vector{UInt8};
             @sync for (k, j) in stale
                 errormonitor(Threads.@spawn restale!(chunks, final, segments, segtypes,
                                                      pendingproblems, buf, opts, d,
-                                                     userprovided, k, j, rowmask, mb(k), rl(k)))
+                                                     userprovided, k, j, rowmask, mb(k), rl(k),
+                                                     poolctx))
             end
         else
             for (k, j) in stale
                 restale!(chunks, final, segments, segtypes, pendingproblems, buf,
-                         opts, d, userprovided, k, j, rowmask, mb(k), rl(k))
+                         opts, d, userprovided, k, j, rowmask, mb(k), rl(k), poolctx)
             end
         end
     end
@@ -2435,7 +2567,8 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Sy
                      segments, segtypes, k::Int,
                      selected::Union{Nothing, Vector{Bool}}=nothing,
                      mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
-                     reportlimit::Int=typemax(Int), reportstructural::Bool=true)
+                     reportlimit::Int=typemax(Int), reportstructural::Bool=true,
+                     poolctx::Union{Nothing, PoolCtx}=nothing)
     alreadyindexed || indexone!(ci, buf, d, scanner)
     n = nrows(ci)
     log = ProblemLog(pendingproblems.limit)
@@ -2469,7 +2602,9 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Sy
         attempts = 0
         while true
             (attempts += 1) > 8 && error("internal error: promotion did not converge")
-            stg = allocatecolumn(T, n, buf, opts.e, d.cq)
+            stg = T === String && poolctx !== nothing ?
+                  PoolSegment(n, buf, opts.e, d.cq, poolctx.maxlevels, poolctx.aborted[j]) :
+                  allocatecolumn(T, n, buf, opts.e, d.cq)
             conflict = T === Missing ?
                 parsecolchunk_missing(buf, ci, j, 0, opts, userprovided[j], log, mask,
                                       maskbase, reportlimit) :
@@ -2503,9 +2638,12 @@ function restale!(chunks, final, segments, segtypes,
                   pendingproblems::PendingProblemLog, buf::Vector{UInt8},
                   opts::ValueOpts, d::Dialect, userprovided, k::Int, j::Int,
                   mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
-                  reportlimit::Int=typemax(Int))
+                  reportlimit::Int=typemax(Int),
+                  poolctx::Union{Nothing, PoolCtx}=nothing)
     ci = chunks[k]
-    stg = allocatecolumn(final[j], nrows(ci), buf, opts.e, d.cq)
+    stg = final[j] === String && poolctx !== nothing ?
+          PoolSegment(nrows(ci), buf, opts.e, d.cq, poolctx.maxlevels, poolctx.aborted[j]) :
+          allocatecolumn(final[j], nrows(ci), buf, opts.e, d.cq)
     log = ProblemLog(pendingproblems.limit)
     conflict = final[j] === Missing ? 0 :
         parsecolchunk!(stg, buf, ci, j, 0, opts, userprovided[j], log, 0, mask,
@@ -2573,8 +2711,12 @@ function materialize(c::PooledColumn{ELT}) where {ELT}
     return out
 end
 
-# Build refs+levels from String segments, or return nothing when the level
-# count blows the policy bound (caller falls back to the flat stitch).
+# Build refs+levels from the per-chunk segments, or return nothing when the
+# level count blows the policy bound (caller falls back to the flat stitch).
+# PoolSegment chunks interned during parse: only their LEVELS hash here (few);
+# their refs remap in a flat integer pass. Degraded/plain StringColumn chunks
+# intern per cell (the pre-existing path). Level order is first occurrence in
+# chunk order = first occurrence in file order, identical to the serial pass.
 function poolsegments(segments, j::Int, chunkrows, rowbases, ndata::Int,
                       buf::Vector{UInt8}, e::UInt8, cq::UInt8,
                       pool::Tuple{Float64, Int},
@@ -2582,6 +2724,12 @@ function poolsegments(segments, j::Int, chunkrows, rowbases, ndata::Int,
     # both bounds hold: levels ≤ ratio×rows AND levels ≤ cap
     ratiolevels = pool[1] == 1.0 ? ndata : floor(Int, pool[1] * ndata)
     maxlevels = min(ratiolevels, pool[2], Int(typemax(UInt32)))
+    # one chunk's abandon abandons the column (its cap ≤ global implies the
+    # global bound already failed; a degraded segment carries the same signal)
+    for k in eachindex(chunkrows)
+        seg = segments[k][j]
+        seg isa PoolSegment && (seg.aborted[] || seg.degraded !== nothing) && return nothing
+    end
     refs = zeros(UInt32, ndata)
     table = Dict{KStr, UInt32}()
     levelpayloads = KStrPayload[]
@@ -2598,7 +2746,42 @@ function poolsegments(segments, j::Int, chunkrows, rowbases, ndata::Int,
             end
             continue
         end
-        scol = seg::StringColumn
+        if seg isa PoolSegment
+            # merge the chunk's level table, then remap refs without hashing
+            remap = Vector{UInt32}(undef, length(seg.levelpayloads))
+            for (l, p) in enumerate(seg.levelpayloads)
+                len = Int(kstrlen(p))
+                cell = len <= KSTR_INLINE ? KStr(p, EMPTY_BYTES) :
+                       KStr(p, kstroff(p) < 0 ? seg.extra : buf)
+                gref = get(table, cell, UInt32(0))
+                if gref == 0
+                    length(levelpayloads) >= maxlevels && return nothing
+                    if len > KSTR_INLINE && kstroff(p) < 0
+                        off = Int(-kstroff(p))
+                        base = length(extra)
+                        append!(extra, @view seg.extra[off:off + len - 1])
+                        p = view_payload(extra, base + 1, len, -(Int64(base) + 1))
+                    end
+                    push!(levelpayloads, p)
+                    gref = UInt32(length(levelpayloads))
+                    table[cell] = gref
+                end
+                remap[l] = gref
+            end
+            rb = rowbases[k]
+            @inbounds for i in 1:chunkrows[k]
+                if mask !== nothing
+                    mask[inbases[k] + i] || continue
+                end
+                dest += 1
+                r = seg.refs[i]
+                r == 0 && continue               # missing ⇒ ref 0
+                npresent += 1
+                refs[mask === nothing ? rb + i : dest] = remap[Int(r)]
+            end
+            continue
+        end
+        scol = seg isa PoolSegment ? seg.degraded : seg::StringColumn
         rb = rowbases[k]
         @inbounds for i in 1:chunkrows[k]
             if mask !== nothing
@@ -2643,11 +2826,19 @@ function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases
                       pool::Union{Nothing, Tuple{Float64, Int}}=nothing,
                       mask::Union{Nothing, Vector{Bool}}=nothing, inbases=nothing) where {T}
     T === Missing && return MissingColumn(ndata)
-    if T === String && pool !== nothing && ndata > 0
-        pooled = poolsegments(segments, j, chunkrows, rowbases, ndata, buf, e, cq, pool,
-                              mask, inbases)
-        pooled !== nothing && return pooled
-        # bound exceeded: fall through to the flat stitch below
+    if T === String && pool !== nothing
+        if ndata > 0
+            pooled = poolsegments(segments, j, chunkrows, rowbases, ndata, buf, e, cq, pool,
+                                  mask, inbases)
+            pooled !== nothing && return pooled
+        end
+        # bound exceeded (or empty): flatten any parse-time staging so the
+        # plain paths below see ordinary StringColumns
+        for k in eachindex(chunkrows)
+            seg = segments[k][j]
+            seg isa PoolSegment &&
+                (segments[k][j] = seg.degraded !== nothing ? seg.degraded : _degradepool!(seg))
+        end
     end
     mask === nothing || return _stitchmasked(T, segments, j, chunkrows, ndata, buf, e, cq,
                                              mask, inbases)

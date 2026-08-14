@@ -1065,6 +1065,31 @@ end
     @test collect(abandoned) == collect(escapedplain[:a])
     # non-string columns ignore pool
     @test K.parse("a\n1\n2\n"; pool=true)[:a] isa Vector{Int64}
+
+    # parse-time staging: a cap that fails MID-CHUNK degrades in place — the
+    # remaining rows finish through the plain string path and every geometry
+    # still equals the unpooled parse (incl. escaped cells after the abandon)
+    manyrows = String[]
+    for i in 1:300
+        push!(manyrows, i % 4 == 0 ? "\"lv$(i % 40) \"\"q\"\"\"" : "lv$(i % 40)")
+    end
+    manycsv = "a\n" * join(manyrows, "\n") * "\n"
+    manyplain = collect(K.parse(manycsv; types=String, pool=false)[:a])
+    for cap in (1, 5, 39), cb in (32, 256, 1 << 20), par in (false, true)
+        c = K.parse(manycsv; types=String, pool=(1.0, cap), chunkbytes=cb, parallel=par)[:a]
+        @test c isa K.KStrVector          # 40 levels always exceed the cap
+        @test collect(c) == manyplain
+    end
+    c = K.parse(manycsv; types=String, pool=(1.0, 40), chunkbytes=64, parallel=true)[:a]
+    @test c isa K.PooledColumn && collect(c) == manyplain
+
+    # duplicate escaped levels rewind the staging extra: interning 200 repeats
+    # of one long escaped value stores its bytes ONCE per chunk at most
+    dupcsv = "a\n" * join((quote_csv(longescaped) for _ in 1:200), "\n") * "\n"
+    dup = K.parse(dupcsv; types=String, pool=true, chunkbytes=1 << 20, parallel=false)[:a]
+    @test dup isa K.PooledColumn{K.KStr}
+    @test length(K.poollevels(dup)) == 1
+    @test K.poollevels(dup).extra == Vector{UInt8}(codeunits(longescaped))
 end
 
 @testset "KStr: inline-else-view strings" begin
