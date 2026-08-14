@@ -1305,6 +1305,77 @@ function _matchname(buf, i, j, table)
     return (0, i, false)
 end
 
+# --- fixed-width ISO fast paths ----------------------------------------------
+# The ISO defaults dominate real data and have fixed shapes; the pattern
+# interpreter costs ~18 ns/date walking its op list. These accelerators handle
+# exactly the fixed-width spellings ("yyyy-mm-dd" in 10 bytes, the 19-byte
+# datetime without subseconds, "HH:MM:SS" in 8) and REJECT to the interpreter
+# on any guard failure — equivalence with parsecivil is by construction, and
+# only invalid cells (already the problems path) pay both.
+
+@inline _dig(b::UInt8) = b - UInt8('0')
+
+@inline function _iso_ymd(buf::Vector{UInt8}, i::Int)
+    @inbounds begin
+        (buf[i + 4] == UInt8('-')) & (buf[i + 7] == UInt8('-')) || return (0, 0, 0, false)
+        y0 = _dig(buf[i]); y1 = _dig(buf[i + 1]); y2 = _dig(buf[i + 2]); y3 = _dig(buf[i + 3])
+        m0 = _dig(buf[i + 5]); m1 = _dig(buf[i + 6])
+        d0 = _dig(buf[i + 8]); d1 = _dig(buf[i + 9])
+        (y0 | y1 | y2 | y3 | m0 | m1 | d0 | d1) <= 0x09 || return (0, 0, 0, false)
+        return (Int(y0) * 1000 + Int(y1) * 100 + Int(y2) * 10 + Int(y3),
+                Int(m0) * 10 + Int(m1), Int(d0) * 10 + Int(d1), true)
+    end
+end
+
+@inline function _iso_hms(buf::Vector{UInt8}, i::Int)
+    @inbounds begin
+        (buf[i + 2] == UInt8(':')) & (buf[i + 5] == UInt8(':')) || return (0, 0, 0, false)
+        h0 = _dig(buf[i]); h1 = _dig(buf[i + 1])
+        m0 = _dig(buf[i + 3]); m1 = _dig(buf[i + 4])
+        s0 = _dig(buf[i + 6]); s1 = _dig(buf[i + 7])
+        (h0 | h1 | m0 | m1 | s0 | s1) <= 0x09 || return (0, 0, 0, false)
+        return (Int(h0) * 10 + Int(h1), Int(m0) * 10 + Int(m1), Int(s0) * 10 + Int(s1), true)
+    end
+end
+
+"""
+    parseiso10(buf, i) -> (CivilParts, rc)
+
+`yyyy-mm-dd` in exactly 10 bytes (caller checks the length). RC_INVALID means
+"not this shape or not a real date" — the caller falls through to
+[`parsecivil`](@ref), which agrees on every 10-byte input.
+"""
+@inline function parseiso10(buf::Vector{UInt8}, i::Int)
+    y, m, d, ok = _iso_ymd(buf, i)
+    (ok && _validymd(y, m, d)) || return (CivilParts(), RC_INVALID)
+    return (CivilParts(Int32(y), Int8(m), Int8(d), Int8(0), Int8(0), Int8(0), Int32(0)), RC_OK)
+end
+
+"""
+    parseiso19(buf, i) -> (CivilParts, rc)
+
+`yyyy-mm-ddTHH:MM:SS` in exactly 19 bytes (no subseconds; those fall through).
+"""
+@inline function parseiso19(buf::Vector{UInt8}, i::Int)
+    @inbounds buf[i + 10] == UInt8('T') || return (CivilParts(), RC_INVALID)
+    y, mo, d, okd = _iso_ymd(buf, i)
+    h, mi, s, okt = _iso_hms(buf, i + 11)
+    (okd && okt && _validymd(y, mo, d) && _validhms(h, mi, s)) ||
+        return (CivilParts(), RC_INVALID)
+    return (CivilParts(Int32(y), Int8(mo), Int8(d), Int8(h), Int8(mi), Int8(s), Int32(0)), RC_OK)
+end
+
+"""
+    parseiso8(buf, i) -> (CivilParts, rc)
+
+`HH:MM:SS` in exactly 8 bytes.
+"""
+@inline function parseiso8(buf::Vector{UInt8}, i::Int)
+    h, mi, s, ok = _iso_hms(buf, i)
+    (ok && _validhms(h, mi, s)) || return (CivilParts(), RC_INVALID)
+    return (CivilParts(Int32(1), Int8(1), Int8(1), Int8(h), Int8(mi), Int8(s), Int32(0)), RC_OK)
+end
+
 """
     parsecivil(buf, i, j, pat::DatePattern) -> (CivilParts, rc)
 

@@ -310,6 +310,26 @@ end
 function _delimclash(buf::Vector{UInt8}, cpos::Int, clen::Int, delim::Vector{UInt8})
     n = length(delim)
     clen < n && return false
+    # this scan runs on EVERY unquoted string cell (protection detection, not
+    # the exception path) — single-byte delimiters take the SWAR word walk
+    if n == 1
+        d = @inbounds delim[1]
+        k = cpos
+        last = cpos + clen - 1
+        GC.@preserve buf begin
+            p = pointer(buf)
+            @inbounds while k + 7 <= last
+                w = ltoh(unsafe_load(Ptr{UInt64}(p + k - 1)))
+                movemask(eqmarks(w, d)) != 0 && return true
+                k += 8
+            end
+        end
+        @inbounds while k <= last
+            buf[k] == d && return true
+            k += 1
+        end
+        return false
+    end
     @inbounds for k in cpos:(cpos + clen - n)
         if buf[k] == delim[1]
             m = 2
@@ -450,18 +470,31 @@ end
 end
 @inline function parsevalue(::Type{Date}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     vo.customfmt && (!vo.datepat.hasdate || vo.datepat.hastime) && return (_DATE0, false)
+    if !vo.customfmt && j - i + 1 == 10
+        c, rc = V.parseiso10(buf, i)
+        rc == V.RC_OK && return (todate(c), true)
+        # not the fixed shape or not a real date — the interpreter agrees either way
+    end
     c, rc = V.parsecivil(buf, i, j, vo.datepat)
     rc == V.RC_OK || return (_DATE0, false)
     return (todate(c), true)
 end
 @inline function parsevalue(::Type{DateTime}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     vo.customfmt && (!vo.datetimepat.hasdate || !vo.datetimepat.hastime) && return (_DATETIME0, false)
+    if !vo.customfmt && j - i + 1 == 19
+        c, rc = V.parseiso19(buf, i)
+        rc == V.RC_OK && return (todatetime(c), true)
+    end
     c, rc = V.parsecivil(buf, i, j, vo.datetimepat)
     rc == V.RC_OK || return (_DATETIME0, false)
     return (todatetime(c), true)
 end
 @inline function parsevalue(::Type{Time}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     vo.customfmt && (vo.timepat.hasdate || !vo.timepat.hastime) && return (_TIME0, false)
+    if !vo.customfmt && j - i + 1 == 8
+        c, rc = V.parseiso8(buf, i)
+        rc == V.RC_OK && return (totime(c), true)
+    end
     c, rc = V.parsecivil(buf, i, j, vo.timepat)
     rc == V.RC_OK || return (_TIME0, false)
     return (totime(c), true)
