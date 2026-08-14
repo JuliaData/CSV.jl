@@ -1238,6 +1238,41 @@ end
     # ratio policy: 4 levels / 500 rows ⇒ pooled at 0.05, plain at 0.005
     @test K.parse(csv; pool=0.05)[:cat] isa K.PooledColumn
     @test K.parse(csv; pool=0.005)[:cat] isa K.KStrVector
+    # Equal-stride sampling aliases this periodic layout: 6000 / 128 is nearly
+    # coprime to 400. Jittered draws must find repeats and preserve pooling.
+    periodicvalues = ["level$(i % 400)" for i in 1:6000]
+    periodiccsv = "a\n" * join(periodicvalues, '\n') * "\n"
+    for par in (false, true)
+        periodic = K.parse(periodiccsv; types=String, pool=(0.2, 500),
+                           chunkbytes=64, parallel=par)[:a]
+        @test periodic isa K.PooledColumn
+        @test K.materialize(periodic) == periodicvalues
+    end
+    # A birthday estimate is not a proof for a near-cap column. The 128 draws
+    # happen to be distinct, but all 501 rows prove that 469 levels fit cap 500.
+    nearcapvalues = ["level$(i % 469)" for i in 1:501]
+    nearcapcsv = "a\n" * join(nearcapvalues, '\n') * "\n"
+    for par in (false, true)
+        nearcap = K.parse(nearcapcsv; types=String, pool=(1.0, 500),
+                          chunkbytes=64, parallel=par)[:a]
+        @test nearcap isa K.PooledColumn
+        @test K.materialize(nearcap) == nearcapvalues
+    end
+    # Pre-skip fingerprints use parsed content. Raw whitespace variants collapse
+    # to one level under stripwhitespace and must not manufacture cardinality.
+    normalizedcsv = "a\n" * join((repeat(" ", i) * "x" for i in 1:128), '\n') * "\n"
+    normalized = K.parse(normalizedcsv; types=String, stripwhitespace=true,
+                         pool=(0.2, 500), chunkbytes=64, parallel=true)[:a]
+    @test normalized isa K.PooledColumn
+    @test length(K.poollevels(normalized)) == 1
+    # A limited parse samples only output rows. High-cardinality excluded rows
+    # cannot make a small categorical prefix bypass pooling or the 32-cell gate.
+    limitedvalues = [i <= 31 ? "cat" : "unique$i" for i in 1:4096]
+    limitedcsv = "a\n" * join(limitedvalues, '\n') * "\n"
+    limited = K.parse(limitedcsv; types=String, limit=31, pool=(0.2, 500),
+                      chunkbytes=1 << 20, parallel=false)[:a]
+    @test limited isa K.PooledColumn
+    @test K.materialize(limited) == fill("cat", 31)
     # absolute cap abandons early
     tall = K.parse("a\n" * join(1:200, "\n") * "\n"; types=String, pool=(1.0, 8))
     @test tall[:a] isa K.KStrVector

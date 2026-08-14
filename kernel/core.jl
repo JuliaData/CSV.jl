@@ -2418,16 +2418,36 @@ end
     return
 end
 
-# Content fingerprint of a sampled cell (FNV-1a over the raw span, capped).
-# Only ever compared against fingerprints from the same column's sample: a
-# collision manufactures a repeat, which merely lets pooling be attempted —
-# the parse-time bound still decides for real.
-@inline function _cellhash(buf::Vector{UInt8}, pos::Int, len::Int)
-    h = 0xcbf29ce484222325 ⊻ UInt64(len)
-    @inbounds for i in pos:(pos + min(len, 64) - 1)
-        h = (h ⊻ buf[i]) * 0x00000100000001b3
+# Content fingerprint of a sampled parsed string (FNV-1a over at most 64
+# canonical bytes, then mixed with the canonical length). Quoting, outer
+# whitespace, sentinels, and escapes must agree with `StringColumn`: equal
+# parsed strings MUST have equal fingerprints or the distinct-count proof below
+# would be unsound. A collision in the other direction merely manufactures a
+# repeat, which lets pooling be attempted; the parse-time bound still decides.
+@inline function _cellhash(buf::Vector{UInt8}, pos::Int, len::Int,
+                           e::UInt8, cq::UInt8, escaped::Bool)
+    h = 0xcbf29ce484222325
+    if !escaped
+        @inbounds for i in pos:(pos + min(len, 64) - 1)
+            h = (h ⊻ buf[i]) * 0x00000100000001b3
+        end
+        return _splitmix64(h ⊻ UInt64(len))
     end
-    return h
+    n = 0
+    i = pos
+    last = pos + len - 1
+    @inbounds while i <= last
+        b = buf[i]
+        if b == e && i < last && (e != cq || buf[i + 1] == cq)
+            b = e == cq ? cq : buf[i + 1]
+            i += 2
+        else
+            i += 1
+        end
+        n += 1
+        n <= 64 && (h = (h ⊻ b) * 0x00000100000001b3)
+    end
+    return _splitmix64(h ⊻ UInt64(n))
 end
 
 @inline function _splitmix64(x::UInt64)
@@ -2438,16 +2458,17 @@ end
 end
 
 # Cell fingerprints for the pooling pre-skip, sampled at deterministically
-# JITTERED positions: one draw per equal-width row bucket, offset by splitmix.
-# Equal-stride sampling (the type sampler) would visit all-distinct residues
-# of a periodic column whose period is coprime to the stride — jitter restores
-# the birthday bound the repeat test relies on. `qrows` restricts the draw to
-# qualifying rows (the masked driver's output-rows-only contract).
+# jittered positions: one draw per equal-width row bucket, offset by splitmix.
+# Equal-stride sampling would alias periodic level patterns. `qrows` restricts
+# the draw to qualifying rows. `sampletotal` clips an unmasked parse to its
+# output prefix when `limit` retains only part of the final indexed chunk.
 function samplerepeathashes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncols::Int,
-                            selected::Union{Nothing, Vector{Bool}},
+                            opts::ValueOpts, selected::Union{Nothing, Vector{Bool}},
                             qrows::Union{Nothing, Vector{Int}}=nothing,
-                            rowbases0=nothing; nsample::Int=128)
-    total = qrows === nothing ? sum(nrows, chunks; init=0) : length(qrows)
+                            rowbases0=nothing; nsample::Int=128,
+                            sampletotal::Union{Nothing, Int}=nothing)
+    total = qrows === nothing ? something(sampletotal, sum(nrows, chunks; init=0)) :
+                                length(qrows)
     hashes = [UInt64[] for _ in 1:ncols]
     total == 0 && return hashes
     count = min(total, nsample)
@@ -2469,7 +2490,9 @@ function samplerepeathashes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncol
             selected !== nothing && !selected[j] && continue
             sp = fieldspan(ci, lr, j)
             (sp === nothing || sp[2] == 0) && continue
-            push!(hashes[j], _cellhash(buf, sp[1], sp[2]))
+            cpos, clen, esc, st = cellcontent(buf, sp[1], sp[2], opts)
+            st == CELL_VALUE || continue
+            push!(hashes[j], _cellhash(buf, cpos, clen, opts.e, opts.cq, esc))
         end
     end
     return hashes
@@ -2795,24 +2818,28 @@ function parse(buf::Vector{UInt8};
     end
     rowbases = cumsum([0; chunkrows[1:max(nch - 1, 0)]])
     ndata = rowmask === nothing ? sum(chunkrows; init=0) : count(rowmask)
-    # pooling pre-skip: a column whose ≥32-cell jittered sample repeats NOTHING
-    # has (by the birthday bound) far more levels than any binding policy bound
-    # admits — a ≤cap-level column repeats within 128 draws with probability
-    # ≈ 1 - exp(-m²/2K), > 1 - 1e-7 at cap 500. Skipped columns take the plain
-    # direct String path: no segments, no interning, no degrade, no stitch.
-    # Errors in either direction stay safe: a manufactured repeat just attempts
-    # pooling (the parse-time bound still decides), and a missed repeat is the
-    # ~1e-7 tail. Only applies when the bound can fail at all (binding).
+    # Pooling pre-skip: more than `maxlevels` semantically distinct sampled cells
+    # PROVES that the binding policy must fail. The proof is capped at the 500
+    # levels used by the default front door; custom larger bounds use the normal
+    # parse-time decision instead of making the sampling cost unbounded. Keep at
+    # least 128 jittered draws for useful high-cardinality coverage and require
+    # at least 32 present cells. Skipped columns take the plain direct String
+    # path: no segments, no interning, no degrade, no stitch.
     if poolctx !== nothing
         ratiolevels = poolspec[1] == 1.0 ? ndata : floor(Int, poolspec[1] * ndata)
-        if min(ratiolevels, poolspec[2]) < ndata
+        maxlevels = min(ratiolevels, poolspec[2], Int(typemax(UInt32)))
+        if maxlevels < ndata && maxlevels <= 500
+            proofsample = max(128, maxlevels + 1)
             srh = rowmask === nothing ?
-                  samplerepeathashes(buf, chunks, ncols, selected) :
-                  samplerepeathashes(buf, chunks, ncols, selected, findall(rowmask), rowbases0)
+                  samplerepeathashes(buf, chunks, ncols, opts, selected;
+                                     nsample=proofsample, sampletotal=ndata) :
+                  samplerepeathashes(buf, chunks, ncols, opts, selected,
+                                     findall(rowmask), rowbases0; nsample=proofsample)
             for j in 1:ncols
                 selected === nothing || selected[j] || continue
                 h = srh[j]
-                length(h) >= 32 && allunique(h) && (poolctx.skip[j] = true)
+                length(h) >= 32 && length(h) > maxlevels && allunique(h) &&
+                    (poolctx.skip[j] = true)
             end
         end
     end
