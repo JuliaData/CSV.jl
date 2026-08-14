@@ -1879,10 +1879,26 @@ function parsecolchunk!(ps::PoolSegment, buf::Vector{UInt8}, ci::ChunkIndex,
         else
             p = view_payload(buf, cpos, clen, Int64(cpos))
         end
-        cell = _levelcell(ps, p)
-        ref = get(ps.table, cell, UInt32(0))
+        # Inline payloads are canonical (equal strings ⇒ identical payloads, and
+        # an inline-length cell always produces an inline payload), so a small
+        # level table resolves by comparing two UInt64s per level — no hashing.
+        # A miss over the full scan is a REAL miss for inline cells. View/extra
+        # payloads and big tables take the Dict.
+        ref = UInt32(0)
+        lp = ps.levelpayloads
+        llen = length(lp)
+        if Int(kstrlen(p)) <= KSTR_INLINE && llen <= 16
+            @inbounds for l in 1:llen
+                if lp[l].a === p.a && lp[l].b === p.b
+                    ref = UInt32(l)
+                    break
+                end
+            end
+        else
+            ref = get(ps.table, _levelcell(ps, p), UInt32(0))
+        end
         if ref == 0
-            if length(ps.levelpayloads) >= ps.maxlevels || ps.aborted[]
+            if llen >= ps.maxlevels || ps.aborted[]
                 ps.aborted[] = true
                 scol = _degradepool!(ps)
                 return parsecolchunk!(scol, buf, ci, j, rowbase, opts, userprovided,
@@ -1890,8 +1906,8 @@ function parsecolchunk!(ps::PoolSegment, buf::Vector{UInt8}, ci::ChunkIndex,
                                       reportlimit, lr)
             end
             push!(ps.levelpayloads, p)
-            ref = UInt32(length(ps.levelpayloads))
-            ps.table[cell] = ref
+            ref = UInt32(llen + 1)
+            ps.table[_levelcell(ps, p)] = ref
         elseif rewind >= 0
             resize!(ps.extra, rewind)              # duplicate escaped level: drop its bytes
         end
