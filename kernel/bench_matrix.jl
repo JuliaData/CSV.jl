@@ -376,4 +376,4 @@ function main(args)
     close(RESULTS[])
 end
 
-main(ARGS)
+abspath(PROGRAM_FILE) == (@__FILE__) && main(ARGS)
