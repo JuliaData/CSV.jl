@@ -1928,30 +1928,72 @@ mutable struct ProblemLog
     limit::Int
     dropped::Int
     first::Union{Nothing, Problem}
+    heaped::Bool                  # items are a max-heap by source order (full logs)
 end
 function ProblemLog(limit::Int)
     limit >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $limit)"))
-    return ProblemLog(Problem[], limit, 0, nothing)
+    return ProblemLog(Problem[], limit, 0, nothing, false)
 end
 
 problemkey(p::Problem) = (p.pos, p.row, p.col, String(p.kind), p.message)
 
+# problemkey's order without its allocations: the tuple eagerly builds
+# String(kind) even though pos/row/col decide almost every comparison.
+@inline function problemless(a::Problem, b::Problem)
+    a.pos != b.pos && return a.pos < b.pos
+    a.row != b.row && return a.row < b.row
+    a.col != b.col && return a.col < b.col
+    ka, kb = String(a.kind), String(b.kind)
+    ka != kb && return ka < kb
+    return a.message < b.message
+end
+
+# Bounded retention keeps the `limit` SOURCE-EARLIEST problems. A full log
+# maintains its items as a max-heap so displacing the worst retained entry is
+# O(log limit) — the previous per-overflow findmax scan was O(limit) each,
+# quadratic-by-cap on problem-dense files (measured: a 5%-ragged 20 MiB file
+# spent seconds scanning a 10k reservoir per dropped report).
+function _siftdown!(items::Vector, lt::F, i::Int) where {F}
+    n = length(items)
+    @inbounds while true
+        l = 2i
+        m = i
+        l <= n && lt(items[m], items[l]) && (m = l)
+        l + 1 <= n && lt(items[m], items[l + 1]) && (m = l + 1)
+        m == i && return
+        items[i], items[m] = items[m], items[i]
+        i = m
+    end
+end
+
+function _heapify!(items::Vector, lt::F) where {F}
+    for i in (length(items) >> 1):-1:1
+        _siftdown!(items, lt, i)
+    end
+end
+
 function pushproblem!(log::ProblemLog, row::Int, col::Int, pos::Int, kind::Symbol, msg::String)
     p = Problem(row, col, pos, kind, msg)
-    (log.first === nothing || problemkey(p) < problemkey(log.first)) && (log.first = p)
+    (log.first === nothing || problemless(p, log.first)) && (log.first = p)
     if length(log.items) < log.limit
         push!(log.items, p)
     else
         log.dropped += 1
         if log.limit > 0
-            _, maxi = findmax(problemkey, log.items)
-            problemkey(p) < problemkey(log.items[maxi]) && (log.items[maxi] = p)
+            if !log.heaped
+                _heapify!(log.items, problemless)
+                log.heaped = true
+            end
+            @inbounds if problemless(p, log.items[1])
+                log.items[1] = p
+                _siftdown!(log.items, problemless, 1)
+            end
         end
     end
     return
 end
 
-sortproblems!(log::ProblemLog) = sort!(log.items; by=problemkey)
+sortproblems!(log::ProblemLog) = (log.heaped = false; sort!(log.items; lt=problemless))
 
 struct LocatedProblem
     problem::Problem
@@ -1964,25 +2006,30 @@ mutable struct PendingProblemLog
     dropped::Int
     first::Union{Nothing, LocatedProblem}
     lock::ReentrantLock
+    heaped::Bool
 end
 function PendingProblemLog(limit::Int)
     limit >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $limit)"))
-    return PendingProblemLog(LocatedProblem[], limit, 0, nothing, ReentrantLock())
+    return PendingProblemLog(LocatedProblem[], limit, 0, nothing, ReentrantLock(), false)
 end
 
 locatedkey(p::LocatedProblem) = problemkey(p.problem)
+@inline locatedless(a::LocatedProblem, b::LocatedProblem) = problemless(a.problem, b.problem)
 
 # Fold one task-local log into the globally bounded reservoir, then release the
 # local retained entries. Row ids stay chunk-local until every chunk is indexed.
 # Absolute positions are the first problem-key field and chunks do not overlap,
 # so later row rebasing cannot change which problems belong under the cap.
+# The reservoir keeps the same max-heap-when-full discipline as ProblemLog —
+# this loop runs under the lock, so a linear scan per overflow would serialize
+# every chunk behind quadratic-by-cap work.
 function mergeproblems!(out::PendingProblemLog, log::ProblemLog, chunk::Int)
     log.first === nothing && return
     lock(out.lock) do
         out.dropped += log.dropped
         if log.first !== nothing
             first = LocatedProblem(log.first, chunk)
-            (out.first === nothing || locatedkey(first) < locatedkey(out.first)) &&
+            (out.first === nothing || locatedless(first, out.first)) &&
                 (out.first = first)
         end
         for p in log.items
@@ -1992,8 +2039,14 @@ function mergeproblems!(out::PendingProblemLog, log::ProblemLog, chunk::Int)
             else
                 out.dropped += 1
                 if out.limit > 0
-                    _, maxi = findmax(locatedkey, out.items)
-                    locatedkey(lp) < locatedkey(out.items[maxi]) && (out.items[maxi] = lp)
+                    if !out.heaped
+                        _heapify!(out.items, locatedless)
+                        out.heaped = true
+                    end
+                    @inbounds if locatedless(lp, out.items[1])
+                        out.items[1] = lp
+                        _siftdown!(out.items, locatedless, 1)
+                    end
                 end
             end
         end
@@ -2001,6 +2054,7 @@ function mergeproblems!(out::PendingProblemLog, log::ProblemLog, chunk::Int)
     log.items = Problem[]
     log.dropped = 0
     log.first = nothing
+    log.heaped = false
     return
 end
 
