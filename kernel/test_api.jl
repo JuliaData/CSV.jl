@@ -13,7 +13,7 @@
 #   • function-typed select/drop retired
 #   • Int64 overflow that fits Int128 remains exact where CSV.jl widens to Float64
 
-using Test, Dates, Tables, PooledArrays
+using Test, Dates, Tables, PooledArrays, CodecZlib
 using CSV
 isdefined(Main, :CSVApi) || include(joinpath(@__DIR__, "api.jl"))
 const A = CSVApi
@@ -515,3 +515,85 @@ end
 end
 
 end # @testset CSVApi
+
+@testset "1.0 parity batch: gzip, typemap, dateformat/pool Dicts, downcast, transpose, deprecations" begin
+    # auto-gzip: every source kind decompresses by magic bytes
+    plain = "a,b\n1,x\n2,y\n"
+    gz = transcode(CodecZlib.GzipCompressor, Vector{UInt8}(codeunits(plain)))
+    for src in (gz, IOBuffer(gz))
+        f = A.File(src)
+        @test Tables.getcolumn(f, :a) == [1, 2]
+    end
+    gzpath = joinpath(mktempdir(), "t.csv.gz")
+    write(gzpath, gz)
+    @test Tables.getcolumn(A.File(gzpath), :a) == [1, 2]
+    oracle = CSV.File(gzpath)
+    @test Tables.getcolumn(oracle, :a) == [1, 2]
+
+    # typemap: detected types remap; user-pinned ones don't
+    input = "a,b\n1,1.5\n2,2.5\n"
+    f = A.File(IOBuffer(input); typemap=Dict(Int64 => Float64))
+    o = CSV.File(IOBuffer(input); typemap=Dict(Int64 => Float64))
+    @test eltype(Tables.getcolumn(f, :a)) == eltype(Tables.getcolumn(o, :a)) == Float64
+    f = A.File(IOBuffer(input); typemap=Dict(Int64 => String), types=Dict(:b => Float64))
+    @test eltype(Tables.getcolumn(f, :b)) == Float64
+    @test Tables.getcolumn(f, :a) isa AbstractVector{<:AbstractString}
+
+    # per-column dateformat
+    input = "d1,d2\n03/04/2020,2020-01-02\n05/06/2021,2021-07-08\n"
+    f = A.File(IOBuffer(input); dateformat=Dict(:d1 => "dd/mm/yyyy"))
+    o = CSV.File(IOBuffer(input); dateformat=Dict(:d1 => "dd/mm/yyyy"))
+    @test Tables.getcolumn(f, :d1) == Tables.getcolumn(o, :d1) == [Date(2020, 4, 3), Date(2021, 6, 5)]
+    @test Tables.getcolumn(f, :d2) == [Date(2020, 1, 2), Date(2021, 7, 8)]
+
+    # per-column pool: Dict pools only the listed column
+    input = "a,b\n" * join(("p$(i % 5),q$(i % 5)" for i in 1:5000), '\n') * "\n"
+    f = A.File(IOBuffer(input); pool=Dict(:a => (1.0, 500)))
+    @test Tables.getcolumn(f, :a) isa PooledArrays.PooledArray
+    @test !(Tables.getcolumn(f, :b) isa PooledArrays.PooledArray)
+    f = A.File(IOBuffer(input); pool=[(1.0, 500), false])
+    @test Tables.getcolumn(f, :a) isa PooledArrays.PooledArray
+    @test !(Tables.getcolumn(f, :b) isa PooledArrays.PooledArray)
+
+    # downcast (oracle agreement on eltypes and values)
+    input = "a,b,c\n1,300,70000\n2,-40,100000\n"
+    f = A.File(IOBuffer(input); downcast=true)
+    o = CSV.File(IOBuffer(input); downcast=true)
+    for nm in (:a, :b, :c)
+        @test eltype(Tables.getcolumn(f, nm)) == eltype(Tables.getcolumn(o, nm))
+        @test Tables.getcolumn(f, nm) == Tables.getcolumn(o, nm)
+    end
+    # downcast with missings keeps Union eltype
+    f = A.File(IOBuffer("a\n1\n\n2\n"); downcast=true, ignoreemptyrows=false)
+    @test eltype(Tables.getcolumn(f, :a)) == Union{Int8, Missing}
+
+    # transpose: names in field 1, ragged pad, oracle value agreement
+    input = "name,1,2,3\nscore,1.5,2.5,3.5\nnote,x,y\n"
+    f = A.File(IOBuffer(input); transpose=true)
+    o = CSV.File(IOBuffer(input); transpose=true)
+    @test Tables.columnnames(Tables.columns(f)) == Tables.columnnames(Tables.columns(o))
+    @test Tables.getcolumn(f, :name) == Tables.getcolumn(o, :name) == [1, 2, 3]
+    @test Tables.getcolumn(f, :score) == [1.5, 2.5, 3.5]
+    @test isequal(Tables.getcolumn(f, :note), ["x", "y", missing])
+    @test isequal(String.(coalesce.(Tables.getcolumn(o, :note), "")),
+                  String.(coalesce.(Tables.getcolumn(f, :note), "")))
+    f = A.File(IOBuffer("1,2\n3,4\n"); transpose=true, header=false)
+    @test Tables.getcolumn(f, :Column1) == [1, 2] && Tables.getcolumn(f, :Column2) == [3, 4]
+    @test_throws ArgumentError A.File(IOBuffer(input); transpose=true, select=[:name])
+
+    # legacy kwargs error with migration text
+    for (kwname, kwval) in ((:silencewarnings, true), (:debug, true), (:lazystrings, true),
+                            (:tasks, 2), (:rows_to_check, 5), (:ignoreemptylines, true))
+        err = try
+            A.File(IOBuffer("a\n1\n"); kwname => kwval)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin("removed in 1.0", err.msg)
+    end
+
+    # reusebuffer: accepted and inert
+    r = A.Rows(IOBuffer("a\n1\n2\n"); reusebuffer=true)
+    @test length(collect(r)) == 2
+end

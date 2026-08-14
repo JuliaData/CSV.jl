@@ -36,7 +36,7 @@ isdefined(Main, :KernelExamples) || include(joinpath(@__DIR__, "examples.jl"))
 module CSVApi
 
 using ..CSVKernel, ..KernelExamples
-using Tables, Dates, Unicode, Mmap, PooledArrays
+using Tables, Dates, Unicode, Mmap, PooledArrays, CodecZlib
 const K = CSVKernel
 const E = KernelExamples
 
@@ -49,14 +49,29 @@ const _DIALECTKW = (:quotechar, :openquotechar, :closequotechar, :escapechar,
 const _VALUEKW = (:dateformat, :decimal, :truestrings, :falsestrings,
                   :stripwhitespace, :groupmark)
 const _INDEXKW = (:fastindex, :scanner)
-const _DRIVERKW = (:maxproblems, :nsample)
+const _DRIVERKW = (:maxproblems, :nsample, :typemap)
 
 function _pickkwargs(kw, allowed)
     return NamedTuple(p for p in pairs(kw) if p.first in allowed)
 end
 
+const _LEGACYKW = Dict{Symbol, String}(
+    :silencewarnings => "warnings are data now: problems(f) returns them; maxproblems caps retention",
+    :debug => "removed in 1.0; parse problems and the structural index are inspectable directly",
+    :lazystrings => "use stringtype=CSVKernel.CompactString (the default) or stringtype=String",
+    :tasks => "use ntasks",
+    :threaded => "use ntasks (ntasks=1 disables threading)",
+    :rows_to_check => "use nsample",
+    :ignoreemptylines => "use ignoreemptyrows",
+    :datarow => "use skipto",
+    :type => "use types (a single Type applies to every column)",
+)
+
 function _checkkwargs(context::AbstractString, kw, allowed)
     for k in keys(kw)
+        if haskey(_LEGACYKW, k)
+            throw(ArgumentError("$k was removed in 1.0: $(_LEGACYKW[k])"))
+        end
         k in allowed || throw(ArgumentError("unsupported $context keyword $k"))
     end
     return
@@ -101,15 +116,26 @@ end
 # may be replaced while the table is alive).
 const MMAP_THRESHOLD = 1 << 19
 
-resolvesource(buf::Vector{UInt8}; buffer_in_memory::Bool=false) = buf
-resolvesource(io::IO; buffer_in_memory::Bool=false) = Base.read(io)
-resolvesource(cmd::Base.AbstractCmd; buffer_in_memory::Bool=false) = Base.read(cmd)
+# gzip is detected by magic bytes on every source kind (CSV.jl parity): a
+# compressed source decompresses to a fresh buffer before any parsing.
+_isgzip(buf::AbstractVector{UInt8}) = length(buf) >= 2 && buf[1] == 0x1f && buf[2] == 0x8b
+_maybegunzip(buf::Vector{UInt8}) = _isgzip(buf) ? transcode(GzipDecompressor, buf) : buf
+
+resolvesource(buf::Vector{UInt8}; buffer_in_memory::Bool=false) = _maybegunzip(buf)
+resolvesource(io::IO; buffer_in_memory::Bool=false) = _maybegunzip(Base.read(io))
+resolvesource(cmd::Base.AbstractCmd; buffer_in_memory::Bool=false) = _maybegunzip(Base.read(cmd))
 function resolvesource(s::AbstractString; buffer_in_memory::Bool=false)
     isfile(s) || throw(ArgumentError("no file at $(repr(String(s))) — a String " *
                                      "source is a file path; wrap literal data in IOBuffer"))
     return open(s, "r") do io
         isfile(io) || throw(ArgumentError("no regular file at $(repr(String(s)))"))
         sz = filesize(io)
+        if sz >= 2
+            magic = Base.read(io, 2)
+            seekstart(io)
+            magic[1] == 0x1f && magic[2] == 0x8b &&
+                return transcode(GzipDecompressor, Base.read(io))
+        end
         (buffer_in_memory || sz < MMAP_THRESHOLD) && return Base.read(io)
         # Use the descriptor that supplied `sz`. This prevents a path replacement
         # between filesize and mmap from mapping a different file at the old size.
@@ -412,6 +438,13 @@ function _prepare(source;
     # missingstring → kernel sentinels ("" entries are inert: empty is always missing)
     sentinels = _sentinels(missingstring)
     valuekw = _pickkwargs(kw, _VALUEKW)
+    # per-column dateformat: a Dict defers to per-column ValueOpts built once
+    # the names are known; the base opts (header parsing, sniffing) go without
+    dfdict = nothing
+    if haskey(valuekw, :dateformat) && valuekw.dateformat isa AbstractDict
+        dfdict = valuekw.dateformat
+        valuekw = NamedTuple(kv for kv in pairs(valuekw) if kv.first != :dateformat)
+    end
     d = K.Dialect(; delim, dialectonly...)
     opts = K.makevalueopts(d; sentinels, valuekw...)
     cb = chunkbytes === nothing ? K._defaultchunkbytes(length(buf)) : chunkbytes
@@ -479,8 +512,24 @@ function _prepare(source;
     lim = limit === nothing ? (footerskip > 0 ? keep : nothing) : min(Int(limit), keep)
 
     # engine + diagnostics kwargs the kernel driver consumes directly
+    colopts = nothing
+    if dfdict !== nothing
+        overrides = Dict{Int, Any}()
+        for (key, fmt) in dfdict
+            j = key isa Integer ? Int(key) : findfirst(==(Symbol(key)), names)
+            (j === nothing || !(1 <= j <= length(names))) &&
+                throw(ArgumentError("dateformat column $key not found"))
+            overrides[j] = fmt
+        end
+        colopts = K.ValueOpts[haskey(overrides, j) ?
+                              K.makevalueopts(d; sentinels, valuekw...,
+                                              dateformat=overrides[j]) : opts
+                              for j in 1:length(names)]
+    end
     passthrough = _pickkwargs(kw, allowed)
-    parsekw = merge(passthrough, (; delim, sentinels, chunkbytes=cb, parallel))
+    dfdict !== nothing &&
+        (passthrough = NamedTuple(kv for kv in pairs(passthrough) if kv.first != :dateformat))
+    parsekw = merge(passthrough, (; delim, sentinels, chunkbytes=cb, parallel, colopts))
     return Prepared(buf, bi, names, length(names), lim, opts, d, headerlog, parsekw)
 end
 
@@ -544,6 +593,8 @@ end
 function File(source;
               types=nothing, select=nothing, drop=nothing,
               pool=DEFAULT_POOL,
+              downcast::Bool=false,
+              transpose::Bool=false,
               stringtype::Type=K.CompactString,
               strict::Bool=false, on_error::Symbol=strict ? :error : :collect,
               maxwarnings::Union{Nothing, Int}=nothing,
@@ -551,6 +602,11 @@ function File(source;
               ntasks::Union{Nothing, Int}=nothing,
               parallel::Bool=ntasks === nothing ? Threads.nthreads() > 1 : ntasks > 1,
               kw...)
+    if transpose
+        (select !== nothing || drop !== nothing) &&
+            throw(ArgumentError("select/drop are not supported with transpose=true"))
+        return _transposedfile(source; types, downcast, stringtype, kw...)
+    end
     ntasks === nothing || ntasks >= 1 ||
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
     maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
@@ -566,8 +622,9 @@ function File(source;
     else
         types
     end
+    poolarg, poolspecs = _resolvepool(pool, p.names, p.ncols)
     t = K.parse(p.buf; index=p.bi, header=p.names, types=parsetypes, select=sel, limit=p.limit,
-                pool, on_error=:collect, p.parsekw...)
+                pool=poolarg, poolspecs, on_error=:collect, p.parsekw...)
     t, firstproblem = _mergeproblems(t, p.headerlog, maxproblems)
     if on_error === :error && firstproblem !== nothing
         pr = firstproblem
@@ -576,6 +633,7 @@ function File(source;
                              pr.message * (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
     end
     t = _pooledarrays(t)
+    downcast && (t = _downcast(t))
     stringtype === String && (t = _materializestrings(t))
     nm = source isa AbstractString ? String(source) : "<$(nameof(typeof(source)))>"
     return File(nm, t, Dict(n => j for (j, n) in enumerate(K.names(t))))
@@ -611,6 +669,182 @@ end
 # inline reconstruction, unsafe_string per cell. The per-cell String() broadcast
 # this replaces ran the generic AbstractString path and was the measured
 # 55–110 MiB/s cliff on string-heavy shapes.
+# ---------------------------------------------------------------------------
+# transpose=true — the compatibility path. Rows are columns: input row j is
+# output column j; with header=true the first field of each row is that
+# column's name. Types are inferred EXACTLY (every cell participates — these
+# files are small by construction), or taken from `types`. Single-threaded,
+# strings materialize as String. select/drop/limit are not supported here.
+# ---------------------------------------------------------------------------
+function _cellstring(buf::Vector{UInt8}, ci, lr::Int, f::Int, opts)
+    sp = K.fieldspan(ci, lr, f)
+    sp === nothing && return ""
+    cpos, clen, esc, st = K.cellcontent(buf, sp[1], sp[2], opts)
+    st == K.CELL_VALUE || return ""
+    if esc
+        tmp = UInt8[]
+        K._unescape_append!(tmp, buf, cpos, clen, opts.e, opts.cq)
+        return String(tmp)
+    end
+    return String(buf[cpos:(cpos + clen - 1)])
+end
+
+function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
+                           T0, opts)
+    nf = K.nfields(ci, lr)
+    T = T0
+    if T === nothing
+        T = Missing
+        for f in startf:nf
+            sp = K.fieldspan(ci, lr, f)
+            sp === nothing && continue
+            T = K.promote_kernel(T, K.detecttype(buf, sp[1], sp[2], opts))
+        end
+    end
+    T === Missing && return fill(missing, n)
+    if T === String
+        out = Vector{Union{String, Missing}}(missing, n)
+        sawmiss = nf - (startf - 1) < n
+        for i in 1:min(n, nf - (startf - 1))
+            f = startf + i - 1
+            sp = K.fieldspan(ci, lr, f)
+            if sp === nothing || sp[2] == 0
+                sawmiss = true
+                continue
+            end
+            cpos, clen, esc, st = K.cellcontent(buf, sp[1], sp[2], opts)
+            if st != K.CELL_VALUE
+                sawmiss = true
+                continue
+            end
+            out[i] = esc ? (tmp = UInt8[];
+                            K._unescape_append!(tmp, buf, cpos, clen, opts.e, opts.cq);
+                            String(tmp)) :
+                     String(buf[cpos:(cpos + clen - 1)])
+        end
+        return sawmiss ? out : convert(Vector{String}, out)
+    end
+    out = Vector{Union{T, Missing}}(missing, n)
+    scratch = K._scratchfor(opts)
+    sawmiss = nf - (startf - 1) < n
+    for i in 1:min(n, nf - (startf - 1))
+        f = startf + i - 1
+        sp = K.fieldspan(ci, lr, f)
+        if sp === nothing || sp[2] == 0
+            sawmiss = true
+            continue
+        end
+        cpos, clen, esc, st = K.cellcontent(buf, sp[1], sp[2], opts)
+        if st != K.CELL_VALUE || esc || clen == 0
+            st == K.CELL_VALUE && (esc || clen == 0) && T0 === nothing &&
+                return _transposedcolumn(buf, ci, lr, startf, n, String, opts)
+            sawmiss = true
+            continue
+        end
+        v, ok = K.parsevalue(T, buf, cpos, cpos + clen - 1, opts, scratch)
+        if !ok
+            # exact inference cannot conflict; a user-pinned type leaves the
+            # cell missing (strict=false File semantics)
+            T0 === nothing && return _transposedcolumn(buf, ci, lr, startf, n, String, opts)
+            sawmiss = true
+            continue
+        end
+        out[i] = v
+    end
+    return sawmiss ? out : convert(Vector{T}, out)
+end
+
+function _transposedfile(source; types=nothing, downcast::Bool=false,
+                         stringtype::Type=K.CompactString,
+                         header::Union{Bool, Integer}=true,
+                         missingstring=nothing, delim=',',
+                         normalizenames::Bool=false, kw...)
+    allowed = (_DIALECTKW..., _VALUEKW...)
+    _checkkwargs("File(transpose=true)", kw, allowed)
+    hasnames = header === true || header == 1
+    hasnames || header === false ||
+        throw(ArgumentError("transpose=true supports header=true (names in field 1 of " *
+                            "each row) or header=false"))
+    buf = resolvesource(source)
+    dialectkw = _pickkwargs(kw, _DIALECTKW)
+    valuekw = _pickkwargs(kw, _VALUEKW)
+    d = K.Dialect(; delim, dialectkw...)
+    opts = K.makevalueopts(d; sentinels=_sentinels(missingstring), valuekw...)
+    bi = K.index(buf, d; datastart=_datastart(buf), parallel=false)
+    rows = Tuple{Any, Int}[]
+    for ci in bi.chunks, lr in ci.firstdatarow:K.totalrows(ci)
+        push!(rows, (ci, lr))
+    end
+    ncols = length(rows)
+    startf = hasnames ? 2 : 1
+    n = ncols == 0 ? 0 :
+        maximum(K.nfields(r[1], r[2]) - (startf - 1) for r in rows)
+    n = max(n, 0)
+    names = Symbol[hasnames ? Symbol(_cellstring(buf, r[1], r[2], 1, opts)) :
+                   Symbol("Column", j) for (j, r) in enumerate(rows)]
+    normalizenames && (names = [normalizename(String(nm)) for nm in names])
+    names = K.makeunique!(names)
+    seed = K.resolvetypes(types, names, ncols)
+    cols = AbstractVector[_transposedcolumn(buf, r[1], r[2], startf, n, seed[j], opts)
+                          for (j, r) in enumerate(rows)]
+    t = K.ParsedTable(names, cols, n, K.Problem[], 0)
+    downcast && (t = _downcast(t))
+    nm = source isa AbstractString ? String(source) : "<$(nameof(typeof(source)))>"
+    return File(nm, t, Dict(nm2 => j for (j, nm2) in enumerate(names)))
+end
+
+# pool as Dict(col => spec) or per-column vector: resolve to kernel poolspecs
+# (entries nothing = never pool). Scalars pass through as the global policy.
+function _resolvepool(pool, names::Vector{Symbol}, ncols::Int)
+    if pool isa AbstractDict
+        specs = Vector{Any}(nothing, ncols)
+        for (key, sp) in pool
+            j = key isa Integer ? Int(key) : findfirst(==(Symbol(key)), names)
+            (j === nothing || !(1 <= j <= ncols)) &&
+                throw(ArgumentError("pool column $key not found"))
+            specs[j] = K._poolpolicy(sp)
+        end
+        return false, specs
+    elseif pool isa AbstractVector
+        length(pool) == ncols ||
+            throw(ArgumentError("pool vector length $(length(pool)) != $ncols columns"))
+        return false, Any[K._poolpolicy(sp) for sp in pool]
+    end
+    return pool, nothing
+end
+
+# downcast=true: Int64 columns shrink to the smallest of Int8/Int16/Int32 that
+# holds every value (CSV.jl parity; one extrema scan + one convert per column)
+function _downcastint(lo::Int64, hi::Int64)
+    typemin(Int8) <= lo && hi <= typemax(Int8) && return Int8
+    typemin(Int16) <= lo && hi <= typemax(Int16) && return Int16
+    typemin(Int32) <= lo && hi <= typemax(Int32) && return Int32
+    return Int64
+end
+function _downcastcol(v::Vector{Int64})
+    isempty(v) && return v
+    lo, hi = extrema(v)
+    T = _downcastint(lo, hi)
+    return T === Int64 ? v : convert(Vector{T}, v)
+end
+function _downcastcol(v::Vector{Union{Int64, Missing}})
+    lo, hi, n = typemax(Int64), typemin(Int64), 0
+    for x in v
+        x === missing && continue
+        n += 1
+        lo = min(lo, x)
+        hi = max(hi, x)
+    end
+    n == 0 && return v
+    T = _downcastint(lo, hi)
+    return T === Int64 ? v : convert(Vector{Union{T, Missing}}, v)
+end
+_downcastcol(v::AbstractVector) = v
+function _downcast(t::K.ParsedTable)
+    cols = AbstractVector[_downcastcol(c) for c in t.columns]
+    return K.ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
+end
+
 # PooledColumn -> PooledArrays.PooledArray, the ecosystem dictionary type.
 # Levels materialize to String (at most the pool cap of them); refs are shared
 # outright for missing-free columns and remapped once — missing joins the pool,
@@ -734,7 +968,9 @@ struct Rows
     limit::Union{Nothing, Int}
 end
 
-function Rows(source; types=nothing, kw...)
+function Rows(source; types=nothing, reusebuffer::Bool=false, kw...)
+    # reusebuffer is CSV.jl surface: rows here are lazy views over the index —
+    # no per-row buffer exists to reuse, so the kwarg is accepted and inert
     allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...)
     _checkkwargs("Rows", kw, allowed)
     p = _prepare(source; kw...)

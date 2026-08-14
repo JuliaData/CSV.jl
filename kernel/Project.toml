@@ -1,4 +1,5 @@
 [deps]
+CodecZlib = "944b1d66-785c-5afd-91f1-9de20f533193"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
 Parsers = "69de0a69-1ddd-5017-9359-2bf0b02dc9f0"
