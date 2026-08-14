@@ -2839,12 +2839,12 @@ function parse(buf::Vector{UInt8};
     # PROVES that the binding policy must fail. The proof is capped at the 500
     # levels used by the default front door; custom larger bounds use the normal
     # parse-time decision instead of making the sampling cost unbounded. Start
-    # with 128 draws. A String-seeded column whose probe stays at least 15/16
-    # distinct gets an exact follow-up of up to twice the bound plus one rows;
-    # categorical columns stop after the cheap probe. Tight bounds can still be
-    # proven before a non-String seed promotes. Require at least 32 present cells.
-    # Skipped columns take the plain direct String path: no segments, no
-    # interning, no degrade, no stitch.
+    # with 128 draws. A String-seeded column whose probe is all-distinct gets an
+    # exact follow-up of up to twice the bound plus one rows; categorical columns
+    # stop at their first sampled repeat. Tight bounds can still be proven before
+    # a non-String seed promotes. Require at least 32 present cells. Skipped
+    # columns take the plain direct String path: no segments, no interning, no
+    # degrade, no stitch.
     if poolctx !== nothing
         ratiolevels = poolspec[1] == 1.0 ? ndata : floor(Int, poolspec[1] * ndata)
         maxlevels = min(ratiolevels, poolspec[2], Int(typemax(UInt32)))
@@ -2861,10 +2861,8 @@ function parse(buf::Vector{UInt8};
                 longmask = fill(false, ncols)
                 for j in 1:ncols
                     h = srh[j]
-                    if active[j] && promo[j] === String && length(h) >= 32
-                        threshold = cld(15 * length(h), 16)
-                        longmask[j] = _morethanunique(h, threshold - 1)
-                    end
+                    longmask[j] = active[j] && promo[j] === String &&
+                                  length(h) >= 32 && allunique(h)
                 end
                 if any(longmask)
                     longhashes = rowmask === nothing ?
