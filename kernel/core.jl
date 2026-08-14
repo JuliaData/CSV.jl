@@ -1390,12 +1390,16 @@ end
         p = pointer(buf)
         @inbounds while i + 7 <= last
             mk = _eqmask8_c(ltoh(unsafe_load(Ptr{UInt64}(p + i - 1))), cq)
-            while mk != 0
-                k = i + (trailing_zeros(mk) >> 3)
-                k < last && buf[k + 1] == cq && return k
-                mk &= mk - one(UInt64)   # a lone quote here means k+1 starts the
-            end                          # pair's first byte in the next word
-            i += 8
+            if mk == 0
+                i += 8
+                continue
+            end
+            # Borrow propagation can mark bytes after the first match. The
+            # first mark is exact; restart after a lone quote before searching
+            # for another candidate.
+            k = i + (trailing_zeros(mk) >> 3)
+            k < last && buf[k + 1] == cq && return k
+            i = k + 1
         end
     end
     @inbounds while i < last
