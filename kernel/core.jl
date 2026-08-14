@@ -1330,6 +1330,29 @@ struct TypedColumn{T}
 end
 TypedColumn{T}(n::Int) where {T} = TypedColumn{T}(Vector{T}(undef, n), fill(false, n))
 
+# Direct-to-final storage for typed columns the SAMPLE showed missings in: the
+# parse writes `Vector{Union{T,Missing}}` cells straight into the final — for a
+# bits `T` that is a data store plus a tag-byte store, the same two stores as
+# values+present — so finalize hands the Base vector back with zero copies.
+# Missing-free columns keep TypedColumn and return the raw `Vector{T}`; a
+# column whose (sparse) missings the sample missed converts once at finalize.
+# Post-parse conversion measures 120-150% of a whole 20 MiB parse (bitsunion
+# stores have no memcpy path), which is why the write-direct mode exists.
+struct UnionColumn{T}
+    uvalues::Vector{Union{T, Missing}}
+end
+UnionColumn{T}(n::Int) where {T} = UnionColumn{T}(Vector{Union{T, Missing}}(undef, n))
+
+@inline function _storevalue!(col::TypedColumn{T}, i::Int, v::T) where {T}
+    @inbounds col.values[i] = v
+    @inbounds col.present[i] = true
+    return
+end
+@inline function _storevalue!(col::UnionColumn{T}, i::Int, v::T) where {T}
+    @inbounds col.uvalues[i] = v
+    return
+end
+
 # --- inline-else-view strings (the "German strings" / Arrow StringView layout) --
 #
 # Every string cell is one 16-byte payload:
@@ -1804,27 +1827,6 @@ _unescape(buf::Vector{UInt8}, pos::Int64, len::Int32, e::UInt8, cq::UInt8) =
     String(_unescape_bytes(buf, pos, len, e, cq))
 
 # All-missing column.
-struct MissingColumn <: AbstractVector{Missing}
-    n::Int
-end
-Base.size(c::MissingColumn) = (c.n,)
-Base.@propagate_inbounds function Base.getindex(c::MissingColumn, i::Int)
-    @boundscheck checkbounds(c, i)
-    return missing
-end
-
-# The user-facing views. `materialize` (below) converts to plain Vectors when the
-# caller prefers copies over views.
-struct MaybeVector{T} <: AbstractVector{Union{T, Missing}}
-    values::Vector{T}
-    present::Vector{Bool}
-end
-Base.size(v::MaybeVector) = size(v.values)
-Base.@propagate_inbounds function Base.getindex(v::MaybeVector, i::Int)
-    @boundscheck checkbounds(v.values, i)
-    @inbounds return v.present[i] ? v.values[i] : missing
-end
-
 # The user-facing string column. getindex returns a `CompactString` (or `missing`) with
 # NO allocation: inline values live in the payload, long values view into `buf`
 # (input) or `extra` (unescaped-at-parse-time). `materialize` copies out to
@@ -1895,13 +1897,13 @@ end
 # Bool/temporal column — is free by construction.
 
 # Returns 0 on success, or the local row of the first conflicting value.
-function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
+function parsecolchunk!(col::Union{TypedColumn{T}, UnionColumn{T}}, buf::Vector{UInt8},
+                        ci::ChunkIndex,
                         j::Int, rowbase::Int, opts::ValueOpts,
                         userprovided::Bool, problems,
                         problemrowbase::Int=rowbase,
                         mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
                         reportlimit::Int=typemax(Int)) where {T}
-    values, present = col.values, col.present
     scratch = _scratchfor(opts)
     @inbounds for lr in ci.firstdatarow:totalrows(ci)
         localrow = lr - ci.firstdatarow + 1
@@ -1917,8 +1919,7 @@ function parsecolchunk!(col::TypedColumn{T}, buf::Vector{UInt8}, ci::ChunkIndex,
         if st == CELL_VALUE && clen > 0 && !esc
             v, ok = parsevalue(T, buf, cpos, cpos + clen - 1, opts, scratch)
             if ok
-                values[out] = v
-                present[out] = true
+                _storevalue!(col, out, v)
                 continue
             end
         end
@@ -2392,7 +2393,8 @@ end
 # the root of most "worked until row 2 million" issues.)
 function sampletypes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncols::Int,
                      opts::ValueOpts; nsample::Int=128,
-                     selected::Union{Nothing, Vector{Bool}}=nothing)
+                     selected::Union{Nothing, Vector{Bool}}=nothing,
+                     sawmissing::Union{Nothing, Vector{Bool}}=nothing)
     nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
     total = sum(nrows, chunks; init=0)
     total == 0 && return fill(Missing, ncols)
@@ -2403,17 +2405,22 @@ function sampletypes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncols::Int,
         gr = count == 1 ? 1 :
              1 + Int(widemul(k - 1, total - 1) ÷ (count - 1))
         ci, lr = locate(chunks, gr)
-        sampledetect!(types, buf, ci, lr, ncols, opts, selected)
+        sampledetect!(types, buf, ci, lr, ncols, opts, selected, sawmissing)
     end
     return types
 end
 
-@inline function sampledetect!(types, buf, ci, lr, ncols, opts, selected)
+@inline function sampledetect!(types, buf, ci, lr, ncols, opts, selected, sawmissing=nothing)
     for j in 1:ncols
         selected !== nothing && !selected[j] && continue
         sp = fieldspan(ci, lr, j)
-        sp === nothing && continue
-        types[j] = promote_kernel(types[j], detecttype(buf, sp[1], sp[2], opts))
+        if sp === nothing
+            sawmissing === nothing || (sawmissing[j] = true)
+            continue
+        end
+        dt = detecttype(buf, sp[1], sp[2], opts)
+        sawmissing !== nothing && dt === Missing && (sawmissing[j] = true)
+        types[j] = promote_kernel(types[j], dt)
     end
     return
 end
@@ -2519,7 +2526,8 @@ end
 # filter's two-phase parse: inference must see only rows that will be output).
 function sampletypesrows(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, rowbases0,
                          qrows::Vector{Int}, ncols::Int, opts::ValueOpts,
-                         selected::Union{Nothing, Vector{Bool}}; nsample::Int=128)
+                         selected::Union{Nothing, Vector{Bool}}; nsample::Int=128,
+                         sawmissing::Union{Nothing, Vector{Bool}}=nothing)
     types = fill(Missing, ncols)
     total = length(qrows)
     total == 0 && return types
@@ -2530,7 +2538,7 @@ function sampletypesrows(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, rowbase
         ki = searchsortedlast(rowbases0, gr - 1)
         ci = chunks[ki]
         lr = ci.firstdatarow + (gr - rowbases0[ki]) - 1
-        sampledetect!(types, buf, ci, lr, ncols, opts, selected)
+        sampledetect!(types, buf, ci, lr, ncols, opts, selected, sawmissing)
     end
     return types
 end
@@ -2769,19 +2777,24 @@ function parse(buf::Vector{UInt8};
     # -- type seeding (stratified over the probe chunks) -----------------------
     seed = resolvetypes(types, names, ncols)
     userprovided = [T !== nothing for T in seed]
+    # typed columns whose sample shows a missing cell get union-direct finals
+    # (the parse writes Vector{Union{T,Missing}} in place; conversion is never
+    # paid). Sample-missed sparse missings fall back to a finalize conversion.
+    sawmissing = fill(false, ncols)
     if any(j -> seed[j] === nothing && (selected === nothing || selected[j]), 1:ncols)
         if rowmask === nothing
             probechunks = ChunkIndex[ci for ci in chunks if nrows(ci) > 0]
             probetotal = sum(nrows, probechunks; init=0)
             ns = nsample === nothing ? clamp(probetotal >> 6, 8, 128) : nsample
-            inferred = sampletypes(buf, probechunks, ncols, opts; nsample=max(ns, 1), selected)
+            inferred = sampletypes(buf, probechunks, ncols, opts; nsample=max(ns, 1), selected,
+                                   sawmissing)
         else
             # inference reflects the rows that will actually be output: a
             # masked-out malformed value must not promote a qualifying column
             qrows = findall(rowmask)
             ns = nsample === nothing ? clamp(length(qrows) >> 6, 8, 128) : nsample
             inferred = sampletypesrows(buf, chunks, rowbases0, qrows, ncols, opts, selected;
-                                       nsample=max(ns, 1))
+                                       nsample=max(ns, 1), sawmissing)
         end
         for j in 1:ncols
             seed[j] === nothing && (seed[j] = inferred[j])
@@ -2901,7 +2914,8 @@ function parse(buf::Vector{UInt8};
         # flow through the existing pooled merge below.
         final = directwave!(cols, chunks, buf, d, opts, ncols, userprovided, promo,
                             promolock, pendingproblems, segments, segtypes, selected,
-                            rowbases, ndata, rl, reportstructural, parallel, poolctx)
+                            rowbases, ndata, rl, reportstructural, parallel, poolctx,
+                            sawmissing)
         for k in 1:(nch - 1)
             chunks[k].unclosedquote &&
                 error("internal error: chunk $(k) ended inside a quoted field despite parity pre-scan")
@@ -3125,12 +3139,13 @@ end
 # slices of promoted finals — including fill-only for chunks whose Missing
 # parse upgrades for free.
 function _allocdirect(::Type{T}, ndata::Int, buf::Vector{UInt8}, opts::ValueOpts,
-                      d::Dialect, poolctx, j::Int) where {T}
+                      d::Dialect, poolctx, j::Int, wantunion::Bool=false) where {T}
     T === Missing && return nothing
     T === String && poolctx !== nothing && !poolctx.skip[j] &&
         return nothing   # pooled: chunk staging
     T === String && return StringColumn(Vector{CompactStringPayload}(undef, ndata), buf,
                                         UInt8[], ReentrantLock(), opts.e, d.cq)
+    wantunion && return UnionColumn{T}(ndata)
     return TypedColumn{T}(Vector{T}(undef, ndata), Vector{Bool}(undef, ndata))
 end
 
@@ -3151,18 +3166,39 @@ function _fillslice!(col::TypedColumn, lo::Int, hi::Int)
     end
     return nothing
 end
+function _fillslice!(col::UnionColumn, lo::Int, hi::Int)
+    uvalues = col.uvalues
+    @inbounds for r in lo:hi
+        uvalues[r] = missing
+    end
+    return nothing
+end
 
 function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOpts,
                      ncols::Int, userprovided, promo, promolock,
                      pendingproblems::PendingProblemLog, segments, segtypes,
                      selected::Union{Nothing, Vector{Bool}},
                      rowbases::Vector{Int}, ndata::Int, rl,
-                     reportstructural::Bool, parallel::Bool, poolctx)
+                     reportstructural::Bool, parallel::Bool, poolctx,
+                     unioncols::Vector{Bool}=fill(false, ncols))
     nch = length(chunks)
     finals = Vector{Any}(nothing, ncols)
     allocjs = [j for j in 1:ncols if selected === nothing || selected[j]]
-    for j in allocjs
-        finals[j] = _allocdirect(promo[j], ndata, buf, opts, d, poolctx, j)
+    # allocate per column in parallel: a Vector{Union{T,Missing}} final zero-
+    # initializes its selector bytes at allocation, which is a serial memset
+    # per union column if done on one task — measured +17-21% at 8T on
+    # missing-heavy shapes before this went parallel
+    if parallel && length(allocjs) > 1 && ndata > (1 << 16)
+        @sync for j in allocjs
+            errormonitor(Threads.@spawn begin
+                finals[j] = _allocdirect(promo[j], ndata, buf, opts, d, poolctx, j,
+                                         unioncols[j])
+            end)
+        end
+    else
+        for j in allocjs
+            finals[j] = _allocdirect(promo[j], ndata, buf, opts, d, poolctx, j, unioncols[j])
+        end
     end
     if parallel && nch > 1
         @sync for k in 1:nch
@@ -3170,13 +3206,13 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
                                                      userprovided, promo, promolock, finals,
                                                      pendingproblems, segments, segtypes, k,
                                                      selected, rowbases[k], rl(k), ndata,
-                                                     reportstructural, poolctx))
+                                                     reportstructural, poolctx, unioncols))
         end
     else
         for k in 1:nch
             directchunk!(chunks[k], buf, d, opts, ncols, userprovided, promo, promolock,
                          finals, pendingproblems, segments, segtypes, k, selected,
-                         rowbases[k], rl(k), ndata, reportstructural, poolctx)
+                         rowbases[k], rl(k), ndata, reportstructural, poolctx, unioncols)
         end
     end
 
@@ -3271,9 +3307,9 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
     # the presence scans are per-column independent — spread them
     finalizeone = j -> begin
         T = final[j]
-        cols[j] = T === Missing ? MissingColumn(ndata) :
+        cols[j] = T === Missing ? fill(missing, ndata) :
                   T === String ? finalizecolumn(String, finals[j]::StringColumn, ndata) :
-                  finalizecolumn(T, finals[j]::TypedColumn{T}, ndata)
+                  finalizecolumn(T, finals[j]::Union{TypedColumn{T}, UnionColumn{T}}, ndata)
     end
     finjs = [j for j in allocjs
              if !(final[j] === String && poolctx !== nothing && !poolctx.skip[j])]
@@ -3291,7 +3327,8 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
                       ncols::Int, userprovided, promo, promolock, finals,
                       pendingproblems::PendingProblemLog, segments, segtypes, k::Int,
                       selected::Union{Nothing, Vector{Bool}}, rowbase::Int,
-                      reportlimit::Int, ndata::Int, reportstructural::Bool, poolctx)
+                      reportlimit::Int, ndata::Int, reportstructural::Bool, poolctx,
+                      unioncols::Vector{Bool}=fill(false, ncols))
     n = nrows(ci)
     log = ProblemLog(pendingproblems.limit)
     if reportstructural
@@ -3364,7 +3401,8 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
                 joined = promote_kernel(promo[j], promoT)
                 if joined !== promo[j]
                     promo[j] = joined
-                    finals[j] = _allocdirect(joined, ndata, buf, opts, d, poolctx, j)
+                    finals[j] = _allocdirect(joined, ndata, buf, opts, d, poolctx, j,
+                                             unioncols[j])
                 end
                 (promo[j], finals[j])
             end
@@ -3531,7 +3569,7 @@ function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases
                       ndata::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8,
                       pool::Union{Nothing, Tuple{Float64, Int}}=nothing,
                       mask::Union{Nothing, Vector{Bool}}=nothing, inbases=nothing) where {T}
-    T === Missing && return MissingColumn(ndata)
+    T === Missing && return fill(missing, ndata)
     if T === String && pool !== nothing
         if ndata > 0
             pooled = poolsegments(segments, j, chunkrows, rowbases, ndata, buf, e, cq, pool,
@@ -3553,7 +3591,7 @@ function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases
     # driver's small-file cost identical to writing final columns in place.
     if length(chunkrows) == 1
         seg = segments[1][j]
-        seg === nothing && return MissingColumn(ndata)
+        seg === nothing && return fill(missing, ndata)
         # a limit-clipped boundary segment is larger than the output; only the
         # untouched case may alias the staging directly
         if (seg isa StringColumn ? length(seg.payloads) : length((seg::TypedColumn{T}).values)) == ndata
@@ -3654,9 +3692,9 @@ function _stitchmasked(::Type{T}, segments, j::Int, chunkrows, ndata::Int,
 end
 
 function finalizecolumn(::Type{Missing}, ::Nothing, n::Int)
-    return MissingColumn(n)
+    return fill(missing, n)
 end
-finalizecolumn(::Type{Missing}, ::Nothing, n::Int, ::Bool) = MissingColumn(n)
+finalizecolumn(::Type{Missing}, ::Nothing, n::Int, ::Bool) = fill(missing, n)
 function finalizecolumn(::Type{String}, col::StringColumn, n::Int)
     anymissing = any(p -> cslen(p) < 0, col.payloads)
     return anymissing ? CompactStringVector{Union{CompactString, Missing}}(col.payloads, col.buf, col.extra) :
@@ -3673,11 +3711,41 @@ end
 _allpresent(present::Vector{Bool}) = count(present) == length(present)
 function finalizecolumn(::Type{T}, col::TypedColumn{T}, n::Int) where {T}
     # no missings ⇒ hand back the raw Vector{T}, zero copies
-    return _allpresent(col.present) ? col.values : MaybeVector{T}(col.values, col.present)
+    return _allpresent(col.present) ? col.values : _tounion(col)
 end
 function finalizecolumn(::Type{T}, col::TypedColumn{T}, n::Int, force_missing::Bool) where {T}
-    return !force_missing && _allpresent(col.present) ? col.values :
-           MaybeVector{T}(col.values, col.present)
+    return !force_missing && _allpresent(col.present) ? col.values : _tounion(col)
+end
+# union-direct finals ARE the output — zero copies either way
+finalizecolumn(::Type{T}, col::UnionColumn{T}, n::Int) where {T} = col.uvalues
+finalizecolumn(::Type{T}, col::UnionColumn{T}, n::Int, ::Bool) where {T} = col.uvalues
+
+# The sample-missed fallback: sparse missings the 128-row probe didn't see.
+# Bitsunion stores have no memcpy path (measured 120-150% of a whole 20 MiB
+# parse serially), so slice it across tasks. Named helper, not a closure: the
+# captured-and-reassigned boxing war story.
+function _tounionrange!(out, values, present, lo::Int, hi::Int)
+    @inbounds for i in lo:hi
+        out[i] = present[i] ? values[i] : missing
+    end
+    return
+end
+function _tounion(col::TypedColumn{T}) where {T}
+    values, present = col.values, col.present
+    n = length(values)
+    out = Vector{Union{T, Missing}}(undef, n)
+    nt = Threads.nthreads()
+    if n > (1 << 17) && nt > 1
+        parts = min(nt, 8)
+        @sync for c in 1:parts
+            lo = 1 + (c - 1) * n ÷ parts
+            hi = c * n ÷ parts
+            errormonitor(Threads.@spawn _tounionrange!(out, values, present, lo, hi))
+        end
+    else
+        _tounionrange!(out, values, present, 1, n)
+    end
+    return out
 end
 
 """
