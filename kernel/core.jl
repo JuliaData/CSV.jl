@@ -1703,6 +1703,11 @@ end
 InlineTable() = InlineTable(fill(IT_EMPTY, 64), Vector{UInt32}(undef, 64), 0, UInt64(63))
 
 @inline _inlinekey(p::CompactStringPayload) = (UInt128(p.a) << 64) | p.b
+# Raw-span keys set bit 31 of the payload's length field (key bit 95): no
+# canonical content payload can carry it (lengths are at most 12 here), so raw
+# keys and content keys share the InlineTable without colliding — and
+# typemax(UInt128) (IT_EMPTY) stays unreachable exactly as before.
+const RAWKEY_BIT = UInt128(0x8000_0000) << 64
 
 @inline function _itmix(k::UInt128)
     # Payload suffix bytes occupy progressively higher bits. Mix both words,
@@ -1763,6 +1768,7 @@ mutable struct PoolSegment
     refs::Vector{UInt32}                 # 0 = missing/not-yet-parsed
     itable::InlineTable                  # inline levels: payload bits are the key
     vtable::Dict{ViewKey, UInt32}        # view/extra levels: content hash, no alloc
+    rawvtable::Dict{ViewKey, UInt32}     # >12-byte RAW escaped spans -> ref (hits skip unescape)
     levelpayloads::Vector{CompactStringPayload}
     extra::Vector{UInt8}                 # unescaped bytes for NEW levels only
     buf::Vector{UInt8}
@@ -1775,6 +1781,7 @@ end
 PoolSegment(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8, maxlevels::Int,
             aborted::Threads.Atomic{Bool}) =
     PoolSegment(zeros(UInt32, n), InlineTable(), Dict{ViewKey, UInt32}(),
+                Dict{ViewKey, UInt32}(),
                 CompactStringPayload[], UInt8[], buf, e, cq, maxlevels, aborted, nothing)
 
 # per-column pooling context the driver threads through chunk tasks
@@ -2068,6 +2075,24 @@ function parsecolchunk!(ps::PoolSegment, buf::Vector{UInt8}, ci::ChunkIndex,
         end
         rewind = -1
         if esc
+            # raw-span fast path: identical raw spellings unescape to identical
+            # values, so a repeat escaped cell resolves WITHOUT the unescape
+            # walk. Inline raw spans key the shared InlineTable under
+            # RAWKEY_BIT; longer ones use their own dict (an unquoted
+            # bare-quote cell can equal an escaped raw span byte-for-byte, so
+            # raw and content key spaces must stay disjoint). The key is
+            # recomputed at registration below so nothing escapes this branch —
+            # extra live state was measured as +5.7% on the escape-free hot
+            # path.
+            rref = clen <= COMPACTSTRING_INLINE ?
+                   itget(ps.itable, _inlinekey(inline_payload(buf, cpos, clen)) | RAWKEY_BIT) :
+                   get(ps.rawvtable,
+                       ViewKey(CompactString(view_payload(buf, cpos, clen, Int64(cpos)), buf)),
+                       UInt32(0))
+            if rref != 0
+                refs[out] = rref
+                continue
+            end
             inl = _unescape_inline(buf, cpos, clen, ps.e, ps.cq)
             if inl !== nothing
                 p = inl
@@ -2119,6 +2144,15 @@ function parsecolchunk!(ps::PoolSegment, buf::Vector{UInt8}, ci::ChunkIndex,
             end
         elseif rewind >= 0
             resize!(ps.extra, rewind)              # duplicate escaped level: drop its bytes
+        end
+        if esc
+            # next occurrence of this raw spelling hits before unescaping
+            if clen <= COMPACTSTRING_INLINE
+                itset!(ps.itable, _inlinekey(inline_payload(buf, cpos, clen)) | RAWKEY_BIT, ref)
+            else
+                ps.rawvtable[ViewKey(CompactString(view_payload(buf, cpos, clen,
+                                                                Int64(cpos)), buf))] = ref
+            end
         end
         refs[out] = ref
     end
