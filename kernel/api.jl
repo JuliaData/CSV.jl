@@ -36,7 +36,7 @@ isdefined(Main, :KernelExamples) || include(joinpath(@__DIR__, "examples.jl"))
 module CSVApi
 
 using ..CSVKernel, ..KernelExamples
-using Tables, Dates, Unicode, Mmap
+using Tables, Dates, Unicode, Mmap, PooledArrays
 const K = CSVKernel
 const E = KernelExamples
 
@@ -575,6 +575,7 @@ function File(source;
         throw(ErrorException("CSVKernel: $(pr.kind) at data row $(pr.row), column $(pr.col): " *
                              pr.message * (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
     end
+    t = _pooledarrays(t)
     stringtype === String && (t = _materializestrings(t))
     nm = source isa AbstractString ? String(source) : "<$(nameof(typeof(source)))>"
     return File(nm, t, Dict(n => j for (j, n) in enumerate(K.names(t))))
@@ -610,6 +611,43 @@ end
 # inline reconstruction, unsafe_string per cell. The per-cell String() broadcast
 # this replaces ran the generic AbstractString path and was the measured
 # 55–110 MiB/s cliff on string-heavy shapes.
+# PooledColumn -> PooledArrays.PooledArray, the ecosystem dictionary type.
+# Levels materialize to String (at most the pool cap of them); refs are shared
+# outright for missing-free columns and remapped once — missing joins the pool,
+# CSV.jl's convention — otherwise. Measured 0.2-0.8 ms on 20 MiB shapes.
+function _topooledarray(c::K.PooledColumn{ELT}) where {ELT}
+    n = length(c.levels)
+    if !(Missing <: ELT)
+        pool = Vector{String}(undef, n)
+        @inbounds for i in 1:n
+            pool[i] = String(c.levels[i])
+        end
+        invpool = Dict{String, UInt32}(pool[i] => UInt32(i) for i in 1:n)
+        return PooledArray(PooledArrays.RefArray(K.poolrefs(c)), invpool, pool)
+    end
+    pool = Vector{Union{String, Missing}}(undef, n + 1)
+    @inbounds for i in 1:n
+        pool[i] = String(c.levels[i])
+    end
+    pool[n + 1] = missing
+    invpool = Dict{Union{String, Missing}, UInt32}(pool[i] => UInt32(i) for i in 1:(n + 1))
+    oldrefs = K.poolrefs(c)
+    refs = similar(oldrefs)
+    mref = UInt32(n + 1)
+    @inbounds @simd for i in eachindex(refs)
+        r = oldrefs[i]
+        refs[i] = r == 0 ? mref : r
+    end
+    return PooledArray(PooledArrays.RefArray(refs), invpool, pool)
+end
+
+function _pooledarrays(t::K.ParsedTable)
+    any(c -> c isa K.PooledColumn, t.columns) || return t
+    cols = AbstractVector[c isa K.PooledColumn ? _topooledarray(c) : c
+                          for c in t.columns]
+    return K.ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
+end
+
 function _materializestrings(t::K.ParsedTable)
     cols = AbstractVector[col isa K.CompactStringVector ? K.materialize(col) : col
                           for col in t.columns]

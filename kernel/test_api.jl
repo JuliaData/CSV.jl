@@ -13,7 +13,7 @@
 #   • function-typed select/drop retired
 #   • Int64 overflow that fits Int128 remains exact where CSV.jl widens to Float64
 
-using Test, Dates, Tables
+using Test, Dates, Tables, PooledArrays
 using CSV
 isdefined(Main, :CSVApi) || include(joinpath(@__DIR__, "api.jl"))
 const A = CSVApi
@@ -209,9 +209,9 @@ end
     vals = rand(["alpha", "beta", "gamma"], 400)
     input = "k\n" * join(vals, "\n") * "\n"
     f = against(input)                                        # both default-pool
-    @test Tables.getcolumn(Tables.columns(f), :k) isa K.PooledColumn
+    @test Tables.getcolumn(Tables.columns(f), :k) isa PooledArrays.PooledArray
     f = against(input; kw=(; pool=false))
-    @test !(Tables.getcolumn(Tables.columns(f), :k) isa K.PooledColumn)
+    @test !(Tables.getcolumn(Tables.columns(f), :k) isa PooledArrays.PooledArray)
     against(input; kw=(; pool=true))
     against(input; kw=(; pool=0.9))
 end
@@ -412,7 +412,7 @@ end
     @test (sm.delim, sm.header, sm.names, sm.types) ==
           (sb.delim, sb.header, sb.names, sb.types)
     @test collect(String, mappedcol) == collect(String, Tables.getcolumn(fb, :s))
-    @test pooledcol isa K.PooledColumn
+    @test pooledcol isa PooledArrays.PooledArray
     @test collect(Tables.getcolumn(mappedbatch, :n)) == collect(fb.n)[1:mappedbatch.nrows]
     # This also runs K.materialize while its source is a read-only mapping.
     fm = A.File(bigpath; pool=false, stringtype=String)
