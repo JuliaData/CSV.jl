@@ -1340,6 +1340,22 @@ end
         @test K.poolrefs(promoc) == K.poolrefs(promoref)
         @test collect(K.poollevels(promoc)) == collect(K.poollevels(promoref))
     end
+    # A tight bound is proven by the 128-row probe before an unsampled String
+    # promotes an Int seed. Both direct and masked skip paths must reparse stale
+    # numeric segments into the plain String destination.
+    skipvalues = [i == 1 ? "1" : "word$i" for i in 1:1200]
+    skipcsv = "a\n" * join(skipvalues, '\n') * "\n"
+    skipmask = [i == 1 || i == 1200 || iseven(i) for i in 1:1200]
+    for par in (false, true)
+        promoted = K.parse(skipcsv; nsample=1, pool=0.05,
+                           chunkbytes=31, parallel=par)[:a]
+        @test promoted isa K.KStrVector
+        @test K.materialize(promoted) == skipvalues
+        maskedpromoted = K.parse(skipcsv; nsample=1, rowmask=skipmask, pool=0.05,
+                                 chunkbytes=31, parallel=par)[:a]
+        @test maskedpromoted isa K.KStrVector
+        @test K.materialize(maskedpromoted) == skipvalues[skipmask]
+    end
     # Abandoning after an extra-backed level must leave flat stitching untouched.
     abandoned = K.parse(escapedcsv; types=String, pool=(1.0, 1),
                         chunkbytes=16, parallel=true)[:a]

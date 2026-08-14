@@ -2490,12 +2490,29 @@ function samplerepeathashes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncol
             selected !== nothing && !selected[j] && continue
             sp = fieldspan(ci, lr, j)
             (sp === nothing || sp[2] == 0) && continue
-            cpos, clen, esc, st = cellcontent(buf, sp[1], sp[2], opts)
+            pos, len = sp
+            firstbyte = @inbounds buf[pos]
+            if !opts.stripws &&
+               (!opts.quoted || (firstbyte != opts.oq && !_isot(firstbyte))) &&
+               !_maybesentinel(opts, firstbyte)
+                push!(hashes[j], _cellhash(buf, pos, len, opts.e, opts.cq, false))
+                continue
+            end
+            cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
             st == CELL_VALUE || continue
             push!(hashes[j], _cellhash(buf, cpos, clen, opts.e, opts.cq, esc))
         end
     end
     return hashes
+end
+
+function _morethanunique(values::Vector{UInt64}, limit::Int)
+    seen = Set{UInt64}()
+    for value in values
+        push!(seen, value)
+        length(seen) > limit && return true
+    end
+    return false
 end
 
 # Stratified sampling restricted to a set of qualifying global rows (the
@@ -2821,24 +2838,52 @@ function parse(buf::Vector{UInt8};
     # Pooling pre-skip: more than `maxlevels` semantically distinct sampled cells
     # PROVES that the binding policy must fail. The proof is capped at the 500
     # levels used by the default front door; custom larger bounds use the normal
-    # parse-time decision instead of making the sampling cost unbounded. Keep at
-    # least 128 jittered draws for useful high-cardinality coverage and require
-    # at least 32 present cells. Skipped columns take the plain direct String
-    # path: no segments, no interning, no degrade, no stitch.
+    # parse-time decision instead of making the sampling cost unbounded. Start
+    # with 128 draws. A String-seeded column whose probe stays at least 15/16
+    # distinct gets an exact follow-up of up to twice the bound plus one rows;
+    # categorical columns stop after the cheap probe. Tight bounds can still be
+    # proven before a non-String seed promotes. Require at least 32 present cells.
+    # Skipped columns take the plain direct String path: no segments, no
+    # interning, no degrade, no stitch.
     if poolctx !== nothing
         ratiolevels = poolspec[1] == 1.0 ? ndata : floor(Int, poolspec[1] * ndata)
         maxlevels = min(ratiolevels, poolspec[2], Int(typemax(UInt32)))
         if maxlevels < ndata && maxlevels <= 500
-            proofsample = max(128, maxlevels + 1)
+            proofsample = max(128, 2 * maxlevels + 1)
+            active = [selected === nothing || selected[j] for j in 1:ncols]
+            qrows = rowmask === nothing ? nothing : findall(rowmask)
             srh = rowmask === nothing ?
-                  samplerepeathashes(buf, chunks, ncols, opts, selected;
-                                     nsample=proofsample, sampletotal=ndata) :
-                  samplerepeathashes(buf, chunks, ncols, opts, selected,
-                                     findall(rowmask), rowbases0; nsample=proofsample)
+                  samplerepeathashes(buf, chunks, ncols, opts, active;
+                                     sampletotal=ndata) :
+                  samplerepeathashes(buf, chunks, ncols, opts, active,
+                                     qrows, rowbases0)
+            if proofsample > 128
+                longmask = fill(false, ncols)
+                for j in 1:ncols
+                    h = srh[j]
+                    if active[j] && promo[j] === String && length(h) >= 32
+                        threshold = cld(15 * length(h), 16)
+                        longmask[j] = _morethanunique(h, threshold - 1)
+                    end
+                end
+                if any(longmask)
+                    longhashes = rowmask === nothing ?
+                                 samplerepeathashes(buf, chunks, ncols, opts, longmask;
+                                                    nsample=proofsample,
+                                                    sampletotal=ndata) :
+                                 samplerepeathashes(buf, chunks, ncols, opts, longmask,
+                                                    qrows, rowbases0;
+                                                    nsample=proofsample)
+                    for j in 1:ncols
+                        longmask[j] && (srh[j] = longhashes[j])
+                    end
+                end
+            end
             for j in 1:ncols
                 selected === nothing || selected[j] || continue
                 h = srh[j]
-                length(h) >= 32 && length(h) > maxlevels && allunique(h) &&
+                length(h) >= 32 && length(h) > maxlevels &&
+                    _morethanunique(h, maxlevels) &&
                     (poolctx.skip[j] = true)
             end
         end
