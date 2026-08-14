@@ -313,9 +313,8 @@ function runcell(label, shape::Symbol, mb::Float64; core::Bool)
     end
 
     if !core && shape in (:numeric, :mixed, :strings, :pooled_low)
-        t4, al4 = besttime(() -> K.parse(copy(buf); (k => v for (k, v) in pairs(apikw)
-                                                     if k !== :missingstring)...,
-                                         (shape === :sentinel ? (; sentinels=["NA"]) : (;))...))
+        # these shapes take no api-only kwargs, so kparse sees the same options
+        t4, al4 = besttime(() -> K.parse(copy(buf)))
         push!(cells, (; config="kparse", t=t4, al=al4))
         record(label, shape, mb, "kparse", bytes, nrows, t4, al4)
     end

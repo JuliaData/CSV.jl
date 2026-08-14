@@ -2498,7 +2498,6 @@ function parse(buf::Vector{UInt8};
         end
         keep = 1:lastk
         chunks = chunks[keep]
-        indexed = indexed[keep]
         rowbases0 = rowbases0[keep]
         nch = lastk
     end
@@ -2508,7 +2507,7 @@ function parse(buf::Vector{UInt8};
     userprovided = [T !== nothing for T in seed]
     if any(j -> seed[j] === nothing && (selected === nothing || selected[j]), 1:ncols)
         if rowmask === nothing
-            probechunks = ChunkIndex[chunks[k] for k in 1:nch if indexed[k] && nrows(chunks[k]) > 0]
+            probechunks = ChunkIndex[ci for ci in chunks if nrows(ci) > 0]
             probetotal = sum(nrows, probechunks; init=0)
             ns = nsample === nothing ? clamp(probetotal >> 6, 8, 128) : nsample
             inferred = sampletypes(buf, probechunks, ncols, opts; nsample=max(ns, 1), selected)
@@ -2544,12 +2543,13 @@ function parse(buf::Vector{UInt8};
         end
     end
 
-    # -- fused wave: index + parse each chunk while its bytes are cache-hot ----
-    # Each chunk task indexes (unless probed), reports problems with chunk-local
-    # row ids into a lock-free task-local log, then folds that log once into a
-    # globally bounded reservoir. It parses every column into a chunk-local
-    # segment and promotes through the shared `promo` register with an immediate
-    # hot re-parse on conflict.
+    # -- value wave ------------------------------------------------------------
+    # Chunks are already indexed. Each chunk task reports its ragged rows with
+    # chunk-local ids into a task-local log (folded once into the bounded
+    # reservoir), parses every selected column, and promotes through the shared
+    # `promo` register with an immediate hot re-parse on conflict. The unmasked
+    # driver writes final columns directly; the masked driver stages and
+    # stitches compactly.
     promo = Type[T for T in seed]
     promolock = ReentrantLock()
     # parse-time pooling: chunk tasks intern String cells as they parse. The
@@ -2608,15 +2608,15 @@ function parse(buf::Vector{UInt8};
         # positions gather compactly)
         if parallel && nch > 1
             @sync for k in 1:nch
-                errormonitor(Threads.@spawn fusedchunk!(chunks[k], buf, d, sc, indexed[k],
-                                                        ncols, opts, userprovided, promo, promolock,
+                errormonitor(Threads.@spawn fusedchunk!(chunks[k], buf, d, ncols, opts,
+                                                        userprovided, promo, promolock,
                                                         pendingproblems, segments, segtypes, k,
                                                         selected, rowmask, mb(k), rl(k),
                                                         reportstructural, poolctx))
             end
         else
             for k in 1:nch
-                fusedchunk!(chunks[k], buf, d, sc, indexed[k], ncols, opts, userprovided,
+                fusedchunk!(chunks[k], buf, d, ncols, opts, userprovided,
                             promo, promolock, pendingproblems, segments, segtypes, k,
                             selected, rowmask, mb(k), rl(k), reportstructural, poolctx)
             end
@@ -2696,15 +2696,14 @@ chunkrowbase(chunks::Vector{ChunkIndex}, target::ChunkIndex) =
 # segment storage, promoting through the shared register with an immediate
 # re-parse while the chunk's bytes are still cache-hot. This is what removes the
 # index-everything-then-parse-everything double pass over RAM.
-function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Symbol,
-                     alreadyindexed::Bool, ncols::Int, opts::ValueOpts,
+function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ncols::Int,
+                     opts::ValueOpts,
                      userprovided, promo, promolock, pendingproblems::PendingProblemLog,
                      segments, segtypes, k::Int,
                      selected::Union{Nothing, Vector{Bool}}=nothing,
                      mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
                      reportlimit::Int=typemax(Int), reportstructural::Bool=true,
                      poolctx::Union{Nothing, PoolCtx}=nothing)
-    alreadyindexed || indexone!(ci, buf, d, scanner)
     n = nrows(ci)
     log = ProblemLog(pendingproblems.limit)
     if reportstructural
@@ -2802,9 +2801,6 @@ end
 # sampling exists to make rare. Pooled String columns are the one carve-out:
 # they keep chunk-local interning staging (levels must merge in chunk order)
 # and the existing merge; only their `segments` slots are populated here.
-
-# the (type, destination) pair for column j, read/updated under `promolock`
-@inline _directref(finals, promo, j) = (promo[j], finals[j])
 
 # Direct finals allocate UNDEF: each chunk task fills its own slice right
 # before parsing it (one page touch, in the task that writes it, parallel at
@@ -3003,7 +2999,7 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
             st[j] = Missing
             continue
         end
-        T, dest = lock(() -> _directref(finals, promo, j), promolock)
+        T, dest = lock(() -> (promo[j], finals[j]), promolock)
         attempts = 0
         while true
             (attempts += 1) > 8 && error("internal error: promotion did not converge")
@@ -3207,35 +3203,11 @@ function poolsegments(segments, j::Int, chunkrows, rowbases, ndata::Int,
             end
             continue
         end
-        scol = seg isa PoolSegment ? seg.degraded : seg::StringColumn
-        rb = rowbases[k]
-        @inbounds for i in 1:chunkrows[k]
-            if mask !== nothing
-                mask[inbases[k] + i] || continue
-            end
-            dest += 1
-            p = scol.payloads[i]
-            len = Int(kstrlen(p))
-            len < 0 && continue                  # missing ⇒ ref 0
-            npresent += 1
-            cell = len <= KSTR_INLINE ? KStr(p, EMPTY_BYTES) :
-                   KStr(p, kstroff(p) < 0 ? scol.extra : buf)
-            ref = get(table, cell, UInt32(0))
-            if ref == 0
-                length(levelpayloads) >= maxlevels && return nothing
-                if len > KSTR_INLINE && kstroff(p) < 0
-                    # chunk-local extra bytes: copy into the pooled extra
-                    off = Int(-kstroff(p))
-                    base = length(extra)
-                    append!(extra, @view scol.extra[off:off + len - 1])
-                    p = view_payload(extra, base + 1, len, -(Int64(base) + 1))
-                end
-                push!(levelpayloads, p)
-                ref = UInt32(length(levelpayloads))
-                table[cell] = ref
-            end
-            refs[mask === nothing ? rb + i : dest] = ref
-        end
+        # every String staging under pooling is a PoolSegment (parse-time
+        # interning; the masked driver and restale allocate them too) — plain
+        # StringColumn staging reaching a pooled merge is a driver bug
+        error("internal error: pooled merge expects PoolSegment staging, got " *
+              string(typeof(seg)))
     end
     levels = KStrVector{KStr}(levelpayloads, buf, extra)
     return npresent == ndata ? PooledColumn{KStr}(refs, levels) :
