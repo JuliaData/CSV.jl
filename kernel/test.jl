@@ -217,6 +217,25 @@ end
     @test idxall("a\r\nb\rc\nd")   == [["a"],["b"],["c"],["d"]]       # mixed terminators
     @test idxall("a\r\n\r\nb\r\n") == [["a"],["b"]]
     @test idxall("a\r\n\r\nb\r\n"; ignoreemptyrows=false) == [["a"],[""],["b"]]
+    @test idxall("a\r\r\nb"; ignoreemptyrows=false) == [["a"],[""],["b"]]   # CR + CRLF
+    @test idxall("a\r\n\r\nb"; ignoreemptyrows=false) == [["a"],[""],["b"]] # CRLF + CRLF
+    @test idxall("#drop\r\nx\r\n"; comment="#") == [["x"]]
+
+    # finishscan! sees raw kind 3 at the CR. Its end test must account for the
+    # LF byte and avoid synthesizing a second row end.
+    d = K.Dialect(ignoreemptyrows=false)
+    for (input, raw) in (("\r\n", UInt32(3)), ("\r", UInt32(1)), ("\n", UInt32(2)))
+        buf = Vector{UInt8}(codeunits(input))
+        ci = K.ChunkIndex(1, length(buf))
+        push!(ci.tape, raw)
+        K.finishscan!(ci, buf, d, 1, false)
+        @test K.totalrows(ci) == 1
+        @test length(ci.tape) == 1
+    end
+    emptyci = K.ChunkIndex(1, 0)
+    K.finishscan!(emptyci, UInt8[], d, 0, false)
+    @test K.totalrows(emptyci) == 0
+    @test isempty(emptyci.tape)
 end
 
 @testset "structural: tape assembly geometry" begin
@@ -246,6 +265,19 @@ end
     end
     dense = ","^1024
     @test idxall(dense; chunks=(64, 65), ignoreemptyrows=false) == [fill("", 1025)]
+
+    # Quote-close boundaries must not pair an in-quote CR with an outside LF.
+    # The second case closes at byte 63, then carries an outside CRLF from the
+    # last bit of the 64-byte block into the scalar tail.
+    insidecr = "\"" * "x"^61 * "\r\""
+    @test idxall(insidecr * "\n"; chunks=(63, 64, 65), ignoreemptyrows=false) == [[insidecr]]
+    outsidecrlf = "\"" * "x"^61 * "\""
+    @test idxall(outsidecrlf * "\r\n"; chunks=(63, 64, 65), ignoreemptyrows=false) ==
+          [[outsidecrlf]]
+    for n in 58:66
+        field = "\"" * "x"^n * "\r\n\""
+        @test idxall(field * "\r\n"; chunks=(63, 64, 65), ignoreemptyrows=false) == [[field]]
+    end
 end
 
 @testset "structural: quotes" begin
@@ -943,6 +975,23 @@ end
     @test isequal(collect(t[:a]), [missing, "x"])                    # strip, then match
     t = K.parse("a,b\nNA,N/A\nx,2\n"; sentinels=["NA", "N/A"])
     @test isequal(collect(t[:a]), [missing, "x"]) && isequal(collect(t[:b]), [missing, 2])
+    # The map contains first bytes only. Multiple spellings can share a bit,
+    # and a single-byte spelling still requires an exact full-cell match.
+    t = K.parse("a,b,c,d,e\nN,NA,NULL,X,NAX\n";
+                sentinels=["N", "NA", "NULL", "X"], types=String)
+    @test isequal(collect(t[:a]), [missing])
+    @test isequal(collect(t[:b]), [missing])
+    @test isequal(collect(t[:c]), [missing])
+    @test isequal(collect(t[:d]), [missing])
+    @test collect(t[:e]) == ["NAX"]
+    nosentinel = K.makevalueopts(K.Dialect())
+    @test nosentinel.sentfirst == (UInt64(0), UInt64(0), UInt64(0), UInt64(0))
+    @test all(!K._maybesentinel(nosentinel, b) for b in typemin(UInt8):typemax(UInt8))
+    firstbytes = UInt8[0x00, 0x40, 0x80, 0xc0, 0xff]
+    byteopts = K.makevalueopts(K.Dialect(quoted=false);
+                               sentinels=[String(UInt8[b, 0x61]) for b in firstbytes])
+    @test all(K._maybesentinel(byteopts, b) for b in firstbytes)
+    @test !K._maybesentinel(byteopts, 0x7f)
     t = K.parse("NA,b\n1,2\n"; sentinels=["NA"])                     # sentinel header auto-names
     @test K.names(t) == [:Column1, :b]
     # PINNED DELTA vs CSV.jl: an empty unquoted cell is ALWAYS missing here —
