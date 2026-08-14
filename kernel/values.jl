@@ -745,15 +745,11 @@ const _P10U = (UInt64(1), UInt64(10), UInt64(100), UInt64(1000), UInt64(10_000),
     mant = iv * (@inbounds _P10U[fraclen + 1]) + fv
     q = -fraclen
     mant == zero(UInt64) && return (neg ? -0.0 : 0.0, true)
-    if mant <= 9007199254740992                  # ≤16 digits can still exceed 2^53
-        # tier 1: mant and 10^|q| exactly representable ⇒ one rounding
-        f = Float64(mant)
-        f = q == 0 ? f : f / _POW10[-q + 1]
-        return (neg ? -f : f, true)
-    end
-    bits = _eisel_lemire(mant, q)
-    bits >= 0 && return (_sign(reinterpret(UInt64, bits), neg), true)
-    return (0.0, false)
+    # n ≤ 15 leaves at most 14 digits when a point is present; without one,
+    # intlen ≤ 8. The mantissa is therefore always below 2^53, and q is -8:0.
+    f = Float64(mant)
+    f = q == 0 ? f : f / _POW10[-q + 1]
+    return (neg ? -f : f, true)
 end
 
 @inline function _parsefloat_core(buf::Vector{UInt8}, i::Int, j::Int, decimal::UInt8)

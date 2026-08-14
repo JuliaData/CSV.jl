@@ -198,6 +198,68 @@ end
     end
 end
 
+@testset "parsefloat64: SWAR fast-path equivalence" begin
+    rng = MersenneTwister(0x16f10a7)
+    function checkvalid(s::String, decimal::UInt8)
+        raw = Vector{UInt8}(codeunits(s))
+        prefix = rand(rng, UInt8, rand(rng, 0:3))
+        buf = [prefix; raw; rand(rng, UInt8, 16)]
+        i = length(prefix) + 1
+        j = i + length(raw) - 1
+        oracle = parse(Float64, decimal == UInt8('.') ? s : replace(s, ',' => '.'))
+        v, rc = V.parsefloat64(buf, i, j, decimal)
+        @test rc == V.RC_OK && reinterpret(UInt64, v) == reinterpret(UInt64, oracle)
+        fast, handled = V._float_fast(buf, i, j, decimal)
+        @test !handled || reinterpret(UInt64, fast) == reinterpret(UInt64, oracle)
+        return nothing
+    end
+    for decimal in (UInt8('.'), UInt8(',')), len in 1:17, _ in 1:50
+        digits = String(rand(rng, '0':'9', len))
+        for p in 0:len, sign in ("", "+", "-")
+            checkvalid(sign * digits[1:p] * Char(decimal) * digits[p + 1:end], decimal)
+        end
+        checkvalid("0"^rand(rng, 1:8) * digits, decimal)
+    end
+    for decimal in (UInt8('.'), UInt8(','))
+        for s in ("0", "-0", "+0", ".5", "5.", "000.000", "00000000.000000",
+                  "9007199254740991", "9007199254740992", "9007199254740993",
+                  "4.9406564584124654e-324", "5e-324", "2.2250738585072014e-308")
+            checkvalid(decimal == UInt8('.') ? s : replace(s, '.' => ','), decimal)
+        end
+        for len in 1:17, _ in 1:1_000
+            raw = rand(rng, UInt8, len)
+            buf = [raw; rand(rng, UInt8, 16)]
+            fast, handled = V._float_fast(buf, 1, len, decimal)
+            if handled
+                text = String(raw)
+                oracle = tryparse(Float64, decimal == UInt8('.') ? text : replace(text, ',' => '.'))
+                @test oracle !== nothing
+                @test reinterpret(UInt64, fast) == reinterpret(UInt64, oracle::Float64)
+            end
+        end
+    end
+    # The post-sign start must have 16 readable bytes for the two word loads.
+    raw = Vector{UInt8}(codeunits("1.25"))
+    for suffixlen in 0:16
+        buf = [UInt8[0xaa, 0xbb]; raw; fill(UInt8('x'), suffixlen)]
+        @test V._float_fast(buf, 3, 6, UInt8('.'))[2] == (length(raw) + suffixlen >= 16)
+    end
+    for s in ("1", "12345678", "1234.5678", "12345678.123456")
+        raw = Vector{UInt8}(codeunits(s))
+        @test V._float_fast([raw; fill(UInt8('x'), 16)], 1, length(raw), UInt8('.'))[2]
+    end
+    for s in ("1..2", "9007199254740991", "9007199254740992", "9007199254740993")
+        raw = Vector{UInt8}(codeunits(s))
+        @test !V._float_fast([raw; fill(UInt8('x'), 16)], 1, length(raw), UInt8('.'))[2]
+    end
+    # A decimal in the loaded padding is outside the span and must be masked.
+    padded = Vector{UInt8}(codeunits("12.3456789012345"))
+    @test V._float_fast(padded, 1, 2, UInt8('.')) == (12.0, true)
+    w = V._load8(Vector{UInt8}(codeunits("12345678")), 1)
+    @test V._rundigits(w, 0) == (UInt64(0), true)
+    @test V._rundigits(w, 8) == (UInt64(12_345_678), true)
+end
+
 @testset "parsebool + strictness pins" begin
     @test pbool("true") == (true, V.RC_OK)
     @test pbool("false") == (false, V.RC_OK)
