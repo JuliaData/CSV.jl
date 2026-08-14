@@ -144,6 +144,7 @@ struct ValueOpts
     decimal::UInt8
     stripws::Bool
     sentinels::Vector{Vector{UInt8}}
+    sentfirst::NTuple{4, UInt64}  # first-byte bitmap: skip matchsentinel for ~every cell
     trues::Vector{Vector{UInt8}}
     falses::Vector{Vector{UInt8}}
     datepat::V.DatePattern
@@ -248,8 +249,13 @@ function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
         end
     end
     inferbool = _validatebools(trues, falses, decimal % UInt8, dp, dtp, tp, custom, gm)
+    sf = (zero(UInt64), zero(UInt64), zero(UInt64), zero(UInt64))
+    for s in sentinelbytes
+        b = s[1]
+        sf = Base.setindex(sf, sf[(b >> 6) + 1] | (UInt64(1) << (b & 0x3f)), (b >> 6) + 1)
+    end
     return ValueOpts(d.oq, d.cq, d.e, d.quoted, delimbytes, decimal % UInt8, stripwhitespace,
-                     sentinelbytes, trues, falses,
+                     sentinelbytes, sf, trues, falses,
                      dp, dtp, tp, custom, inferbool, gm)
 end
 
@@ -268,6 +274,11 @@ const CELL_MISSING  = 0x01
 const CELL_BADQUOTE = 0x02
 
 @inline _isot(b::UInt8) = (b == UInt8(' ')) | (b == UInt8('\t'))
+
+# a cell can only be a sentinel if its first byte starts one — one bit test
+# replaces the per-cell spelling comparisons (empty sentinel list ⇒ zero map)
+@inline _maybesentinel(vo::ValueOpts, b::UInt8) =
+    (vo.sentfirst[(b >> 6) + 1] >> (b & 0x3f)) & UInt64(1) != 0
 
 @inline function cellcontent(buf::Vector{UInt8}, pos::Int, len::Int, vo::ValueOpts)
     i, j = pos, pos + len - 1
@@ -290,13 +301,13 @@ const CELL_BADQUOTE = 0x02
                     while cj >= cpos && _isot(buf[cj]); cj -= 1; end
                     clen = cj - cpos + 1
                 end
-                clen > 0 && !isempty(vo.sentinels) && !esc &&
+                clen > 0 && !esc && _maybesentinel(vo, buf[cpos]) &&
                     V.matchsentinel(buf, cpos, cpos + clen - 1, vo.sentinels) &&
                     return (cpos, 0, false, CELL_MISSING)
                 return (cpos, clen, esc, CELL_VALUE)
             end
         end
-        !isempty(vo.sentinels) && V.matchsentinel(buf, i, j, vo.sentinels) &&
+        _maybesentinel(vo, buf[i]) && V.matchsentinel(buf, i, j, vo.sentinels) &&
             return (i, 0, false, CELL_MISSING)
         return (i, j - i + 1, false, CELL_VALUE)
     end
@@ -1582,9 +1593,29 @@ StringColumn(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8) =
 # the extra buffer transfers whole (offsets already extra-relative), and the
 # remaining rows parse through the plain string path. A failed gamble costs
 # nothing but the interning already done.
+# Interning table keys never allocate: inline payloads ARE their identity
+# (canonical two-word bits ⇒ a UInt128 key), and view/extra payloads wrap in
+# ViewKey, whose hash walks codeunits (FNV-1a) instead of materializing a
+# String — the old Dict{KStr,…} paid TWO allocations per cell lookup through
+# hash(::KStr) = hash(String(s)) and made pooling 3× the cost of the parse
+# on 400-level columns.
+struct ViewKey
+    s::KStr
+end
+function Base.hash(k::ViewKey, h::UInt)
+    s = k.s
+    hv = 0xcbf29ce484222325 % UInt64
+    @inbounds for i in 1:ncodeunits(s)
+        hv = (hv ⊻ codeunit(s, i)) * 0x00000100000001b3
+    end
+    return hash(hv, h)
+end
+Base.:(==)(a::ViewKey, b::ViewKey) = a.s == b.s
+
 mutable struct PoolSegment
     refs::Vector{UInt32}                 # 0 = missing/not-yet-parsed
-    table::Dict{KStr, UInt32}
+    itable::Dict{UInt128, UInt32}        # inline levels: payload bits are the key
+    vtable::Dict{ViewKey, UInt32}        # view/extra levels: content hash, no alloc
     levelpayloads::Vector{KStrPayload}
     extra::Vector{UInt8}                 # unescaped bytes for NEW levels only
     buf::Vector{UInt8}
@@ -1596,8 +1627,8 @@ mutable struct PoolSegment
 end
 PoolSegment(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8, maxlevels::Int,
             aborted::Threads.Atomic{Bool}) =
-    PoolSegment(zeros(UInt32, n), Dict{KStr, UInt32}(), KStrPayload[], UInt8[],
-                buf, e, cq, maxlevels, aborted, nothing)
+    PoolSegment(zeros(UInt32, n), Dict{UInt128, UInt32}(), Dict{ViewKey, UInt32}(),
+                KStrPayload[], UInt8[], buf, e, cq, maxlevels, aborted, nothing)
 
 # per-column pooling context the driver threads through chunk tasks
 struct PoolCtx
@@ -1939,8 +1970,10 @@ function parsecolchunk!(ps::PoolSegment, buf::Vector{UInt8}, ci::ChunkIndex,
                     break
                 end
             end
+        elseif Int(kstrlen(p)) <= KSTR_INLINE
+            ref = get(ps.itable, (UInt128(p.a) << 64) | p.b, UInt32(0))
         else
-            ref = get(ps.table, _levelcell(ps, p), UInt32(0))
+            ref = get(ps.vtable, ViewKey(_levelcell(ps, p)), UInt32(0))
         end
         if ref == 0
             if llen >= ps.maxlevels || ps.aborted[]
@@ -1952,7 +1985,11 @@ function parsecolchunk!(ps::PoolSegment, buf::Vector{UInt8}, ci::ChunkIndex,
             end
             push!(ps.levelpayloads, p)
             ref = UInt32(llen + 1)
-            ps.table[_levelcell(ps, p)] = ref
+            if Int(kstrlen(p)) <= KSTR_INLINE
+                ps.itable[(UInt128(p.a) << 64) | p.b] = ref
+            else
+                ps.vtable[ViewKey(_levelcell(ps, p))] = ref
+            end
         elseif rewind >= 0
             resize!(ps.extra, rewind)              # duplicate escaped level: drop its bytes
         end
