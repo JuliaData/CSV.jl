@@ -775,6 +775,21 @@ compose the same way in `File`, `Chunks`, and `Rows`:
 `Chunks` applies `pool` per batch (each batch is an independent table);
 `Rows` has no columns to pool and materializes each accessed cell as
 `stringtype` (`CompactString` cells are lazy views).
+
+## A vector of sources
+
+`File(sources::AbstractVector; source=nothing, kw...)` parses each source
+with the same keywords and vertically concatenates: the column set is the
+FIRST source's columns; a later source contributes to a column by name,
+`missing`-fills columns it lacks, and its extra columns are ignored (0.10
+semantics). Element types promote across sources (`Int` + `Float64` ⇒
+`Float64`); string columns come back as `String` (concatenation owns its
+memory — the single-source zero-copy `CompactString` story does not span
+buffers). `source=:name` (or `"name"`) appends a `PooledArray` column
+recording each row's origin — the path for path sources, `"<source i>"`
+otherwise; `source=:name => vals` supplies one label per source. Unlike
+0.10, `source=` also works for a one-element vector, and a `source` name
+colliding with a data column is an error.
 """
 struct File
     name::String
@@ -830,6 +845,103 @@ function File(source;
     stringtype === K.CompactString || (t = _materializestrings(t, stringtype))
     nm = source isa AbstractString ? String(source) : "<$(nameof(typeof(source)))>"
     return File(nm, t, Dict(n => j for (j, n) in enumerate(K.names(t))))
+end
+
+function File(sources::AbstractVector; source=nothing, kw...)
+    if eltype(sources) === UInt8
+        # a byte buffer IS a vector; route it to the single-source door
+        source === nothing ||
+            throw(ArgumentError("source= requires a vector of sources, not a byte buffer"))
+        return invoke(File, Tuple{Any}, sources; kw...)
+    end
+    isempty(sources) &&
+        throw(ArgumentError("unable to read delimited data from an empty sources vector"))
+    if source isa Pair
+        (source.first isa Symbol || source.first isa AbstractString) &&
+            source.second isa AbstractVector ||
+            throw(ArgumentError("source must be a column name or name => values pair"))
+        length(source.second) == length(sources) ||
+            throw(ArgumentError("source label list has $(length(source.second)) entries " *
+                                "for $(length(sources)) sources"))
+    elseif !(source === nothing || source isa Symbol || source isa AbstractString)
+        throw(ArgumentError("source must be a column name or name => values pair"))
+    end
+    source === nothing && length(sources) == 1 && return File(first(sources); kw...)
+    files = [File(s; kw...) for s in sources]
+    counts = [f.table.nrows for f in files]
+    total = sum(counts)
+    names = copy(K.names(files[1].table))
+    cols = AbstractVector[_chaincolumn(
+        AbstractVector[_colpiece(f, nm) for f in files], counts, total) for nm in names]
+    if source !== nothing
+        srcname = Symbol(source isa Pair ? source.first : source)
+        srcname in names &&
+            throw(ArgumentError("source column name $srcname collides with a data column"))
+        vals = source isa Pair ? source.second :
+               [s isa AbstractString ? String(s) : "<source $i>"
+                for (i, s) in enumerate(sources)]
+        expanded = eltype(vals)[vals[i] for i in eachindex(files) for _ in 1:counts[i]]
+        push!(names, srcname)
+        push!(cols, PooledArray(expanded))
+    end
+    probs = K.Problem[]
+    dropped = 0
+    off = 0
+    for f in files
+        t = f.table
+        for pr in t.problems
+            push!(probs, K.Problem(pr.row == 0 ? 0 : pr.row + off,
+                                   pr.col, pr.pos, pr.kind, pr.message))
+        end
+        dropped += t.droppedproblems
+        off += t.nrows
+    end
+    t = K.ParsedTable(names, cols, total, probs, dropped)
+    return File("<$(length(sources)) sources>", t,
+                Dict(n => j for (j, n) in enumerate(names)))
+end
+
+# a source that lacks a column contributes an all-missing block
+const EMPTY_COLUMN = Union{}[]
+
+function _colpiece(f::File, nm::Symbol)
+    j = get(f.lookup, nm, 0)
+    return j == 0 ? EMPTY_COLUMN : f.table.columns[j]
+end
+
+# Concatenate one column's per-source pieces (EMPTY_COLUMN ⇒ the source lacks
+# the column: all-missing block). Element types promote across sources; any
+# string type concatenates as String — the result owns its memory.
+function _chaincolumn(pieces::Vector{AbstractVector}, counts::Vector{Int}, total::Int)
+    T = Union{}
+    anymissing = false
+    for (c, n) in zip(pieces, counts)
+        if c === EMPTY_COLUMN
+            n > 0 && (anymissing = true)
+        else
+            et = eltype(c)
+            anymissing |= Missing <: et
+            S = Base.nonmissingtype(et)   # Union{} for an all-missing column
+            S === Union{} || (T = promote_type(T, S <: AbstractString ? String : S))
+        end
+    end
+    T === Union{} && return fill(missing, total)   # every source's block is all-missing
+    E = anymissing ? Union{T, Missing} : T
+    out = Vector{E}(undef, total)
+    off = 0
+    for (c, n) in zip(pieces, counts)
+        if c === EMPTY_COLUMN
+            fill!(view(out, off+1:off+n), missing)
+        elseif T === String
+            @inbounds for (k, x) in enumerate(c)
+                out[off+k] = x === missing ? missing : String(x)
+            end
+        else
+            copyto!(out, off + 1, c, 1, n)
+        end
+        off += n
+    end
+    return out
 end
 
 function _mergeproblems(t::K.ParsedTable, headerlog::Union{Nothing, K.ProblemLog}, cap::Int)

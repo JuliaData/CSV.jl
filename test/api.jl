@@ -12,7 +12,7 @@
 #   • function-typed select/drop retired
 #   • Int64 overflow that fits Int128 remains exact where CSV.jl widens to Float64
 
-using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings
+using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings, FilePathsBase
 using CSV, LegacyCSV
 const A = CSV.CSVApi
 const K = CSV.CSVKernel
@@ -992,4 +992,72 @@ end
     ours = collect(A.Chunks(gzpath; ntasks=2))
     theirs = collect(LegacyCSV.Chunks(gzpath; ntasks=2))
     @test sum(nrows, ours) == sum(length, theirs) == 70_000
+end
+
+@testset "vector of sources + source= column" begin
+    data = ["a,b,c\n1,2,3\n4,5,6\n", "a,b,c\n7,8,9\n10,11,12\n", "a,b,c\n13,14,15\n16,17,18"]
+    f = A.File(map(IOBuffer, data))
+    @test length(f) == 6 && f.a == [1, 4, 7, 10, 13, 16]
+    # element types promote across sources
+    f = A.File(map(IOBuffer, ["a\n1\n", "a\n2.5\n"]))
+    @test eltype(Tables.getcolumn(f, :a)) == Float64 && f.a == [1.0, 2.5]
+    # a source missing a column missing-fills it; its extra columns are ignored
+    shifted = ["a,b,c\n1,2,3\n4,5,6\n", "a2,b,c\n7,8,9\n10,11,12\n", "a,b,c\n13,14,15\n16,17,18"]
+    f = A.File(map(IOBuffer, shifted))
+    @test Tables.columnnames(Tables.columns(f)) == [:a, :b, :c]
+    @test isequal(collect(Tables.getcolumn(f, :a)), [1, 4, missing, missing, 13, 16])
+    # string columns concatenate as String (concatenation owns its memory)
+    f = A.File(map(IOBuffer, ["a,b\nx,1\n", "a,b\n,2\n"]))
+    @test eltype(Tables.getcolumn(f, :a)) == Union{Missing, String}
+    @test isequal(collect(Tables.getcolumn(f, :a)), ["x", missing])
+    # source= appends a pooled provenance column; labels are deterministic
+    f = A.File(map(IOBuffer, data); source=:origin)
+    col = Tables.getcolumn(f, :origin)
+    @test col isa PooledArrays.PooledArray && eltype(col) == String
+    @test collect(col) == ["<source 1>", "<source 1>", "<source 2>", "<source 2>",
+                           "<source 3>", "<source 3>"]
+    f = A.File(map(IOBuffer, data); source="origin" => [10, 20, 30])
+    @test collect(Tables.getcolumn(f, :origin)) == [10, 10, 20, 20, 30, 30]
+    # path sources label with the path; single-element vectors keep the column
+    mktempdir() do tmp
+        p1, p2 = joinpath(tmp, "x.csv"), joinpath(tmp, "y.csv")
+        write(p1, "a\n1\n"); write(p2, "a\n2\n")
+        f = A.File([p1, p2]; source=:src)
+        @test collect(Tables.getcolumn(f, :src)) == [p1, p2]
+        f = A.File([p1]; source=:src)
+        @test collect(Tables.getcolumn(f, :src)) == [p1]
+    end
+    # per-file problems merge with row offsets
+    f = A.File(map(IOBuffer, ["a,b\n1,2\n", "a,b\n3,4,5\n"]))
+    @test length(A.problems(f)) == 1 && A.problems(f)[1].row == 2
+    # kwargs apply per source
+    f = A.File(map(IOBuffer, data); select=["a"], types=Dict(:a => Float64))
+    @test Tables.columnnames(Tables.columns(f)) == [:a] && f.a == [1.0, 4.0, 7.0, 10.0, 13.0, 16.0]
+    # byte buffers still route to the single-source door
+    @test A.File(Vector{UInt8}("a\n1\n")).a == [1]
+    @test A.File(codeunits("a\n1\n")).a == [1]
+    # errors: empty vector, label-length mismatch, name collision, bad source form
+    @test_throws ArgumentError A.File(IOBuffer[])
+    @test_throws ArgumentError A.File(map(IOBuffer, data); source="s" => [1, 2])
+    @test_throws ArgumentError A.File(map(IOBuffer, data); source=:a)
+    @test_throws ArgumentError A.File(map(IOBuffer, data); source=1)
+    @test_throws ArgumentError A.File(Vector{UInt8}("a\n1\n"); source=:src)
+    # all-missing everywhere stays Missing eltype
+    f = A.File(map(IOBuffer, ["a,b\n1,\n", "a,b\n2,\n"]))
+    @test eltype(Tables.getcolumn(f, :b)) == Missing
+end
+
+@testset "FilePathsBase extension" begin
+    mktempdir() do tmp
+        write(joinpath(tmp, "in.csv"), "x,y\n1,2\n3,4\n")
+        p = joinpath(FilePathsBase.Path(tmp), "in.csv")
+        f = A.File(p)
+        @test f.x == [1, 3] && f.y == [2, 4]
+        @test first(A.Rows(p)).x isa AbstractString
+        # writer sink + compress=:auto by extension
+        CSV.write(joinpath(FilePathsBase.Path(tmp), "out.csv"), (a=[1, 2],))
+        @test read(joinpath(tmp, "out.csv"), String) == "a\n1\n2\n"
+        CSV.write(joinpath(FilePathsBase.Path(tmp), "out.csv.gz"), (a=[1, 2],))
+        @test A.File(joinpath(tmp, "out.csv.gz")).a == [1, 2]
+    end
 end
