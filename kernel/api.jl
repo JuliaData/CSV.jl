@@ -62,9 +62,14 @@ const _LEGACYKW = Dict{Symbol, String}(
     :tasks => "use ntasks",
     :threaded => "use ntasks (ntasks=1 disables threading)",
     :rows_to_check => "use nsample",
+    :lines_to_check => "use nsample",
     :ignoreemptylines => "use ignoreemptyrows",
     :datarow => "use skipto",
     :type => "use types (a single Type applies to every column)",
+    :missingstrings => "pass a string or vector to missingstring",
+    :dateformats => "pass per-column formats to dateformat",
+    :parsingdebug => "parse problems and the structural index are inspectable directly",
+    :validate => "column references are always validated",
 )
 
 function _checkkwargs(context::AbstractString, kw, allowed)

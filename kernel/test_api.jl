@@ -214,6 +214,29 @@ end
     @test !(Tables.getcolumn(Tables.columns(f), :k) isa PooledArrays.PooledArray)
     against(input; kw=(; pool=true))
     against(input; kw=(; pool=0.9))
+
+    # Missing is an ordinary final pool level. Conversion remaps kernel ref 0
+    # without changing the kernel-owned refs, while an all-present conversion
+    # can transfer its exclusively owned refs at the File door.
+    kernelmissing = K.parse("k\nx\n\ny\nx\n"; ignoreemptyrows=false, pool=true)[:k]
+    oldrefs = copy(K.poolrefs(kernelmissing))
+    missingpool = A._topooledarray(kernelmissing)
+    @test K.poolrefs(kernelmissing) == oldrefs == UInt32[1, 0, 2, 1]
+    @test all(!iszero, missingpool.refs)
+    @test missingpool.pool[end] === missing
+    @test missingpool.invpool[missing] == missingpool.refs[2]
+    @test isequal(collect(missingpool), ["x", missing, "y", "x"])
+
+    kernelpresent = K.parse(input; pool=true)[:k]
+    presentpool = A._topooledarray(kernelpresent)
+    @test presentpool.refs === K.poolrefs(kernelpresent)
+    refsnapshot = copy(presentpool.refs)
+    table = K.ParsedTable([:k], AbstractVector[presentpool], length(presentpool), K.Problem[], 0)
+    @test A._downcast(A._materializestrings(table)).columns[1] === presentpool
+    @test presentpool.refs == refsnapshot
+
+    stringpool = A.File(IOBuffer(input); pool=true, stringtype=String).k
+    @test stringpool isa PooledArrays.PooledArray{String}
 end
 
 @testset "value options agree" begin
@@ -538,6 +561,27 @@ end # @testset CSVApi
     f = A.File(IOBuffer(input); typemap=Dict(Int64 => String), types=Dict(:b => Float64))
     @test eltype(Tables.getcolumn(f, :b)) == Float64
     @test Tables.getcolumn(f, :a) isa AbstractVector{<:AbstractString}
+    # A mapped parse type is a fixed point. Downward and cyclic maps must widen
+    # instead of retrying the same rejecting type until the driver guard fires.
+    for (mappedinput, tm) in (("a\n1.5\n2.5\n", IdDict(Float64 => Int64)),
+                              ("a\nx\ny\n", IdDict(String => Int64)),
+                              ("a\n1\n2.5\n", IdDict(Int64 => Float64,
+                                                       Float64 => Int64)))
+        mapped = A.File(IOBuffer(mappedinput); typemap=tm, pool=false)
+        @test String.(mapped.a) == split(chomp(mappedinput), '\n')[2:end]
+    end
+    chained = A.File(IOBuffer("a\n1\n2\n");
+                     typemap=IdDict(Int64 => Float64, Float64 => String), pool=false)
+    @test chained.a isa Vector{Float64}
+    pinned = A.File(IOBuffer("a\n1\n2\n"); types=Int64,
+                    typemap=IdDict(Int64 => String), pool=false)
+    @test pinned.a isa Vector{Int64}
+    mappedmissing = A.File(IOBuffer("a\n1\n\n2\n"); ignoreemptyrows=false,
+                           typemap=IdDict(Int64 => Float64), pool=false)
+    @test eltype(mappedmissing.a) == Union{Float64, Missing}
+    mappedpool = A.File(IOBuffer("a\n" * join((string(i % 3) for i in 1:300), '\n') * "\n");
+                        typemap=IdDict(Int64 => String), pool=true)
+    @test mappedpool.a isa PooledArrays.PooledArray{String}
 
     # per-column dateformat
     input = "d1,d2\n03/04/2020,2020-01-02\n05/06/2021,2021-07-08\n"
@@ -554,6 +598,24 @@ end # @testset CSVApi
     f = A.File(IOBuffer(input); pool=[(1.0, 500), false])
     @test Tables.getcolumn(f, :a) isa PooledArrays.PooledArray
     @test !(Tables.getcolumn(f, :b) isa PooledArrays.PooledArray)
+    f = A.File(IOBuffer(input); pool=[(1.0, 500), nothing])
+    @test Tables.getcolumn(f, :a) isa PooledArrays.PooledArray
+    @test !(Tables.getcolumn(f, :b) isa PooledArrays.PooledArray)
+    @test_throws ArgumentError A.File(IOBuffer(input); pool=Dict(:nope => true))
+    @test_throws ArgumentError A.File(IOBuffer(input); pool=[true])
+    @test_throws ArgumentError A.File(IOBuffer(input); pool=Dict(:a => "invalid"))
+
+    # The pre-skip proof and parse-time degrade both bind the policy by column.
+    proofinput = "a,b\n" * join(("unique$i,cat$(i % 3)" for i in 1:1000), '\n') * "\n"
+    proof = A.File(IOBuffer(proofinput);
+                   pool=Dict(:a => (1.0, 10), :b => (1.0, 500)))
+    @test !(proof.a isa PooledArrays.PooledArray)
+    @test proof.b isa PooledArrays.PooledArray
+    degradeinput = "a,b\nx,u\ny,v\n"
+    degraded = A.File(IOBuffer(degradeinput);
+                      pool=Dict(:a => (1.0, 1), :b => (1.0, 2)))
+    @test !(degraded.a isa PooledArrays.PooledArray)
+    @test degraded.b isa PooledArrays.PooledArray
 
     # downcast (oracle agreement on eltypes and values)
     input = "a,b,c\n1,300,70000\n2,-40,100000\n"
@@ -566,6 +628,15 @@ end # @testset CSVApi
     # downcast with missings keeps Union eltype
     f = A.File(IOBuffer("a\n1\n\n2\n"); downcast=true, ignoreemptyrows=false)
     @test eltype(Tables.getcolumn(f, :a)) == Union{Int8, Missing}
+    for (T, lo, hi) in ((Int8, typemin(Int8), typemax(Int8)),
+                        (Int16, typemin(Int16), typemax(Int16)),
+                        (Int32, typemin(Int32), typemax(Int32)),
+                        (Int64, typemin(Int64), typemax(Int64)))
+        c = A.File(IOBuffer("a\n$lo\n$hi\n"); downcast=true).a
+        @test eltype(c) == T
+        @test c == T[lo, hi]
+    end
+    @test A.File(IOBuffer("a\n\n"); downcast=true, ignoreemptyrows=false).a isa Vector{Missing}
 
     # transpose: names in field 1, ragged pad, oracle value agreement
     input = "name,1,2,3\nscore,1.5,2.5,3.5\nnote,x,y\n"
@@ -580,10 +651,36 @@ end # @testset CSVApi
     f = A.File(IOBuffer("1,2\n3,4\n"); transpose=true, header=false)
     @test Tables.getcolumn(f, :Column1) == [1, 2] && Tables.getcolumn(f, :Column2) == [3, 4]
     @test_throws ArgumentError A.File(IOBuffer(input); transpose=true, select=[:name])
+    # Quoted newlines, escapes, empty rows, unicode, ragged tails, and pinned
+    # types retain the same names and values as CSV.jl.
+    transposedcases = [
+        ("name,\"a\nb\",c\nnum,1,2\n", (;)),
+        ("name,\"a\"\"b\",c\nnum,1,2\n", (;)),
+        ("a,1,2\n\nb,3,4\n", (;)),
+        ("α,β,γ\nδ,日,月\n", (;)),
+        ("a,1,x,3\nb,2020-01-01,2020-01-02,\n",
+         (; types=Dict(:a => Int64, :b => Date))),
+    ]
+    for (transposedinput, transposedkw) in transposedcases
+        tf = A.File(IOBuffer(transposedinput); transpose=true, transposedkw...)
+        to = CSV.File(IOBuffer(transposedinput); transpose=true, transposedkw...)
+        @test Tables.columnnames(tf) == Tables.columnnames(to)
+        for nm in Tables.columnnames(tf)
+            av = Any[ismissing(x) ? missing : x isa AbstractString ? String(x) : x
+                     for x in Tables.getcolumn(tf, nm)]
+            ov = Any[ismissing(x) ? missing : x isa AbstractString ? String(x) : x
+                     for x in Tables.getcolumn(to, nm)]
+            @test isequal(av, ov)
+        end
+    end
 
     # legacy kwargs error with migration text
     for (kwname, kwval) in ((:silencewarnings, true), (:debug, true), (:lazystrings, true),
-                            (:tasks, 2), (:rows_to_check, 5), (:ignoreemptylines, true))
+                            (:tasks, 2), (:threaded, true), (:rows_to_check, 5),
+                            (:lines_to_check, 5), (:ignoreemptylines, true),
+                            (:datarow, 2), (:type, Int64), (:missingstrings, ["NA"]),
+                            (:dateformats, Dict(:a => "yyyy-mm-dd")),
+                            (:parsingdebug, true), (:validate, false))
         err = try
             A.File(IOBuffer("a\n1\n"); kwname => kwval)
             nothing
