@@ -2,7 +2,7 @@
 # expression as source text with its file:line, and classify the input.
 using JuliaSyntax
 files = ["basics.jl", "iteration.jl", "runtests.jl", "write.jl", "testfiles.jl"]
-root = "joinpath(@__DIR__, "..", "..", "legacy", "test")"
+root = joinpath(@__DIR__, "..", "..", "legacy", "test")
 calls = []
 function walk(node, src, file, out)
     kids = JuliaSyntax.children(node)
