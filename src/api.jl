@@ -55,7 +55,7 @@ the usual dialect/value surface.
 # released Tables loads this file without the Scan surface
 if isdefined(Tables, :Scan)
     # Load the executor while this file is evaluated. Loading it lazily inside
-    # `read` defines `KernelScan.read` in a newer world than the active call,
+    # `read` defines `KernelScan.scan` in a newer world than the active call,
     # which fails on a fresh Julia 1.12 process.
     # KernelScan is a sibling submodule of the package (included after CSVApi
     # in CSV.jl); resolve it through the parent at call time
@@ -64,7 +64,7 @@ if isdefined(Tables, :Scan)
         haskey(kw, :sentinels) &&
             throw(ArgumentError("pass missing spellings as missingstring, not sentinels"))
         buf = resolvesource(source; buffer_in_memory, prefetch)
-        return Base.parentmodule(@__MODULE__).KernelScan.read(
+        return Base.parentmodule(@__MODULE__).KernelScan.scan(
             buf, scan; sentinels=_sentinels(missingstring), kw...)
     end
 end

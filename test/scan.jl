@@ -62,7 +62,7 @@ scans = [
     for (i, scan) in enumerate(scans)
         ref = T.finish(K.parse(csv), scan)
         for cb in (256, 4096, 1 << 20), par in (false, true)
-            t = S.read(csv, scan; chunkbytes=cb, parallel=par)
+            t = S.scan(csv, scan; chunkbytes=cb, parallel=par)
             @test sametable(t, ref) || error("scan $i, chunkbytes=$cb, parallel=$par diverged")
         end
     end
@@ -80,10 +80,10 @@ end
                    T.Scan(select=select, filter=T.AlwaysTrue())
         falsescan = select === nothing ? T.Scan(filter=T.AlwaysFalse()) :
                     T.Scan(select=select, filter=T.AlwaysFalse())
-        t = S.read(csv, truescan)
+        t = S.scan(csv, truescan)
         @test t.nrows == 2_000
         @test K.names(t) == (select === nothing ? [:region, :price, :qty, :notes, :flag] : Symbol[])
-        t = S.read(csv, falsescan)
+        t = S.scan(csv, falsescan)
         @test t.nrows == 0
         @test K.names(t) == (select === nothing ? [:region, :price, :qty, :notes, :flag] : Symbol[])
     end
@@ -92,12 +92,12 @@ end
 @testset "pushdown composes with pool and groupmark" begin
     scan = T.Scan(select = (:region, :qty), filter = T.col(:qty) > 25)
     ref = T.finish(K.parse(csv), scan)
-    t = S.read(csv, scan; pool=true, chunkbytes=512)
+    t = S.scan(csv, scan; pool=true, chunkbytes=512)
     @test sametable(t, ref)
     @test t[:region] isa K.PooledColumn                             # masked pooling
     gcsv = "a;n\nx;\"1,234\"\ny;\"22\"\nz;\"5,678\"\n"
     gscan = T.Scan(filter = T.col(:n) > 1000)
-    tg = S.read(gcsv, gscan; delim=';', groupmark=',')
+    tg = S.scan(gcsv, gscan; delim=';', groupmark=',')
     @test tg[:n] == [1234, 5678] && collect(tg[:a]) == ["x", "z"]
 
     # ignorerepeated flows through both phases of the masked parse
@@ -106,7 +106,7 @@ end
     irscan = T.Scan(select = (:region,), filter = T.col(:qty) > 25)
     ref = T.finish(K.parse(padded; irkw...), irscan)
     for cb in (8, 1 << 20), par in (false, true)
-        t = S.read(padded, irscan; chunkbytes=cb, parallel=par, irkw...)
+        t = S.scan(padded, irscan; chunkbytes=cb, parallel=par, irkw...)
         @test sametable(t, ref)
         @test collect(String, t[:region]) == ["west", "east"]
     end
@@ -115,7 +115,7 @@ end
 @testset "masked inference: excluded garbage cannot degrade a type (pinned divergence)" begin
     dirty = "region,qty\neast,1\nwest,oops\neast,3\n"
     scan = T.Scan(filter = T.col(:region) == "east")
-    t = S.read(dirty, scan)
+    t = S.scan(dirty, scan)
     @test t[:qty] isa Vector{Int64} && t[:qty] == [1, 3]            # pushdown: Int64
     ref = T.finish(K.parse(dirty), scan)
     @test eltype(Tables.getcolumn(ref, :qty)) != Int64              # generic path: strings
@@ -124,10 +124,10 @@ end
 @testset "problems reference input rows; excluded rows do not report" begin
     dirty = "a,b\n1,x\n2,y\nbad,z\n4,w\n"
     scan = T.Scan(select = (:a => Int64, :b), filter = T.col(:b) != "z")
-    t = S.read(dirty, scan)
+    t = S.scan(dirty, scan)
     @test isequal(collect(t[:a]), [1, 2, 4]) && isempty(K.problems(t))   # bad row excluded ⇒ silent
     scan2 = T.Scan(select = (:a => Int64,), filter = T.col(:b) != "y")
-    t2 = S.read(dirty, scan2)
+    t2 = S.scan(dirty, scan2)
     @test any(p -> p.row == 3 && p.col == 1, K.problems(t2))        # row 3 in INPUT numbering
 
     unclosed = "a\n1\n\"unterminated"
@@ -140,27 +140,27 @@ end
     dirty = "a,b\nbad,1\n1,bad\n2,2\n"
     scan = T.Scan(select = (:a => Int64, :b => Int64), filter = T.col(:a) > 0)
     for cap in 0:3
-        t = S.read(dirty, scan; maxproblems=cap, chunkbytes=5, parallel=true)
+        t = S.scan(dirty, scan; maxproblems=cap, chunkbytes=5, parallel=true)
         @test length(K.problems(t)) == min(cap, 2)
         @test t.droppedproblems == 2 - min(cap, 2)
         @test issorted(K.problems(t); by=K.problemkey)
     end
 
     ragged = "a,b\n1\n2,x\n"
-    t = S.read(ragged, T.Scan(select=:b, filter=T.col(:a) > 0); chunkbytes=5)
+    t = S.scan(ragged, T.Scan(select=:b, filter=T.col(:a) > 0); chunkbytes=5)
     @test count(p -> p.kind == :short_row, K.problems(t)) == 1
 
     malformed = "\"bad,header\na,b\n"
     ref = K.parse(malformed; chunkbytes=2, parallel=false)
-    t = S.read(malformed, T.Scan(); chunkbytes=2, parallel=false)
+    t = S.scan(malformed, T.Scan(); chunkbytes=2, parallel=false)
     @test K.names(t) == K.names(ref)
     @test K.problemkey.(K.problems(t)) == K.problemkey.(K.problems(ref))
 
     commentonly = "#\"unterminated"
     ref = K.parse(commentonly; comment="#", chunkbytes=2)
-    t = S.read(commentonly, T.Scan(); comment="#", chunkbytes=2)
+    t = S.scan(commentonly, T.Scan(); comment="#", chunkbytes=2)
     @test K.problemkey.(K.problems(t)) == K.problemkey.(K.problems(ref))
-    @test_throws ErrorException S.read(malformed, T.Scan(); maxproblems=0,
+    @test_throws ErrorException S.scan(malformed, T.Scan(); maxproblems=0,
                                        on_error=:error, chunkbytes=2)
 end
 
@@ -261,7 +261,7 @@ end
     dirty = "a,b\n1,x\n2,y\noops,z\n"
     scan = T.Scan(limit=2)
     for cb in (8, 16, 1 << 20), par in (false, true)
-        t = S.read(dirty, scan; chunkbytes=cb, parallel=par)
+        t = S.scan(dirty, scan; chunkbytes=cb, parallel=par)
         @test t[:a] isa Vector{Int64}
         @test t[:a] == [1, 2]
         @test String.(t[:b]) == ["x", "y"]
@@ -270,17 +270,17 @@ end
 end
 
 @testset "errors: contradictions, not gaps" begin
-    @test_throws ArgumentError S.read(csv, T.Scan(select = :nope))
-    @test_throws ArgumentError S.read(csv, T.Scan(select = (:qty => Int64, :qty => Float64)))
+    @test_throws ArgumentError S.scan(csv, T.Scan(select = :nope))
+    @test_throws ArgumentError S.scan(csv, T.Scan(select = (:qty => Int64, :qty => Float64)))
     normalized = T.Scan(select = (:qty => Int64,
                                   :qty => Union{Int64, Missing} => :qty2))
-    @test sametable(S.read(csv, normalized), T.finish(K.parse(csv), normalized))
-    @test_throws ArgumentError S.read(csv, T.Scan(select = :region); types=Dict(:qty => Int64))
-    @test_throws ArgumentError S.read(csv, T.Scan(); limit=3)
-    @test_throws ArgumentError S.read(csv, T.Scan(); rowmask=fill(true, 2_000))
-    @test_throws ArgumentError S.read(csv, T.Scan(); index=nothing)
+    @test sametable(S.scan(csv, normalized), T.finish(K.parse(csv), normalized))
+    @test_throws ArgumentError S.scan(csv, T.Scan(select = :region); types=Dict(:qty => Int64))
+    @test_throws ArgumentError S.scan(csv, T.Scan(); limit=3)
+    @test_throws ArgumentError S.scan(csv, T.Scan(); rowmask=fill(true, 2_000))
+    @test_throws ArgumentError S.scan(csv, T.Scan(); index=nothing)
     # validate=false: unmatched reference quietly drops
-    t = S.read(csv, T.Scan(select = (:nope, :qty), validate = false))
+    t = S.scan(csv, T.Scan(select = (:nope, :qty), validate = false))
     @test K.names(t) == [:qty]
 end
 

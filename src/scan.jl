@@ -25,15 +25,15 @@ using ..CSVKernel
 const K = CSVKernel
 
 """
-    KernelScan.read(source, scan::Tables.Scan; kw...) -> K.ParsedTable
+    KernelScan.scan(source, scan::Tables.Scan; kw...) -> K.ParsedTable
 
 Parse `source` with every axis of `scan` pushed into the kernel. `kw` are the
 usual kernel options (dialect, dateformat, pool, ...). Equivalent to — but far
 cheaper than — `Tables.finish(K.parse(source; kw...), scan)`, which is exactly
 what the differential tests assert.
 """
-function read(source, scan::Tables.Scan; kw...)
-    t, residual = apply(source, scan; kw...)
+function scan(source, sc::Tables.Scan; kw...)
+    t, residual = apply(source, sc; kw...)
     return Tables.finish(t, residual)   # residual is empty: identity
 end
 
