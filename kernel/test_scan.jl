@@ -305,3 +305,25 @@ end
 end
 
 end # testset
+
+@testset "front-door Scan sources (CSVApi.read)" begin
+    using CodecZlib
+    isdefined(Main, :CSVApi) || include(joinpath(@__DIR__, "api.jl"))
+    csv = "a,b,c\n" * join(("$(i),$(i / 2),v$(i % 7)" for i in 1:1000), '\n') * "\n"
+    bytes = Vector{UInt8}(codeunits(csv))
+    gz = transcode(GzipCompressor, copy(bytes))
+    scan = T.Scan(select=[:c, :a], limit=10)
+    ref = Tables.finish(K.parse(copy(bytes)), scan)
+    refcols = Tables.columns(ref)
+    for src in (copy(bytes), gz, IOBuffer(csv), IOBuffer(gz))
+        t = Main.CSVApi.read(src, scan)
+        cols = Tables.columns(t)
+        @test collect(Tables.columnnames(cols)) == collect(Tables.columnnames(refcols))
+        for nm in Tables.columnnames(refcols)
+            @test isequal([x isa AbstractString ? String(x) : x
+                           for x in Tables.getcolumn(cols, nm)],
+                          [x isa AbstractString ? String(x) : x
+                           for x in Tables.getcolumn(refcols, nm)])
+        end
+    end
+end

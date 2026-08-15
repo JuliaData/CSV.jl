@@ -44,6 +44,25 @@ export sniff, Spec
 
 const DEFAULT_POOL = (0.2, 500)   # CSV.jl's default: pool strings ≤20% unique, ≤500 levels
 
+"""
+    CSVApi.read(source, scan::Tables.Scan; kw...)
+
+The Tables.Scan front door: every axis of `scan` (select/rename, pinned
+types, limit/offset, filter) pushes into the kernel — unselected columns are
+never parsed, filtered-out rows never cost value work. Sources resolve
+exactly like `File` (paths, IO, bytes, Cmd, gzip by magic, mmap); `kw` is
+the usual dialect/value surface.
+"""
+# defined only when the Tables.Scan proposal is present (the dev'd Tables);
+# released Tables loads this file without the Scan surface
+if isdefined(Tables, :Scan)
+    function read(source, scan::Tables.Scan; buffer_in_memory::Bool=false, kw...)
+        isdefined(Main, :KernelScan) ||
+            Base.include(Main, joinpath(@__DIR__, "scan.jl"))
+        return Main.KernelScan.read(resolvesource(source; buffer_in_memory), scan; kw...)
+    end
+end
+
 const _DIALECTKW = (:quotechar, :openquotechar, :closequotechar, :escapechar,
                     :quoted, :comment, :ignoreemptyrows, :ignorerepeated)
 const _VALUEKW = (:dateformat, :decimal, :truestrings, :falsestrings,
