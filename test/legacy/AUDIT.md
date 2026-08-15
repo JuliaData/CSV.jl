@@ -161,13 +161,14 @@ category), and pins assert their exact direction. Final ledger: 212 agree,
   implementations plus a writer round-trip per case — 63 differential cases
   + 63 round-trips in ~4 s, zero bytes on disk. Broader than the tiny files
   it stands in for (chunk boundaries land everywhere; every size class).
-- **Artifact recut** to the 24 large real-world files (18 MB unpacked,
-  5.1 MB tarball; was 119 files / 28 MB): every kept file pins real-world
-  messiness a synthetic cannot reproduce. Dropped `pandas_zeros.csv`
-  (10 MB synthetic zeros; its `normalizenames` check is covered inline) and
-  the 12 unreferenced files. Publishing is a release action
-  (`test/legacy/artifact/README.md`); until then the original artifact
-  resolves the same files and `corpusfile()` falls back to it.
+- **Corpus committed in-repo** (`test/legacy/testfiles/`, 24 large
+  real-world files, 18 MB unpacked / ~5 MB in git's object store; was an
+  artifact of 119 files / 28 MB): every kept file pins real-world messiness
+  a synthetic cannot reproduce. Dropped `pandas_zeros.csv` (10 MB synthetic
+  zeros; its `normalizenames` check is covered inline) and the 12 files no
+  test referenced. The artifact machinery (Artifacts.toml, LazyArtifacts,
+  the release-upload step) is retired — at this size the files simply live
+  in the repo, as they did in 0.10.
 
 ## Layout
 

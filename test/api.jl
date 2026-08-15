@@ -16,15 +16,7 @@ using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings
 using CSV, LegacyCSV
 const A = CSV.CSVApi
 const K = CSV.CSVKernel
-using LazyArtifacts
-const _corpusdir = let toml = joinpath(dirname(dirname(pathof(CSV))), "Artifacts.toml")
-    try
-        LazyArtifacts.ensure_artifact_installed("testfiles", toml)
-    catch
-        LazyArtifacts.ensure_artifact_installed("testfiles-full-1", toml)   # until testdata-full-2 is published
-    end
-end
-corpusfile(name) = joinpath(_corpusdir, name)
+corpusfile(name) = joinpath(@__DIR__, "legacy", "testfiles", name)
 
 # Minimal ordered AbstractDict for precedence tests. Base.Dict iteration order
 # is not an API contract, while CSV's rule is explicitly first matching Regex.

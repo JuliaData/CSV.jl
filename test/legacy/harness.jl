@@ -9,10 +9,11 @@
 # delta (record it in DELTAS below with a reason — the harness then asserts
 # the NEW behavior instead so the delta stays pinned).
 #
-# `corpusfile(name)` resolves the LazyArtifact corpus; small files were
-# inlined into cases.jl as literals during the audit (see AUDIT.md).
+# `corpusfile(name)` resolves the committed corpus (test/legacy/testfiles);
+# small files were inlined into cases.jl as literals during the audit (see
+# AUDIT.md).
 
-using Test, Tables, Dates, LazyArtifacts, PooledArrays
+using Test, Tables, Dates, PooledArrays
 using CSV, LegacyCSV
 const NEW = CSV
 const OLD = LegacyCSV
@@ -35,28 +36,17 @@ Base.zero(::Type{Dec64}) = Dec64(0.0)
 # The corpus lives in two places: the small files (<= 4 KiB) are inlined as
 # byte literals in corpus_inline.jl and written to a scratch dir once per
 # session (real paths, so path-dependent behavior — .gz by extension, the
-# mmap threshold, Cmd sources — is exercised exactly as before); the large
-# real-world files come from the LazyArtifact, resolved through the PACKAGE's
-# Artifacts.toml regardless of how this file is included.
+# mmap threshold, Cmd sources — is exercised exactly as before); the 24 large
+# real-world files are committed at test/legacy/testfiles (18 MB, ~5 MB in
+# git's object store).
 include("corpus_inline.jl")
 const inlinedir = mktempdir(; prefix="csv-corpus-inline-")
 for (name, bytes) in INLINE_FILES
     write(joinpath(inlinedir, name), bytes)
 end
-const _artifactdir = Ref{Union{Nothing, String}}(nothing)
 function corpusfile(name)
     haskey(INLINE_FILES, name) && return joinpath(inlinedir, name)
-    if _artifactdir[] === nothing
-        toml = joinpath(dirname(dirname(pathof(CSV))), "Artifacts.toml")
-        # the recut artifact (testdata-full-2); until that release is published
-        # the original full corpus resolves the same files (strict subset)
-        _artifactdir[] = try
-            LazyArtifacts.ensure_artifact_installed("testfiles", toml)
-        catch
-            LazyArtifacts.ensure_artifact_installed("testfiles-full-1", toml)
-        end
-    end
-    return joinpath(_artifactdir[], name)
+    return joinpath(@__DIR__, "testfiles", name)
 end
 
 _legacynorm(x) = x isa AbstractString ? String(x) : x
