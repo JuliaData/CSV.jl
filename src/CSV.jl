@@ -61,7 +61,10 @@ import Dates, CodecZlib
         File(IOBuffer(mixed); stringtype=String)
         File(IOBuffer(mixed); parallel=true, ntasks=2, chunkbytes=1 << 10)
         gz = IOBuffer()
-        gzs = CodecZlib.GzipCompressorStream(gz)
+        # Keep the IOBuffer open when the compressor is finalized. Without
+        # stop_on_end, close(gzs) also closes and empties `gz`, so take!(gz)
+        # would exercise File on an empty byte vector instead of gzip input.
+        gzs = CodecZlib.GzipCompressorStream(gz; stop_on_end=true)
         Base.write(gzs, mixed)
         close(gzs)
         File(take!(gz))

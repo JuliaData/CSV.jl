@@ -671,6 +671,15 @@ end # @testset CSVApi
         f = A.File(src)
         @test Tables.getcolumn(f, :a) == [1, 2]
     end
+    # This is also the in-memory stream pattern used by the precompile workload.
+    # The wrapper must not close its IOBuffer before take! retrieves the bytes.
+    gzbuf = IOBuffer()
+    gzstream = CodecZlib.GzipCompressorStream(gzbuf; stop_on_end=true)
+    write(gzstream, plain)
+    close(gzstream)
+    streamedgz = take!(gzbuf)
+    @test streamedgz[1:2] == UInt8[0x1f, 0x8b]
+    @test Tables.getcolumn(A.File(streamedgz), :a) == [1, 2]
     gzpath = joinpath(mktempdir(), "t.csv.gz")
     write(gzpath, gz)
     @test Tables.getcolumn(A.File(gzpath), :a) == [1, 2]
