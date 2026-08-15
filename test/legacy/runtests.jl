@@ -24,5 +24,6 @@ include("corpus_table.jl")
         end
     end
     include("cases_file.jl")
+    include("generated.jl")
     report()
 end

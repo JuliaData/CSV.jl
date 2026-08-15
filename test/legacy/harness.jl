@@ -32,11 +32,32 @@ end
 Base.parse(::Type{Dec64}, s::String) = Dec64(parse(Float64, s))
 Base.tryparse(::Type{Dec64}, s::String) = Dec64(parse(Float64, s))
 Base.zero(::Type{Dec64}) = Dec64(0.0)
-# resolve the corpus through the PACKAGE's Artifacts.toml regardless of how
-# this file is included (Pkg.test, or run standalone from test/)
-const corpusdir = LazyArtifacts.ensure_artifact_installed("testfiles",
-    joinpath(dirname(dirname(pathof(CSV))), "Artifacts.toml"))
-corpusfile(name) = joinpath(corpusdir, name)
+# The corpus lives in two places: the small files (<= 4 KiB) are inlined as
+# byte literals in corpus_inline.jl and written to a scratch dir once per
+# session (real paths, so path-dependent behavior — .gz by extension, the
+# mmap threshold, Cmd sources — is exercised exactly as before); the large
+# real-world files come from the LazyArtifact, resolved through the PACKAGE's
+# Artifacts.toml regardless of how this file is included.
+include("corpus_inline.jl")
+const inlinedir = mktempdir(; prefix="csv-corpus-inline-")
+for (name, bytes) in INLINE_FILES
+    write(joinpath(inlinedir, name), bytes)
+end
+const _artifactdir = Ref{Union{Nothing, String}}(nothing)
+function corpusfile(name)
+    haskey(INLINE_FILES, name) && return joinpath(inlinedir, name)
+    if _artifactdir[] === nothing
+        toml = joinpath(dirname(dirname(pathof(CSV))), "Artifacts.toml")
+        # the recut artifact (testdata-full-2); until that release is published
+        # the original full corpus resolves the same files (strict subset)
+        _artifactdir[] = try
+            LazyArtifacts.ensure_artifact_installed("testfiles", toml)
+        catch
+            LazyArtifacts.ensure_artifact_installed("testfiles-full-1", toml)
+        end
+    end
+    return joinpath(_artifactdir[], name)
+end
 
 _legacynorm(x) = x isa AbstractString ? String(x) : x
 _legacynormvec(v) = Any[_legacynorm(x) for x in v]
@@ -64,6 +85,15 @@ function _newkw(kw)
     if haskey(d, :lazystrings)
         delete!(d, :lazystrings)
     end
+    return (; d...)
+end
+# writer kwargs implied by a parse dialect (delim/decimal/... round-trip)
+function _writekw(kw)
+    d = Dict{Symbol, Any}()
+    haskey(kw, :delim) && (d[:delim] = kw[:delim])
+    haskey(kw, :decimal) && (d[:decimal] = kw[:decimal])
+    haskey(kw, :missingstring) && kw[:missingstring] isa AbstractString &&
+        (d[:missingstring] = kw[:missingstring])
     return (; d...)
 end
 function _oldkw(kw)

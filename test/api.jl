@@ -17,8 +17,13 @@ using CSV, LegacyCSV
 const A = CSV.CSVApi
 const K = CSV.CSVKernel
 using LazyArtifacts
-const _corpusdir = LazyArtifacts.ensure_artifact_installed("testfiles",
-    joinpath(dirname(dirname(pathof(CSV))), "Artifacts.toml"))
+const _corpusdir = let toml = joinpath(dirname(dirname(pathof(CSV))), "Artifacts.toml")
+    try
+        LazyArtifacts.ensure_artifact_installed("testfiles", toml)
+    catch
+        LazyArtifacts.ensure_artifact_installed("testfiles-full-1", toml)   # until testdata-full-2 is published
+    end
+end
 corpusfile(name) = joinpath(_corpusdir, name)
 
 # Minimal ordered AbstractDict for precedence tests. Base.Dict iteration order

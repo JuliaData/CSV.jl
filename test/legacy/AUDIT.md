@@ -149,6 +149,26 @@ schema types, values, AND semantic error categories (both-error must agree on
 category), and pins assert their exact direction. Final ledger: 212 agree,
 17 both-error, 8 + 4 + 2 pinned; battery 1,175/1,175.
 
+## The corpus overhaul (done)
+
+- **82 small files (≤ 4 KiB, 12 KB total) inlined** as exact byte literals in
+  `corpus_inline.jl` — BOMs, CRLF, NULs, invalid UTF-8 preserved by `repr`;
+  written to a scratch dir once per session so path-dependent behavior
+  (`.gz` by extension, mmap threshold, `Cmd` sources) is exercised
+  unchanged. Battery identical: 1,175/1,175 before and after.
+- **Generated battery** (`generated.jl`): `bench/bench_matrix.jl`'s 21 shape
+  generators × 3 sizes (single-chunk → several chunks) through both
+  implementations plus a writer round-trip per case — 63 differential cases
+  + 63 round-trips in ~4 s, zero bytes on disk. Broader than the tiny files
+  it stands in for (chunk boundaries land everywhere; every size class).
+- **Artifact recut** to the 24 large real-world files (18 MB unpacked,
+  5.1 MB tarball; was 119 files / 28 MB): every kept file pins real-world
+  messiness a synthetic cannot reproduce. Dropped `pandas_zeros.csv`
+  (10 MB synthetic zeros; its `normalizenames` check is covered inline) and
+  the 12 unreferenced files. Publishing is a release action
+  (`test/legacy/artifact/README.md`); until then the original artifact
+  resolves the same files and `corpusfile()` falls back to it.
+
 ## Layout
 
 ```
