@@ -22,17 +22,17 @@ end
 # Pinned 1.0 deltas: the two implementations MUST disagree here (a stale pin
 # fails). Reason strings are the migration-guide entries.
 DELTAS = Dict(
-    "basics:704" => "empty unquoted cell is ALWAYS missing (missingstring only ADDS spellings); 0.10's missingstring=nothing made empties present \"\"",
-    "basics:529" => "stringtype=PosLenString retired: CompactString (default) or String",
-    "basics:795" => "function-typed types=/pool= retired: Dict / vector / Type forms (Tables.Scan is the expression channel)",
-    "basics:281" => "unclosed quote is a reported problem, not a fatal error (warnings are data)",
-    "basics:282" => "unclosed quote is a reported problem, not a fatal error (warnings are data)",
-    "basics:283" => "unclosed quote is a reported problem, not a fatal error (warnings are data)",
-    "basics:284" => "unclosed quote is a reported problem, not a fatal error (warnings are data)",
-    "basics:285" => "unclosed quote is a reported problem, not a fatal error (warnings are data)",
-    "basics:286" => "unclosed quote is a reported problem, not a fatal error (warnings are data)",
-    "basics:60"  => "NUL is an accepted delimiter byte (0.10 rejected it)",
-    "basics:61"  => "NUL is an accepted delimiter byte (0.10 rejected it)",
+    "basics:704" => (outcome=:differ, reason="empty unquoted cell is ALWAYS missing (missingstring only ADDS spellings); 0.10's missingstring=nothing made empties present \"\""),
+    "basics:529" => (outcome=:new_errors, reason="stringtype=PosLenString retired: CompactString (default) or String"),
+    "basics:795" => (outcome=:new_errors, reason="function-typed types=/pool= retired: Dict / vector / Type forms (Tables.Scan is the expression channel)"),
+    "basics:281" => (outcome=:old_errors, reason="unclosed quote is a reported problem, not a fatal error (warnings are data)"),
+    "basics:282" => (outcome=:old_errors, reason="unclosed quote is a reported problem, not a fatal error (warnings are data)"),
+    "basics:283" => (outcome=:old_errors, reason="unclosed quote is a reported problem, not a fatal error (warnings are data)"),
+    "basics:284" => (outcome=:old_errors, reason="unclosed quote is a reported problem, not a fatal error (warnings are data)"),
+    "basics:285" => (outcome=:old_errors, reason="unclosed quote is a reported problem, not a fatal error (warnings are data)"),
+    "basics:286" => (outcome=:old_errors, reason="unclosed quote is a reported problem, not a fatal error (warnings are data)"),
+    "basics:60"  => (outcome=:old_errors, reason="NUL is an accepted delimiter byte (0.10 rejected it)"),
+    "basics:61"  => (outcome=:old_errors, reason="NUL is an accepted delimiter byte (0.10 rejected it)"),
 )
 out = IOBuffer()
 println(out, "# GENERATED from the 0.10 test suite (legacy/test) by the audit's extractor;")
@@ -54,23 +54,28 @@ for (hdr, text) in entries
     # kwargs reference no legacy-only names (retired types, custom types, helper
     # variables); everything else is hand triage
     inputlit = occursin(r"^\s*IOBuffer\(\"", args) || occursin(r"^\s*corpusfile\(\"", args) ||
+               occursin(r"^\s*joinpath\(dir,\s*\"", args) ||
                occursin(r"^\s*codeunits\(\"", args)
     # strip the corpusfile("...") input before scanning kwargs for free names
     kwargs_only = replace(args, r"corpusfile\(\"[^\"]*\"\)" => "CORPUS")
-    legacyname = occursin(r"\b(PosLenString|CSVString|Dec64|CSV_Foo|InlineString\d*|String\d+|IdDict|test_logs|CustomTypes|catcmd)\b", kwargs_only) ||
-                 occursin(r"\b(data|buf|io|str|csv|parent|source|path|firstbyte|lastbyte)\b\s*[,;)\]]", kwargs_only) ||
+    legacyname = occursin(r"\b(PosLenString|InlineString\d*|String\d+|test_logs|CustomTypes|catcmd)\b", kwargs_only) ||
+                 occursin(r"\b(data|buf|io|str|csv|tm|parent|source|path|firstbyte|lastbyte)\b\s*(?:[,;)\]]|$)", kwargs_only) ||
                  occursin(r"\(\s*i\s*,\s*nm\s*\)\s*->", kwargs_only)   # function-typed forms are retired
-    freevar = !inputlit || legacyname || occursin("test_logs", text) || hdr in ("basics.jl:727 [CSV.File]",)
+    lbl = replace(split(hdr, " [")[1], ".jl" => "")
+    pinned = haskey(DELTAS, lbl)
+    freevar = !pinned && (!inputlit || legacyname || occursin("test_logs", text) ||
+                          hdr in ("basics.jl:727 [CSV.File]",))
     args = replace(args, "joinpath(dir, " => "corpusfile(")
     # legacy-only kwargs the new side rejects outright: strip for the replay
     args = replace(args, r",?\s*silencewarnings\s*=\s*true" => "")
     if selfcontained && !freevar
-        lbl = replace(split(hdr, " [")[1], ".jl" => "")
         sep = occursin(";", args) ? ", " : "; "
-        if haskey(DELTAS, lbl)
-            println(out, "    # PINNED 1.0 DELTA: ", DELTAS[lbl])
+        if pinned
+            delta = DELTAS[lbl]
+            println(out, "    # PINNED 1.0 DELTA: ", delta.reason)
             println(out, "    @case \"", lbl, "\" agree(", args, sep, "label=\"", lbl,
-                    "\", expect_delta=\"", replace(DELTAS[lbl], "\"" => "\\\""), "\")")
+                    "\", expect_delta=(outcome=:", delta.outcome, ", reason=\"",
+                    replace(delta.reason, "\"" => "\\\""), "\"))")
         else
             println(out, "    @case \"", lbl, "\" agree(", args, sep, "label=\"", lbl, "\")")
         end

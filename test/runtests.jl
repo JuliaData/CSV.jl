@@ -7,7 +7,7 @@
 #                (LegacyCSV = the frozen legacy/src, loaded as the oracle)
 #   write.jl   — the writer, incl. round-trips through File and byte parity
 #   scan.jl    — Tables.Scan pushdown (only when the Tables proposal is loaded)
-#   legacy/    — ported 0.10 corpus tests (see legacy/README.md for the audit)
+#   legacy/    — ported 0.10 corpus tests (see test/legacy/AUDIT.md)
 using Test, CSV
 @testset "CSV" begin
     include("kernel.jl")

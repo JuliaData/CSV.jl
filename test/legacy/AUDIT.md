@@ -34,8 +34,17 @@ total. Self-contained ones (literal/corpus input, no legacy-only names) became
 `agree(...)` replays in `cases_file.jl` — the *input* is the test and the *oracle*
 supplies the expectation. That is cheaper to maintain than 362 hand-written
 value assertions and strictly stronger (every column, every row, both
-implementations). Free-variable calls, custom-type cases, `@test_logs`, and
-retired forms are listed as `# MANUAL` in the same file for hand triage.
+implementations). Free-variable calls, `@test_logs`, and retired forms are
+listed as `# MANUAL` in the same file for hand triage. This
+round moved the self-contained custom-type cases and both `IdDict` typemap cases
+out of that queue and into the replay.
+
+The harness now compares row counts and normalized schema types as well as names
+and values. Two thrown calls agree only when their semantic error categories
+agree. Every delta pin states its exact expected outcome (`differ`, `new_errors`,
+or `old_errors`), so a reversed error direction also fails. The current ledger
+is 212 `agree`, 17 `both_error`, 4 `differ`, 2 `new_errors`, and 8 `old_errors`,
+with no `unportable` outcome.
 
 ### 3. What the replay FOUND (the audit's real yield)
 
@@ -49,8 +58,9 @@ Real defects, all fixed in this pass:
 - **delimiter sniffing**: header-only delimiter false positives (`Created
   Date` → split on space) and header-vs-data disagreements (`A;B;C` over
   `1,1,10`). Fix: field-consistency scorer first, then 0.10's exact byte-count
-  tiers as fallback — 19/19 probes now agree with 0.10, while quoted samples
-  still detect correctly where 0.10 fails.
+  tiers as fallback. A deterministic 256-sample differential fuzz covers
+  quotes, spaces, all six candidate delimiters, CRLF, and multiple delimiter
+  bytes inside quoted cells. Header-only, empty, BOM, and tie cases are pinned.
 - **typed values with surrounding blanks** (`1, 2, 3`) parsed as strings.
   Fix: typed parse + detection trim blanks (0.10/Parsers semantics); String
   columns keep their spaces unless `stripwhitespace`.
@@ -68,6 +78,16 @@ Real defects, all fixed in this pass:
   type even when no missing appears (0.10 honors the declaration); and the type
   sample no longer looks past `limit`/footer rows (a skipped footer's missings
   were seeding missing-capable finals).
+- **custom scalar types**: concrete user types with `tryparse(T, String)` or
+  `parse(T, String)` now use the typed column path. Unsupported custom types
+  still fail at configuration time, as in 0.10.
+
+The comment scanner count reduction is intentional and exact. Forty-eight
+randomized comment cases each lost 14 unsafe fast-scanner variants (672 checks).
+Ten explicit comment cases each lost 18 variants (180 checks). Total: 852.
+Scalar sequential and parallel geometry remains covered at chunk sizes 3, 7,
+16, and 64. Focused row-start and quote-poison checks increased the current
+kernel total beyond the original 54,488.
 - Two Julia traps hit twice each in this pass and now documented in code:
   `cond && (a, b = c, d)` parses as a tuple (silent no-op), and `begin…end`
   inside a typed comprehension is a parse error.
@@ -82,7 +102,7 @@ The harness asserts these DISAGREE with 0.10 (a stale pin fails):
 - unclosed quote is a reported problem, not a fatal error
 - NUL is an accepted delimiter byte
 - retired: `PosLenString`, function-typed `types`/`select`/`drop`/`pool`,
-  `IdDict` typemap keys (plain Dict works), `debug`, `silencewarnings`, …
+  `debug`, `silencewarnings`, …
 - writer: quoted `""` is a present empty string; unquoted empty is missing
 
 ### 5. `runtests.jl`, `iteration.jl`, `write.jl` — PARTIALLY superseded, rest queued

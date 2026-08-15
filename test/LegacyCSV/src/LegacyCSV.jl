@@ -4,7 +4,23 @@
 module LegacyCSV
 const CSV = LegacyCSV   # the legacy sources reference themselves as `CSV.`
 const _LEGACY_SRC = normpath(joinpath(@__DIR__, "..", "..", "..", "legacy", "src"))
-let src = read(joinpath(_LEGACY_SRC, "CSV.jl"), String)
+
+# Rewrite every source file, not only CSV.jl. This keeps nested includes inside
+# the frozen tree and makes `dirname(pathof(CSV))` sound in optional workload
+# files even though `CSV` is an alias for this shim module.
+function _rewritesource(src::String)
+    src = replace(src, "dirname(pathof(CSV))" => "_LEGACY_SRC")
+    return replace(src, r"include\(\"([^\"]+)\"\)" => s"_includelegacy(\"\1\")")
+end
+function _includelegacy(file::String)
+    path = normpath(joinpath(_LEGACY_SRC, file))
+    startswith(path, _LEGACY_SRC * Base.Filesystem.path_separator) ||
+        error("legacy include escapes source tree: $file")
+    return include_string(@__MODULE__, _rewritesource(Base.read(path, String)),
+                          "LegacyCSV(" * file * ")")
+end
+
+let src = Base.read(joinpath(_LEGACY_SRC, "CSV.jl"), String)
     lo = findfirst(r"^module CSV\s*$"m, src)
     hi = let ms = collect(eachmatch(r"^end # module\s*$"m, src))
         isempty(ms) ? nothing : (ms[end].offset:(ms[end].offset + length(ms[end].match) - 1))
@@ -12,8 +28,6 @@ let src = read(joinpath(_LEGACY_SRC, "CSV.jl"), String)
     lo === nothing && error("legacy CSV.jl: module header not found")
     hi === nothing && error("legacy CSV.jl: module footer not found")
     body = src[last(lo)+1:first(hi)-1]
-    body = replace(body, "dirname(pathof(CSV))" => "_LEGACY_SRC")
-    body = replace(body, r"include\(\"([^\"]+)\"\)" => s"include(joinpath(_LEGACY_SRC, \"\1\"))")
-    include_string(@__MODULE__, body, "LegacyCSV(CSV.jl)")
+    include_string(@__MODULE__, _rewritesource(body), "LegacyCSV(CSV.jl)")
 end
 end
