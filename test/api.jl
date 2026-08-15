@@ -12,7 +12,7 @@
 #   • function-typed select/drop retired
 #   • Int64 overflow that fits Int128 remains exact where CSV.jl widens to Float64
 
-using Test, Dates, Tables, PooledArrays, CodecZlib
+using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings
 using CSV, LegacyCSV
 const A = CSV.CSVApi
 const K = CSV.CSVKernel
@@ -808,4 +808,49 @@ end # @testset CSVApi
     # reusebuffer: accepted and inert
     r = A.Rows(IOBuffer("a\n1\n2\n"); reusebuffer=true)
     @test length(collect(r)) == 2
+end
+
+@testset "CompactString hash + stringtype extension hook" begin
+    # hash contract: CompactString hashes like its String, allocation-free
+    col = K.parse(Vector{UInt8}(codeunits("a\n" * join(("v$(i)_" * "x"^(i % 30) for i in 1:500), '\n') * "\n")); pool=false).columns[1]
+    @test all(hash(col[i]) == hash(String(col[i])) for i in eachindex(col))
+    @test all(hash(col[i], UInt(7)) == hash(String(col[i]), UInt(7)) for i in eachindex(col))
+    hashall(c) = (h = UInt(0); @inbounds for i in eachindex(c); h ⊻= hash(c[i]); end; h)
+    hashall(col)
+    @test @allocated(hashall(col)) == 0
+    for n in 0:14   # every inline length + the first view lengths, incl. escaped
+        s = "y"^n
+        c = K.parse(Vector{UInt8}(codeunits("a\n\"" * s * "\"\n\"" * s * "\"\"z\"\n")); pool=false).columns[1]
+        @test hash(c[1]) == hash(s) && hash(c[2]) == hash(s * "\"z")
+    end
+    d = Dict{AbstractString, Int}(String(col[3]) => 3)
+    @test d[col[3]] == 3                    # CompactString finds the String key
+    # stringtype validation and String path unchanged
+    @test_throws ArgumentError A.File(IOBuffer("a\nx\n"); stringtype=Int)
+    @test eltype(Tables.getcolumn(A.File(IOBuffer("a\nx\n"); stringtype=String), :a)) == String
+end
+
+@testset "InlineStrings extension" begin
+    csv = "s,t,n\n" * join(("a$(i),$(i % 3 == 0 ? "" : "longer value number $(i)"),$(i)" for i in 1:300), '\n') * "\n"
+    f = A.File(IOBuffer(csv); stringtype=InlineString)
+    @test eltype(Tables.getcolumn(f, :s)) == String7           # auto width per column
+    @test eltype(Tables.getcolumn(f, :t)) == Union{Missing, String31}
+    @test String(Tables.getcolumn(f, :t)[1]) == "longer value number 1"
+    @test Tables.getcolumn(f, :t)[3] === missing
+    f = A.File(IOBuffer(csv); stringtype=String31)
+    @test eltype(Tables.getcolumn(f, :s)) == String31           # pinned width
+    @test_throws ArgumentError A.File(IOBuffer(csv); stringtype=String7)   # too narrow
+    # pooled levels take the inline type; missing joins the pool
+    f = A.File(IOBuffer(csv); stringtype=InlineString, pool=Dict(:s => false, :t => (1.0, 5000)))
+    @test Tables.getcolumn(f, :t) isa PooledArrays.PooledArray
+    @test eltype(Tables.getcolumn(f, :t)) == Union{Missing, String31}
+    # escaped (extra-backed) values and unicode
+    f = A.File(IOBuffer("a\n\"q\"\"x\"\nαβγδεζηθ\n"); stringtype=InlineString)
+    @test collect(String.(Tables.getcolumn(f, :a))) == ["q\"x", "αβγδεζηθ"]
+    @test eltype(Tables.getcolumn(f, :a)) == String31   # αβγδεζηθ is 16 UTF-8 bytes
+    # oracle: values agree with 0.10's InlineString default
+    o = LegacyCSV.File(IOBuffer(csv))
+    @test isequal(String.(coalesce.(Tables.getcolumn(f, :a), "")), String.(coalesce.(Tables.getcolumn(f, :a), "")))
+    @test isequal(collect(Tables.getcolumn(A.File(IOBuffer(csv); stringtype=InlineString), :s)),
+                  collect(Tables.getcolumn(o, :s)))
 end

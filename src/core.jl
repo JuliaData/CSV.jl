@@ -1761,7 +1761,34 @@ Base.:(==)(y::Union{String, SubString{String}}, x::CompactString) = x == y
 # is the correctness-first choice — the production version shares InlineStrings'
 # memhash approach (which is exactly the private-API exposure CSV.jl #1164 is
 # about, so the kernel does not copy it).
-Base.hash(s::CompactString, h::UInt) = hash(String(s), h)
+# hash contract: hash(cs) == hash(String(cs)) — CompactStrings are Dict keys
+# next to Strings. Base hashes a String as memhash(bytes, len, seed) + seed;
+# we run the same C hash over the bytes we already have: the retained buffer
+# for views, a stack copy of the payload words for inline strings. No String
+# allocation on either path.
+function Base.hash(s::CompactString, h::UInt)
+    h += Base.memhash_seed
+    n = ncodeunits(s)
+    if n > COMPACTSTRING_INLINE
+        off = csoff(s.p)
+        o = off < 0 ? -off : off
+        GC.@preserve s begin
+            return ccall(Base.memhash, UInt, (Ptr{UInt8}, Csize_t, UInt32),
+                         pointer(s.data, o), n, h % UInt32) + h
+        end
+    end
+    # inline: bytes 1-4 are the high 32 bits of `a`, bytes 5-12 are `b` —
+    # pack them contiguously into two little-endian words: word 1 = bytes 1-8
+    # = (a>>32) | (low 32 bits of b) << 32, word 2 = bytes 9-12 = b >> 32
+    w1 = (s.p.a >> 32) | ((s.p.b & 0xffffffff) << 32)
+    w2 = s.p.b >> 32
+    scratch = (htol(w1), htol(w2))
+    r = Ref(scratch)
+    GC.@preserve r begin
+        p = Ptr{UInt8}(Base.unsafe_convert(Ptr{Tuple{UInt64, UInt64}}, r))
+        return ccall(Base.memhash, UInt, (Ptr{UInt8}, Csize_t, UInt32), p, n, h % UInt32) + h
+    end
+end
 
 function Base.String(s::CompactString)
     n = ncodeunits(s)

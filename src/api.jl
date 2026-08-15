@@ -778,8 +778,7 @@ function File(source;
     ntasks === nothing || ntasks >= 1 ||
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
     maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
-    stringtype in (K.CompactString, String) ||
-        throw(ArgumentError("stringtype must be CSVKernel.CompactString or String (got $stringtype)"))
+    _checkstringtype(stringtype)
     on_error in (:collect, :error) ||
         throw(ArgumentError("on_error must be :collect or :error"))
     capturecap = max(maxproblems, 1)
@@ -801,9 +800,10 @@ function File(source;
                              pr.message * (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
     end
     t = _narrowtypes(t, K.requestedtypes(types, p.names, p.ncols), sel)
-    t = _pooledarrays(t)
+    poolS = stringtype === K.CompactString ? String : stringtype   # pool levels are never views
+    t = _pooledarrays(t, poolS)
     downcast && (t = _downcast(t))
-    stringtype === String && (t = _materializestrings(t))
+    stringtype === K.CompactString || (t = _materializestrings(t, stringtype))
     nm = source isa AbstractString ? String(source) : "<$(nameof(typeof(source)))>"
     return File(nm, t, Dict(n => j for (j, n) in enumerate(K.names(t))))
 end
@@ -1072,22 +1072,20 @@ end
 # Levels materialize to String (at most the pool cap of them); refs are shared
 # outright for missing-free columns and remapped once — missing joins the pool,
 # CSV.jl's convention — otherwise. Measured 0.2-0.8 ms on 20 MiB shapes.
-function _topooledarray(c::K.PooledColumn{ELT}) where {ELT}
+function _topooledarray(c::K.PooledColumn{ELT}, ::Type{S0}=String) where {ELT, S0}
     n = length(c.levels)
+    lv = _levelvector(S0, c.levels, n)   # an abstract S0 (InlineString) resolves to a width here
+    S = eltype(lv)
     if !(Missing <: ELT)
-        pool = Vector{String}(undef, n)
-        @inbounds for i in 1:n
-            pool[i] = String(c.levels[i])
-        end
-        invpool = Dict{String, UInt32}(pool[i] => UInt32(i) for i in 1:n)
-        return PooledArray(PooledArrays.RefArray(K.poolrefs(c)), invpool, pool)
+        invpool = Dict{S, UInt32}(lv[i] => UInt32(i) for i in 1:n)
+        return PooledArray(PooledArrays.RefArray(K.poolrefs(c)), invpool, lv)
     end
-    pool = Vector{Union{String, Missing}}(undef, n + 1)
+    pool = Vector{Union{S, Missing}}(undef, n + 1)
     @inbounds for i in 1:n
-        pool[i] = String(c.levels[i])
+        pool[i] = lv[i]
     end
     pool[n + 1] = missing
-    invpool = Dict{Union{String, Missing}, UInt32}(pool[i] => UInt32(i) for i in 1:(n + 1))
+    invpool = Dict{Union{S, Missing}, UInt32}(pool[i] => UInt32(i) for i in 1:(n + 1))
     oldrefs = K.poolrefs(c)
     refs = similar(oldrefs)
     mref = UInt32(n + 1)
@@ -1098,15 +1096,37 @@ function _topooledarray(c::K.PooledColumn{ELT}) where {ELT}
     return PooledArray(PooledArrays.RefArray(refs), invpool, pool)
 end
 
-function _pooledarrays(t::K.ParsedTable)
+function _pooledarrays(t::K.ParsedTable, ::Type{S}=String) where {S}
     any(c -> c isa K.PooledColumn, t.columns) || return t
-    cols = AbstractVector[c isa K.PooledColumn ? _topooledarray(c) : c
+    cols = AbstractVector[c isa K.PooledColumn ? _topooledarray(c, S) : c
                           for c in t.columns]
     return K.ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
 end
 
-function _materializestrings(t::K.ParsedTable)
-    cols = AbstractVector[col isa K.CompactStringVector ? K.materialize(col) : col
+# --- the string-output hook -------------------------------------------------
+# `stringtype` names the element type string columns come out as. The core
+# knows CompactString (the default; zero-copy views) and String (bulk
+# materialization). Extensions register more by adding methods to
+# `_stringsink` (validation) and `_materializecolumn` / `_levelvector`
+# (conversion): CSVInlineStringsExt registers InlineString (auto-width per
+# column) and the fixed String1..String255.
+_stringsink(::Type{K.CompactString}) = true
+_stringsink(::Type{String}) = true
+_stringsink(::Type) = false
+_checkstringtype(T) =
+    (T isa Type && _stringsink(T)) ||
+        throw(ArgumentError("stringtype must be CSVKernel.CompactString, String, or a " *
+                            "type provided by an extension (e.g. InlineString with " *
+                            "InlineStrings loaded); got $T"))
+
+# a CompactStringVector to Vector{S} / Vector{Union{S,Missing}}
+_materializecolumn(::Type{String}, col::K.CompactStringVector) = K.materialize(col)
+# pool levels (a CompactStringVector) to Vector{S}
+_levelvector(::Type{String}, levels::K.CompactStringVector, n::Int) =
+    String[String(levels[i]) for i in 1:n]
+
+function _materializestrings(t::K.ParsedTable, ::Type{S}=String) where {S}
+    cols = AbstractVector[col isa K.CompactStringVector ? _materializecolumn(S, col) : col
                           for col in t.columns]
     return K.ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
 end
