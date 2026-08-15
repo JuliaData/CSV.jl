@@ -34,17 +34,21 @@ total. Self-contained ones (literal/corpus input, no legacy-only names) became
 `agree(...)` replays in `cases_file.jl` — the *input* is the test and the *oracle*
 supplies the expectation. That is cheaper to maintain than 362 hand-written
 value assertions and strictly stronger (every column, every row, both
-implementations). Free-variable calls, `@test_logs`, and retired forms are
-listed as `# MANUAL` in the same file for hand triage. This
-round moved the self-contained custom-type cases and both `IdDict` typemap cases
-out of that queue and into the replay.
+implementations). Free-variable calls, `@test_logs`, and retired forms were
+listed as `# MANUAL` in the same file for hand triage. **The manual queue is
+now empty**: every one of the 71 remaining entries is either a replay (with
+its missing context — seeded data, loop variables, thunk-built sources —
+inlined) or a pinned delta with its direction asserted. `agree()` gained a
+thunk input form for sources `seekstart` cannot reset (an IO whose position
+matters, vectors of one-shot IOs).
 
 The harness now compares row counts and normalized schema types as well as names
 and values. Two thrown calls agree only when their semantic error categories
 agree. Every delta pin states its exact expected outcome (`differ`, `new_errors`,
 or `old_errors`), so a reversed error direction also fails. The current ledger
-is 212 `agree`, 17 `both_error`, 4 `differ`, 2 `new_errors`, and 8 `old_errors`,
-with no `unportable` outcome.
+is 336 `agree`, 19 `both_error`, 14 `differ` (all pinned), 9 `new_errors` (all
+pinned), and 8 `old_errors` (all pinned), with no `unportable` outcome and no
+unqueued entry.
 
 ### 3. What the replay FOUND (the audit's real yield)
 
@@ -82,6 +86,20 @@ Real defects, all fixed in this pass:
   `parse(T, String)` now use the typed column path. Unsupported custom types
   still fail at configuration time, as in 0.10.
 
+The manual-queue burndown found three more, all fixed in that pass:
+
+- **the delimiter sniff sample could come up empty** when a single row is
+  wider than `samplebytes` (64 KB default; a 60,000-column space-delimited
+  file) — detection then collapsed to one column. The sample now grows until
+  it holds at least one complete row.
+- **`transpose=true` did not accept `limit`** (0.10 does: first N transposed
+  rows).
+- **`validate=false` was wrongly retired** (and a `Regex` key matching no
+  column was silently ignored even with the default `validate=true`). It is
+  now a real keyword on `File`/`Rows`/`Chunks`: keys of `types`/`dateformat`/
+  `pool` naming absent columns error by default and are ignored under
+  `validate=false`, exactly as 0.10.
+
 The comment scanner count reduction is intentional and exact. Forty-eight
 randomized comment cases each lost 14 unsafe fast-scanner variants (672 checks).
 Ten explicit comment cases each lost 18 variants (180 checks). Total: 852.
@@ -98,22 +116,33 @@ The harness asserts these DISAGREE with 0.10 (a stale pin fails):
 
 - empty unquoted cell is always `missing`; `missingstring` only adds spellings
 - Bool columns are strictly `true`/`false` unless `truestrings`/`falsestrings`
-- long rows do not widen the schema (extra fields → problem)
+- long rows do not widen the schema (extra fields → problem) — including the
+  #1021 family, where 0.10 grew columns that only user `types` mentioned; a
+  `types` VECTOR must now match the header's column count
 - unclosed quote is a reported problem, not a fatal error
 - NUL is an accepted delimiter byte
 - retired: `PosLenString`, function-typed `types`/`select`/`drop`/`pool`,
-  `debug`, `silencewarnings`, …
+  `debug`, `silencewarnings`, the 0.10-deprecated `type=` singular, …
 - writer: quoted `""` is a present empty string; unquoted empty is missing
+- multithreaded parsing of quoted multiline fields keeps exact column types
+  (0.10's chunk-boundary speculation degraded such columns to `String`)
+- multi-source `File`: the schema reports the true concatenated column types
+  (0.10 returned the first source's pre-promotion types, disagreeing with its
+  own columns), and `source=` labels for non-path sources are deterministic
+  `"<source i>"` strings (0.10 embedded the IO object hash)
 
 ### 5. `runtests.jl`, `iteration.jl`, `write.jl` — PARTIALLY superseded, rest queued
 
 - CSV.Rows/Chunks/select/drop/vector-of-files: the new `test/api.jl` covers
   Rows/Chunks/select/drop differentially. **Vector-of-files input (+ `source=`
-  column) is a real feature gap** found here — queued, not silently dropped.
+  column) — the feature gap found here — is now BUILT** (first source's
+  column set, by-name matching with missing-fill, promotion across sources,
+  pooled provenance column) and its nine queue entries replay.
 - `iteration.jl`: row-accessor iteration is covered by `api.jl`'s Rows tests;
-  the two corpus files it used are in the table. Dropped as redundant.
+  its two corpus files replay as `iteration:3-*`.
 - `write.jl`: `test/write.jl` (77 tests, parser-oracle fuzz) supersedes it;
-  RowWriter/writebom/`writerow` surface — queued for parity review.
+  the three File-side reads (tab dialect, control-char delims, FilePathsBase
+  path — now an extension) replay as `write:*` cases.
 - `perf_write.jl`: a benchmark, not a test → `bench/`.
 
 ### 6. The corpus artifact — keep, but shrink the dependency

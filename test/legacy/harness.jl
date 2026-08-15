@@ -13,7 +13,7 @@
 # small files were inlined into cases.jl as literals during the audit (see
 # AUDIT.md).
 
-using Test, Tables, Dates, PooledArrays
+using Test, Tables, Dates, PooledArrays, Random, CodecZlib, Mmap, FilePathsBase
 using CSV, LegacyCSV
 const NEW = CSV
 const OLD = LegacyCSV
@@ -97,7 +97,10 @@ end
 
 Replay one File call on both implementations; assert equal names, sizes, and
 values. Returns the NEW File. `input` may be a String literal (wrapped in
-IOBuffer for both), an IO, bytes, or a corpus path.
+IOBuffer for both), an IO, bytes, a corpus path, or a zero-argument function
+producing the source — the thunk form is for sources a `seekstart` cannot
+reset (an IO whose position matters, a vector of one-shot IOs): each
+implementation gets a fresh one.
 """
 # Outcome classes, so one run yields the COMPLETE disagreement ledger:
 #   :agree        both parse, same names/sizes/values
@@ -122,7 +125,8 @@ _errorclass(e) = e isa ArgumentError ? :argument :
                  :other
 
 function agree(input; expect_delta=nothing, label::String="", kw...)
-    src() = input isa AbstractString && !isfile(input) ? IOBuffer(input) :
+    src() = input isa Function ? input() :
+            input isa AbstractString && !isfile(input) ? IOBuffer(input) :
             input isa IO ? (seekstart(input); input) : input
     fnew = try NEW.File(src(); _newkw(kw)...) catch e; e end
     fold = try OLD.File(src(); _oldkw(kw)...) catch e; e end
