@@ -19,6 +19,11 @@ isdefined(Main, :CSVApi) || include(joinpath(@__DIR__, "api.jl"))
 const A = CSVApi
 const K = CSVKernel
 
+@testset "released Tables has no Scan front door" begin
+    @test !isdefined(Tables, :Scan)
+    @test all(m -> !occursin("Scan", string(m.sig)), methods(A.read))
+end
+
 _norm(x) = x isa AbstractString ? String(x) : x
 
 function colvalues(f)
@@ -427,14 +432,22 @@ end
     mappedrow = first(A.Rows(bigpath))
     mappedbatch = first(A.Chunks(bigpath; ntasks=2))
     fb = A.File(bigpath; buffer_in_memory=true)
+    fnoprefetch = A.File(bigpath; prefetch=false, pool=false)
     @test first(A.Rows(bigpath; buffer_in_memory=true)).s == mappedrow.s
+    @test first(A.Rows(bigpath; prefetch=false)).s == mappedrow.s
     bufferedbatch = first(A.Chunks(bigpath; ntasks=2, buffer_in_memory=true))
+    noprefetchbatch = first(A.Chunks(bigpath; ntasks=2, prefetch=false))
     @test colvalues(bufferedbatch) == colvalues(mappedbatch)
+    @test colvalues(noprefetchbatch) == colvalues(mappedbatch)
     sm = A.sniff(bigpath)
     sb = A.sniff(bigpath; buffer_in_memory=true)
+    sn = A.sniff(bigpath; prefetch=false)
     @test (sm.delim, sm.header, sm.names, sm.types) ==
           (sb.delim, sb.header, sb.names, sb.types)
+    @test (sm.delim, sm.header, sm.names, sm.types) ==
+          (sn.delim, sn.header, sn.names, sn.types)
     @test collect(String, mappedcol) == collect(String, Tables.getcolumn(fb, :s))
+    @test collect(String, mappedcol) == collect(String, Tables.getcolumn(fnoprefetch, :s))
     @test pooledcol isa PooledArrays.PooledArray
     @test collect(Tables.getcolumn(mappedbatch, :n)) == collect(fb.n)[1:mappedbatch.nrows]
     # This also runs K.materialize while its source is a read-only mapping.

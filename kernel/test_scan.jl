@@ -12,6 +12,7 @@
 
 using Test, Random, Dates, Tables
 
+isdefined(Main, :CSVApi) || include(joinpath(@__DIR__, "api.jl"))
 isdefined(Main, :KernelScan) || include(joinpath(@__DIR__, "scan.jl"))
 const K = CSVKernel
 const S = KernelScan
@@ -308,8 +309,7 @@ end # testset
 
 @testset "front-door Scan sources (CSVApi.read)" begin
     using CodecZlib
-    isdefined(Main, :CSVApi) || include(joinpath(@__DIR__, "api.jl"))
-    csv = "a,b,c\n" * join(("$(i),$(i / 2),v$(i % 7)" for i in 1:1000), '\n') * "\n"
+    csv = "a,b,c\n" * join(("$(i),$(i / 2),v$(i % 7)_abcdefghijklmnop" for i in 1:30_000), '\n') * "\n"
     bytes = Vector{UInt8}(codeunits(csv))
     gz = transcode(GzipCompressor, copy(bytes))
     scan = T.Scan(select=[:c, :a], limit=10)
@@ -326,4 +326,21 @@ end # testset
                            for x in Tables.getcolumn(refcols, nm)])
         end
     end
+    dir = mktempdir()
+    path = joinpath(dir, "source.csv")
+    gzpath = joinpath(dir, "source.data")
+    write(path, bytes)
+    write(gzpath, gz)
+    @test filesize(path) >= Main.CSVApi.MMAP_THRESHOLD
+    for (src, prefetch) in ((path, true), (path, false), (gzpath, true), (gzpath, false))
+        t = Main.CSVApi.read(src, scan; prefetch)
+        @test sametable(t, ref)
+        GC.gc()
+        @test String(Tables.getcolumn(Tables.columns(t), :c)[1]) == "v1_abcdefghijklmnop"
+    end
+    misscan = T.Scan(select=[:a])
+    mt = Main.CSVApi.read(Vector{UInt8}(codeunits("a\nNA\n")), misscan;
+                          missingstring="NA")
+    @test isequal(collect(Tables.getcolumn(Tables.columns(mt), :a)), [missing])
+    @test_throws ArgumentError Main.CSVApi.read(bytes, scan; sentinels=["NA"])
 end

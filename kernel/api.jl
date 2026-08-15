@@ -56,10 +56,16 @@ the usual dialect/value surface.
 # defined only when the Tables.Scan proposal is present (the dev'd Tables);
 # released Tables loads this file without the Scan surface
 if isdefined(Tables, :Scan)
-    function read(source, scan::Tables.Scan; buffer_in_memory::Bool=false, kw...)
-        isdefined(Main, :KernelScan) ||
-            Base.include(Main, joinpath(@__DIR__, "scan.jl"))
-        return Main.KernelScan.read(resolvesource(source; buffer_in_memory), scan; kw...)
+    # Load the executor while this file is evaluated. Loading it lazily inside
+    # `read` defines `KernelScan.read` in a newer world than the active call,
+    # which fails on a fresh Julia 1.12 process.
+    isdefined(Main, :KernelScan) || Base.include(Main, joinpath(@__DIR__, "scan.jl"))
+    function read(source, scan::Tables.Scan; buffer_in_memory::Bool=false,
+                  prefetch::Bool=true, missingstring=nothing, kw...)
+        haskey(kw, :sentinels) &&
+            throw(ArgumentError("pass missing spellings as missingstring, not sentinels"))
+        buf = resolvesource(source; buffer_in_memory, prefetch)
+        return Main.KernelScan.read(buf, scan; sentinels=_sentinels(missingstring), kw...)
     end
 end
 
@@ -145,9 +151,12 @@ const MMAP_THRESHOLD = 1 << 19
 _isgzip(buf::AbstractVector{UInt8}) = length(buf) >= 2 && buf[1] == 0x1f && buf[2] == 0x8b
 _maybegunzip(buf::Vector{UInt8}) = _isgzip(buf) ? transcode(GzipDecompressor, buf) : buf
 
-resolvesource(buf::Vector{UInt8}; buffer_in_memory::Bool=false) = _maybegunzip(buf)
-resolvesource(io::IO; buffer_in_memory::Bool=false) = _maybegunzip(Base.read(io))
-resolvesource(cmd::Base.AbstractCmd; buffer_in_memory::Bool=false) = _maybegunzip(Base.read(cmd))
+resolvesource(buf::Vector{UInt8}; buffer_in_memory::Bool=false, prefetch::Bool=true) =
+    _maybegunzip(buf)
+resolvesource(io::IO; buffer_in_memory::Bool=false, prefetch::Bool=true) =
+    _maybegunzip(Base.read(io))
+resolvesource(cmd::Base.AbstractCmd; buffer_in_memory::Bool=false, prefetch::Bool=true) =
+    _maybegunzip(Base.read(cmd))
 const PREFETCH_PAGE = 16384
 
 function _prefetchrange(m::Vector{UInt8}, lo::Int, hi::Int)
@@ -327,14 +336,14 @@ resulting names/types. `kw` may pin dialect, value, and index pieces
 `buffer_in_memory=true` copies a file source instead of mapping it.
 """
 function sniff(source; samplebytes::Int=1 << 16, missingstring=nothing,
-               buffer_in_memory::Bool=false, kw...)
+               buffer_in_memory::Bool=false, prefetch::Bool=true, kw...)
     allowed = (_DIALECTKW..., _VALUEKW..., _INDEXKW..., _DRIVERKW...)
     _checkkwargs("sniff", kw, allowed)
     dialectkw = _pickkwargs(kw, _DIALECTKW)
     valuekw = _pickkwargs(kw, _VALUEKW)
     indexkw = _pickkwargs(kw, _INDEXKW)
     driverkw = _pickkwargs(kw, _DRIVERKW)
-    buf = resolvesource(source; buffer_in_memory)
+    buf = resolvesource(source; buffer_in_memory, prefetch)
     sample = _sample(buf, samplebytes; dialectkw...)
     bestdelim = _detectdelim(sample, dialectkw, indexkw)
     sentinels = _sentinels(missingstring)
@@ -473,13 +482,14 @@ function _prepare(source;
                   chunkbytes::Union{Nothing, Int}=nothing,
                   parallel::Bool=Threads.nthreads() > 1,
                   buffer_in_memory::Bool=false,
+                  prefetch::Bool=true,
                   kw...)
     footerskip >= 0 || throw(ArgumentError("footerskip must be ≥ 0 (got $footerskip)"))
     limit === nothing || limit >= 0 || throw(ArgumentError("limit must be ≥ 0 (got $limit)"))
     samplebytes >= 1 || throw(ArgumentError("samplebytes must be ≥ 1 (got $samplebytes)"))
     allowed = (_DIALECTKW..., _VALUEKW..., _INDEXKW..., _DRIVERKW...)
     _checkkwargs("File/Rows/Chunks", kw, allowed)
-    buf = resolvesource(source; buffer_in_memory)
+    buf = resolvesource(source; buffer_in_memory, prefetch)
     dialectonly = _pickkwargs(kw, _DIALECTKW)
     indexonly = _pickkwargs(kw, _INDEXKW)
     if delim === nothing
@@ -589,7 +599,7 @@ end
 # kwargs _prepare consumes itself (not forwarded to the kernel driver)
 const _PREPKW = (:header, :normalizenames, :skipto, :footerskip, :missingstring,
                  :delim, :limit, :samplebytes, :chunkbytes, :parallel,
-                 :buffer_in_memory)
+                 :buffer_in_memory, :prefetch)
 
 # select/drop: list forms only (function forms retired — Tables.Scan is the
 # expression channel). Returns a kernel `select` Int vector or nothing.
@@ -811,14 +821,15 @@ function _transposedfile(source; types=nothing, downcast::Bool=false,
                          stringtype::Type=K.CompactString,
                          header::Union{Bool, Integer}=true,
                          missingstring=nothing, delim=',',
-                         normalizenames::Bool=false, kw...)
+                         normalizenames::Bool=false,
+                         buffer_in_memory::Bool=false, prefetch::Bool=true, kw...)
     allowed = (_DIALECTKW..., _VALUEKW...)
     _checkkwargs("File(transpose=true)", kw, allowed)
     hasnames = header === true || header == 1
     hasnames || header === false ||
         throw(ArgumentError("transpose=true supports header=true (names in field 1 of " *
                             "each row) or header=false"))
-    buf = resolvesource(source)
+    buf = resolvesource(source; buffer_in_memory, prefetch)
     dialectkw = _pickkwargs(kw, _DIALECTKW)
     valuekw = _pickkwargs(kw, _VALUEKW)
     d = K.Dialect(; delim, dialectkw...)
@@ -1108,7 +1119,9 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...)
     _checkkwargs("Chunks", kw, allowed)
     if !haskey(kw, :chunkbytes)
-        buf = resolvesource(source; buffer_in_memory=get(kw, :buffer_in_memory, false))
+        buf = resolvesource(source;
+                            buffer_in_memory=get(kw, :buffer_in_memory, false),
+                            prefetch=get(kw, :prefetch, true))
         kw = (; kw..., chunkbytes=clamp(cld(length(buf), nt), 1 << 10, 1 << 22))
         source = buf
     end
