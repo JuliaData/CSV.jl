@@ -16,9 +16,8 @@
 # streaming Context mode (CSV.Rows) — those existed because the old design
 # coupled "find structure", "pick types", and "materialize" into one pass.
 #
-# Run the demo:  julia --project=kernel kernel/examples.jl
+# (formerly a runnable demo script; now the Tables.jl glue + streaming primitives)
 
-isdefined(Main, :CSVKernel) || include(joinpath(@__DIR__, "core.jl"))
 
 module KernelExamples
 

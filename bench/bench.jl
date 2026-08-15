@@ -12,12 +12,12 @@
 #     multithreaded chunking fallback warnings).
 #   * Timings are best-of-N wall clock with auto-repetition for tiny inputs.
 #
-# Run:   julia --project=. -t8 kernel/bench.jl              # full matrix (needs CSV in project)
-#        julia --project=. -t8 kernel/bench.jl 0.01 20      # just these sizes (MiB)
-#        julia --project=kernel -t8 kernel/bench.jl         # kernel-only (no CSV.jl column)
-#        julia --project=. -t1 kernel/bench.jl 20           # single-thread story
+# Run:   julia --project=. -t8 bench/bench.jl              # full matrix (needs CSV in project)
+#        julia --project=. -t8 bench/bench.jl 0.01 20      # just these sizes (MiB)
+#        julia --project=kernel -t8 bench/bench.jl         # kernel-only (no CSV.jl column)
+#        julia --project=. -t1 bench/bench.jl 20           # single-thread story
 
-isdefined(Main, :CSVKernel) || include(joinpath(@__DIR__, "core.jl"))
+using CSV; const CSVKernel = CSV.CSVKernel
 using .CSVKernel
 using Dates, Random
 const K = CSVKernel

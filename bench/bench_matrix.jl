@@ -11,11 +11,11 @@
 # is being compared, and the `api_str` config adds stringtype=String where the
 # owned-data comparison matters.
 #
-# Run:  julia --project=. -t8 kernel/bench_matrix.jl LABEL [sizes...]
+# Run:  julia --project=. -t8 bench/bench_matrix.jl LABEL [sizes...]
 #       results append to kernel-bench-LABEL.tsv next to this file, table to stdout.
-#       julia --project=. -t1 kernel/bench_matrix.jl LABEL-1t 20 --core
+#       julia --project=. -t1 bench/bench_matrix.jl LABEL-1t 20 --core
 
-isdefined(Main, :CSVApi) || include(joinpath(@__DIR__, "api.jl"))
+using CSV; const CSVApi = CSV.CSVApi; const CSVKernel = CSV.CSVKernel
 using Dates, Random, Tables
 const K = CSVKernel
 const A = CSVApi

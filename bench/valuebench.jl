@@ -2,9 +2,9 @@
 # Parsers.xparse vs Base.parse, across a value-shape grid. A kernel earns its
 # place in the hot path only when this table says so.
 #
-# Run:  julia --project=kernel kernel/valuebench.jl
+# Run:  julia --project=. bench/valuebench.jl
 
-isdefined(Main, :KernelValues) || include(joinpath(@__DIR__, "values.jl"))
+using CSV; const KernelValues = CSV.CSVKernel.KernelValues; const KernelValuesDates = CSV.CSVKernel.KernelValuesDates
 using .KernelValues, .KernelValuesDates
 using Parsers, Dates, Random
 const V = KernelValues
@@ -122,7 +122,7 @@ end
 K_xparsestring(b, i, j) = Parsers.xparse(String, b, i, j, OPTS, Parsers.PosLen31)
 
 # the kernel's grouped path goes through core's parsevalue + ValueOpts
-isdefined(Main, :CSVKernel) || include(joinpath(@__DIR__, "core.jl"))
+using CSV; const CSVKernel = CSV.CSVKernel
 const MainK = CSVKernel
 kernelgroupopts() = MainK.makevalueopts(MainK.Dialect(delim=';'); groupmark=',')
 

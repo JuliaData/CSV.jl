@@ -12,11 +12,10 @@
 
 using Test, Random, Dates, Tables
 
-isdefined(Main, :CSVKernel) || include(joinpath(@__DIR__, "core.jl"))
-using .CSVKernel
-const K = CSVKernel
-include(joinpath(@__DIR__, "examples.jl"))
-const E = KernelExamples
+using CSV
+const K = CSV.CSVKernel
+const E = CSV.KernelExamples
+using .K
 
 # ---------------------------------------------------------------------------
 # helpers

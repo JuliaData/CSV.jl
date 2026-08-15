@@ -9,10 +9,10 @@
 
 using Test, Random, Dates
 
-isdefined(Main, :KernelValues) || include(joinpath(@__DIR__, "values.jl"))
-using .KernelValues
-using .KernelValuesDates
-const V = KernelValues
+using CSV
+const V = CSV.CSVKernel.KernelValues
+using .V
+using CSV.CSVKernel.KernelValuesDates
 
 b(s) = Vector{UInt8}(codeunits(s))
 pint(s) = V.parseint64(b(s), 1, ncodeunits(s))

@@ -17,8 +17,6 @@
 #
 # The structural index is built ONCE and shared by both phases.
 
-isdefined(Main, :CSVKernel) || include(joinpath(@__DIR__, "core.jl"))
-isdefined(Main, :KernelExamples) || include(joinpath(@__DIR__, "examples.jl"))
 
 module KernelScan
 

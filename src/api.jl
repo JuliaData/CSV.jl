@@ -28,10 +28,8 @@
 #   • integer spellings that fit Int128 stay exact, including initially-wide
 #     and grouped columns where CSV.jl can widen Int64 overflow to Float64
 #
-# Run the demo:  julia --project=kernel kernel/api.jl
+# Demo: julia --project=. -e 'using CSV; CSV.CSVApi.demo()'  (if defined)
 
-isdefined(Main, :CSVKernel) || include(joinpath(@__DIR__, "core.jl"))
-isdefined(Main, :KernelExamples) || include(joinpath(@__DIR__, "examples.jl"))
 
 module CSVApi
 
@@ -59,13 +57,15 @@ if isdefined(Tables, :Scan)
     # Load the executor while this file is evaluated. Loading it lazily inside
     # `read` defines `KernelScan.read` in a newer world than the active call,
     # which fails on a fresh Julia 1.12 process.
-    isdefined(Main, :KernelScan) || Base.include(Main, joinpath(@__DIR__, "scan.jl"))
+    # KernelScan is a sibling submodule of the package (included after CSVApi
+    # in CSV.jl); resolve it through the parent at call time
     function read(source, scan::Tables.Scan; buffer_in_memory::Bool=false,
                   prefetch::Bool=true, missingstring=nothing, kw...)
         haskey(kw, :sentinels) &&
             throw(ArgumentError("pass missing spellings as missingstring, not sentinels"))
         buf = resolvesource(source; buffer_in_memory, prefetch)
-        return Main.KernelScan.read(buf, scan; sentinels=_sentinels(missingstring), kw...)
+        return Base.parentmodule(@__MODULE__).KernelScan.read(
+            buf, scan; sentinels=_sentinels(missingstring), kw...)
     end
 end
 

@@ -14,10 +14,11 @@
 #   • Int64 overflow that fits Int128 remains exact where CSV.jl widens to Float64
 
 using Test, Dates, Tables, PooledArrays, CodecZlib
-using CSV
-isdefined(Main, :CSVApi) || include(joinpath(@__DIR__, "api.jl"))
-const A = CSVApi
-const K = CSVKernel
+using CSV, LegacyCSV
+const A = CSV.CSVApi
+const K = CSV.CSVKernel
+# The 0.10 implementation is the behavioral ORACLE throughout this file: every
+# `LegacyCSV.File`/`LegacyCSV.write` below that means "the old behavior" is spelled LegacyCSV.
 
 @testset "released Tables has no Scan front door" begin
     @test !isdefined(Tables, :Scan)
@@ -31,10 +32,10 @@ function colvalues(f)
     return names, [Any[_norm(x) for x in Tables.getcolumn(Tables.columns(f), nm)] for nm in names]
 end
 
-# CSV.jl side always runs silencewarnings=true: its warnings are our problems.
+# LegacyCSV.jl side always runs silencewarnings=true: its warnings are our problems.
 function against(input; kw=NamedTuple(), api=kw, csv=kw)
     fa = A.File(IOBuffer(input); api...)
-    fc = CSV.File(IOBuffer(input); silencewarnings=true, csv...)
+    fc = LegacyCSV.File(IOBuffer(input); silencewarnings=true, csv...)
     na, va = colvalues(fa)
     nc, vc = colvalues(fc)
     @test na == nc
@@ -48,7 +49,7 @@ end
 
 @testset "CSVApi" begin
 
-@testset "values and inference agree with CSV.jl" begin
+@testset "values and inference agree with LegacyCSV.jl" begin
     against("a,b,c\n1,2,3\n4,5,6\n")
     against("a,b\n1.5,2\n-3.25e2,4\n")
     against("x\ntrue\nfalse\n")
@@ -60,11 +61,11 @@ end
     big = against("p\n1\n99999999999999999999999999\n"; kw=(; pool=false))
     @test eltype(big.p) === Int128
     @test collect(big.p) == Int128[1, 99999999999999999999999999]
-    csvbig = CSV.File(IOBuffer("p\n1\n99999999999999999999999999\n"); pool=false)
+    csvbig = LegacyCSV.File(IOBuffer("p\n1\n99999999999999999999999999\n"); pool=false)
     @test eltype(csvbig.p) === Int128
     wideinput = "p\n99999999999999999999999999\n"
     wide = A.File(IOBuffer(wideinput); pool=false)
-    csvwide = CSV.File(IOBuffer(wideinput); pool=false)
+    csvwide = LegacyCSV.File(IOBuffer(wideinput); pool=false)
     @test eltype(wide.p) === Int128
     @test wide.p[1] == Int128(99999999999999999999999999)
     @test eltype(csvwide.p) === Float64
@@ -116,7 +117,7 @@ end
     @test A.sniff(IOBuffer("n\n1\n2\n")).header === true   # single col, text over ints
     @test A.sniff(IOBuffer("1,2\n3,4\n")).header === false # numbers all the way down
     @test_throws ArgumentError A.File(IOBuffer("a b\n1  2\n"); ignorerepeated=true)
-    @test_throws ArgumentError CSV.File(IOBuffer("a b\n1  2\n"); ignorerepeated=true)
+    @test_throws ArgumentError LegacyCSV.File(IOBuffer("a b\n1  2\n"); ignorerepeated=true)
 end
 
 @testset "headers agree" begin
@@ -124,7 +125,7 @@ end
     against("junk\na,b\n1,2\n"; kw=(; header=2))
     against("h1,h2\nx,y\n1,2\n"; kw=(; header=[1, 2]))
     against("h1,\nx,y\n1,2\n"; kw=(; header=[1, 2]))          # blank part → ColumnN_y
-    # CSV.jl skips the comment while reading merged name parts, but starts data
+    # LegacyCSV.jl skips the comment while reading merged name parts, but starts data
     # at the raw row after `last(header)`, so the second part is also data.
     against("a,b\n#middle\nx,y\n1,2\n"; kw=(; header=[1, 2], comment="#"))
     against("a,b\n"; kw=(; header=[1, 2]))                    # partial header at EOF
@@ -154,7 +155,7 @@ end
     against("a,b\n1,2\n"; kw=(; limit=0))
     against("a\n1\n2\n"; kw=(; limit=0, footerskip=1))
     fa0 = A.File(IOBuffer("a\n1\n2\n"); limit=0, footerskip=1)
-    fc0 = CSV.File(IOBuffer("a\n1\n2\n"); limit=0, footerskip=1)
+    fc0 = LegacyCSV.File(IOBuffer("a\n1\n2\n"); limit=0, footerskip=1)
     @test Tables.schema(fa0).types == Tables.schema(fc0).types == (Missing,)
     against("﻿junk\n#ignore\na,b\n1,2\n3,4\n";
             kw=(; header=3, comment="#", skipto=5))
@@ -166,16 +167,16 @@ end
 end
 
 @testset "missingstring agrees (modulo the pinned empty delta)" begin
-    # align semantics for comparison: CSV.jl gets "" appended so empties stay missing
+    # align semantics for comparison: LegacyCSV.jl gets "" appended so empties stay missing
     against("a,b\nNA,1\n2,NA\n"; api=(; missingstring="NA"), csv=(; missingstring=["NA", ""]))
     against("a,b\nNA,N/A\nx,2\n"; api=(; missingstring=["NA", "N/A"]),
             csv=(; missingstring=["NA", "N/A", ""]))
     against("a\n999\n1\n"; api=(; missingstring="999"), csv=(; missingstring=["999", ""]))
     @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); missingstring="N\"A")
-    @test_throws ArgumentError CSV.File(IOBuffer("a\n1\n"); missingstring="N\"A")
-    # the PINNED DELTA itself: ours keeps empties missing; CSV.jl makes them ""
+    @test_throws ArgumentError LegacyCSV.File(IOBuffer("a\n1\n"); missingstring="N\"A")
+    # the PINNED DELTA itself: ours keeps empties missing; LegacyCSV.jl makes them ""
     fa = A.File(IOBuffer("a\n\nx\n"); missingstring="NA", ignoreemptyrows=false)
-    fc = CSV.File(IOBuffer("a\n\nx\n"); missingstring="NA", ignoreemptyrows=false,
+    fc = LegacyCSV.File(IOBuffer("a\n\nx\n"); missingstring="NA", ignoreemptyrows=false,
                   silencewarnings=true)
     @test isequal(collect(fa.a), [missing, "x"])
     @test isequal([_norm(x) for x in Tables.getcolumn(fc, :a)], ["", "x"])
@@ -191,7 +192,7 @@ end
     f = A.File(IOBuffer("a\n1\nbad\n"); types=Int64)
     @test any(p -> p.kind == :invalid_value, A.problems(f))
     @test_throws Exception A.File(IOBuffer("a\n1\nbad\n"); types=Int64, strict=true)
-    @test_throws Exception CSV.File(IOBuffer("a\n1\nbad\n"); types=Int64, strict=true)
+    @test_throws Exception LegacyCSV.File(IOBuffer("a\n1\nbad\n"); types=Int64, strict=true)
 end
 
 @testset "select and drop agree" begin
@@ -251,12 +252,12 @@ end
     against("n;m\n1,234;5\n"; kw=(; delim=';', groupmark=','))
     groupedinput = "n;m\n99,999,999,999,999,999,999,999,999;5\n"
     grouped = A.File(IOBuffer(groupedinput); delim=';', groupmark=',')
-    csvgrouped = CSV.File(IOBuffer(groupedinput); delim=';', groupmark=',')
+    csvgrouped = LegacyCSV.File(IOBuffer(groupedinput); delim=';', groupmark=',')
     @test eltype(grouped.n) === Int128
     @test grouped.n[1] == Int128(99999999999999999999999999)
     @test eltype(csvgrouped.n) === Float64
     against("s,t\n  x  ,1\n"; kw=(; delim=',', stripwhitespace=true))
-    # NOTE: without an explicit delim, "s\n  x  \n" splits on ' ' under CSV.jl's
+    # NOTE: without an explicit delim, "s\n  x  \n" splits on ' ' under LegacyCSV.jl's
     # byte-divisibility detector (5 ragged columns); our sniffer requires
     # field-count consistency and keeps 1 column. Deliberate improvement.
 end
@@ -313,11 +314,11 @@ end
 
 @testset "pinned delta: long rows do not widen the schema" begin
     fa = A.File(IOBuffer("a,b\n1,2,3\n4,5\n"))
-    fc = CSV.File(IOBuffer("a,b\n1,2,3\n4,5\n"); silencewarnings=true)
+    fc = LegacyCSV.File(IOBuffer("a,b\n1,2,3\n4,5\n"); silencewarnings=true)
     @test Base.names(fa) == [:a, :b]                          # extra field ⇒ problem
     @test any(p -> p.kind == :long_row, A.problems(fa))
     @test collect(fa.a) == [1, 4] && collect(fa.b) == [2, 5]
-    @test :Column3 in Tables.columnnames(fc)                  # CSV.jl widens instead
+    @test :Column3 in Tables.columnnames(fc)                  # LegacyCSV.jl widens instead
 end
 
 @testset "File surface: rows, properties, show, problems" begin
@@ -461,10 +462,10 @@ end
     rm(bigpath)
 end
 
-@testset "Rows agrees with CSV.Rows" begin
+@testset "Rows agrees with LegacyCSV.Rows" begin
     input = "a,b\n1,x\n2,\n3,z\n"
     ra = collect(A.Rows(IOBuffer(input)))
-    rc = collect(CSV.Rows(IOBuffer(input)))
+    rc = collect(LegacyCSV.Rows(IOBuffer(input)))
     @test length(ra) == length(rc) == 3
     for (x, y) in zip(ra, rc)
         @test isequal(_norm.(collect(Tables.getcolumn.(Ref(x), 1:2))),
@@ -476,7 +477,7 @@ end
     @test [r.a for r in typed] == [1, 2, 3]
     @test Tables.schema(typed).types[1] == Union{Int64, Missing}
     typedbad = A.Rows(IOBuffer("a\n1\nbad\n"); types=Union{Int64, Missing})
-    csvbad = CSV.Rows(IOBuffer("a\n1\nbad\n"); types=Union{Int64, Missing},
+    csvbad = LegacyCSV.Rows(IOBuffer("a\n1\nbad\n"); types=Union{Int64, Missing},
                       silencewarnings=true)
     @test isequal([r.a for r in typedbad], [r.a for r in csvbad])
     # windowing composes
@@ -488,11 +489,11 @@ end
                   [missing, "1"])
     quoted = "a,b\n\"x\ny\",1\nz,2\n"
     @test [_norm(r.a) for r in A.Rows(IOBuffer(quoted))] ==
-          [_norm(r.a) for r in CSV.Rows(IOBuffer(quoted))]
+          [_norm(r.a) for r in LegacyCSV.Rows(IOBuffer(quoted))]
     @test length(collect(A.Rows(IOBuffer(input); footerskip=2))) == 1
     footer = "a\n1\n\n2\n\n3\n"
     @test [r.a for r in A.Rows(IOBuffer(footer); footerskip=2)] ==
-          [r.a for r in CSV.Rows(IOBuffer(footer); footerskip=2)]
+          [r.a for r in LegacyCSV.Rows(IOBuffer(footer); footerskip=2)]
     @test_throws ArgumentError A.Rows(IOBuffer(input); pool=true)
     @test_throws ArgumentError A.Rows(IOBuffer(input); nsample=2)
     @test_throws ArgumentError A.Rows(IOBuffer(input); maxproblems=1)
@@ -563,13 +564,13 @@ end # @testset CSVApi
     gzpath = joinpath(mktempdir(), "t.csv.gz")
     write(gzpath, gz)
     @test Tables.getcolumn(A.File(gzpath), :a) == [1, 2]
-    oracle = CSV.File(gzpath)
+    oracle = LegacyCSV.File(gzpath)
     @test Tables.getcolumn(oracle, :a) == [1, 2]
 
     # typemap: detected types remap; user-pinned ones don't
     input = "a,b\n1,1.5\n2,2.5\n"
     f = A.File(IOBuffer(input); typemap=Dict(Int64 => Float64))
-    o = CSV.File(IOBuffer(input); typemap=Dict(Int64 => Float64))
+    o = LegacyCSV.File(IOBuffer(input); typemap=Dict(Int64 => Float64))
     @test eltype(Tables.getcolumn(f, :a)) == eltype(Tables.getcolumn(o, :a)) == Float64
     f = A.File(IOBuffer(input); typemap=Dict(Int64 => String), types=Dict(:b => Float64))
     @test eltype(Tables.getcolumn(f, :b)) == Float64
@@ -599,7 +600,7 @@ end # @testset CSVApi
     # per-column dateformat
     input = "d1,d2\n03/04/2020,2020-01-02\n05/06/2021,2021-07-08\n"
     f = A.File(IOBuffer(input); dateformat=Dict(:d1 => "dd/mm/yyyy"))
-    o = CSV.File(IOBuffer(input); dateformat=Dict(:d1 => "dd/mm/yyyy"))
+    o = LegacyCSV.File(IOBuffer(input); dateformat=Dict(:d1 => "dd/mm/yyyy"))
     @test Tables.getcolumn(f, :d1) == Tables.getcolumn(o, :d1) == [Date(2020, 4, 3), Date(2021, 6, 5)]
     @test Tables.getcolumn(f, :d2) == [Date(2020, 1, 2), Date(2021, 7, 8)]
 
@@ -633,7 +634,7 @@ end # @testset CSVApi
     # downcast (oracle agreement on eltypes and values)
     input = "a,b,c\n1,300,70000\n2,-40,100000\n"
     f = A.File(IOBuffer(input); downcast=true)
-    o = CSV.File(IOBuffer(input); downcast=true)
+    o = LegacyCSV.File(IOBuffer(input); downcast=true)
     for nm in (:a, :b, :c)
         @test eltype(Tables.getcolumn(f, nm)) == eltype(Tables.getcolumn(o, nm))
         @test Tables.getcolumn(f, nm) == Tables.getcolumn(o, nm)
@@ -654,7 +655,7 @@ end # @testset CSVApi
     # transpose: names in field 1, ragged pad, oracle value agreement
     input = "name,1,2,3\nscore,1.5,2.5,3.5\nnote,x,y\n"
     f = A.File(IOBuffer(input); transpose=true)
-    o = CSV.File(IOBuffer(input); transpose=true)
+    o = LegacyCSV.File(IOBuffer(input); transpose=true)
     @test Tables.columnnames(Tables.columns(f)) == Tables.columnnames(Tables.columns(o))
     @test Tables.getcolumn(f, :name) == Tables.getcolumn(o, :name) == [1, 2, 3]
     @test Tables.getcolumn(f, :score) == [1.5, 2.5, 3.5]
@@ -665,7 +666,7 @@ end # @testset CSVApi
     @test Tables.getcolumn(f, :Column1) == [1, 2] && Tables.getcolumn(f, :Column2) == [3, 4]
     @test_throws ArgumentError A.File(IOBuffer(input); transpose=true, select=[:name])
     # Quoted newlines, escapes, empty rows, unicode, ragged tails, and pinned
-    # types retain the same names and values as CSV.jl.
+    # types retain the same names and values as LegacyCSV.jl.
     transposedcases = [
         ("name,\"a\nb\",c\nnum,1,2\n", (;)),
         ("name,\"a\"\"b\",c\nnum,1,2\n", (;)),
@@ -676,7 +677,7 @@ end # @testset CSVApi
     ]
     for (transposedinput, transposedkw) in transposedcases
         tf = A.File(IOBuffer(transposedinput); transpose=true, transposedkw...)
-        to = CSV.File(IOBuffer(transposedinput); transpose=true, transposedkw...)
+        to = LegacyCSV.File(IOBuffer(transposedinput); transpose=true, transposedkw...)
         @test Tables.columnnames(tf) == Tables.columnnames(to)
         for nm in Tables.columnnames(tf)
             av = Any[ismissing(x) ? missing : x isa AbstractString ? String(x) : x

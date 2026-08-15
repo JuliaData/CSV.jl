@@ -12,10 +12,9 @@
 
 using Test, Random, Dates, Tables
 
-isdefined(Main, :CSVApi) || include(joinpath(@__DIR__, "api.jl"))
-isdefined(Main, :KernelScan) || include(joinpath(@__DIR__, "scan.jl"))
-const K = CSVKernel
-const S = KernelScan
+using CSV
+const K = CSV.CSVKernel
+const S = CSV.KernelScan
 const T = Tables
 
 # name-and-value equivalence between a kernel table and a columntable
@@ -316,7 +315,7 @@ end # testset
     ref = Tables.finish(K.parse(copy(bytes)), scan)
     refcols = Tables.columns(ref)
     for src in (copy(bytes), gz, IOBuffer(csv), IOBuffer(gz))
-        t = Main.CSVApi.read(src, scan)
+        t = CSV.CSVApi.read(src, scan)
         cols = Tables.columns(t)
         @test collect(Tables.columnnames(cols)) == collect(Tables.columnnames(refcols))
         for nm in Tables.columnnames(refcols)
@@ -331,16 +330,16 @@ end # testset
     gzpath = joinpath(dir, "source.data")
     write(path, bytes)
     write(gzpath, gz)
-    @test filesize(path) >= Main.CSVApi.MMAP_THRESHOLD
+    @test filesize(path) >= CSV.CSVApi.MMAP_THRESHOLD
     for (src, prefetch) in ((path, true), (path, false), (gzpath, true), (gzpath, false))
-        t = Main.CSVApi.read(src, scan; prefetch)
+        t = CSV.CSVApi.read(src, scan; prefetch)
         @test sametable(t, ref)
         GC.gc()
         @test String(Tables.getcolumn(Tables.columns(t), :c)[1]) == "v1_abcdefghijklmnop"
     end
     misscan = T.Scan(select=[:a])
-    mt = Main.CSVApi.read(Vector{UInt8}(codeunits("a\nNA\n")), misscan;
+    mt = CSV.CSVApi.read(Vector{UInt8}(codeunits("a\nNA\n")), misscan;
                           missingstring="NA")
     @test isequal(collect(Tables.getcolumn(Tables.columns(mt), :a)), [missing])
-    @test_throws ArgumentError Main.CSVApi.read(bytes, scan; sentinels=["NA"])
+    @test_throws ArgumentError CSV.CSVApi.read(bytes, scan; sentinels=["NA"])
 end
