@@ -1650,8 +1650,8 @@ end
 A kernel string value: 16-byte payload plus the byte vector long values view
 into (a shared empty vector for inline values). Byte access, direct comparisons,
 and iteration do not allocate; they use the inline bytes or retained buffer.
-Hashing currently delegates through `String(s)` for contract correctness and
-therefore allocates. `String(s)` (or `materialize` on the column) copies out.
+Hashing and ordering operate on the payload bytes without allocation and agree
+with `String`. `String(s)` (or `materialize` on the column) copies out.
 Lifetime: a view pins its buffer, exactly like today's `PosLenString` — the
 production compaction story is `materialize`.
 """

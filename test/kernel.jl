@@ -125,6 +125,23 @@ function csfrombytes(bytes::Vector{UInt8})
     return K.CompactString(p, length(bytes) <= K.COMPACTSTRING_INLINE ? K.EMPTY_BYTES : bytes)
 end
 
+function csscratchbytes(s::K.CompactString)
+    r = Ref(K._cs_scratch(s))
+    out = Vector{UInt8}(undef, 16)
+    GC.@preserve r begin
+        p = Ptr{UInt8}(Base.unsafe_convert(Ptr{Tuple{UInt64, UInt64}}, r))
+        unsafe_copyto!(pointer(out), p, 16)
+    end
+    return out
+end
+
+function foldcshash(v, h::UInt)
+    @inbounds for x in v
+        h = hash(x, h)
+    end
+    return h
+end
+
 function inlinekey(s::AbstractString)
     bytes = Vector{UInt8}(codeunits(s))
     p = K.inline_payload(bytes, 1, length(bytes))
@@ -1588,6 +1605,55 @@ end
     @test d2["y"^13] == 2
     @test sort([col[2], col[1]]) == [col[1], col[2]]
     @test cmp(col[1], col[2]) == cmp("x"^12, "y"^13)
+    # Exhaust the payload-length byte and use data that includes NUL, invalid
+    # UTF-8, all-one bytes, and sentinel-like runs. Odd out-of-line lengths use
+    # negative offsets, as escaped values do in a materialized column.
+    pattern = UInt8[0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                    0xff, 0xff, 0xff, 0xff, 0x80, 0xc0, 0x7f, 0x41, 0xfe]
+    strings = String[]
+    payloads = K.CompactString[]
+    for n in 0:255
+        bytes = UInt8[xor(pattern[mod1(i, length(pattern))], UInt8(i % 251)) for i in 1:n]
+        push!(strings, String(copy(bytes)))
+        if n <= K.COMPACTSTRING_INLINE
+            push!(payloads, K.CompactString(K.inline_payload(bytes, 1, n), K.EMPTY_BYTES))
+        else
+            data = vcat(UInt8[0x11], bytes, UInt8[0x22])
+            off = isodd(n) ? Int64(-2) : Int64(2)
+            push!(payloads, K.CompactString(K.view_payload(data, 2, n, off), data))
+        end
+    end
+    seeds = UInt[0, 1, 7, typemax(UInt), Base.memhash_seed, 0x0123456789abcdef]
+    @test all(hash(payloads[i], h) == hash(strings[i], h)
+              for i in eachindex(payloads), h in seeds)
+    @test all([codeunit(payloads[i], j) for j in 1:ncodeunits(payloads[i])] ==
+              collect(codeunits(strings[i])) for i in eachindex(payloads))
+    @test all(begin
+        n = ncodeunits(payloads[i])
+        bytes = csscratchbytes(payloads[i])
+        bytes[1:n] == collect(codeunits(strings[i])) &&
+            all(iszero, bytes[(n + 1):end]) && K._inlinekey(payloads[i].p) != K.IT_EMPTY
+    end for i in 1:(K.COMPACTSTRING_INLINE + 1))
+    @test all(cmp(payloads[i], payloads[j]) == cmp(strings[i], strings[j]) &&
+              isless(payloads[i], payloads[j]) == isless(strings[i], strings[j]) &&
+              cmp(payloads[i], strings[j]) == cmp(strings[i], strings[j]) &&
+              cmp(strings[i], payloads[j]) == cmp(strings[i], strings[j]) &&
+              (payloads[i] == payloads[j]) == (strings[i] == strings[j]) &&
+              (payloads[i] == strings[j]) == (strings[i] == strings[j])
+              for i in eachindex(payloads), j in eachindex(payloads))
+    @test sortperm(payloads) == sortperm(strings)
+    valid = ["a", "abcdefgh1234", "abcdefgh12345", "α", "漢字", "z"^40, "a\0b"]
+    validcs = [csfrombytes(Vector{UInt8}(codeunits(s))) for s in valid]
+    substrings = [SubString("!" * s * "?", 2,
+                            prevind("!" * s * "?", lastindex("!" * s * "?"))) for s in valid]
+    @test all(cmp(validcs[i], substrings[j]) == cmp(valid[i], String(substrings[j])) &&
+              cmp(substrings[j], validcs[i]) == cmp(String(substrings[j]), valid[i]) &&
+              (validcs[i] == substrings[j]) == (valid[i] == String(substrings[j]))
+              for i in eachindex(validcs), j in eachindex(substrings))
+    @test isless(first(validcs), missing) == isless(first(valid), missing)
+    @test isless(missing, first(validcs)) == isless(missing, first(valid))
+    foldcshash(payloads, UInt(9))
+    @test @allocated(foldcshash(payloads, UInt(9))) == 0
     # escaped values: short ones inline, long ones land in the extra buffer
     t2 = K.parse("a\n\"in\"\"line\"\n\"a long escaped \"\"string\"\" beyond inline\"\n")
     @test collect(t2[:a]) == ["in\"line", "a long escaped \"string\" beyond inline"]
