@@ -133,6 +133,22 @@ The harness asserts these DISAGREE with 0.10 (a stale pin fails):
   generator (`bench/bench_matrix.jl` already has 22 shape generators) plus the
   oracle covers the same space with no artifact. Proposed, not built.
 
+## Codex round 22 (the port's review) — CLEAN, with hardening
+
+Four commits on top of the port (`c204119` `42abd70` `3773b5e` `6915e2a`):
+comment skipping proven at row starts only; the kernel's 852-assertion drop
+accounted for exactly (672 randomized + 180 explicit fast-scanner variants
+that comment dialects no longer take — scalar sequential and parallel
+geometry still covered at 3/7/16/64 bytes); delimiter fallbacks fixed for
+single-row headers, CRLF evidence, BOM, ties, header precedence, and a
+256-sample fuzz vs the 0.10 detector; sentinels with blanks; `limit` scoping
+of inference; narrow-type/select mapping; declared-Union widening through
+every container; **custom scalar types with `parse`/`tryparse` now work**
+(ported from the manual queue). The harness now compares names, row counts,
+schema types, values, AND semantic error categories (both-error must agree on
+category), and pins assert their exact direction. Final ledger: 212 agree,
+17 both-error, 8 + 4 + 2 pinned; battery 1,175/1,175.
+
 ## Layout
 
 ```
