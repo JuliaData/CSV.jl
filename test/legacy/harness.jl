@@ -38,8 +38,8 @@ const corpusdir = LazyArtifacts.ensure_artifact_installed("testfiles",
     joinpath(dirname(dirname(pathof(CSV))), "Artifacts.toml"))
 corpusfile(name) = joinpath(corpusdir, name)
 
-_norm(x) = x isa AbstractString ? String(x) : x
-_normvec(v) = Any[_norm(x) for x in v]
+_legacynorm(x) = x isa AbstractString ? String(x) : x
+_legacynormvec(v) = Any[_legacynorm(x) for x in v]
 function _normtype(T::Type)
     T === Missing && return Missing
     S = Base.nonmissingtype(T)
@@ -53,7 +53,7 @@ function _table(f)
     schema = Tables.schema(cols)
     types = schema === nothing ? nothing : map(_normtype, schema.types)
     return names, length(f), types,
-           [_normvec(Tables.getcolumn(cols, nm)) for nm in names]
+           [_legacynormvec(Tables.getcolumn(cols, nm)) for nm in names]
 end
 
 # kwargs the 0.10 side accepts but the new side spells differently / retired
@@ -175,7 +175,7 @@ const PosLenString = LegacyCSV.PosLenString
 # One entry: (file, kwargs, (nrows, ncols), NamedTuple{names, types}, expected)
 # The old schema names string types as InlineString*/String*/PosLenString: any
 # AbstractString eltype counts as "string" here. Expected values compare
-# through _norm (String wrappers away).
+# through `_legacynorm` (String wrappers away).
 _nms(::Type{NamedTuple{names, types}}) where {names, types} = names
 _typs(::Type{NamedTuple{names, types}}) where {names, types} =
     Tuple(fieldtype(types, i) for i = 1:fieldcount(types))
@@ -221,7 +221,7 @@ function corpuscase(file, kwargs, expected_sz, expected_sch, expected;
         for (nm, col) in pairs(expected)
             j = findfirst(==(nm), names)
             j === nothing && continue
-            @test isequal(vals[j], _normvec(col))
+            @test isequal(vals[j], _legacynormvec(col))
         end
     elseif expected isa Function
         expected(Tables.columntable(fnew))
