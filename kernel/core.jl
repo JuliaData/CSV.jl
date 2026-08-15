@@ -1285,6 +1285,18 @@ function _normalizetypemap(typemap)
     return isempty(tm) ? nothing : tm
 end
 @inline _maptype(tm, T) = tm === nothing || T === Missing ? T : get(tm, T, T)
+@inline function _promotemapped(tm, current::Type, detected::Type)
+    joined = promote_kernel(current, detected)
+    # A typemap result is already the column's chosen parse type. Do not feed
+    # that result through the map again when a concurrent/stale join does not
+    # widen it (for example Int64=>Float64, Float64=>String).
+    joined === current && return current
+    mapped = _maptype(tm, joined)
+    # A downward or cyclic mapping can collapse a real promotion back to the
+    # type that just rejected the cell (Float64=>Int64 is the minimal case).
+    # String is the finite lattice join that accepts both spellings.
+    return mapped === current ? String : mapped
+end
 @inline _copts(colopts, opts, j::Int) = colopts === nothing ? opts : @inbounds colopts[j]
 
 promote_kernel(a::Type, b::Type) =
@@ -2147,6 +2159,10 @@ function parsecolchunk!(ps::PoolSegment, buf::Vector{UInt8}, ci::ChunkIndex,
         if ref == 0
             if llen >= ps.maxlevels || ps.aborted[]
                 ps.aborted[] = true
+                # A long escaped miss appended its candidate bytes before the
+                # level lookup. They are not referenced when the bound fails;
+                # rewind them before transferring `extra` to the flat column.
+                rewind >= 0 && resize!(ps.extra, rewind)
                 scol = _degradepool!(ps)
                 return parsecolchunk!(scol, buf, ci, j, rowbase, opts, userprovided,
                                       problems, problemrowbase, mask, maskbase,
@@ -2839,6 +2855,9 @@ function parse(buf::Vector{UInt8};
     # (the parse writes Vector{Union{T,Missing}} in place; conversion is never
     # paid). Sample-missed sparse missings fall back to a finalize conversion.
     sawmissing = fill(false, ncols)
+    # Validate before sampling: `_copts` is deliberately inbounds in hot loops.
+    colopts === nothing || length(colopts) == ncols ||
+        throw(ArgumentError("colopts length $(length(colopts)) != $ncols columns"))
     if any(j -> seed[j] === nothing && (selected === nothing || selected[j]), 1:ncols)
         if rowmask === nothing
             probechunks = ChunkIndex[ci for ci in chunks if nrows(ci) > 0]
@@ -2858,8 +2877,6 @@ function parse(buf::Vector{UInt8};
             seed[j] === nothing && (seed[j] = _maptype(tm, inferred[j]))
         end
     end
-    colopts === nothing || length(colopts) == ncols ||
-        throw(ArgumentError("colopts length $(length(colopts)) != $ncols columns"))
     if limit !== nothing
         for (k, ci) in enumerate(typechunks)
             firstexcluded = max(limit - typerowbases0[k] + 1, 1)
@@ -2869,8 +2886,9 @@ function parse(buf::Vector{UInt8};
                 seed[j] === String && continue
                 sp = fieldspan(ci, lr, j)
                 sp === nothing && continue
-                seed[j] = _maptype(tm, promote_kernel(seed[j],
-                                       detecttype(buf, sp[1], sp[2], _copts(colopts, opts, j))))
+                seed[j] = _promotemapped(tm, seed[j],
+                                         detecttype(buf, sp[1], sp[2],
+                                                    _copts(colopts, opts, j)))
             end
         end
     end
@@ -3168,7 +3186,7 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ncols::Int,
             newT = promote_kernel(T, detecttype(buf, sp[1], sp[2], _copts(colopts, opts, j)))
             newT = newT === T ? String : newT  # a conflicting value must move the type
             T = lock(promolock) do
-                promo[j] = _maptype(tm, promote_kernel(promo[j], newT))
+                promo[j] = _promotemapped(tm, promo[j], newT)
             end
         end
     end
@@ -3450,8 +3468,10 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
             local conflict::Int
             if T === Missing
                 segs[j] = nothing
-                conflict = parsecolchunk_missing(buf, ci, j, 0, opts, userprovided[j],
-                                                 log, nothing, 0, reportlimit)
+                conflict = parsecolchunk_missing(buf, ci, j, 0,
+                                                 _copts(colopts, opts, j),
+                                                 userprovided[j], log, nothing, 0,
+                                                 reportlimit)
             elseif T === String && poolctx !== nothing && !poolctx.skip[j]
                 ps = PoolSegment(n, buf, opts.e, d.cq, poolctx.maxlevels[j], poolctx.aborted[j])
                 segs[j] = ps
@@ -3485,7 +3505,7 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
             # and a captured-and-reassigned local boxes (the staging war story)
             promoT = detected === T ? String : detected
             T, dest = lock(promolock) do
-                joined = _maptype(tm, promote_kernel(promo[j], promoT))
+                joined = _promotemapped(tm, promo[j], promoT)
                 if joined !== promo[j]
                     promo[j] = joined
                     finals[j] = _allocdirect(joined, ndata, buf, opts, d, poolctx, j,
@@ -3549,13 +3569,16 @@ poollevels(c::PooledColumn) = c.levels
     (@inbounds sp = poolspecs[j]; sp === nothing ? nothing : sp::Tuple{Float64, Int})
 
 function _poolpolicy(pool)
-    pool === false && return nothing
+    (pool === nothing || pool === false) && return nothing
     pool === true && return (1.0, typemax(Int))
     if pool isa Real
         0.0 <= pool <= 1.0 ||
             throw(ArgumentError("pool ratio must be in [0, 1] (got $pool)"))
         return (Float64(pool), typemax(Int))
     end
+    pool isa Tuple{<:Real, <:Integer} ||
+        throw(ArgumentError("pool spec must be Bool, Real, (Real, Integer), or nothing " *
+                            "(got $(typeof(pool)))"))
     ratio = pool[1]
     0.0 <= ratio <= 1.0 ||
         throw(ArgumentError("pool ratio must be in [0, 1] (got $ratio)"))

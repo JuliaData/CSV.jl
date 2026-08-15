@@ -599,6 +599,17 @@ end
     t4 = K.parse("a,b\n1,\n2,\n")
     @test eltype(t4[:b]) == Missing && length(t4[:b]) == 2
     @test_throws BoundsError t4[:b][3]
+
+    # Per-column options must apply even while a column is still seeded as
+    # Missing. The direct Missing probe used to read the global options and
+    # spuriously promote this all-sentinel column to String.
+    sentinelopts = [K.makevalueopts(K.Dialect(); sentinels=["NA"])]
+    for par in (false, true)
+        tc = K.parse("a\nNA\nNA\n"; colopts=sentinelopts, nsample=1, parallel=par)
+        @test tc[:a] isa Vector{Missing}
+        @test isequal(tc[:a], fill(missing, 2))
+    end
+    @test_throws ArgumentError K.parse("a,b\n1,2\n"; colopts=sentinelopts)
 end
 
 @testset "typed: promotion" begin
@@ -1388,6 +1399,62 @@ end
     @test dup isa K.PooledColumn{K.CompactString}
     @test length(K.poollevels(dup)) == 1
     @test K.poollevels(dup).extra == Vector{UInt8}(codeunits(longescaped))
+
+    # Raw escaped-span keys occupy a namespace disjoint from canonical inline
+    # payloads. Even all-0xff content cannot reach the empty-table sentinel.
+    keybytes = fill(0xff, 16)
+    for n in 0:K.COMPACTSTRING_INLINE
+        contentkey = K._inlinekey(K.inline_payload(keybytes, 1, n))
+        rawkey = contentkey | K.RAWKEY_BIT
+        @test contentkey & K.RAWKEY_BIT == 0
+        @test rawkey != contentkey
+        @test rawkey != K.IT_EMPTY
+    end
+    # A bare-quote canonical value can equal an escaped cell's raw spelling.
+    # The two values must remain distinct despite sharing the InlineTable.
+    rawcollision = K.parse("a\na\"\"b\n\"a\"\"b\"\n";
+                           types=String, pool=true, parallel=false)[:a]
+    @test String.(rawcollision) == ["a\"\"b", "a\"b"]
+    @test K.poolrefs(rawcollision) == UInt32[1, 2]
+
+    # Long raw spellings use rawvtable. Repeats resolve to one ref and store
+    # the unescaped bytes once.
+    rawinput = "a\n" * join(fill(quote_csv(longescaped), 3), '\n') * "\n"
+    rawbuf = Vector{UInt8}(codeunits(rawinput))
+    rawd = K.Dialect()
+    rawopts = K.makevalueopts(rawd)
+    rawci = only(K.index(rawbuf, rawd; chunkbytes=1 << 20, parallel=false).chunks)
+    rawlog = K.ProblemLog(10)
+    K.parseheader!(rawbuf, rawci, rawopts, rawd, rawlog)
+    rawseg = K.PoolSegment(K.nrows(rawci), rawbuf, rawopts.e, rawd.cq, 10,
+                           Threads.Atomic{Bool}(false))
+    @test K.parsecolchunk!(rawseg, rawbuf, rawci, 1, 0, rawopts, false, rawlog) == 0
+    @test length(rawseg.rawvtable) == 1
+    @test rawseg.refs == UInt32[1, 1, 1]
+    @test rawseg.extra == Vector{UInt8}(codeunits(longescaped))
+
+    # Different escaped spellings of the same long content dedupe by canonical
+    # content. The second raw miss must rewind its temporary bytes.
+    canonical = "a long escaped x value"
+    spellings = "a\n\"a long escaped \\x value\"\n" *
+                "\"a long escaped x value\"\n" *
+                "\"a long escaped \\x value\"\n"
+    rewound = K.parse(spellings; types=String, escapechar='\\', pool=true,
+                      chunkbytes=1 << 20, parallel=false)[:a]
+    @test String.(K.poollevels(rewound)) == [canonical]
+    @test K.poolrefs(rewound) == UInt32[1, 1, 1]
+    @test K.poollevels(rewound).extra == Vector{UInt8}(codeunits(canonical))
+
+    # If an escaped long miss exceeds the cap, its speculative bytes must not
+    # survive the switch to the flat StringColumn.
+    firstescaped = "first long value with a \"quote\" tail"
+    secondescaped = "second long value with a \"quote\" tail"
+    abortcsv = "a\n" * quote_csv(firstescaped) * "\n" * quote_csv(secondescaped) * "\n"
+    abortedraw = K.parse(abortcsv; types=String, pool=(1.0, 1),
+                         chunkbytes=1 << 20, parallel=false)[:a]
+    @test abortedraw isa K.CompactStringVector{K.CompactString}
+    @test String.(abortedraw) == [firstescaped, secondescaped]
+    @test abortedraw.extra == Vector{UInt8}(codeunits(firstescaped * secondescaped))
     # The inline scan stays exact at its 16-level boundary. This sequence mixes
     # empty, escaped-inline, inline, and view levels. It then grows to level 17,
     # where duplicate lookup switches to the still-complete InlineTable.
