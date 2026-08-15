@@ -8,6 +8,17 @@ const W = CSV.KernelWrite
 buf() = IOBuffer()
 str(f) = (io = buf(); f(io); String(take!(io)))
 
+mutable struct NoSchemaRows{T}
+    values::Vector{T}
+    next::Int
+end
+Base.iterate(r::NoSchemaRows, state=nothing) =
+    r.next > length(r.values) ? nothing : (r.values[r.next], (r.next += 1))
+Tables.istable(::Type{<:NoSchemaRows}) = true
+Tables.rowaccess(::Type{<:NoSchemaRows}) = true
+Tables.rows(r::NoSchemaRows) = r
+Tables.schema(::NoSchemaRows) = nothing
+
 @testset "KernelWrite" begin
     tbl = (a=[1, 2, 3], b=[1.5, missing, -2.0], c=["x", "y,z", "q\"r"],
            d=[Date(2024, 1, 2), Date(2024, 3, 4), Date(2024, 5, 6)])
@@ -25,6 +36,42 @@ str(f) = (io = buf(); f(io); String(take!(io)))
     ours = str(io -> W.write(io, plain))
     theirs = str(io -> LegacyCSV.write(io, plain))
     @test ours == theirs
+
+    # RowWriter uses the same renderer for every supported writer option.
+    rowtable = (id=[1, 2], text=["a,b", "q\"r"], value=[1.25, missing],
+                date=[Date(2024, 1, 2), Date(2025, 3, 4)])
+    rowkwargs = [
+        (;),
+        (; delim=';', quotechar='\'', escapechar='\'', newline="\r\n"),
+        (; openquotechar='<', closequotechar='>', escapechar='\\'),
+        (; quotestyle=:all),
+        (; floatformat="%.3f"),
+        (; dateformat="dd/mm/yyyy"),
+        (; decimal=',', delim=';'),
+        (; missingstring="NA"),
+        (; bom=true),
+    ]
+    for kwargs in rowkwargs
+        bytes = str(io -> W.write(io, rowtable; kwargs...))
+        @test join(CSV.RowWriter(rowtable; kwargs...)) == bytes
+    end
+    for writeheader in (false, true)
+        bytes = str(io -> W.write(io, rowtable; writeheader, bom=true))
+        @test join(CSV.RowWriter(rowtable; writeheader, bom=true)) == bytes
+    end
+    bytes = str(io -> W.write(io, rowtable; header=["a", "b", "c", "d"]))
+    @test join(CSV.RowWriter(rowtable; header=["a", "b", "c", "d"])) == bytes
+    @test Base.IteratorSize(typeof(CSV.RowWriter(rowtable))) isa Base.SizeUnknown
+
+    # Schema-free streams are prefetched once for names. The cached result is
+    # also the first output row, including for stateful one-shot iterators.
+    rowtype = NamedTuple{(:a, :b), Tuple{Int, String}}
+    oneshot = NoSchemaRows(rowtype[(a=1, b="x"), (a=2, b="y")], 1)
+    @test collect(CSV.RowWriter(oneshot)) == ["a,b\n", "1,x\n", "2,y\n"]
+    @test isempty(collect(CSV.RowWriter(NoSchemaRows(rowtype[], 1))))
+    @test collect(CSV.RowWriter(NoSchemaRows(rowtype[], 1); header=["a", "b"])) == ["a,b\n"]
+    @test_throws ArgumentError CSV.RowWriter(NoSchemaRows(rowtype[(a=1, b="x")], 1);
+                                              header=["only"])
 
     # determinism across thread splits
     big = (n=collect(1:50_000), s=[string("v", i % 97) for i in 1:50_000])
@@ -164,6 +211,7 @@ str(f) = (io = buf(); f(io); String(take!(io)))
                  flag=rand(rng, Bool, n),
                  text=[rand(rng, atoms) for _ in 1:n])
         bytes = str(io -> W.write(io, table; ntasks=rand(rng, 1:8), dialect...))
+        @test join(CSV.RowWriter(table; dialect...)) == bytes
         f = A.File(IOBuffer(bytes);
                    delim=dialect.delim,
                    quotechar=get(dialect, :quotechar, '"'),

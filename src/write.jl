@@ -200,12 +200,13 @@ code path `write` uses — so `join(RowWriter(t))` is byte-identical to
 floatformat, dateformat, ...). Streams: rows render on demand from a
 row-access view of the table (`Tables.rows`), no whole-table buffer.
 """
-struct RowWriter{R}
+struct RowWriter{R, I}
     rows::R
+    initial::I
     names::Vector{Symbol}
     o::WriteOpts
     writeheader::Bool
-    newline::String
+    prefetched::Bool
 end
 
 function RowWriter(table; writeheader::Bool=true, header::Union{Nothing, Vector}=nothing,
@@ -213,12 +214,16 @@ function RowWriter(table; writeheader::Bool=true, header::Union{Nothing, Vector}
     o = _writeopts(; kw...)
     rows = Tables.rows(table)
     sch = Tables.schema(rows)
-    names = header !== nothing ? Symbol.(header) :
-            sch === nothing ? collect(Symbol, Tables.columnnames(first(rows))) :
-            collect(Symbol, sch.names)
-    header !== nothing && sch !== nothing && length(names) != length(sch.names) &&
-        throw(ArgumentError("header has $(length(names)) names for $(length(sch.names)) columns"))
-    return RowWriter(rows, names, o, writeheader, String(copy(o.newline)))
+    prefetched = sch === nothing
+    initial = prefetched ? iterate(rows) : nothing
+    source_names = sch === nothing ?
+                   initial === nothing ? nothing :
+                   collect(Symbol, Tables.columnnames(initial[1])) :
+                   collect(Symbol, sch.names)
+    names = header === nothing ? something(source_names, Symbol[]) : Symbol.(header)
+    source_names !== nothing && length(names) != length(source_names) &&
+        throw(ArgumentError("header has $(length(names)) names for $(length(source_names)) columns"))
+    return RowWriter(rows, initial, names, o, writeheader, prefetched)
 end
 
 Base.IteratorSize(::Type{<:RowWriter}) = Base.SizeUnknown()
@@ -237,9 +242,18 @@ end
 
 function Base.iterate(rw::RowWriter, state=nothing)
     if state === nothing
-        rw.writeheader && !isempty(rw.names) &&
-            return String(_renderheader(rw.names, rw.o)), (iterate(rw.rows),)
-        state = (iterate(rw.rows),)
+        it = rw.prefetched ? rw.initial : iterate(rw.rows)
+        if rw.writeheader && !isempty(rw.names)
+            line = String(_renderheader(rw.names, rw.o))
+            rw.o.bom && (line = string('\ufeff', line))
+            return line, (it,)
+        elseif rw.o.bom
+            it === nothing && return "\ufeff", (nothing,)
+            row, rstate = it
+            return string('\ufeff', _renderrow(row, rw.names, rw.o)),
+                   (iterate(rw.rows, rstate),)
+        end
+        state = (it,)
     end
     it = state[1]
     it === nothing && return nothing
