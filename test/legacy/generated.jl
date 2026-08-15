@@ -68,4 +68,9 @@ const GEN_SIZES = (2_000, 40_000, 400_000)          # single-chunk .. several ch
             @test isequal(_table(back)[end], _table(fnew)[end])
         end
     end
+    expected = Set("gen:$(shape):$(sz)" for shape in GEN_SHAPES
+                   for sz in GEN_SIZES if !(shape in GEN_OURS_ONLY))
+    observed = Set(k for k in keys(OUTCOMES) if startswith(k, "gen:"))
+    @test observed == expected
+    @test !any(endswith(":roundtrip"), keys(OUTCOMES))
 end
