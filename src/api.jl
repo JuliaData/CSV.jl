@@ -153,6 +153,8 @@ _maybegunzip(buf::Vector{UInt8}) = _isgzip(buf) ? transcode(GzipDecompressor, bu
 
 resolvesource(buf::Vector{UInt8}; buffer_in_memory::Bool=false, prefetch::Bool=true) =
     _maybegunzip(buf)
+# other byte containers (codeunits, views) copy into a Vector — the kernel's buffer contract
+resolvesource(buf::AbstractVector{UInt8}; kw...) = resolvesource(Vector{UInt8}(buf); kw...)
 resolvesource(io::IO; buffer_in_memory::Bool=false, prefetch::Bool=true) =
     _maybegunzip(Base.read(io))
 resolvesource(cmd::Base.AbstractCmd; buffer_in_memory::Bool=false, prefetch::Bool=true) =
@@ -294,8 +296,12 @@ function _scoredelim(buf::Vector{UInt8}, delim::Char, datastart::Int,
         length(counts) >= 11 && break
     end
     isempty(counts) && return (0.0, 0, 0)
-    modal = argmax(c -> count(==(c), counts), unique(counts))
-    return (count(==(modal), counts) / length(counts), modal, first(counts))
+    # the modal field count is voted by the DATA rows when there are any; the
+    # header row alone must not elect a delimiter (a space in "Created Date"
+    # over one-word data rows) — it only has to agree with the winner
+    voters = length(counts) > 1 ? counts[2:end] : counts
+    modal = argmax(c -> count(==(c), voters), unique(voters))
+    return (count(==(modal), voters) / length(voters), modal, first(counts))
 end
 
 function _detectdelim(sample::Vector{UInt8}, dialectkw::NamedTuple, indexkw::NamedTuple)
@@ -312,17 +318,98 @@ function _detectdelim(sample::Vector{UInt8}, dialectkw::NamedTuple, indexkw::Nam
         rows += 1
     end
     scoresample = stop > length(sample) ? sample : sample[1:stop - 1]
-    best, bestdelim = (false, 0.0, 1), first(DELIM_CANDIDATES)
+    best, bestdelim = (false, false, 0.0, 0), first(DELIM_CANDIDATES)
+    headerfields = Dict{Char, Int}()
     for c in DELIM_CANDIDATES
         consistency, fields, firstfields = _scoredelim(scoresample, c, datastart,
                                                        dialectkw, indexkw)
-        represented = firstfields > 1
-        score = represented ? (true, consistency, fields) : (false, 0.0, 1)
+        # a real delimiter splits the FIRST row and the data rows the same way:
+        # a candidate that only appears in the header (a space in "Created
+        # Date" over one-word data rows) is not represented in the data
+        represented = firstfields > 1 && fields == firstfields
+        # more fields only wins when the DATA rows established it: with a single
+        # row (or an all-header sample) the field count is no evidence at all —
+        # a one-line "\"a, b\", \"c\"" must not elect the space — so candidates
+        # then tie on consistency and CSV.jl's candidate order decides
+        evidence = length(scoresample) > 0 && consistency > 0 && fields > 1 &&
+                   count(==(UInt8('\n')), scoresample) >= 2
+        # 0.10 tier order: a candidate PRESENT IN THE HEADER outranks one that
+        # only appears in the data ("A;B;C" over "1,1,10" rows keeps ';')
+        inheader = firstfields > 1
+        score = represented ? (true, inheader, consistency, evidence ? fields : 0) :
+                (fields > 1 && consistency > 0 && length(scoresample) > 0 &&
+                 count(==(UInt8('\n')), scoresample) >= 2) ?
+                    (true, false, consistency, evidence ? fields : 0) :   # data-only candidate
+                    (false, false, 0.0, 0)
         if score > best
             best, bestdelim = score, c
         end
+        headerfields[c] = firstfields
     end
-    return bestdelim
+    # a candidate that structures the header AND the data rows won above; the
+    # remaining cases (delimiter only in the header, or the sample too short
+    # for field-consistency evidence) follow 0.10's byte-count tiers exactly,
+    # so files that detected one way for years keep detecting that way
+    (best[1] && best[2]) && return bestdelim
+    return _detectdelim_bytecounts(scoresample, datastart, dialectkw, bestdelim, best[1])
+end
+
+# 0.10's detector (detection.jl): count candidate bytes outside quotes over the
+# header row and up to 10 data rows; tier 1 = present in header AND total count
+# divisible by nlines; tier 2 = divisible by nlines; tier 3 = most frequent in
+# the header, SPACE excluded; else ','. `fallback` is the consistency scorer's
+# data-only pick, used when it found real data evidence.
+function _detectdelim_bytecounts(sample::Vector{UInt8}, datastart::Int, dialectkw::NamedTuple,
+                                 fallback::Char, havedataevidence::Bool)
+    quotechar = haskey(dialectkw, :quotechar) ? dialectkw.quotechar : '"'
+    oq = UInt8(something(haskey(dialectkw, :openquotechar) ? dialectkw.openquotechar : nothing, quotechar))
+    cq = UInt8(something(haskey(dialectkw, :closequotechar) ? dialectkw.closequotechar : nothing, quotechar))
+    eq = UInt8(something(haskey(dialectkw, :escapechar) ? dialectkw.escapechar : nothing, Char(cq)))
+    len = length(sample)
+    hcounts = zeros(Int, 256); counts = zeros(Int, 256)
+    pos = datastart; nlines = 0; inheader = true; parsedany = false; lastnl = false
+    while pos <= len && nlines < 11
+        parsedany = true
+        b = sample[pos]; pos += 1
+        if b == oq
+            while pos <= len
+                b = sample[pos]; pos += 1
+                if b == eq
+                    pos > len && break
+                    (eq == cq && sample[pos] != cq) && break
+                    pos += 1
+                elseif b == cq
+                    break
+                end
+            end
+        elseif b == UInt8('\n') || b == UInt8('\r')
+            b == UInt8('\r') && pos <= len && sample[pos] == UInt8('\n') && (pos += 1)
+            nlines += 1; lastnl = true; inheader = false
+        else
+            lastnl = false
+            inheader && (hcounts[b + 1] += 1)
+            counts[b + 1] += 1
+        end
+    end
+    nlines += parsedany && !lastnl
+    nlines == 0 && return ','
+    cands = (',', '\t', ' ', '|', ';', ':')
+    for c in cands   # tier 1
+        h = hcounts[UInt8(c) + 1]; n = counts[UInt8(c) + 1]
+        h > 0 && n > 0 && n % nlines == 0 && return c
+    end
+    for c in cands   # tier 2
+        n = counts[UInt8(c) + 1]
+        n > 0 && n % nlines == 0 && return c
+    end
+    bestc, bestn = ',', 0
+    for c in (',', '\t', '|', ';', ':')   # tier 3: header max, no space
+        n = hcounts[UInt8(c) + 1]
+        if n > bestn            # NOT `cond && (a, b = c, d)`: that parses as a tuple
+            bestc, bestn = c, n
+        end
+    end
+    return bestc
 end
 
 """
@@ -515,13 +602,17 @@ function _prepare(source;
     # -- the row window, in RAW rows: header rows, skipto, footerskip ---------
     header isa Integer && header < 0 &&
         throw(ArgumentError("header must be ≥ 0 (got $header)"))
+    # 0.10 rule: the default header row 1 with skipto=1 means "no header, data
+    # starts at row 1" (the header row and the first data row cannot coincide)
+    if header isa Integer && header == 1 && skipto !== nothing && skipto == 1
+        header = false
+    end
     header isa Integer && (header = header == 0 ? false : Int(header))
     headerrows = header isa AbstractVector{<:Integer} ? Int.(header) :
                  header isa Int ? [header] : Int[]
     if !isempty(headerrows)
-        (issorted(headerrows) && first(headerrows) >= 1 &&
-         headerrows == first(headerrows):last(headerrows)) ||
-            throw(ArgumentError("header rows must be consecutive and ≥ 1 (got $header)"))
+        (issorted(headerrows) && first(headerrows) >= 1 && allunique(headerrows)) ||
+            throw(ArgumentError("header rows must be increasing and ≥ 1 (got $header)"))
     end
     headerrow = header === true ? 1 : isempty(headerrows) ? 0 : last(headerrows)
     rawstart = _datastart(buf)
@@ -531,9 +622,11 @@ function _prepare(source;
     chunks = bi.chunks
     headerlog = K.ProblemLog(get(kw, :maxproblems, 10_000))
 
-    names = if header isa AbstractVector && !(header isa AbstractVector{<:Integer})
+    names = if header isa AbstractVector && !(header isa AbstractVector{<:Integer}) &&
+               !isempty(header)
         Symbol.(header)
-    elseif header === false || isempty(chunks)
+    elseif header === false || isempty(chunks) ||
+           (header isa AbstractVector && isempty(header))   # header=[] ⇒ generate ColumnN
         k = _firstlive(chunks)
         n = k === nothing ? 0 : K.nfields(chunks[k], chunks[k].firstdatarow)
         [Symbol("Column", j) for j in 1:n]
@@ -541,11 +634,14 @@ function _prepare(source;
         k = _firstlive(chunks)
         k === nothing ? Symbol[] : K.parseheader!(buf, chunks[k], opts, d, headerlog)
     else
-        # multi-row header: every part participates in the join (blank cells
-        # resolve to ColumnN first) — pinned against CSV.jl
+        # multi-row header: the LISTED raw rows (not necessarily consecutive —
+        # blank rows may sit between them) join with "_"; blank cells resolve
+        # to ColumnN first — pinned against CSV.jl. Each listed row is parsed
+        # in place by advancing the chunk cursor to that raw row's byte offset.
         parts = Vector{Vector{Symbol}}()
         firstrows = Int[ci.firstdatarow for ci in chunks]
-        for _ in headerrows
+        for hr in headerrows
+            _skiptobyte!(chunks, _rawrowoffset(buf, d, rawstart, hr))
             k = _firstlive(chunks)
             k === nothing && break
             push!(parts, K.parseheader!(buf, chunks[k], opts, d, headerlog))
@@ -577,13 +673,7 @@ function _prepare(source;
     # engine + diagnostics kwargs the kernel driver consumes directly
     colopts = nothing
     if dfdict !== nothing
-        overrides = Dict{Int, Any}()
-        for (key, fmt) in dfdict
-            j = key isa Integer ? Int(key) : findfirst(==(Symbol(key)), names)
-            (j === nothing || !(1 <= j <= length(names))) &&
-                throw(ArgumentError("dateformat column $key not found"))
-            overrides[j] = fmt
-        end
+        overrides = K._resolvekeys(dfdict, names, length(names), "dateformat")
         colopts = K.ValueOpts[haskey(overrides, j) ?
                               K.makevalueopts(d; sentinels, valuekw...,
                                               dateformat=overrides[j]) : opts
@@ -695,6 +785,7 @@ function File(source;
         throw(ErrorException("CSVKernel: $(pr.kind) at data row $(pr.row), column $(pr.col): " *
                              pr.message * (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
     end
+    t = _narrowtypes(t, K.requestedtypes(types, p.names, p.ncols), sel)
     t = _pooledarrays(t)
     downcast && (t = _downcast(t))
     stringtype === String && (t = _materializestrings(t))
@@ -804,7 +895,11 @@ function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
             sawmiss = true
             continue
         end
-        v, ok = K.parsevalue(T, buf, cpos, cpos + clen - 1, opts, scratch)
+        ti, tj = K._trimblanks(buf, cpos, cpos + clen - 1)   # typed values tolerate blanks
+        if ti > tj
+            ti, tj = cpos, cpos + clen - 1
+        end
+        v, ok = K.parsevalue(T, buf, ti, tj, opts, scratch)
         if !ok
             # exact inference cannot conflict; a user-pinned type leaves the
             # cell missing (strict=false File semantics)
@@ -819,16 +914,27 @@ end
 
 function _transposedfile(source; types=nothing, downcast::Bool=false,
                          stringtype::Type=K.CompactString,
-                         header::Union{Bool, Integer}=true,
+                         header::Union{Bool, Integer, AbstractVector}=true,
+                         skipto::Union{Nothing, Integer}=nothing,
                          missingstring=nothing, delim=',',
                          normalizenames::Bool=false,
                          buffer_in_memory::Bool=false, prefetch::Bool=true, kw...)
     allowed = (_DIALECTKW..., _VALUEKW...)
     _checkkwargs("File(transpose=true)", kw, allowed)
-    hasnames = header === true || header == 1
-    hasnames || header === false ||
-        throw(ArgumentError("transpose=true supports header=true (names in field 1 of " *
-                            "each row) or header=false"))
+    # transposed geometry (0.10 semantics): header=N takes each row's Nth field
+    # as that column's name; skipto=M starts data at field M (default: the field
+    # after the header, or field 1 without one); header=[names] is explicit
+    namefield = header === true ? 1 : header === false ? 0 :
+                header isa Integer ? Int(header) : 0
+    explicitnames = header isa AbstractVector && !(header isa AbstractVector{<:Integer}) ?
+                    Symbol.(header) : nothing
+    header isa AbstractVector{<:Integer} &&
+        throw(ArgumentError("transpose=true takes a single header field index, not a range"))
+    hasnames = namefield > 0
+    startf = skipto === nothing ? namefield + 1 : Int(skipto)
+    startf >= 1 || throw(ArgumentError("skipto must be ≥ 1 (got $skipto)"))
+    hasnames && startf <= namefield &&
+        throw(ArgumentError("skipto=$skipto must be past the header field $namefield"))
     buf = resolvesource(source; buffer_in_memory, prefetch)
     dialectkw = _pickkwargs(kw, _DIALECTKW)
     valuekw = _pickkwargs(kw, _VALUEKW)
@@ -840,12 +946,15 @@ function _transposedfile(source; types=nothing, downcast::Bool=false,
         push!(rows, (ci, lr))
     end
     ncols = length(rows)
-    startf = hasnames ? 2 : 1
     n = ncols == 0 ? 0 :
         maximum(K.nfields(r[1], r[2]) - (startf - 1) for r in rows)
     n = max(n, 0)
-    names = Symbol[hasnames ? Symbol(_cellstring(buf, r[1], r[2], 1, opts)) :
-                   Symbol("Column", j) for (j, r) in enumerate(rows)]
+    _tname(j, r) = (nm = hasnames ? _cellstring(buf, r[1], r[2], namefield, opts) : "";
+                    isempty(nm) ? Symbol("Column", j) : Symbol(nm))
+    names = explicitnames !== nothing ? copy(explicitnames) :
+            Symbol[_tname(j, r) for (j, r) in enumerate(rows)]
+    explicitnames !== nothing && length(names) != ncols &&
+        throw(ArgumentError("header has $(length(names)) names for $ncols transposed rows"))
     normalizenames && (names = [normalizename(String(nm)) for nm in names])
     names = K.makeunique!(names)
     seed = K.resolvetypes(types, names, ncols)
@@ -862,10 +971,7 @@ end
 function _resolvepool(pool, names::Vector{Symbol}, ncols::Int)
     if pool isa AbstractDict
         specs = Vector{Any}(nothing, ncols)
-        for (key, sp) in pool
-            j = key isa Integer ? Int(key) : findfirst(==(Symbol(key)), names)
-            (j === nothing || !(1 <= j <= ncols)) &&
-                throw(ArgumentError("pool column $key not found"))
+        for (j, sp) in K._resolvekeys(pool, names, ncols, "pool")
             specs[j] = K._poolpolicy(sp)
         end
         return false, specs
@@ -875,6 +981,39 @@ function _resolvepool(pool, names::Vector{Symbol}, ncols::Int)
         return false, Any[K._poolpolicy(sp) for sp in pool]
     end
     return pool, nothing
+end
+
+# user-requested narrow types (Int8/16/32, UInt*, Float16/32): the kernel
+# parsed the native type; convert here. A value outside the narrow range
+# becomes missing with a recorded problem (0.10 semantics, strict=false).
+function _narrowtypes(t::K.ParsedTable, req, sel)
+    all(x -> x === nothing, req) && return t
+    keep = sel === nothing ? collect(1:length(req)) : sel   # output pos -> file col
+    cols = AbstractVector[t.columns...]
+    problems = copy(t.problems)
+    for (o, j) in enumerate(keep)
+        T = req[j]
+        T === nothing && continue
+        c = cols[o]
+        Base.nonmissingtype(eltype(c)) in (Int64, Int128, Float64) || continue
+        out = Vector{Union{T, Missing}}(undef, length(c))
+        anymissing = false
+        @inbounds for i in eachindex(c)
+            x = c[i]
+            if x === missing
+                out[i] = missing
+                anymissing = true
+            elseif T <: Integer && !(typemin(T) <= x <= typemax(T))
+                out[i] = missing
+                anymissing = true
+                push!(problems, K.Problem(i, j, 0, :invalid_value, "value $x does not fit $T"))
+            else
+                out[i] = convert(T, x)
+            end
+        end
+        cols[o] = anymissing ? out : convert(Vector{T}, out)
+    end
+    return K.ParsedTable(t.names, cols, t.nrows, problems, t.droppedproblems)
 end
 
 # downcast=true: Int64 columns shrink to the smallest of Int8/Int16/Int32 that

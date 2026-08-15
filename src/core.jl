@@ -122,9 +122,14 @@ end
 # backslash) or asymmetric open/close quotes breaks parity, so those dialects run
 # on the sequential scalar path.
 parityclean(d::Dialect) = !d.quoted || (d.oq == d.cq && d.e == d.cq)
+# A comment dialect breaks PARALLEL parity composition (a `"` inside a comment
+# row is not a quote toggle, and a mid-range popcount cannot see row starts) and
+# needs the scalar scanner (comment rows are skipped whole at row starts). Such
+# files still get bounded chunks: the planner walks true row starts.
+commentaware(d::Dialect) = d.comment !== nothing
 
 # The fast scanners additionally need a single-byte delimiter.
-swareligible(d::Dialect) = parityclean(d) && d.delim isa UInt8
+swareligible(d::Dialect) = parityclean(d) && d.delim isa UInt8 && !commentaware(d)
 
 # Value-level options: everything a cell needs beyond structure. Temporal
 # parsing always runs a compiled format program — the ISO trio by default; a
@@ -311,6 +316,16 @@ const CELL_BADQUOTE = 0x02
             return (i, 0, false, CELL_MISSING)
         return (i, j - i + 1, false, CELL_VALUE)
     end
+end
+
+# Typed values tolerate surrounding blanks (0.10 / Parsers.jl semantics): the
+# `1, 2, 3` spelling parses numerically without stripwhitespace=true, while
+# String columns keep their spaces. One first/last-byte check per cell —
+# never-taken branches on clean data.
+@inline function _trimblanks(buf::Vector{UInt8}, i::Int, j::Int)
+    @inbounds while i <= j && _isot(buf[i]); i += 1; end
+    @inbounds while j >= i && _isot(buf[j]); j -= 1; end
+    return i, j
 end
 
 # An UNQUOTED span can only contain the delimiter when a bare mid-field quote
@@ -784,7 +799,26 @@ function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
     n = 0
     pos = start
     inquote = false
+    cmt = d.comment
+    atrowstart = true      # comment rows are skipped whole: their bytes are not structural
     @inbounds while pos <= stop
+        if atrowstart && cmt !== nothing && !inquote &&
+           pos + length(cmt) - 1 <= stop && _matchbytes(buf, pos, cmt)
+            # consume through the row terminator, emitting the row-end event
+            # only (assembly drops the comment row by its start bytes)
+            while pos <= stop && buf[pos] != LF && buf[pos] != CR
+                pos += 1
+            end
+            pos > stop && break
+            b = buf[pos]
+            crlf = b == CR && pos < stop && buf[pos + 1] == LF
+            tape_room!(tape, n, 1)
+            n += 1
+            tape[n] = (UInt32(pos - start) << 2) | (crlf ? UInt32(3) : rawkind(b))
+            pos += crlf ? 2 : 1
+            continue
+        end
+        atrowstart = false
         b = buf[pos]
         if inquote
             if b == e && e != cq
@@ -816,6 +850,7 @@ function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
             n += 1
             tape[n] = (UInt32(pos - start) << 2) | (crlf ? UInt32(3) : rawkind(b))
             pos += crlf ? 2 : 1
+            atrowstart = true
         else
             pos += 1
         end
@@ -1102,6 +1137,19 @@ end
 function nextrowstart(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect, inquote::Bool)::Int
     pos = from
     cq, oq, e = d.cq, d.oq, d.e
+    # a comment row's bytes are not structural: when `from` is a row start
+    # (inquote=false) that begins with the comment prefix, run straight to the
+    # terminator without honoring quotes
+    cmt = d.comment
+    if !inquote && cmt !== nothing && from + length(cmt) - 1 <= to && _matchbytes(buf, from, cmt)
+        @inbounds while pos <= to
+            b = buf[pos]
+            b == LF && return pos + 1
+            b == CR && return pos + 1 + (pos < to && buf[pos + 1] == LF)
+            pos += 1
+        end
+        return to + 1
+    end
     @inbounds while pos <= to
         b = buf[pos]
         if inquote
@@ -1142,6 +1190,24 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
     # not on `parallel`: sequential runs also want bounded chunks because the
     # column-at-a-time parse re-walks each chunk once per column and needs it
     # cache-resident. `parallel` only decides tasks vs a plain loop.
+    if commentaware(d) && parityclean(d) && len - datastart + 1 > chunkbytes
+        # comment dialect: parity popcounts cannot see comment rows, so chunk
+        # bounds come from a sequential row-start walk (nextrowstart is
+        # comment-aware). One pass at chunk granularity, no per-byte work
+        # beyond the quote/terminator scan the index pays anyway.
+        chunks = ChunkIndex[]
+        b0 = datastart
+        while b0 <= len
+            target = min(b0 + chunkbytes - 1, len)
+            # walk row starts from the known start b0 (a mid-row probe could not
+            # know its quote state); quoted newlines and comment rows are honored
+            b1 = target >= len ? len + 1 : _rowstartatorafter(buf, b0, target, len, d)
+            push!(chunks, ChunkIndex(b0, b1 - 1))
+            b0 = b1
+        end
+        foreach(checktaperange, chunks)
+        return chunks
+    end
     nranges = parityclean(d) ? max(1, cld(len - datastart + 1, chunkbytes)) : 1
     starts = [datastart + (i - 1) * chunkbytes for i in 1:nranges]
     entry = falses(nranges)
@@ -1193,6 +1259,16 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
     # this bound is about one giant row.
     foreach(checktaperange, chunks)
     return chunks
+end
+
+# first row start strictly after `target`, walking rows from the known row
+# start `from` (quote- and comment-aware); len+1 at EOF
+function _rowstartatorafter(buf::Vector{UInt8}, from::Int, target::Int, len::Int, d::Dialect)
+    pos = from
+    while pos <= target
+        pos = nextrowstart(buf, pos, len, d, false)
+    end
+    return min(pos, len + 1)
 end
 
 function indexone!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Symbol)
@@ -1320,7 +1396,8 @@ function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::ValueOpts)
     st == CELL_MISSING && return Missing
     st == CELL_BADQUOTE && return String    # malformed quoting reports at parse time
     (clen == 0 || esc) && return String     # quoted-empty / escape content is stringy
-    cj = cpos + clen - 1
+    cpos, cj = _trimblanks(buf, cpos, cpos + clen - 1)
+    cpos > cj && return String              # blanks only: a present string
     if opts.groupmark != 0x00
         # sampling is cold: a fresh scratch per call keeps the signature small
         scratch = Vector{UInt8}(undef, 64)
@@ -1953,7 +2030,11 @@ function parsecolchunk!(col::Union{TypedColumn{T}, UnionColumn{T}}, buf::Vector{
         cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
         st == CELL_MISSING && continue                  # sentinel / stripped-to-empty
         if st == CELL_VALUE && clen > 0 && !esc
-            v, ok = parsevalue(T, buf, cpos, cpos + clen - 1, opts, scratch)
+            ti, tj = _trimblanks(buf, cpos, cpos + clen - 1)
+            if ti > tj                              # blanks only: parse the original (invalid) span
+                ti, tj = cpos, cpos + clen - 1
+            end
+            v, ok = parsevalue(T, buf, ti, tj, opts, scratch)
             if ok
                 _storevalue!(col, out, v)
                 continue
@@ -2462,9 +2543,12 @@ function sampletypes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncols::Int,
                      opts::ValueOpts; nsample::Int=128,
                      selected::Union{Nothing, Vector{Bool}}=nothing,
                      sawmissing::Union{Nothing, Vector{Bool}}=nothing,
-                     colopts::Union{Nothing, Vector{ValueOpts}}=nothing)
+                     colopts::Union{Nothing, Vector{ValueOpts}}=nothing,
+                     maxrows::Union{Nothing, Int}=nothing)
     nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
     total = sum(nrows, chunks; init=0)
+    # rows past `limit` are never output: they must not seed union finals
+    maxrows === nothing || (total = min(total, maxrows))
     total == 0 && return fill(Missing, ncols)
     types = fill(Missing, ncols)
     count = min(total, nsample)
@@ -2655,6 +2739,35 @@ end
 # Resolve the `types` keyword: nothing | Type | AbstractVector | AbstractDict
 # (by name or index). `Union{T,Missing}` collapses to T (missingness is tracked
 # per-value, never in the column type).
+# Narrow numeric types parse through their native kernel type and convert at
+# the API door (0.10 semantics: `types=Int8` parses Int64 and narrows; an
+# out-of-range value is a problem, not a crash).
+const NARROW_TYPES = Dict{Type, Type}(
+    Int8 => Int64, Int16 => Int64, Int32 => Int64,
+    UInt8 => Int64, UInt16 => Int64, UInt32 => Int64, UInt64 => Int128,
+    Float16 => Float64, Float32 => Float64)
+_nativetype(T::Type) = get(NARROW_TYPES, T, T)
+
+# Dict keys: Integer (position), name (Symbol/String), or Regex (every
+# matching name; exact keys take precedence — 0.10 semantics)
+function _resolvekeys(dict::AbstractDict, names::Vector{Symbol}, ncols::Int, what::String)
+    out = Dict{Int, Any}()
+    for (k, v) in dict
+        k isa Regex && continue
+        j = k isa Integer ? Int(k) : findfirst(==(Symbol(k)), names)
+        j === nothing && throw(ArgumentError("$what key $k does not match any column"))
+        1 <= j <= ncols || throw(ArgumentError("$what key $k out of range"))
+        out[j] = v
+    end
+    for (k, v) in dict
+        k isa Regex || continue
+        for (j, nm) in enumerate(names)
+            occursin(k, String(nm)) && !haskey(out, j) && (out[j] = v)
+        end
+    end
+    return out
+end
+
 function resolvetypes(types, names::Vector{Symbol}, ncols::Int)
     seed = Vector{Union{Nothing, Type}}(nothing, ncols)
     types === nothing && return seed
@@ -2662,6 +2775,7 @@ function resolvetypes(types, names::Vector{Symbol}, ncols::Int)
         T === nothing && return nothing
         T isa Type || throw(ArgumentError("column type must be a Type or nothing (got $(repr(T)))"))
         T = T === Missing ? Missing : Base.nonmissingtype(T)
+        T = _nativetype(T)
         parseable = T === Missing ||
                     T in (Int64, Int128, Float64, Bool, Date, DateTime, Time, String,
                           BigInt, BigFloat, Base.UUID)
@@ -2674,16 +2788,50 @@ function resolvetypes(types, names::Vector{Symbol}, ncols::Int)
         length(types) == ncols || throw(ArgumentError("types vector length $(length(types)) != $ncols columns"))
         seed .= normalize.(types)
     elseif types isa AbstractDict
-        for (k, T) in types
-            j = k isa Integer ? Int(k) : findfirst(==(Symbol(k)), names)
-            j === nothing && throw(ArgumentError("types key $k does not match any column"))
-            1 <= j <= ncols || throw(ArgumentError("types key $k out of range"))
+        for (j, T) in _resolvekeys(types, names, ncols, "types")
             seed[j] = normalize(T)
         end
     else
         throw(ArgumentError("unsupported types specification: $(typeof(types))"))
     end
     return seed
+end
+
+# columns the user declared as Union{Missing, T}: honored even when no missing
+# value appears (0.10 semantics — the declared type is the column type)
+function declaredmissing(types, names::Vector{Symbol}, ncols::Int)
+    wm = fill(false, ncols)
+    types === nothing && return wm
+    ismiss(T) = T isa Type && T !== Missing && Missing <: T
+    if types isa Type
+        fill!(wm, ismiss(types))
+    elseif types isa AbstractVector
+        length(types) == ncols && (wm .= ismiss.(types))
+    elseif types isa AbstractDict
+        for (j, T) in _resolvekeys(types, names, ncols, "types")
+            wm[j] = ismiss(T)
+        end
+    end
+    return wm
+end
+
+# the user-REQUESTED types per column (narrow ones included), for the API
+# door's post-parse narrowing; nothing where the kernel type is the answer
+function requestedtypes(types, names::Vector{Symbol}, ncols::Int)
+    req = Vector{Union{Nothing, Type}}(nothing, ncols)
+    types === nothing && return req
+    narrow(T) = (T isa Type && haskey(NARROW_TYPES, Base.nonmissingtype(T))) ?
+                Base.nonmissingtype(T) : nothing
+    if types isa Type
+        fill!(req, narrow(types))
+    elseif types isa AbstractVector
+        length(types) == ncols && (req .= narrow.(types))
+    elseif types isa AbstractDict
+        for (j, T) in _resolvekeys(types, names, ncols, "types")
+            req[j] = narrow(T)
+        end
+    end
+    return req
 end
 
 @inline _defaultchunkbytes(nbytes::Int, nthreads::Int=Threads.nthreads()) =
@@ -2851,10 +2999,11 @@ function parse(buf::Vector{UInt8};
     # -- type seeding (stratified over the probe chunks) -----------------------
     seed = resolvetypes(types, names, ncols)
     userprovided = [T !== nothing for T in seed]
+    wantmissing = declaredmissing(types, names, ncols)   # user wrote Union{Missing,T}
     # typed columns whose sample shows a missing cell get union-direct finals
     # (the parse writes Vector{Union{T,Missing}} in place; conversion is never
     # paid). Sample-missed sparse missings fall back to a finalize conversion.
-    sawmissing = fill(false, ncols)
+    sawmissing = copy(wantmissing)   # declared Union{Missing,T} ⇒ union finals
     # Validate before sampling: `_copts` is deliberately inbounds in hot loops.
     colopts === nothing || length(colopts) == ncols ||
         throw(ArgumentError("colopts length $(length(colopts)) != $ncols columns"))
@@ -2864,7 +3013,7 @@ function parse(buf::Vector{UInt8};
             probetotal = sum(nrows, probechunks; init=0)
             ns = nsample === nothing ? clamp(probetotal >> 6, 8, 128) : nsample
             inferred = sampletypes(buf, probechunks, ncols, opts; nsample=max(ns, 1), selected,
-                                   sawmissing, colopts)
+                                   sawmissing, colopts, maxrows=limit)
         else
             # inference reflects the rows that will actually be output: a
             # masked-out malformed value must not promote a qualifying column
@@ -3113,6 +3262,13 @@ function parse(buf::Vector{UInt8};
         nproblems = length(log.items) + log.dropped
         throw(ErrorException("CSVKernel: $(p.kind) at data row $(p.row), column $(p.col): $(p.message)" *
                              (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
+    end
+    # a user-declared Union{Missing,T} is the column type even without missings
+    for j in stitchjs
+        wantmissing[j] || continue
+        c = cols[j]
+        Missing <: eltype(c) && continue
+        cols[j] = _widenmissing(c)
     end
     selected === nothing && return ParsedTable(names, cols, ndata, log.items, log.dropped)
     return ParsedTable(names[stitchjs], cols[stitchjs], ndata, log.items, log.dropped)
@@ -3550,6 +3706,17 @@ struct PooledColumn{ELT} <: AbstractVector{ELT}
     levels::CompactStringVector{CompactString}
 end
 Base.size(c::PooledColumn) = size(c.refs)
+
+# widen a missing-free column to its Union{Missing,T} counterpart, zero-copy
+# where the container supports it (CompactString views / pooled refs), else a
+# converted Base vector
+_widenmissing(c::CompactStringVector{CompactString}) =
+    CompactStringVector{Union{CompactString, Missing}}(c.payloads, c.buf, c.extra)
+_widenmissing(c::PooledColumn{CompactString}) =
+    PooledColumn{Union{CompactString, Missing}}(c.refs, c.levels)
+_widenmissing(c::Vector{T}) where {T} = convert(Vector{Union{T, Missing}}, c)
+_widenmissing(c::AbstractVector) = c
+
 Base.@propagate_inbounds function Base.getindex(c::PooledColumn{ELT}, i::Int) where {ELT}
     @boundscheck checkbounds(c.refs, i)
     @inbounds r = c.refs[i]

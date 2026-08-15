@@ -20,9 +20,10 @@ const K = CSV.CSVKernel
 # The 0.10 implementation is the behavioral ORACLE throughout this file: every
 # `LegacyCSV.File`/`LegacyCSV.write` below that means "the old behavior" is spelled LegacyCSV.
 
-@testset "released Tables has no Scan front door" begin
-    @test !isdefined(Tables, :Scan)
-    @test all(m -> !occursin("Scan", string(m.sig)), methods(A.read))
+@testset "Scan front door tracks the Tables proposal" begin
+    # the method exists exactly when the loaded Tables carries the Scan proposal
+    hasscan = isdefined(Tables, :Scan)
+    @test any(m -> occursin("Scan", string(m.sig)), methods(A.read)) == hasscan
 end
 
 _norm(x) = x isa AbstractString ? String(x) : x
@@ -137,7 +138,9 @@ end
     # header row consumed even when it is the only content in early chunks
     f = A.File(IOBuffer("a,b\n1,2\n"); chunkbytes=4)
     @test collect(f.a) == [1]
-    @test_throws ArgumentError A.File(IOBuffer("a,b\nx,y\n1,2\n"); header=[1, 3])
+    # non-consecutive header rows join like 0.10 (rows 1 and 3, skipping row 2)
+    against("a,b\nx,y\n1,2\n3,4\n"; kw=(; header=[1, 3]))
+    @test_throws ArgumentError A.File(IOBuffer("a,b\nx,y\n1,2\n"); header=[3, 1])
 end
 
 @testset "row windowing agrees (raw-row semantics)" begin
@@ -161,7 +164,9 @@ end
             kw=(; header=3, comment="#", skipto=5))
     against("a,b\n1,2\n"; kw=(; skipto=100))
     against("a,b\n1,2\n"; kw=(; header=100))
-    @test_throws ArgumentError A.File(IOBuffer("a,b\n1,2\n"); skipto=1)
+    # 0.10 rule: default header 1 + skipto=1 means "no header, data at row 1"
+    against("a,b\n1,2\n"; kw=(; skipto=1))
+    @test_throws ArgumentError A.File(IOBuffer("a,b\n1,2\n"); header=2, skipto=1)
     @test_throws ArgumentError A.File(IOBuffer("a,b\n1,2\n"); limit=-1)
     @test A.File(IOBuffer("a,b\n1,2\n"); footerskip=5).table.nrows == 0
 end
