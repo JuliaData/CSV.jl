@@ -47,13 +47,15 @@ column, and a `Dict` count (groupby).
    a general default for free-text columns.
 
 2. **Downstream, InlineString wins where the operation is a whole-value
-   compare**: `==` 4–13× faster and `sortperm` 2–7× faster than CompactString,
-   because an InlineString compares in registers while a CompactString view
-   compares through a memcmp on the retained buffer (inline ≤12-byte
-   CompactStrings compare through a stack scratch — the remaining gap on
-   `eq` is that scratch materialization; a payload-word fast path for the
-   inline-vs-inline case would close most of it and is a straightforward
-   follow-up). Hashing and Dict-groupby are at parity across the three
+   compare**, because an InlineString compares in registers. *Updated after
+   the inline payload-word `cmp` fast path landed (2026-08-15, 1M-cell
+   micro-bench, interleaved A/B)*: CompactString `sortperm` improved 2.7×
+   on short strings (260→96 ms) and 1.27× on long (412→323 ms) — it now
+   beats `String` on BOTH (313/353 ms) — and `==` runs ~5× faster than
+   `String`. The residual InlineString sort lead (~3.8× on short strings)
+   is structural: a heap-referencing 24-byte struct cannot match a pure
+   isbits register compare, and LLVM vectorizes whole InlineString `==`
+   scans outright. Hashing and Dict-groupby are at parity across the three
    (the allocation-free hash landed with this work).
 
 3. **Memory: CompactString retains the input buffer.** Charged honestly, a
@@ -69,19 +71,21 @@ column, and a `Dict` count (groupby).
    its per-object layout beats both (17 ms sort, 22 MiB). It is the
    ecosystem-safest type and the slowest to produce.
 
-## Recommendation
+## Decision (2026-08-15)
 
-**Keep `CompactString` as the default; ship the InlineStrings extension for
-users who want the 0.10 types.** The default should optimize the operation
-every user pays (parsing) and the read-and-hand-off path (DataFrames,
-Arrow); it costs the input-buffer residency and a 2–7× penalty on
-sort/filter *until* the inline-compare fast path lands (queued). Users whose
-workload is compare-heavy on short strings and who want the smallest
-footprint get exactly 0.10's behavior with `stringtype=InlineString`, and
-`stringtype=String` remains for maximal ecosystem compatibility.
+**`CompactString` IS the 1.0 default** — ratified by the maintainer; the
+InlineStrings extension ships for users who want the 0.10 types. The default
+optimizes the operation every user pays (parsing) and the read-and-hand-off
+path (DataFrames, Arrow); with the inline-compare fast path landed it also
+beats `String` on every downstream operation measured, so the remaining
+trades are input-buffer residency and the structural sort gap to
+InlineString on short strings. Users whose workload is compare-heavy on
+short strings and who want the smallest footprint get exactly 0.10's
+behavior with `stringtype=InlineString`, and `stringtype=String` remains for
+maximal ecosystem compatibility.
 
-The counter-argument worth stating: defaulting to InlineString preserves
-0.10's *types* exactly (no `String3` → `CompactString` surprises in
-downstream code) at a 3–9× parse-time cost and a hard failure mode on long
-text. If ecosystem type-stability outweighs parse speed for 1.0, flip the
-default; the extension makes either default a one-line change.
+The counter-argument, recorded for the migration guide: defaulting to
+InlineString would preserve 0.10's *types* exactly (no `String3` →
+`CompactString` surprises in downstream code) at a 3–9× parse-time cost and
+a hard failure mode on long text. The extension makes flipping a one-line
+change if the ecosystem ever demands it.

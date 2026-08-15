@@ -142,6 +142,14 @@ function foldcshash(v, h::UInt)
     return h
 end
 
+function foldcscmp(v)
+    s = 0
+    @inbounds for i in 2:length(v)
+        s += cmp(v[i - 1], v[i]) + (v[i - 1] == v[i])
+    end
+    return s
+end
+
 function inlinekey(s::AbstractString)
     bytes = Vector{UInt8}(codeunits(s))
     p = K.inline_payload(bytes, 1, length(bytes))
@@ -1654,6 +1662,10 @@ end
     @test isless(missing, first(validcs)) == isless(missing, first(valid))
     foldcshash(payloads, UInt(9))
     @test @allocated(foldcshash(payloads, UInt(9))) == 0
+    # ordering and equality across every inline/view mix stay allocation-free
+    # (the inline fast path in registers, the rest through stack scratches)
+    foldcscmp(payloads)
+    @test @allocated(foldcscmp(payloads)) == 0
     # escaped values: short ones inline, long ones land in the extra buffer
     t2 = K.parse("a\n\"in\"\"line\"\n\"a long escaped \"\"string\"\" beyond inline\"\n")
     @test collect(t2[:a]) == ["in\"line", "a long escaped \"string\" beyond inline"]
