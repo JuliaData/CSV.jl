@@ -22,7 +22,8 @@ It was already a table. It stays a table (`corpus_table.jl`, verbatim) and is
 driven by `harness.jl`'s `corpuscase`, which asserts (a) **agreement with the
 0.10 implementation** on names/size/values — the oracle catches everything —
 and (b) the table's **own literal expectations** (schema class + values) as an
-oracle-independent pin. 110 entries → 190 agreeing replays.
+oracle-independent pin. Its 110 entries each replay once, with additional
+literal schema and value assertions.
 
 Old string-type schemas (`InlineString15`, `String3`, `PosLenString`) are
 aliased to `String` for the type-class comparison only.
@@ -46,9 +47,11 @@ The harness now compares row counts and normalized schema types as well as names
 and values. Two thrown calls agree only when their semantic error categories
 agree. Every delta pin states its exact expected outcome (`differ`, `new_errors`,
 or `old_errors`), so a reversed error direction also fails. The current ledger
-is 336 `agree`, 19 `both_error`, 14 `differ` (all pinned), 9 `new_errors` (all
+is 351 `agree`, 19 `both_error`, 14 `differ` (all pinned), 9 `new_errors` (all
 pinned), and 8 `old_errors` (all pinned), with no `unportable` outcome and no
-unqueued entry.
+unqueued entry: 401 unique outcomes and 1,447/1,447 passing battery assertions.
+Duplicate or empty outcome labels are fatal, so one case cannot silently replace
+another case in the ledger.
 
 ### 3. What the replay FOUND (the audit's real yield)
 
@@ -131,7 +134,7 @@ The harness asserts these DISAGREE with 0.10 (a stale pin fails):
   own columns), and `source=` labels for non-path sources are deterministic
   `"<source i>"` strings (0.10 embedded the IO object hash)
 
-### 5. `runtests.jl`, `iteration.jl`, `write.jl` — PARTIALLY superseded, rest queued
+### 5. `runtests.jl`, `iteration.jl`, `write.jl` — superseded or replayed
 
 - CSV.Rows/Chunks/select/drop/vector-of-files: the new `test/api.jl` covers
   Rows/Chunks/select/drop differentially. **Vector-of-files input (+ `source=`
@@ -145,22 +148,16 @@ The harness asserts these DISAGREE with 0.10 (a stale pin fails):
   path — now an extension) replay as `write:*` cases.
 - `perf_write.jl`: a benchmark, not a test → `bench/`.
 
-### 6. The corpus artifact — keep, but shrink the dependency
+### 6. The corpus artifact — retired
 
-- 82 referenced files are ≤4 KB (12 KB total): candidates to inline as string
-  literals next to their assertions (self-describing tests, no artifact needed
-  for the common path). Not done in this pass — the table drives them by path
-  and works; inlining is mechanical follow-up.
-- 19 real-world dumps (27 MB): each keeps only if it pins something synthetic
-  input cannot — `pandas_zeros` (10 MB of a degenerate shape), `Fielding`,
-  `FL_insurance` (wide real data), `randoms.csv.gz` (gzip + promotions),
-  `escape_row_starts`, the multithreaded-row-start-detection files. Candidates
-  to DROP: `precompile.csv` (295 KB, 0 refs), the three utf16 files (0 refs —
-  utf16 is out of scope), 8 other 0-ref files.
-- A lighter equivalent for most of the corpus: the table's kwargs × a
-  generator. Most rows test one dialect knob on a tiny file; a parametrized
-  generator (`bench/bench_matrix.jl` already has 22 shape generators) plus the
-  oracle covers the same space with no artifact. Proposed, not built.
+- 82 referenced files at or below 4 KiB are exact byte literals in
+  `corpus_inline.jl`. The harness writes them to one scratch directory so path
+  behavior remains covered.
+- The 24 retained real-world files live in `test/legacy/testfiles/`. They are
+  byte-identical to the former `d37a9eaf615396a9c00d9f4280cb832111193b57`
+  artifact tree.
+- The generated shape battery covers the synthetic cases. `Artifacts.toml`,
+  `LazyArtifacts`, and the release-upload instructions are removed.
 
 ## Codex round 22 (the port's review) — CLEAN, with hardening
 

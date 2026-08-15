@@ -50,7 +50,7 @@ const GEN_SIZES = (2_000, 40_000, 400_000)          # single-chunk .. several ch
                 no, vo = _table(fold)[1], _table(fold)[end]
                 (nn == no && isequal(vn, vo)) ? :agree : :differ
             end
-            OUTCOMES[label] = outcome
+            _recordoutcome!(label, outcome)
             if delta === nothing
                 ok = outcome in (:agree, :both_error)
                 @test ok

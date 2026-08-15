@@ -7,7 +7,7 @@
     # it in an IOBuffer, so pin the error pair directly: both reject the path.
     @test_throws ArgumentError NEW.File("")
     @test_throws ArgumentError OLD.File("")
-    OUTCOMES["basics:23"] = :both_error
+    _recordoutcome!("basics:23", :both_error)
     @case "basics:26" agree(corpusfile("test_no_header.csv"); skipto=1, header=2, label="basics:26")
     @case "basics:29" agree(corpusfile("test_float_in_int_column.csv"); types=[Int, Int, Int], strict=true, label="basics:29")
     @case "basics:32" agree(corpusfile("int64_overflow.csv"); types=[Int8], strict=true, label="basics:32")

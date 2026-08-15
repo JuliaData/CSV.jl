@@ -112,6 +112,13 @@ implementation gets a fresh one.
 const OUTCOMES = Dict{String, Symbol}()
 const ERROR_PAIRS = Dict{String, Any}()
 
+function _recordoutcome!(label::String, outcome::Symbol)
+    isempty(label) && error("legacy outcome label must not be empty")
+    haskey(OUTCOMES, label) && error("duplicate legacy outcome label: $label")
+    OUTCOMES[label] = outcome
+    return
+end
+
 # Concrete package error wrappers are implementation details. Require the same
 # useful category instead: bad arguments, unsupported methods/types, bounds, IO,
 # or a data-parse rejection. This is stricter than counting any two throws as
@@ -145,7 +152,7 @@ function agree(input; expect_delta=nothing, label::String="", kw...)
         no, ro, to, vo = _table(fold)
         (nn == no && rn == ro && tn == to && isequal(vn, vo)) ? :agree : :differ
     end
-    OUTCOMES[label] = outcome
+    _recordoutcome!(label, outcome)
     if expect_delta === nothing
         ok = outcome in (:agree, :both_error)
         @test ok
@@ -169,7 +176,7 @@ macro case(label, ex)
             $(esc(ex))
         catch e
             e isa UndefVarError || rethrow()
-            OUTCOMES[$(esc(label))] = :unportable
+            _recordoutcome!($(esc(label)), :unportable)
         end
     end
 end

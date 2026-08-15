@@ -19,7 +19,7 @@ include("corpus_table.jl")
     @testset "corpus table (testfiles.jl)" begin
         for (i, entry) in enumerate(CORPUS_TABLE)
             file = entry[1]
-            lbl = file isa IO ? "table:io#$i" : "table:" * file
+            lbl = file isa IO ? "table:io#$i" : "table:$file#$i"
             @case lbl corpuscase(entry...; label=lbl)
         end
     end
