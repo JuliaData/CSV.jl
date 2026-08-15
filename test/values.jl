@@ -1,6 +1,6 @@
 # Differential test suite for the new value layer.
 #
-# Run:  julia --project=kernel kernel/test_values.jl
+# Run:  julia --startup-file=no --project=test test/values.jl
 #
 # Base.parse / Dates are the ORACLES here (tests only — the runtime layer never
 # calls them). Every parser must agree bit-for-bit with the oracle on the

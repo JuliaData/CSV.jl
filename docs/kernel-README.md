@@ -18,17 +18,16 @@ enough to demonstrate that the architecture holds end-to-end:
 
 | file | contents |
 |---|---|
-| `core.jl` | the kernel: `Dialect`, tape index (vector + SWAR + scalar scanners), parallel indexing, type detection & promotion lattice, column builders, `CSVKernel.parse` driver, `Problem` log |
-| `test.jl` | 11,890 assertions: pinned structural cases, randomized scanner and string properties, typed-layer tests, driver determinism stress, examples-layer tests |
-| `examples.jl` | `KernelExamples.read` / `.batches` / `.rows` — the CSV.jl API surfaces as compositions of kernel blocks, plus Tables.jl integration |
-| `bench.jl` | rough throughput probe (index vs full-parse split; optional CSV.jl comparison) |
-| `Project.toml` | standalone environment (Parsers, Tables, Dates + test deps) |
+| `src/core.jl` | the kernel: `Dialect`, tape index (vector + SWAR + scalar scanners), parallel indexing, type detection and promotion, column builders, `CSVKernel.parse`, and `Problem` log |
+| `test/kernel.jl` | structural, typed-layer, driver determinism, and examples-layer tests |
+| `src/examples.jl` | `KernelExamples.read` / `.batches` / `.rows` API compositions plus Tables.jl integration |
+| `bench/bench.jl` | rough throughput probe with a LegacyCSV comparison |
+| `Project.toml` | the CSV package environment; `test/Project.toml` adds test-only dependencies |
 
 ```sh
-julia --project=kernel -e 'using Pkg; Pkg.instantiate()'   # once
-julia --project=kernel -t4 kernel/test.jl                  # full suite
-julia --project=kernel kernel/examples.jl                  # demo
-julia --project=kernel -t8 kernel/bench.jl                 # throughput probe
+julia --startup-file=no --project=. -e 'using Pkg; Pkg.instantiate()'
+julia --startup-file=no --project=test -t4 test/kernel.jl
+julia --startup-file=no --project=test -t8 bench/bench.jl
 ```
 
 ## The architecture, in five decisions
@@ -90,11 +89,11 @@ spam, nothing lost to a terminal scrollback.
   parsing, and the stitch phase knows the exact global row count. `rowsguess`,
   `reallocate!`, and growth heuristics have no analog.
 
-## Measured breadth (kernel/bench.jl)
+## Measured breadth (`bench/bench.jl`)
 
 `bench.jl` runs a shape × size matrix (numeric, mixed, string-heavy,
 quoted-with-embedded-newlines, 200-column wide, 2-column long, missing-heavy ×
-10 KiB → 200 MiB) against the installed CSV.jl. With the three deep pieces in
+10 KiB → 200 MiB) against the frozen CSV 0.10 oracle. With the three deep pieces in
 (width-generic 64-byte vector scanner, CompactString inline-else-view strings, fused index→parse
 pipeline), on an M-series laptop at 8 threads (kernel ÷ CSV.File, kernel's
 string columns being the zero-copy CompactString default):

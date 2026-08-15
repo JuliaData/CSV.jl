@@ -1,4 +1,4 @@
-# Throughput matrix: current CSV.jl vs the kernel, across data shapes and sizes.
+# Throughput matrix: frozen CSV 0.10 vs the new kernel, across data shapes and sizes.
 #
 # NOT a rigorous benchmark suite — a breadth probe to check the architecture's
 # performance is broadly applicable rather than tuned to one shape. Caveats on
@@ -12,10 +12,9 @@
 #     multithreaded chunking fallback warnings).
 #   * Timings are best-of-N wall clock with auto-repetition for tiny inputs.
 #
-# Run:   julia --project=. -t8 bench/bench.jl              # full matrix (needs CSV in project)
-#        julia --project=. -t8 bench/bench.jl 0.01 20      # just these sizes (MiB)
-#        julia --project=kernel -t8 bench/bench.jl         # kernel-only (no CSV.jl column)
-#        julia --project=. -t1 bench/bench.jl 20           # single-thread story
+# Run:   julia --project=test -t8 bench/bench.jl           # full matrix vs LegacyCSV
+#        julia --project=test -t8 bench/bench.jl 0.01 20   # just these sizes (MiB)
+#        julia --project=test -t1 bench/bench.jl 20        # single-thread story
 
 using CSV; const CSVKernel = CSV.CSVKernel
 using .CSVKernel
@@ -23,8 +22,8 @@ using Dates, Random
 const K = CSVKernel
 
 const CSVMOD = try
-    @eval import CSV
-    @eval CSV
+    @eval import LegacyCSV
+    @eval LegacyCSV
 catch
     nothing
 end

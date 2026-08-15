@@ -1,5 +1,5 @@
-include(joinpath(@__DIR__, "values.jl"))
-using .KernelValues; const V = KernelValues
+using CSV
+const V = CSV.CSVKernel.KernelValues
 using Random
 function corpus(; normalonly=false)
     rng = MersenneTwister(7)
