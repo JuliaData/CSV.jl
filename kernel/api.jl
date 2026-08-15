@@ -148,7 +148,28 @@ _maybegunzip(buf::Vector{UInt8}) = _isgzip(buf) ? transcode(GzipDecompressor, bu
 resolvesource(buf::Vector{UInt8}; buffer_in_memory::Bool=false) = _maybegunzip(buf)
 resolvesource(io::IO; buffer_in_memory::Bool=false) = _maybegunzip(Base.read(io))
 resolvesource(cmd::Base.AbstractCmd; buffer_in_memory::Bool=false) = _maybegunzip(Base.read(cmd))
-function resolvesource(s::AbstractString; buffer_in_memory::Bool=false)
+const PREFETCH_PAGE = 16384
+
+function _prefetchrange(m::Vector{UInt8}, lo::Int, hi::Int)
+    acc = UInt8(0)
+    @inbounds for i in lo:PREFETCH_PAGE:hi
+        acc ⊻= m[i]
+    end
+    return acc
+end
+
+function _prefetch!(m::Vector{UInt8})
+    n = length(m)
+    parts = min(4, Threads.nthreads())
+    for p in 1:parts
+        lo = 1 + (p - 1) * n ÷ parts
+        hi = p * n ÷ parts
+        Threads.@spawn _prefetchrange(m, lo, hi)
+    end
+    return
+end
+
+function resolvesource(s::AbstractString; buffer_in_memory::Bool=false, prefetch::Bool=true)
     isfile(s) || throw(ArgumentError("no file at $(repr(String(s))) — a String " *
                                      "source is a file path; wrap literal data in IOBuffer"))
     return open(s, "r") do io
@@ -167,6 +188,14 @@ function resolvesource(s::AbstractString; buffer_in_memory::Bool=false)
         # async readahead: faulting overlaps the parallel parse (measured 22% on a
         # warm 200 MiB file; larger when cold). madvise is a Unix API.
         @static Sys.isunix() && Mmap.madvise!(m, Mmap.MADV_WILLNEED)
+        # cold-file IO/parse overlap: WILLNEED alone loses to demand faults on a
+        # cold file (the serial quote-parity pre-scan walks the whole buffer
+        # before the parallel chunk wave). Detached toucher tasks stride one
+        # byte per page across disjoint regions, converting demand faults into
+        # queued readahead that runs AHEAD of the parity scan. Warm files are
+        # unaffected (touching resident pages is nanoseconds); the closures
+        # keep the mapping alive for the toucher lifetime.
+        prefetch && Threads.nthreads() > 1 && _prefetch!(m)
         return m
     end
 end
