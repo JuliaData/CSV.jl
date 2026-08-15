@@ -844,27 +844,50 @@ end
 
 @testset "InlineStrings extension" begin
     csv = "s,t,n\n" * join(("a$(i),$(i % 3 == 0 ? "" : "longer value number $(i)"),$(i)" for i in 1:300), '\n') * "\n"
-    f = A.File(IOBuffer(csv); stringtype=InlineString)
-    @test eltype(Tables.getcolumn(f, :s)) == String7           # auto width per column
-    @test eltype(Tables.getcolumn(f, :t)) == Union{Missing, String31}
-    @test String(Tables.getcolumn(f, :t)[1]) == "longer value number 1"
-    @test Tables.getcolumn(f, :t)[3] === missing
+    auto = A.File(IOBuffer(csv); stringtype=InlineString)
+    @test eltype(Tables.getcolumn(auto, :s)) == String7           # auto width per column
+    @test eltype(Tables.getcolumn(auto, :t)) == Union{Missing, String31}
+    @test String(Tables.getcolumn(auto, :t)[1]) == "longer value number 1"
+    @test Tables.getcolumn(auto, :t)[3] === missing
     f = A.File(IOBuffer(csv); stringtype=String31)
     @test eltype(Tables.getcolumn(f, :s)) == String31           # pinned width
     @test_throws ArgumentError A.File(IOBuffer(csv); stringtype=String7)   # too narrow
+    widths = (String1, String3, String7, String15, String31, String63, String127, String255)
+    for T in widths
+        n = sizeof(T) - 1
+        value = "x"^n
+        @test String(only(A.File(IOBuffer("s\n$value\n"); stringtype=T, pool=false).s)) == value
+        @test_throws ArgumentError A.File(IOBuffer("s\n" * "x"^(n + 1) * "\n");
+                                          stringtype=T, pool=false)
+    end
+    @test_throws ArgumentError A.File(IOBuffer("s\n" * "x"^256 * "\n");
+                                      stringtype=InlineString, pool=false)
+    empty = A.File(IOBuffer("s\n"); types=String, stringtype=InlineString, pool=false)
+    @test isempty(empty.s) && eltype(empty.s) == String1
+    allmissing = A.File(IOBuffer("id,s\n1,\n2,\n"); types=Dict(:s => String),
+                        stringtype=InlineString, pool=false)
+    @test eltype(allmissing.s) == Union{Missing, String1}
+    @test all(ismissing, allmissing.s)
     # pooled levels take the inline type; missing joins the pool
     f = A.File(IOBuffer(csv); stringtype=InlineString, pool=Dict(:s => false, :t => (1.0, 5000)))
-    @test Tables.getcolumn(f, :t) isa PooledArrays.PooledArray
-    @test eltype(Tables.getcolumn(f, :t)) == Union{Missing, String31}
+    pooled = Tables.getcolumn(f, :t)
+    @test pooled isa PooledArrays.PooledArray
+    @test eltype(pooled) == Union{Missing, String31}
+    @test all(getfield(pooled, :invpool)[getfield(pooled, :pool)[i]] == UInt32(i)
+              for i in eachindex(getfield(pooled, :pool)))
     # escaped (extra-backed) values and unicode
-    f = A.File(IOBuffer("a\n\"q\"\"x\"\nαβγδεζηθ\n"); stringtype=InlineString)
-    @test collect(String.(Tables.getcolumn(f, :a))) == ["q\"x", "αβγδεζηθ"]
-    @test eltype(Tables.getcolumn(f, :a)) == String31   # αβγδεζηθ is 16 UTF-8 bytes
+    escaped = A.File(IOBuffer("a\n\"q\"\"x\"\n\"a long \"\"escaped\"\" value\"\nαβγδεζηθ\n");
+                     stringtype=InlineString)
+    @test collect(String.(Tables.getcolumn(escaped, :a))) ==
+          ["q\"x", "a long \"escaped\" value", "αβγδεζηθ"]
+    @test eltype(Tables.getcolumn(escaped, :a)) == String31
     # oracle: values agree with 0.10's InlineString default
     o = LegacyCSV.File(IOBuffer(csv))
-    @test isequal(String.(coalesce.(Tables.getcolumn(f, :a), "")), String.(coalesce.(Tables.getcolumn(f, :a), "")))
-    @test isequal(collect(Tables.getcolumn(A.File(IOBuffer(csv); stringtype=InlineString), :s)),
-                  collect(Tables.getcolumn(o, :s)))
+    for nm in (:s, :t)
+        ours = Any[x === missing ? missing : String(x) for x in Tables.getcolumn(auto, nm)]
+        theirs = Any[x === missing ? missing : String(x) for x in Tables.getcolumn(o, nm)]
+        @test isequal(ours, theirs)
+    end
 end
 
 @testset "RowWriter" begin
@@ -920,6 +943,26 @@ end
     @test first(A.Rows(IOBuffer(csv); stringtype=String15))[:a] isa String15
     @test Tables.schema(A.Rows(IOBuffer(csv); stringtype=String)).types[1] == Union{String, Missing}
     @test_throws ArgumentError A.Rows(IOBuffer(csv); stringtype=Int)
+    # Auto-width is per column for File and per accessed cell for Rows.
+    asymmetry = "s\na\nabcdef\n"
+    @test eltype(A.File(IOBuffer(asymmetry); stringtype=InlineString, pool=false).s) == String7
+    rowvalues = [row.s for row in A.Rows(IOBuffer(asymmetry); stringtype=InlineString)]
+    @test rowvalues[1] isa String1 && rowvalues[2] isa String7
+    @test_throws ArgumentError first(A.Rows(IOBuffer("s\nab\n"); stringtype=String1)).s
+    # Plain views retain the input buffer. Long escaped cells own the unescaped buffer.
+    plainrow = first(A.Rows(IOBuffer("s\nabcdefghijklmnop\n")))
+    plainbuf = getfield(getfield(getfield(plainrow, :view), :r), :buf)
+    plainvalue = plainrow.s
+    @test getfield(plainvalue, :data) === plainbuf
+    escapedrow = first(A.Rows(IOBuffer("s\n\"abcdefghij\"\"klmnop\"\n")))
+    inputbuf = getfield(getfield(getfield(escapedrow, :view), :r), :buf)
+    escapedvalue = escapedrow.s
+    @test String(escapedvalue) == "abcdefghij\"klmnop"
+    @test getfield(escapedvalue, :data) !== inputbuf
+    owned = WeakRef(getfield(escapedvalue, :data))
+    GC.gc(true)
+    @test owned.value !== nothing && String(escapedvalue) == "abcdefghij\"klmnop"
+    @test first(A.Rows(IOBuffer("s\nabcdefghijklmnop\n"); types=String)).s isa String
 end
 
 @testset "Chunks: schema stable across batches (0.10 port)" begin
@@ -935,6 +978,23 @@ end
     @test length(cs) >= 2
     types = unique(eltype(Tables.getcolumn(c, :x)) for c in cs)
     @test length(types) == 1 && Base.nonmissingtype(types[1]) <: AbstractString
+    # Pooling must preserve the whole-file missing-capable schema in batches
+    # that do not themselves contain a missing value.
+    pooledinput = "id,s\n" *
+                  join(("$(i)," * (i == 60 ? "" : "x") for i in 1:120), '\n') * "\n"
+    pooledchunks = collect(A.Chunks(IOBuffer(pooledinput); chunkbytes=64, pool=true))
+    @test length(pooledchunks) > 1
+    @test all(Tables.getcolumn(c, :s) isa PooledArrays.PooledArray for c in pooledchunks)
+    @test all(eltype(Tables.getcolumn(c, :s)) == Union{Missing, String} for c in pooledchunks)
+    @test any(any(ismissing, Tables.getcolumn(c, :s)) for c in pooledchunks)
+    @test any(!any(ismissing, Tables.getcolumn(c, :s)) for c in pooledchunks)
+    # Ratio and cap apply to each batch's own rows and levels.
+    twolvl = "s\n" * join((isodd(i) ? "x" : "y" for i in 1:20), '\n') * "\n"
+    threelvl = "s\n" * join((string(Char(Int('x') + (i % 3))) for i in 1:21), '\n') * "\n"
+    @test first(A.Chunks(IOBuffer(twolvl); chunkbytes=1 << 20,
+                         pool=(1.0, 2)))[:s] isa PooledArrays.PooledArray
+    @test !(first(A.Chunks(IOBuffer(threelvl); chunkbytes=1 << 20,
+                           pool=(1.0, 2)))[:s] isa PooledArrays.PooledArray)
     # oracle: same row counts and values as 0.10 on the corpus file
     gzpath = corpusfile("randoms.csv.gz")
     ours = collect(A.Chunks(gzpath; ntasks=2))

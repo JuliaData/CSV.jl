@@ -1377,9 +1377,12 @@ function _poolbatch(t::K.ParsedTable, ps::Tuple{Float64, Int})
         # a PooledColumn over the batch's own payload buffers
         lv = K.CompactStringVector{K.CompactString}(
             K.CompactStringPayload[l.p for l in levels], c.buf, c.extra)
-        anymissing = Missing <: eltype(c) && any(==(0), refs)
-        cols[j] = anymissing ? K.PooledColumn{Union{K.CompactString, Missing}}(refs, lv) :
-                               K.PooledColumn{K.CompactString}(refs, lv)
+        # `c` already carries the whole-file missingness prepass. Preserve it
+        # even when this batch has no missing refs, so pooling cannot make the
+        # stable Chunks schema vary from batch to batch.
+        allowmissing = Missing <: eltype(c)
+        cols[j] = allowmissing ? K.PooledColumn{Union{K.CompactString, Missing}}(refs, lv) :
+                                 K.PooledColumn{K.CompactString}(refs, lv)
     end
     return K.ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
 end
