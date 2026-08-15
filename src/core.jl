@@ -2968,7 +2968,7 @@ Keywords: `delim`, `quotechar`, `openquotechar`/`closequotechar`, `escapechar`,
 `sentinels` (spellings that parse as missing), `stripwhitespace`, `groupmark`,
 `pool`, `chunkbytes`, `parallel`, `fastindex`, `scanner`
 (:auto | :vec | :swar | :scalar), `maxproblems`,
-`on_error` (:collect | :error), `nsample`.
+`on_error` (:collect | :error), `validate`, `nsample`.
 """
 function parse(buf::Vector{UInt8};
                header::Union{Bool, AbstractVector}=true,

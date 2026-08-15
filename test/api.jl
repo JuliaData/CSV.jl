@@ -124,6 +124,15 @@ end
     @test spec.delim == ';' && spec.types == [Float64, Int64]
     spec = A.sniff(IOBuffer("a;b\n\"x\ny\";1\nz;2\n"); samplebytes=12)
     @test spec.delim == ';'
+    # The initial bound grows only when it has no complete row. A normal
+    # bounded sample is unchanged; a single unterminated row returns whole.
+    normal = Vector{UInt8}("a,b\n1,2\n")
+    @test A._sample(normal, 6) == normal[1:4]
+    @test A._sample(normal, 1) == normal[1:4]
+    single = Vector{UInt8}("a;b;c")
+    @test A._sample(single, 1) == single
+    bom = vcat(UInt8[0xef, 0xbb, 0xbf], Vector{UInt8}("a;b\n1;2\n"))
+    @test A.sniff(bom; samplebytes=1).delim == ';'
     @test A.sniff(IOBuffer("n\n1\n2\n")).header === true   # single col, text over ints
     @test A.sniff(IOBuffer("1,2\n3,4\n")).header === false # numbers all the way down
     @test A.sniff(IOBuffer("Created Date\n")).delim == ','  # one header row: space is not evidence
@@ -792,6 +801,25 @@ end # @testset CSVApi
             @test isequal(av, ov)
         end
     end
+    # limit scopes inference as well as output. Values after the retained
+    # prefix cannot promote an Int column to Float64 or String.
+    limited = A.File(IOBuffer("a,1,x\n"); transpose=true, limit=1)
+    @test limited.a == [1] && eltype(limited.a) == Int64
+    limited = A.File(IOBuffer("a,1,2.5\n"); transpose=true, limit=1, downcast=true)
+    @test limited.a == Int8[1] && eltype(limited.a) == Int8
+    zero = A.File(IOBuffer("a,1,2.5\nb,3,4\n"); transpose=true, limit=0)
+    @test length(zero) == 0 && all(eltype(Tables.getcolumn(zero, nm)) == Missing
+                                  for nm in Tables.columnnames(zero))
+    numbered = A.File(IOBuffer("skip,a,1,2,x\nskip,b,3,4,5\n");
+                        transpose=true, header=2, skipto=3, limit=2)
+    @test numbered.a == [1, 2] && numbered.b == [3, 4]
+    explicit = A.File(IOBuffer("1,2,x\n3,4,5\n");
+                        transpose=true, header=[:a, :b], limit=2)
+    @test explicit.a == [1, 2] && explicit.b == [3, 4]
+    ragged = A.File(IOBuffer("a,1,2,3\nb,4\n"); transpose=true, limit=2)
+    @test ragged.a == [1, 2] && isequal(ragged.b, [4, missing])
+    @test A.File(IOBuffer("a,1,2\n"); transpose=true, limit=99).a == [1, 2]
+    @test_throws ArgumentError A.File(IOBuffer("a,1\n"); transpose=true, limit=-1)
 
     # legacy kwargs error with migration text
     for (kwname, kwval) in ((:silencewarnings, true), (:debug, true), (:lazystrings, true),
@@ -820,9 +848,23 @@ end # @testset CSVApi
                         validate=false)
     @test length(novalidate) == 1 && novalidate.a == [1]
     @test_throws ArgumentError A.File(IOBuffer("a,b,c\n1,2,3\n"); types=Dict(r"_x$" => Int8))
+    @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); types=Dict(r"z" => Int), limit=0)
+    @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); dateformat=Dict(r"z" => "yyyy"))
+    @test_throws ArgumentError A.File(IOBuffer("a\nx\n"); pool=Dict(r"z" => true))
     @test_throws ArgumentError A.Rows(IOBuffer("a\n1\n"); types=Dict(:zz => Int))
     @test first(A.Rows(IOBuffer("a\n1\n"); types=Dict(:zz => Int), validate=false)).a isa AbstractString
     @test first(A.Chunks(IOBuffer("a\n1\n"); types=Dict(:zz => Int), validate=false, chunkbytes=1 << 20))[:a] == [1]
+    @test_throws ArgumentError A.Rows(IOBuffer("a\n1\n"); dateformat=Dict(r"z" => "yyyy"))
+    @test_throws ArgumentError A.Chunks(IOBuffer("a\n1\n"); types=Dict(r"z" => Int))
+    @test_throws ArgumentError A.File(IOBuffer("a,1\n"); transpose=true,
+                                      types=Dict(r"z" => Int))
+    @test_throws ArgumentError K.parse(Vector{UInt8}("a\n1\n"); types=Dict(r"z" => Int))
+    @test length(A.File(IOBuffer("a,1\n"); transpose=true,
+                        types=Dict(:z => Int, 2 => Int, r"q" => Int), validate=false)) == 1
+    @test K.parse(Vector{UInt8}("a\n1\n");
+                  types=Dict(:z => Int, 2 => Int, r"q" => Int), validate=false).nrows == 1
+    @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); select=[:z], validate=false)
+    @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); drop=[:z], validate=false)
 end
 
 @testset "CompactString hash + stringtype extension hook" begin
@@ -1012,6 +1054,12 @@ end
     # element types promote across sources
     f = A.File(map(IOBuffer, ["a\n1\n", "a\n2.5\n"]))
     @test eltype(Tables.getcolumn(f, :a)) == Float64 && f.a == [1.0, 2.5]
+    mixedinputs = [Vector{UInt8}("a\n1\n"), Vector{UInt8}("a\nlong-value\n")]
+    f = A.File(mixedinputs; pool=false)
+    @test eltype(f.a) == Any && isequal(f.a, Any[1, "long-value"])
+    @test f.a[2] isa String
+    fill!(mixedinputs[2], UInt8('z'))
+    @test f.a[2] == "long-value"
     # a source missing a column missing-fills it; its extra columns are ignored
     shifted = ["a,b,c\n1,2,3\n4,5,6\n", "a2,b,c\n7,8,9\n10,11,12\n", "a,b,c\n13,14,15\n16,17,18"]
     f = A.File(map(IOBuffer, shifted))
@@ -1021,6 +1069,16 @@ end
     f = A.File(map(IOBuffer, ["a,b\nx,1\n", "a,b\n,2\n"]))
     @test eltype(Tables.getcolumn(f, :a)) == Union{Missing, String}
     @test isequal(collect(Tables.getcolumn(f, :a)), ["x", missing])
+    pooled = A.File(map(IOBuffer, ["a\nx\nx\n", "a\ny\ny\n"]); pool=true)
+    @test pooled.a isa PooledArrays.PooledArray
+    @test eltype(pooled.a) == String && collect(pooled.a) == ["x", "x", "y", "y"]
+    # The concatenated strings own their bytes, including pooled levels.
+    ownedinputs = [Vector{UInt8}("a\nlong-value-one\n"),
+                   Vector{UInt8}("a\nlong-value-two\n")]
+    owned = A.File(ownedinputs; pool=true)
+    fill!(ownedinputs[1], UInt8('z'))
+    fill!(ownedinputs[2], UInt8('z'))
+    @test collect(owned.a) == ["long-value-one", "long-value-two"]
     # source= appends a pooled provenance column; labels are deterministic
     f = A.File(map(IOBuffer, data); source=:origin)
     col = Tables.getcolumn(f, :origin)
@@ -1029,6 +1087,10 @@ end
                            "<source 3>", "<source 3>"]
     f = A.File(map(IOBuffer, data); source="origin" => [10, 20, 30])
     @test collect(Tables.getcolumn(f, :origin)) == [10, 10, 20, 20, 30, 30]
+    labels = Union{Missing, Int}[1, missing, 3]
+    f = A.File(map(IOBuffer, data); source=:origin => labels)
+    @test eltype(f.origin) == Union{Missing, Int}
+    @test isequal(collect(f.origin), [1, 1, missing, missing, 3, 3])
     # path sources label with the path; single-element vectors keep the column
     mktempdir() do tmp
         p1, p2 = joinpath(tmp, "x.csv"), joinpath(tmp, "y.csv")
@@ -1041,21 +1103,51 @@ end
     # per-file problems merge with row offsets
     f = A.File(map(IOBuffer, ["a,b\n1,2\n", "a,b\n3,4,5\n"]))
     @test length(A.problems(f)) == 1 && A.problems(f)[1].row == 2
+    f = A.File(map(IOBuffer, ["a\n1\n", "a\n\"x\n"]); pool=false)
+    @test any(p -> p.kind == :invalid_quoted_field && p.row == 2, A.problems(f))
+    @test any(p -> p.kind == :unclosed_quote && p.row == 0, A.problems(f))
     # kwargs apply per source
     f = A.File(map(IOBuffer, data); select=["a"], types=Dict(:a => Float64))
     @test Tables.columnnames(Tables.columns(f)) == [:a] && f.a == [1.0, 4.0, 7.0, 10.0, 13.0, 16.0]
+    @test A.File(map(IOBuffer, data); limit=1).a == [1, 7, 13]
+    readback = CSV.read(map(IOBuffer, data), Tables.columntable; limit=1)
+    @test readback.a == [1, 7, 13]
     # byte buffers still route to the single-source door
     @test A.File(Vector{UInt8}("a\n1\n")).a == [1]
     @test A.File(codeunits("a\n1\n")).a == [1]
+    bytes = Vector{UInt8}("xa\n1\ny")
+    byteview = @view bytes[2:end-1]
+    @test A.File(byteview).a == [1]
     # errors: empty vector, label-length mismatch, name collision, bad source form
     @test_throws ArgumentError A.File(IOBuffer[])
     @test_throws ArgumentError A.File(map(IOBuffer, data); source="s" => [1, 2])
     @test_throws ArgumentError A.File(map(IOBuffer, data); source=:a)
     @test_throws ArgumentError A.File(map(IOBuffer, data); source=1)
+    @test_throws ArgumentError A.File(map(IOBuffer, data); source=:s => (1, 2, 3))
+    @test_throws ArgumentError A.File(map(IOBuffer, data); source=1 => [1, 2, 3])
     @test_throws ArgumentError A.File(Vector{UInt8}("a\n1\n"); source=:src)
+    @test_throws ArgumentError A.File(codeunits("a\n1\n"); source=:src)
+    @test_throws ArgumentError A.File(byteview; source=:src)
     # all-missing everywhere stays Missing eltype
     f = A.File(map(IOBuffer, ["a,b\n1,\n", "a,b\n2,\n"]))
     @test eltype(Tables.getcolumn(f, :b)) == Missing
+    # Empty and Missing-eltype pieces preserve their schema contribution. The
+    # copy into the promoted Union final converts values and fills absent blocks.
+    f = A.File(map(IOBuffer, ["a\n", "a\n1\n"]); pool=false)
+    @test eltype(f.a) == Union{Missing, Int64} && f.a == [1]
+    f = A.File(map(IOBuffer, ["a\n1\n\n", "a\n2.5\n"]);
+               pool=false, ignoreemptyrows=false)
+    @test eltype(f.a) == Union{Missing, Float64}
+    @test isequal(f.a, [1.0, missing, 2.5])
+    # A distinct empty Union{} piece is not the absent-column sentinel. Guard
+    # the vacuous `Union{} <: AbstractString` relation in both chain passes.
+    unionempty = Union{}[]
+    chained = A._chaincolumn(AbstractVector[unionempty, Int64[1]], [0, 1], 1)
+    @test chained == [1] && eltype(chained) == Int64
+    f = A.File(map(IOBuffer, ["a,b\n1,2\n", "a\n3\n"]); pool=false)
+    @test isequal(f.b, [2, missing])
+    f = A.File(map(IOBuffer, ["", "a\n1\n"]); pool=false)
+    @test isempty(Tables.columnnames(f)) && length(f) == 1
 end
 
 @testset "FilePathsBase extension" begin
@@ -1065,10 +1157,32 @@ end
         f = A.File(p)
         @test f.x == [1, 3] && f.y == [2, 4]
         @test first(A.Rows(p)).x isa AbstractString
+        @test first(A.Chunks(p; chunkbytes=1 << 20))[:x] == [1, 3]
+        @test A.sniff(p).names == [:x, :y]
+        @test CSV.read(p, Tables.columntable).x == [1, 3]
         # writer sink + compress=:auto by extension
-        CSV.write(joinpath(FilePathsBase.Path(tmp), "out.csv"), (a=[1, 2],))
+        out = joinpath(FilePathsBase.Path(tmp), "out.csv")
+        CSV.write(out, (a=[1],))
+        CSV.write(out, (a=[2],); append=true)
         @test read(joinpath(tmp, "out.csv"), String) == "a\n1\n2\n"
-        CSV.write(joinpath(FilePathsBase.Path(tmp), "out.csv.gz"), (a=[1, 2],))
-        @test A.File(joinpath(tmp, "out.csv.gz")).a == [1, 2]
+        gz = joinpath(FilePathsBase.Path(tmp), "out.csv.gz")
+        CSV.write(gz, (a=[1],))
+        CSV.write(gz, (a=[2],); append=true)
+        @test A.File(gz).a == [1, 2]
+        @test first(A.Rows(gz)).a == "1"
+        @test first(A.Chunks(gz; chunkbytes=1 << 20))[:a] == [1, 2]
+        @test A.sniff(gz).names == [:a]
+        # A large AbstractPath takes the mmap branch and accepts both source
+        # controls through the extension method.
+        big = joinpath(FilePathsBase.Path(tmp), "big.csv")
+        open(string(big), "w") do io
+            write(io, "x,y\n")
+            for i in 1:140_000
+                print(io, i, ',', i + 1, '\n')
+            end
+        end
+        @test filesize(string(big)) >= A.MMAP_THRESHOLD
+        @test A.File(big; prefetch=false, limit=2).x == [1, 2]
+        @test A.File(big; buffer_in_memory=true, limit=2).y == [2, 3]
     end
 end

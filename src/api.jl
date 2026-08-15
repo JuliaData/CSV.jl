@@ -284,7 +284,7 @@ function _sample(buf::Vector{UInt8}, samplebytes::Int; dialectkw...)
         # wider than samplebytes — wide scientific files), grow until one does
         rowstart > datastart && return sample[1:rowstart - 1]
         limit >= length(buf) && return buf
-        limit *= 8
+        limit = limit > typemax(Int) ÷ 8 ? length(buf) : min(8 * limit, length(buf))
     end
 end
 
@@ -928,10 +928,12 @@ end
 function _chaincolumn(pieces::Vector{AbstractVector}, counts::Vector{Int}, total::Int)
     T = Union{}
     anymissing = false
+    pooled = false
     for (c, n) in zip(pieces, counts)
         if c === EMPTY_COLUMN
             n > 0 && (anymissing = true)
         else
+            pooled |= c isa PooledArray
             et = eltype(c)
             anymissing |= Missing <: et
             S = Base.nonmissingtype(et)   # Union{} for an all-missing column
@@ -945,16 +947,19 @@ function _chaincolumn(pieces::Vector{AbstractVector}, counts::Vector{Int}, total
     for (c, n) in zip(pieces, counts)
         if c === EMPTY_COLUMN
             fill!(view(out, off+1:off+n), missing)
-        elseif T === String
-            @inbounds for (k, x) in enumerate(c)
-                out[off+k] = x === missing ? missing : String(x)
-            end
         else
-            copyto!(out, off + 1, c, 1, n)
+            S = Base.nonmissingtype(eltype(c))
+            if S !== Union{} && S <: AbstractString
+                @inbounds for (k, x) in enumerate(c)
+                    out[off+k] = x === missing ? missing : String(x)
+                end
+            else
+                copyto!(out, off + 1, c, 1, n)
+            end
         end
         off += n
     end
-    return out
+    return pooled ? PooledArray(out) : out
 end
 
 function _mergeproblems(t::K.ParsedTable, headerlog::Union{Nothing, K.ProblemLog}, cap::Int)
@@ -990,9 +995,9 @@ end
 # ---------------------------------------------------------------------------
 # transpose=true — the compatibility path. Rows are columns: input row j is
 # output column j; with header=true the first field of each row is that
-# column's name. Types are inferred EXACTLY (every cell participates — these
-# files are small by construction), or taken from `types`. Single-threaded,
-# strings materialize as String. select/drop/limit are not supported here.
+# column's name. Types are inferred EXACTLY (every retained cell participates —
+# these files are small by construction), or taken from `types`. Single-threaded,
+# strings materialize as String. select/drop are not supported here.
 # ---------------------------------------------------------------------------
 function _cellstring(buf::Vector{UInt8}, ci, lr::Int, f::Int, opts)
     sp = K.fieldspan(ci, lr, f)
@@ -1013,7 +1018,7 @@ function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
     T = T0
     if T === nothing
         T = Missing
-        for f in startf:nf
+        for f in startf:min(nf, startf + n - 1)
             sp = K.fieldspan(ci, lr, f)
             sp === nothing && continue
             T = K.promote_kernel(T, K.detecttype(buf, sp[1], sp[2], opts))
@@ -1098,6 +1103,7 @@ function _transposedfile(source; types=nothing, downcast::Bool=false,
     hasnames = namefield > 0
     startf = skipto === nothing ? namefield + 1 : Int(skipto)
     startf >= 1 || throw(ArgumentError("skipto must be ≥ 1 (got $skipto)"))
+    limit === nothing || limit >= 0 || throw(ArgumentError("limit must be ≥ 0 (got $limit)"))
     hasnames && startf <= namefield &&
         throw(ArgumentError("skipto=$skipto must be past the header field $namefield"))
     buf = resolvesource(source; buffer_in_memory, prefetch)
