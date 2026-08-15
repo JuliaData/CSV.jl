@@ -80,9 +80,9 @@ spam, nothing lost to a terminal scrollback.
 - isbits columns: `Vector{T}` + `Vector{Bool}` presence — no sentinel
   arithmetic (retires the SentinelArrays dependency for this purpose); columns
   with no missings hand back the raw `Vector{T}` zero-copy.
-- string columns: 16-byte `KStr` payloads hold up to 12 bytes inline and view
+- string columns: 16-byte `CompactString` payloads hold up to 12 bytes inline and view
   longer content in the retained input buffer. Long escaped values are
-  unescaped once into a column-owned extra buffer. `getindex` returns a `KStr`
+  unescaped once into a column-owned extra buffer. `getindex` returns a `CompactString`
   without allocating; `materialize(col)` copies to plain `String`s. Length is
   `Int32`, deliberately not Parsers' `PosLen` (whose 20-bit length cap is the
   root of CSV.jl #935).
@@ -95,9 +95,9 @@ spam, nothing lost to a terminal scrollback.
 `bench.jl` runs a shape × size matrix (numeric, mixed, string-heavy,
 quoted-with-embedded-newlines, 200-column wide, 2-column long, missing-heavy ×
 10 KiB → 200 MiB) against the installed CSV.jl. With the three deep pieces in
-(width-generic 64-byte vector scanner, KStr inline-else-view strings, fused index→parse
+(width-generic 64-byte vector scanner, CompactString inline-else-view strings, fused index→parse
 pipeline), on an M-series laptop at 8 threads (kernel ÷ CSV.File, kernel's
-string columns being the zero-copy KStr default):
+string columns being the zero-copy CompactString default):
 
 - **10 KiB: kernel wins every shape, ~1.7–2.3×** (51–112 µs vs 100–255 µs).
 - **20–200 MiB: wins or ties 5–6 of 7 shapes** — numeric 1.25–1.31×, sparse
@@ -108,7 +108,7 @@ string columns being the zero-copy KStr default):
 - **Single-threaded (20 MiB): wins 6 of 7 (1.03–1.58×)** — not a threading
   artifact.
 - `kernel+str` (detaching to `Vector{String}`) is allocation-bound by
-  definition; the KStr columns are the intended interface (zero-alloc access,
+  definition; the CompactString columns are the intended interface (zero-alloc access,
   2× faster length/iteration than InlineString columns, direct ==(·,String)).
 
 The fused driver indexes each chunk and parses all its columns while the bytes
