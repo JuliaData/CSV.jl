@@ -2,9 +2,11 @@
 
 *Measured 2026-08-15 on the 22-shape corpus (20 MiB shapes, 8 threads, M3 Max),
 interleaved best-of-N per cell. Script: `scratchpad/strcmp.jl`; raw:
-`strcmp2.tsv`. After the CompactString `cmp`/`isless` memcmp fix (before it,
-CompactString sort was 15–45× slower — that gap was a missing method, not a
-property of the type).*
+`strcmp2.tsv`. This table is after the general CompactString `cmp`/`isless`
+memcmp fix but before the inline×inline payload-word fast path. Before the
+general fix, CompactString sort was 15–45× slower — that gap was a missing
+method, not a property of the type. Targeted post-fast-path results follow in
+item 2.*
 
 ## What was measured
 
@@ -67,22 +69,25 @@ column, and a `Dict` count (groupby).
    footprint is the smallest of the three on short-string shapes; String's
    is smallest on long-text shapes.
 
-4. **String is never the best choice on any axis except long text**, where
-   its per-object layout beats both (17 ms sort, 22 MiB). It is the
-   ecosystem-safest type and the slowest to produce.
+4. **String is not the best parse default, but it still wins individual
+   downstream cells.** Its per-object layout is strongest on long text
+   (17 ms sort, 22 MiB), and the mixed shape gives it the smallest retained
+   memory plus the fastest hash and Dict-groupby. It is the ecosystem-safest
+   type and the slowest to produce.
 
 ## Decision (2026-08-15)
 
 **`CompactString` IS the 1.0 default** — ratified by the maintainer; the
 InlineStrings extension ships for users who want the 0.10 types. The default
 optimizes the operation every user pays (parsing) and the read-and-hand-off
-path (DataFrames, Arrow); with the inline-compare fast path landed it also
-beats `String` on every downstream operation measured, so the remaining
-trades are input-buffer residency and the structural sort gap to
-InlineString on short strings. Users whose workload is compare-heavy on
-short strings and who want the smallest footprint get exactly 0.10's
-behavior with `stringtype=InlineString`, and `stringtype=String` remains for
-maximal ecosystem compatibility.
+path (DataFrames, Arrow). The inline-compare fast path reverses the sort gap
+to `String` in the targeted short- and long-string probes above, while the
+corpus table still shows workload-dependent downstream wins for `String`.
+The remaining trades include input-buffer residency, those workload-specific
+gaps, and the structural sort gap to InlineString on short strings. Users
+whose workload is compare-heavy on short strings and who want the smallest
+footprint get exactly 0.10's behavior with `stringtype=InlineString`, and
+`stringtype=String` remains for maximal ecosystem compatibility.
 
 The counter-argument, recorded for the migration guide: defaulting to
 InlineString would preserve 0.10's *types* exactly (no `String3` →
