@@ -53,12 +53,27 @@ function _writeopts(; delim::Union{Char, String}=',', quotechar::Char='"',
                     bom::Bool=false)
     delim isa String && sizeof(delim) != 1 &&
         throw(ArgumentError("write delim must be a single byte (got $(repr(delim)))"))
+    delim isa Char && !isascii(delim) &&
+        throw(ArgumentError("write delim must be a single byte (got $(repr(delim)))"))
     quotestyle in WRITE_QUOTESTYLES ||
         throw(ArgumentError("quotestyle must be one of $(WRITE_QUOTESTYLES) (got $quotestyle)"))
-    oq = something(openquotechar, quotechar) % UInt8
-    cq = something(closequotechar, quotechar) % UInt8
-    e = something(escapechar, Char(cq)) % UInt8
+    oqc = something(openquotechar, quotechar)
+    cqc = something(closequotechar, quotechar)
+    ec = something(escapechar, cqc)
+    for (nm, c) in (("quotechar", quotechar), ("openquotechar", oqc),
+                    ("closequotechar", cqc), ("escapechar", ec),
+                    ("decimal", decimal))
+        isascii(c) || throw(ArgumentError("$nm must be ASCII (got $(repr(c)))"))
+    end
+    oq = oqc % UInt8
+    cq = cqc % UInt8
+    e = ec % UInt8
     d = delim isa Char ? delim % UInt8 : codeunit(delim, 1)
+    d in (UInt8('\r'), UInt8('\n')) &&
+        throw(ArgumentError("write delimiter may not be \\r or \\n"))
+    d == oq && throw(ArgumentError("write delimiter may not equal the open quote character"))
+    any(c -> c in ('\r', '\n'), (oqc, cqc, ec)) &&
+        throw(ArgumentError("write quote/escape characters may not be \\r or \\n"))
     df = dateformat === nothing ? nothing :
          dateformat isa DateFormat ? dateformat : DateFormat(string(dateformat))
     ff = floatformat === nothing ? nothing : Printf.Format(String(floatformat))
@@ -71,18 +86,24 @@ end
 
 _needsquote(o::WriteOpts, b::UInt8) =
     b == o.delim || b == o.oq || b == o.cq || b == UInt8('\n') || b == UInt8('\r')
+_numericsyntax(b::UInt8) = b - UInt8('0') <= 0x09 || b in (UInt8('+'), UInt8('-'))
 
-function _writestring(io::IO, s::AbstractString, o::WriteOpts)
-    bytes = codeunits(s)
+function _writebytes(io::IO, bytes::AbstractVector{UInt8}, o::WriteOpts;
+                     stringcell::Bool)
     if o.quotestyle === :none
+        stringcell && isempty(bytes) &&
+            throw(ArgumentError("quotestyle=:none cannot distinguish an empty string from missing"))
         for b in bytes
             _needsquote(o, b) &&
                 throw(ArgumentError("quotestyle=:none cannot write a value containing " *
-                                    "a structural byte: $(repr(s))"))
+                                    "a structural byte: $(repr(String(bytes)))"))
         end
         return Base.write(io, bytes)
     end
-    quote_it = o.quotestyle === :all
+    # Empty quoted content is the parser's present-empty-string spelling.
+    # Empty unquoted content is missing, matching the kernel's pinned 1.0
+    # convention (and intentionally differing from CSV.write's ambiguity).
+    quote_it = stringcell && (o.quotestyle === :all || isempty(bytes))
     if !quote_it
         for b in bytes
             if _needsquote(o, b)
@@ -91,7 +112,7 @@ function _writestring(io::IO, s::AbstractString, o::WriteOpts)
             end
         end
         # leading/trailing whitespace survives a round-trip only when quoted
-        if !quote_it && !isempty(bytes)
+        if stringcell && !quote_it && !isempty(bytes)
             (bytes[1] == UInt8(' ') || bytes[end] == UInt8(' ')) && (quote_it = true)
         end
     end
@@ -104,26 +125,39 @@ function _writestring(io::IO, s::AbstractString, o::WriteOpts)
     return n + Base.write(io, o.cq)
 end
 
+_writestring(io::IO, s::AbstractString, o::WriteOpts; stringcell::Bool=true) =
+    _writebytes(io, codeunits(s), o; stringcell)
+
+_writescalar(io::IO, s::AbstractString, o::WriteOpts) =
+    _writestring(io, s, o; stringcell=false)
+_writescalar(io::IO, x, o::WriteOpts) = _writescalar(io, string(x), o)
+
 function _writecell(io::IO, x, o::WriteOpts)
     if x === missing
-        Base.write(io, o.missingstring)
+        _writebytes(io, o.missingstring, o; stringcell=false)
     elseif x isa AbstractString
         _writestring(io, x, o)
     elseif x isa AbstractFloat
         if o.floatfmt !== nothing
-            Printf.format(io, o.floatfmt, x)
-        elseif o.decimal != UInt8('.')
-            _writestring(io, replace(string(x), '.' => Char(o.decimal)), o)
+            s = Printf.format(o.floatfmt, x)
+            o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
+            _writescalar(io, s, o)
         else
-            print(io, x)
+            s = string(x)
+            o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
+            _writescalar(io, s, o)
         end
     elseif x isa Dates.TimeType
-        o.dateformat === nothing ? print(io, x) :
-            _writestring(io, Dates.format(x, o.dateformat), o)
+        _writescalar(io, o.dateformat === nothing ? string(x) : Dates.format(x, o.dateformat), o)
     elseif x isa Bool
-        print(io, x)
-    elseif x isa Integer || x isa Number
-        print(io, x)
+        _writescalar(io, x, o)
+    elseif x isa Integer
+        # The ordinary CSV dialect cannot conflict with an integer spelling;
+        # keep that hot path allocation-free. Exotic numeric delimiters or
+        # quote bytes take the checked rendering path.
+        any(_numericsyntax, (o.delim, o.oq, o.cq)) ? _writescalar(io, x, o) : print(io, x)
+    elseif x isa Number
+        _writescalar(io, x, o)
     else
         _writestring(io, string(x), o)
     end
@@ -147,7 +181,6 @@ end
 
 function _renderheader(names, o::WriteOpts)
     io = IOBuffer()
-    o.bom && Base.write(io, 0xef, 0xbb, 0xbf)
     for (j, nm) in enumerate(names)
         _writestring(io, String(nm), o)
         j < length(names) && Base.write(io, o.delim)
@@ -170,6 +203,7 @@ function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool
                partition::Bool=false,
                ntasks::Int=Threads.nthreads(), kw...)
     o = _writeopts(; kw...)
+    ntasks >= 1 || throw(ArgumentError("ntasks must be >= 1 (got $ntasks)"))
     if partition
         parts = Tables.partitions(table)
         sinks = sink isa AbstractVector ? sink :
@@ -184,14 +218,18 @@ function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool
         return sink
     end
     cols0 = Tables.columns(table)
-    names = header !== nothing ? Symbol.(header) :
-            collect(Symbol, Tables.columnnames(cols0))
-    cols = AbstractVector[Tables.getcolumn(cols0, nm) for nm in Tables.columnnames(cols0)]
-    isempty(cols) && length(names) > 0 && (cols = AbstractVector[])
+    source_names = collect(Symbol, Tables.columnnames(cols0))
+    names = header !== nothing ? Symbol.(header) : source_names
+    length(names) == length(source_names) ||
+        throw(ArgumentError("header has $(length(names)) names for $(length(source_names)) columns"))
+    cols = AbstractVector[Tables.getcolumn(cols0, nm) for nm in source_names]
     nrows = isempty(cols) ? 0 : length(cols[1])
+    all(col -> length(col) == nrows, cols) ||
+        throw(ArgumentError("all table columns must have the same length"))
     wantheader = writeheader === nothing ? !append : writeheader
 
     blocks = Vector{Vector{UInt8}}()
+    o.bom && !append && push!(blocks, UInt8[0xef, 0xbb, 0xbf])
     if wantheader && !isempty(names)
         push!(blocks, _renderheader(names, o))
     end
@@ -219,7 +257,15 @@ function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool
     if sink isa AbstractString
         open(io -> Base.write(io, payload), String(sink), append ? "a" : "w")
     else
+        seekable = sink isa IO && hasmethod(seek, Tuple{typeof(sink), Integer}) &&
+                   hasmethod(seekend, Tuple{typeof(sink)})
+        seekable && (append ? seekend(sink) : seekstart(sink))
         Base.write(sink, payload)
+        # `append=false` means replacement for seekable IOs as it does for a
+        # path opened with "w". Remove any stale suffix when the new payload
+        # is shorter than the old contents.
+        !append && seekable && applicable(truncate, sink, position(sink)) &&
+            truncate(sink, position(sink))
     end
     return sink
 end
