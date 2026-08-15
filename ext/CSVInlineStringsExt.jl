@@ -87,6 +87,10 @@ function A._materializecolumn(::Type{T}, col::K.CompactStringVector) where {T <:
     return out
 end
 
+# Rows(stringtype=InlineString): per-cell, smallest fitting width
+A._rowstring(::Type{InlineString}, x::K.CompactString) = _inl(_fitwidth(ncodeunits(x)), x)
+A._rowstring(::Type{T}, x::K.CompactString) where {T <: InlineString} = _inl(T, x)
+
 A._levelvector(::Type{InlineString}, levels::K.CompactStringVector, n::Int) =
     A._levelvector(_widthfor(levels), levels, n)
 A._levelvector(::Type{T}, levels::K.CompactStringVector, n::Int) where {T <: InlineString} =

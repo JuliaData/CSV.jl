@@ -1756,8 +1756,48 @@ function Base.:(==)(x::CompactString, y::Union{String, SubString{String}})
 end
 Base.:(==)(y::Union{String, SubString{String}}, x::CompactString) = x == y
 
-# Ordering comparisons fall back to Base's generic codeunit-wise `cmp`; hash must
-# agree with `String`'s so mixed Dict{String}/CompactString use is sound. Allocating here
+# Ordering: memcmp over the bytes, exactly like String's `cmp` (Base's generic
+# AbstractString fallback iterates chars — measured 15-45x slower on sortperm).
+# Inline payloads compare through a stack scratch of their bytes.
+@inline function _cs_scratch(s::CompactString)
+    w1 = (s.p.a >> 32) | ((s.p.b & 0xffffffff) << 32)
+    w2 = s.p.b >> 32
+    return (htol(w1), htol(w2))
+end
+function Base.cmp(x::CompactString, y::CompactString)
+    nx, ny = ncodeunits(x), ncodeunits(y)
+    n = min(nx, ny)
+    sx = _cs_scratch(x); sy = _cs_scratch(y)
+    rx = Ref(sx); ry = Ref(sy)
+    GC.@preserve x y rx ry begin
+        px = nx <= COMPACTSTRING_INLINE ?
+             Ptr{UInt8}(Base.unsafe_convert(Ptr{Tuple{UInt64, UInt64}}, rx)) :
+             pointer(x.data, abs(csoff(x.p)))
+        py = ny <= COMPACTSTRING_INLINE ?
+             Ptr{UInt8}(Base.unsafe_convert(Ptr{Tuple{UInt64, UInt64}}, ry)) :
+             pointer(y.data, abs(csoff(y.p)))
+        c = ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t), px, py, n)
+    end
+    return c < 0 ? -1 : c > 0 ? 1 : cmp(nx, ny)
+end
+function Base.cmp(x::CompactString, y::Union{String, SubString{String}})
+    nx, ny = ncodeunits(x), ncodeunits(y)
+    n = min(nx, ny)
+    rx = Ref(_cs_scratch(x))
+    GC.@preserve x y rx begin
+        px = nx <= COMPACTSTRING_INLINE ?
+             Ptr{UInt8}(Base.unsafe_convert(Ptr{Tuple{UInt64, UInt64}}, rx)) :
+             pointer(x.data, abs(csoff(x.p)))
+        c = ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t), px, pointer(y), n)
+    end
+    return c < 0 ? -1 : c > 0 ? 1 : cmp(nx, ny)
+end
+Base.cmp(y::Union{String, SubString{String}}, x::CompactString) = -cmp(x, y)
+Base.isless(x::CompactString, y::CompactString) = cmp(x, y) < 0
+Base.isless(x::CompactString, y::Union{String, SubString{String}}) = cmp(x, y) < 0
+Base.isless(y::Union{String, SubString{String}}, x::CompactString) = cmp(y, x) < 0
+
+# hash must agree with `String`'s so mixed Dict{String}/CompactString use is sound.
 # is the correctness-first choice — the production version shares InlineStrings'
 # memhash approach (which is exactly the private-API exposure CSV.jl #1164 is
 # about, so the kernel does not copy it).

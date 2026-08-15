@@ -188,6 +188,65 @@ function _renderheader(names, o::WriteOpts)
     return take!(io)
 end
 
+# --- RowWriter: the row-string iterator ---------------------------------------
+
+"""
+    KernelWrite.RowWriter(table; writeheader=true, header=nothing, kw...)
+
+Iterate `table` as CSV-formatted `String`s: the header line first (unless
+`writeheader=false`), then one line per row, each rendered by exactly the
+code path `write` uses — so `join(RowWriter(t))` is byte-identical to
+`write(io, t)`. `kw` is the writer's dialect surface (delim, quotestyle,
+floatformat, dateformat, ...). Streams: rows render on demand from a
+row-access view of the table (`Tables.rows`), no whole-table buffer.
+"""
+struct RowWriter{R}
+    rows::R
+    names::Vector{Symbol}
+    o::WriteOpts
+    writeheader::Bool
+    newline::String
+end
+
+function RowWriter(table; writeheader::Bool=true, header::Union{Nothing, Vector}=nothing,
+                   kw...)
+    o = _writeopts(; kw...)
+    rows = Tables.rows(table)
+    sch = Tables.schema(rows)
+    names = header !== nothing ? Symbol.(header) :
+            sch === nothing ? collect(Symbol, Tables.columnnames(first(rows))) :
+            collect(Symbol, sch.names)
+    header !== nothing && sch !== nothing && length(names) != length(sch.names) &&
+        throw(ArgumentError("header has $(length(names)) names for $(length(sch.names)) columns"))
+    return RowWriter(rows, names, o, writeheader, String(copy(o.newline)))
+end
+
+Base.IteratorSize(::Type{<:RowWriter}) = Base.SizeUnknown()
+Base.eltype(::Type{<:RowWriter}) = String
+
+function _renderrow(row, names, o::WriteOpts)
+    io = IOBuffer()
+    ncols = length(names)
+    for (j, nm) in enumerate(names)
+        _writecell(io, Tables.getcolumn(row, j), o)
+        j < ncols && Base.write(io, o.delim)
+    end
+    Base.write(io, o.newline)
+    return String(take!(io))
+end
+
+function Base.iterate(rw::RowWriter, state=nothing)
+    if state === nothing
+        rw.writeheader && !isempty(rw.names) &&
+            return String(_renderheader(rw.names, rw.o)), (iterate(rw.rows),)
+        state = (iterate(rw.rows),)
+    end
+    it = state[1]
+    it === nothing && return nothing
+    row, rstate = it
+    return _renderrow(row, rw.names, rw.o), (iterate(rw.rows, rstate),)
+end
+
 # --- the front door ---------------------------------------------------------
 
 """

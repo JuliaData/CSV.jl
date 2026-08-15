@@ -233,7 +233,7 @@ Tables.istable(::Type{Rows}) = true
 Tables.rowaccess(::Type{Rows}) = true
 Tables.rows(r::Rows) = r
 Tables.schema(r::Rows) =
-    Tables.Schema(r.names, fill(Union{String, Missing}, length(r.names)))
+    Tables.Schema(r.names, fill(Union{K.CompactString, Missing}, length(r.names)))
 
 function rows(source; header::Union{Bool, AbstractVector}=true,
               stripwhitespace::Bool=false,
@@ -278,7 +278,10 @@ Tables.columnnames(row::RowView) = getfield(row, :r).names
 Tables.getcolumn(row::RowView, j::Int) = row[j]
 Tables.getcolumn(row::RowView, nm::Symbol) = row[nm]
 
-# Untyped access: Union{String, Missing}, materialized (and unescaped) on demand.
+# Untyped access: Union{CompactString, Missing} — a lazy view. Short cells
+# are inline payloads, long cells view the input buffer (zero-copy); an
+# escaped cell unescapes into a small owned buffer that the CompactString
+# then views. No String allocation on the plain path.
 function Base.getindex(row::RowView, j::Int)
     r = getfield(row, :r)
     @boundscheck checkbounds(r.names, j)
@@ -289,8 +292,16 @@ function Base.getindex(row::RowView, j::Int)
     buf = r.buf
     cpos, clen, esc, st = K.cellcontent(buf, pos, len, r.opts)
     st == K.CELL_VALUE || return missing
-    return esc ? K._unescape(buf, Int64(cpos), Int32(clen), r.opts.e, r.d.cq) :
-        GC.@preserve(buf, unsafe_string(pointer(buf, cpos), clen))
+    if esc
+        inl = K._unescape_inline(buf, cpos, clen, r.opts.e, r.d.cq)
+        inl === nothing || return K.CompactString(inl, K.EMPTY_BYTES)
+        own = UInt8[]
+        n = K._unescape_append!(own, buf, cpos, clen, r.opts.e, r.d.cq)
+        return K.CompactString(K.view_payload(own, 1, n, Int64(1)), own)
+    end
+    clen <= K.COMPACTSTRING_INLINE &&
+        return K.CompactString(K.inline_payload(buf, cpos, clen), K.EMPTY_BYTES)
+    return K.CompactString(K.view_payload(buf, cpos, clen, Int64(cpos)), buf)
 end
 Base.getindex(row::RowView, nm::Symbol) = row[getfield(row, :r).lookup[nm]]
 function Base.getproperty(row::RowView, nm::Symbol)
@@ -299,7 +310,10 @@ function Base.getproperty(row::RowView, nm::Symbol)
 end
 
 # Typed access on demand — the CSV.Rows `parse(T, row, i)` pattern.
-typedvalue(::Type{String}, row::RowView, j::Int) = row[j]
+function typedvalue(::Type{String}, row::RowView, j::Int)
+    x = row[j]
+    return x === missing ? missing : String(x)
+end
 function typedvalue(::Type{T}, row::RowView, j::Int) where {T}
     r = getfield(row, :r)
     @boundscheck checkbounds(r.names, j)

@@ -35,6 +35,7 @@ const sniff = CSVApi.sniff
 const Spec = CSVApi.Spec
 const problems = CSVApi.problems
 const write = KernelWrite.write
+const RowWriter = KernelWrite.RowWriter
 const CompactString = CSVKernel.CompactString
 
 export sniff, Spec

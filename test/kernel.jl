@@ -1719,8 +1719,9 @@ end
     rows = E.rows(csv)
     @test Tables.istable(typeof(rows)) && Tables.rowaccess(typeof(rows))
     @test Tables.rows(rows) === rows
+    # untyped rows are lazy CompactString views (zero-copy); == against String literals holds
     @test Tables.schema(rows).types ==
-          (Union{String, Missing}, Union{String, Missing}, Union{String, Missing})
+          (Union{K.CompactString, Missing}, Union{K.CompactString, Missing}, Union{K.CompactString, Missing})
     @test Tables.rowtable(rows)[1] == (a="1", b="x", c="2.5")
     # A CSV column name takes priority over RowView's private storage fields.
     row = first(E.rows("r,rownumber\nvalue,7\n"))

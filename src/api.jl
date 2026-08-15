@@ -747,10 +747,34 @@ Keywords (CSV.jl names): `header` (row number | Bool | names | rows-to-merge),
 (`nothing` ⇒ sniffed), `quotechar`/`openquotechar`/`closequotechar`/`escapechar`,
 `quoted`, `comment`, `ignoreemptyrows`, `ignorerepeated`, `dateformat`,
 `decimal`, `truestrings`/`falsestrings`, `stripwhitespace`, `groupmark`,
-`types` (Type | Vector | Dict), `select`/`drop` (lists), `pool`
-(default `(0.2, 500)` — CSV.jl's), `stringtype` (kernel string | `String`),
+`types` (Type | Vector | Dict), `select`/`drop` (lists), `pool`, `stringtype`,
 `strict`/`on_error`, `maxwarnings`/`maxproblems`, `ntasks`/`parallel`,
 `nsample`, `buffer_in_memory`. Diagnostics are data: [`problems`](@ref)`(f)`.
+
+## String columns: `stringtype` and `pool`
+
+Two independent choices decide what a text column comes back as, and they
+compose the same way in `File`, `Chunks`, and `Rows`:
+
+  * `stringtype` — the ELEMENT type. `CompactString` (default): a 16-byte
+    value that is the parsed payload itself — short values inline, long
+    values zero-copy views into the retained input; hashes and compares
+    like `String`, `String(x)` copies out. `String`: every cell
+    materialized (one allocation each). With InlineStrings loaded,
+    `InlineString` (smallest fitting width per column — 0.10's default
+    behavior) or a fixed `String1`…`String255`.
+  * `pool` — the CONTAINER for low-cardinality columns. `(ratio, cap)`
+    (default `(0.2, 500)`, CSV.jl's), a `Bool`, a ratio, or per-column via
+    `Dict(col => spec)` / a vector. A column that pools comes back as a
+    `PooledArrays.PooledArray` whose levels are `stringtype` values
+    (`CompactString` levels materialize to `String`: pool levels are never
+    views); a column that does not pool comes back as a plain vector of
+    `stringtype` (`CompactString` ⇒ `CSV.CSVKernel.CompactStringVector`,
+    else `Vector{T}`), `Union{T, Missing}` when missings are present.
+
+`Chunks` applies `pool` per batch (each batch is an independent table);
+`Rows` has no columns to pool and materializes each accessed cell as
+`stringtype` (`CompactString` cells are lazy views).
 """
 struct File
     name::String
@@ -1209,32 +1233,45 @@ struct Rows
     inner::E.Rows
     types::Union{Nothing, Vector{Type}}
     limit::Union{Nothing, Int}
+    stringtype::Type
 end
 
-function Rows(source; types=nothing, reusebuffer::Bool=false, kw...)
-    # reusebuffer is CSV.jl surface: rows here are lazy views over the index —
-    # no per-row buffer exists to reuse, so the kwarg is accepted and inert
+"""
+    CSVApi.Rows(source; types=nothing, stringtype=CompactString, kw...)
+
+`CSV.Rows` analog: stream rows without materializing columns. Cells are lazy
+views by default (`CompactString` for text, on-demand typed access when
+`types` is given); `stringtype=String` (or an extension type such as
+`InlineString`) materializes each string cell as it is accessed. `reusebuffer`
+is accepted for 0.10 compatibility and inert: there is no per-row buffer.
+"""
+function Rows(source; types=nothing, reusebuffer::Bool=false,
+              stringtype::Type=K.CompactString, kw...)
     allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...)
     _checkkwargs("Rows", kw, allowed)
+    _checkstringtype(stringtype)
     p = _prepare(source; kw...)
     seed = types === nothing ? nothing :
            Type[T === nothing ? String : T
                 for T in K.resolvetypes(types, p.names, p.ncols)]
     inner = E.Rows(p.buf, p.bi.chunks, p.names,
                    Dict(nm => j for (j, nm) in enumerate(p.names)), p.opts, p.d)
-    return Rows(inner, seed, p.limit)
+    return Rows(inner, seed, p.limit, stringtype)
 end
 
 Tables.istable(::Type{Rows}) = true
 Tables.rowaccess(::Type{Rows}) = true
 Tables.rows(r::Rows) = r
 Tables.schema(r::Rows) = r.types === nothing ?
-    Tables.Schema(r.inner.names, fill(Union{String, Missing}, length(r.inner.names))) :
+    Tables.Schema(r.inner.names, fill(Union{_rowstringtype(r.stringtype), Missing},
+                                      length(r.inner.names))) :
     Tables.Schema(r.inner.names, Type[Union{T, Missing} for T in r.types])
+_rowstringtype(T) = T === K.CompactString ? K.CompactString : T
 
 struct Row <: Tables.AbstractRow
     view::E.RowView
     types::Union{Nothing, Vector{Type}}
+    stringtype::Type
 end
 
 Base.eltype(::Type{Rows}) = Row
@@ -1245,18 +1282,23 @@ function Base.iterate(r::Rows, state=((1, nothing, 1)))
     it = iterate(r.inner, state)
     it === nothing && return nothing
     view, next = it
-    return Row(view, r.types), next
+    return Row(view, r.types, r.stringtype), next
 end
 
 Tables.columnnames(row::Row) = Tables.columnnames(getfield(row, :view))
 function Tables.getcolumn(row::Row, j::Int)
     ts = getfield(row, :types)
     v = getfield(row, :view)
-    return ts === nothing ? v[j] : E.typedvalue(ts[j], v, j)
+    x = ts === nothing ? v[j] : E.typedvalue(ts[j], v, j)
+    st = getfield(row, :stringtype)
+    return st === K.CompactString || !(x isa K.CompactString) ? x : _rowstring(st, x)
 end
+# per-cell string materialization for Rows(stringtype=...); extensions may add
+_rowstring(::Type{String}, x::K.CompactString) = String(x)
 Tables.getcolumn(row::Row, nm::Symbol) =
     Tables.getcolumn(row, getfield(getfield(row, :view), :r).lookup[nm])
-Base.getindex(row::Row, j) = Tables.getcolumn(row, j)
+Base.getindex(row::Row, j::Int) = Tables.getcolumn(row, j)
+Base.getindex(row::Row, nm::Symbol) = Tables.getcolumn(row, nm)
 rownumber(row::Row) = getfield(getfield(row, :view), :rownumber)
 
 # ---------------------------------------------------------------------------
@@ -1269,12 +1311,15 @@ rownumber(row::Row) = getfield(getfield(row, :view), :rownumber)
 `CSV.Chunks` analog: iterate the file as a sequence of `File`-shaped tables.
 Unlike `CSV.Chunks`, every batch reports the SAME column types — a whole-window
 schema prepass over the index makes the batch schema stable by construction.
-`ntasks` sizes the batches (or pass `chunkbytes` directly).
+`ntasks` sizes the batches (or pass `chunkbytes` directly). `stringtype` and
+`pool` behave as in [`File`](@ref) (pooling is per batch; a single policy).
 """
 struct Chunks
     inner::E.Batches
     headerlog::K.ProblemLog
     maxproblems::Int
+    stringtype::Type
+    poolspec::Union{Nothing, Tuple{Float64, Int}}
 end
 
 Base.length(c::Chunks) = length(getfield(c, :inner))
@@ -1287,14 +1332,68 @@ function Base.iterate(c::Chunks, state::Int=1)
     t, next = it
     headerlog = state == 1 ? getfield(c, :headerlog) : nothing
     t, _ = _mergeproblems(t, headerlog, getfield(c, :maxproblems))
+    # every batch leaves through the same door as File: PooledArray for
+    # pooled columns (levels in the output string type), then the string
+    # materialization the caller asked for
+    st = getfield(c, :stringtype)
+    poolS = st === K.CompactString ? String : st
+    ps = getfield(c, :poolspec)
+    ps === nothing || (t = _poolbatch(t, ps))
+    t = _pooledarrays(t, poolS)
+    st === K.CompactString || (t = _materializestrings(t, st))
     return t, next
 end
 
+# Per-batch pooling: each Chunks batch is an independent table, so its
+# string columns pool against the batch's own rows (0.10 pooled per chunk
+# too). Reuses the kernel's single-segment pooled stitch: intern the batch's
+# CompactStringVector as one PoolSegment, then the same policy bound decides.
+function _poolbatch(t::K.ParsedTable, ps::Tuple{Float64, Int})
+    cols = AbstractVector[t.columns...]
+    for (j, c) in enumerate(cols)
+        c isa K.CompactStringVector || continue
+        n = length(c)
+        n == 0 && continue
+        ratiolevels = ps[1] == 1.0 ? n : floor(Int, ps[1] * n)
+        maxlevels = min(ratiolevels, ps[2])
+        maxlevels <= 0 && continue
+        table = Dict{K.CompactString, UInt32}()
+        levels = K.CompactString[]
+        refs = zeros(UInt32, n)
+        ok = true
+        @inbounds for i in 1:n
+            x = c[i]
+            x === missing && continue
+            r = get(table, x, UInt32(0))
+            if r == 0
+                length(levels) >= maxlevels && (ok = false; break)
+                push!(levels, x)
+                r = UInt32(length(levels))
+                table[x] = r
+            end
+            refs[i] = r
+        end
+        ok || continue
+        # a PooledColumn over the batch's own payload buffers
+        lv = K.CompactStringVector{K.CompactString}(
+            K.CompactStringPayload[l.p for l in levels], c.buf, c.extra)
+        anymissing = Missing <: eltype(c) && any(==(0), refs)
+        cols[j] = anymissing ? K.PooledColumn{Union{K.CompactString, Missing}}(refs, lv) :
+                               K.PooledColumn{K.CompactString}(refs, lv)
+    end
+    return K.ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
+end
+
 function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
-                maxproblems::Int=10_000, kw...)
+                maxproblems::Int=10_000, stringtype::Type=K.CompactString,
+                pool=DEFAULT_POOL, kw...)
     nt = something(ntasks, Threads.nthreads())
     nt >= 1 || throw(ArgumentError("ntasks must be ≥ 1 (got $nt)"))
     maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
+    _checkstringtype(stringtype)
+    poolspec = K._poolpolicy(pool)   # per-batch policy (Dict/vector forms: File only)
+    pool isa Union{AbstractDict, AbstractVector} &&
+        throw(ArgumentError("Chunks takes a single pool policy (Bool / ratio / (ratio, cap))"))
     allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...)
     _checkkwargs("Chunks", kw, allowed)
     if !haskey(kw, :chunkbytes)
@@ -1325,7 +1424,7 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     unclosedquote = p.bi.unclosedquote && (p.limit === nothing || p.limit >= fullrows)
     inner = E.Batches(p.buf, chunks, p.names, seedtypes, userprovided, allowmissing,
                       p.opts, p.d, capturecap, unclosedquote)
-    return Chunks(inner, p.headerlog, maxproblems)
+    return Chunks(inner, p.headerlog, maxproblems, stringtype, poolspec)
 end
 
 # ---------------------------------------------------------------------------

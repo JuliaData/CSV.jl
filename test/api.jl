@@ -16,6 +16,10 @@ using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings
 using CSV, LegacyCSV
 const A = CSV.CSVApi
 const K = CSV.CSVKernel
+using LazyArtifacts
+const _corpusdir = LazyArtifacts.ensure_artifact_installed("testfiles",
+    joinpath(dirname(dirname(pathof(CSV))), "Artifacts.toml"))
+corpusfile(name) = joinpath(_corpusdir, name)
 
 # Minimal ordered AbstractDict for precedence tests. Base.Dict iteration order
 # is not an API contract, while CSV's rule is explicitly first matching Regex.
@@ -634,7 +638,10 @@ end
     bad = first(A.Chunks(IOBuffer("a\nBAD\nNOPE\n"); types=Int64,
                          chunkbytes=64, maxproblems=0))
     @test isempty(A.problems(bad)) && bad.droppedproblems == 2
-    @test_throws ArgumentError A.Chunks(IOBuffer(input); pool=true)
+    # pool is now supported per batch (each batch is an independent table);
+    # only a single policy — Dict/vector per-column forms stay File-only
+    @test Tables.getcolumn(first(A.Chunks(IOBuffer("s\n" * "x\ny\n"^50); pool=true, chunkbytes=64)), :s) isa PooledArrays.PooledArray
+    @test_throws ArgumentError A.Chunks(IOBuffer(input); pool=Dict(:a => true))
     @test_throws ArgumentError A.Chunks(IOBuffer(input); select=[:a])
     @test_throws ArgumentError A.Chunks(IOBuffer(input); strict=true)
 end
@@ -853,4 +860,79 @@ end
     @test isequal(String.(coalesce.(Tables.getcolumn(f, :a), "")), String.(coalesce.(Tables.getcolumn(f, :a), "")))
     @test isequal(collect(Tables.getcolumn(A.File(IOBuffer(csv); stringtype=InlineString), :s)),
                   collect(Tables.getcolumn(o, :s)))
+end
+
+@testset "RowWriter" begin
+    t = (a=[1, 2, 3], b=["x", "y,z", missing], c=[1.5, 2.0, 3.25],
+         d=[Date(2024, 1, 2), Date(2024, 3, 4), Date(2024, 5, 6)])
+    lines = collect(CSV.RowWriter(t))
+    @test length(lines) == 4
+    @test lines[1] == "a,b,c,d\n"
+    @test lines[3] == "2,\"y,z\",2.0,2024-03-04\n"
+    io = IOBuffer(); CSV.write(io, t)
+    @test join(lines) == String(take!(io))                    # byte-identical to write
+    @test collect(CSV.RowWriter(t; writeheader=false))[1] == "1,x,1.5,2024-01-02\n"
+    @test collect(CSV.RowWriter(t; header=["p", "q", "r", "s"]))[1] == "p,q,r,s\n"
+    @test collect(CSV.RowWriter(t; delim=';', quotestyle=:all, floatformat="%.1f"))[2] ==
+          "1;\"x\";1.5;2024-01-02\n"
+    @test_throws ArgumentError collect(CSV.RowWriter(t; header=["only", "three", "names"]))
+    # streams over a row-access table (a File) without materializing columns
+    f = A.File(IOBuffer("a,b\n1,x\n2,y\n"))
+    @test collect(CSV.RowWriter(f)) == ["a,b\n", "1,x\n", "2,y\n"]
+    # 0.10 oracle agreement on plain content
+    io2 = IOBuffer(); LegacyCSV.write(io2, (x=[1, 2], y=["ab", "c,d"]))
+    @test join(collect(CSV.RowWriter((x=[1, 2], y=["ab", "c,d"])))) == String(take!(io2))
+end
+
+@testset "stringtype × pool matrix: File / Rows / Chunks agree" begin
+    csv = "a,b,n\n" * join(("p$(i % 4),v$(i),$(i)" for i in 1:2000), '\n') * "\n"
+    # File: (stringtype, pool) -> (a is pooled?, eltype of a, eltype of b)
+    expect = Dict(
+        (K.CompactString, true)  => (true,  String,           K.CompactString),
+        (K.CompactString, false) => (false, K.CompactString,  K.CompactString),
+        (String, true)           => (true,  String,           String),
+        (String, false)          => (false, String,           String),
+        (InlineString, true)     => (true,  String3,          String7),
+        (InlineString, false)    => (false, String3,          String7),
+    )
+    for ((st, pl), (pooled, ea, eb)) in expect
+        pool = pl ? (0.2, 500) : false
+        f = A.File(IOBuffer(csv); stringtype=st, pool)
+        ca, cb = Tables.getcolumn(f, :a), Tables.getcolumn(f, :b)
+        @test (ca isa PooledArrays.PooledArray) == pooled
+        @test eltype(ca) == ea && eltype(cb) == eb
+        @test String(ca[5]) == "p1" && String(cb[5]) == "v5"
+        # Chunks batches leave through the SAME door
+        c = first(A.Chunks(IOBuffer(csv); ntasks=2, stringtype=st, pool))
+        @test (Tables.getcolumn(c, :a) isa PooledArrays.PooledArray) == pooled
+        @test eltype(Tables.getcolumn(c, :a)) == ea && eltype(Tables.getcolumn(c, :b)) == eb
+    end
+    # Rows: lazy views by default; stringtype materializes per cell
+    r = first(A.Rows(IOBuffer(csv)))
+    @test r[:a] isa K.CompactString && r.b isa K.CompactString
+    @test first(A.Rows(IOBuffer(csv); stringtype=String))[:a] isa String
+    @test first(A.Rows(IOBuffer(csv); stringtype=InlineString))[:b] isa String3   # per-cell smallest fit ("v1")
+    @test first(A.Rows(IOBuffer(csv); stringtype=String15))[:a] isa String15
+    @test Tables.schema(A.Rows(IOBuffer(csv); stringtype=String)).types[1] == Union{String, Missing}
+    @test_throws ArgumentError A.Rows(IOBuffer(csv); stringtype=Int)
+end
+
+@testset "Chunks: schema stable across batches (0.10 port)" begin
+    # a promotion that only appears late must not change the batch schema
+    data = "a,b\n" * join(("$(i),value$(i)" for i in 1:40), '\n') * "X"
+    chunks = collect(A.Chunks(IOBuffer(data); ntasks=2, pool=false))
+    nrows(t) = t.nrows
+    @test sum(nrows, chunks) == 40
+    @test String(last(Tables.getcolumn(last(chunks), :b))) == "value40X"
+    # ints then a string in the last batch: every batch reports the widened type
+    late = "x\n" * join(string.(1:6000), '\n') * "\nfinal\n"
+    cs = collect(A.Chunks(IOBuffer(late); ntasks=4, chunkbytes=8_000, pool=false))
+    @test length(cs) >= 2
+    types = unique(eltype(Tables.getcolumn(c, :x)) for c in cs)
+    @test length(types) == 1 && Base.nonmissingtype(types[1]) <: AbstractString
+    # oracle: same row counts and values as 0.10 on the corpus file
+    gzpath = corpusfile("randoms.csv.gz")
+    ours = collect(A.Chunks(gzpath; ntasks=2))
+    theirs = collect(LegacyCSV.Chunks(gzpath; ntasks=2))
+    @test sum(nrows, ours) == sum(length, theirs) == 70_000
 end
