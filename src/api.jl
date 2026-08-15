@@ -94,7 +94,6 @@ const _LEGACYKW = Dict{Symbol, String}(
     :missingstrings => "pass a string or vector to missingstring",
     :dateformats => "pass per-column formats to dateformat",
     :parsingdebug => "parse problems and the structural index are inspectable directly",
-    :validate => "column references are always validated",
 )
 
 function _checkkwargs(context::AbstractString, kw, allowed)
@@ -270,16 +269,23 @@ end
 function _sample(buf::Vector{UInt8}, samplebytes::Int; dialectkw...)
     samplebytes >= 1 || throw(ArgumentError("samplebytes must be ≥ 1 (got $samplebytes)"))
     length(buf) <= samplebytes && return buf
-    sample = buf[1:samplebytes]
     d = K.Dialect(; delim=_probedelim(dialectkw), dialectkw...)
-    datastart = _datastart(sample)
-    rowstart = datastart
-    while rowstart <= length(sample)
-        next = K.nextrowstart(sample, rowstart, length(sample), d, false, true)
-        next > length(sample) && break
-        rowstart = next
+    limit = samplebytes
+    while true
+        sample = buf[1:min(limit, length(buf))]
+        datastart = _datastart(sample)
+        rowstart = datastart
+        while rowstart <= length(sample)
+            next = K.nextrowstart(sample, rowstart, length(sample), d, false, true)
+            next > length(sample) && break
+            rowstart = next
+        end
+        # keep only complete rows; when not even one row fits (a single row
+        # wider than samplebytes — wide scientific files), grow until one does
+        rowstart > datastart && return sample[1:rowstart - 1]
+        limit >= length(buf) && return buf
+        limit *= 8
     end
-    return rowstart <= 1 ? UInt8[] : sample[1:rowstart - 1]
 end
 
 function _scoredelim(buf::Vector{UInt8}, delim::Char, datastart::Int,
@@ -433,7 +439,8 @@ end
 Detect the delimiter (quote-aware field-count consistency over a bounded
 sample, candidates $(DELIM_CANDIDATES) in CSV.jl's order), whether a header
 row is likely (row 1 all text while later rows type differently), and the
-resulting names/types. `kw` may pin dialect, value, and index pieces
+resulting names/types. `samplebytes` is the initial sample size; a sample too
+small to hold even one complete row grows until it does. `kw` may pin dialect, value, and index pieces
 (`quotechar`, `comment`, `decimal`, `scanner`, ...) that sniffing should use.
 `buffer_in_memory=true` copies a file source instead of mapping it.
 """
@@ -585,6 +592,7 @@ function _prepare(source;
                   parallel::Bool=Threads.nthreads() > 1,
                   buffer_in_memory::Bool=false,
                   prefetch::Bool=true,
+                  validate::Bool=true,
                   kw...)
     footerskip >= 0 || throw(ArgumentError("footerskip must be ≥ 0 (got $footerskip)"))
     limit === nothing || limit >= 0 || throw(ArgumentError("limit must be ≥ 0 (got $limit)"))
@@ -688,7 +696,7 @@ function _prepare(source;
     # engine + diagnostics kwargs the kernel driver consumes directly
     colopts = nothing
     if dfdict !== nothing
-        overrides = K._resolvekeys(dfdict, names, length(names), "dateformat")
+        overrides = K._resolvekeys(dfdict, names, length(names), "dateformat"; validate)
         colopts = K.ValueOpts[haskey(overrides, j) ?
                               K.makevalueopts(d; sentinels, valuekw...,
                                               dateformat=overrides[j]) : opts
@@ -697,14 +705,14 @@ function _prepare(source;
     passthrough = _pickkwargs(kw, allowed)
     dfdict !== nothing &&
         (passthrough = NamedTuple(kv for kv in pairs(passthrough) if kv.first != :dateformat))
-    parsekw = merge(passthrough, (; delim, sentinels, chunkbytes=cb, parallel, colopts))
+    parsekw = merge(passthrough, (; delim, sentinels, chunkbytes=cb, parallel, colopts, validate))
     return Prepared(buf, bi, names, length(names), lim, opts, d, headerlog, parsekw)
 end
 
 # kwargs _prepare consumes itself (not forwarded to the kernel driver)
 const _PREPKW = (:header, :normalizenames, :skipto, :footerskip, :missingstring,
                  :delim, :limit, :samplebytes, :chunkbytes, :parallel,
-                 :buffer_in_memory, :prefetch)
+                 :buffer_in_memory, :prefetch, :validate)
 
 # select/drop: list forms only (function forms retired — Tables.Scan is the
 # expression channel). Returns a kernel `select` Int vector or nothing.
@@ -741,7 +749,9 @@ end
 """
     CSVApi.File(source; kw...)
 
-`CSV.File` analog. `source` is a file path, `IO`, `Vector{UInt8}`, or `Cmd`.
+`CSV.File` analog. `source` is a file path, `IO`, `Vector{UInt8}`, `Cmd`,
+a `FilePathsBase` path (with that package loaded), or a vector of any of
+these (see "A vector of sources" below).
 Keywords (CSV.jl names): `header` (row number | Bool | names | rows-to-merge),
 `normalizenames`, `skipto`, `footerskip`, `limit`, `missingstring`, `delim`
 (`nothing` ⇒ sniffed), `quotechar`/`openquotechar`/`closequotechar`/`escapechar`,
@@ -749,7 +759,9 @@ Keywords (CSV.jl names): `header` (row number | Bool | names | rows-to-merge),
 `decimal`, `truestrings`/`falsestrings`, `stripwhitespace`, `groupmark`,
 `types` (Type | Vector | Dict), `select`/`drop` (lists), `pool`, `stringtype`,
 `strict`/`on_error`, `maxwarnings`/`maxproblems`, `ntasks`/`parallel`,
-`nsample`, `buffer_in_memory`. Diagnostics are data: [`problems`](@ref)`(f)`.
+`nsample`, `buffer_in_memory`, `validate` (`false` ⇒ `types`/`dateformat`/
+`pool` keys naming absent columns are ignored instead of erroring).
+Diagnostics are data: [`problems`](@ref)`(f)`.
 
 ## String columns: `stringtype` and `pool`
 
@@ -808,11 +820,12 @@ function File(source;
               maxproblems::Int=something(maxwarnings, 10_000),
               ntasks::Union{Nothing, Int}=nothing,
               parallel::Bool=ntasks === nothing ? Threads.nthreads() > 1 : ntasks > 1,
+              validate::Bool=true,
               kw...)
     if transpose
         (select !== nothing || drop !== nothing) &&
             throw(ArgumentError("select/drop are not supported with transpose=true"))
-        return _transposedfile(source; types, downcast, stringtype, kw...)
+        return _transposedfile(source; types, downcast, stringtype, validate, kw...)
     end
     ntasks === nothing || ntasks >= 1 ||
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
@@ -821,14 +834,14 @@ function File(source;
     on_error in (:collect, :error) ||
         throw(ArgumentError("on_error must be :collect or :error"))
     capturecap = max(maxproblems, 1)
-    p = _prepare(source; parallel, maxproblems=capturecap, kw...)
+    p = _prepare(source; parallel, maxproblems=capturecap, validate, kw...)
     sel = _resolveselect(select, drop, p.names)
     parsetypes = if p.limit == 0
-        Type[T === nothing ? Missing : T for T in K.resolvetypes(types, p.names, p.ncols)]
+        Type[T === nothing ? Missing : T for T in K.resolvetypes(types, p.names, p.ncols; validate)]
     else
         types
     end
-    poolarg, poolspecs = _resolvepool(pool, p.names, p.ncols)
+    poolarg, poolspecs = _resolvepool(pool, p.names, p.ncols; validate)
     t = K.parse(p.buf; index=p.bi, header=p.names, types=parsetypes, select=sel, limit=p.limit,
                 pool=poolarg, poolspecs, on_error=:collect, p.parsekw...)
     t, firstproblem = _mergeproblems(t, p.headerlog, maxproblems)
@@ -838,7 +851,7 @@ function File(source;
         throw(ErrorException("CSVKernel: $(pr.kind) at data row $(pr.row), column $(pr.col): " *
                              pr.message * (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
     end
-    t = _narrowtypes(t, K.requestedtypes(types, p.names, p.ncols), sel)
+    t = _narrowtypes(t, K.requestedtypes(types, p.names, p.ncols; validate), sel)
     poolS = stringtype === K.CompactString ? String : stringtype   # pool levels are never views
     t = _pooledarrays(t, poolS)
     downcast && (t = _downcast(t))
@@ -1068,7 +1081,8 @@ function _transposedfile(source; types=nothing, downcast::Bool=false,
                          header::Union{Bool, Integer, AbstractVector}=true,
                          skipto::Union{Nothing, Integer}=nothing,
                          missingstring=nothing, delim=',',
-                         normalizenames::Bool=false,
+                         normalizenames::Bool=false, limit::Union{Nothing, Integer}=nothing,
+                         validate::Bool=true,
                          buffer_in_memory::Bool=false, prefetch::Bool=true, kw...)
     allowed = (_DIALECTKW..., _VALUEKW...)
     _checkkwargs("File(transpose=true)", kw, allowed)
@@ -1100,6 +1114,7 @@ function _transposedfile(source; types=nothing, downcast::Bool=false,
     n = ncols == 0 ? 0 :
         maximum(K.nfields(r[1], r[2]) - (startf - 1) for r in rows)
     n = max(n, 0)
+    limit === nothing || (n = min(n, max(Int(limit), 0)))
     _tname(j, r) = (nm = hasnames ? _cellstring(buf, r[1], r[2], namefield, opts) : "";
                     isempty(nm) ? Symbol("Column", j) : Symbol(nm))
     names = explicitnames !== nothing ? copy(explicitnames) :
@@ -1108,7 +1123,7 @@ function _transposedfile(source; types=nothing, downcast::Bool=false,
         throw(ArgumentError("header has $(length(names)) names for $ncols transposed rows"))
     normalizenames && (names = [normalizename(String(nm)) for nm in names])
     names = K.makeunique!(names)
-    seed = K.resolvetypes(types, names, ncols)
+    seed = K.resolvetypes(types, names, ncols; validate)
     cols = AbstractVector[_transposedcolumn(buf, r[1], r[2], startf, n, seed[j], opts)
                           for (j, r) in enumerate(rows)]
     t = K.ParsedTable(names, cols, n, K.Problem[], 0)
@@ -1119,10 +1134,10 @@ end
 
 # pool as Dict(col => spec) or per-column vector: resolve to kernel poolspecs
 # (entries nothing = never pool). Scalars pass through as the global policy.
-function _resolvepool(pool, names::Vector{Symbol}, ncols::Int)
+function _resolvepool(pool, names::Vector{Symbol}, ncols::Int; validate::Bool=true)
     if pool isa AbstractDict
         specs = Vector{Any}(nothing, ncols)
-        for (j, sp) in K._resolvekeys(pool, names, ncols, "pool")
+        for (j, sp) in K._resolvekeys(pool, names, ncols, "pool"; validate)
             specs[j] = K._poolpolicy(sp)
         end
         return false, specs
@@ -1365,7 +1380,7 @@ function Rows(source; types=nothing, reusebuffer::Bool=false,
     p = _prepare(source; kw...)
     seed = types === nothing ? nothing :
            Type[T === nothing ? String : T
-                for T in K.resolvetypes(types, p.names, p.ncols)]
+                for T in K.resolvetypes(types, p.names, p.ncols; validate=get(kw, :validate, true))]
     inner = E.Rows(p.buf, p.bi.chunks, p.names,
                    Dict(nm => j for (j, nm) in enumerate(p.names)), p.opts, p.d)
     return Rows(inner, seed, p.limit, stringtype)
@@ -1525,7 +1540,7 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     fullrows = sum(K.nrows, chunks; init=0)
     p.limit === nothing || _limitrows!(chunks, p.limit)
     filter!(ci -> K.nrows(ci) > 0, chunks)
-    seed = K.resolvetypes(types, p.names, p.ncols)
+    seed = K.resolvetypes(types, p.names, p.ncols; validate=get(kw, :validate, true))
     userprovided = [T !== nothing for T in seed]
     if any(isnothing, seed)
         total = sum(K.nrows, chunks; init=0)

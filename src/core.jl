@@ -2850,25 +2850,34 @@ _customparseable(T::Type) = isconcretetype(T) &&
 
 # Dict keys: Integer (position), name (Symbol/String), or Regex (every
 # matching name; exact keys take precedence — 0.10 semantics)
-function _resolvekeys(dict::AbstractDict, names::Vector{Symbol}, ncols::Int, what::String)
+function _resolvekeys(dict::AbstractDict, names::Vector{Symbol}, ncols::Int, what::String;
+                      validate::Bool=true)
     out = Dict{Int, Any}()
     for (k, v) in dict
         k isa Regex && continue
         j = k isa Integer ? Int(k) : findfirst(==(Symbol(k)), names)
-        j === nothing && throw(ArgumentError("$what key $k does not match any column"))
-        1 <= j <= ncols || throw(ArgumentError("$what key $k out of range"))
+        if j === nothing || !(1 <= j <= ncols)
+            validate || continue
+            j === nothing && throw(ArgumentError("$what key $k does not match any column"))
+            throw(ArgumentError("$what key $k out of range"))
+        end
         out[j] = v
     end
     for (k, v) in dict
         k isa Regex || continue
+        matched = false
         for (j, nm) in enumerate(names)
-            occursin(k, String(nm)) && !haskey(out, j) && (out[j] = v)
+            occursin(k, String(nm)) || continue
+            matched = true
+            haskey(out, j) || (out[j] = v)
         end
+        matched || !validate ||
+            throw(ArgumentError("$what key $k does not match any column"))
     end
     return out
 end
 
-function resolvetypes(types, names::Vector{Symbol}, ncols::Int)
+function resolvetypes(types, names::Vector{Symbol}, ncols::Int; validate::Bool=true)
     seed = Vector{Union{Nothing, Type}}(nothing, ncols)
     types === nothing && return seed
     function normalize(T)
@@ -2888,7 +2897,7 @@ function resolvetypes(types, names::Vector{Symbol}, ncols::Int)
         length(types) == ncols || throw(ArgumentError("types vector length $(length(types)) != $ncols columns"))
         seed .= normalize.(types)
     elseif types isa AbstractDict
-        for (j, T) in _resolvekeys(types, names, ncols, "types")
+        for (j, T) in _resolvekeys(types, names, ncols, "types"; validate)
             seed[j] = normalize(T)
         end
     else
@@ -2899,7 +2908,7 @@ end
 
 # columns the user declared as Union{Missing, T}: honored even when no missing
 # value appears (0.10 semantics — the declared type is the column type)
-function declaredmissing(types, names::Vector{Symbol}, ncols::Int)
+function declaredmissing(types, names::Vector{Symbol}, ncols::Int; validate::Bool=true)
     wm = fill(false, ncols)
     types === nothing && return wm
     ismiss(T) = T isa Type && T !== Missing && Missing <: T
@@ -2908,7 +2917,7 @@ function declaredmissing(types, names::Vector{Symbol}, ncols::Int)
     elseif types isa AbstractVector
         length(types) == ncols && (wm .= ismiss.(types))
     elseif types isa AbstractDict
-        for (j, T) in _resolvekeys(types, names, ncols, "types")
+        for (j, T) in _resolvekeys(types, names, ncols, "types"; validate)
             wm[j] = ismiss(T)
         end
     end
@@ -2917,7 +2926,7 @@ end
 
 # the user-REQUESTED types per column (narrow ones included), for the API
 # door's post-parse narrowing; nothing where the kernel type is the answer
-function requestedtypes(types, names::Vector{Symbol}, ncols::Int)
+function requestedtypes(types, names::Vector{Symbol}, ncols::Int; validate::Bool=true)
     req = Vector{Union{Nothing, Type}}(nothing, ncols)
     types === nothing && return req
     narrow(T) = (T isa Type && haskey(NARROW_TYPES, Base.nonmissingtype(T))) ?
@@ -2927,7 +2936,7 @@ function requestedtypes(types, names::Vector{Symbol}, ncols::Int)
     elseif types isa AbstractVector
         length(types) == ncols && (req .= narrow.(types))
     elseif types isa AbstractDict
-        for (j, T) in _resolvekeys(types, names, ncols, "types")
+        for (j, T) in _resolvekeys(types, names, ncols, "types"; validate)
             req[j] = narrow(T)
         end
     end
@@ -2981,6 +2990,7 @@ function parse(buf::Vector{UInt8};
                scanner::Symbol=:auto,
                maxproblems::Int=10_000,
                on_error::Symbol=:collect,
+               validate::Bool=true,
                nsample::Union{Nothing, Int}=nothing,
                select=nothing,
                limit::Union{Nothing, Int}=nothing,
@@ -3095,9 +3105,9 @@ function parse(buf::Vector{UInt8};
     end
 
     # -- type seeding (stratified over the probe chunks) -----------------------
-    seed = resolvetypes(types, names, ncols)
+    seed = resolvetypes(types, names, ncols; validate)
     userprovided = [T !== nothing for T in seed]
-    wantmissing = declaredmissing(types, names, ncols)   # user wrote Union{Missing,T}
+    wantmissing = declaredmissing(types, names, ncols; validate)   # user wrote Union{Missing,T}
     # typed columns whose sample shows a missing cell get union-direct finals
     # (the parse writes Vector{Union{T,Missing}} in place; conversion is never
     # paid). Sample-missed sparse missings fall back to a finalize conversion.

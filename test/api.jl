@@ -799,7 +799,7 @@ end # @testset CSVApi
                             (:lines_to_check, 5), (:ignoreemptylines, true),
                             (:datarow, 2), (:type, Int64), (:missingstrings, ["NA"]),
                             (:dateformats, Dict(:a => "yyyy-mm-dd")),
-                            (:parsingdebug, true), (:validate, false))
+                            (:parsingdebug, true))
         err = try
             A.File(IOBuffer("a\n1\n"); kwname => kwval)
             nothing
@@ -812,6 +812,17 @@ end # @testset CSVApi
     # reusebuffer: accepted and inert
     r = A.Rows(IOBuffer("a\n1\n2\n"); reusebuffer=true)
     @test length(collect(r)) == 2
+
+    # validate=false: types/dateformat/pool keys naming absent columns are
+    # ignored (0.10 semantics); the default validates, Regex misses included
+    novalidate = A.File(IOBuffer("a,b,c\n1,2,3\n"); types=Dict(4 => Float64, r"_x$" => Int8),
+                        dateformat=Dict(:e => "dd/mm/yyyy"), pool=Dict("f" => true),
+                        validate=false)
+    @test length(novalidate) == 1 && novalidate.a == [1]
+    @test_throws ArgumentError A.File(IOBuffer("a,b,c\n1,2,3\n"); types=Dict(r"_x$" => Int8))
+    @test_throws ArgumentError A.Rows(IOBuffer("a\n1\n"); types=Dict(:zz => Int))
+    @test first(A.Rows(IOBuffer("a\n1\n"); types=Dict(:zz => Int), validate=false)).a isa AbstractString
+    @test first(A.Chunks(IOBuffer("a\n1\n"); types=Dict(:zz => Int), validate=false, chunkbytes=1 << 20))[:a] == [1]
 end
 
 @testset "CompactString hash + stringtype extension hook" begin
