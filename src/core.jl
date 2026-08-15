@@ -37,10 +37,9 @@ The pipeline (and the file's layout) is:
                         (CSV.Chunks-like) and row-streaming (CSV.Rows-like) modes
                         on the same pieces.
 
-What this kernel deliberately does NOT include (extensions documented in
-kernel/README.md): dialect sniffing, pooled columns, InlineString widths,
-transposed reading, multi-file, incremental IO sources, and the writer. Each has
-a designed seam here; none requires re-architecting.
+The package-level layers for sniffing, pooling, transposed reading, streaming,
+and writing are documented in `docs/kernel-README.md`. Multi-file input and
+incremental IO remain separate follow-up work.
 
 Semantics note (pinned by tests): the structural layer treats *every* quote byte as
 toggling quote state, like Sep/simdcsv. This matches RFC-style well-formed fields. A
@@ -285,6 +284,24 @@ const CELL_BADQUOTE = 0x02
 @inline _maybesentinel(vo::ValueOpts, b::UInt8) =
     (vo.sentfirst[(b >> 6) + 1] >> (b & 0x3f)) & UInt64(1) != 0
 
+# Typed values and sentinel matching tolerate surrounding blanks (0.10 /
+# Parsers.jl semantics). String columns still retain these bytes because this
+# helper only changes the span used by those two checks.
+@inline function _trimblanks(buf::Vector{UInt8}, i::Int, j::Int)
+    @inbounds while i <= j && _isot(buf[i]); i += 1; end
+    @inbounds while j >= i && _isot(buf[j]); j -= 1; end
+    return i, j
+end
+
+@inline function _matchsentinel(buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    i <= j && _maybesentinel(vo, @inbounds(buf[i])) &&
+        V.matchsentinel(buf, i, j, vo.sentinels) && return true
+    ti, tj = _trimblanks(buf, i, j)
+    return ti <= tj && (ti != i || tj != j) &&
+           _maybesentinel(vo, @inbounds(buf[ti])) &&
+           V.matchsentinel(buf, ti, tj, vo.sentinels)
+end
+
 @inline function cellcontent(buf::Vector{UInt8}, pos::Int, len::Int, vo::ValueOpts)
     i, j = pos, pos + len - 1
     @inbounds begin
@@ -306,26 +323,17 @@ const CELL_BADQUOTE = 0x02
                     while cj >= cpos && _isot(buf[cj]); cj -= 1; end
                     clen = cj - cpos + 1
                 end
-                clen > 0 && !esc && _maybesentinel(vo, buf[cpos]) &&
-                    V.matchsentinel(buf, cpos, cpos + clen - 1, vo.sentinels) &&
-                    return (cpos, 0, false, CELL_MISSING)
+                if clen > 0 && !esc
+                    _matchsentinel(buf, cpos, cpos + clen - 1, vo) &&
+                        return (cpos, 0, false, CELL_MISSING)
+                end
                 return (cpos, clen, esc, CELL_VALUE)
             end
         end
-        _maybesentinel(vo, buf[i]) && V.matchsentinel(buf, i, j, vo.sentinels) &&
+        _matchsentinel(buf, i, j, vo) &&
             return (i, 0, false, CELL_MISSING)
         return (i, j - i + 1, false, CELL_VALUE)
     end
-end
-
-# Typed values tolerate surrounding blanks (0.10 / Parsers.jl semantics): the
-# `1, 2, 3` spelling parses numerically without stripwhitespace=true, while
-# String columns keep their spaces. One first/last-byte check per cell —
-# never-taken branches on clean data.
-@inline function _trimblanks(buf::Vector{UInt8}, i::Int, j::Int)
-    @inbounds while i <= j && _isot(buf[i]); i += 1; end
-    @inbounds while j >= i && _isot(buf[j]); j -= 1; end
-    return i, j
 end
 
 # An UNQUOTED span can only contain the delimiter when a bare mid-field quote
@@ -524,6 +532,25 @@ end
     c, rc = V.parsecivil(buf, i, j, vo.timepat)
     rc == V.RC_OK || return (_TIME0, false)
     return (totime(c), true)
+end
+
+# User-defined scalar types are a cold path. Match CSV 0.10's contract: a
+# concrete type is accepted when it defines `tryparse(T, ::String)` or
+# `parse(T, ::String)`. Keep failures as ordinary invalid cells; a custom
+# parser must not escape the parse loop and abort the whole file.
+@noinline function parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int,
+                              ::ValueOpts) where {T}
+    s = String(buf[i:j])
+    try
+        if hasmethod(Base.tryparse, Tuple{Type{T}, String})
+            v = tryparse(T, s)
+            return (v, v isa T)
+        end
+        v = parse(T, s)
+        return (v, v isa T)
+    catch
+        return (nothing, false)
+    end
 end
 
 # ---------------------------------------------------------------------------
@@ -1132,16 +1159,19 @@ function quoteparity(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect)::Bool
 end
 
 # First row start after a terminator at or after `from`, given the entry quote
-# state. CRLF returns the byte after LF. Returns `to + 1` when no terminator
-# exists; callers treat a result > `to` as "no row starts in this range".
-function nextrowstart(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect, inquote::Bool)::Int
+# state. `atrowstart=true` permits comment skipping because it proves `from` is
+# not a mid-row range probe. CRLF returns the byte after LF. Returns `to + 1`
+# when no terminator exists; callers treat a result > `to` as no row start.
+function nextrowstart(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect, inquote::Bool,
+                      atrowstart::Bool=false)::Int
     pos = from
     cq, oq, e = d.cq, d.oq, d.e
     # a comment row's bytes are not structural: when `from` is a row start
     # (inquote=false) that begins with the comment prefix, run straight to the
     # terminator without honoring quotes
     cmt = d.comment
-    if !inquote && cmt !== nothing && from + length(cmt) - 1 <= to && _matchbytes(buf, from, cmt)
+    if atrowstart && !inquote && cmt !== nothing &&
+       from + length(cmt) - 1 <= to && _matchbytes(buf, from, cmt)
         @inbounds while pos <= to
             b = buf[pos]
             b == LF && return pos + 1
@@ -1266,7 +1296,7 @@ end
 function _rowstartatorafter(buf::Vector{UInt8}, from::Int, target::Int, len::Int, d::Dialect)
     pos = from
     while pos <= target
-        pos = nextrowstart(buf, pos, len, d, false)
+        pos = nextrowstart(buf, pos, len, d, false, true)
     end
     return min(pos, len + 1)
 end
@@ -2747,6 +2777,9 @@ const NARROW_TYPES = Dict{Type, Type}(
     UInt8 => Int64, UInt16 => Int64, UInt32 => Int64, UInt64 => Int128,
     Float16 => Float64, Float32 => Float64)
 _nativetype(T::Type) = get(NARROW_TYPES, T, T)
+_customparseable(T::Type) = isconcretetype(T) &&
+    (hasmethod(Base.tryparse, Tuple{Type{T}, String}) ||
+     hasmethod(Base.parse, Tuple{Type{T}, String}))
 
 # Dict keys: Integer (position), name (Symbol/String), or Regex (every
 # matching name; exact keys take precedence — 0.10 semantics)
@@ -2778,7 +2811,7 @@ function resolvetypes(types, names::Vector{Symbol}, ncols::Int)
         T = _nativetype(T)
         parseable = T === Missing ||
                     T in (Int64, Int128, Float64, Bool, Date, DateTime, Time, String,
-                          BigInt, BigFloat, Base.UUID)
+                          BigInt, BigFloat, Base.UUID) || _customparseable(T)
         parseable || throw(ArgumentError("unsupported column type $T"))
         return T
     end
@@ -2975,16 +3008,14 @@ function parse(buf::Vector{UInt8};
     selected = resolveselect(select, names, ncols)
     # every chunk is indexed: global row bases are simply known
     rowbases0 = cumsum([0; Int[nrows(ci) for ci in chunks[1:max(nch - 1, 0)]]])
-    typechunks = chunks
-    typerowbases0 = rowbases0
     if rowmask !== nothing
         total = sum(nrows, chunks; init=0)
         length(rowmask) == total ||
             throw(ArgumentError("rowmask length $(length(rowmask)) != $total data rows"))
     end
     if limit !== nothing
-        # keep whole chunks up to the boundary; rows after the boundary are
-        # type-detected below but never value-parsed, written, or reported
+        # Keep whole chunks up to the boundary. `sampletypes(maxrows=limit)`
+        # restricts inference to the retained prefix of the boundary chunk.
         lastk = 0
         for k in 1:nch
             lastk = k
@@ -3024,21 +3055,6 @@ function parse(buf::Vector{UInt8};
         end
         for j in 1:ncols
             seed[j] === nothing && (seed[j] = _maptype(tm, inferred[j]))
-        end
-    end
-    if limit !== nothing
-        for (k, ci) in enumerate(typechunks)
-            firstexcluded = max(limit - typerowbases0[k] + 1, 1)
-            firstexcluded > nrows(ci) && continue
-            for lr in (ci.firstdatarow + firstexcluded - 1):totalrows(ci), j in 1:ncols
-                (selected === nothing || selected[j]) && !userprovided[j] || continue
-                seed[j] === String && continue
-                sp = fieldspan(ci, lr, j)
-                sp === nothing && continue
-                seed[j] = _promotemapped(tm, seed[j],
-                                         detecttype(buf, sp[1], sp[2],
-                                                    _copts(colopts, opts, j)))
-            end
         end
     end
     if selected !== nothing

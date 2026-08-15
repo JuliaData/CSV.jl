@@ -275,7 +275,7 @@ function _sample(buf::Vector{UInt8}, samplebytes::Int; dialectkw...)
     datastart = _datastart(sample)
     rowstart = datastart
     while rowstart <= length(sample)
-        next = K.nextrowstart(sample, rowstart, length(sample), d, false)
+        next = K.nextrowstart(sample, rowstart, length(sample), d, false, true)
         next > length(sample) && break
         rowstart = next
     end
@@ -287,7 +287,7 @@ function _scoredelim(buf::Vector{UInt8}, delim::Char, datastart::Int,
     quoted = haskey(dialectkw, :quoted) ? dialectkw.quoted : true
     quotechar = haskey(dialectkw, :quotechar) ? dialectkw.quotechar : '"'
     openquotechar = haskey(dialectkw, :openquotechar) ? dialectkw.openquotechar : nothing
-    quoted && delim == something(openquotechar, quotechar) && return (0.0, 0, 0)
+    quoted && delim == something(openquotechar, quotechar) && return (0.0, 0, 0, 0)
     d = K.Dialect(; delim, dialectkw...)
     bi = K.index(buf, d; datastart, parallel=false, indexkw...)
     counts = Int[]
@@ -295,13 +295,13 @@ function _scoredelim(buf::Vector{UInt8}, delim::Char, datastart::Int,
         push!(counts, K.nfields(ci, lr))
         length(counts) >= 11 && break
     end
-    isempty(counts) && return (0.0, 0, 0)
+    isempty(counts) && return (0.0, 0, 0, 0)
     # the modal field count is voted by the DATA rows when there are any; the
     # header row alone must not elect a delimiter (a space in "Created Date"
     # over one-word data rows) — it only has to agree with the winner
     voters = length(counts) > 1 ? counts[2:end] : counts
     modal = argmax(c -> count(==(c), voters), unique(voters))
-    return (count(==(modal), voters) / length(voters), modal, first(counts))
+    return (count(==(modal), voters) / length(voters), modal, first(counts), length(counts))
 end
 
 function _detectdelim(sample::Vector{UInt8}, dialectkw::NamedTuple, indexkw::NamedTuple)
@@ -314,15 +314,15 @@ function _detectdelim(sample::Vector{UInt8}, dialectkw::NamedTuple, indexkw::Nam
     # and delimiter-independent) so candidates don't each index the full sample
     stop, rows = datastart, 0
     while stop <= length(sample) && rows < 12
-        stop = K.nextrowstart(sample, stop, length(sample), d0, false)
+        stop = K.nextrowstart(sample, stop, length(sample), d0, false, true)
         rows += 1
     end
     scoresample = stop > length(sample) ? sample : sample[1:stop - 1]
     best, bestdelim = (false, false, 0.0, 0), first(DELIM_CANDIDATES)
-    headerfields = Dict{Char, Int}()
+    headercandidate = false
     for c in DELIM_CANDIDATES
-        consistency, fields, firstfields = _scoredelim(scoresample, c, datastart,
-                                                       dialectkw, indexkw)
+        consistency, fields, firstfields, nrows = _scoredelim(scoresample, c, datastart,
+                                                              dialectkw, indexkw)
         # a real delimiter splits the FIRST row and the data rows the same way:
         # a candidate that only appears in the header (a space in "Created
         # Date" over one-word data rows) is not represented in the data
@@ -331,34 +331,35 @@ function _detectdelim(sample::Vector{UInt8}, dialectkw::NamedTuple, indexkw::Nam
         # row (or an all-header sample) the field count is no evidence at all —
         # a one-line "\"a, b\", \"c\"" must not elect the space — so candidates
         # then tie on consistency and CSV.jl's candidate order decides
-        evidence = length(scoresample) > 0 && consistency > 0 && fields > 1 &&
-                   count(==(UInt8('\n')), scoresample) >= 2
+        evidence = nrows >= 2 && consistency > 0 && fields > 1
         # 0.10 tier order: a candidate PRESENT IN THE HEADER outranks one that
         # only appears in the data ("A;B;C" over "1,1,10" rows keeps ';')
         inheader = firstfields > 1
-        score = represented ? (true, inheader, consistency, evidence ? fields : 0) :
-                (fields > 1 && consistency > 0 && length(scoresample) > 0 &&
-                 count(==(UInt8('\n')), scoresample) >= 2) ?
+        headercandidate |= inheader
+        score = represented && nrows >= 2 ?
+                    (true, inheader, consistency, evidence ? fields : 0) :
+                evidence ?
                     (true, false, consistency, evidence ? fields : 0) :   # data-only candidate
                     (false, false, 0.0, 0)
         if score > best
             best, bestdelim = score, c
         end
-        headerfields[c] = firstfields
     end
     # a candidate that structures the header AND the data rows won above; the
     # remaining cases (delimiter only in the header, or the sample too short
     # for field-consistency evidence) follow 0.10's byte-count tiers exactly,
     # so files that detected one way for years keep detecting that way
     (best[1] && best[2]) && return bestdelim
-    return _detectdelim_bytecounts(scoresample, datastart, dialectkw, bestdelim, best[1])
+    return _detectdelim_bytecounts(scoresample, datastart, dialectkw, bestdelim,
+                                   best[1] && headercandidate)
 end
 
 # 0.10's detector (detection.jl): count candidate bytes outside quotes over the
 # header row and up to 10 data rows; tier 1 = present in header AND total count
 # divisible by nlines; tier 2 = divisible by nlines; tier 3 = most frequent in
-# the header, SPACE excluded; else ','. `fallback` is the consistency scorer's
-# data-only pick, used when it found real data evidence.
+# the header, SPACE excluded; else ','. A one-row sample goes directly to tier
+# 3 so a header phrase cannot elect space. `fallback` is the consistency
+# scorer's data-only pick, used when it found real data evidence.
 function _detectdelim_bytecounts(sample::Vector{UInt8}, datastart::Int, dialectkw::NamedTuple,
                                  fallback::Char, havedataevidence::Bool)
     quotechar = haskey(dialectkw, :quotechar) ? dialectkw.quotechar : '"'
@@ -394,6 +395,19 @@ function _detectdelim_bytecounts(sample::Vector{UInt8}, datastart::Int, dialectk
     nlines += parsedany && !lastnl
     nlines == 0 && return ','
     cands = (',', '\t', ' ', '|', ';', ':')
+    # A single row can only be a header. Space is not evidence there (for
+    # example `Created Date`); use the old detector's header-only tier, which
+    # deliberately excludes space, and otherwise retain the comma default.
+    if nlines == 1
+        bestc, bestn = ',', 0
+        for c in (',', '\t', '|', ';', ':')
+            n = hcounts[UInt8(c) + 1]
+            if n > bestn
+                bestc, bestn = c, n
+            end
+        end
+        return bestc
+    end
     for c in cands   # tier 1
         h = hcounts[UInt8(c) + 1]; n = counts[UInt8(c) + 1]
         h > 0 && n > 0 && n % nlines == 0 && return c
@@ -409,7 +423,8 @@ function _detectdelim_bytecounts(sample::Vector{UInt8}, datastart::Int, dialectk
             bestc, bestn = c, n
         end
     end
-    return bestc
+    bestn > 0 && return bestc
+    return havedataevidence ? fallback : ','
 end
 
 """
@@ -473,7 +488,7 @@ function _rawrowoffset(buf::Vector{UInt8}, d::K.Dialect, datastart::Int, n::Int)
     off = datastart
     for _ in 1:(n - 1)
         off > length(buf) && return length(buf) + 1
-        off = K.nextrowstart(buf, off, length(buf), d, false)
+        off = K.nextrowstart(buf, off, length(buf), d, false, true)
     end
     return off
 end
@@ -510,7 +525,7 @@ function _footeroffset(buf::Vector{UInt8}, d::K.Dialect, rawstart::Int, footersk
             nrows += 1
             starts[mod1(nrows, footerskip)] = rowstart
         end
-        rowstart = K.nextrowstart(buf, rowstart, length(buf), d, false)
+        rowstart = K.nextrowstart(buf, rowstart, length(buf), d, false, true)
     end
     footerskip >= nrows && return rawstart
     return starts[mod1(nrows - footerskip + 1, footerskip)]
@@ -988,7 +1003,10 @@ end
 # becomes missing with a recorded problem (0.10 semantics, strict=false).
 function _narrowtypes(t::K.ParsedTable, req, sel)
     all(x -> x === nothing, req) && return t
-    keep = sel === nothing ? collect(1:length(req)) : sel   # output pos -> file col
+    # The kernel emits selected columns in file order. `sel` retains the user's
+    # request order and may contain duplicates, so normalize it before mapping
+    # output position back to the file-column-indexed `req` vector.
+    keep = sel === nothing ? collect(1:length(req)) : sort!(unique(sel))
     cols = AbstractVector[t.columns...]
     problems = copy(t.problems)
     for (o, j) in enumerate(keep)
@@ -997,7 +1015,9 @@ function _narrowtypes(t::K.ParsedTable, req, sel)
         c = cols[o]
         Base.nonmissingtype(eltype(c)) in (Int64, Int128, Float64) || continue
         out = Vector{Union{T, Missing}}(undef, length(c))
-        anymissing = false
+        # The kernel widens a user-declared Union{Missing,T} before this door.
+        # Preserve that declaration even when every value is present.
+        anymissing = Missing <: eltype(c)
         @inbounds for i in eachindex(c)
             x = c[i]
             if x === missing

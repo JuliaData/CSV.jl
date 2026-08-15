@@ -1,6 +1,6 @@
 # Tables.Scan pushdown integration tests.
 #
-# Run:  julia --project=kernel kernel/test_scan.jl
+# Run:  julia --startup-file=no --project=test test/scan.jl
 #
 # THE contract (from Tables.apply's docstring): pushing a Scan into the kernel
 # must produce the same table as parsing everything and applying the Scan
@@ -257,13 +257,15 @@ end
     end
 end
 
-@testset "limit preserves full-parse inference without parsing excluded values" begin
+@testset "limit restricts inference and parsing to retained rows" begin
     dirty = "a,b\n1,x\n2,y\noops,z\n"
     scan = T.Scan(limit=2)
     for cb in (8, 16, 1 << 20), par in (false, true)
-        ref = T.finish(K.parse(dirty; chunkbytes=cb, parallel=par), scan)
         t = S.read(dirty, scan; chunkbytes=cb, parallel=par)
-        @test sametable(t, ref)
+        @test t[:a] isa Vector{Int64}
+        @test t[:a] == [1, 2]
+        @test String.(t[:b]) == ["x", "y"]
+        @test isempty(K.problems(t))
     end
 end
 

@@ -1,7 +1,6 @@
-# Differential battery: CSVApi (the kernel's front doors) vs the real CSV.jl.
+# Differential battery: CSVApi (the kernel's front doors) vs frozen CSV 0.10.
 #
-# Run:  julia --project=. -t4 kernel/test_api.jl     (the root project IS dev
-# CSV.jl, so `using CSV` loads the old implementation as the oracle.)
+# Run:  julia --startup-file=no --project=test -t4 test/api.jl
 #
 # Strategy: every behavior CSV.jl and the new API share is asserted by VALUE
 # equality on the same input (string containers and pooling wrappers
@@ -17,6 +16,15 @@ using Test, Dates, Tables, PooledArrays, CodecZlib
 using CSV, LegacyCSV
 const A = CSV.CSVApi
 const K = CSV.CSVKernel
+
+# Minimal ordered AbstractDict for precedence tests. Base.Dict iteration order
+# is not an API contract, while CSV's rule is explicitly first matching Regex.
+struct OrderedTestDict <: AbstractDict{Any, Any}
+    entries::Vector{Pair{Any, Any}}
+end
+Base.length(d::OrderedTestDict) = length(d.entries)
+Base.iterate(d::OrderedTestDict, state::Int=1) =
+    state > length(d.entries) ? nothing : (d.entries[state], state + 1)
 # The 0.10 implementation is the behavioral ORACLE throughout this file: every
 # `LegacyCSV.File`/`LegacyCSV.write` below that means "the old behavior" is spelled LegacyCSV.
 
@@ -117,6 +125,18 @@ end
     @test spec.delim == ';'
     @test A.sniff(IOBuffer("n\n1\n2\n")).header === true   # single col, text over ints
     @test A.sniff(IOBuffer("1,2\n3,4\n")).header === false # numbers all the way down
+    @test A.sniff(IOBuffer("Created Date\n")).delim == ','  # one header row: space is not evidence
+    @test A.sniff(IOBuffer("a;b;c\n")).delim == ';'
+    @test A.sniff(IOBuffer("")).delim == ','
+    @test A.sniff(IOBuffer(String(UInt8[0xef, 0xbb, 0xbf]) * "a;b\n1;2\n")).delim == ';'
+    # Two rows are enough field-consistency evidence, including CRLF input.
+    @test A.sniff(IOBuffer("x y:a:p,q:p,q:p,q\r\n\"p:q\":b:c:d:x y")).delim == ':'
+    # Equal scorers retain candidate order. The old header-max tier still
+    # outranks data-only evidence; data evidence is the final fallback only
+    # when that tier has no non-space candidate.
+    @test A.sniff(IOBuffer("a,b;c\n1,2;3\n")).delim == ','
+    @test A.sniff(IOBuffer("header, text\n1:2\n3:4\n")).delim == ','
+    @test A.sniff(IOBuffer("header text\n1:2\n3:4\n")).delim == ':'
     @test_throws ArgumentError A.File(IOBuffer("a b\n1  2\n"); ignorerepeated=true)
     @test_throws ArgumentError LegacyCSV.File(IOBuffer("a b\n1  2\n"); ignorerepeated=true)
 end
@@ -169,6 +189,21 @@ end
     @test_throws ArgumentError A.File(IOBuffer("a,b\n1,2\n"); header=2, skipto=1)
     @test_throws ArgumentError A.File(IOBuffer("a,b\n1,2\n"); limit=-1)
     @test A.File(IOBuffer("a,b\n1,2\n"); footerskip=5).table.nrows == 0
+    # Comment rows count for header/skipto positions but not footerskip. Quoted
+    # physical lines that start with '#' remain one data row.
+    commentheavy = "#lead\r\nh1,h2\r\n#between \" poison\r\n1,2\r\n\"top\r\n# content\r\nbottom\",3\r\n#tail"
+    f = A.File(IOBuffer(commentheavy); comment="#", header=2, skipto=4,
+               footerskip=1, delim=',')
+    @test Base.names(f) == [:h1, :h2]
+    @test f.h1 == [1]
+
+    limitedtype = A.File(IOBuffer("a\n1\nx\n"); limit=1)
+    @test limitedtype.a isa Vector{Int64}
+    @test limitedtype.a == [1]
+
+    # A blank or comment row may sit between explicitly listed header rows.
+    against("a,b\n\nA,B\n1,2\n"; kw=(; header=[1, 2]))
+    against("a,b\n# gap\nA,B\n1,2\n"; kw=(; header=[1, 2], comment="#"))
 end
 
 @testset "missingstring agrees (modulo the pinned empty delta)" begin
@@ -198,6 +233,55 @@ end
     @test any(p -> p.kind == :invalid_value, A.problems(f))
     @test_throws Exception A.File(IOBuffer("a\n1\nbad\n"); types=Int64, strict=true)
     @test_throws Exception LegacyCSV.File(IOBuffer("a\n1\nbad\n"); types=Int64, strict=true)
+
+    # Narrow conversion is an API-door operation. Requests remain indexed by
+    # file column while selected output columns remain in file order.
+    selected = A.File(IOBuffer("a,b,c\n1,2,300\n3,4,500\n");
+                      types=Dict(:a => Int8, :c => Int16), select=[:c, :a])
+    @test Base.names(selected) == [:a, :c]
+    @test selected.a == Int8[1, 3]
+    @test selected.c == Int16[300, 500]
+    duplicate = A.File(IOBuffer("a,b,c\n1,2,300\n");
+                       types=Dict(:a => Int8, :c => Int16), select=[3, 1, 3])
+    @test Base.names(duplicate) == [:a, :c]
+
+    overflow = A.File(IOBuffer("a\n127\n128\n"); types=Int8)
+    @test isequal(collect(overflow.a), [Int8(127), missing])
+    @test [(p.row, p.col, p.kind) for p in A.problems(overflow)] ==
+          [(2, 1, :invalid_value)]
+    unsigned = A.File(IOBuffer("u\n$(typemax(UInt64))\n"); types=UInt64)
+    @test unsigned.u == UInt64[typemax(UInt64)]
+    declarednarrow = A.File(IOBuffer("a\n1\n2\n"); types=Union{Missing, Int8})
+    @test eltype(declarednarrow.a) == Union{Missing, Int8}
+    declaredstring = A.File(IOBuffer("a\nx\ny\n"); types=Union{Missing, String},
+                            pool=false)
+    @test eltype(declaredstring.a) == Union{Missing, K.CompactString}
+    declaredpoolinput = "a\n" * join(fill("x", 40), '\n') * "\n"
+    declaredpool = A.File(IOBuffer(declaredpoolinput);
+                          types=Union{Missing, String}, pool=true)
+    @test declaredpool.a isa PooledArrays.PooledArray
+    @test eltype(declaredpool.a) == Union{Missing, String}
+
+    # Exact keys beat Regex keys. Among Regex keys, the first matching entry in
+    # the AbstractDict wins for types, dateformat, and pool.
+    typemap = OrderedTestDict(Any[r"_col$" => Int16, r"^a" => Int32,
+                                  :a_col => Int8])
+    regexfile = A.File(IOBuffer("a_col,b_col,c\n1,2,3\n"); types=typemap)
+    @test eltype(regexfile.a_col) == Int8
+    @test eltype(regexfile.b_col) == Int16
+    firstregex = OrderedTestDict(Any[r"^a" => Int16, r"_col$" => Int32])
+    @test eltype(A.File(IOBuffer("a_col\n1\n"); types=firstregex).a_col) == Int16
+
+    dateformats = OrderedTestDict(Any[r"^date" => "dd/mm/yyyy",
+                                      r"1$" => "mm/dd/yyyy"])
+    dates = A.File(IOBuffer("date1,date2\n03/04/2020,05/06/2021\n");
+                   dateformat=dateformats)
+    @test dates.date1 == [Date(2020, 4, 3)]
+    pools = OrderedTestDict(Any[r"^a" => true, r"_col$" => false])
+    pooledinput = "a_col,b_col\n" * join(fill("x,y", 40), '\n') * "\n"
+    pooled = A.File(IOBuffer(pooledinput); pool=pools)
+    @test pooled.a_col isa PooledArrays.PooledArray
+    @test !(pooled.b_col isa PooledArrays.PooledArray)
 end
 
 @testset "select and drop agree" begin
@@ -398,6 +482,14 @@ end
     @test collect(A.File(Vector{UInt8}(codeunits("a,b\n1,2\n"))).a) == [1]
     @test collect(A.File(`cat $path`).a) == [1]
     @test_throws ArgumentError A.File("definitely-not-a-file.csv")
+    @test collect(A.File(codeunits("a,b\n1,2\n")).a) == [1]
+    parent = Vector{UInt8}(codeunits("prefixa,b\n1,stable value\nsuffix"))
+    lo = ncodeunits("prefix") + 1
+    hi = lo + ncodeunits("a,b\n1,stable value\n") - 1
+    viewfile = A.File(@view(parent[lo:hi]); types=Dict(:b => String), pool=false)
+    fill!(@view(parent[lo:hi]), UInt8('x'))
+    @test viewfile.a == [1]
+    @test String(viewfile.b[1]) == "stable value"
     rm(path)
     # Zero-byte files use the read path. Directories and FIFOs fail before a
     # read or mmap. A file exactly at the threshold uses the mmap branch.
@@ -670,6 +762,10 @@ end # @testset CSVApi
     f = A.File(IOBuffer("1,2\n3,4\n"); transpose=true, header=false)
     @test Tables.getcolumn(f, :Column1) == [1, 2] && Tables.getcolumn(f, :Column2) == [3, 4]
     @test_throws ArgumentError A.File(IOBuffer(input); transpose=true, select=[:name])
+    paddedtranspose = A.File(IOBuffer("a, 1 , \" 2 \" \nb, 3.5 , 4.5 \n");
+                               transpose=true)
+    @test paddedtranspose.a == [1, 2]
+    @test paddedtranspose.b == [3.5, 4.5]
     # Quoted newlines, escapes, empty rows, unicode, ragged tails, and pinned
     # types retain the same names and values as LegacyCSV.jl.
     transposedcases = [

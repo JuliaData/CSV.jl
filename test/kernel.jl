@@ -1,6 +1,6 @@
 # Kernel test suite.
 #
-# Run:  julia --project=kernel -t4 kernel/test.jl
+# Run:  julia --startup-file=no --project=test -t4 test/kernel.jl
 #
 # Strategy: the scalar scanner is the correctness oracle. Every structural case is
 # run through each eligible scanner (scalar / SWAR / vector) both sequentially
@@ -39,9 +39,9 @@ end
 indexsnapshot(buf, bi) =
     (; rows=rawrows(buf, bi), nrows=bi.nrows, unclosedquote=bi.unclosedquote)
 
-# Index `input` every way the kernel supports for this dialect, asserting all ways
-# agree, and return the (single) raw-rows result.
-function idxall(input::AbstractString; chunks=(3, 7, 16, 64), kw...)
+# Build every index variant supported by a dialect. Kept separate so tests can
+# pin the geometry matrix itself, not only the results produced by that matrix.
+function idxvariants(input::AbstractString; chunks=(3, 7, 16, 64), kw...)
     buf = Vector{UInt8}(codeunits(input))
     d = K.Dialect(; kw...)
     variants = Pair{String, Any}[]
@@ -69,6 +69,13 @@ function idxall(input::AbstractString; chunks=(3, 7, 16, 64), kw...)
             end
         end
     end
+    return variants
+end
+
+# Index `input` every way the kernel supports for this dialect, assert agreement,
+# and return the raw rows.
+function idxall(input::AbstractString; chunks=(3, 7, 16, 64), kw...)
+    variants = idxvariants(input; chunks, kw...)
     ref = variants[1].second
     for (label, got) in variants
         @test got == ref
@@ -324,6 +331,30 @@ end
     @test idxall("//x\na\n"; comment="//")             == [["a"]]
     # '#' mid-line is content, not a comment
     @test idxall("a#b,c\n"; comment="#")               == [["a#b","c"]]
+    # Comment bytes are opaque. An unmatched quote cannot poison later rows,
+    # including CRLF rows and every tiny sequential/parallel chunk geometry.
+    poisoned = "# unmatched \" quote,comma\r\na,b\r\n1,2\r\n"
+    @test idxall(poisoned; comment="#") == [["a", "b"], ["1", "2"]]
+    labels = first.(idxvariants(poisoned; comment="#"))
+    @test labels == ["scalar/seq";
+                     [x for cb in (3, 7, 16, 64) for x in ("scalar/seq$cb", "scalar/par$cb")]]
+    # A comment marker at a physical line start inside a quoted multiline field
+    # is content because the structural row has not ended.
+    @test idxall("a,b\n\"top\n# content \"\" quote\nbottom\",1\n"; comment="#") ==
+          [["a", "b"], ["\"top\n# content \"\" quote\nbottom\"", "1"]]
+    # A shorter row cannot match a longer comment prefix. A matching final
+    # comment row without a terminator is still dropped.
+    @test idxall("##\na\n###last"; comment="###") == [["##"], ["a"]]
+
+    # `nextrowstart` only treats `from` as comment-capable when the caller proves
+    # it is a true row start. A mid-row range probe must honor quote state.
+    midbuf = Vector{UInt8}(codeunits("x# \"\nstill quoted\"\nnext\n"))
+    middialect = K.Dialect(comment="#")
+    nextpos = findfirst(==(UInt8('n')), midbuf)
+    @test K.nextrowstart(midbuf, 2, length(midbuf), middialect, false) == nextpos
+    rowbuf = Vector{UInt8}(codeunits("# \" poison\nnext\n"))
+    @test K.nextrowstart(rowbuf, 1, length(rowbuf), middialect, false, true) ==
+          findlast(==(UInt8('n')), rowbuf)
 end
 
 @testset "structural: dialects" begin
@@ -343,7 +374,7 @@ end
 end
 
 @testset "structural: ignorerepeated" begin
-    # Semantics pinned against CSV.jl (kernel/probe_ignorerepeated.jl):
+    # Semantics pinned against CSV.jl by the legacy differential probes:
     # runs collapse, leading runs are consumed, trailing runs fold into the row
     # end (also at EOF and before CRLF), an all-delimiter row is ONE empty field
     # (a short row, not an empty row), and comments only match at the raw line
@@ -756,9 +787,60 @@ end
     bi.chunks[1].firstdatarow += 1
     opts = K.makevalueopts(K.Dialect())
     @test K.sampletypes(buf, bi.chunks, 1, opts; nsample=2) == [Float64]
+    # Type inference cannot inspect rows excluded by `limit`.
+    limitedtype = K.parse("a\n1\nx\n"; limit=1)
+    @test limitedtype[:a] isa Vector{Int64}
+    @test limitedtype[:a] == [1]
     @test_throws ArgumentError K.sampletypes(buf, bi.chunks, 1, opts; nsample=0)
     @test_throws ArgumentError K.parse("a\n1\n"; types=Int64, nsample=0)
     @test_throws ArgumentError K.parse("a\n1\n"; chunkbytes=0)
+end
+
+@testset "typed: surrounding blanks on every parse path" begin
+    # Detection and direct typed storage use the same trimmed span.
+    padded = "a\n 1 \n 2 \n 3 \n"
+    opts = K.makevalueopts(K.Dialect())
+    bytes = Vector{UInt8}(codeunits("\t42 \t"))
+    @test K.detecttype(bytes, 1, length(bytes), opts) === Int64
+    direct = K.parse(padded; types=Int64, chunkbytes=4, parallel=true)
+    @test direct[:a] == [1, 2, 3]
+
+    # The masked driver stages compact output. A later Float64 promotion makes
+    # earlier Int64 segments stale and exercises `restale!` with padded cells.
+    promoted = "a\n 1 \n 2 \n 3.5 \n"
+    masked = K.parse(promoted; rowmask=fill(true, 3), nsample=1,
+                     chunkbytes=4, parallel=true)
+    @test masked[:a] == [1.0, 2.0, 3.5]
+
+    # The unmasked direct driver performs the same late promotion through
+    # `redirect!` into the replacement final column.
+    redirected = K.parse(promoted; nsample=1, chunkbytes=4, parallel=true)
+    @test redirected[:a] == [1.0, 2.0, 3.5]
+
+    # Typed quoted values trim their content, while String columns retain it.
+    @test K.parse("a\n\" 2 \"\n"; types=Int64)[:a] == [2]
+    @test collect(K.parse("a\n  x  \n\" y \"\n"; types=String)[:a]) ==
+          ["  x  ", " y "]
+
+    # Sentinel matching uses the same blank tolerance without requiring global
+    # whitespace stripping, for quoted and unquoted cells.
+    sent = K.parse("a\n  NA \n\"\tNA\t\"\n1\n"; sentinels=["NA"])
+    @test isequal(collect(sent[:a]), [missing, missing, 1])
+    exactblanksentinel = K.parse("a\n  NA \nNA\n"; sentinels=["  NA "], types=String)
+    @test isequal(String.(coalesce.(exactblanksentinel[:a], "present-missing")),
+                  ["present-missing", "NA"])
+
+    # Interior spaces belong to the syntax. Only outer blanks are removed.
+    temporal = K.parse("d\n  Jan 02 2024  \n"; dateformat="u dd yyyy")
+    @test temporal[:d] == [Date(2024, 1, 2)]
+    grouped = K.parse("n;x\n 1,234 ;ok\n"; delim=';', groupmark=',')
+    @test grouped[:n] == [1234]
+    bools = K.parse("b\n YES \n NO \n";
+                    truestrings=["YES"], falsestrings=["NO"])
+    @test bools[:b] == [true, false]
+    stripped = K.parse("a\n \n 2 \n"; stripwhitespace=true,
+                       ignoreemptyrows=false)
+    @test isequal(collect(stripped[:a]), [missing, 2])
 end
 
 @testset "typed: user-provided types" begin
@@ -1283,6 +1365,13 @@ end
                       chunkbytes=1 << 20, parallel=false)[:a]
     @test limited isa K.PooledColumn
     @test K.materialize(limited) == fill("cat", 31)
+    # A declared missing union is retained by every String container even when
+    # the data has no missing cells.
+    declaredflat = K.parse("a\nx\ny\n"; types=Union{Missing, String}, pool=false)[:a]
+    @test declaredflat isa K.CompactStringVector{Union{K.CompactString, Missing}}
+    declaredpool = K.parse("a\n" * join(fill("x", 40), '\n') * "\n";
+                           types=Union{Missing, String}, pool=true)[:a]
+    @test declaredpool isa K.PooledColumn{Union{K.CompactString, Missing}}
     # absolute cap abandons early
     tall = K.parse("a\n" * join(1:200, "\n") * "\n"; types=String, pool=(1.0, 8))
     @test tall[:a] isa K.CompactStringVector
