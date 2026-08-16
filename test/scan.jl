@@ -49,13 +49,13 @@ scans = [
     T.Scan(filter = (T.col(:price) > 100) & T.in_(T.col(:region), ("east", "west"))),
     T.Scan(filter = T.isnull(T.col(:region)) | startswith(T.col(:notes), "note a")),
     T.Scan(filter = !T.isnull(T.col(:notes)), select = (:notes, :region)),
-    T.Scan(filter = T.col(:flag) == true, select = (:qty, :flag => :f)),
+    T.Scan(filter = T.coleq(T.col(:flag), true), select = (:qty, :flag => :f)),
     T.Scan(limit = 17),
     T.Scan(limit = 17, offset = 5),
     T.Scan(offset = 1990),
     T.Scan(filter = T.col(:qty) >= 25, limit = 100, offset = 10,
            select = (:qty, :price => Float64 => :p)),
-    T.Scan(filter = T.col(:region) != "east"),                     # != never matches missing
+    T.Scan(filter = T.colne(T.col(:region), "east")),              # != never matches missing
 ]
 
 @testset "contract: pushdown ≅ generic finish" begin
@@ -114,7 +114,7 @@ end
 
 @testset "masked inference: excluded garbage cannot degrade a type (pinned divergence)" begin
     dirty = "region,qty\neast,1\nwest,oops\neast,3\n"
-    scan = T.Scan(filter = T.col(:region) == "east")
+    scan = T.Scan(filter = T.coleq(T.col(:region), "east"))
     t = S.scan(dirty, scan)
     @test t[:qty] isa Vector{Int64} && t[:qty] == [1, 3]            # pushdown: Int64
     ref = T.finish(K.parse(dirty), scan)
@@ -123,10 +123,10 @@ end
 
 @testset "problems reference input rows; excluded rows do not report" begin
     dirty = "a,b\n1,x\n2,y\nbad,z\n4,w\n"
-    scan = T.Scan(select = (:a => Int64, :b), filter = T.col(:b) != "z")
+    scan = T.Scan(select = (:a => Int64, :b), filter = T.colne(T.col(:b), "z"))
     t = S.scan(dirty, scan)
     @test isequal(collect(t[:a]), [1, 2, 4]) && isempty(K.problems(t))   # bad row excluded ⇒ silent
-    scan2 = T.Scan(select = (:a => Int64,), filter = T.col(:b) != "y")
+    scan2 = T.Scan(select = (:a => Int64,), filter = T.colne(T.col(:b), "y"))
     t2 = S.scan(dirty, scan2)
     @test any(p -> p.row == 3 && p.col == 1, K.problems(t2))        # row 3 in INPUT numbering
 
