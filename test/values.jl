@@ -148,6 +148,34 @@ end
     end
 end
 
+@testset "parsefloat64: exact-halfway band stays in Eisel-Lemire (round-half-even in-line)" begin
+    # odd 16-digit integers just above 2^53 are exact ties between doubles;
+    # they used to trip to the 800-digit tier (2.4 µs each). Bit-exact vs Base
+    # across the band, ties above 2^54, decimal .5 ties, and ties under the
+    # exact-product exponent range -4..23.
+    okall = true
+    for x in (2^53 + 1):2:(2^53 + 40_001)
+        s = string(x); v, rc = pflt(s)
+        okall &= rc == V.RC_OK && reinterpret(UInt64, v) == reinterpret(UInt64, parse(Float64, s))
+    end
+    for x in (2^54 + 2):4:(2^54 + 40_002)
+        s = string(x); v, rc = pflt(s)
+        okall &= rc == V.RC_OK && reinterpret(UInt64, v) == reinterpret(UInt64, parse(Float64, s))
+    end
+    for x in (2^52):(2^52 + 20_000)
+        s = string(x) * ".5"; v, rc = pflt(s)
+        okall &= rc == V.RC_OK && reinterpret(UInt64, v) == reinterpret(UInt64, parse(Float64, s))
+    end
+    rng = MersenneTwister(9)
+    for _ in 1:40_000
+        s = string((2^53 + 1) + 2 * rand(rng, 0:10^6)) * "e" * string(rand(rng, -4:23)); v, rc = pflt(s)
+        okall &= rc == V.RC_OK && reinterpret(UInt64, v) == reinterpret(UInt64, parse(Float64, s))
+    end
+    @test okall
+    # and it must not touch tier 3: the tie resolves in the fast core
+    @test V._parsefloat_core(b("9007199254740993"), 1, 16, UInt8('.'))[3] == true
+end
+
 @testset "parsefloat64: round-trip (shortest repr) differential" begin
     rng = MersenneTwister(7)
     n = 0

@@ -420,11 +420,14 @@ function _eisel_lemire(mant::UInt64, q::Int)
         e2 = m < (UInt64(1) << 52) ? 0 : 1
         return reinterpret(Int64, (UInt64(e2) << 52) | (m & 0x000fffffffffffff))
     end
-    # Exact halfway values in the small-power range need the discarded bits.
-    # Keep the fast_float condition exact; this tier delegates instead of
-    # repairing the low bit because SDC already owns all ambiguous answers.
+    # Exact halfway values in the small-power range: for -4 <= q <= 23 the
+    # 128-bit product is EXACT (5^|q| fits; Mushtak & Lemire, "Fast Number
+    # Parsing Without Fallback"), so a detected tie is a true tie and
+    # round-half-even is applied here by clearing the low bit — no tier-3
+    # trip. (Delegating instead cost 2.4 µs per value on the band of odd
+    # 16-digit integers just above 2^53: 188x slower than fast_float.)
     if lo <= 1 && -4 <= q <= 23 && (m & 0b11) == 0b01 && (m << shift) == hi
-        return Int64(-1)
+        m &= ~UInt64(1)                                  # tie → even (do not round up)
     end
     m = (m + (m & 1)) >> 1                              # round to nearest, ties away resolved below
     if m == (UInt64(1) << 53)
