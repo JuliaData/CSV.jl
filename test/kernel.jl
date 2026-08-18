@@ -1934,4 +1934,42 @@ end
     end
 end
 
+@testset "concurrency hygiene: no boxed captures in spawn-containing methods" begin
+    # A variable captured by a task body or closure that is assigned more than
+    # once is lowered to a shared, mutable `Core.Box`: the exact hazard
+    # `Threads.@spawn`'s `\$x` interpolation exists for (and, incidentally, an
+    # `Any`-typed load inside every task that reads it). `for`-loop iteration
+    # variables are fresh per iteration and never need `\$`; this invariant
+    # guards the OTHER kind — driver locals reassigned in a later branch. Rather
+    # than eyeball 17 spawn sites, lower every method that spawns and assert
+    # no box survives.
+    boxed = String[]
+    for m in (K,)
+        for name in names(m; all=true)
+            f = try getfield(m, name) catch; continue end
+            f isa Function || continue
+            for meth in methods(f)
+                meth.module === m || continue
+                ci = try Base.uncompressed_ast(meth) catch; continue end
+                lines = string.(ci.code)
+                any(l -> occursin("@spawn", l) || occursin("Threads.Task", l) ||
+                         occursin("Base.Threads", l), lines) || continue
+                nb = count(l -> occursin("Core.Box()", l), lines)
+                nb == 0 || push!(boxed, "$(meth.name): $nb boxed captures")
+            end
+        end
+    end
+    @test isempty(boxed)
+    # and the loop-variable question itself, pinned: each spawned task sees its
+    # own iteration value even when tasks outlive the loop
+    seen = zeros(Int, 64)
+    @sync for b in 1:64
+        Threads.@spawn begin
+            sleep(0.001 * (65 - b) / 64)   # later iterations finish FIRST
+            seen[b] = b
+        end
+    end
+    @test seen == 1:64
+end
+
 end # top-level testset

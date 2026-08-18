@@ -2827,6 +2827,17 @@ allocatecolumn(::Type{Missing}, n::Int, buf, e, cq) = nothing
 allocatecolumn(::Type{String}, n::Int, buf, e, cq) = StringColumn(n, buf, e, cq)
 allocatecolumn(::Type{T}, n::Int, buf, e, cq) where {T} = TypedColumn{T}(n)
 
+# Number of leading chunks needed to cover `limit` data rows (all of them when
+# the file is shorter than the limit).
+function _limitchunks(chunks::Vector{ChunkIndex}, rowbases::Vector{Int}, limit::Int)
+    lastk = 0
+    for k in eachindex(chunks)
+        lastk = k
+        rowbases[k] + nrows(chunks[k]) >= limit && break
+    end
+    return lastk
+end
+
 # Resolve the `select` keyword against the discovered names: nothing (all) or
 # a vector of Bool (positional mask), Int, Symbol, or String. Unselected
 # columns are never sampled, parsed, or stitched — they simply don't exist to
@@ -3047,17 +3058,17 @@ function parse(buf::Vector{UInt8};
     # A caller holding a prebuilt index (the Scan integration indexes once for
     # header binding and reuses it across the filter's two parse phases) hands
     # it in; the chunk geometry and dialect must match how it was built.
-    local chunks::Vector{ChunkIndex}
-    indexunclosed = false
-    if index === nothing
-        chunks = chunkplan(buf, d, datastart, chunkbytes, parallel)
-        indexed = fill(false, length(chunks))
-    else
-        chunks = index.chunks
-        indexed = fill(true, length(chunks))
-        indexunclosed = index.unclosedquote
-    end
-    nch = length(chunks)
+    # Single-assignment discipline for everything a spawned task or closure
+    # captures (`allchunks`, `indexed`, `chunks`, `rowbases0`, the per-branch
+    # `final*`): a captured variable assigned twice is boxed (`Core.Box`),
+    # which is both the shared-mutable-capture hazard `\$x` interpolation exists
+    # for and a type-instability inside every task body that reads it. The
+    # test suite lowers this method and asserts no boxes remain.
+    allchunks::Vector{ChunkIndex} = index === nothing ?
+        chunkplan(buf, d, datastart, chunkbytes, parallel) : index.chunks
+    indexed = fill(index !== nothing, length(allchunks))
+    indexunclosed = index !== nothing && index.unclosedquote
+    nchall = length(allchunks)
     headerlog = ProblemLog(maxproblems)
 
     # -- index wave -----------------------------------------------------------
@@ -3067,61 +3078,54 @@ function parse(buf::Vector{UInt8};
     # stitch copies, no transient 2×-file-size allocation churn. The index pass
     # is a streaming scan (multi-GiB/s per core); giving up the fused
     # index-then-parse cache warmth on ONE column costs less than the copies.
-    toindex = [k for k in 1:nch if !indexed[k]]
+    toindex = [k for k in 1:nchall if !indexed[k]]
     if parallel && length(toindex) > 1
         @sync for k in toindex
             errormonitor(Threads.@spawn begin
-                indexone!(chunks[k], buf, d, sc)
+                indexone!(allchunks[k], buf, d, sc)
                 indexed[k] = true
             end)
         end
     else
         for k in toindex
-            indexone!(chunks[k], buf, d, sc)
+            indexone!(allchunks[k], buf, d, sc)
             indexed[k] = true
         end
     end
     # the header lives in the first chunk that still has rows after comment/empty
     # hygiene
-    headerchunk = something(findfirst(k -> totalrows(chunks[k]) > 0, 1:nch), 0)
+    headerchunk = something(findfirst(k -> totalrows(allchunks[k]) > 0, 1:nchall), 0)
 
     # -- header & column names ------------------------------------------------
     local names::Vector{Symbol}
     if header === true && headerchunk > 0
-        ci = chunks[headerchunk]
+        ci = allchunks[headerchunk]
         names = parseheader!(buf, ci, opts, d, headerlog)
     elseif header isa AbstractVector
         names = Symbol.(header)
     else
-        ncg = headerchunk == 0 ? 0 : nfields(chunks[headerchunk], chunks[headerchunk].firstdatarow)
+        ncg = headerchunk == 0 ? 0 :
+              nfields(allchunks[headerchunk], allchunks[headerchunk].firstdatarow)
         names = [Symbol("Column", j) for j in 1:ncg]
     end
     names = makeunique!(names)
     ncols = length(names)
-    fullrows = sum(nrows, chunks; init=0)
+    fullrows = sum(nrows, allchunks; init=0)
 
     # -- selection & row geometry ----------------------------------------------
     selected = resolveselect(select, names, ncols)
     # every chunk is indexed: global row bases are simply known
-    rowbases0 = cumsum([0; Int[nrows(ci) for ci in chunks[1:max(nch - 1, 0)]]])
+    rowbasesall = cumsum([0; Int[nrows(ci) for ci in allchunks[1:max(nchall - 1, 0)]]])
     if rowmask !== nothing
-        total = sum(nrows, chunks; init=0)
-        length(rowmask) == total ||
-            throw(ArgumentError("rowmask length $(length(rowmask)) != $total data rows"))
+        length(rowmask) == fullrows ||
+            throw(ArgumentError("rowmask length $(length(rowmask)) != $fullrows data rows"))
     end
-    if limit !== nothing
-        # Keep whole chunks up to the boundary. `sampletypes(maxrows=limit)`
-        # restricts inference to the retained prefix of the boundary chunk.
-        lastk = 0
-        for k in 1:nch
-            lastk = k
-            rowbases0[k] + nrows(chunks[k]) >= limit && break
-        end
-        keep = 1:lastk
-        chunks = chunks[keep]
-        rowbases0 = rowbases0[keep]
-        nch = lastk
-    end
+    # Keep whole chunks up to the limit boundary. `sampletypes(maxrows=limit)`
+    # restricts inference to the retained prefix of the boundary chunk. The
+    # working `chunks`/`rowbases0`/`nch` bind exactly once, here.
+    nch = limit === nothing ? nchall : _limitchunks(allchunks, rowbasesall, limit)
+    chunks = nch == nchall ? allchunks : allchunks[1:nch]
+    rowbases0 = nch == nchall ? rowbasesall : rowbasesall[1:nch]
 
     # -- type seeding (stratified over the probe chunks) -----------------------
     seed = resolvetypes(types, names, ncols; validate)
@@ -3270,17 +3274,17 @@ function parse(buf::Vector{UInt8};
         # copies. Pooled String columns are the one exception: they keep
         # chunk-local interning staging (levels must merge in chunk order) and
         # flow through the existing pooled merge below.
-        final = directwave!(cols, chunks, buf, d, opts, ncols, userprovided, promo,
-                            promolock, pendingproblems, segments, segtypes, selected,
-                            rowbases, ndata, rl, reportstructural, parallel, poolctx,
-                            sawmissing, tm, colopts)
+        finaldirect = directwave!(cols, chunks, buf, d, opts, ncols, userprovided, promo,
+                                  promolock, pendingproblems, segments, segtypes, selected,
+                                  rowbases, ndata, rl, reportstructural, parallel, poolctx,
+                                  sawmissing, tm, colopts)
         for k in 1:(nch - 1)
             chunks[k].unclosedquote &&
                 error("internal error: chunk $(k) ended inside a quoted field despite parity pre-scan")
         end
         # pooled columns merge chunk staging exactly as before
         pooljs = [j for j in stitchjs
-                  if final[j] === String && poolctx !== nothing && !poolctx.skip[j]]
+                  if finaldirect[j] === String && poolctx !== nothing && !poolctx.skip[j]]
         pstitch = j -> (cols[j] = stitchcolumn(String, segments, segtypes, j, chunkrows,
                                                rowbases, ndata, buf, opts.e, d.cq,
                                                _colspec(poolspecs, poolspec, j),
@@ -3318,29 +3322,29 @@ function parse(buf::Vector{UInt8};
         end
         # unify: re-parse the (rare) segments parsed under a stale type.
         # `promo` is frozen now; a Missing segment upgrades without work.
-        final = Type[promo[j] for j in 1:ncols]
+        finalstaged = Type[promo[j] for j in 1:ncols]
         stale = Tuple{Int, Int}[]
         for k in 1:nch, j in 1:ncols
             T = segtypes[k][j]
-            T !== final[j] && T !== Missing && push!(stale, (k, j))
+            T !== finalstaged[j] && T !== Missing && push!(stale, (k, j))
         end
         if !isempty(stale)
             if parallel && length(stale) > 1
                 @sync for (k, j) in stale
-                    errormonitor(Threads.@spawn restale!(chunks, final, segments, segtypes,
+                    errormonitor(Threads.@spawn restale!(chunks, finalstaged, segments, segtypes,
                                                          pendingproblems, buf, opts, d,
                                                          userprovided, k, j, rowmask, mb(k), rl(k),
                                                          poolctx, colopts))
                 end
             else
                 for (k, j) in stale
-                    restale!(chunks, final, segments, segtypes, pendingproblems, buf,
+                    restale!(chunks, finalstaged, segments, segtypes, pendingproblems, buf,
                              opts, d, userprovided, k, j, rowmask, mb(k), rl(k), poolctx,
                              colopts)
                 end
             end
         end
-        stitchcol = j -> (cols[j] = stitchcolumn(final[j], segments, segtypes, j, chunkrows,
+        stitchcol = j -> (cols[j] = stitchcolumn(finalstaged[j], segments, segtypes, j, chunkrows,
                                                  rowbases, ndata, buf, opts.e, d.cq,
                                                  poolctx !== nothing && poolctx.skip[j] ?
                                                      nothing : _colspec(poolspecs, poolspec, j),
