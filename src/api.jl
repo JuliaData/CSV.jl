@@ -1393,9 +1393,14 @@ end
     CSVApi.read(source, sink; kw...)
 
 `CSV.read` analog: parse `source` (same keywords as [`File`](@ref)) straight
-into a Tables.jl `sink` — `read(path, DataFrame)`, `read(path, columntable)`.
+into a Tables.jl `sink` — `read(path, DataFrame)`, `read(path, columntable)`,
+`read(path, Tables.matrix)`, or any function of a table. The sink is CALLED
+(0.10 semantics): a type sink runs its constructor, a function sink runs. The
+parsed columns are freshly allocated, so they are handed over as
+`Tables.CopiedColumns` — sinks that honor it (DataFrame) take ownership
+without copying.
 """
-read(source, sink; kw...) = Tables.materializer(sink)(File(source; kw...))
+read(source, sink; kw...) = sink(Tables.CopiedColumns(File(source; kw...)))
 
 # ---------------------------------------------------------------------------
 # Rows — streaming

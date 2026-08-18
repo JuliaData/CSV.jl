@@ -314,6 +314,21 @@ end
     @test Base.names(f) == [:my_col]
 end
 
+@testset "read(source, sink) calls the sink (functions, lambdas, types)" begin
+    csv = IOBuffer("a,b\n1,2\n3,4\n")
+    @test A.read(csv, Tables.matrix) == [1 2; 3 4]                 # function sink runs
+    seekstart(csv)
+    @test A.read(csv, Tables.rowtable) == [(a=1, b=2), (a=3, b=4)]
+    seekstart(csv)
+    @test A.read(csv, t -> sum(Tables.getcolumn(t, :a))) == 4     # lambda sink runs
+    seekstart(csv)
+    nt = A.read(csv, Tables.columntable)
+    @test nt.a == [1, 3] && nt.b == [2, 4]
+    # 0.10 legacy oracle agrees for the function sink
+    seekstart(csv)
+    @test A.read(csv, Tables.matrix) == LegacyCSV.read(IOBuffer("a,b\n1,2\n3,4\n"), Tables.matrix)
+end
+
 @testset "delimiter sniff ignores rows before a numbered header / skipto" begin
     # a one-line preamble ("skip me") used to elect the space as delimiter for
     # the whole file even though header=2 declares that row junk
