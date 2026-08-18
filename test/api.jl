@@ -313,7 +313,11 @@ end
 @testset "pooling agrees on values" begin
     vals = rand(["alpha", "beta", "gamma"], 400)
     input = "k\n" * join(vals, "\n") * "\n"
-    f = against(input)                                        # both default-pool
+    # 1.0 default is NO pooling (values must still agree with 0.10, which pools
+    # by default — the differential compares values, not container types)
+    f = against(input)
+    @test !(Tables.getcolumn(Tables.columns(f), :k) isa PooledArrays.PooledArray)
+    f = against(input; kw=(; pool=(0.2, 500)))               # 0.10's default policy, opted in
     @test Tables.getcolumn(Tables.columns(f), :k) isa PooledArrays.PooledArray
     f = against(input; kw=(; pool=false))
     @test !(Tables.getcolumn(Tables.columns(f), :k) isa PooledArrays.PooledArray)

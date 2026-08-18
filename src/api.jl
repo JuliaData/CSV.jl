@@ -39,7 +39,12 @@ const E = KernelExamples
 
 export sniff, Spec
 
-const DEFAULT_POOL = (0.2, 500)   # CSV.jl's default: pool strings ≤20% unique, ≤500 levels
+# 1.0: no pooling unless asked. Pooling by 0.10's default policy measured
+# +65% parse time on a pool-friendly 39 MiB file (22.4 vs 13.6 ms), and every
+# other reader surveyed (polars, pyarrow.csv, pandas, DuckDB, fread) makes
+# dictionary/categorical encoding opt-in. `pool=(0.2, 500)` restores the old
+# behavior; `pool=true` pools every string column.
+const DEFAULT_POOL = false
 
 """
     CSVApi.read(source, scan::Tables.Scan; kw...)
@@ -774,8 +779,10 @@ compose the same way in `File`, `Chunks`, and `Rows`:
     materialized (one allocation each). With InlineStrings loaded,
     `InlineString` (smallest fitting width per column — 0.10's default
     behavior) or a fixed `String1`…`String255`.
-  * `pool` — the CONTAINER for low-cardinality columns. `(ratio, cap)`
-    (default `(0.2, 500)`, CSV.jl's), a `Bool`, a ratio, or per-column via
+  * `pool` — the CONTAINER for low-cardinality columns. Default `false`:
+    nothing pools unless asked (0.10 pooled by default under `(0.2, 500)`;
+    that policy is available verbatim by passing it). Accepts `(ratio, cap)`,
+    a `Bool`, a ratio, or per-column via
     `Dict(col => spec)` / a vector. A column that pools comes back as a
     `PooledArrays.PooledArray` whose levels are `stringtype` values
     (`CompactString` levels materialize to `String`: pool levels are never

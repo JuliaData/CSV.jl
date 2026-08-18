@@ -684,8 +684,8 @@ file = CSV.File(IOBuffer(data); types=Dict(:zipcode => String))
 using CSV
 
 # In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations
-# like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt32`. By default,
-# `pool=(0.2, 500)`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide
+# like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt32`. As of 1.0
+# nothing is pooled by default (`pool=false`); passing `pool=(0.2, 500)` restores 0.10's default policy. Via the `pool` keyword argument, we can provide
 # greater control: `pool=0.4` means that if 40% or less of a column's values are unique, then it will be pooled.
 data = """
 id,code
@@ -728,8 +728,8 @@ file = CSV.File(IOBuffer(data); pool=[true, false])
 using CSV
 
 # In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations
-# like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt32`. By default,
-# `pool=(0.2, 500)`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide
+# like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt32`. As of 1.0
+# nothing is pooled by default (`pool=false`); passing `pool=(0.2, 500)` restores 0.10's default policy. Via the `pool` keyword argument, we can provide
 # greater control: `pool=(0.5, 2)` means that if a column has 2 or fewer unique values _and_ the total number of unique values is less than 50% of all values, then it will be pooled.
 data = """
 id,code
