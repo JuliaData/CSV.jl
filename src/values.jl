@@ -1282,14 +1282,17 @@ each digit run gathers straight out of the loaded word. Runs longer than
 eight digits, or spans within eight bytes of the buffer's end, take the
 reference path so nothing reads past the buffer.
 """
-function parsegroupedint64(buf::Vector{UInt8}, i::Int, j::Int, gm::UInt8)
+parsegroupedint64(buf::Vector{UInt8}, i::Int, j::Int, gm::UInt8) =
+    parsegroupedint64(buf, i, j, gm, Vector{UInt8}(undef, 64))
+
+function parsegroupedint64(buf::Vector{UInt8}, i::Int, j::Int, gm::UInt8, scratch::Vector{UInt8})
     i > j && return (zero(Int64), RC_INVALID)
     i0 = i                                       # the reference path re-reads the sign itself
     @inbounds b = buf[i]
     neg = b == UInt8('-')
     (neg | (b == UInt8('+'))) && (i += 1)
     i > j && return (zero(Int64), RC_INVALID)
-    j + 8 > length(buf) && return _parsegroupedint64_slow(buf, i0, j, gm)
+    j + 8 > length(buf) && return _parsegroupedint64_slow(buf, i0, j, gm, scratch)
     v = zero(UInt64)
     ndig = 0            # significant digits (leading zeros of the whole number excluded)
     k = i
@@ -1306,7 +1309,7 @@ function parsegroupedint64(buf::Vector{UInt8}, i::Int, j::Int, gm::UInt8)
         r == 0 && return (zero(Int64), RC_INVALID)   # mark/garbage where a digit must be
         # a run longer than the word (ninth byte still a digit) → reference path
         r == 8 && k + 8 <= j && (buf[k + 8] - UInt8('0')) <= 0x09 &&
-            return _parsegroupedint64_slow(buf, i0, j, gm)
+            return _parsegroupedint64_slow(buf, i0, j, gm, scratch)
         run, ok = _rundigits(w, r)
         ok || return (zero(Int64), RC_INVALID)
         # digit accounting with the parseint64 leading-zero rule
@@ -1319,7 +1322,7 @@ function parsegroupedint64(buf::Vector{UInt8}, i::Int, j::Int, gm::UInt8)
         else
             ndig += r
         end
-        ndig > 19 && return _parsegroupedint64_slow(buf, i0, j, gm)
+        ndig > 19 && return _parsegroupedint64_slow(buf, i0, j, gm, scratch)
         v = v * _P10U[r + 1] + run
         k += r
         k > j && break
@@ -1336,9 +1339,10 @@ function parsegroupedint64(buf::Vector{UInt8}, i::Int, j::Int, gm::UInt8)
 end
 
 # reference semantics for the guarded cases: degroup the WHOLE span (sign
-# included) into a small scratch, then parseint64
-@noinline function _parsegroupedint64_slow(buf::Vector{UInt8}, i::Int, j::Int, gm::UInt8)
-    scratch = Vector{UInt8}(undef, max(j - i + 1, 8))
+# included) into the caller's scratch (degroup! grows it if needed), then
+# parseint64 — allocation-free on the column loop's per-chunk scratch
+@noinline function _parsegroupedint64_slow(buf::Vector{UInt8}, i::Int, j::Int, gm::UInt8,
+                                           scratch::Vector{UInt8})
     n = degroup!(scratch, buf, i, j, gm, 0xff)
     n == -2 && return (zero(Int64), RC_INVALID)
     return n == -1 ? parseint64(buf, i, j) : parseint64(scratch, 1, n)

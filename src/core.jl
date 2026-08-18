@@ -449,7 +449,7 @@ const _TIME0 = Time(0)
         # marks are the exception even in grouped columns: one word-scan says
         # whether this cell has any; only then run the run-gather parser
         if V._hasbyte(buf, i, j, vo.groupmark)
-            v, rc = V.parsegroupedint64(buf, i, j, vo.groupmark)
+            v, rc = V.parsegroupedint64(buf, i, j, vo.groupmark, scratch)
             return (v, rc == V.RC_OK)
         end
     end
