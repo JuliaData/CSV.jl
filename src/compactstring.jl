@@ -251,15 +251,27 @@ Base.isless(y::Union{String, SubString{String}}, x::CompactString) = cmp(y, x) <
 # we run the same C hash over the bytes we already have: the retained buffer
 # for views, a stack copy of the payload words for inline strings. No String
 # allocation on either path.
+# Base's String hash over a raw pointer, on both hashing generations:
+#   ≤ 1.12  memhash(bytes, n, seed) + seed  with seed = h + memhash_seed
+#   ≥ 1.13  hash_bytes(ptr, n, UInt64(h), HASH_SECRET) % UInt   (rapidhash)
+# The gate is on the API that exists, not the version number.
+@static if isdefined(Base, :hash_bytes) && isdefined(Base, :HASH_SECRET)
+    @inline _stringhash(p::Ptr{UInt8}, n::Int, h::UInt) =
+        Base.hash_bytes(p, n, UInt64(h), Base.HASH_SECRET) % UInt
+else
+    @inline function _stringhash(p::Ptr{UInt8}, n::Int, h::UInt)
+        h += Base.memhash_seed
+        return ccall(Base.memhash, UInt, (Ptr{UInt8}, Csize_t, UInt32), p, n, h % UInt32) + h
+    end
+end
+
 function Base.hash(s::CompactString, h::UInt)
-    h += Base.memhash_seed
     n = ncodeunits(s)
     if n > COMPACTSTRING_INLINE
         off = csoff(s.p)
         o = off < 0 ? -off : off
         GC.@preserve s begin
-            return ccall(Base.memhash, UInt, (Ptr{UInt8}, Csize_t, UInt32),
-                         pointer(s.data, o), n, h % UInt32) + h
+            return _stringhash(pointer(s.data, o), n, h)
         end
     end
     # inline: bytes 1-4 are the high 32 bits of `a`, bytes 5-12 are `b` —
@@ -271,7 +283,7 @@ function Base.hash(s::CompactString, h::UInt)
     r = Ref(scratch)
     GC.@preserve r begin
         p = Ptr{UInt8}(Base.unsafe_convert(Ptr{Tuple{UInt64, UInt64}}, r))
-        return ccall(Base.memhash, UInt, (Ptr{UInt8}, Csize_t, UInt32), p, n, h % UInt32) + h
+        return _stringhash(p, n, h)
     end
 end
 
