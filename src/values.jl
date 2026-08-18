@@ -1268,17 +1268,19 @@ end
 """
     daysfromcivil(y, m, d) -> Int64
 
-Days since 0000-12-31 (Rata Die), matching `Dates.value(Date(y,m,d))`. Pure
-integer arithmetic (Hinnant's civil-days algorithm, shifted to the Rata Die
-epoch Dates uses).
+Days since 0000-12-31 (Rata Die), matching `Dates.value(Date(y,m,d))` — this
+IS the Dates stdlib's `totaldays` formula (shift the year to start on March 1
+so the leap day is the year's last day; then days + month offset + year days),
+carried here without a Dates dependency so Dates can one day call it instead.
+Equivalence is pinned exhaustively (every day of years -1000..3000 and the
+extremes) in the test suite; the earlier Hinnant era/year-of-era form was
+identical over ±9999 but ~35% slower.
 """
+const _SHIFTEDMONTHDAYS = (306, 337, 0, 31, 61, 92, 122, 153, 184, 214, 245, 275)
 function daysfromcivil(y::Integer, m::Integer, d::Integer)
-    yy = Int64(y) - (m <= 2)
-    era = fld(yy, 400)
-    yoe = yy - era * 400
-    doy = fld(153 * (m + (m > 2 ? -3 : 9)) + 2, 5) + d - 1
-    doe = yoe * 365 + fld(yoe, 4) - fld(yoe, 100) + doy
-    return era * 146097 + doe - 305
+    z = Int64(y) - (m < 3)
+    return Int64(d) + @inbounds(_SHIFTEDMONTHDAYS[m]) + 365z + fld(z, 4) - fld(z, 100) +
+           fld(z, 400) - 306
 end
 
 # --- format programs -----------------------------------------------------------

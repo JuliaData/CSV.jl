@@ -297,11 +297,15 @@ end
             @test V.daysfromcivil(y, m, d) == Dates.value(Date(y, m, d))
         end
     end
-    # every day across two centuries
-    dt = Date(1900, 1, 1)
-    while dt <= Date(2100, 12, 31)
-        @test V.daysfromcivil(year(dt), month(dt), day(dt)) == Dates.value(dt)
-        dt += Day(1)
+    # every day of four millennia (single aggregated assertion — 1.46M days)
+    okall = true
+    for y in -1000:3000, m in 1:12, d in 1:Dates.daysinmonth(y, m)
+        okall &= V.daysfromcivil(y, m, d) == Dates.value(Date(y, m, d))
+    end
+    @test okall
+    # extremes and negative eras
+    for (y, m, d) in ((-100_000, 1, 1), (275_760, 9, 13), (typemax(Int32) ÷ 400 * 400 - 1, 12, 31))
+        @test V.daysfromcivil(y, m, d) == Dates.value(Date(y, m, d))
     end
 end
 

@@ -1497,6 +1497,14 @@ end
 
 # --- column storage ----------------------------------------------------------
 
+# Two typed storage layouts, chosen per column by what the SAMPLE showed, so
+# that the FINAL column is a plain Base vector with zero copies either way:
+#   TypedColumn{T}  values + presence  → `Vector{T}` when nothing is missing
+#   UnionColumn{T}  Vector{Union{T,Missing}} written in place → that vector
+# (converting one layout to the other after the parse is a full extra pass —
+# see UnionColumn below for the measured cost — which is the whole reason two
+# layouts exist rather than one plus a conversion.)
+#
 # Fixed-size isbits values + presence bytes. `Vector{Bool}` (not BitVector): chunk
 # tasks write disjoint row ranges concurrently and BitVector packs 64 rows per word
 # (a data race); the production version uses a word-aligned bitmap per chunk slice.
