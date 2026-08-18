@@ -46,33 +46,6 @@ export sniff, Spec
 # behavior; `pool=true` pools every string column.
 const DEFAULT_POOL = false
 
-"""
-    CSVApi.read(source, scan::Tables.Scan; kw...)
-
-The Tables.Scan front door: every axis of `scan` (select/rename, pinned
-types, limit/offset, filter) pushes into the kernel — unselected columns are
-never parsed, filtered-out rows never cost value work. Sources resolve
-exactly like `File` (paths, IO, bytes, Cmd, gzip by magic, mmap); `kw` is
-the usual dialect/value surface.
-"""
-# defined only when the Tables.Scan proposal is present (the dev'd Tables);
-# released Tables loads this file without the Scan surface
-if isdefined(Tables, :Scan)
-    # Load the executor while this file is evaluated. Loading it lazily inside
-    # `read` defines `KernelScan.scan` in a newer world than the active call,
-    # which fails on a fresh Julia 1.12 process.
-    # KernelScan is a sibling submodule of the package (included after CSVApi
-    # in CSV.jl); resolve it through the parent at call time
-    function read(source, scan::Tables.Scan; buffer_in_memory::Bool=false,
-                  prefetch::Bool=true, missingstring=nothing, kw...)
-        haskey(kw, :sentinels) &&
-            throw(ArgumentError("pass missing spellings as missingstring, not sentinels"))
-        buf = resolvesource(source; buffer_in_memory, prefetch)
-        return Base.parentmodule(@__MODULE__).KernelScan.scan(
-            buf, scan; sentinels=_sentinels(missingstring), kw...)
-    end
-end
-
 const _DIALECTKW = (:quotechar, :openquotechar, :closequotechar, :escapechar,
                     :quoted, :comment, :ignoreemptyrows, :ignorerepeated)
 const _VALUEKW = (:dateformat, :decimal, :truestrings, :falsestrings,
@@ -270,13 +243,14 @@ end
 
 # Quote-aware sample clip. When bounded, discard the final raw row because it
 # may be cut. Row boundaries depend on quote syntax, not on the delimiter.
-function _sample(buf::Vector{UInt8}, samplebytes::Int; dialectkw...)
+function _sample(buf::Vector{UInt8}, samplebytes::Int; start::Int=1, dialectkw...)
     samplebytes >= 1 || throw(ArgumentError("samplebytes must be ≥ 1 (got $samplebytes)"))
-    length(buf) <= samplebytes && return buf
+    start = clamp(start, 1, length(buf) + 1)
+    length(buf) - start + 1 <= samplebytes && return start == 1 ? buf : buf[start:end]
     d = K.Dialect(; delim=_probedelim(dialectkw), dialectkw...)
     limit = samplebytes
     while true
-        sample = buf[1:min(limit, length(buf))]
+        sample = buf[start:min(start + limit - 1, length(buf))]
         datastart = _datastart(sample)
         rowstart = datastart
         while rowstart <= length(sample)
@@ -287,7 +261,7 @@ function _sample(buf::Vector{UInt8}, samplebytes::Int; dialectkw...)
         # keep only complete rows; when not even one row fits (a single row
         # wider than samplebytes — wide scientific files), grow until one does
         rowstart > datastart && return sample[1:rowstart - 1]
-        limit >= length(buf) && return buf
+        limit >= length(buf) - start + 1 && return start == 1 ? buf : buf[start:end]
         limit = limit > typemax(Int) ÷ 8 ? length(buf) : min(8 * limit, length(buf))
     end
 end
@@ -479,8 +453,8 @@ end
 
 # delimiter-only sniff for File(delim=nothing) — no second parse
 function _sniffdelim(buf::Vector{UInt8}, samplebytes::Int,
-                     dialectkw::NamedTuple, indexkw::NamedTuple)
-    sample = _sample(buf, samplebytes; dialectkw...)
+                     dialectkw::NamedTuple, indexkw::NamedTuple; start::Int=1)
+    sample = _sample(buf, samplebytes; start, dialectkw...)
     return _detectdelim(sample, dialectkw, indexkw)
 end
 
@@ -610,7 +584,20 @@ function _prepare(source;
         get(kw, :ignorerepeated, false) &&
             throw(ArgumentError("auto-delimiter detection is not supported with " *
                                 "ignorerepeated=true; pass delim explicitly"))
-        delim = _sniffdelim(buf, samplebytes, dialectonly, indexonly)
+        # Sniff from the first row that matters. Prefix rows before a numbered
+        # header (or before `skipto` with no header) are declared junk and must
+        # not vote on the delimiter — a one-line "skip me" preamble otherwise
+        # elects the space. Row starts are quote-aware but delimiter-free.
+        firstrow = header isa Integer && header > 1 ? Int(header) :
+                   header isa AbstractVector{<:Integer} && !isempty(header) ? Int(first(header)) :
+                   (header === false || (header isa Integer && header == 0)) && skipto !== nothing ?
+                       Int(skipto) : 1
+        sniffstart = 1
+        if firstrow > 1
+            dprobe = K.Dialect(; delim=_probedelim(dialectonly), dialectonly...)
+            sniffstart = _rawrowoffset(buf, dprobe, _datastart(buf), firstrow)
+        end
+        delim = _sniffdelim(buf, samplebytes, dialectonly, indexonly; start=sniffstart)
     end
     # missingstring → kernel sentinels ("" entries are inert: empty is always missing)
     sentinels = _sentinels(missingstring)
@@ -643,8 +630,16 @@ function _prepare(source;
     end
     headerrow = header === true ? 1 : isempty(headerrows) ? 0 : last(headerrows)
     rawstart = _datastart(buf)
-    datastart = isempty(headerrows) || first(headerrows) == 1 ? rawstart :
-                _rawrowoffset(buf, d, rawstart, first(headerrows))
+    # Skipped prefix rows never enter the index: before a numbered header, or —
+    # with no header row at all (header=false / explicit names) — before
+    # `skipto`. Otherwise a generated column count would come from a junk
+    # first row (0.10 took it from the first DATA row).
+    noheaderrow = header === false ||
+                  (header isa AbstractVector && !(header isa AbstractVector{<:Integer}))
+    datastart = !isempty(headerrows) && first(headerrows) > 1 ?
+                    _rawrowoffset(buf, d, rawstart, first(headerrows)) :
+                noheaderrow && skipto !== nothing && skipto > 1 ?
+                    _rawrowoffset(buf, d, rawstart, Int(skipto)) : rawstart
     bi = K.index(buf, d; datastart, chunkbytes=cb, parallel, indexonly...)
     chunks = bi.chunks
     headerlog = K.ProblemLog(get(kw, :maxproblems, 10_000))
@@ -767,6 +762,19 @@ Keywords (CSV.jl names): `header` (row number | Bool | names | rows-to-merge),
 `pool` keys naming absent columns are ignored instead of erroring).
 Diagnostics are data: [`problems`](@ref)`(f)`.
 
+## Pushdown: `scan`
+
+`scan=Tables.Scan(select=..., filter=..., limit=..., offset=...)` is the
+shared Tables.jl request for projection, renames, per-column types, row
+predicates, and row bounds — every axis is pushed into the parser: unselected
+columns are never sampled or parsed, filtered-out rows never cost value work
+(the predicate's columns parse first, the rest parse only where it holds),
+`limit`/`offset` are exact under any thread count, and a `:col => T` select
+item seeds that column's type. The result equals `Tables.scan(File(source),
+scan)` — the generic executor — except that type inference for the other
+columns sees only qualifying rows. `scan` owns those axes, so `select`/`drop`/
+`types`/`limit` are refused alongside it. Requires a Tables.jl with `Scan`.
+
 ## String columns: `stringtype` and `pool`
 
 Two independent choices decide what a text column comes back as, and they
@@ -817,6 +825,7 @@ end
 
 function File(source;
               types=nothing, select=nothing, drop=nothing,
+              scan=nothing,
               pool=DEFAULT_POOL,
               downcast::Bool=false,
               transpose::Bool=false,
@@ -831,6 +840,7 @@ function File(source;
     if transpose
         (select !== nothing || drop !== nothing) &&
             throw(ArgumentError("select/drop are not supported with transpose=true"))
+        scan === nothing || throw(ArgumentError("scan is not supported with transpose=true"))
         return _transposedfile(source; types, downcast, stringtype, validate, kw...)
     end
     ntasks === nothing || ntasks >= 1 ||
@@ -840,6 +850,29 @@ function File(source;
     on_error in (:collect, :error) ||
         throw(ArgumentError("on_error must be :collect or :error"))
     capturecap = max(maxproblems, 1)
+    if scan !== nothing
+        # -- Tables.Scan pushdown: the scan owns selection, types, and row
+        # bounds; the classic keywords for those axes are refused rather than
+        # merged, so a request means one thing --------------------------------
+        (isdefined(Tables, :Scan) && scan isa Tables.Scan) ||
+            throw(ArgumentError("scan must be a Tables.Scan (got $(typeof(scan)))"))
+        select === nothing && drop === nothing ||
+            throw(ArgumentError("pass the column selection through the Scan, not select=/drop="))
+        types === nothing ||
+            throw(ArgumentError("pass column types through the Scan's select items (`:col => T`), not types="))
+        haskey(kw, :limit) &&
+            throw(ArgumentError("pass the row limit through the Scan, not limit="))
+        p = _prepare(source; parallel, maxproblems=capturecap, validate, kw...)
+        poolarg, poolspecs = _resolvepool(pool, p.names, p.ncols; validate)
+        t = _executescan(p, scan; parsekw=merge(p.parsekw, (; pool=poolarg, poolspecs)),
+                         maxproblems, on_error)
+        poolS = stringtype === K.CompactString ? String : stringtype
+        t = _pooledarrays(t, poolS)
+        downcast && (t = _downcast(t))
+        stringtype === K.CompactString || (t = _materializestrings(t, stringtype))
+        nm = source isa AbstractString ? String(source) : "<$(nameof(typeof(source)))>"
+        return File(nm, t, Dict(n => j for (j, n) in enumerate(K.names(t))))
+    end
     p = _prepare(source; parallel, maxproblems=capturecap, validate, kw...)
     sel = _resolveselect(select, drop, p.names)
     parsetypes = if p.limit == 0
@@ -864,6 +897,15 @@ function File(source;
     stringtype === K.CompactString || (t = _materializestrings(t, stringtype))
     nm = source isa AbstractString ? String(source) : "<$(nameof(typeof(source)))>"
     return File(nm, t, Dict(n => j for (j, n) in enumerate(K.names(t))))
+end
+
+# KernelScan is a sibling submodule included after CSVApi; resolve it through
+# the parent at call time (a released Tables without Scan never reaches here —
+# the `scan isa Tables.Scan` check above fails first with a clear error).
+function _executescan(p::Prepared, scan; parsekw, maxproblems::Int, on_error::Symbol)
+    S = Base.parentmodule(@__MODULE__).KernelScan
+    return S.execute(p.buf, p.bi, p.names, scan; parsekw, headerlog=p.headerlog,
+                     maxproblems, on_error)
 end
 
 function File(sources::AbstractVector; source=nothing, kw...)

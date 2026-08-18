@@ -30,9 +30,13 @@ Base.iterate(d::OrderedTestDict, state::Int=1) =
 # `LegacyCSV.File`/`LegacyCSV.write` below that means "the old behavior" is spelled LegacyCSV.
 
 @testset "Scan front door tracks the Tables proposal" begin
-    # the method exists exactly when the loaded Tables carries the Scan proposal
-    hasscan = isdefined(Tables, :Scan)
-    @test any(m -> occursin("Scan", string(m.sig)), methods(A.read)) == hasscan
+    # `scan=` is accepted exactly when the loaded Tables carries Scan; otherwise
+    # it is a clear ArgumentError, never an UndefVarError
+    if isdefined(Tables, :Scan)
+        @test Base.names(A.File(IOBuffer("a,b\n1,2\n"); scan=Tables.Scan(select=(:b,)))) == [:b]
+    else
+        @test_throws ArgumentError A.File(IOBuffer("a,b\n1,2\n"); scan=:anything)
+    end
 end
 
 _norm(x) = x isa AbstractString ? String(x) : x
@@ -308,6 +312,21 @@ end
     @test_throws ArgumentError A.File(IOBuffer(input); select=[:nope])
     f = against("my col,b\n1,2\n"; kw=(; normalizenames=true, select=[:my_col]))
     @test Base.names(f) == [:my_col]
+end
+
+@testset "delimiter sniff ignores rows before a numbered header / skipto" begin
+    # a one-line preamble ("skip me") used to elect the space as delimiter for
+    # the whole file even though header=2 declares that row junk
+    body = "region,price,qty\n" * join(("east,$(i).5,$(i)" for i in 1:300), "\n") * "\n"
+    f = A.File(IOBuffer("skip me\n" * body); header=2)
+    @test Base.names(f) == [:region, :price, :qty]
+    f = A.File(IOBuffer("skip me\nand me too\n" * body); header=false, skipto=3)
+    @test length(Base.names(f)) == 3            # column count from the first DATA row (0.10 parity)
+    @test Tables.getcolumn(f, 1)[1] == "region" && length(Tables.getcolumn(f, 1)) == 301
+    f = A.File(IOBuffer("skip me\nx\n" * body); header=[:r, :p, :q], skipto=3)
+    @test Base.names(f) == [:r, :p, :q] && length(Tables.getcolumn(f, :q)) == 301
+    f = A.File(IOBuffer("skip me\n" * body); header=[2])
+    @test Base.names(f) == [:region, :price, :qty]
 end
 
 @testset "pooling agrees on values" begin

@@ -1,8 +1,7 @@
-# Tables.Scan pushdown for the CSV kernel — the CSV.read(source, scan) analog.
-#
-# This is the integration the Tables.scan proposal promises: the kernel
-# consumes EVERY axis of a Scan exactly, so the residual is always empty and
-# Tables.finish is the identity.
+# Tables.Scan pushdown for the CSV kernel — what `CSV.File(src; scan=...)`
+# runs. The kernel consumes EVERY axis of a Scan exactly (no residual is ever
+# handed to Tables.scan), and the differential tests assert the result equals
+# `Tables.scan(K.parse(src), scan)` — the generic reference semantics.
 #
 #   select/rename : bound against the header; unselected columns are never
 #                   sampled, parsed, or stitched (zero per-cell cost)
@@ -27,21 +26,14 @@ const K = CSVKernel
 """
     KernelScan.scan(source, scan::Tables.Scan; kw...) -> K.ParsedTable
 
-Parse `source` with every axis of `scan` pushed into the kernel. `kw` are the
-usual kernel options (dialect, dateformat, pool, ...). Equivalent to — but far
-cheaper than — `Tables.finish(K.parse(source; kw...), scan)`, which is exactly
-what the differential tests assert.
+The kernel-level door (raw source, kernel kwargs): index, extract the header,
+then `execute`. Equivalent to — but far cheaper than —
+`Tables.scan(K.parse(source; kw...), scan)`, which is what the differential
+tests assert. `CSV.File(src; scan=...)` reaches `execute` through its own
+`_prepare` instead, so scans compose with every File keyword.
 """
-function scan(source, sc::Tables.Scan; kw...)
-    t, residual = apply(source, sc; kw...)
-    return Tables.finish(t, residual)   # residual is empty: identity
-end
-
-const _DIALECTKW = (:delim, :quotechar, :openquotechar, :closequotechar, :escapechar,
-                    :quoted, :comment, :ignoreemptyrows, :ignorerepeated)
-
-function apply(source, scan::Tables.Scan; header::Union{Bool, AbstractVector}=true,
-               chunkbytes::Union{Nothing, Int}=nothing, kw...)
+function scan(source, sc::Tables.Scan; header::Union{Bool, AbstractVector}=true,
+              chunkbytes::Union{Nothing, Int}=nothing, kw...)
     haskey(kw, :types) && throw(ArgumentError("pass column types through the Scan's select items, not types="))
     haskey(kw, :select) && throw(ArgumentError("pass the selection through the Scan, not select="))
     for key in (:limit, :rowmask, :index)
@@ -59,9 +51,8 @@ function apply(source, scan::Tables.Scan; header::Union{Bool, AbstractVector}=tr
     on_error in (:collect, :error) ||
         throw(ArgumentError("on_error must be :collect or :error"))
     phasecap = max(maxproblems, on_error === :error ? 1 : 0)
-    phasekw = merge(parsekw, (; maxproblems=phasecap, on_error=:collect))
 
-    # -- index once; bind the scan against the extracted header ----------------
+    # -- index once; extract the header --------------------------------------
     cb = chunkbytes === nothing ? K._defaultchunkbytes(length(buf)) : chunkbytes
     datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1
     d = K.Dialect(; dialectkw...)
@@ -82,6 +73,24 @@ function apply(source, scan::Tables.Scan; header::Union{Bool, AbstractVector}=tr
             [Symbol("Column", j) for j in 1:K.nfields(bi.chunks[1], bi.chunks[1].firstdatarow)]
     end
     names = K.makeunique!(names)
+    return execute(buf, bi, names, sc; parsekw, headerlog, maxproblems, on_error)
+end
+
+const _DIALECTKW = (:delim, :quotechar, :openquotechar, :closequotechar, :escapechar,
+                    :quoted, :comment, :ignoreemptyrows, :ignorerepeated)
+
+"""
+    KernelScan.execute(buf, bi, names, scan; parsekw, headerlog, maxproblems, on_error)
+
+The pushdown core over an already-indexed buffer with known column names:
+bind the scan, seed types from its select items, and run either the single-
+phase (no filter) or the two-phase masked parse. `parsekw` are the kernel
+options `K.parse` takes (dialect, value options, pool, engine knobs).
+"""
+function execute(buf::Vector{UInt8}, bi::K.BufferIndex, names::Vector{Symbol}, scan::Tables.Scan;
+                 parsekw, headerlog::K.ProblemLog, maxproblems::Int, on_error::Symbol)
+    phasecap = max(maxproblems, on_error === :error ? 1 : 0)
+    phasekw = merge(NamedTuple(parsekw), (; maxproblems=phasecap, on_error=:collect))
     b = Tables.bind(scan, names)
 
     # -- translate the bound scan into kernel pushdown --------------------------
@@ -106,7 +115,7 @@ function apply(source, scan::Tables.Scan; header::Union{Bool, AbstractVector}=tr
                     types=seedtypes, limit=lim, phasekw...)
         b.offset > 0 && (t = _droprows(t, b.offset))
         t = _project(t, b, names)
-        return (_finishproblems(t, maxproblems, on_error, headerlog, t), Tables.EMPTYSCAN)
+        return _finishproblems(t, maxproblems, on_error, headerlog, t)
     end
 
     # -- two-phase masked parse --------------------------------------------------
@@ -142,7 +151,7 @@ function apply(source, scan::Tables.Scan; header::Union{Bool, AbstractVector}=tr
         end
     end
     t = K.ParsedTable(outnames, cols, length(kept), K.Problem[], 0)
-    return (_finishproblems(t, maxproblems, on_error, headerlog, t1, t2), Tables.EMPTYSCAN)
+    return _finishproblems(t, maxproblems, on_error, headerlog, t1, t2)
 end
 
 # keep only the first `limit` trues after skipping `offset` trues

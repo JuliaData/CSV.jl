@@ -2,9 +2,8 @@
 #
 # Run:  julia --startup-file=no --project=test test/scan.jl
 #
-# THE contract (from Tables.apply's docstring): pushing a Scan into the kernel
-# must produce the same table as parsing everything and applying the Scan
-# generically. That equivalence is asserted across scan shapes, chunk
+# THE contract: pushing a Scan into the kernel must produce the same table as
+# parsing everything and applying the Scan generically with Tables.scan. That equivalence is asserted across scan shapes, chunk
 # geometries, and parallelism — with one deliberate, pinned divergence:
 # phase-2 type inference sees only qualifying rows, so values excluded by the
 # filter cannot degrade a column's inferred type (the generic path, which must
@@ -60,7 +59,7 @@ scans = [
 
 @testset "contract: pushdown ≅ generic finish" begin
     for (i, scan) in enumerate(scans)
-        ref = T.finish(K.parse(csv), scan)
+        ref = T.scan(K.parse(csv), scan)
         for cb in (256, 4096, 1 << 20), par in (false, true)
             t = S.scan(csv, scan; chunkbytes=cb, parallel=par)
             @test sametable(t, ref) || error("scan $i, chunkbytes=$cb, parallel=$par diverged")
@@ -68,10 +67,30 @@ scans = [
     end
 end
 
-@testset "residual is empty; apply round-trips" begin
-    t, residual = S.apply(csv, T.Scan(select = (:region,), filter = T.col(:qty) > 10, limit = 5))
-    @test isempty(residual)
-    @test T.finish(t, residual) === t
+@testset "the public door: CSV.File(source; scan=) composes with File keywords" begin
+    A = CSV.CSVApi
+    scan = T.Scan(select = (:region, :price => Float64 => :cost, :qty), filter = T.col(:qty) > 25, limit = 50)
+    f = A.File(IOBuffer(csv); scan)
+    ref = T.scan(K.parse(csv), scan)
+    @test A.names(f) == collect(keys(ref))
+    @test all(isequal(collect(Tables.getcolumn(f, nm)), collect(ref[nm])) for nm in keys(ref))
+    # composes with header handling, missingstring, and skipto through _prepare
+    f2 = A.File(IOBuffer("skip me\n" * csv);
+                header=2, missingstring="", scan=T.Scan(select=(:qty,), limit=3))
+    @test A.names(f2) == [:qty] && length(Tables.getcolumn(f2, :qty)) == 3
+    # the classic keywords for the axes a Scan owns are refused, not merged
+    @test_throws ArgumentError A.File(IOBuffer(csv); scan, select=[:qty])
+    @test_throws ArgumentError A.File(IOBuffer(csv); scan, types=Dict(:qty => Int64))
+    @test_throws ArgumentError A.File(IOBuffer(csv); scan, limit=3)
+    @test_throws ArgumentError A.File(IOBuffer(csv); scan=:notascan)
+    @test_throws ArgumentError A.File(IOBuffer(csv); scan, transpose=true)
+    # CSV.read routes the keyword through File
+    nt = CSV.read(IOBuffer(csv), Tables.columntable; scan=T.Scan(select=(:region,), limit=2))
+    @test keys(nt) == (:region,) && length(nt.region) == 2
+    # a residual handed to Tables.scan agrees with full pushdown
+    partial = A.File(IOBuffer(csv); scan=T.Scan(scan; filter=nothing, limit=nothing))
+    @test all(isequal(collect(Tables.getcolumn(T.scan(partial, T.Scan(scan; select=nothing)), nm)),
+                      collect(ref[nm])) for nm in keys(ref))
 end
 
 @testset "constant filters preserve row counts with no predicate columns" begin
@@ -91,7 +110,7 @@ end
 
 @testset "pushdown composes with pool and groupmark" begin
     scan = T.Scan(select = (:region, :qty), filter = T.col(:qty) > 25)
-    ref = T.finish(K.parse(csv), scan)
+    ref = T.scan(K.parse(csv), scan)
     t = S.scan(csv, scan; pool=true, chunkbytes=512)
     @test sametable(t, ref)
     @test t[:region] isa K.PooledColumn                             # masked pooling
@@ -104,7 +123,7 @@ end
     padded = "region   qty\n  east   10\nwest  30 \n east    40\n"
     irkw = (delim=' ', ignorerepeated=true)
     irscan = T.Scan(select = (:region,), filter = T.col(:qty) > 25)
-    ref = T.finish(K.parse(padded; irkw...), irscan)
+    ref = T.scan(K.parse(padded; irkw...), irscan)
     for cb in (8, 1 << 20), par in (false, true)
         t = S.scan(padded, irscan; chunkbytes=cb, parallel=par, irkw...)
         @test sametable(t, ref)
@@ -117,7 +136,7 @@ end
     scan = T.Scan(filter = T.coleq(T.col(:region), "east"))
     t = S.scan(dirty, scan)
     @test t[:qty] isa Vector{Int64} && t[:qty] == [1, 3]            # pushdown: Int64
-    ref = T.finish(K.parse(dirty), scan)
+    ref = T.scan(K.parse(dirty), scan)
     @test eltype(Tables.getcolumn(ref, :qty)) != Int64              # generic path: strings
 end
 
@@ -274,7 +293,7 @@ end
     @test_throws ArgumentError S.scan(csv, T.Scan(select = (:qty => Int64, :qty => Float64)))
     normalized = T.Scan(select = (:qty => Int64,
                                   :qty => Union{Int64, Missing} => :qty2))
-    @test sametable(S.scan(csv, normalized), T.finish(K.parse(csv), normalized))
+    @test sametable(S.scan(csv, normalized), T.scan(K.parse(csv), normalized))
     @test_throws ArgumentError S.scan(csv, T.Scan(select = :region); types=Dict(:qty => Int64))
     @test_throws ArgumentError S.scan(csv, T.Scan(); limit=3)
     @test_throws ArgumentError S.scan(csv, T.Scan(); rowmask=fill(true, 2_000))
@@ -308,16 +327,16 @@ end
 
 end # testset
 
-@testset "front-door Scan sources (CSVApi.read)" begin
+@testset "front-door Scan sources (File(src; scan=))" begin
     using CodecZlib
     csv = "a,b,c\n" * join(("$(i),$(i / 2),v$(i % 7)_abcdefghijklmnop" for i in 1:30_000), '\n') * "\n"
     bytes = Vector{UInt8}(codeunits(csv))
     gz = transcode(GzipCompressor, copy(bytes))
     scan = T.Scan(select=[:c, :a], limit=10)
-    ref = Tables.finish(K.parse(copy(bytes)), scan)
+    ref = Tables.scan(K.parse(copy(bytes)), scan)
     refcols = Tables.columns(ref)
     for src in (copy(bytes), gz, IOBuffer(csv), IOBuffer(gz))
-        t = CSV.CSVApi.read(src, scan)
+        t = CSV.CSVApi.File(src; scan)
         cols = Tables.columns(t)
         @test collect(Tables.columnnames(cols)) == collect(Tables.columnnames(refcols))
         for nm in Tables.columnnames(refcols)
@@ -334,14 +353,14 @@ end # testset
     write(gzpath, gz)
     @test filesize(path) >= CSV.CSVApi.MMAP_THRESHOLD
     for (src, prefetch) in ((path, true), (path, false), (gzpath, true), (gzpath, false))
-        t = CSV.CSVApi.read(src, scan; prefetch)
+        t = CSV.CSVApi.File(src; scan, prefetch)
         @test sametable(t, ref)
         GC.gc()
         @test String(Tables.getcolumn(Tables.columns(t), :c)[1]) == "v1_abcdefghijklmnop"
     end
     misscan = T.Scan(select=[:a])
-    mt = CSV.CSVApi.read(Vector{UInt8}(codeunits("a\nNA\n")), misscan;
+    mt = CSV.CSVApi.File(Vector{UInt8}(codeunits("a\nNA\n")); scan=misscan,
                           missingstring="NA")
     @test isequal(collect(Tables.getcolumn(Tables.columns(mt), :a)), [missing])
-    @test_throws ArgumentError CSV.CSVApi.read(bytes, scan; sentinels=["NA"])
+    @test_throws ArgumentError CSV.CSVApi.File(bytes; scan, sentinels=["NA"])
 end
