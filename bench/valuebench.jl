@@ -68,6 +68,7 @@ function main()
         ("bigfloat (256b)",  (rng, i) -> string(rand(rng, 1:999999)) * "." * String(rand(rng, '0':'9', 40)) * "e" * string(rand(rng, -100:100)), :bigfloat),
         ("uuid",             (rng, i) -> string(Base.UUID(rand(rng, UInt128))), :uuid),
         ("date ISO",         (rng, i) -> string(Date(2020, 1, 1) + Day(rand(rng, 0:2000))), :date),
+        ("date ISO (interp)", (rng, i) -> string(Date(2020, 1, 1) + Day(rand(rng, 0:2000))), :dateinterp),
         ("datetime ISO",     (rng, i) -> string(DateTime(2020, 1, 1) + Second(rand(rng, 0:10^7))), :datetime),
         ("bool",             (rng, i) -> rand(rng, ("true", "false")), :bool),
         ("string unquoted",  (rng, i) -> String(rand(rng, 'a':'z', rand(rng, 3:14))), :str),
@@ -100,11 +101,17 @@ function main()
             tx = bench((b, ss) -> (a = 0.0; for (i, j) in ss; r = Parsers.xparse(Float64, b, i, j, OPTS); a += r.val; end; a), buf, spans)
             tb = bench((b, ss) -> (a = 0.0; for (i, j) in ss; a += parse(Float64, String(b[i:j])); end; a), buf, spans)
         elseif kind === :date
+            # the kernel's column path: fixed-width fast path (parsecivil agrees on every input)
+            tk = bench((b, ss) -> (a = 0; for (i, j) in ss; c, rc = V.parseiso10(b, i); a += c.day; end; a), buf, spans)
+            tx = bench((b, ss) -> (a = 0; for (i, j) in ss; r = Parsers.xparse(Date, b, i, j, OPTS); a += Dates.day(r.val); end; a), buf, spans)
+            tb = bench((b, ss) -> (a = 0; for (i, j) in ss; a += Dates.day(Date(String(b[i:j]), DFD)); end; a), buf, spans)
+        elseif kind === :dateinterp
+            # the format-program interpreter (custom dateformats take this path)
             tk = bench((b, ss) -> (a = 0; for (i, j) in ss; c, rc = V.parsecivil(b, i, j, V.ISO_DATE); a += c.day; end; a), buf, spans)
             tx = bench((b, ss) -> (a = 0; for (i, j) in ss; r = Parsers.xparse(Date, b, i, j, OPTS); a += Dates.day(r.val); end; a), buf, spans)
             tb = bench((b, ss) -> (a = 0; for (i, j) in ss; a += Dates.day(Date(String(b[i:j]), DFD)); end; a), buf, spans)
         elseif kind === :datetime
-            tk = bench((b, ss) -> (a = 0; for (i, j) in ss; c, rc = V.parsecivil(b, i, j, V.ISO_DATETIME); a += c.second; end; a), buf, spans)
+            tk = bench((b, ss) -> (a = 0; for (i, j) in ss; c, rc = V.parseiso19(b, i); a += c.second; end; a), buf, spans)
             tx = bench((b, ss) -> (a = 0; for (i, j) in ss; r = Parsers.xparse(DateTime, b, i, j, OPTS); a += Dates.second(r.val); end; a), buf, spans)
         elseif kind === :bool
             tk = bench((b, ss) -> (a = 0; for (i, j) in ss; v, rc = V.parsebool(b, i, j); a += v; end; a), buf, spans)

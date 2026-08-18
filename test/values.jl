@@ -530,6 +530,48 @@ end
     end
 end
 
+@testset "parsegroupedint64 ≡ degroup! + parseint64" begin
+    # the word-gather grouped parser must agree with the reference composition
+    # on every spelling, with spans both mid-buffer and flush against the end
+    rng = MersenneTwister(5)
+    alphabet = ['0':'9'; ','; ','; ','; '-'; '+'; 'x'; '.'; ' ']
+    function refgrouped(buf, i, j)
+        scratch = Vector{UInt8}(undef, 64)
+        n = V.degroup!(scratch, buf, i, j, UInt8(','), 0xff)
+        n == -2 && return (Int64(0), V.RC_INVALID)
+        return n == -1 ? V.parseint64(buf, i, j) : V.parseint64(scratch, 1, n)
+    end
+    pinned = ("9,223,372,036,854,775,807", "-9,223,372,036,854,775,808",
+              "9,223,372,036,854,775,808", "-9,223,372,036,854,775,809",
+              "000,000,001", "0,0,0", "1,", ",1", "1,,2", "-,1", "+1,000",
+              "12345678,9", "123456789,0", "1234567890,1", "0000000000000000000000,1",
+              "1,234", "12,34,567", "-", "+", "", ",")
+    okall = true
+    for it in 1:60_000
+        kind = rand(rng, 1:4)
+        s = kind == 1 ? (rand(rng, Bool) ? "-" : "") *
+                        join((String(rand(rng, '0':'9', rand(rng, 1:3))) for _ in 1:rand(rng, 1:7)), ",") :
+            kind == 2 ? (rand(rng, Bool) ? "-" : "") *
+                        join((String(rand(rng, '0':'9', 3)) for _ in 1:rand(rng, 6:9)), ",") :
+            kind == 3 ? String(rand(rng, alphabet, rand(rng, 1:14))) :
+                        rand(rng, pinned)
+        for pad in (16, 0)
+            buf = Vector{UInt8}(s * " "^pad)
+            i, j = 1, ncodeunits(s)
+            okall &= V.parsegroupedint64(buf, i, j, UInt8(',')) == refgrouped(buf, i, j)
+        end
+    end
+    @test okall
+    for s in pinned, pad in (16, 0)
+        buf = Vector{UInt8}(s * " "^pad)
+        @test V.parsegroupedint64(buf, 1, ncodeunits(s), UInt8(',')) == refgrouped(buf, 1, ncodeunits(s))
+    end
+    # and the through-the-kernel view: grouped column values equal ungrouped
+    @test V._hasbyte(b("1,234"), 1, 5, UInt8(','))
+    @test !V._hasbyte(b("1234567890123"), 1, 13, UInt8(','))
+    @test V._hasbyte(b("123456789012,"), 1, 13, UInt8(','))
+end
+
 @testset "parseuuid: oracle differential" begin
     rng = MersenneTwister(31)
     for _ in 1:20_000
@@ -540,6 +582,17 @@ end
         @test rc == V.RC_OK
         @test Base.UUID(v) == Base.tryparse(Base.UUID, s)
     end
+    # every single-byte corruption of a valid uuid, at every position, against
+    # the oracle (exercises the SWAR range test's lane boundaries)
+    s0 = "123e4567-e89b-12d3-a456-426614174000"
+    okall = true
+    for pos in 1:36, c in ('g', 'G', '`', '@', '/', ':', 'z', '\xff', '\x80', '\x00', ' ', '-', 'a', 'F', '0', '9')
+        s = s0[1:pos-1] * c * s0[pos+1:end]
+        v, rc = V.parseuuid(b(s), 1, 36)
+        o = Base.tryparse(Base.UUID, s)
+        okall &= (o === nothing) == (rc != V.RC_OK) && (o === nothing || o.value == v)
+    end
+    @test okall
     for s in ("123e4567-e89b-12d3-a456-42661417400",    # 35 chars
               "123e4567-e89b-12d3-a456-4266141740000",  # 37 chars
               "123e4567xe89b-12d3-a456-426614174000",   # bad dash

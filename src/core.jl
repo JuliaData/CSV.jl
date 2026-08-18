@@ -446,10 +446,10 @@ const _TIME0 = Time(0)
 @inline function parsevalue(::Type{Int64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                             scratch::Vector{UInt8})
     if vo.groupmark != 0x00
-        n = V.degroup!(scratch, buf, i, j, vo.groupmark, 0xff)  # ints: no fraction to guard
-        n == -2 && return (Int64(0), false)
-        if n >= 0
-            v, rc = V.parseint64(scratch, 1, n)
+        # marks are the exception even in grouped columns: one word-scan says
+        # whether this cell has any; only then run the run-gather parser
+        if V._hasbyte(buf, i, j, vo.groupmark)
+            v, rc = V.parsegroupedint64(buf, i, j, vo.groupmark)
             return (v, rc == V.RC_OK)
         end
     end
