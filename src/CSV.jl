@@ -3,7 +3,7 @@
 
 Fast, flexible reading and writing of delimited text.
 
-Reading — `CSV.File`, `CSV.read`, `CSV.Rows`, `CSV.Chunks`, `CSV.sniff`.
+Reading — `CSV.File`, `CSV.read`, `CSV.Rows`, `CSV.Chunks`.
 Writing — `CSV.write`.
 Diagnostics — `CSV.problems`.
 
@@ -31,21 +31,20 @@ const File = CSVApi.File
 const Rows = CSVApi.Rows
 const Chunks = CSVApi.Chunks
 const read = CSVApi.read
-const sniff = CSVApi.sniff
-const Spec = CSVApi.Spec
 const problems = CSVApi.problems
+# Delimiter/header sniffing (`CSVApi.sniff` → `Spec`) is internal machinery
+# behind `delim=nothing`; it is not part of the 1.0 public surface (0.10 had
+# no such API). It can be promoted later if there is demand.
 const write = KernelWrite.write
 const RowWriter = KernelWrite.RowWriter
 const CompactString = CSVKernel.CompactString
-
-export sniff, Spec
 
 # -- precompile workload -------------------------------------------------------
 # The kernel's monomorphic per-column loops are exactly what makes first-File
 # expensive to compile (~4 s cold on an M3). One small in-memory pass through
 # every front door caches those specializations: File (inference, promotion,
 # pooling, missing, all eight lattice types, gzip, parallel driver,
-# stringtype=String materializer), Rows, Chunks, sniff, write, RowWriter.
+# stringtype=String materializer), Rows, Chunks, the sniffer, write, RowWriter.
 using PrecompileTools: @setup_workload, @compile_workload
 import Dates, CodecZlib
 @setup_workload begin
@@ -70,7 +69,7 @@ import Dates, CodecZlib
         File(take!(gz))
         foreach(identity, Rows(IOBuffer("a,b\n1,x\n2,y\n")))
         first(Chunks(IOBuffer(pooled); chunkbytes=1 << 16))
-        sniff(IOBuffer(mixed))
+        CSVApi.sniff(IOBuffer(mixed))
         out = IOBuffer()
         write(out, (a=[1, 2], b=["x", "y,z"], c=[1.5, missing],
                     d=[Dates.Date(2024, 1, 2), Dates.Date(2024, 3, 4)]))

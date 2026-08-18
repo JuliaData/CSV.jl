@@ -37,7 +37,7 @@ using Tables, Dates, Unicode, Mmap, PooledArrays, CodecZlib
 const K = CSVKernel
 const E = KernelExamples
 
-export sniff, Spec
+# `sniff`/`Spec` are internal (behind `delim=nothing`); not exported.
 
 # 1.0: no pooling unless asked. Pooling by 0.10's default policy measured
 # +65% parse time on a pool-friendly 39 MiB file (22.4 vs 13.6 ms), and every
