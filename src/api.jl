@@ -28,7 +28,6 @@
 #   • integer spellings that fit Int128 stay exact, including initially-wide
 #     and grouped columns where CSV.jl can widen Int64 overflow to Float64
 #
-# Demo: julia --project=. -e 'using CSV; CSV.CSVApi.demo()'  (if defined)
 
 
 module CSVApi
@@ -988,10 +987,6 @@ function _mergeproblems(t::K.ParsedTable, headerlog::Union{Nothing, K.ProblemLog
     return table, log.first
 end
 
-# Bulk materialization through K.materialize — one shared scratch, word-store
-# inline reconstruction, unsafe_string per cell. The per-cell String() broadcast
-# this replaces ran the generic AbstractString path and was the measured
-# 55–110 MiB/s cliff on string-heavy shapes.
 # ---------------------------------------------------------------------------
 # transpose=true — the compatibility path. Rows are columns: input row j is
 # output column j; with header=true the first field of each row is that
@@ -1276,7 +1271,11 @@ _checkstringtype(T) =
                             "type provided by an extension (e.g. InlineString with " *
                             "InlineStrings loaded); got $T"))
 
-# a CompactStringVector to Vector{S} / Vector{Union{S,Missing}}
+# a CompactStringVector to Vector{S} / Vector{Union{S,Missing}}. String goes
+# through K.materialize's bulk path — one shared scratch, word-store inline
+# reconstruction, unsafe_string per cell; a per-cell String() broadcast ran the
+# generic AbstractString path and was a measured 55–110 MiB/s cliff on
+# string-heavy shapes.
 _materializecolumn(::Type{String}, col::K.CompactStringVector) = K.materialize(col)
 # pool levels (a CompactStringVector) to Vector{S}
 _levelvector(::Type{String}, levels::K.CompactStringVector, n::Int) =
@@ -1563,32 +1562,4 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     return Chunks(inner, p.headerlog, maxproblems, stringtype, poolspec)
 end
 
-# ---------------------------------------------------------------------------
-# demo
-# ---------------------------------------------------------------------------
-
-function demo()
-    path, io = mktemp()
-    write(io, "name,score,when\nalice,10,2024-01-02\nbob,11.5,2024-01-03\ncarol,NA,2024-01-04\n")
-    close(io)
-    println("== sniff ==")
-    show(stdout, sniff(path)); println("\n")
-    println("== File ==")
-    f = File(path; missingstring="NA")
-    show(stdout, f); println()
-    println("score column: ", collect(f.score))
-    println("row 2 name:   ", f[2].name)
-    println("\n== Rows (typed) ==")
-    for row in Rows(path; types=Dict(:score => Float64), missingstring="NA")
-        println("  ", row.name, " → ", row.score)
-    end
-    println("\n== Chunks ==")
-    for (k, batch) in enumerate(Chunks(path; chunkbytes=32, missingstring="NA"))
-        println("  batch $k: $(batch.nrows) rows, score::$(eltype(batch[:score]))")
-    end
-    rm(path)
-end
-
 end # module CSVApi
-
-abspath(PROGRAM_FILE) == (@__FILE__) && CSVApi.demo()

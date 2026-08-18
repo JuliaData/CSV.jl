@@ -302,6 +302,46 @@ end
            V.matchsentinel(buf, ti, tj, vo.sentinels)
 end
 
+"""
+    cellcontent(buf, pos, len, vo) -> (cpos, clen, escaped, disposition)
+
+Turn one raw field span `buf[pos : pos+len-1]` (exactly what the structural
+index delimited — quotes and any surrounding blanks included) into the
+*content* the value layer should look at:
+
+  * `cpos`, `clen`     the content span `buf[cpos : cpos+clen-1]`: quotes and
+                       structural blanks stripped; `clen == 0` for a quoted
+                       empty field `""` (a PRESENT empty string, not missing);
+  * `escaped`          `true` when the content still contains escape sequences
+                       (`""` doubling or backslash-escapes) that must be unescaped before
+                       the bytes are the value — typed kernels reject such
+                       cells, string cells unescape once at parse time;
+  * `disposition`      `CELL_VALUE`    → parse `[cpos, cpos+clen)` as a value
+                       `CELL_MISSING`  → empty / stripped-to-empty / sentinel
+                                          (`clen` is 0; the caller stores missing)
+                       `CELL_BADQUOTE` → malformed quoting (unterminated open
+                                          quote, or bytes after the close quote);
+                                          `cpos`/`clen` still point at the best-
+                                          effort content so diagnostics can
+                                          excerpt it.
+
+Examples (default dialect, `stripwhitespace=false`, sentinels `["NA"]`):
+
+    field bytes        → cpos..len  escaped  disposition
+    `42`               → `42`       false    CELL_VALUE
+    `"a,b"`            → `a,b`      false    CELL_VALUE       (quotes stripped)
+    `"say ""hi"" now"` → `say ""hi"" now` true  CELL_VALUE   (needs unescape)
+    `  "x"  `          → `x`        false    CELL_VALUE       (outer blanks structural)
+    `""`               → ``  (0)    false    CELL_VALUE       (present empty string)
+    ``                 → (0)        false    CELL_MISSING
+    `NA`               → (0)        false    CELL_MISSING     (sentinel)
+    `"NA"`             → (0)        false    CELL_MISSING     (sentinel inside quotes)
+    `"unterminated`    → …          false    CELL_BADQUOTE
+    `"x"y`             → `x`        false    CELL_BADQUOTE    (bytes after close)
+
+With `stripwhitespace=true`, unquoted blanks are stripped too (`  7  ` → `7`)
+and blanks inside quotes are stripped as content (`"  x  "` → `x`).
+"""
 @inline function cellcontent(buf::Vector{UInt8}, pos::Int, len::Int, vo::ValueOpts)
     i, j = pos, pos + len - 1
     @inbounds begin

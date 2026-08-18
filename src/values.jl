@@ -674,21 +674,6 @@ function _matchspecial(buf::Vector{UInt8}, i::Int, j::Int)
     return (0.0, false)
 end
 
-"""
-    parsefloat64(buf, i, j, decimal=UInt8('.')) -> (Float64, rc)
-
-Parse `buf[i:j]` as a `Float64` with correct (round-half-even) rounding for
-every input — no C, no BigFloat: Clinger's exact small case, then Eisel–Lemire,
-then simple-decimal-conversion for the rare ambiguous/subnormal cases.
-Accepts sign, digits, one `decimal` byte, optional e/E exponent, and the
-case-insensitive spellings Inf/Infinity/NaN. Overflow → ±Inf with OK.
-
-Structured as an @inline hot core plus a thin wrapper owning the cold tier-3
-tail. (A once-suspected compiler pessimization here turned out to be real
-tier-3 work: random-bit benchmarks include ~0.05%% subnormals, which cost ~1ms
-each until Eisel-Lemire grew the standard denormal shift. See
-probe_float_anomaly.jl for the post-mortem.)
-"""
 # byte-equality marks (0x80 at each matching byte) — SWAR zero-byte test
 @inline function _eqmask8(w::UInt64, b::UInt8)
     x = w ⊻ (0x0101010101010101 * b)
@@ -785,6 +770,21 @@ end
     return (parts.neg ? -1.0 : 1.0, RC_OK, false)   # tier 3 required; sign in value
 end
 
+"""
+    parsefloat64(buf, i, j, decimal=UInt8('.')) -> (Float64, rc)
+
+Parse `buf[i:j]` as a `Float64` with correct (round-half-even) rounding for
+every input — no C, no BigFloat: Clinger's exact small case, then Eisel–Lemire,
+then simple-decimal-conversion for the rare ambiguous/subnormal cases.
+Accepts sign, digits, one `decimal` byte, optional e/E exponent, and the
+case-insensitive spellings Inf/Infinity/NaN. Overflow → ±Inf with OK.
+
+Structured as an @inline hot core plus a thin wrapper owning the cold tier-3
+tail. (A once-suspected compiler pessimization here turned out to be real
+tier-3 work: random-bit benchmarks include ~0.05% subnormals, which cost ~1ms
+each until Eisel-Lemire grew the standard denormal shift. See
+probe_float_anomaly.jl for the post-mortem.)
+"""
 function parsefloat64(buf::Vector{UInt8}, i::Int, j::Int, decimal::UInt8)
     v, rc, done = _parsefloat_core(buf, i, j, decimal)
     done && return (v, rc)

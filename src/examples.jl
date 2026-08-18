@@ -329,33 +329,4 @@ end
 typedvalue(::Type{T}, row::RowView, nm::Symbol) where {T} =
     typedvalue(T, row, getfield(row, :r).lookup[nm])
 
-# ---------------------------------------------------------------------------
-# demo
-# ---------------------------------------------------------------------------
-
-function demo()
-    csv = "name,score,when,notes\n" *
-          "alice,10,2024-01-02,\"likes\nmultiline, quoted text\"\n" *
-          "bob,11.5,2024-01-03,\n" *
-          "carol,12,2024-01-04,\"she said \"\"hi\"\"\"\n"
-    println("== eager (CSV.read analog) ==")
-    t = read(csv)
-    show(stdout, t); println()
-    println("as a NamedTuple of columns: ")
-    show(stdout, Tables.columntable(t)); println("\n")
-
-    println("== batches (CSV.Chunks analog, chunkbytes=32) ==")
-    for (k, batch) in enumerate(batches(csv; chunkbytes=32))
-        println("batch $k: $(batch.nrows) rows, score::$(eltype(batch[:score]))")
-    end
-    println()
-
-    println("== row streaming (CSV.Rows analog) ==")
-    for row in rows(csv)
-        println("row $(row.rownumber): name=$(row.name) score=$(typedvalue(Float64, row, :score)) notes=$(repr(row[:notes]))")
-    end
-end
-
 end # module KernelExamples
-
-abspath(PROGRAM_FILE) == (@__FILE__) && KernelExamples.demo()
