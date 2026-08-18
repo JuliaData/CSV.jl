@@ -229,4 +229,81 @@ Tables.schema(::NoSchemaRows) = nothing
                        Any[v === missing ? missing : String(v) for v in table.text]))
     end
 end
+
+@testset "staged renderer: direct paths are byte-identical to the Base spellings" begin
+    o = W._writeopts()
+    render(x) = (st = W.ColStage(); W._stagecolumn!(st, [x], 1, 1, o); String(copy(st.bytes)))
+    # integers: every fixed width at its extremes and around zero
+    for T in (Int8, Int16, Int32, Int64, Int128, UInt8, UInt16, UInt32, UInt64, UInt128)
+        for x in (typemin(T), typemax(T), zero(T), one(T), T(9), T(10), T(99), T(100))
+            @test render(x) == string(x)
+        end
+        rng = MersenneTwister(1)
+        okall = true
+        for _ in 1:2_000
+            x = rand(rng, T)
+            okall &= render(x) == string(x)
+        end
+        @test okall
+    end
+    @test render(big(10)^40) == string(big(10)^40)
+    # dates: adversarial years and every millisecond value
+    for y in (-12345, -1, 0, 1, 99, 999, 1000, 2024, 9999, 10000, 123456), m in (1, 12), d in (1, 28)
+        @test render(Date(y, m, d)) == string(Date(y, m, d))
+    end
+    okall = true
+    for ms in 0:999
+        x = DateTime(2020, 1, 1, 0, 0, 0, ms)
+        okall &= render(x) == string(x)
+    end
+    @test okall
+    rng = MersenneTwister(2)
+    okall = true
+    for _ in 1:20_000
+        x = DateTime(rand(rng, -100:12000), rand(rng, 1:12), rand(rng, 1:28),
+                     rand(rng, 0:23), rand(rng, 0:59), rand(rng, 0:59), rand(rng, 0:999))
+        okall &= render(x) == string(x)
+    end
+    @test okall
+    # floats: shortest round-trip, incl. specials, and decimal=','
+    okall = true
+    for _ in 1:20_000
+        x = reinterpret(Float64, rand(rng, UInt64))
+        okall &= render(x) == string(x)
+    end
+    @test okall
+    for x in (0.0, -0.0, 1.0, 1e10, 1e-10, Inf, -Inf, NaN, 1.7976931348623157e308, 5e-324, 1.0f0, Float16(1.5))
+        @test render(x) == string(x)
+    end
+    oc = W._writeopts(; decimal=',', delim=';')
+    st = W.ColStage(); W._stagecolumn!(st, [1.5, 2.25e10], 1, 2, oc)
+    @test String(copy(st.bytes)) == "1,52,25e10"
+    # bools, missings, and the union split
+    @test render(true) * render(false) == "truefalse"
+    st = W.ColStage(); W._stagecolumn!(st, Union{Int32, Missing}[1, missing, -7], 1, 3, o)
+    @test String(copy(st.bytes)) == "1-7" && st.ends == [1, 1, 3]
+    # whole-table byte identity across thread counts and vs the per-cell reference
+    rng = MersenneTwister(3)
+    n = 20_000
+    tbl = (id = collect(1:n), s = [rand(rng, ("a", "b,c", "d\"e", " lead", "")) for _ in 1:n],
+           f = rand(rng, n), d = [Date(2020) + Day(i) for i in 1:n],
+           t = [DateTime(2020) + Millisecond(i * 7) for i in 1:n],
+           m = [rand(rng) < 0.2 ? missing : rand(rng, Int64) for _ in 1:n], b = rand(rng, Bool, n))
+    ref = IOBuffer()
+    for r in 1:n
+        for (j, nm) in enumerate(keys(tbl))
+            W._writecell(ref, tbl[nm][r], o)
+            j < length(tbl) && write(ref, ',')
+        end
+        write(ref, '\n')
+    end
+    refbytes = take!(ref)
+    for nt in (1, 3, 8)
+        io = IOBuffer(); W.write(io, tbl; ntasks=nt, writeheader=false)
+        @test take!(io) == refbytes
+    end
+    # gzip streams block by block; the member must be complete and decodable
+    io = IOBuffer(); W.write(io, tbl; compress=:gzip, ntasks=4, writeheader=false)
+    @test transcode(GzipDecompressor, take!(io)) == refbytes
+end
 println("WRITE BATTERY OK")

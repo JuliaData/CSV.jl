@@ -12,14 +12,22 @@
 #   compress     :auto (by .gz extension) | :gzip | :none
 #   partition    write a Vector of sinks in parallel, one table partition each
 #
-# The engine renders row-major from Tables.columns, in parallel: rows split
-# into contiguous blocks, each block renders into its own buffer on its own
-# task, blocks concatenate in order into one output write. Bytes out are
-# identical at any thread count.
+# The engine renders from Tables.columns, in parallel: rows split into
+# contiguous blocks, each block renders on its own task. Within a block every
+# COLUMN renders first, through a loop specialized on that column's element
+# type, into a staged (bytes, ends) buffer — one dynamic dispatch per column
+# per block instead of one per cell (the per-cell `col[r]` on an
+# `AbstractVector` was 4× slower than 0.10) — and a row-gather then
+# interleaves the staged cells with delimiters and newlines. Ints emit their
+# digits directly, floats through Ryu into the buffer at the write position
+# (no `string(x)`), strings memcpy after one structural-byte scan. Blocks
+# stream to the sink in order (nothing is concatenated). Bytes out are
+# identical at any thread count and byte-identical to 0.10's writer.
 
 module KernelWrite
 
 using Tables, Dates, Printf, CodecZlib
+using CodecZlib.TranscodingStreams
 using ..CSVKernel
 const K = CSVKernel
 
@@ -163,19 +171,316 @@ function _writecell(io::IO, x, o::WriteOpts)
     return
 end
 
+# --- staged column rendering ---------------------------------------------------
+#
+# A block's cells for ONE column, rendered into `bytes` back to back with
+# `ends[k]` = end offset of the k-th cell (cell k = bytes[ends[k-1]+1 : ends[k]]).
+
+struct ColStage
+    bytes::Vector{UInt8}
+    ends::Vector{Int}
+end
+ColStage() = ColStage(UInt8[], Int[])
+@inline function _reset!(st::ColStage, ncells::Int)
+    empty!(st.bytes)
+    resize!(st.ends, ncells)
+    return st
+end
+@inline _endcell!(st::ColStage, k::Int) = (@inbounds st.ends[k] = length(st.bytes); nothing)
+
+# ensure `st.bytes` can take `n` more bytes when written through pointers
+@inline function _room!(v::Vector{UInt8}, n::Int)
+    need = length(v) + n
+    need > length(v) && resize!(v, need)     # length grows; content is written by the caller
+    return
+end
+
+# structural-byte scan for a byte range: any delimiter/quote/CR/LF?
+@inline function _needsquotebytes(o::WriteOpts, p::Ptr{UInt8}, n::Int)
+    @inbounds for k in 0:(n - 1)
+        _needsquote(o, unsafe_load(p, k + 1)) && return true
+    end
+    return false
+end
+
+# The exact `_writebytes` policy, appending to a Vector{UInt8}. `stringcell`
+# says whether the cell is a string (only strings get :all-quoting, the
+# empty-means-present rule, and whitespace-preserving quoting).
+function _appendbytes!(out::Vector{UInt8}, bytes::AbstractVector{UInt8}, o::WriteOpts,
+                       stringcell::Bool)
+    n = length(bytes)
+    if o.quotestyle === :none
+        stringcell && n == 0 &&
+            throw(ArgumentError("quotestyle=:none cannot distinguish an empty string from missing"))
+        for b in bytes
+            _needsquote(o, b) &&
+                throw(ArgumentError("quotestyle=:none cannot write a value containing " *
+                                    "a structural byte: $(repr(String(collect(bytes))))"))
+        end
+        return append!(out, bytes)
+    end
+    quote_it = stringcell && (o.quotestyle === :all || n == 0)
+    if !quote_it
+        for b in bytes
+            if _needsquote(o, b)
+                quote_it = true
+                break
+            end
+        end
+        if stringcell && !quote_it && n > 0
+            (bytes[1] == UInt8(' ') || bytes[end] == UInt8(' ')) && (quote_it = true)
+        end
+    end
+    quote_it || return append!(out, bytes)
+    push!(out, o.oq)
+    for b in bytes
+        (b == o.cq || (o.e != o.cq && b == o.e)) && push!(out, o.e)
+        push!(out, b)
+    end
+    push!(out, o.cq)
+    return out
+end
+_appendstring!(out::Vector{UInt8}, s::AbstractString, o::WriteOpts) =
+    _appendbytes!(out, codeunits(s), o, true)
+_appendscalar!(out::Vector{UInt8}, s::AbstractString, o::WriteOpts) =
+    _appendbytes!(out, codeunits(s), o, false)
+
+# fast path for String / SubString{String}: pointer scan, one memcpy when no
+# quoting is needed (the overwhelmingly common case)
+function _appendstring!(out::Vector{UInt8}, s::Union{String, SubString{String}}, o::WriteOpts)
+    n = ncodeunits(s)
+    if o.quotestyle === :minimal && n > 0
+        GC.@preserve s begin
+            p = pointer(s)
+            if !_needsquotebytes(o, p, n) &&
+               unsafe_load(p) != UInt8(' ') && unsafe_load(p, n) != UInt8(' ')
+                len = length(out)
+                _room!(out, n)
+                GC.@preserve out unsafe_copyto!(pointer(out, len + 1), p, n)
+                return out
+            end
+        end
+    end
+    return _appendbytes!(out, codeunits(s), o, true)
+end
+
+# --- integers: digits straight into the buffer ---------------------------------
+@inline function _appendint!(out::Vector{UInt8}, x::Union{Int128, Int64, Int32, Int16, Int8})
+    neg = x < 0
+    u = neg ? reinterpret(unsigned(typeof(x)), -x) : unsigned(x)   # wraps typemin correctly
+    return _appendudec!(out, u, neg)
+end
+@inline _appendint!(out::Vector{UInt8}, x::Union{UInt128, UInt64, UInt32, UInt16, UInt8}) =
+    _appendudec!(out, x, false)
+# other Integers (BigInt, ...) print via Base
+_appendint!(out::Vector{UInt8}, x::Integer) = append!(out, codeunits(string(x)))
+function _appendudec!(out::Vector{UInt8}, u::Unsigned, neg::Bool)
+    nd = u == 0 ? 1 : ndigits(u; base=10)
+    len = length(out)
+    _room!(out, nd + neg)
+    @inbounds begin
+        neg && (out[len + 1] = UInt8('-'))
+        pos = len + neg + nd
+        while true
+            q = u ÷ 0xa
+            out[pos] = UInt8('0') + (u - q * 0xa) % UInt8
+            u = q
+            pos -= 1
+            u == 0 && break
+        end
+    end
+    return out
+end
+
+# --- floats: Ryu shortest, written at the buffer position ------------------------
+# `string(x::Float64)` IS `Ryu.writeshortest(x)` with these defaults, so bytes
+# match; `decchar` takes `decimal` directly (no replace pass).
+@inline function _appendfloat!(out::Vector{UInt8}, x::Union{Float64, Float32, Float16}, o::WriteOpts)
+    len = length(out)
+    _room!(out, Base.Ryu.neededdigits(typeof(x)))
+    pos = Base.Ryu.writeshortest(out, len + 1, x, false, false, true, -1, UInt8('e'), false,
+                                 o.decimal, false, false)
+    resize!(out, pos - 1)
+    return out
+end
+
+# --- dates: the ISO spellings `string(::Date/::DateTime)` produces, direct ----
+# Date       yyyy-mm-dd            year ≥ 4 digits (more if needed), '-' if negative
+# DateTime   yyyy-mm-ddTHH:MM:SS   plus ".sss" (three digits) only when the
+#                                  milliseconds are nonzero (Dates' `.s` token)
+# Byte equality with `string(x)` is pinned by the test suite over adversarial
+# years (negative, 5-digit) and every millisecond value.
+@inline function _append2!(out::Vector{UInt8}, v::Int)   # two zero-padded digits, 0 ≤ v < 100
+    len = length(out)
+    _room!(out, 2)
+    @inbounds begin
+        out[len + 1] = UInt8('0') + (v ÷ 10) % UInt8
+        out[len + 2] = UInt8('0') + (v % 10) % UInt8
+    end
+    return out
+end
+@inline function _appendyear!(out::Vector{UInt8}, y::Int)
+    y < 0 && (push!(out, UInt8('-')); y = -y)
+    y < 1000 && push!(out, UInt8('0'))
+    y < 100 && push!(out, UInt8('0'))
+    y < 10 && push!(out, UInt8('0'))
+    return _appendudec!(out, unsigned(y), false)
+end
+function _appenddate!(out::Vector{UInt8}, x::Date)
+    y, m, d = Dates.yearmonthday(x)
+    _appendyear!(out, y); push!(out, UInt8('-'))
+    _append2!(out, m); push!(out, UInt8('-'))
+    _append2!(out, d)
+    return out
+end
+function _appenddatetime!(out::Vector{UInt8}, x::DateTime)
+    y, m, d = Dates.yearmonthday(x)
+    _appendyear!(out, y); push!(out, UInt8('-'))
+    _append2!(out, m); push!(out, UInt8('-'))
+    _append2!(out, d); push!(out, UInt8('T'))
+    _append2!(out, Dates.hour(x)); push!(out, UInt8(':'))
+    _append2!(out, Dates.minute(x)); push!(out, UInt8(':'))
+    _append2!(out, Dates.second(x))
+    ms = Dates.millisecond(x)
+    if ms != 0                                   # ".sss" — three digits, omitted only when zero
+        push!(out, UInt8('.'))
+        d1, r = divrem(ms, 100); d2, d3 = divrem(r, 10)
+        push!(out, UInt8('0') + d1 % UInt8)
+        push!(out, UInt8('0') + d2 % UInt8)
+        push!(out, UInt8('0') + d3 % UInt8)
+    end
+    return out
+end
+
+const _TRUE = codeunits("true"); const _FALSE = codeunits("false")
+@inline _boolbyte(b::UInt8) = b in (UInt8('t'), UInt8('r'), UInt8('u'), UInt8('e'),
+                                    UInt8('f'), UInt8('a'), UInt8('l'), UInt8('s'))
+
+# --- per-column staged loops (specialized on the column type) ------------------
+# Each renders cells lo..hi of `col`; the loop body is monomorphic, so the
+# `x === missing` split is static for Union columns.
+
+@inline _stagecell!(st::ColStage, x, o::WriteOpts) = _appendcell!(st.bytes, x, o)
+
+# the semantic reference is `_writecell`; this mirrors it, appending to a byte vector
+@inline function _appendcell!(out::Vector{UInt8}, x, o::WriteOpts)
+    if x === missing
+        _appendbytes!(out, o.missingstring, o, false)
+    elseif x isa AbstractString
+        _appendstring!(out, x, o)
+    elseif x isa AbstractFloat
+        if o.floatfmt !== nothing
+            s = Printf.format(o.floatfmt, x)
+            o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
+            _appendscalar!(out, s, o)
+        elseif x isa Union{Float64, Float32, Float16} && !any(_numericsyntax, (o.delim, o.oq, o.cq))
+            _appendfloat!(out, x, o)
+        else
+            s = string(x)
+            o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
+            _appendscalar!(out, s, o)
+        end
+    elseif x isa Dates.TimeType
+        if o.dateformat === nothing && !any(_numericsyntax, (o.delim, o.oq, o.cq)) &&
+           o.delim != UInt8('T') && o.delim != UInt8(':') && o.delim != UInt8('.') &&
+           x isa Union{Date, DateTime}
+            x isa Date ? _appenddate!(out, x) : _appenddatetime!(out, x)
+        else
+            _appendscalar!(out, o.dateformat === nothing ? string(x) : Dates.format(x, o.dateformat), o)
+        end
+    elseif x isa Bool
+        # the letters of true/false can only be structural under an exotic
+        # dialect; the checked path handles that
+        if o.quotestyle !== :none && !_boolbyte(o.delim) && !_boolbyte(o.oq) && !_boolbyte(o.cq)
+            append!(out, x ? _TRUE : _FALSE)
+        else
+            _appendscalar!(out, x ? "true" : "false", o)
+        end
+    elseif x isa Integer
+        any(_numericsyntax, (o.delim, o.oq, o.cq)) ? _appendscalar!(out, string(x), o) :
+                                                    _appendint!(out, x)
+    elseif x isa Number
+        _appendscalar!(out, string(x), o)
+    else
+        _appendstring!(out, string(x), o)
+    end
+    return
+end
+
+# the monomorphic driver: `col` is concretely typed here, so `col[r]` and the
+# `_stagecell!` branches resolve statically for the common element types
+function _stagecolumn!(st::ColStage, col::AbstractVector, lo::Int, hi::Int, o::WriteOpts)
+    _reset!(st, hi - lo + 1)
+    k = 0
+    @inbounds for r in lo:hi
+        _stagecell!(st, col[r], o)
+        _endcell!(st, k += 1)
+    end
+    return st
+end
+
 # --- row-block rendering (the parallel unit) --------------------------------
 
-function _renderblock(cols, lo::Int, hi::Int, o::WriteOpts)
-    io = IOBuffer()
-    ncols = length(cols)
-    @inbounds for r in lo:hi
-        for (j, col) in enumerate(cols)
-            _writecell(io, col[r], o)
-            j < ncols && Base.write(io, o.delim)
-        end
-        Base.write(io, o.newline)
+# Narrow tables (the common case): the columns travel as a Tuple, so the
+# recursion below is unrolled by the compiler with every column's element type
+# known statically — one specialized row renderer, direct row-major writes,
+# no staging and no gather. Wide tables use the staged path (a Tuple of
+# hundreds of vectors would cost compile time out of proportion).
+const TUPLE_RENDER_MAXCOLS = 32
+
+@inline function _writerow!(out::Vector{UInt8}, r::Int, cols::Tuple, o::WriteOpts)
+    _writecells!(out, r, cols, o)
+    for b in o.newline
+        push!(out, b)
     end
-    return take!(io)
+    return
+end
+@inline _writecells!(out::Vector{UInt8}, r::Int, ::Tuple{}, o::WriteOpts) = nothing
+@inline function _writecells!(out::Vector{UInt8}, r::Int, cols::Tuple, o::WriteOpts)
+    @inbounds _appendcell!(out, first(cols)[r], o)
+    rest = Base.tail(cols)
+    isempty(rest) || push!(out, o.delim)
+    return _writecells!(out, r, rest, o)
+end
+
+function _renderblock_tuple(cols::Tuple, lo::Int, hi::Int, o::WriteOpts)
+    out = UInt8[]
+    sizehint!(out, (hi - lo + 1) * 16 * length(cols))
+    @inbounds for r in lo:hi
+        _writerow!(out, r, cols, o)
+    end
+    return out
+end
+
+function _renderblock(cols, lo::Int, hi::Int, o::WriteOpts)
+    ncols = length(cols)
+    ncols <= TUPLE_RENDER_MAXCOLS && return _renderblock_tuple(Tuple(cols), lo, hi, o)
+    nrows = hi - lo + 1
+    stages = [ColStage() for _ in 1:ncols]
+    total = 0
+    for j in 1:ncols
+        _stagecolumn!(stages[j], cols[j], lo, hi, o)   # one dynamic dispatch per column
+        total += length(stages[j].bytes)
+    end
+    out = Vector{UInt8}(undef, total + nrows * (max(ncols - 1, 0) + length(o.newline)))
+    pos = 1
+    nl = o.newline
+    GC.@preserve out begin
+        @inbounds for k in 1:nrows
+            for j in 1:ncols
+                st = stages[j]
+                s = k == 1 ? 1 : st.ends[k - 1] + 1
+                e = st.ends[k]
+                n = e - s + 1
+                n > 0 && (unsafe_copyto!(pointer(out, pos), pointer(st.bytes, s), n); pos += n)
+                j < ncols && (out[pos] = o.delim; pos += 1)
+            end
+            for b in nl
+                out[pos] = b; pos += 1
+            end
+        end
+    end
+    return out
 end
 
 function _renderheader(names, o::WriteOpts)
@@ -319,20 +624,35 @@ function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool
         end
         append!(blocks, rendered)
     end
-    out = isempty(blocks) ? UInt8[] : reduce(vcat, blocks)
-
     gzip = compress === :gzip ||
            (compress === :auto && sink isa AbstractString && endswith(String(sink), ".gz"))
     compress in (:auto, :gzip, :none) ||
         throw(ArgumentError("compress must be :auto, :gzip, or :none (got $compress)"))
-    payload = gzip ? transcode(GzipCompressor, out) : out
+    # blocks stream to the sink in order — the output is never concatenated
+    # into a second whole-file buffer; gzip compresses through a stream
+    emit = function (io)
+        if gzip
+            gz = GzipCompressorStream(io)
+            for blk in blocks
+                Base.write(gz, blk)
+            end
+            # finish the gzip member without closing the caller's IO
+            Base.write(gz, TranscodingStreams.TOKEN_END)
+            flush(gz)
+        else
+            for blk in blocks
+                Base.write(io, blk)
+            end
+        end
+        return
+    end
     if sink isa AbstractString
-        open(io -> Base.write(io, payload), String(sink), append ? "a" : "w")
+        open(emit, String(sink), append ? "a" : "w")
     else
         seekable = sink isa IO && hasmethod(seek, Tuple{typeof(sink), Integer}) &&
                    hasmethod(seekend, Tuple{typeof(sink)})
         seekable && (append ? seekend(sink) : seekstart(sink))
-        Base.write(sink, payload)
+        emit(sink)
         # `append=false` means replacement for seekable IOs as it does for a
         # path opened with "w". Remove any stale suffix when the new payload
         # is shorter than the old contents.
