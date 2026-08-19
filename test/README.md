@@ -17,6 +17,6 @@ CSV.jl’s test fixtures live in an artifact (`artifact"testfiles"`) to avoid sh
    archive_artifact(artifact_hash, tarball)
    println((; artifact_hash, sha256=bytes2hex(open(sha256, tarball))))
    ```
-4. Upload the new tarball to a release (same repo/tag is fine), update `Artifacts.toml` with the new `git-tree-sha1` and `sha256`, and keep the asset available so tests can download it.
+4. Upload the new tarball to a release (same repo/tag is fine), update `test/Artifacts.toml` with the new `git-tree-sha1` and `sha256`, and keep the asset available so tests can download it.
 
 Tests assume the artifact root contains the contents of the old `test/testfiles` directory (no extra nesting).
