@@ -9,7 +9,7 @@
 # filter cannot degrade a column's inferred type (the generic path, which must
 # parse everything first, has no way to offer this).
 
-using Test, Random, Dates, Tables
+using Test, Random, Dates, Tables, PooledArrays
 
 using CSV
 const K = CSV.CSVKernel
@@ -108,12 +108,12 @@ end
     end
 end
 
-@testset "pushdown composes with pool and groupmark" begin
+@testset "pushdown composes with pool (API layer) and groupmark" begin
     scan = T.Scan(select = (:region, :qty), filter = T.col(:qty) > 25)
     ref = T.scan(K.parse(csv), scan)
-    t = S.scan(csv, scan; pool=true, chunkbytes=512)
-    @test sametable(t, ref)
-    @test t[:region] isa K.PooledColumn                             # masked pooling
+    f = CSV.CSVApi.File(IOBuffer(csv); scan, pool=true, chunkbytes=512)
+    @test all(isequal(collect(Tables.getcolumn(f, nm)), collect(ref[nm])) for nm in keys(ref))
+    @test Tables.getcolumn(f, :region) isa PooledArrays.PooledArray   # pooled after the masked parse
     gcsv = "a;n\nx;\"1,234\"\ny;\"22\"\nz;\"5,678\"\n"
     gscan = T.Scan(filter = T.col(:n) > 1000)
     tg = S.scan(gcsv, gscan; delim=';', groupmark=',')
@@ -191,9 +191,8 @@ end
         i <= 20 ? missing : "value_$(i % 3)" for i in 1:80 if mask[i]
     ]
     for cb in (8, 16, 32), par in (false, true)
-        t = K.parse(pcsv; select=[:s], rowmask=mask, pool=true, nsample=1,
+        t = K.parse(pcsv; select=[:s], rowmask=mask, nsample=1,
                     chunkbytes=cb, parallel=par)
-        @test t[:s] isa K.PooledColumn
         @test isequal([ismissing(x) ? missing : String(x) for x in t[:s]], want)
     end
 

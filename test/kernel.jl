@@ -150,23 +150,6 @@ function foldcscmp(v)
     return s
 end
 
-function inlinekey(s::AbstractString)
-    bytes = Vector{UInt8}(codeunits(s))
-    p = K.inline_payload(bytes, 1, length(bytes))
-    return (UInt128(p.a) << 64) | p.b
-end
-
-function itprobes(t::K.InlineTable, k::UInt128)
-    i = K._itmix(k) & t.mask
-    probes = 1
-    @inbounds while true
-        s = t.slots[i + 1]
-        (s === k || s === K.IT_EMPTY) && return probes
-        i = (i + 1) & t.mask
-        probes += 1
-    end
-end
-
 function tablesnapshot(t::K.ParsedTable)
     probs = [(p.row, p.col, p.pos, p.kind, p.message) for p in K.problems(t)]
     return (; names=K.names(t), types=map(eltype, K.columns(t)),
@@ -1148,10 +1131,9 @@ end
     @test isequal(collect(t[:a]), [missing, 1])
     @test isequal(collect(t[:b]), [missing, 2])
     @test [(p.row, p.col, p.kind) for p in K.problems(t)] == [(1, 0, :short_row)]
-    # composes with pool, groupmark, select, limit, header choices
-    pooled = "k v\n" * join(("$(iseven(i) ? "ee" : "oo")   $i" for i in 1:50), '\n') * "\n"
-    t = K.parse(pooled; delim=' ', ignorerepeated=true, pool=true, nsample=1, chunkbytes=32)
-    @test t[:k] isa K.PooledColumn
+    # composes with groupmark, select, limit, header choices
+    padded2 = "k v\n" * join(("$(iseven(i) ? "ee" : "oo")   $i" for i in 1:50), '\n') * "\n"
+    t = K.parse(padded2; delim=' ', ignorerepeated=true, nsample=1, chunkbytes=32)
     @test collect(t[:k])[1:4] == ["oo", "ee", "oo", "ee"]
     t = K.parse("a b\n1,234  5\n"; delim=' ', ignorerepeated=true, groupmark=',')
     @test t[:a] == [1234] && t[:b] == [5]
@@ -1292,309 +1274,6 @@ end
     @test any(p -> p.kind == :invalid_quoted_field && p.row == 1, K.problems(t))
 end
 
-@testset "pooled string columns" begin
-    # The inline table stays at or below half full. A missing colliding key
-    # terminates at an empty slot even at exactly 50% load. The 129th insert
-    # grows 256 -> 1024 once; recursive rehash does not grow again.
-    colliders = UInt128[]
-    candidate = UInt128(0)
-    while length(colliders) < 129
-        K._itmix(candidate) & UInt64(0xff) == 0 && push!(colliders, candidate)
-        candidate += 1
-    end
-    for order in (collect(1:129), collect(129:-1:1))
-        it = K.InlineTable()
-        for (ref, k) in enumerate(colliders[order[1:128]])
-            K.itset!(it, k, UInt32(ref))
-        end
-        @test length(it.refs) == 256
-        @test it.count == 128
-        @test it.count << 1 <= length(it.refs)
-        missingkey = colliders[order[129]]
-        @test K.itget(it, missingkey) == 0
-        K.itset!(it, missingkey, UInt32(129))
-        @test length(it.refs) == 1024
-        @test it.count == 129
-        @test K.itget(it, missingkey) == 129
-    end
-
-    # Short categorical payloads share a length and prefix. Every payload byte
-    # must affect the initial slot before linear probing starts.
-    realistic = [inlinekey("lvl$(lpad(i, 4, '0'))") for i in 1:400]
-    it = K.InlineTable()
-    for (ref, k) in enumerate(realistic)
-        K.itset!(it, k, UInt32(ref))
-    end
-    probes = [itprobes(it, k) for k in realistic]
-    @test length(unique(K._itmix(k) & it.mask for k in realistic)) >= 300
-    @test sum(probes) / length(probes) <= 2
-    @test maximum(probes) <= 12
-
-    # pooling must be invisible to values: differential vs the plain parse
-    # across chunk geometries, parallelism, escaped levels, and missings
-    rng = Random.MersenneTwister(77)
-    cats = ["aa", "bb", "a much longer categorical value", "q\"\"z"]
-    rows = String[]
-    for i in 1:500
-        c = rand(rng, cats)
-        cell = c == "q\"\"z" ? "\"q\"\"z\"" : c
-        push!(rows, (rand(rng, 1:10) == 1 ? "" : cell) * "," * string(i))
-    end
-    csv = "cat,val\n" * join(rows, "\n") * "\n"
-    plain = K.parse(csv)
-    for cb in (64, 256, 1 << 20), par in (false, true)
-        t = K.parse(csv; pool=true, chunkbytes=cb, parallel=par)
-        c = t[:cat]
-        @test c isa K.PooledColumn
-        @test isequal(collect(c), collect(plain[:cat]))
-        # deterministic level ids: first occurrence in row order
-        lv = collect(K.poollevels(c))
-        @test lv == unique([x for x in collect(plain[:cat]) if !ismissing(x)])
-        @test all(lv .!== missing)
-    end
-    # ratio policy: 4 levels / 500 rows ⇒ pooled at 0.05, plain at 0.005
-    @test K.parse(csv; pool=0.05)[:cat] isa K.PooledColumn
-    @test K.parse(csv; pool=0.005)[:cat] isa K.CompactStringVector
-    # Equal-stride sampling aliases this periodic layout: 6000 / 128 is nearly
-    # coprime to 400. Jittered draws must find repeats and preserve pooling.
-    periodicvalues = ["level$(i % 400)" for i in 1:6000]
-    periodiccsv = "a\n" * join(periodicvalues, '\n') * "\n"
-    for par in (false, true)
-        periodic = K.parse(periodiccsv; types=String, pool=(0.2, 500),
-                           chunkbytes=64, parallel=par)[:a]
-        @test periodic isa K.PooledColumn
-        @test K.materialize(periodic) == periodicvalues
-    end
-    # A birthday estimate is not a proof for a near-cap column. The 128 draws
-    # happen to be distinct, but all 501 rows prove that 469 levels fit cap 500.
-    nearcapvalues = ["level$(i % 469)" for i in 1:501]
-    nearcapcsv = "a\n" * join(nearcapvalues, '\n') * "\n"
-    for par in (false, true)
-        nearcap = K.parse(nearcapcsv; types=String, pool=(1.0, 500),
-                          chunkbytes=64, parallel=par)[:a]
-        @test nearcap isa K.PooledColumn
-        @test K.materialize(nearcap) == nearcapvalues
-    end
-    # Pre-skip fingerprints use parsed content. Raw whitespace variants collapse
-    # to one level under stripwhitespace and must not manufacture cardinality.
-    normalizedcsv = "a\n" * join((repeat(" ", i) * "x" for i in 1:128), '\n') * "\n"
-    normalized = K.parse(normalizedcsv; types=String, stripwhitespace=true,
-                         pool=(0.2, 500), chunkbytes=64, parallel=true)[:a]
-    @test normalized isa K.PooledColumn
-    @test length(K.poollevels(normalized)) == 1
-    # A limited parse samples only output rows. High-cardinality excluded rows
-    # cannot make a small categorical prefix bypass pooling or the 32-cell gate.
-    limitedvalues = [i <= 31 ? "cat" : "unique$i" for i in 1:4096]
-    limitedcsv = "a\n" * join(limitedvalues, '\n') * "\n"
-    limited = K.parse(limitedcsv; types=String, limit=31, pool=(0.2, 500),
-                      chunkbytes=1 << 20, parallel=false)[:a]
-    @test limited isa K.PooledColumn
-    @test K.materialize(limited) == fill("cat", 31)
-    # A declared missing union is retained by every String container even when
-    # the data has no missing cells.
-    declaredflat = K.parse("a\nx\ny\n"; types=Union{Missing, String}, pool=false)[:a]
-    @test declaredflat isa K.CompactStringVector{Union{K.CompactString, Missing}}
-    declaredpool = K.parse("a\n" * join(fill("x", 40), '\n') * "\n";
-                           types=Union{Missing, String}, pool=true)[:a]
-    @test declaredpool isa K.PooledColumn{Union{K.CompactString, Missing}}
-    # absolute cap abandons early
-    tall = K.parse("a\n" * join(1:200, "\n") * "\n"; types=String, pool=(1.0, 8))
-    @test tall[:a] isa K.CompactStringVector
-    # cap forms and validation
-    @test_throws ArgumentError K.parse("a\nx\n"; pool=1.5)
-    @test_throws ArgumentError K.parse("a\nx\n"; pool=(-0.1, 10))
-    @test_throws ArgumentError K.parse("a\nx\n"; pool=(1.0, -1))
-    # The ratio is a strict level/row bound: 2 levels exceed 0.5 * 3 rows.
-    @test K.parse("a\nx\ny\nx\n"; types=String, pool=0.5)[:a] isa K.CompactStringVector
-    # all-present column gets the concrete eltype; missing goes Union + ref 0
-    tp = K.parse("a,b\nx,1\nx,2\n"; pool=true)
-    @test tp[:a] isa K.PooledColumn{K.CompactString}
-    tm = K.parse("a,b\nx,1\n,2\ny,3\nx,4\n"; pool=true)
-    @test tm[:a] isa K.PooledColumn{Union{K.CompactString, Missing}}
-    @test K.poolrefs(tm[:a]) == UInt32[1, 0, 2, 1]
-    @test isequal(K.materialize(tm[:a]), ["x", missing, "y", "x"])
-    @test K.materialize(tp[:a]) == ["x", "x"]
-    # Generic AbstractVector operations must work without custom methods.
-    firstvalue, iterstate = iterate(tp[:a])
-    @test firstvalue == tp[:a][1]
-    @test first(iterate(tp[:a], iterstate)) == tp[:a][2]
-    @test similar(tp[:a]) isa Vector{K.CompactString}
-    @test collect(copy(tp[:a])) == collect(tp[:a])
-    @test occursin("x", sprint(show, tp[:a]))
-    # Header-only typed strings stay a valid empty vector; there is no pool to build.
-    emptycol = K.parse("a\n"; types=String, pool=true)[:a]
-    @test emptycol isa K.CompactStringVector{K.CompactString} && isempty(emptycol)
-    # Long escaped values live in per-chunk `extra` buffers. Pooling must intern
-    # equal bytes across those buffers, copy one level, and keep negative offsets.
-    longescaped = "a long \"escaped\" categorical value"
-    inlineescaped = "abcdefghij\"k"             # 12 bytes after unescaping
-    quote_csv(s) = "\"" * replace(s, "\"" => "\"\"") * "\""
-    escapedcsv = "a\n" * join((quote_csv(longescaped), quote_csv(inlineescaped),
-                                quote_csv(longescaped), quote_csv(inlineescaped)), "\n") * "\n"
-    escapedplain = K.parse(escapedcsv; types=String, chunkbytes=16, parallel=false)
-    for par in (false, true)
-        escapedpool = K.parse(escapedcsv; types=String, pool=true,
-                              chunkbytes=16, parallel=par)[:a]
-        @test escapedpool isa K.PooledColumn{K.CompactString}
-        @test collect(escapedpool) == collect(escapedplain[:a])
-        @test K.poolrefs(escapedpool) == UInt32[1, 2, 1, 2]
-        levels = K.poollevels(escapedpool)
-        @test K.csoff(levels.payloads[1]) < 0
-        @test K.cslen(levels.payloads[2]) == K.COMPACTSTRING_INLINE
-        dict = Dict(levels[1] => 7)
-        @test dict[escapedplain[:a][1]] == 7
-    end
-    # ViewKey equality and hashing depend only on codeunits. Positive input
-    # offsets and negative extra-buffer offsets must interoperate.
-    viewcontent = Vector{UInt8}(codeunits("abcdefghijklmnop"))
-    extrabuf = [UInt8(0xff); viewcontent; UInt8(0xee)]
-    inputkey = K.ViewKey(K.CompactString(K.view_payload(viewcontent, 1, length(viewcontent), 1),
-                               viewcontent))
-    extrakey = K.ViewKey(K.CompactString(K.view_payload(extrabuf, 2, length(viewcontent), -2),
-                               extrabuf))
-    @test inputkey == extrakey
-    @test hash(inputkey, UInt(17)) == hash(extrakey, UInt(17))
-    @test Dict(inputkey => UInt32(7))[extrakey] == 7
-    # A promotion to String must still pool after stale numeric segments reparse.
-    promocsv = "a\n1\n2\nword\n1\n"
-    promoref = K.parse(promocsv; nsample=1, pool=true, chunkbytes=3, parallel=false)[:a]
-    @test promoref isa K.PooledColumn{K.CompactString}
-    for _ in 1:10
-        promoc = K.parse(promocsv; nsample=1, pool=true, chunkbytes=3, parallel=true)[:a]
-        @test K.poolrefs(promoc) == K.poolrefs(promoref)
-        @test collect(K.poollevels(promoc)) == collect(K.poollevels(promoref))
-    end
-    # A tight bound is proven by the 128-row probe before an unsampled String
-    # promotes an Int seed. Both direct and masked skip paths must reparse stale
-    # numeric segments into the plain String destination.
-    skipvalues = [i == 1 ? "1" : "word$i" for i in 1:1200]
-    skipcsv = "a\n" * join(skipvalues, '\n') * "\n"
-    skipmask = [i == 1 || i == 1200 || iseven(i) for i in 1:1200]
-    for par in (false, true)
-        promoted = K.parse(skipcsv; nsample=1, pool=0.05,
-                           chunkbytes=31, parallel=par)[:a]
-        @test promoted isa K.CompactStringVector
-        @test K.materialize(promoted) == skipvalues
-        maskedpromoted = K.parse(skipcsv; nsample=1, rowmask=skipmask, pool=0.05,
-                                 chunkbytes=31, parallel=par)[:a]
-        @test maskedpromoted isa K.CompactStringVector
-        @test K.materialize(maskedpromoted) == skipvalues[skipmask]
-    end
-    # Abandoning after an extra-backed level must leave flat stitching untouched.
-    abandoned = K.parse(escapedcsv; types=String, pool=(1.0, 1),
-                        chunkbytes=16, parallel=true)[:a]
-    @test abandoned isa K.CompactStringVector
-    @test collect(abandoned) == collect(escapedplain[:a])
-    # non-string columns ignore pool
-    @test K.parse("a\n1\n2\n"; pool=true)[:a] isa Vector{Int64}
-
-    # parse-time staging: a cap that fails MID-CHUNK degrades in place — the
-    # remaining rows finish through the plain string path and every geometry
-    # still equals the unpooled parse (incl. escaped cells after the abandon)
-    manyrows = String[]
-    for i in 1:300
-        push!(manyrows, i % 4 == 0 ? "\"lv$(i % 40) \"\"q\"\"\"" : "lv$(i % 40)")
-    end
-    manycsv = "a\n" * join(manyrows, "\n") * "\n"
-    manyplain = collect(K.parse(manycsv; types=String, pool=false)[:a])
-    for cap in (1, 5, 39), cb in (32, 256, 1 << 20), par in (false, true)
-        c = K.parse(manycsv; types=String, pool=(1.0, cap), chunkbytes=cb, parallel=par)[:a]
-        @test c isa K.CompactStringVector          # 40 levels always exceed the cap
-        @test collect(c) == manyplain
-    end
-    c = K.parse(manycsv; types=String, pool=(1.0, 40), chunkbytes=64, parallel=true)[:a]
-    @test c isa K.PooledColumn && collect(c) == manyplain
-
-    # duplicate escaped levels rewind the staging extra: interning 200 repeats
-    # of one long escaped value stores its bytes ONCE per chunk at most
-    dupcsv = "a\n" * join((quote_csv(longescaped) for _ in 1:200), "\n") * "\n"
-    dup = K.parse(dupcsv; types=String, pool=true, chunkbytes=1 << 20, parallel=false)[:a]
-    @test dup isa K.PooledColumn{K.CompactString}
-    @test length(K.poollevels(dup)) == 1
-    @test K.poollevels(dup).extra == Vector{UInt8}(codeunits(longescaped))
-
-    # Raw escaped-span keys occupy a namespace disjoint from canonical inline
-    # payloads. Even all-0xff content cannot reach the empty-table sentinel.
-    keybytes = fill(0xff, 16)
-    for n in 0:K.COMPACTSTRING_INLINE
-        contentkey = K._inlinekey(K.inline_payload(keybytes, 1, n))
-        rawkey = contentkey | K.RAWKEY_BIT
-        @test contentkey & K.RAWKEY_BIT == 0
-        @test rawkey != contentkey
-        @test rawkey != K.IT_EMPTY
-    end
-    # A bare-quote canonical value can equal an escaped cell's raw spelling.
-    # The two values must remain distinct despite sharing the InlineTable.
-    rawcollision = K.parse("a\na\"\"b\n\"a\"\"b\"\n";
-                           types=String, pool=true, parallel=false)[:a]
-    @test String.(rawcollision) == ["a\"\"b", "a\"b"]
-    @test K.poolrefs(rawcollision) == UInt32[1, 2]
-
-    # Long raw spellings use rawvtable. Repeats resolve to one ref and store
-    # the unescaped bytes once.
-    rawinput = "a\n" * join(fill(quote_csv(longescaped), 3), '\n') * "\n"
-    rawbuf = Vector{UInt8}(codeunits(rawinput))
-    rawd = K.Dialect()
-    rawopts = K.makevalueopts(rawd)
-    rawci = only(K.index(rawbuf, rawd; chunkbytes=1 << 20, parallel=false).chunks)
-    rawlog = K.ProblemLog(10)
-    K.parseheader!(rawbuf, rawci, rawopts, rawd, rawlog)
-    rawseg = K.PoolSegment(K.nrows(rawci), rawbuf, rawopts.e, rawd.cq, 10,
-                           Threads.Atomic{Bool}(false))
-    @test K.parsecolchunk!(rawseg, rawbuf, rawci, 1, 0, rawopts, false, rawlog) == 0
-    @test length(rawseg.rawvtable) == 1
-    @test rawseg.refs == UInt32[1, 1, 1]
-    @test rawseg.extra == Vector{UInt8}(codeunits(longescaped))
-
-    # Different escaped spellings of the same long content dedupe by canonical
-    # content. The second raw miss must rewind its temporary bytes.
-    canonical = "a long escaped x value"
-    spellings = "a\n\"a long escaped \\x value\"\n" *
-                "\"a long escaped x value\"\n" *
-                "\"a long escaped \\x value\"\n"
-    rewound = K.parse(spellings; types=String, escapechar='\\', pool=true,
-                      chunkbytes=1 << 20, parallel=false)[:a]
-    @test String.(K.poollevels(rewound)) == [canonical]
-    @test K.poolrefs(rewound) == UInt32[1, 1, 1]
-    @test K.poollevels(rewound).extra == Vector{UInt8}(codeunits(canonical))
-
-    # If an escaped long miss exceeds the cap, its speculative bytes must not
-    # survive the switch to the flat StringColumn.
-    firstescaped = "first long value with a \"quote\" tail"
-    secondescaped = "second long value with a \"quote\" tail"
-    abortcsv = "a\n" * quote_csv(firstescaped) * "\n" * quote_csv(secondescaped) * "\n"
-    abortedraw = K.parse(abortcsv; types=String, pool=(1.0, 1),
-                         chunkbytes=1 << 20, parallel=false)[:a]
-    @test abortedraw isa K.CompactStringVector{K.CompactString}
-    @test String.(abortedraw) == [firstescaped, secondescaped]
-    @test abortedraw.extra == Vector{UInt8}(codeunits(firstescaped * secondescaped))
-    # The inline scan stays exact at its 16-level boundary. This sequence mixes
-    # empty, escaped-inline, inline, and view levels. It then grows to level 17,
-    # where duplicate lookup switches to the still-complete InlineTable.
-    scanlevels = ["", "a\"b", ["v$(lpad(i, 2, '0'))" for i in 3:15]...,
-                  "a long view-backed level"]
-    scancells = ["\"\"", "\"a\"\"b\"", ["v$(lpad(i, 2, '0'))" for i in 3:15]...,
-                 "a long view-backed level", "\"a\"\"b\"", "v17", "v17", "\"\""]
-    scantable = K.parse("a\n" * join(scancells, "\n") * "\n";
-                        types=String, pool=true, chunkbytes=1 << 20, parallel=false)[:a]
-    @test scantable isa K.PooledColumn{K.CompactString}
-    @test String.(K.poollevels(scantable)) == [scanlevels; "v17"]
-    @test K.poolrefs(scantable) == UInt32[collect(1:16); 2; 17; 17; 1]
-
-    # The all-zero inline key is also valid when it first appears at level 17.
-    # More than 400 levels force table growth before the final empty duplicate.
-    growcells = ["v$(lpad(i, 3, '0'))" for i in 1:16]
-    push!(growcells, "\"\"")
-    append!(growcells, ["v$(lpad(i, 3, '0'))" for i in 17:400])
-    push!(growcells, "\"\"")
-    grown = K.parse("a\n" * join(growcells, '\n') * "\n";
-                    types=String, pool=(1.0, 500), chunkbytes=1 << 20,
-                    parallel=false)[:a]
-    @test grown isa K.PooledColumn{K.CompactString}
-    @test length(K.poollevels(grown)) == 401
-    @test String(K.poollevels(grown)[17]) == ""
-    @test K.poolrefs(grown)[end] == 17
-end
 
 @testset "CompactString: inline-else-view strings" begin
     # inline/view boundary: 12 bytes inline, 13 views the buffer
@@ -1640,7 +1319,7 @@ end
         n = ncodeunits(payloads[i])
         bytes = csscratchbytes(payloads[i])
         bytes[1:n] == collect(codeunits(strings[i])) &&
-            all(iszero, bytes[(n + 1):end]) && K._inlinekey(payloads[i].p) != K.IT_EMPTY
+            all(iszero, bytes[(n + 1):end])
     end for i in 1:(K.COMPACTSTRING_INLINE + 1))
     @test all(cmp(payloads[i], payloads[j]) == cmp(strings[i], strings[j]) &&
               isless(payloads[i], payloads[j]) == isless(strings[i], strings[j]) &&
@@ -1944,7 +1623,7 @@ end
     # than eyeball 17 spawn sites, lower every method that spawns and assert
     # no box survives.
     boxed = String[]
-    for m in (K,)
+    for m in (K, CSV.CSVApi, CSV.KernelWrite)
         for name in names(m; all=true)
             f = try getfield(m, name) catch; continue end
             f isa Function || continue

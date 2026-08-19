@@ -344,6 +344,59 @@ end
     @test Base.names(f) == [:region, :price, :qty]
 end
 
+@testset "pooling is a finalize-time API pass over CompactString columns" begin
+    # values never change; container/policy/levels are the observable contract
+    rng = Random.MersenneTwister(77)
+    cats = ["aa", "bb", "a much longer categorical value", "q\"\"z"]
+    rows = String[]
+    for i in 1:500
+        c = rand(rng, cats)
+        cell = c == "q\"\"z" ? "\"q\"\"z\"" : c
+        push!(rows, (rand(rng, 1:10) == 1 ? "" : cell) * "," * string(i))
+    end
+    csv = "cat,val\n" * join(rows, "\n") * "\n"
+    plain = A.File(IOBuffer(csv))
+    for cb in (64, 256, 1 << 20), par in (false, true)
+        f = A.File(IOBuffer(csv); pool=true, chunkbytes=cb, parallel=par)
+        c = Tables.getcolumn(f, :cat)
+        @test c isa PooledArrays.PooledArray
+        @test isequal(collect(c), collect(Tables.getcolumn(plain, :cat)))
+        # deterministic level ids: first occurrence in row order (missing last)
+        lv = [x for x in c.pool if !ismissing(x)]
+        @test lv == unique([String(x) for x in collect(Tables.getcolumn(plain, :cat)) if !ismissing(x)])
+    end
+    # ratio policy: 4 levels / 500 rows ⇒ pooled at 0.05, plain at 0.005; cap abandons
+    @test Tables.getcolumn(A.File(IOBuffer(csv); pool=0.05), :cat) isa PooledArrays.PooledArray
+    @test !(Tables.getcolumn(A.File(IOBuffer(csv); pool=0.005), :cat) isa PooledArrays.PooledArray)
+    tall = A.File(IOBuffer("a\n" * join(1:200, "\n") * "\n"); types=String, pool=(1.0, 8))
+    @test !(Tables.getcolumn(tall, :a) isa PooledArrays.PooledArray)
+    @test_throws ArgumentError A.File(IOBuffer("a\nx\n"); pool=1.5)
+    @test_throws ArgumentError A.File(IOBuffer("a\nx\n"); pool=(-0.1, 10))
+    @test_throws ArgumentError A.File(IOBuffer("a\nx\n"); pool=(1.0, -1))
+    # all-present ⇒ concrete eltype; missing ⇒ Union eltype with missing as a level
+    tp = Tables.getcolumn(A.File(IOBuffer("a,b\nx,1\nx,2\n"); pool=true), :a)
+    @test tp isa PooledArrays.PooledArray && eltype(tp) == String
+    tm = Tables.getcolumn(A.File(IOBuffer("a,b\nx,1\n,2\ny,3\nx,4\n"); pool=true), :a)
+    @test eltype(tm) == Union{String, Missing} && isequal(collect(tm), ["x", missing, "y", "x"])
+    # escaped levels unescape exactly once
+    esc = Tables.getcolumn(A.File(IOBuffer("a\n\"q\"\"z\"\nplain\n\"q\"\"z\"\n"); pool=true), :a)
+    @test collect(esc) == ["q\"z", "plain", "q\"z"] && length(esc.pool) == 2
+    # per-column specs: Dict by name / by regex, and a vector; select maps source specs
+    f = A.File(IOBuffer("k,v,w\nx,y,z\nx,y,z\n"); pool=Dict(:k => true))
+    @test Tables.getcolumn(f, :k) isa PooledArrays.PooledArray
+    @test !(Tables.getcolumn(f, :v) isa PooledArrays.PooledArray)
+    f = A.File(IOBuffer("k,v,w\nx,y,z\nx,y,z\n"); pool=[false, true, false], select=[:v, :w])
+    @test Tables.getcolumn(f, :v) isa PooledArrays.PooledArray
+    @test !(Tables.getcolumn(f, :w) isa PooledArrays.PooledArray)
+    # empty typed String column: nothing to pool, no error
+    @test length(Tables.getcolumn(A.File(IOBuffer("a\n"); types=String, pool=true), :a)) == 0
+    # the primitive itself
+    col = Tables.getcolumn(A.File(IOBuffer("a\nx\ny\nx\n")), :a)
+    pc = A._poolcolumn(col, (1.0, 10))
+    @test pc isa K.PooledColumn && K.poolrefs(pc) == UInt32[1, 2, 1]
+    @test A._poolcolumn(col, (0.5, 10)) === nothing         # 2 levels > floor(0.5·3)=1
+end
+
 @testset "pooling agrees on values" begin
     vals = rand(["alpha", "beta", "gamma"], 400)
     input = "k\n" * join(vals, "\n") * "\n"
@@ -361,7 +414,7 @@ end
     # Missing is an ordinary final pool level. Conversion remaps kernel ref 0
     # without changing the kernel-owned refs, while an all-present conversion
     # can transfer its exclusively owned refs at the File door.
-    kernelmissing = K.parse("k\nx\n\ny\nx\n"; ignoreemptyrows=false, pool=true)[:k]
+    kernelmissing = A._poolcolumn(K.parse("k\nx\n\ny\nx\n"; ignoreemptyrows=false)[:k], (1.0, 10))
     oldrefs = copy(K.poolrefs(kernelmissing))
     missingpool = A._topooledarray(kernelmissing)
     @test K.poolrefs(kernelmissing) == oldrefs == UInt32[1, 0, 2, 1]
@@ -370,7 +423,7 @@ end
     @test missingpool.invpool[missing] == missingpool.refs[2]
     @test isequal(collect(missingpool), ["x", missing, "y", "x"])
 
-    kernelpresent = K.parse(input; pool=true)[:k]
+    kernelpresent = A._poolcolumn(K.parse(input)[:k], (1.0, typemax(Int)))
     presentpool = A._topooledarray(kernelpresent)
     @test presentpool.refs === K.poolrefs(kernelpresent)
     refsnapshot = copy(presentpool.refs)
@@ -916,7 +969,7 @@ end
 
 @testset "CompactString hash + stringtype extension hook" begin
     # hash contract: CompactString hashes like its String, allocation-free
-    col = K.parse(Vector{UInt8}(codeunits("a\n" * join(("v$(i)_" * "x"^(i % 30) for i in 1:500), '\n') * "\n")); pool=false).columns[1]
+    col = K.parse(Vector{UInt8}(codeunits("a\n" * join(("v$(i)_" * "x"^(i % 30) for i in 1:500), '\n') * "\n"))).columns[1]
     @test all(hash(col[i]) == hash(String(col[i])) for i in eachindex(col))
     @test all(hash(col[i], UInt(7)) == hash(String(col[i]), UInt(7)) for i in eachindex(col))
     hashall(c) = (h = UInt(0); @inbounds for i in eachindex(c); h ⊻= hash(c[i]); end; h)
@@ -924,7 +977,7 @@ end
     @test @allocated(hashall(col)) == 0
     for n in 0:14   # every inline length + the first view lengths, incl. escaped
         s = "y"^n
-        c = K.parse(Vector{UInt8}(codeunits("a\n\"" * s * "\"\n\"" * s * "\"\"z\"\n")); pool=false).columns[1]
+        c = K.parse(Vector{UInt8}(codeunits("a\n\"" * s * "\"\n\"" * s * "\"\"z\"\n"))).columns[1]
         @test hash(c[1]) == hash(s) && hash(c[2]) == hash(s * "\"z")
     end
     d = Dict{AbstractString, Int}(String(col[3]) => 3)

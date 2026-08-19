@@ -863,9 +863,10 @@ function File(source;
         haskey(kw, :limit) &&
             throw(ArgumentError("pass the row limit through the Scan, not limit="))
         p = _prepare(source; parallel, maxproblems=capturecap, validate, kw...)
-        poolarg, poolspecs = _resolvepool(pool, p.names, p.ncols; validate)
-        t = _executescan(p, scan; parsekw=merge(p.parsekw, (; pool=poolarg, poolspecs)),
-                         maxproblems, on_error)
+        t = _executescan(p, scan; parsekw=p.parsekw, maxproblems, on_error)
+        # pool keys name the scan's OUTPUT columns (the request already renamed
+        # and reordered them)
+        t = _poolcolumns(t, _resolvepool(pool, K.names(t), length(K.names(t)); validate); parallel)
         poolS = stringtype === K.CompactString ? String : stringtype
         t = _pooledarrays(t, poolS)
         downcast && (t = _downcast(t))
@@ -880,9 +881,9 @@ function File(source;
     else
         types
     end
-    poolarg, poolspecs = _resolvepool(pool, p.names, p.ncols; validate)
+    poolspecs = _resolvepool(pool, p.names, p.ncols; validate)   # by SOURCE column
     t = K.parse(p.buf; index=p.bi, header=p.names, types=parsetypes, select=sel, limit=p.limit,
-                pool=poolarg, poolspecs, on_error=:collect, p.parsekw...)
+                on_error=:collect, p.parsekw...)
     t, firstproblem = _mergeproblems(t, p.headerlog, maxproblems)
     if on_error === :error && firstproblem !== nothing
         pr = firstproblem
@@ -891,6 +892,9 @@ function File(source;
                              pr.message * (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
     end
     t = _narrowtypes(t, K.requestedtypes(types, p.names, p.ncols; validate), sel)
+    # the kernel emits selected columns in file order: map source specs to them
+    keep = sel === nothing ? collect(1:p.ncols) : sort!(unique(sel))
+    t = _poolcolumns(t, poolspecs[keep]; parallel)
     poolS = stringtype === K.CompactString ? String : stringtype   # pool levels are never views
     t = _pooledarrays(t, poolS)
     downcast && (t = _downcast(t))
@@ -1182,21 +1186,171 @@ function _transposedfile(source; types=nothing, downcast::Bool=false,
     return File(nm, t, Dict(nm2 => j for (j, nm2) in enumerate(names)))
 end
 
-# pool as Dict(col => spec) or per-column vector: resolve to kernel poolspecs
-# (entries nothing = never pool). Scalars pass through as the global policy.
+# --- pooling: a finalize-time pass at the API layer ---------------------------
+#
+# The kernel never pools. When asked, each CompactString column is interned
+# ONCE, allocation-free (CompactString hashing/equality are content-based),
+# into first-occurrence levels; the policy bound `min(floor(ratio·n), cap)`
+# abandons a column the moment its distinct count exceeds it (a unique-valued
+# column costs the walk up to that bound, nothing more). Columns pool in
+# parallel. This replaced ~500 lines of parse-time interning (open-addressing
+# tables, per-column atomic abort/degrade, hash-sampled pre-skip) at the cost
+# of a few ms on a pooled 39 MiB file — and only when pooling is requested.
+
+# `pool` policy spellings → (ratio, cap) or nothing
+function _poolpolicy(pool)
+    (pool === nothing || pool === false) && return nothing
+    pool === true && return (1.0, typemax(Int))
+    if pool isa Real
+        0.0 <= pool <= 1.0 ||
+            throw(ArgumentError("pool ratio must be in [0, 1] (got $pool)"))
+        return (Float64(pool), typemax(Int))
+    end
+    pool isa Tuple{<:Real, <:Integer} ||
+        throw(ArgumentError("pool spec must be Bool, Real, (Real, Integer), or nothing " *
+                            "(got $(typeof(pool)))"))
+    ratio = pool[1]
+    0.0 <= ratio <= 1.0 ||
+        throw(ArgumentError("pool ratio must be in [0, 1] (got $ratio)"))
+    cap = Int(pool[2])
+    cap >= 0 || throw(ArgumentError("pool cap must be nonnegative (got $cap)"))
+    return (Float64(ratio), cap)
+end
+
+# pool as a scalar policy, Dict(col => spec), or per-column vector → one spec
+# per column of `names` (nothing = never pool)
 function _resolvepool(pool, names::Vector{Symbol}, ncols::Int; validate::Bool=true)
     if pool isa AbstractDict
-        specs = Vector{Any}(nothing, ncols)
+        specs = Vector{Union{Nothing, Tuple{Float64, Int}}}(nothing, ncols)
         for (j, sp) in K._resolvekeys(pool, names, ncols, "pool"; validate)
-            specs[j] = K._poolpolicy(sp)
+            specs[j] = _poolpolicy(sp)
         end
-        return false, specs
+        return specs
     elseif pool isa AbstractVector
         length(pool) == ncols ||
             throw(ArgumentError("pool vector length $(length(pool)) != $ncols columns"))
-        return false, Any[K._poolpolicy(sp) for sp in pool]
+        return Union{Nothing, Tuple{Float64, Int}}[_poolpolicy(sp) for sp in pool]
     end
-    return pool, nothing
+    sp = _poolpolicy(pool)
+    return Union{Nothing, Tuple{Float64, Int}}[sp for _ in 1:ncols]
+end
+
+# intern one CompactString column; nothing when the policy bound is exceeded.
+# Rows split into contiguous ranges interned in parallel (each range's local
+# table is a Dict{CompactString,UInt32}; the CompactString hash walks the
+# bytes, no allocation); the local level lists then merge in range order — so
+# level ids are first-occurrence-in-file order exactly as a serial pass would
+# assign them — and each range's refs remap through a small local→global
+# vector. A range exceeding the bound locally proves the column exceeds it.
+function _poolcolumn(c::K.CompactStringVector, ps::Tuple{Float64, Int}; parallel::Bool=true)
+    n = length(c)
+    n == 0 && return nothing
+    ratiolevels = ps[1] == 1.0 ? n : floor(Int, ps[1] * n)
+    maxlevels = min(ratiolevels, ps[2], Int(typemax(UInt32)))
+    maxlevels <= 0 && return nothing
+    nt = parallel ? clamp(n ÷ 65_536, 1, 4 * Threads.nthreads()) : 1
+    bounds = [1 + (t - 1) * n ÷ nt for t in 1:nt]
+    push!(bounds, n + 1)
+    refs = zeros(UInt32, n)
+    locals = Vector{Tuple{Vector{K.CompactStringPayload}, Vector{K.CompactString}}}(undef, nt)
+    aborted = Threads.Atomic{Bool}(false)
+    # task bodies are named functions (a closure that assigned `levels`/`keys`
+    # here would rebind the merge scope's variables — shared across tasks)
+    if nt > 1
+        @sync for t in 1:nt
+            Threads.@spawn (locals[t] = _internrange!(refs, c, bounds[t], bounds[t + 1] - 1,
+                                                       maxlevels, aborted))
+        end
+    else
+        locals[1] = _internrange!(refs, c, 1, n, maxlevels, aborted)
+    end
+    aborted[] && return nothing
+    if nt == 1
+        levels = locals[1][1]
+    else
+        # merge levels in range order (first-occurrence-in-file ids); remap
+        # each range's refs through its local→global vector
+        levels = K.CompactStringPayload[]
+        globalof = Dict{K.CompactString, UInt32}()
+        remaps = Vector{Vector{UInt32}}(undef, nt)
+        for t in 1:nt
+            lkeys = locals[t][2]
+            remap = Vector{UInt32}(undef, length(lkeys))
+            for (li, x) in enumerate(lkeys)
+                g = get(globalof, x, UInt32(0))
+                if g == 0
+                    length(levels) >= maxlevels && return nothing
+                    push!(levels, x.p)
+                    g = UInt32(length(levels))
+                    globalof[x] = g
+                end
+                remap[li] = g
+            end
+            remaps[t] = remap
+        end
+        @sync for t in 1:nt
+            Threads.@spawn _remaprange!(refs, remaps[t], bounds[t], bounds[t + 1] - 1)
+        end
+    end
+    lv = K.CompactStringVector{K.CompactString}(levels, c.buf, c.extra)
+    return Missing <: eltype(c) ? K.PooledColumn{Union{K.CompactString, Missing}}(refs, lv) :
+                                  K.PooledColumn{K.CompactString}(refs, lv)
+end
+
+# intern rows lo..hi of `c` into a fresh local table; refs get LOCAL ids
+function _internrange!(refs::Vector{UInt32}, c::K.CompactStringVector, lo::Int, hi::Int,
+                       maxlevels::Int, aborted::Threads.Atomic{Bool})
+    table = Dict{K.CompactString, UInt32}()
+    levels = K.CompactStringPayload[]
+    keys = K.CompactString[]
+    @inbounds for i in lo:hi
+        aborted[] && break
+        x = c[i]
+        x === missing && continue
+        r = get(table, x, UInt32(0))
+        if r == 0
+            if length(levels) >= maxlevels
+                aborted[] = true
+                break
+            end
+            push!(levels, x.p)
+            push!(keys, x)
+            r = UInt32(length(levels))
+            table[x] = r
+        end
+        refs[i] = r
+    end
+    return (levels, keys)
+end
+
+function _remaprange!(refs::Vector{UInt32}, remap::Vector{UInt32}, lo::Int, hi::Int)
+    @inbounds for i in lo:hi
+        r = refs[i]
+        r == 0 || (refs[i] = remap[r])
+    end
+    return
+end
+
+# pool the table's CompactString columns per `specs` (one per output column),
+# in parallel across columns
+function _poolcolumns(t::K.ParsedTable, specs::AbstractVector; parallel::Bool=true)
+    js = [j for (j, c) in enumerate(t.columns)
+          if c isa K.CompactStringVector && j <= length(specs) && specs[j] !== nothing]
+    isempty(js) && return t
+    cols = AbstractVector[t.columns...]
+    pooled = Vector{Any}(nothing, length(js))
+    poolone = i -> (pooled[i] = _poolcolumn(cols[js[i]]::K.CompactStringVector, specs[js[i]]; parallel))
+    if parallel && length(js) > 1
+        @sync for i in eachindex(js)
+            Threads.@spawn poolone(i)
+        end
+    else
+        foreach(poolone, eachindex(js))
+    end
+    for (i, j) in enumerate(js)
+        pooled[i] === nothing || (cols[j] = pooled[i])
+    end
+    return K.ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
 end
 
 # user-requested narrow types (Int8/16/32, UInt*, Float16/32): the kernel
@@ -1524,53 +1678,10 @@ function Base.iterate(c::Chunks, state::Int=1)
     st = getfield(c, :stringtype)
     poolS = st === K.CompactString ? String : st
     ps = getfield(c, :poolspec)
-    ps === nothing || (t = _poolbatch(t, ps))
+    ps === nothing || (t = _poolcolumns(t, fill(ps, length(t.columns))))
     t = _pooledarrays(t, poolS)
     st === K.CompactString || (t = _materializestrings(t, st))
     return t, next
-end
-
-# Per-batch pooling: each Chunks batch is an independent table, so its
-# string columns pool against the batch's own rows (0.10 pooled per chunk
-# too). Reuses the kernel's single-segment pooled stitch: intern the batch's
-# CompactStringVector as one PoolSegment, then the same policy bound decides.
-function _poolbatch(t::K.ParsedTable, ps::Tuple{Float64, Int})
-    cols = AbstractVector[t.columns...]
-    for (j, c) in enumerate(cols)
-        c isa K.CompactStringVector || continue
-        n = length(c)
-        n == 0 && continue
-        ratiolevels = ps[1] == 1.0 ? n : floor(Int, ps[1] * n)
-        maxlevels = min(ratiolevels, ps[2])
-        maxlevels <= 0 && continue
-        table = Dict{K.CompactString, UInt32}()
-        levels = K.CompactString[]
-        refs = zeros(UInt32, n)
-        ok = true
-        @inbounds for i in 1:n
-            x = c[i]
-            x === missing && continue
-            r = get(table, x, UInt32(0))
-            if r == 0
-                length(levels) >= maxlevels && (ok = false; break)
-                push!(levels, x)
-                r = UInt32(length(levels))
-                table[x] = r
-            end
-            refs[i] = r
-        end
-        ok || continue
-        # a PooledColumn over the batch's own payload buffers
-        lv = K.CompactStringVector{K.CompactString}(
-            K.CompactStringPayload[l.p for l in levels], c.buf, c.extra)
-        # `c` already carries the whole-file missingness prepass. Preserve it
-        # even when this batch has no missing refs, so pooling cannot make the
-        # stable Chunks schema vary from batch to batch.
-        allowmissing = Missing <: eltype(c)
-        cols[j] = allowmissing ? K.PooledColumn{Union{K.CompactString, Missing}}(refs, lv) :
-                                 K.PooledColumn{K.CompactString}(refs, lv)
-    end
-    return K.ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
 end
 
 function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
@@ -1580,7 +1691,7 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     nt >= 1 || throw(ArgumentError("ntasks must be ≥ 1 (got $nt)"))
     maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
     _checkstringtype(stringtype)
-    poolspec = K._poolpolicy(pool)   # per-batch policy (Dict/vector forms: File only)
+    poolspec = _poolpolicy(pool)   # per-batch policy (Dict/vector forms: File only)
     pool isa Union{AbstractDict, AbstractVector} &&
         throw(ArgumentError("Chunks takes a single pool policy (Bool / ratio / (ratio, cap))"))
     allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...)
