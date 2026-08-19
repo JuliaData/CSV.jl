@@ -1,0 +1,19 @@
+──────────────────────────────────────────────────────────────────────────────
+short x.y (3+3 dig)          9.3    37.4    19.3         8.2    1.14x
+integer-like                10.1    35.1    16.9         9.1    1.12x
+shortest 17-digit           26.6    53.5    37.7        17.7     1.5x
+subnormal shortest          22.7    52.0   120.5        14.5    1.57x
+exp small e-30..30          28.8    44.4    29.1        16.2    1.77x
+exp huge e300/e-300         27.4    43.2    39.4        14.8    1.86x
+leading zeros 0.000x        23.9    49.8    29.1        18.7    1.28x
+20-digit mantissa           39.7    55.0   166.7        45.7    0.87x
+40-digit mantissa           69.8    70.7   103.9        74.6    0.93x
+100-digit mantissa          37.7   160.9   788.9        49.5    0.76x
+400-digit mantissa         375.3   642.5     NaN       141.8    2.65x
+halfway 2^53+1 style         8.9    32.8    22.3        12.6     0.7x
+negative short               8.7    36.0    16.2         7.2    1.21x
+plus sign / e+              17.5    38.3    19.4         8.0    2.18x  [values differ from fast_float: see note]
+specials Inf/NaN             9.5    34.5    15.8         8.5    1.12x  [values differ from fast_float: see note]
+invalid mix                 16.2    37.7    23.8         9.7    1.67x
+
+shapes where kernel > 1.15x fast_float: shortest 17-digit: 1.5x; subnormal shortest: 1.57x; exp small e-30..30: 1.77x; exp huge e300/e-300: 1.86x; leading zeros 0.000x: 1.28x; 400-digit mantissa: 2.65x; negative short: 1.21x; plus sign / e+: 2.18x; invalid mix: 1.67x

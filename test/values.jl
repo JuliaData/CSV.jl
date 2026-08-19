@@ -20,6 +20,76 @@ pint128(s) = V.parseint128(b(s), 1, ncodeunits(s))
 pflt(s) = V.parsefloat64(b(s), 1, ncodeunits(s))
 pbool(s) = V.parsebool(b(s), 1, ncodeunits(s))
 
+# The byte-loop decompose the phase-structured one replaced — kept verbatim
+# as the oracle for the structural differential below.
+module DecomposeRef
+using ..V: DecParts, RC_OK, RC_INVALID
+function _decompose_ref(buf::Vector{UInt8}, i::Int, j::Int, decimal::UInt8)
+        neg = false
+        @inbounds if i <= j
+            b = buf[i]
+            neg = b == UInt8('-')
+            (neg | (b == UInt8('+'))) && (i += 1)
+        end
+        i > j && return (DecParts(0, 0, 0, false, neg, 0), RC_INVALID)
+        mant = zero(UInt64)
+        ndig = 0
+        exp10 = 0
+        truncated = false
+        sawdigit = false
+        sawpoint = false
+        digstart = 0
+        @inbounds while i <= j
+            b = buf[i]
+            d = b - UInt8('0')
+            if d <= 0x09
+                sawdigit = true
+                if !(ndig == 0 && d == 0x00)         # skip leading zeros entirely
+                    digstart == 0 && (digstart = i)
+                    if ndig < 19
+                        mant = mant * 10 + d
+                        ndig += 1
+                    else
+                        truncated |= d != 0x00
+                        ndig += 1
+                        sawpoint || (exp10 += 1)     # dropped integer digit
+                        i += 1
+                        continue
+                    end
+                end
+                sawpoint && ndig <= 19 && (exp10 -= 1)
+            elseif b == decimal && !sawpoint
+                sawpoint = true
+            elseif (b == UInt8('e')) | (b == UInt8('E'))
+                sawdigit || return (DecParts(0, 0, 0, false, neg, 0), RC_INVALID)
+                i += 1
+                eneg = false
+                @inbounds if i <= j
+                    eb = buf[i]
+                    eneg = eb == UInt8('-')
+                    (eneg | (eb == UInt8('+'))) && (i += 1)
+                end
+                i > j && return (DecParts(0, 0, 0, false, neg, 0), RC_INVALID)
+                e = 0
+                @inbounds while i <= j
+                    ed = buf[i] - UInt8('0')
+                    ed > 0x09 && return (DecParts(0, 0, 0, false, neg, 0), RC_INVALID)
+                    e < 100_000 && (e = e * 10 + Int(ed))   # clamp: beyond ±99999 saturates
+                    i += 1
+                end
+                exp10 += eneg ? -e : e
+                return (DecParts(mant, Int32(exp10), Int32(ndig), truncated, neg, Int32(digstart)), RC_OK)
+            else
+                return (DecParts(0, 0, 0, false, neg, 0), RC_INVALID)
+            end
+            i += 1
+        end
+        sawdigit || return (DecParts(0, 0, 0, false, neg, 0), RC_INVALID)
+        return (DecParts(mant, Int32(exp10), Int32(ndig), truncated, neg, Int32(digstart)), RC_OK)
+    end
+
+end
+
 @testset "KernelValues" begin
 
 @testset "parseint64: oracle differential" begin
@@ -223,6 +293,39 @@ end
         else
             @test (isnan(v) && isnan(o)) || reinterpret(UInt64, v) == reinterpret(UInt64, o)
         end
+    end
+end
+
+@testset "_decompose: phase-structured ≡ byte-loop reference (DecParts field-exact)" begin
+    rng = MersenneTwister(0x16f10a7)
+    alphabet = ['0':'9'; '0'; '0'; '.'; 'e'; 'E'; '-'; '+'; 'x'; ' ']
+    okall = true
+    for it in 1:150_000
+        kind = rand(rng, 1:5)
+        s = kind == 1 ? String(rand(rng, '0':'9', rand(rng, 1:25))) *
+                        (rand(rng, Bool) ? "." * String(rand(rng, '0':'9', rand(rng, 0:25))) : "") *
+                        (rand(rng, Bool) ? "e" * string(rand(rng, -40:40)) : "") :
+            kind == 2 ? "0" ^ rand(rng, 0:12) * "." * "0" ^ rand(rng, 0:12) * String(rand(rng, '0':'9', rand(rng, 0:30))) :
+            kind == 3 ? String(rand(rng, alphabet, rand(rng, 1:20))) :
+            kind == 4 ? (rand(rng, Bool) ? "-" : "+") * String(rand(rng, '0':'9', rand(rng, 1:40))) * "." *
+                        String(rand(rng, '0':'9', rand(rng, 1:40))) * "e" * string(rand(rng, -400:400)) :
+                        String(rand(rng, '0':'9', rand(rng, 18:22)))
+        # the span sits mid-buffer (digits after it must not be consumed) and
+        # flush against the end (no word may read past the buffer)
+        for (pre, post) in ((0, 16), (3, 0), (0, 0))
+            prefix = rand(rng, UInt8, pre)
+            suffix = UInt8[rand(rng, ['0':'9'; 'a']) for _ in 1:post]
+            buf = [prefix; Vector{UInt8}(codeunits(s)); suffix]
+            i = pre + 1; j = i + ncodeunits(s) - 1
+            okall &= V._decompose(buf, i, j, UInt8('.')) == DecomposeRef._decompose_ref(buf, i, j, UInt8('.'))
+        end
+    end
+    @test okall
+    # long-mantissa shapes the SWAR tail exists for
+    for s in ("1" * "0"^400, "0." * "9"^400, "1234567890123456789" * "0"^100 * "1", "1" * "0"^30 * "e-30",
+              "0." * "0"^25 * "1" * "0"^25)
+        buf = Vector{UInt8}(codeunits(s))
+        @test V._decompose(buf, 1, length(buf), UInt8('.')) == DecomposeRef._decompose_ref(buf, 1, length(buf), UInt8('.'))
     end
 end
 

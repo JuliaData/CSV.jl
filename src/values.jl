@@ -189,6 +189,12 @@ end
 # Split [i,j] into sign/digits/point/exponent. Returns (parts, rc) with
 # rc=INVALID for structure errors; special spellings handled by caller.
 function _decompose(buf::Vector{UInt8}, i::Int, j::Int, decimal::UInt8)
+    # Phase-structured: sign → integer run → decimal point → fraction run →
+    # (>19-digit tail) → exponent. Each digit run gathers eight digits per word
+    # while the 19-digit significand has room (and a whole word is in bounds);
+    # the tail past 19 significant digits is scanned eight bytes at a time for
+    # validity and any-nonzero (all it needs to know), so 400-digit mantissas
+    # cost ~50 word steps instead of 400 byte steps.
     neg = false
     @inbounds if i <= j
         b = buf[i]
@@ -201,54 +207,114 @@ function _decompose(buf::Vector{UInt8}, i::Int, j::Int, decimal::UInt8)
     exp10 = 0
     truncated = false
     sawdigit = false
-    sawpoint = false
     digstart = 0
-    @inbounds while i <= j
-        b = buf[i]
-        d = b - UInt8('0')
-        if d <= 0x09
-            sawdigit = true
-            if !(ndig == 0 && d == 0x00)         # skip leading zeros entirely
-                digstart == 0 && (digstart = i)
-                if ndig < 19
-                    mant = mant * 10 + d
-                    ndig += 1
-                else
-                    truncated |= d != 0x00
-                    ndig += 1
-                    sawpoint || (exp10 += 1)     # dropped integer digit
-                    i += 1
-                    continue
-                end
-            end
-            sawpoint && ndig <= 19 && (exp10 -= 1)
-        elseif b == decimal && !sawpoint
-            sawpoint = true
-        elseif (b == UInt8('e')) | (b == UInt8('E'))
-            sawdigit || return (DecParts(0, 0, 0, false, neg, 0), RC_INVALID)
-            i += 1
-            eneg = false
-            @inbounds if i <= j
-                eb = buf[i]
-                eneg = eb == UInt8('-')
-                (eneg | (eb == UInt8('+'))) && (i += 1)
-            end
-            i > j && return (DecParts(0, 0, 0, false, neg, 0), RC_INVALID)
-            e = 0
-            @inbounds while i <= j
-                ed = buf[i] - UInt8('0')
-                ed > 0x09 && return (DecParts(0, 0, 0, false, neg, 0), RC_INVALID)
-                e < 100_000 && (e = e * 10 + Int(ed))   # clamp: beyond ±99999 saturates
-                i += 1
-            end
-            exp10 += eneg ? -e : e
-            return (DecParts(mant, Int32(exp10), Int32(ndig), truncated, neg, Int32(digstart)), RC_OK)
-        else
-            return (DecParts(0, 0, 0, false, neg, 0), RC_INVALID)
-        end
+    lastw = j - 7                            # last position with a whole word inside the span
+    # -- integer part ---------------------------------------------------------
+    @inbounds while i <= j && buf[i] == UInt8('0')      # leading zeros: value-neutral
+        sawdigit = true
         i += 1
     end
+    @inbounds if i <= j && buf[i] - UInt8('0') <= 0x09
+        digstart = i
+        while i <= lastw && ndig <= 11                   # ndig + 8 <= 19
+            w = _load8(buf, i)
+            _alldigits8(w) || break
+            mant = mant * 100_000_000 + _digits8(w)
+            ndig += 8
+            i += 8
+        end
+        while i <= j
+            d = buf[i] - UInt8('0')
+            d > 0x09 && break
+            if ndig < 19
+                mant = mant * 10 + d
+            else
+                truncated |= d != 0x00
+                exp10 += 1                               # dropped integer digit
+            end
+            ndig += 1
+            i += 1
+            # past the significand: the rest of the run only needs "all digits"
+            # and "any nonzero" — eight bytes at a time
+            if ndig >= 19
+                while i <= lastw
+                    w = _load8(buf, i)
+                    _alldigits8(w) || break
+                    truncated |= w != 0x3030303030303030
+                    ndig += 8
+                    exp10 += 8
+                    i += 8
+                end
+            end
+        end
+        sawdigit = true
+    end
+    # -- fraction ------------------------------------------------------------
+    @inbounds if i <= j && buf[i] == decimal
+        i += 1
+        if ndig == 0                                     # zeros before the first significant digit
+            while i <= j && buf[i] == UInt8('0')
+                sawdigit = true
+                exp10 -= 1
+                i += 1
+            end
+            i <= j && buf[i] - UInt8('0') <= 0x09 && (digstart = i)
+        end
+        while i <= lastw && ndig <= 11
+            w = _load8(buf, i)
+            _alldigits8(w) || break
+            mant = mant * 100_000_000 + _digits8(w)
+            ndig += 8
+            exp10 -= 8
+            sawdigit = true
+            i += 8
+        end
+        while i <= j
+            d = buf[i] - UInt8('0')
+            d > 0x09 && break
+            if ndig < 19
+                mant = mant * 10 + d
+                exp10 -= 1
+            else
+                truncated |= d != 0x00                   # dropped fraction digit: scale unchanged
+            end
+            ndig += 1
+            sawdigit = true
+            i += 1
+            if ndig >= 19
+                while i <= lastw
+                    w = _load8(buf, i)
+                    _alldigits8(w) || break
+                    truncated |= w != 0x3030303030303030
+                    ndig += 8
+                    i += 8
+                end
+            end
+        end
+    end
     sawdigit || return (DecParts(0, 0, 0, false, neg, 0), RC_INVALID)
+    # -- exponent -------------------------------------------------------------
+    @inbounds if i <= j
+        b = buf[i]
+        (b == UInt8('e')) | (b == UInt8('E')) ||
+            return (DecParts(0, 0, 0, false, neg, 0), RC_INVALID)
+        i += 1
+        eneg = false
+        if i <= j
+            eb = buf[i]
+            eneg = eb == UInt8('-')
+            (eneg | (eb == UInt8('+'))) && (i += 1)
+        end
+        i > j && return (DecParts(0, 0, 0, false, neg, 0), RC_INVALID)
+        e = 0
+        while i <= j
+            ed = buf[i] - UInt8('0')
+            ed > 0x09 && return (DecParts(0, 0, 0, false, neg, 0), RC_INVALID)
+            e < 100_000 && (e = e * 10 + Int(ed))       # clamp: beyond ±99999 saturates
+            i += 1
+        end
+        exp10 += eneg ? -e : e
+    end
     return (DecParts(mant, Int32(exp10), Int32(ndig), truncated, neg, Int32(digstart)), RC_OK)
 end
 
