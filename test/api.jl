@@ -314,6 +314,22 @@ end
     @test Base.names(f) == [:my_col]
 end
 
+@testset "skipped prefix rows are physical lines: quotes in them are inert" begin
+    # #1012 / #1079 / #1160 — a stray quote in a junk preamble used to swallow the file
+    f = A.File(IOBuffer("1'2\"junk\na,b\n1,2\n3,4\n"); header=2)
+    @test Base.names(f) == [:a, :b] && Tables.getcolumn(f, :a) == [1, 3]
+    f = A.File(IOBuffer("junk\n11.0\"\na,b\n1,2\n"); header=false, skipto=3)
+    @test Base.names(f) == [:Column1, :Column2] && length(Tables.getcolumn(f, 1)) == 2
+    f = A.File(IOBuffer("x\"y\nnames here\na,b\n1,2\n"); header=3)
+    @test Base.names(f) == [:a, :b] && Tables.getcolumn(f, :b) == [2]
+    f = A.File(IOBuffer("odd \" quote\r\nk,v\r\n7,8\r\n"); header=[2])   # CRLF prefix
+    @test Base.names(f) == [:k, :v] && Tables.getcolumn(f, :k) == [7]
+    # rows BETWEEN the header and skipto are real rows: a quoted newline there
+    # is one row, exactly as before
+    f = A.File(IOBuffer("a,b\n\"x\ny\",1\n2,3\n"); skipto=3)
+    @test Tables.getcolumn(f, :a) == [2]
+end
+
 @testset "read(source, sink) calls the sink (functions, lambdas, types)" begin
     csv = IOBuffer("a,b\n1,2\n3,4\n")
     @test A.read(csv, Tables.matrix) == [1 2; 3 4]                 # function sink runs

@@ -468,6 +468,31 @@ end
 # never even enter the index; `skipto` advances `firstdatarow` by byte
 # offset, so hygiene-dropped rows cannot skew the count.
 
+# byte offset of PHYSICAL line `n` (1-based from `start`): CR, LF, or CRLF end a
+# line and quotes mean nothing. This is how skipped PREFIX rows are counted —
+# rows before a numbered header, or before `skipto` when there is no header
+# row — because a stray quote in a junk preamble must not swallow the file
+# (issues #1012/#1079/#1160; polars' skip_lines has the same semantics).
+function _physicallineoffset(buf::Vector{UInt8}, start::Int, n::Int)
+    off = start
+    len = length(buf)
+    for _ in 1:(n - 1)
+        off > len && return len + 1
+        @inbounds while off <= len
+            b = buf[off]
+            if b == UInt8('\n')
+                off += 1
+                break
+            elseif b == UInt8('\r')
+                off += 1 + (off < len && buf[off + 1] == UInt8('\n'))
+                break
+            end
+            off += 1
+        end
+    end
+    return off
+end
+
 # byte offset of raw structural row `n` (1-based from `datastart`)
 function _rawrowoffset(buf::Vector{UInt8}, d::K.Dialect, datastart::Int, n::Int)
     off = datastart
@@ -580,24 +605,25 @@ function _prepare(source;
     buf = resolvesource(source; buffer_in_memory, prefetch)
     dialectonly = _pickkwargs(kw, _DIALECTKW)
     indexonly = _pickkwargs(kw, _INDEXKW)
+    # The first row that MATTERS — the (first) header row, or `skipto` when
+    # there is no header row. Everything before it is a skipped prefix: counted
+    # as physical lines (quote-blind), never indexed, never sniffed. Row
+    # offsets at or after it are quote-aware from that anchor.
+    firstrow = header isa Integer && header > 1 ? Int(header) :
+               header isa AbstractVector{<:Integer} && !isempty(header) ? Int(first(header)) :
+               (header === false || (header isa Integer && header == 0) ||
+                (header isa AbstractVector && !(header isa AbstractVector{<:Integer}))) &&
+               skipto !== nothing ? Int(skipto) : 1
+    rawstart = _datastart(buf)
+    anchoroff = firstrow > 1 ? _physicallineoffset(buf, rawstart, firstrow) : rawstart
     if delim === nothing
         get(kw, :ignorerepeated, false) &&
             throw(ArgumentError("auto-delimiter detection is not supported with " *
                                 "ignorerepeated=true; pass delim explicitly"))
-        # Sniff from the first row that matters. Prefix rows before a numbered
-        # header (or before `skipto` with no header) are declared junk and must
-        # not vote on the delimiter — a one-line "skip me" preamble otherwise
-        # elects the space. Row starts are quote-aware but delimiter-free.
-        firstrow = header isa Integer && header > 1 ? Int(header) :
-                   header isa AbstractVector{<:Integer} && !isempty(header) ? Int(first(header)) :
-                   (header === false || (header isa Integer && header == 0)) && skipto !== nothing ?
-                       Int(skipto) : 1
-        sniffstart = 1
-        if firstrow > 1
-            dprobe = K.Dialect(; delim=_probedelim(dialectonly), dialectonly...)
-            sniffstart = _rawrowoffset(buf, dprobe, _datastart(buf), firstrow)
-        end
-        delim = _sniffdelim(buf, samplebytes, dialectonly, indexonly; start=sniffstart)
+        # Sniff from the first row that matters: skipped prefix rows are junk
+        # and must not vote on the delimiter (a one-line "skip me" preamble
+        # otherwise elects the space).
+        delim = _sniffdelim(buf, samplebytes, dialectonly, indexonly; start=anchoroff)
     end
     # missingstring → kernel sentinels ("" entries are inert: empty is always missing)
     sentinels = _sentinels(missingstring)
@@ -629,17 +655,13 @@ function _prepare(source;
             throw(ArgumentError("header rows must be increasing and ≥ 1 (got $header)"))
     end
     headerrow = header === true ? 1 : isempty(headerrows) ? 0 : last(headerrows)
-    rawstart = _datastart(buf)
-    # Skipped prefix rows never enter the index: before a numbered header, or —
-    # with no header row at all (header=false / explicit names) — before
-    # `skipto`. Otherwise a generated column count would come from a junk
-    # first row (0.10 took it from the first DATA row).
-    noheaderrow = header === false ||
-                  (header isa AbstractVector && !(header isa AbstractVector{<:Integer}))
-    datastart = !isempty(headerrows) && first(headerrows) > 1 ?
-                    _rawrowoffset(buf, d, rawstart, first(headerrows)) :
-                noheaderrow && skipto !== nothing && skipto > 1 ?
-                    _rawrowoffset(buf, d, rawstart, Int(skipto)) : rawstart
+    # Skipped prefix rows never enter the index (a generated column count would
+    # otherwise come from a junk first row; 0.10 took it from the first DATA
+    # row) — the index starts at the anchor. Row `n` at/after the anchor is
+    # `n - firstrow + 1` quote-aware structural rows from it.
+    datastart = anchoroff
+    rowoff(n::Int) = n < firstrow ? _physicallineoffset(buf, rawstart, n) :
+                                    _rawrowoffset(buf, d, anchoroff, n - firstrow + 1)
     bi = K.index(buf, d; datastart, chunkbytes=cb, parallel, indexonly...)
     chunks = bi.chunks
     headerlog = K.ProblemLog(get(kw, :maxproblems, 10_000))
@@ -663,7 +685,7 @@ function _prepare(source;
         parts = Vector{Vector{Symbol}}()
         firstrows = Int[ci.firstdatarow for ci in chunks]
         for hr in headerrows
-            _skiptobyte!(chunks, _rawrowoffset(buf, d, rawstart, hr))
+            _skiptobyte!(chunks, rowoff(hr))
             k = _firstlive(chunks)
             k === nothing && break
             push!(parts, K.parseheader!(buf, chunks[k], opts, d, headerlog))
@@ -671,7 +693,7 @@ function _prepare(source;
         for (ci, firstrow) in zip(chunks, firstrows)
             ci.firstdatarow = firstrow
         end
-        _skiptobyte!(chunks, _rawrowoffset(buf, d, rawstart, headerrow + 1))
+        _skiptobyte!(chunks, rowoff(headerrow + 1))
         if isempty(parts)
             Symbol[]
         else
@@ -686,7 +708,7 @@ function _prepare(source;
     if skipto !== nothing
         skipto > headerrow ||
             throw(ArgumentError("skipto=$skipto must be past the header (row $headerrow)"))
-        _skiptobyte!(chunks, _rawrowoffset(buf, d, rawstart, Int(skipto)))
+        _skiptobyte!(chunks, rowoff(Int(skipto)))
     end
     footer = _footeroffset(buf, d, rawstart, Int(footerskip))
     keep = footerskip == 0 ? sum(K.nrows, chunks; init=0) : _rowsbefore(chunks, footer)
