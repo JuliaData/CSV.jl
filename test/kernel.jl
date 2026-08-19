@@ -121,7 +121,7 @@ end
 
 function csfrombytes(bytes::Vector{UInt8})
     p = length(bytes) <= K.COMPACTSTRING_INLINE ? K.inline_payload(bytes, 1, length(bytes)) :
-                                         K.view_payload(bytes, 1, length(bytes), Int64(1))
+                                         K.view_payload(bytes, 1, length(bytes), 0, 0)
     return K.CompactString(p, length(bytes) <= K.COMPACTSTRING_INLINE ? K.EMPTY_BYTES : bytes)
 end
 
@@ -1243,12 +1243,13 @@ end
     # completely empty input
     t = K.parse("")
     @test t.nrows == 0 && isempty(K.names(t))
-    # unclosed quote at EOF: recorded as a problem, field still delivered
+    # unclosed quote at EOF: recorded as a problem, and the cell keeps its RAW
+    # bytes (quote included) rather than becoming missing (#1118/#522)
     t = K.parse("a\n\"unclosed")
     @test any(p -> p.kind == :unclosed_quote, K.problems(t))
     @test only(filter(p -> p.kind == :unclosed_quote, K.problems(t))).row == 0
     @test any(p -> p.kind == :invalid_quoted_field, K.problems(t))
-    @test isequal(collect(t[:a]), [missing])
+    @test isequal(collect(t[:a]), ["\"unclosed"])
     # string escape materialization
     t = K.parse("a\n\"x\"\"y\"\n")
     @test collect(t[:a]) == ["x\"y"]
@@ -1306,8 +1307,8 @@ end
             push!(payloads, K.CompactString(K.inline_payload(bytes, 1, n), K.EMPTY_BYTES))
         else
             data = vcat(UInt8[0x11], bytes, UInt8[0x22])
-            off = isodd(n) ? Int64(-2) : Int64(2)
-            push!(payloads, K.CompactString(K.view_payload(data, 2, n, off), data))
+            bufidx = isodd(n) ? 1 : 0                 # either buffer index hashes alike
+            push!(payloads, K.CompactString(K.view_payload(data, 2, n, bufidx, 1), data))
         end
     end
     seeds = UInt[0, 1, 7, typemax(UInt), Base.memhash_seed, 0x0123456789abcdef]
@@ -1349,7 +1350,7 @@ end
     t2 = K.parse("a\n\"in\"\"line\"\n\"a long escaped \"\"string\"\" beyond inline\"\n")
     @test collect(t2[:a]) == ["in\"line", "a long escaped \"string\" beyond inline"]
     @test !isempty(t2[:a].extra)                      # long unescaped value stored out-of-line
-    @test K.csoff(t2[:a].payloads[2]) < 0           # negative offset ⇒ extra buffer
+    @test K.csbufidx(t2[:a].payloads[2]) == 1       # buffer index 1 ⇒ extra buffer
     # quoted empty vs missing, unicode, Symbol
     t3 = K.parse("a\n\"\"\n\nαβγδεζηθικλμ\n"; ignoreemptyrows=false)
     @test isequal(collect(t3[:a]), ["", missing, "αβγδεζηθικλμ"])

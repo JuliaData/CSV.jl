@@ -33,7 +33,7 @@
 module CSVApi
 
 using ..CSVKernel, ..KernelExamples
-using Tables, Dates, Unicode, Mmap, PooledArrays, CodecZlib
+using Tables, Dates, Unicode, Mmap, PooledArrays, CodecZlib, Downloads
 const K = CSVKernel
 const E = KernelExamples
 
@@ -157,8 +157,19 @@ function _prefetch!(m::Vector{UInt8})
 end
 
 function resolvesource(s::AbstractString; buffer_in_memory::Bool=false, prefetch::Bool=true)
+    # a URL (#506): fetch to a temporary file with the Downloads stdlib, then
+    # resolve that path exactly like any other (magic-byte gzip, mmap, ...)
+    if startswith(s, r"^https?://")
+        path = Downloads.download(String(s))
+        try
+            return resolvesource(path; buffer_in_memory=true, prefetch)   # temp file: read, don't map
+        finally
+            rm(path; force=true)
+        end
+    end
     isfile(s) || throw(ArgumentError("no file at $(repr(String(s))) — a String " *
-                                     "source is a file path; wrap literal data in IOBuffer"))
+                                     "source is a file path (or an http(s):// URL); " *
+                                     "wrap literal data in IOBuffer"))
     return open(s, "r") do io
         isfile(io) || throw(ArgumentError("no regular file at $(repr(String(s)))"))
         sz = filesize(io)
@@ -333,9 +344,27 @@ function _detectdelim(sample::Vector{UInt8}, dialectkw::NamedTuple, indexkw::Nam
     # remaining cases (delimiter only in the header, or the sample too short
     # for field-consistency evidence) follow 0.10's byte-count tiers exactly,
     # so files that detected one way for years keep detecting that way
-    (best[1] && best[2]) && return bestdelim
-    return _detectdelim_bytecounts(scoresample, datastart, dialectkw, bestdelim,
-                                   best[1] && headercandidate)
+    delim = (best[1] && best[2]) ? bestdelim :
+            _detectdelim_bytecounts(scoresample, datastart, dialectkw, bestdelim,
+                                    best[1] && headercandidate)
+    # Space-ALIGNED files (#853): a run of blanks between fields is one
+    # separator. Score the (' ', ignorerepeated=true) reading last, and elect it
+    # only when it cannot change a file that detected before: the plain space
+    # won (so the file was going to be space-delimited anyway — with a column
+    # per blank), and the repeated reading is at least as consistent with
+    # fewer, ≥2 fields; or nothing structured the sample at all.
+    if !get(dialectkw, :ignorerepeated, false)
+        cons, fields, firstfields, nrows = _scoredelim(scoresample, ' ', datastart,
+                                                       merge(dialectkw, (; ignorerepeated=true)),
+                                                       indexkw)
+        aligned = nrows >= 2 && cons > 0 && fields > 1 && fields == firstfields
+        if aligned && (delim == ' ' || !best[1])
+            plaincons, plainfields, _, _ = delim == ' ' ?
+                _scoredelim(scoresample, ' ', datastart, dialectkw, indexkw) : (0.0, typemax(Int), 0, 0)
+            (cons >= plaincons && fields < plainfields) && return (' ', true)
+        end
+    end
+    return (delim, false)
 end
 
 # 0.10's detector (detection.jl): count candidate bytes outside quotes over the
@@ -432,7 +461,8 @@ function sniff(source; samplebytes::Int=1 << 16, missingstring=nothing,
     driverkw = _pickkwargs(kw, _DRIVERKW)
     buf = resolvesource(source; buffer_in_memory, prefetch)
     sample = _sample(buf, samplebytes; dialectkw...)
-    bestdelim = _detectdelim(sample, dialectkw, indexkw)
+    bestdelim, ir = _detectdelim(sample, dialectkw, indexkw)
+    ir && (dialectkw = merge(dialectkw, (; ignorerepeated=true)))
     sentinels = _sentinels(missingstring)
     parsekw = merge(dialectkw, valuekw, indexkw, driverkw,
                     (; delim=bestdelim, sentinels, limit=100, parallel=false))
@@ -452,6 +482,7 @@ function sniff(source; samplebytes::Int=1 << 16, missingstring=nothing,
 end
 
 # delimiter-only sniff for File(delim=nothing) — no second parse
+# -> (delim, ignorerepeated)
 function _sniffdelim(buf::Vector{UInt8}, samplebytes::Int,
                      dialectkw::NamedTuple, indexkw::NamedTuple; start::Int=1)
     sample = _sample(buf, samplebytes; start, dialectkw...)
@@ -623,7 +654,10 @@ function _prepare(source;
         # Sniff from the first row that matters: skipped prefix rows are junk
         # and must not vote on the delimiter (a one-line "skip me" preamble
         # otherwise elects the space).
-        delim = _sniffdelim(buf, samplebytes, dialectonly, indexonly; start=anchoroff)
+        delim, ir = _sniffdelim(buf, samplebytes, dialectonly, indexonly; start=anchoroff)
+        # an elected (' ', ignorerepeated=true) reading becomes the dialect
+        ir && (dialectonly = merge(dialectonly, (; ignorerepeated=true));
+               kw = merge(NamedTuple(kw), (; ignorerepeated=true)))
     end
     # missingstring → kernel sentinels ("" entries are inert: empty is always missing)
     sentinels = _sentinels(missingstring)
@@ -753,7 +787,10 @@ function _resolveselect(select, drop, names::Vector{Symbol})
         Int.(spec)
     else
         map(spec) do s
+            # match the name as spelled OR as `normalizenames` would spell it
+            # (#990: users pass the raw header text after normalization)
             j = findfirst(==(Symbol(s)), names)
+            j === nothing && (j = findfirst(==(Symbol(normalizename(String(s)))), names))
             j === nothing && throw(ArgumentError("select/drop name $s does not match any column"))
             j
         end

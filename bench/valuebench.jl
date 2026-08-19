@@ -2,7 +2,7 @@
 # Parsers.xparse vs Base.parse, across a value-shape grid. A kernel earns its
 # place in the hot path only when this table says so.
 #
-# Run:  julia --project=. bench/valuebench.jl
+# Run:  julia --project=test bench/valuebench.jl
 
 using CSV; const KernelValues = CSV.CSVKernel.KernelValues; const KernelValuesDates = CSV.CSVKernel.KernelValuesDates
 using .KernelValues, .KernelValuesDates

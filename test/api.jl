@@ -314,6 +314,28 @@ end
     @test Base.names(f) == [:my_col]
 end
 
+@testset "cheap wins from the issue audit" begin
+    # #853: space-ALIGNED files elect (' ', ignorerepeated=true); plain space
+    # and comma files detect exactly as before
+    aligned = "id   name    value\n1    alice   3.5\n22   bob     4.25\n333  carol   5.0\n"
+    f = A.File(IOBuffer(aligned))
+    @test Base.names(f) == [:id, :name, :value] && Tables.getcolumn(f, :id) == [1, 22, 333]
+    @test Base.names(A.File(IOBuffer("a b c\n1 2 3\n4 5 6\n"))) == [:a, :b, :c]
+    @test Base.names(A.File(IOBuffer("a,b\n1,2\n"))) == [:a, :b]
+    @test_throws ArgumentError A.File(IOBuffer(aligned); ignorerepeated=true)   # still needs an explicit delim
+    # #990: select/drop names match as spelled in the file OR normalized
+    f = A.File(IOBuffer("my col,b\n1,2\n"); normalizenames=true, select=["my col"])
+    @test Base.names(f) == [:my_col]
+    f = A.File(IOBuffer("my col,b\n1,2\n"); normalizenames=true, drop=[:my_col])
+    @test Base.names(f) == [:b]
+    # #1118/#522: a malformed-quote cell keeps its raw bytes AND reports
+    f = A.File(IOBuffer("a,b\n\"x\"y,1\nok,2\n"); types=String)
+    @test collect(Tables.getcolumn(f, :a)) == ["\"x\"y", "ok"]
+    @test any(p -> p.kind == :invalid_quoted_field && p.row == 1, CSV.problems(f))
+    # #506: http(s) URLs are sources (Downloads stdlib); a bad URL is a clear error
+    @test_throws Exception A.File("http://127.0.0.1:1/nope.csv")
+end
+
 @testset "skipped prefix rows are physical lines: quotes in them are inert" begin
     # #1012 / #1079 / #1160 — a stray quote in a junk preamble used to swallow the file
     f = A.File(IOBuffer("1'2\"junk\na,b\n1,2\n3,4\n"); header=2)

@@ -6,7 +6,7 @@
 # Setup (once): drop fast_float's amalgamated header next to bench/ffbench.cpp
 #   curl -sL -o bench/fast_float.h https://github.com/fastfloat/fast_float/releases/latest/download/fast_float.h
 #   clang++ -O3 -std=c++17 -march=native -o bench/ffbench bench/ffbench.cpp
-# Run:  julia --project=. bench/floatsweep.jl
+# Run:  julia --project=test bench/floatsweep.jl
 using CSV, Parsers, Random, Printf
 const V = CSV.CSVKernel.V
 const DIR = @__DIR__

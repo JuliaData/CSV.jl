@@ -6,6 +6,7 @@ version = "1.0.0-DEV"
 [deps]
 CodecZlib = "944b1d66-785c-5afd-91f1-9de20f533193"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
 Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
 PooledArrays = "2dfb63ee-cc39-5dd5-95bd-886bf059d720"
 PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
@@ -22,6 +23,7 @@ CSVFilePathsBaseExt = "FilePathsBase"
 CSVInlineStringsExt = "InlineStrings"
 
 [compat]
+Downloads = "1"
 CodecZlib = "0.7"
 FilePathsBase = "0.9"
 InlineStrings = "1"

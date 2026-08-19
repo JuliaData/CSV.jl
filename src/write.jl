@@ -293,15 +293,102 @@ function _appendudec!(out::Vector{UInt8}, u::Unsigned, neg::Bool)
 end
 
 # --- floats: Ryu shortest, written at the buffer position ------------------------
-# `string(x::Float64)` IS `Ryu.writeshortest(x)` with these defaults, so bytes
-# match; `decchar` takes `decimal` directly (no replace pass).
+# `string(x::Float64)` IS `Ryu.writeshortest(x)` with the default options. The
+# generic writer spends ~60% of its time in option branches it cannot fold
+# (plus/space/hash/precision/typed/compact/padexp), so this is that function
+# with the defaults inlined: same digits (Ryu.reduce_shortest), same layout
+# rules — fixed notation for -4 < pt <= 6 (Float16: 3) unless an integer-valued
+# value would print more digits than its magnitude warrants, else `d.ddde±xx`;
+# hash=true forces the trailing ".0". Byte equality with string(x) is pinned
+# in the tests over random bits, specials, and every exponent form.
 @inline function _appendfloat!(out::Vector{UInt8}, x::Union{Float64, Float32, Float16}, o::WriteOpts)
     len = length(out)
     _room!(out, Base.Ryu.neededdigits(typeof(x)))
-    pos = Base.Ryu.writeshortest(out, len + 1, x, false, false, true, -1, UInt8('e'), false,
-                                 o.decimal, false, false)
+    pos = _writeshortest_default(out, len + 1, x, o.decimal)
     resize!(out, pos - 1)
     return out
+end
+
+function _writeshortest_default(buf::Vector{UInt8}, pos::Int, x::T, decchar::UInt8) where {T <: Union{Float64, Float32, Float16}}
+    @inbounds begin
+        if x == 0
+            signbit(x) && (buf[pos] = UInt8('-'); pos += 1)
+            buf[pos] = UInt8('0'); buf[pos + 1] = decchar; buf[pos + 2] = UInt8('0')
+            return pos + 3
+        elseif isnan(x)
+            buf[pos] = UInt8('N'); buf[pos + 1] = UInt8('a'); buf[pos + 2] = UInt8('N')
+            return pos + 3
+        elseif !isfinite(x)
+            signbit(x) && (buf[pos] = UInt8('-'); pos += 1)
+            buf[pos] = UInt8('I'); buf[pos + 1] = UInt8('n'); buf[pos + 2] = UInt8('f')
+            return pos + 3
+        end
+        output, nexp = Base.Ryu.reduce_shortest(x, nothing)
+        signbit(x) && (buf[pos] = UInt8('-'); pos += 1)
+        olength = Base.Ryu.decimallength(output)
+        pt = nexp + olength
+        maxpt = T == Float16 ? 3 : 6
+        expform = !(-4 < pt <= maxpt &&
+                    !(pt >= olength && abs(mod(x + 0.05, 10^(pt - olength)) - 0.05) > 0.05))
+        if !expform
+            if pt <= 0
+                buf[pos] = UInt8('0'); pos += 1
+                buf[pos] = decchar; pos += 1
+                for _ in 1:(-pt)
+                    buf[pos] = UInt8('0'); pos += 1
+                end
+                Base.Ryu.append_c_digits(olength, output, buf, pos)
+                return pos + olength
+            elseif pt >= olength
+                Base.Ryu.append_c_digits(olength, output, buf, pos)
+                pos += olength
+                for _ in 1:nexp
+                    buf[pos] = UInt8('0'); pos += 1
+                end
+                buf[pos] = decchar; buf[pos + 1] = UInt8('0')
+                return pos + 2
+            else
+                # digits with the point inside: write the two runs directly
+                # (the generic writer writes then memmoves)
+                Base.Ryu.append_c_digits(olength, output, buf, pos + 1)   # all digits, shifted right by one
+                # move the integer digits back left by one to open the slot
+                for k in 0:(pt - 1)
+                    buf[pos + k] = buf[pos + k + 1]
+                end
+                buf[pos + pt] = decchar
+                return pos + olength + 1
+            end
+        else
+            # d.ddd e±xx
+            Base.Ryu.append_c_digits(olength, output, buf, pos + 1)
+            buf[pos] = buf[pos + 1]
+            buf[pos + 1] = decchar
+            pos += olength + 1
+            if olength == 1                       # "1.0e10" (hash forces the zero)
+                buf[pos] = UInt8('0'); pos += 1
+            end
+            buf[pos] = UInt8('e'); pos += 1
+            exp2 = nexp + olength - 1
+            if exp2 < 0
+                buf[pos] = UInt8('-'); pos += 1
+                exp2 = -exp2
+            end
+            if exp2 >= 100
+                c = exp2 % 10
+                d100 = Base.Ryu.DIGIT_TABLE16[(div(exp2, 10) % Int) + 1]
+                buf[pos] = d100 % UInt8; buf[pos + 1] = (d100 >> 0x8) % UInt8
+                buf[pos + 2] = UInt8('0') + (c % UInt8)
+                return pos + 3
+            elseif exp2 >= 10
+                d100 = Base.Ryu.DIGIT_TABLE16[(exp2 % Int) + 1]
+                buf[pos] = d100 % UInt8; buf[pos + 1] = (d100 >> 0x8) % UInt8
+                return pos + 2
+            else
+                buf[pos] = UInt8('0') + (exp2 % UInt8)
+                return pos + 1
+            end
+        end
+    end
 end
 
 # --- dates: the ISO spellings `string(::Date/::DateTime)` produces, direct ----

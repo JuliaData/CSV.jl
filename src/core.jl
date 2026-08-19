@@ -1758,9 +1758,14 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
         len == 0 && continue                            # unquoted empty ⇒ missing; quoted "" survives below
         cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
         if st == CELL_BADQUOTE
+            # malformed quoting: report it AND keep the raw field bytes as the
+            # value (quotes included, nothing unescaped) — 0.10 users rely on
+            # seeing what was there (#1118, #522) rather than a silent missing
             problemrow = problemrowbase + localrow
             pushproblem!(problems, problemrow, j, pos, :invalid_quoted_field,
                          "malformed quoting in " * excerpt(buf, pos, len))
+            payloads[out] = len <= COMPACTSTRING_INLINE ? inline_payload(buf, pos, len) :
+                                                          view_payload(buf, pos, len, 0, pos - 1)
             continue
         end
         if st == CELL_MISSING
@@ -1788,7 +1793,7 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
         elseif clen <= COMPACTSTRING_INLINE
             payloads[out] = inline_payload(buf, cpos, clen)
         else
-            payloads[out] = view_payload(buf, cpos, clen, Int64(cpos))
+            payloads[out] = view_payload(buf, cpos, clen, 0, cpos - 1)
         end
     end
     staging === nothing || _flushstaging!(col, payloads, staging)
@@ -1822,7 +1827,7 @@ function _flushstaging!(col::StringColumn, payloads::Vector{CompactStringPayload
         append!(col.extra, sbytes)
         @inbounds for k in eachindex(srows)
             payloads[srows[k]] = view_payload(sbytes, soffs[k], slens[k],
-                                              -(base + Int64(soffs[k])))
+                                              1, base + Int64(soffs[k]) - 1)
         end
     finally
         unlock(col.extralock)
@@ -2902,8 +2907,8 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
             rhi = k < nch ? rowbases[k + 1] : ndata
             @inbounds for r in (rowbases[k] + 1):rhi
                 pl = payloads[r]
-                if cslen(pl) > COMPACTSTRING_INLINE && csoff(pl) < 0
-                    payloads[r] = CompactStringPayload(pl.a, reinterpret(UInt64, csoff(pl) - base))
+                if cslen(pl) > COMPACTSTRING_INLINE && csbufidx(pl) == 1
+                    payloads[r] = rebase_payload(pl, base)
                 end
             end
             segments[k][j] = nothing
@@ -3168,8 +3173,8 @@ function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases
                 append!(extra, scol.extra)
                 @inbounds for i in 1:chunkrows[k]
                     p = scol.payloads[i]
-                    if cslen(p) > COMPACTSTRING_INLINE && csoff(p) < 0
-                        p = CompactStringPayload(p.a, reinterpret(UInt64, csoff(p) - base))
+                    if cslen(p) > COMPACTSTRING_INLINE && csbufidx(p) == 1
+                        p = rebase_payload(p, base)
                     end
                     payloads[rb + i] = p
                     end
@@ -3215,8 +3220,8 @@ function _stitchmasked(::Type{T}, segments, j::Int, chunkrows, ndata::Int,
                 mask[inbases[k] + i] || continue
                 dest += 1
                 p = scol.payloads[i]
-                if cslen(p) > COMPACTSTRING_INLINE && csoff(p) < 0
-                    p = CompactStringPayload(p.a, reinterpret(UInt64, csoff(p) - base))
+                if cslen(p) > COMPACTSTRING_INLINE && csbufidx(p) == 1
+                    p = rebase_payload(p, base)
                 end
                 payloads[dest] = p
             end

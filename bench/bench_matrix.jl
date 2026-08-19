@@ -11,7 +11,7 @@
 # is being compared, and the `api_str` config adds stringtype=String where the
 # owned-data comparison matters.
 #
-# Run:  julia --project=. -t8 bench/bench_matrix.jl LABEL [sizes...]
+# Run:  julia --project=test -t8 bench/bench_matrix.jl LABEL [sizes...]
 #       results append to kernel-bench-LABEL.tsv next to this file, table to stdout.
 #       julia --project=. -t1 bench/bench_matrix.jl LABEL-1t 20 --core
 
