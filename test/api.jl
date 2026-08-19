@@ -12,7 +12,7 @@
 #   • function-typed select/drop retired
 #   • Int64 overflow that fits Int128 remains exact where CSV.jl widens to Float64
 
-using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings, FilePathsBase
+using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings, FilePathsBase, Random
 using CSV, LegacyCSV
 const A = CSV.CSVApi
 const K = CSV.CSVKernel

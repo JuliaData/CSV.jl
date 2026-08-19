@@ -528,6 +528,37 @@ end
     @test rc == V.RC_OK && todate(c) == Date(1776, 7, 4)
     @test V.parsecivil(b("Foo 02 2024"), 1, 11, p)[2] == V.RC_INVALID
     @test_throws ArgumentError V.compilepattern("yyyy-Qq")
+    # 12-hour clock, AM/PM, and day names — Dates parity (adjusthour + the
+    # 1..12 rule when AM/PM is present; day names validated, value ignored)
+    let rng = MersenneTwister(4), okall = true
+        for f in ("yyyy-mm-dd I:MM p", "I:MM:SS p", "e, dd u yyyy", "E dd U yyyy HH:MM", "II:MM p", "e yyyy-mm-dd", "I p")
+            p = V.compilepattern(f); df = DateFormat(f)
+            T = p.hasdate && p.hastime ? DateTime : p.hasdate ? Date : Time
+            for _ in 1:3_000
+                dt = DateTime(rand(rng, 1900:2100), rand(rng, 1:12), rand(rng, 1:28),
+                              rand(rng, 0:23), rand(rng, 0:59), rand(rng, 0:59))
+                x = T === Date ? Date(dt) : T === Time ? Time(dt) : dt
+                s = Dates.format(x, df)
+                s = rand(rng, Bool) ? s : replace(replace(s, "AM" => "am"), "PM" => "pm")
+                c, rc = V.parsecivil(b(s), 1, ncodeunits(s), p)
+                v = rc == V.RC_OK ? (T === Date ? todate(c) : T === Time ? totime(c) : todatetime(c)) : nothing
+                okall &= v == T(s, df)
+            end
+        end
+        @test okall
+        for (f, s, ok) in (("I p", "12 AM", true), ("I p", "12 PM", true), ("I p", "13 PM", false),
+                           ("I p", "0 am", false), ("HH p", "23 pm", false), ("e", "Mon", true),
+                           ("e", "mon", true), ("E", "Monday", true), ("E", "Mon", false),
+                           ("e", "Foo", false), ("I p", "1 xm", false), ("I p", "1 a", false))
+            p = V.compilepattern(f)
+            @test (V.parsecivil(b(s), 1, ncodeunits(s), p)[2] == V.RC_OK) == ok
+        end
+        c, _ = V.parsecivil(b("12 AM"), 1, 5, V.compilepattern("I p")); @test c.hour == 0
+        c, _ = V.parsecivil(b("12 PM"), 1, 5, V.compilepattern("I p")); @test c.hour == 12
+        c, _ = V.parsecivil(b("7 pm"), 1, 4, V.compilepattern("I p")); @test c.hour == 19
+        # a lone 'e' pattern is neither a date nor a time
+        pe = V.compilepattern("e"); @test !pe.hasdate && !pe.hastime
+    end
     @test_throws ArgumentError V.compilepattern("y"^256)
     # Large year fields are invalid data, not conversion exceptions.
     pwide = V.compilepattern("yyyyyyyyyy")

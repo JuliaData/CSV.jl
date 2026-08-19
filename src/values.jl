@@ -1476,6 +1476,7 @@ end
 struct PatternOp
     kind::UInt8     # 1=year 2=month 3=day 4=hour 5=minute 6=second 7=subsec
                     # 8=literal 9=monthname-abbrev 10=monthname-full
+                    # 11=hour12 12=am/pm 13=dayname-abbrev 14=dayname-full
     width::UInt8    # numeric: max digits; fixed ⇒ exactly; literal: byte
     fixed::Bool
 end
@@ -1487,6 +1488,8 @@ struct DatePattern
 end
 
 const ENGLISH_MONTHS_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+const ENGLISH_DAYS_ABBR = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+const ENGLISH_DAYS_FULL = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 const ENGLISH_MONTHS_FULL = ["January","February","March","April","May","June","July",
                              "August","September","October","November","December"]
 
@@ -1529,8 +1532,19 @@ function compilepattern(fmt::AbstractString)
             push!(ops, PatternOp(9, UInt8(0), false)); hasdate = true
         elseif c == 'U'
             push!(ops, PatternOp(10, UInt8(0), false)); hasdate = true
-        elseif c in ('e', 'E', 'Q', 'q')
-            # Dates tokens this engine does not support yet — fail at compile time
+        elseif c == 'I'
+            # 12-hour clock: same width rules as 'H'; `p` (if present) adjusts
+            push!(ops, PatternOp(11, UInt8(2), n >= 2)); hastime = true
+        elseif c == 'p'
+            # AM/PM: exactly two letters, case-insensitive (Dates' rule)
+            push!(ops, PatternOp(12, UInt8(0), false)); hastime = true
+        elseif c == 'e'
+            # day-of-week names are consumed and validated, never used
+            # (Dates' DayOfWeekToken) — they do not make a pattern a date
+            push!(ops, PatternOp(13, UInt8(0), false))
+        elseif c == 'E'
+            push!(ops, PatternOp(14, UInt8(0), false))
+        elseif c in ('Q', 'q')
             throw(ArgumentError("unsupported date format token '$c' in \"$fmt\""))
         elseif isascii(c)
             # any other ASCII char is a literal (Dates' rule: only token letters
@@ -1666,6 +1680,7 @@ is checked here — structurally valid but impossible dates are INVALID.
 """
 function parsecivil(buf::Vector{UInt8}, i::Int, j::Int, pat::DatePattern)
     y = 1; mo = 1; dy = 1; h = 0; mi = 0; s = 0; ns = 0
+    ampm = 0x00                                          # 0 none, 1 AM, 2 PM
     k = i
     ops = pat.ops
     oi = 1
@@ -1686,6 +1701,17 @@ function parsecivil(buf::Vector{UInt8}, i::Int, j::Int, pat::DatePattern)
             ok || return (CivilParts(), RC_INVALID)
             mo = idx
             k = k2
+        elseif op.kind == 13 || op.kind == 14
+            _, k2, ok = _matchname(buf, k, j, op.kind == 13 ? ENGLISH_DAYS_ABBR : ENGLISH_DAYS_FULL)
+            ok || return (CivilParts(), RC_INVALID)      # validated, value unused (Dates' rule)
+            k = k2
+        elseif op.kind == 12
+            k + 1 <= j || return (CivilParts(), RC_INVALID)
+            a = _lower(buf[k])
+            (a == UInt8('a') || a == UInt8('p')) && _lower(buf[k + 1]) == UInt8('m') ||
+                return (CivilParts(), RC_INVALID)
+            ampm = a == UInt8('a') ? 0x01 : 0x02
+            k += 2
         elseif op.kind == 7
             v, k2, ok = _readnum(buf, k, j, 9, false)
             ok || return (CivilParts(), RC_INVALID)
@@ -1701,7 +1727,7 @@ function parsecivil(buf::Vector{UInt8}, i::Int, j::Int, pat::DatePattern)
                 mo = v
             elseif op.kind == 3
                 dy = v
-            elseif op.kind == 4
+            elseif op.kind == 4 || op.kind == 11
                 h = v
             elseif op.kind == 5
                 mi = v
@@ -1713,6 +1739,12 @@ function parsecivil(buf::Vector{UInt8}, i::Int, j::Int, pat::DatePattern)
         oi += 1
     end
     k <= j && return (CivilParts(), RC_INVALID)          # unconsumed bytes
+    # Dates: with AM/PM present the hour must be 1..12; then adjusthour —
+    # PM below 12 adds 12, AM at 12 is midnight
+    if ampm != 0x00
+        1 <= h <= 12 || return (CivilParts(), RC_INVALID)
+        ampm == 0x02 ? (h < 12 && (h += 12)) : (h == 12 && (h = 0))
+    end
     pat.hasdate && !_validymd(y, mo, dy) && return (CivilParts(), RC_INVALID)
     pat.hastime && !_validhms(h, mi, s) && return (CivilParts(), RC_INVALID)
     typemin(Int32) <= y <= typemax(Int32) || return (CivilParts(), RC_INVALID)
