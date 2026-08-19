@@ -28,6 +28,8 @@ using .CSVKernel, .CSVApi, .KernelWrite
 
 # -- public surface -----------------------------------------------------------
 const File = CSVApi.File
+const lazy = CSVApi.lazy
+const LazyFile = CSVApi.LazyFile
 const Rows = CSVApi.Rows
 const Chunks = CSVApi.Chunks
 const read = CSVApi.read

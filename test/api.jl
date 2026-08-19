@@ -314,6 +314,45 @@ end
     @test Base.names(f) == [:my_col]
 end
 
+@testset "lazy / LazyFile: the index as a table" begin
+    csv = "id,name,price,when\n1,alice,3.5,2024-01-02\n2,\"bob, jr\",4.25,2024-01-03\n3,,5.0,\n4,\"say \"\"hi\"\"\",6.0,2024-01-05\n"
+    lf = A.lazy(IOBuffer(csv))
+    @test lf isa A.LazyFile && size(lf) == (4, 4) && Base.names(lf) == [:id, :name, :price, :when]
+    @test lf.name[2] == "bob, jr" && lf[4, :name] == "say \"hi\"" && ismissing(lf[3, :name])   # quotes/escapes/empties
+    @test lf[1, 3] == "3.5" && lf.price isa A.LazyColumn && eltype(lf.price) == Union{K.CompactString, Missing}
+    @test isequal(collect(lf.when), ["2024-01-02", "2024-01-03", missing, "2024-01-05"])
+    @test isequal(collect(lf.name), [lf.name[i] for i in 1:4])       # sequential and random access agree
+    # Tables.jl columns; materialization is on demand
+    ct = Tables.columntable(lf)
+    @test keys(ct) == (:id, :name, :price, :when) && ct.id == ["1", "2", "3", "4"]
+    @test Tables.rowcount(lf) == 4 && Tables.schema(lf).names == (:id, :name, :price, :when)
+    # typed lazy columns parse on access through the same kernels
+    lt = A.lazy(IOBuffer(csv); types=Dict(:price => Float64, :when => Date, :id => Int64))
+    @test collect(lt.price) == [3.5, 4.25, 5.0, 6.0] && eltype(lt.id) == Union{Int64, Missing}
+    @test isequal(collect(lt.when), [Date(2024, 1, 2), Date(2024, 1, 3), missing, Date(2024, 1, 5)])
+    @test ismissing(A.lazy(IOBuffer("a\nx\n"); types=Int64).a[1])          # unparsable ⇒ missing
+    # File(lf) reuses the index and equals a fresh parse
+    f = A.File(lf); g = A.File(IOBuffer(csv))
+    @test all(isequal(collect(Tables.getcolumn(f, nm)), collect(Tables.getcolumn(g, nm))) for nm in Base.names(g))
+    ft = A.File(lf; types=Dict(:price => Float32))
+    @test Tables.getcolumn(ft, :price) isa Vector{Float32}
+    # stringtype, select, limit, header, dialect
+    ls = A.lazy(IOBuffer(csv); stringtype=String, select=[:name])
+    @test Base.names(ls) == [:name] && eltype(ls.name) == Union{String, Missing} && ls.name[1] == "alice"
+    ll = A.lazy(IOBuffer(csv); limit=2)
+    @test size(ll, 1) == 2 && collect(ll.id) == ["1", "2"]
+    lh = A.lazy(IOBuffer("x;y\n1;2\n"); delim=';', header=false)
+    @test Base.names(lh) == [:Column1, :Column2] && lh[1, 1] == "x"
+    # a chunked file: cells across chunk boundaries, random access, iteration
+    big = "a,b\n" * join(("$(i),v$(i)" for i in 1:5000), "\n") * "\n"
+    lb = A.lazy(IOBuffer(big); chunkbytes=512)
+    @test lb.b[4321] == "v4321" && lb.b[1] == "v1" && lb.b[5000] == "v5000"
+    @test collect(lb.a) == string.(1:5000)
+    @test [x for x in lb.a] == string.(1:5000)                        # iterate == getindex
+    @test occursin("5000 rows × 2 columns", sprint(show, lb))
+    @test_throws BoundsError lb.a[5001]
+end
+
 @testset "cheap wins from the issue audit" begin
     # #853: space-ALIGNED files elect (' ', ignorerepeated=true); plain space
     # and comma files detect exactly as before

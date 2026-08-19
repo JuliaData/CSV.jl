@@ -930,10 +930,21 @@ function File(source;
         t = _pooledarrays(t, poolS)
         downcast && (t = _downcast(t))
         stringtype === K.CompactString || (t = _materializestrings(t, stringtype))
-        nm = source isa AbstractString ? String(source) : "<$(nameof(typeof(source)))>"
-        return File(nm, t, Dict(n => j for (j, n) in enumerate(K.names(t))))
+        return File(_sourcename(source), t, Dict(n => j for (j, n) in enumerate(K.names(t))))
     end
     p = _prepare(source; parallel, maxproblems=capturecap, validate, kw...)
+    return _filefromprepared(p, _sourcename(source); types, select, drop, pool, downcast,
+                             stringtype, on_error, maxproblems, parallel, validate)
+end
+
+_sourcename(source) = source isa AbstractString ? String(source) : "<$(nameof(typeof(source)))>"
+
+# the typed parse over an existing index — File's classic path, and what
+# File(::LazyFile) reuses so the scan is never repeated
+function _filefromprepared(p::Prepared, nm::String; types=nothing, select=nothing, drop=nothing,
+                           pool=DEFAULT_POOL, downcast::Bool=false, stringtype::Type=K.CompactString,
+                           on_error::Symbol=:collect, maxproblems::Int=10_000,
+                           parallel::Bool=Threads.nthreads() > 1, validate::Bool=true)
     sel = _resolveselect(select, drop, p.names)
     parsetypes = if p.limit == 0
         Type[T === nothing ? Missing : T for T in K.resolvetypes(types, p.names, p.ncols; validate)]
@@ -958,7 +969,6 @@ function File(source;
     t = _pooledarrays(t, poolS)
     downcast && (t = _downcast(t))
     stringtype === K.CompactString || (t = _materializestrings(t, stringtype))
-    nm = source isa AbstractString ? String(source) : "<$(nameof(typeof(source)))>"
     return File(nm, t, Dict(n => j for (j, n) in enumerate(K.names(t))))
 end
 
@@ -1614,6 +1624,215 @@ parsed columns are freshly allocated, so they are handed over as
 without copying.
 """
 read(source, sink; kw...) = sink(Tables.CopiedColumns(File(source; kw...)))
+
+# ---------------------------------------------------------------------------
+# lazy / LazyFile — the structural index AS a table
+# ---------------------------------------------------------------------------
+"""
+    CSVApi.lazy(source; types=nothing, stringtype=CompactString, kw...) -> LazyFile
+
+The fastest possible first look at a file: build the structural index (the
+parallel scan that finds every row and field — a fraction of a full parse) and
+return a table whose cells materialize only when touched. Every column is a
+lazy vector of `CompactString`s (zero-copy views into the input; `missing` for
+empty cells) with O(1) random access; `nrows`/`size`, names, `lf[i, j]`,
+`lf.col`, `lf[:col]`, and the Tables.jl columns interface all work, so
+`DataFrame(lf)` or `Tables.columntable(lf)` materialize on demand. Pass
+`types=Dict(:price => Float64)` (or a Type/Vector) to make chosen columns
+parse on access instead. When you decide the file is worth a full parse,
+`File(lf; kw...)` reuses the index — the scan is never repeated.
+
+`stringtype=String` materializes each accessed cell as a `String`. Row-
+positional (`header`, `skipto`, `footerskip`, `limit`), dialect, and value
+keywords match [`File`](@ref); `select`/`drop` apply too (unselected columns
+are simply not offered).
+"""
+function lazy(source; types=nothing, stringtype::Type=K.CompactString,
+              select=nothing, drop=nothing, kw...)
+    allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW..., :validate)
+    _checkkwargs("lazy", kw, allowed)
+    _checkstringtype(stringtype)
+    p = _prepare(source; kw...)
+    validate = get(kw, :validate, true)
+    sel = _resolveselect(select, drop, p.names)
+    seed = types === nothing ? nothing :
+           K.resolvetypes(types, p.names, p.ncols; validate)
+    chunks = p.bi.chunks
+    rowbases = cumsum([0; Int[K.nrows(ci) for ci in chunks[1:max(length(chunks) - 1, 0)]]])
+    total = sum(K.nrows, chunks; init=0)
+    nr = p.limit === nothing ? total : min(total, p.limit)
+    js = sel === nothing ? collect(1:p.ncols) : sel
+    cols = AbstractVector[]
+    for j in js
+        T = seed === nothing ? nothing : seed[j]
+        c = T === nothing || T === String ?
+                LazyColumn{_lazyeltype(stringtype)}(p.buf, chunks, rowbases, j, p.opts, nr, stringtype) :
+                LazyColumn{Union{T, Missing}}(p.buf, chunks, rowbases, j, p.opts, nr, T)
+        push!(cols, c)
+    end
+    names = p.names[js]
+    return LazyFile(_sourcename(source), p, names, cols, nr,
+                    Dict(nm => i for (i, nm) in enumerate(names)))
+end
+_lazyeltype(::Type{K.CompactString}) = Union{K.CompactString, Missing}
+_lazyeltype(::Type{S}) where {S} = Union{S, Missing}
+
+"""
+    LazyColumn{ELT}
+
+One column of a [`LazyFile`](@ref): an `AbstractVector` whose `getindex`
+locates the cell through the structural index (a chunk lookup and an O(1)
+field-span read), then returns a `CompactString` view (or the requested
+string type / parsed value). Nothing is stored per cell.
+"""
+struct LazyColumn{ELT, T} <: AbstractVector{ELT}   # T: CompactString | String | extension string type | a value type
+    buf::Vector{UInt8}
+    chunks::Vector{K.ChunkIndex}
+    rowbases::Vector{Int}
+    j::Int
+    opts::K.ValueOpts
+    nrows::Int
+    hint::Base.RefValue{Int}   # last chunk touched: sequential/local access skips the search
+end
+LazyColumn{ELT}(buf, chunks, rowbases, j, opts, nrows, ::Type{T}) where {ELT, T} =
+    LazyColumn{ELT, T}(buf, chunks, rowbases, j, opts, nrows, Ref(1))
+_lazytarget(::LazyColumn{ELT, T}) where {ELT, T} = T
+Base.size(c::LazyColumn) = (c.nrows,)
+Base.IndexStyle(::Type{<:LazyColumn}) = IndexLinear()
+
+# global row → (chunk, local row); rowbases is nondecreasing. The hint makes
+# a scan of the column O(1) per cell (a stale hint from another task is only
+# a hint: it is validated, and any task may overwrite it).
+@inline function _lazylocate(c::LazyColumn, i::Int)
+    k = c.hint[]
+    @inbounds if !(1 <= k <= length(c.chunks) &&
+                   c.rowbases[k] < i <= c.rowbases[k] + K.nrows(c.chunks[k]))
+        k = searchsortedlast(c.rowbases, i - 1)
+        c.hint[] = k
+    end
+    ci = @inbounds c.chunks[k]
+    return ci, ci.firstdatarow + (i - @inbounds(c.rowbases[k])) - 1
+end
+
+function Base.getindex(c::LazyColumn, i::Int)
+    @boundscheck checkbounds(c, i)
+    ci, lr = _lazylocate(c, i)
+    sp = K.fieldspan(ci, lr, c.j)
+    sp === nothing && return missing                       # short row
+    pos, len = sp
+    len == 0 && return missing
+    return _lazyvalue(c, pos, len)
+end
+@inline function _lazyvalue(c::LazyColumn{ELT, T}, pos::Int, len::Int) where {ELT, T}
+    cpos, clen, esc, st = K.cellcontent(c.buf, pos, len, c.opts)
+    st == K.CELL_MISSING && return missing
+    if T === K.CompactString || T === String || !(T <: Number || T <: Dates.TimeType || T === Bool || T === Base.UUID)
+        # a string cell: zero-copy view, unless quoting demands unescaping
+        # (or the structural quote reading is malformed — keep the raw bytes)
+        if st == K.CELL_BADQUOTE
+            cpos, clen, esc = pos, len, false
+        end
+        s = if esc
+            bytes = K._unescape_bytes(c.buf, Int64(cpos), Int32(clen), c.opts.e, c.opts.cq)
+            n = length(bytes)
+            n <= K.COMPACTSTRING_INLINE ? K.CompactString(K.inline_payload(bytes, 1, n), K.EMPTY_BYTES) :
+                                          K.CompactString(K.view_payload(bytes, 1, n, 0, 0), bytes)
+        elseif clen <= K.COMPACTSTRING_INLINE
+            K.CompactString(K.inline_payload(c.buf, cpos, clen), K.EMPTY_BYTES)
+        else
+            K.CompactString(K.view_payload(c.buf, cpos, clen, 0, cpos - 1), c.buf)
+        end
+        return T === K.CompactString ? s : convert(T, String(s))
+    end
+    # a typed cell: the same kernels File uses, on demand
+    (st == K.CELL_BADQUOTE || clen == 0 || esc) && return missing
+    v, ok = K.parsevalue(T, c.buf, cpos, cpos + clen - 1, c.opts)
+    return ok ? v : missing
+end
+
+# Sequential access (collect, sum, DataFrame(lf), display) walks chunk by
+# chunk with no per-cell chunk lookup; only random access pays the search.
+@inline function _lazycell(c::LazyColumn, ci::K.ChunkIndex, lr::Int)
+    sp = K.fieldspan(ci, lr, c.j)
+    sp === nothing && return missing
+    pos, len = sp
+    len == 0 && return missing
+    return _lazyvalue(c, pos, len)
+end
+function Base.iterate(c::LazyColumn, state=(1, 0, 0))
+    k, lr, done = state
+    done >= c.nrows && return nothing
+    chunks = c.chunks
+    @inbounds while k <= length(chunks)
+        ci = chunks[k]
+        lr == 0 && (lr = ci.firstdatarow)
+        if lr <= K.totalrows(ci)
+            return _lazycell(c, ci, lr), (k, lr + 1, done + 1)
+        end
+        k += 1
+        lr = 0
+    end
+    return nothing
+end
+
+"""
+    CSVApi.LazyFile
+
+The table [`lazy`](@ref) returns. Columns are [`LazyColumn`](@ref)s;
+`File(lf; kw...)` parses it fully on the same index.
+"""
+struct LazyFile
+    name::String
+    prepared::Prepared
+    names::Vector{Symbol}
+    columns::Vector{AbstractVector}
+    nrows::Int
+    lookup::Dict{Symbol, Int}
+end
+Base.names(lf::LazyFile) = getfield(lf, :names)
+Base.size(lf::LazyFile) = (getfield(lf, :nrows), length(getfield(lf, :columns)))
+Base.size(lf::LazyFile, d::Int) = size(lf)[d]
+Base.length(lf::LazyFile) = getfield(lf, :nrows)
+Base.getindex(lf::LazyFile, nm::Symbol) = getfield(lf, :columns)[getfield(lf, :lookup)[nm]]
+Base.getindex(lf::LazyFile, j::Int) = getfield(lf, :columns)[j]
+Base.getindex(lf::LazyFile, i::Int, j::Int) = getfield(lf, :columns)[j][i]
+Base.getindex(lf::LazyFile, i::Int, nm::Symbol) = lf[nm][i]
+Base.getproperty(lf::LazyFile, nm::Symbol) =
+    haskey(getfield(lf, :lookup), nm) ? lf[nm] : getfield(lf, nm)
+Base.propertynames(lf::LazyFile) = getfield(lf, :names)
+Tables.istable(::Type{LazyFile}) = true
+Tables.columnaccess(::Type{LazyFile}) = true
+Tables.columns(lf::LazyFile) = lf
+Tables.columnnames(lf::LazyFile) = getfield(lf, :names)
+Tables.getcolumn(lf::LazyFile, i::Int) = getfield(lf, :columns)[i]
+Tables.getcolumn(lf::LazyFile, nm::Symbol) = lf[nm]
+Tables.rowcount(lf::LazyFile) = getfield(lf, :nrows)
+Tables.schema(lf::LazyFile) =
+    Tables.Schema(getfield(lf, :names), Type[eltype(c) for c in getfield(lf, :columns)])
+function Base.show(io::IO, lf::LazyFile)
+    n, m = size(lf)
+    print(io, "CSV.LazyFile(", repr(getfield(lf, :name)), "): ", n, " row", n == 1 ? "" : "s",
+          " × ", m, " column", m == 1 ? "" : "s", " (indexed, cells lazy)")
+    for (nm, c) in zip(getfield(lf, :names), getfield(lf, :columns))
+        print(io, "\n  ", nm, "::", eltype(c))
+    end
+end
+
+"""
+    File(lf::LazyFile; kw...)
+
+Full typed parse of a lazily indexed file, reusing its structural index —
+the scan is not repeated. `kw` are `File`'s type/string/pool/engine keywords
+(row-positional and dialect choices were fixed when `lf` was created).
+"""
+function File(lf::LazyFile; types=nothing, select=nothing, drop=nothing, pool=DEFAULT_POOL,
+              downcast::Bool=false, stringtype::Type=K.CompactString, strict::Bool=false,
+              on_error::Symbol=strict ? :error : :collect, maxproblems::Int=10_000,
+              parallel::Bool=Threads.nthreads() > 1, validate::Bool=true)
+    _checkstringtype(stringtype)
+    return _filefromprepared(getfield(lf, :prepared), getfield(lf, :name); types, select, drop,
+                             pool, downcast, stringtype, on_error, maxproblems, parallel, validate)
+end
 
 # ---------------------------------------------------------------------------
 # Rows — streaming
