@@ -270,7 +270,7 @@ end
                     limit=directlimit, parallel=par, nsample=1)
         @test String.(t[:s]) == directvalues[1:directlimit]
         @test t[:s].extra == expectedextra
-        @test all(i -> signbit(K.csoff(t[:s].payloads[i])) == occursin('\"', directvalues[i]),
+        @test all(i -> (K.csbufidx(t[:s].payloads[i]) == 1) == occursin('\"', directvalues[i]),
                   1:directlimit)
     end
 end

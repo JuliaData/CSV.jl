@@ -34,10 +34,8 @@ end
     n > sizeof(T) - 1 &&
         throw(ArgumentError("value of $n bytes does not fit $T"))
     if n > K.COMPACTSTRING_INLINE
-        off = K.csoff(s.p)
-        o = off < 0 ? -off : off
         GC.@preserve s begin
-            return T(pointer(s.data, o), n)
+            return T(pointer(s.data, K.cspos(s.p)), n)
         end
     end
     # inline payload: build through a stack scratch (≤12 bytes)

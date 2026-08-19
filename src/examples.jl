@@ -297,11 +297,11 @@ function Base.getindex(row::RowView, j::Int)
         inl === nothing || return K.CompactString(inl, K.EMPTY_BYTES)
         own = UInt8[]
         n = K._unescape_append!(own, buf, cpos, clen, r.opts.e, r.d.cq)
-        return K.CompactString(K.view_payload(own, 1, n, Int64(1)), own)
+        return K.CompactString(K.view_payload(own, 1, n, 0, 0), own)
     end
     clen <= K.COMPACTSTRING_INLINE &&
         return K.CompactString(K.inline_payload(buf, cpos, clen), K.EMPTY_BYTES)
-    return K.CompactString(K.view_payload(buf, cpos, clen, Int64(cpos)), buf)
+    return K.CompactString(K.view_payload(buf, cpos, clen, 0, cpos - 1), buf)
 end
 Base.getindex(row::RowView, nm::Symbol) = row[getfield(row, :r).lookup[nm]]
 function Base.getproperty(row::RowView, nm::Symbol)

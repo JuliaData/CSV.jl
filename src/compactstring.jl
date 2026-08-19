@@ -15,13 +15,17 @@
 #      bits 32..63 = content bytes 1..4 (the full bytes when inline, the PREFIX
 #      when a view — prefixes make equality's fast path branch-free)
 #   b: len ≤ 12 ⇒ content bytes 5..12 (zero-padded);
-#      len > 12 ⇒ Int64 byte offset of the content: positive into the input
-#      buffer (zero copy), negative into the column's `extra` buffer (escaped
-#      values are unescaped once at parse time and stored there)
+#      len > 12 ⇒ bits 0..31 = Int32 BUFFER INDEX (0 = the input buffer, zero
+#      copy; 1 = the column's `extra` buffer, where escaped values are
+#      unescaped once at parse time), bits 32..63 = Int32 0-based byte OFFSET
+#      of the content within that buffer
 # Byte packing is by explicit shifts, so the layout is endianness-independent.
-# This maps 1:1 onto Arrow's StringView (12-byte inline, 4-byte prefix; Arrow's
-# int32 buffer offsets correspond to the production plan's <2 GiB chunk-owned
-# buffers) — the strategic bet: string columns that hand off to Arrow zero-copy.
+# This IS Arrow's StringView entry, byte for byte (12-byte inline, 4-byte
+# prefix, int32 buffer index + int32 offset): a payload vector hands off to
+# Arrow as a views buffer with no rewrite, and Arrow view arrays come back
+# the same way. Arrow's int32 offsets are the reason buffers must stay under
+# 2 GiB (the production plan's chunk-owned buffers); `view_payload` refuses
+# larger positions.
 struct CompactStringPayload
     a::UInt64
     b::UInt64
@@ -31,7 +35,13 @@ const COMPACTSTRING_INLINE = 12
 const EMPTY_BYTES = UInt8[]
 
 @inline cslen(p::CompactStringPayload) = reinterpret(Int32, p.a % UInt32)
-@inline csoff(p::CompactStringPayload) = reinterpret(Int64, p.b)
+# Long-entry word (Arrow StringView's second word): buffer index and 0-based
+# byte offset within that buffer; `cspos` is the 1-based Julia position.
+@inline csbufidx(p::CompactStringPayload) = reinterpret(Int32, p.b % UInt32)
+@inline csoffset(p::CompactStringPayload) = reinterpret(Int32, (p.b >> 32) % UInt32)
+@inline cspos(p::CompactStringPayload) = Int(csoffset(p)) + 1
+@inline _viewword(bufidx::Integer, offset0::Integer) =
+    UInt64(bufidx % UInt32) | (UInt64(offset0 % UInt32) << 32)
 
 # Two overlapping little-endian loads gather up to 12 content bytes branch-free;
 # the byte-loop fallback only runs within 11 bytes of the buffer's end (loads
@@ -60,14 +70,32 @@ const EMPTY_BYTES = UInt8[]
 end
 
 
-# `off` is the (positive) input-buffer position, or negative for `extra`.
-# len > 12 guarantees the 4-byte prefix load is in-bounds.
-@inline function view_payload(src::Vector{UInt8}, srcpos::Int, len::Int, off::Int64)
+# `bufidx`/`offset0` are the entry's Arrow words: which buffer (0 = input,
+# 1 = extra) and the 0-based byte offset of the content within it. `srcpos`
+# is the 1-based position of the same content in `src` (the buffer the
+# prefix is read from). len > 12 guarantees the 4-byte prefix load is
+# in-bounds. Offsets beyond Int32 cannot be represented — buffers must stay
+# under 2 GiB.
+@inline function view_payload(src::Vector{UInt8}, srcpos::Int, len::Int,
+                              bufidx::Integer, offset0::Integer)
+    (0 <= offset0 <= typemax(Int32) && 0 <= bufidx <= typemax(Int32)) ||
+        throw(ArgumentError("CompactString view (buffer $bufidx, offset $offset0) " *
+                            "does not fit Arrow's Int32 view words; buffers must stay under 2 GiB"))
     GC.@preserve src begin
         pre = ltoh(unsafe_load(Ptr{UInt32}(pointer(src, srcpos))))
     end
     a = UInt64(len % UInt32) | (UInt64(pre) << 32)
-    return CompactStringPayload(a, reinterpret(UInt64, off))
+    return CompactStringPayload(a, _viewword(bufidx, offset0))
+end
+
+# The same entry re-pointed `base` bytes further into its buffer — what
+# stitching per-chunk `extra` buffers into one column-owned buffer needs.
+@inline function rebase_payload(p::CompactStringPayload, base::Integer)
+    off = Int(csoffset(p)) + Int(base)
+    0 <= off <= typemax(Int32) ||
+        throw(ArgumentError("rebased CompactString view offset $off does not fit " *
+                            "Arrow's Int32 view offset; buffers must stay under 2 GiB"))
+    return CompactStringPayload(p.a, _viewword(csbufidx(p), off))
 end
 
 """
@@ -95,9 +123,7 @@ Base.@propagate_inbounds function Base.codeunit(s::CompactString, i::Int)
         return i <= 4 ? (s.p.a >> (32 + 8 * (i - 1))) % UInt8 :
                         (s.p.b >> (8 * (i - 5))) % UInt8
     else
-        off = csoff(s.p)
-        o = off < 0 ? -off : off
-        return @inbounds s.data[o + i - 1]
+        return @inbounds s.data[cspos(s.p) + i - 1]
     end
 end
 
@@ -157,8 +183,8 @@ function Base.:(==)(x::CompactString, y::CompactString)
     x.p.a == y.p.a || return false                # length + 4-byte prefix reject
     GC.@preserve x y begin
         return ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t),
-                     pointer(x.data, abs(csoff(x.p))),
-                     pointer(y.data, abs(csoff(y.p))), n) == 0
+                     pointer(x.data, cspos(x.p)),
+                     pointer(y.data, cspos(y.p)), n) == 0
     end
 end
 # Direct byte comparison against String — Base's generic AbstractString ==
@@ -175,10 +201,8 @@ function Base.:(==)(x::CompactString, y::Union{String, SubString{String}})
             end
             return true
         end
-        off = csoff(x.p)
-        o = off < 0 ? -off : off
         return ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t),
-                     pointer(x.data, o), py, n) == 0
+                     pointer(x.data, cspos(x.p)), py, n) == 0
     end
 end
 Base.:(==)(y::Union{String, SubString{String}}, x::CompactString) = x == y
@@ -217,10 +241,10 @@ function Base.cmp(x::CompactString, y::CompactString)
     GC.@preserve x y rx ry begin
         px = nx <= COMPACTSTRING_INLINE ?
              Ptr{UInt8}(Base.unsafe_convert(Ptr{Tuple{UInt64, UInt64}}, rx)) :
-             pointer(x.data, abs(csoff(x.p)))
+             pointer(x.data, cspos(x.p))
         py = ny <= COMPACTSTRING_INLINE ?
              Ptr{UInt8}(Base.unsafe_convert(Ptr{Tuple{UInt64, UInt64}}, ry)) :
-             pointer(y.data, abs(csoff(y.p)))
+             pointer(y.data, cspos(y.p))
         c = ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t), px, py, n)
     end
     return c < 0 ? -1 : c > 0 ? 1 : cmp(nx, ny)
@@ -232,7 +256,7 @@ function Base.cmp(x::CompactString, y::Union{String, SubString{String}})
     GC.@preserve x y rx begin
         px = nx <= COMPACTSTRING_INLINE ?
              Ptr{UInt8}(Base.unsafe_convert(Ptr{Tuple{UInt64, UInt64}}, rx)) :
-             pointer(x.data, abs(csoff(x.p)))
+             pointer(x.data, cspos(x.p))
         c = ccall(:memcmp, Cint, (Ptr{UInt8}, Ptr{UInt8}, Csize_t), px, pointer(y), n)
     end
     return c < 0 ? -1 : c > 0 ? 1 : cmp(nx, ny)
@@ -268,10 +292,8 @@ end
 function Base.hash(s::CompactString, h::UInt)
     n = ncodeunits(s)
     if n > COMPACTSTRING_INLINE
-        off = csoff(s.p)
-        o = off < 0 ? -off : off
         GC.@preserve s begin
-            return _stringhash(pointer(s.data, o), n, h)
+            return _stringhash(pointer(s.data, cspos(s.p)), n, h)
         end
     end
     # inline: bytes 1-4 are the high 32 bits of `a`, bytes 5-12 are `b` —
@@ -291,10 +313,8 @@ function Base.String(s::CompactString)
     n = ncodeunits(s)
     if n > COMPACTSTRING_INLINE
         # view: one memcpy out of the retained buffer
-        off = csoff(s.p)
-        o = off < 0 ? -off : off
         GC.@preserve s begin
-            return unsafe_string(pointer(s.data, o), n)
+            return unsafe_string(pointer(s.data, cspos(s.p)), n)
         end
     end
     out = Vector{UInt8}(undef, n)
@@ -332,7 +352,7 @@ Base.@propagate_inbounds @inline function Base.getindex(v::CompactStringVector{E
     len = cslen(p)
     len < 0 && return missing
     len <= COMPACTSTRING_INLINE && return CompactString(p, EMPTY_BYTES)
-    return CompactString(p, csoff(p) < 0 ? v.extra : v.buf)
+    return CompactString(p, csbufidx(p) == 0 ? v.buf : v.extra)
 end
 # All-present columns skip the missing branch entirely — the concrete return
 # type is what lets access compile down to zero allocations.
@@ -341,7 +361,7 @@ Base.@propagate_inbounds @inline function Base.getindex(v::CompactStringVector{C
     @inbounds p = v.payloads[i]
     len = cslen(p)
     len <= COMPACTSTRING_INLINE && return CompactString(p, EMPTY_BYTES)
-    return CompactString(p, csoff(p) < 0 ? v.extra : v.buf)
+    return CompactString(p, csbufidx(p) == 0 ? v.buf : v.extra)
 end
 
 function materialize(v::CompactStringVector{ELT}) where {ELT}
@@ -359,11 +379,9 @@ function materialize(v::CompactStringVector{ELT}) where {ELT}
                 unsafe_store!(Ptr{UInt64}(q + 8), htol(p.b >> 32))
                 out[i] = unsafe_string(q, len)
             else
-                off = csoff(p)
-                o = off < 0 ? -off : off
-                src = off < 0 ? v.extra : v.buf
+                src = csbufidx(p) == 0 ? v.buf : v.extra
                 GC.@preserve src begin
-                    out[i] = unsafe_string(pointer(src, o), len)
+                    out[i] = unsafe_string(pointer(src, cspos(p)), len)
                 end
             end
         end
