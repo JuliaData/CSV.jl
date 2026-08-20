@@ -1,78 +1,138 @@
 name: CI
+
 on:
   pull_request:
   push:
     branches: [main]
     tags: ["*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
   test:
-    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - ${{ github.event_name }}
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     env:
       JULIA_NUM_THREADS: 2
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        version:
-          - '1'    # Current stable version
-        os:
-          - ubuntu-latest
-          - windows-latest
-        arch:
-          - x64
+        version: ['1']
+        os: [ubuntu-latest, windows-latest]
+        arch: [x64]
         include:
-          - os: macOS-latest
+          - version: '1.10'
+            os: ubuntu-latest
+            arch: x64
+          - version: '1'
+            os: macos-latest
             arch: aarch64
-            version: '1'
-          - os: macOS-14
-            arch: aarch64
-            version: '1'
-          - os: ubuntu-latest
+          - version: '1'
+            os: ubuntu-latest
             arch: x86
-            version: '1'
-          - os: ubuntu-latest
+          - version: 'nightly'
+            os: ubuntu-latest
             arch: x64
-            version: '1.6'
-          - os: ubuntu-latest
-            arch: x64
-            version: 'nightly'
-          - os: windows-latest
-            arch: x64
-            version: 'lts'
 
     steps:
-      - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v6
+      - name: Disable Git line-ending conversion
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
-      - uses: actions/cache@v5
-        env:
-          cache-name: cache-artifacts
-        with:
-          path: ~/.julia/artifacts
-          key: ${{ runner.os }}-test-${{ env.cache-name }}-${{ hashFiles('**/Project.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-test-${{ env.cache-name }}-
-            ${{ runner.os }}-test-
-            ${{ runner.os }}-
+      - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
       - uses: julia-actions/julia-processcoverage@v1
-      - uses: codecov/codecov-action@v6
+      - uses: codecov/codecov-action@v7
         with:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  tables-scan:
+    name: Tables.Scan integration (pinned)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      JULIA_NUM_THREADS: 2
+      # Keep this immutable until a registered Tables.jl release contains Scan.
+      TABLES_SCAN_REV: 6be83de366499e7a428ecea1f6adab1c4f8eeff0
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.10'
+      - uses: julia-actions/cache@v3
+      - name: Install the reviewed Tables.Scan revision
+        shell: julia --color=yes --project=. {0}
+        run: |
+          using Pkg
+          revision = ENV["TABLES_SCAN_REV"]
+          Pkg.add(PackageSpec(
+              url="https://github.com/JuliaData/Tables.jl.git",
+              rev=revision,
+          ))
+          Pkg.instantiate()
+      - name: Require the scan API
+        shell: julia --color=yes --project=. {0}
+        run: |
+          using CSV
+          isdefined(CSV.Tables, :Scan) ||
+              error("the pinned Tables.jl revision does not define Tables.Scan")
+          isdefined(CSV, :KernelScan) ||
+              error("CSV.jl did not load its Tables.Scan integration")
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+
+  quality:
+    name: Package quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3
+      - name: Instantiate the test environment
+        shell: julia --color=yes --project=test {0}
+        run: |
+          using Pkg
+          Pkg.develop(PackageSpec(path=pwd()))
+          Pkg.instantiate()
+      - name: Run Aqua
+        run: julia --color=yes --project=test test/quality.jl
+
   docs:
     name: Documentation
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: read
+      statuses: write
     steps:
-      - uses: actions/checkout@v6
-      - uses: julia-actions/julia-buildpkg@latest
-      - uses: julia-actions/julia-docdeploy@latest
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3
+      - name: Instantiate the documentation environment
+        shell: julia --color=yes --project=docs {0}
+        run: |
+          using Pkg
+          Pkg.develop(PackageSpec(path=pwd()))
+          Pkg.instantiate()
+      - name: Build strict documentation
+        run: julia --color=yes --project=docs docs/make.jl
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
