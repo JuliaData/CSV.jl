@@ -2,6 +2,8 @@
 # tests can use it as a behavioral ORACLE. The sources are the frozen copy in
 # legacy/src/; only the module wrapper is rewritten at include time.
 module LegacyCSV
+# Do not define `VERSION` here. The frozen sources use the imported
+# `Base.VERSION` for Julia-runtime compatibility branches.
 const CSV = LegacyCSV   # the legacy sources reference themselves as `CSV.`
 const _LEGACY_SRC = normpath(joinpath(@__DIR__, "..", "..", "..", "legacy", "src"))
 

@@ -1,0 +1,7 @@
+[testfiles]
+git-tree-sha1 = "d37a9eaf615396a9c00d9f4280cb832111193b57"
+lazy = true
+
+    [[testfiles.download]]
+    url = "https://github.com/JuliaData/CSV.jl/releases/download/testdata-kernel-1/testfiles-artifact.tar.gz"
+    sha256 = "33734961737247ec8ce8838ae535523cbb28958fe8936f8f39ff36b38bde0d28"

@@ -3,7 +3,8 @@
 #
 # Run:  julia --project=test -t8 bench/writebench.jl [rows...]
 #       (default rows: 100_000 1_000_000)
-using CSV, LegacyCSV, Tables, Random, Dates, Printf
+using CSV, Tables, Random, Dates, Printf
+include(joinpath(@__DIR__, "legacycsv.jl"))
 const NROWS = isempty(ARGS) ? [100_000, 1_000_000] : parse.(Int, ARGS)
 
 function shape(kind::Symbol, n::Int, rng)

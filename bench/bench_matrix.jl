@@ -13,19 +13,15 @@
 #
 # Run:  julia --project=test -t8 bench/bench_matrix.jl LABEL [sizes...]
 #       results append to kernel-bench-LABEL.tsv next to this file, table to stdout.
-#       julia --project=. -t1 bench/bench_matrix.jl LABEL-1t 20 --core
+#       julia --project=test -t1 bench/bench_matrix.jl LABEL-1t 20 --core
 
 using CSV; const CSVApi = CSV.CSVApi; const CSVKernel = CSV.CSVKernel
 using Dates, Random, Tables
 const K = CSVKernel
 const A = CSVApi
 
-const CSVMOD = try
-    @eval import CSV
-    @eval CSV
-catch
-    nothing
-end
+include(joinpath(@__DIR__, "legacycsv.jl"))
+const CSVMOD = LegacyCSV
 
 # ---------------------------------------------------------------------------
 # shapes — each returns bytes; header names say what the type mix is

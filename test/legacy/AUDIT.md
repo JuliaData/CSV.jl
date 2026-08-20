@@ -109,9 +109,6 @@ Ten explicit comment cases each lost 18 variants (180 checks). Total: 852.
 Scalar sequential and parallel geometry remains covered at chunk sizes 3, 7,
 16, and 64. Focused row-start and quote-poison checks increased the current
 kernel total beyond the original 54,488.
-- Two Julia traps hit twice each in this pass and now documented in code:
-  `cond && (a, b = c, d)` parses as a tuple (silent no-op), and `begin…end`
-  inside a typed comprehension is a parse error.
 
 ### 4. Pinned 1.0 deltas surfaced by the replay (the migration guide's spine)
 
@@ -143,58 +140,26 @@ The harness asserts these DISAGREE with 0.10 (a stale pin fails):
   pooled provenance column) and its nine queue entries replay.
 - `iteration.jl`: row-accessor iteration is covered by `api.jl`'s Rows tests;
   its two corpus files replay as `iteration:3-*`.
-- `write.jl`: `test/write.jl` (77 tests, parser-oracle fuzz) supersedes it;
+- `write.jl`: `test/write.jl` (including parser-oracle fuzz) supersedes it;
   the three File-side reads (tab dialect, control-char delims, FilePathsBase
   path — now an extension) replay as `write:*` cases.
 - `perf_write.jl`: a benchmark, not a test → `bench/`.
 
-### 6. The corpus artifact — retired
+### 6. The corpus artifact — retained lazily for large fixtures
 
 - 82 referenced files at or below 4 KiB are exact byte literals in
   `corpus_inline.jl`. The harness writes them to one scratch directory so path
   behavior remains covered.
-- The 24 retained real-world files live in `test/legacy/testfiles/`. They are
-  byte-identical to the former `d37a9eaf615396a9c00d9f4280cb832111193b57`
-  artifact tree.
-- The generated shape battery covers the synthetic cases. `Artifacts.toml`,
-  `LazyArtifacts`, and the release-upload instructions are removed.
-
-## Codex round 22 (the port's review) — CLEAN, with hardening
-
-Four commits on top of the port (`c204119` `42abd70` `3773b5e` `6915e2a`):
-comment skipping proven at row starts only; the kernel's 852-assertion drop
-accounted for exactly (672 randomized + 180 explicit fast-scanner variants
-that comment dialects no longer take — scalar sequential and parallel
-geometry still covered at 3/7/16/64 bytes); delimiter fallbacks fixed for
-single-row headers, CRLF evidence, BOM, ties, header precedence, and a
-256-sample fuzz vs the 0.10 detector; sentinels with blanks; `limit` scoping
-of inference; narrow-type/select mapping; declared-Union widening through
-every container; **custom scalar types with `parse`/`tryparse` now work**
-(ported from the manual queue). The harness now compares names, row counts,
-schema types, values, AND semantic error categories (both-error must agree on
-category), and pins assert their exact direction. Final ledger: 212 agree,
-17 both-error, 8 + 4 + 2 pinned; battery 1,175/1,175.
-
-## The corpus overhaul (done)
-
-- **82 small files (≤ 4 KiB, 12 KB total) inlined** as exact byte literals in
-  `corpus_inline.jl` — BOMs, CRLF, NULs, invalid UTF-8 preserved by `repr`;
-  written to a scratch dir once per session so path-dependent behavior
-  (`.gz` by extension, mmap threshold, `Cmd` sources) is exercised
-  unchanged. Battery identical: 1,175/1,175 before and after.
-- **Generated battery** (`generated.jl`): `bench/bench_matrix.jl`'s 21 shape
-  generators × 3 sizes (single-chunk → several chunks) through both
-  implementations plus a writer round-trip per case — 63 differential cases
-  + 63 round-trips in ~4 s, zero bytes on disk. Broader than the tiny files
-  it stands in for (chunk boundaries land everywhere; every size class).
-- **Corpus committed in-repo** (`test/legacy/testfiles/`, 24 large
-  real-world files, 18 MB unpacked / ~5 MB in git's object store; was an
-  artifact of 119 files / 28 MB): every kept file pins real-world messiness
-  a synthetic cannot reproduce. Dropped `pandas_zeros.csv` (10 MB synthetic
-  zeros; its `normalizenames` check is covered inline) and the 12 files no
-  test referenced. The artifact machinery (Artifacts.toml, LazyArtifacts,
-  the release-upload step) is retired — at this size the files simply live
-  in the repo, as they did in 0.10.
+- The 24 retained real-world files (18 MB unpacked) come from the lazy
+  `testfiles` artifact. Its exact file list and content hashes are pinned in
+  `test/artifacts/testfiles.sha256`.
+  They are byte-identical to the former in-repository
+  `test/legacy/testfiles/` subset.
+- `generated.jl` reuses the 21 benchmark shape generators at three sizes.
+  It runs 63 differential cases and 63 writer round-trips. The sizes cross
+  chunk boundaries without adding generated fixture files to the repository.
+- `test/Artifacts.toml` keeps the large corpus test-only, so package users do
+  not download it. `test/README.md` documents the fixture update process.
 
 ## Layout
 
@@ -205,7 +170,10 @@ test/legacy/
   cases_file.jl     GENERATED replays of basics/runtests/write/iteration File calls
   runtests.jl       runs both, prints the outcome ledger
   AUDIT.md          this file
-legacy/{src,test}   the frozen 0.10 sources + original tests (loadable as LegacyCSV)
+test/Artifacts.toml lazy 24-file real-world corpus
+test/README.md      fixture layout and artifact-update notes
+test/LegacyCSV/src  direct-include shim that loads the frozen oracle as LegacyCSV
+legacy/{src,test}   the frozen 0.10 sources + original tests
 ```
 
 Regenerate `cases_file.jl` with the extractor scripts if `legacy/test` ever

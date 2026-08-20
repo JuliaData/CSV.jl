@@ -21,12 +21,8 @@ using .CSVKernel
 using Dates, Random
 const K = CSVKernel
 
-const CSVMOD = try
-    @eval import LegacyCSV
-    @eval LegacyCSV
-catch
-    nothing
-end
+include(joinpath(@__DIR__, "legacycsv.jl"))
+const CSVMOD = LegacyCSV
 
 # ---------------------------------------------------------------------------
 # data shapes
@@ -55,7 +51,8 @@ function genrows(io, shape::Symbol, targetbytes::Int, rng)
     elseif shape === :strings
         println(io, join(("s$j" for j in 1:8), ','))
         while position(io) < targetbytes
-            vals = [rand(rng) < 0.10 ? "\"$(rand(WORDS)), $(rand(WORDS))\"" : rand(WORDS) for _ in 1:8]
+            vals = [rand(rng) < 0.10 ? "\"$(rand(rng, WORDS)), $(rand(rng, WORDS))\"" :
+                    rand(rng, WORDS) for _ in 1:8]
             println(io, join(vals, ','))
         end
     elseif shape === :quoted
@@ -64,11 +61,11 @@ function genrows(io, shape::Symbol, targetbytes::Int, rng)
         println(io, "q1,q2,q3,q4,q5")
         while position(io) < targetbytes
             vals = map(1:5) do _
-                w = rand(WORDS)
+                w = rand(rng, WORDS)
                 r = rand(rng)
-                inner = r < 0.20 ? "$w, $(rand(WORDS))" :
-                        r < 0.25 ? "$w \"\"$(rand(WORDS))\"\"" :
-                        r < 0.30 ? "$w\n$(rand(WORDS))" : w
+                inner = r < 0.20 ? "$w, $(rand(rng, WORDS))" :
+                        r < 0.25 ? "$w \"\"$(rand(rng, WORDS))\"\"" :
+                        r < 0.30 ? "$w\n$(rand(rng, WORDS))" : w
                 "\"$inner\""
             end
             println(io, join(vals, ','))
@@ -163,7 +160,7 @@ end
 function main(sizes)
     shapes = (:numeric, :mixed, :strings, :quoted, :wide, :longnarrow, :sparse)
     println("threads=$(Threads.nthreads())  julia=$(VERSION)  CSV.jl=",
-            CSVMOD === nothing ? "not loaded" : string(Base.invokelatest(() -> pkgversion(CSVMOD))))
+            LEGACYCSV_VERSION)
     println()
     header = rpad("shape", 11) * rpad("size", 9) * lpad("rows", 10) * " │" *
              lpad("CSV.File", 10) * lpad("kernel", 10) * lpad("kernel+str", 12) * " │" *

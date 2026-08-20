@@ -9,12 +9,15 @@
 # delta (record it in DELTAS below with a reason — the harness then asserts
 # the NEW behavior instead so the delta stays pinned).
 #
-# `corpusfile(name)` resolves the committed corpus (test/legacy/testfiles);
+# `corpusfile(name)` resolves the inlined or artifact-backed corpus;
 # small files were inlined into cases.jl as literals during the audit (see
 # AUDIT.md).
 
 using Test, Tables, Dates, PooledArrays, Random, CodecZlib, Mmap, FilePathsBase
-using CSV, LegacyCSV
+using InlineStrings: String1, String3, String7, String15, String31, String63,
+                     String127, String255
+using CSV
+import .LegacyCSV
 const NEW = CSV
 const OLD = LegacyCSV
 
@@ -37,16 +40,15 @@ Base.zero(::Type{Dec64}) = Dec64(0.0)
 # byte literals in corpus_inline.jl and written to a scratch dir once per
 # session (real paths, so path-dependent behavior — .gz by extension, the
 # mmap threshold, Cmd sources — is exercised exactly as before); the 24 large
-# real-world files are committed at test/legacy/testfiles (18 MB, ~5 MB in
-# git's object store).
+# real-world files are fetched lazily from the testfiles artifact.
 include("corpus_inline.jl")
 const inlinedir = mktempdir(; prefix="csv-corpus-inline-")
 for (name, bytes) in INLINE_FILES
     write(joinpath(inlinedir, name), bytes)
 end
-function corpusfile(name)
+function corpusfile(name::String)
     haskey(INLINE_FILES, name) && return joinpath(inlinedir, name)
-    return joinpath(@__DIR__, "testfiles", name)
+    return joinpath(TESTFILES_DIR, name)
 end
 
 _legacynorm(x) = x isa AbstractString ? String(x) : x
@@ -200,8 +202,6 @@ end
 const InlineString1 = String; const InlineString3 = String; const InlineString7 = String
 const InlineString15 = String; const InlineString31 = String; const InlineString63 = String
 const InlineString127 = String; const InlineString255 = String
-const String1 = String; const String3 = String; const String7 = String; const String15 = String
-const String31 = String; const String63 = String
 const PosLenString = LegacyCSV.PosLenString
 # One entry: (file, kwargs, (nrows, ncols), NamedTuple{names, types}, expected)
 # The old schema names string types as InlineString*/String*/PosLenString: any
