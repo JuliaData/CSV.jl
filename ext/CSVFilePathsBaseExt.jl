@@ -12,8 +12,12 @@ using CSV, FilePathsBase
 
 CSV.CSVApi.resolvesource(p::FilePathsBase.AbstractPath; kw...) =
     CSV.CSVApi.resolvesource(string(p); kw...)
+CSV.CSVApi._sourcename(p::FilePathsBase.AbstractPath) = string(p)
+CSV.CSVApi._sourceprovenance(p::FilePathsBase.AbstractPath, ::Int) = string(p)
 
-CSV.KernelWrite.write(sink::FilePathsBase.AbstractPath, table; kw...) =
+function CSV.KernelWrite.write(sink::FilePathsBase.AbstractPath, table; kw...)
     CSV.KernelWrite.write(string(sink), table; kw...)
+    return sink
+end
 
 end # module

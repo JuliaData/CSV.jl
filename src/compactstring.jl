@@ -16,22 +16,24 @@
 #      when a view — prefixes make equality's fast path branch-free)
 #   b: len ≤ 12 ⇒ content bytes 5..12 (zero-padded);
 #      len > 12 ⇒ bits 0..31 = Int32 BUFFER INDEX (0 = the input buffer, zero
-#      copy; 1 = the column's `extra` buffer, where escaped values are
-#      unescaped once at parse time), bits 32..63 = Int32 0-based byte OFFSET
+#      copy; 1 and above = bounded column-owned buffers, where escaped values
+#      and views beyond the source-offset limit are copied once at parse time),
+#      bits 32..63 = Int32 0-based byte OFFSET
 #      of the content within that buffer
 # Byte packing is by explicit shifts, so the layout is endianness-independent.
 # This IS Arrow's StringView entry, byte for byte (12-byte inline, 4-byte
 # prefix, int32 buffer index + int32 offset): a payload vector hands off to
 # Arrow as a views buffer with no rewrite, and Arrow view arrays come back
-# the same way. Arrow's int32 offsets are the reason buffers must stay under
-# 2 GiB (the production plan's chunk-owned buffers); `view_payload` refuses
-# larger positions.
+# the same way. Arrow's int32 offsets are the reason each referenced buffer
+# stays bounded. A column may own several such buffers, so the input file
+# itself is not subject to a 2 GiB size limit.
 struct CompactStringPayload
     a::UInt64
     b::UInt64
 end
 const PAYLOAD_MISSING = CompactStringPayload(UInt64(0xffffffff), zero(UInt64))
 const COMPACTSTRING_INLINE = 12
+const COMPACTSTRING_BUFFER_BYTES = Int(typemax(Int32))
 const EMPTY_BYTES = UInt8[]
 
 @inline cslen(p::CompactStringPayload) = reinterpret(Int32, p.a % UInt32)
@@ -71,7 +73,7 @@ end
 
 
 # `bufidx`/`offset0` are the entry's Arrow words: which buffer (0 = input,
-# 1 = extra) and the 0-based byte offset of the content within it. `srcpos`
+# 1 and above = column-owned) and the 0-based byte offset of the content within it. `srcpos`
 # is the 1-based position of the same content in `src` (the buffer the
 # prefix is read from). len > 12 guarantees the 4-byte prefix load is
 # in-bounds. Offsets beyond Int32 cannot be represented — buffers must stay
@@ -98,16 +100,26 @@ end
     return CompactStringPayload(p.a, _viewword(csbufidx(p), off))
 end
 
-"""
-    CompactString <: AbstractString
+# Re-point an owned-buffer view while preserving its length and four-byte
+# prefix. Stitching uses this when a chunk-local buffer is copied into a final
+# column-owned buffer, which may have a different Arrow buffer index.
+@inline function repoint_payload(p::CompactStringPayload, bufidx::Integer,
+                                 offset0::Integer)
+    (0 <= offset0 <= typemax(Int32) && 0 <= bufidx <= typemax(Int32)) ||
+        throw(ArgumentError("CompactString view (buffer $bufidx, offset $offset0) " *
+                            "does not fit Arrow's Int32 view words"))
+    return CompactStringPayload(p.a, _viewword(bufidx, offset0))
+end
 
-A kernel string value: 16-byte payload plus the byte vector long values view
-into (a shared empty vector for inline values). Byte access, direct comparisons,
-and iteration do not allocate; they use the inline bytes or retained buffer.
+"""
+    CSV.CompactString <: AbstractString
+
+A compact string value used by CSV text columns. Short values fit in a 16-byte
+inline payload. Long values view a retained backing buffer. Byte access,
+direct comparisons, and iteration do not allocate.
 Hashing and ordering operate on the payload bytes without allocation and agree
-with `String`. `String(s)` (or `materialize` on the column) copies out.
-Lifetime: a view pins its buffer, exactly like today's `PosLenString` — the
-production compaction story is `materialize`.
+with `String`. `String(s)` copies the value into a standard Julia string.
+A long value keeps its source buffer alive for as long as the value is alive.
 """
 struct CompactString <: AbstractString
     p::CompactStringPayload
@@ -334,16 +346,34 @@ function Base.write(io::IO, s::CompactString)
     end
     return n
 end
+@static if isdefined(Base, :AnnotatedIOBuffer)
+    # Base defines `write(::AnnotatedIOBuffer, ::AbstractString)`. Without the
+    # intersection method, that method is ambiguous with the byte-preserving
+    # CompactString writer above on Julia versions that provide annotated IO.
+    function Base.write(io::Base.AnnotatedIOBuffer, s::CompactString)
+        return invoke(write, Tuple{IO, CompactString}, io, s)
+    end
+end
 Base.print(io::IO, s::CompactString) = (write(io, s); nothing)
 
 # The user-facing string column. getindex returns a `CompactString` (or `missing`) with
 # NO allocation: inline values live in the payload, long values view into `buf`
-# (input) or `extra` (unescaped-at-parse-time). `materialize` copies out to
-# `Vector{String}`, detaching from both buffers.
+# (input) or a bounded column-owned buffer. `materialize` copies out to
+# `Vector{String}`, detaching from all buffers.
 struct CompactStringVector{ELT} <: AbstractVector{ELT}
     payloads::Vector{CompactStringPayload}
     buf::Vector{UInt8}
     extra::Vector{UInt8}
+    overflow::Vector{Vector{UInt8}}
+end
+CompactStringVector{ELT}(payloads::Vector{CompactStringPayload}, buf::Vector{UInt8},
+                         extra::Vector{UInt8}) where {ELT} =
+    CompactStringVector{ELT}(payloads, buf, extra, Vector{Vector{UInt8}}())
+
+@inline function _stringbuffer(v::CompactStringVector, idx::Int32)
+    idx == 0 && return v.buf
+    idx == 1 && return v.extra
+    return @inbounds v.overflow[Int(idx) - 1]
 end
 Base.size(v::CompactStringVector) = size(v.payloads)
 Base.@propagate_inbounds @inline function Base.getindex(v::CompactStringVector{ELT}, i::Int) where {ELT}
@@ -352,7 +382,7 @@ Base.@propagate_inbounds @inline function Base.getindex(v::CompactStringVector{E
     len = cslen(p)
     len < 0 && return missing
     len <= COMPACTSTRING_INLINE && return CompactString(p, EMPTY_BYTES)
-    return CompactString(p, csbufidx(p) == 0 ? v.buf : v.extra)
+    return CompactString(p, _stringbuffer(v, csbufidx(p)))
 end
 # All-present columns skip the missing branch entirely — the concrete return
 # type is what lets access compile down to zero allocations.
@@ -361,7 +391,7 @@ Base.@propagate_inbounds @inline function Base.getindex(v::CompactStringVector{C
     @inbounds p = v.payloads[i]
     len = cslen(p)
     len <= COMPACTSTRING_INLINE && return CompactString(p, EMPTY_BYTES)
-    return CompactString(p, csbufidx(p) == 0 ? v.buf : v.extra)
+    return CompactString(p, _stringbuffer(v, csbufidx(p)))
 end
 
 function materialize(v::CompactStringVector{ELT}) where {ELT}
@@ -379,7 +409,7 @@ function materialize(v::CompactStringVector{ELT}) where {ELT}
                 unsafe_store!(Ptr{UInt64}(q + 8), htol(p.b >> 32))
                 out[i] = unsafe_string(q, len)
             else
-                src = csbufidx(p) == 0 ? v.buf : v.extra
+                src = _stringbuffer(v, csbufidx(p))
                 GC.@preserve src begin
                     out[i] = unsafe_string(pointer(src, cspos(p)), len)
                 end

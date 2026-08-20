@@ -1,10 +1,9 @@
 """
     KernelValues
 
-The new value layer — span-exact, monomorphic, self-contained type parsers.
-This module is the initial shape of what becomes Parsers.jl 3.0's core and,
-after that, the proposed Base implementation. Design constraints, in force from
-day one:
+The temporary vendored value layer: span-exact, monomorphic, self-contained
+type parsers shared with the Parsers.jl 3.0 work. CSV.jl must replace this copy
+with the registered Parsers.jl API before 1.0. Its design constraints are:
 
   * **Total functions.** Every parser consumes an exact byte span `[i, j]` and
     returns `(value, rc)` where `rc` is OK / INVALID / OVERFLOW. There is no
@@ -29,11 +28,10 @@ day one:
     sample-independence guard by construction.
   * **Dates independence.** Date/time parsing produces a plain `CivilParts`
     record via pure integer arithmetic (format programs included); thin adapters
-    at the bottom of this file convert to `Dates.Date`/`DateTime`/`Time`. When
-    this moves to Base, the adapters move to the Dates stdlib.
+    at the bottom of this file convert to `Dates.Date`/`DateTime`/`Time`.
 
 Deliberate semantic choices (deltas from legacy `Parsers.xparse` are pinned in
-test_values.jl): whitespace is never consumed (trimming is the caller's layer);
+`test/values.jl`): whitespace is never consumed (trimming is the caller's layer);
 sentinels/quotes are the caller's layer (`findcontent`/`matchsentinel` below);
 `-0` parses as `Int64(0)`; `Inf`/`Infinity`/`NaN` are case-insensitive; float
 overflow yields `±Inf` with OK (matching `Base.parse`); integer overflow is
@@ -983,7 +981,7 @@ binary digits, round once with the sticky bit. MPFR only STORES the result —
 the value is assembled from an exactly-representable prec-bit integer and an
 exact `ldexp`, so this layer performs the single rounding itself.
 
-Prove-out range bound: decimal magnitudes beyond ~10^±65536 return
+Current range bound: decimal magnitudes beyond ~10^±65536 return
 RC_OVERFLOW (binary scaling is bit-at-a-time here; the upstream Parsers form
 gets power-of-ten jump tables the way Eisel-Lemire's POW5 works). No
 subnormal handling is needed inside that range — BigFloat's exponent field
@@ -1754,8 +1752,7 @@ end
 end # module KernelValues
 
 # =============================================================================
-# Dates adapters — the ONLY section that touches the Dates stdlib. When this
-# layer moves to Base, these functions move to Dates itself.
+# Dates adapters — the only section that touches the Dates stdlib.
 # =============================================================================
 
 module KernelValuesDates

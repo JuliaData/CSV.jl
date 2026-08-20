@@ -10,7 +10,7 @@
 # correctness claim (determinism for any chunk geometry), so it is tested
 # exhaustively rather than incidentally.
 
-using Test, Random, Dates, Tables
+using Test, Random, Dates, Tables, Mmap
 
 using CSV
 const K = CSV.CSVKernel
@@ -94,6 +94,12 @@ function sumncodeunits(c::K.CompactStringVector{K.CompactString})
     return t
 end
 
+# Keep `@allocated` inside a compiled, typed function. Julia 1.10 otherwise
+# boxes the scalar return at a testset-local measurement site (16 bytes), even
+# when the loop itself is allocation-free.
+allocsumncodeunits(c::K.CompactStringVector{K.CompactString}) =
+    @allocated sumncodeunits(c)
+
 function sumgrouped(buf::Vector{UInt8}, opts::K.ValueOpts, scratch::Vector{UInt8})
     total = Int64(0)
     for _ in 1:1000
@@ -102,6 +108,9 @@ function sumgrouped(buf::Vector{UInt8}, opts::K.ValueOpts, scratch::Vector{UInt8
     end
     return total
 end
+
+allocsumgrouped(buf::Vector{UInt8}, opts::K.ValueOpts, scratch::Vector{UInt8}) =
+    @allocated sumgrouped(buf, opts, scratch)
 
 function scalar_delimclash(buf::Vector{UInt8}, cpos::Int, clen::Int,
                            delim::Vector{UInt8})
@@ -142,6 +151,8 @@ function foldcshash(v, h::UInt)
     return h
 end
 
+allocfoldcshash(v::Vector{K.CompactString}, h::UInt) = @allocated foldcshash(v, h)
+
 function foldcscmp(v)
     s = 0
     @inbounds for i in 2:length(v)
@@ -149,6 +160,8 @@ function foldcscmp(v)
     end
     return s
 end
+
+allocfoldcscmp(v::Vector{K.CompactString}) = @allocated foldcscmp(v)
 
 function tablesnapshot(t::K.ParsedTable)
     probs = [(p.row, p.col, p.pos, p.kind, p.message) for p in K.problems(t)]
@@ -1037,8 +1050,7 @@ end
     @test K.V.degroup!(scratch, Vector{UInt8}(codeunits("1e1,0")), 1, 5,
                        UInt8(','), UInt8('.')) == -2
     groupedbytes = Vector{UInt8}(codeunits("1,234,567"))
-    sumgrouped(groupedbytes, gmo, scratch) # compile before the allocation probe
-    @test @allocated(sumgrouped(groupedbytes, gmo, scratch)) == 0
+    @test allocsumgrouped(groupedbytes, gmo, scratch) == 0
     # groupmark == delim works through quoting (the mark is content there)
     for ns in (1, 2, 3)
         tg = K.parse("a,b\n\"1,234\",x\n\"5,678\",y\n"; groupmark=',', nsample=ns)
@@ -1316,6 +1328,16 @@ end
               for i in eachindex(payloads), h in seeds)
     @test all([codeunit(payloads[i], j) for j in 1:ncodeunits(payloads[i])] ==
               collect(codeunits(strings[i])) for i in eachindex(payloads))
+    for i in eachindex(payloads)
+        io = IOBuffer()
+        @test write(io, payloads[i]) == ncodeunits(payloads[i])
+        @test take!(io) == collect(codeunits(strings[i]))
+        @static if isdefined(Base, :AnnotatedIOBuffer)
+            annotated = Base.AnnotatedIOBuffer(IOBuffer())
+            @test write(annotated, payloads[i]) == ncodeunits(payloads[i])
+            @test take!(annotated.io) == collect(codeunits(strings[i]))
+        end
+    end
     @test all(begin
         n = ncodeunits(payloads[i])
         bytes = csscratchbytes(payloads[i])
@@ -1340,17 +1362,78 @@ end
               for i in eachindex(validcs), j in eachindex(substrings))
     @test isless(first(validcs), missing) == isless(first(valid), missing)
     @test isless(missing, first(validcs)) == isless(missing, first(valid))
-    foldcshash(payloads, UInt(9))
-    @test @allocated(foldcshash(payloads, UInt(9))) == 0
+    @test allocfoldcshash(payloads, UInt(9)) == 0
     # ordering and equality across every inline/view mix stay allocation-free
     # (the inline fast path in registers, the rest through stack scratches)
-    foldcscmp(payloads)
-    @test @allocated(foldcscmp(payloads)) == 0
+    @test allocfoldcscmp(payloads) == 0
     # escaped values: short ones inline, long ones land in the extra buffer
     t2 = K.parse("a\n\"in\"\"line\"\n\"a long escaped \"\"string\"\" beyond inline\"\n")
     @test collect(t2[:a]) == ["in\"line", "a long escaped \"string\" beyond inline"]
     @test !isempty(t2[:a].extra)                      # long unescaped value stored out-of-line
     @test K.csbufidx(t2[:a].payloads[2]) == 1       # buffer index 1 ⇒ extra buffer
+    # Buffer indices above one select later bounded owned buffers.
+    overflowvalue = "a value in the second owned buffer"
+    overflowbytes = Vector{UInt8}(codeunits(overflowvalue))
+    overflowpayload = K.view_payload(overflowbytes, 1, length(overflowbytes), 2, 0)
+    overflowcol = K.CompactStringVector{K.CompactString}(
+        [overflowpayload], UInt8[], UInt8[], [overflowbytes])
+    @test String(overflowcol[1]) == overflowvalue
+    @test K.materialize(overflowcol) == [overflowvalue]
+
+    # Exercise the large-offset fallback and owned-buffer rollover on every
+    # platform with small injected limits. The production limits remain Int32.
+    forcedvalue = "forced owned-buffer value"
+    forcedbuf = Vector{UInt8}(codeunits(forcedvalue * "\n"))
+    forcedci = K.ChunkIndex(1, length(forcedbuf))
+    forceddialect = K.Dialect()
+    K.indexone!(forcedci, forcedbuf, forceddialect, :scalar)
+    forcedcol = K.StringColumn(1, forcedbuf, UInt8('"'), UInt8('"'))
+    forcedlog = K.ProblemLog(10)
+    K.parsecolchunk!(forcedcol, forcedbuf, forcedci, 1, 0,
+                     K.makevalueopts(forceddialect), true, forcedlog;
+                     viewoffsetlimit=-1)
+    @test K.csbufidx(forcedcol.payloads[1]) == 1
+    @test forcedcol.extra == Vector{UInt8}(codeunits(forcedvalue))
+    @test isempty(forcedlog.items)
+
+    rollover = K.StringColumn(fill(K.PAYLOAD_MISSING, 1), forcedbuf,
+                              fill(UInt8(0xaa), 8), ReentrantLock(),
+                              UInt8('"'), UInt8('"'))
+    maps = K._copyownedbuffers!(rollover, forcedcol, 32)
+    repointed = K._repointowned(forcedcol.payloads[1], maps)
+    rollovervec = K.CompactStringVector{K.CompactString}(
+        [repointed], forcedbuf, rollover.extra, rollover.overflow)
+    @test K.csbufidx(repointed) == 2
+    @test String(rollovervec[1]) == forcedvalue
+    @test length(rollover.overflow) == 1
+
+    # A long string whose absolute source position is beyond Int32 is copied
+    # into a small owned buffer. The sparse file consumes only the written
+    # pages, while the mmap gives the parser a real >2 GiB Vector{UInt8}.
+    if Sys.WORD_SIZE == 64 && Sys.isunix()
+        mktemp() do _, io
+            offset0 = Int(typemax(Int32)) + 4096
+            largeposvalue = "large-offset string value"
+            seek(io, offset0)
+            write(io, largeposvalue, '\n')
+            flush(io)
+            seekstart(io)
+            mapped = Mmap.mmap(io, Vector{UInt8}, filesize(io))
+            ci = K.ChunkIndex(offset0 + 1, filesize(io))
+            dialect = K.Dialect()
+            K.indexone!(ci, mapped, dialect, :scalar)
+            stringcol = K.StringColumn(1, mapped, UInt8('"'), UInt8('"'))
+            log = K.ProblemLog(10)
+            K.parsecolchunk!(stringcol, mapped, ci, 1, 0,
+                             K.makevalueopts(dialect), true, log)
+            parsed = K.finalizecolumn(String, stringcol, 1)
+            @test String(parsed[1]) == largeposvalue
+            @test K.csbufidx(parsed.payloads[1]) == 1
+            @test parsed.extra == Vector{UInt8}(codeunits(largeposvalue))
+            @test isempty(parsed.overflow)
+            @test isempty(log.items)
+        end
+    end
     # quoted empty vs missing, unicode, Symbol
     t3 = K.parse("a\n\"\"\n\nαβγδεζηθικλμ\n"; ignoreemptyrows=false)
     @test isequal(collect(t3[:a]), ["", missing, "αβγδεζηθικλμ"])
@@ -1401,8 +1484,7 @@ end
     # access is allocation-free for inline AND view strings
     big = K.parse("a\n" * join(("value$(i)_" * "p"^(i % 20) for i in 1:1000), "\n") * "\n")
     colv = big[:a]::K.CompactStringVector{K.CompactString}
-    sumncodeunits(colv)  # compile
-    @test @allocated(sumncodeunits(colv)) == 0
+    @test allocsumncodeunits(colv) == 0
     # materialize detaches to plain Strings
     m = K.materialize(colv)
     @test m isa Vector{String} && m[1] == "value1_p"
@@ -1611,6 +1693,57 @@ end
         @test eltype(t[:when]) == Date
         s = sum(t[:id])
         ref === nothing ? (ref = s) : @test(s == ref)
+    end
+end
+
+@testset "bounded reader task count" begin
+    @test_throws ArgumentError K.parse("a\n1\n"; ntasks=0)
+
+    # The worker helper visits every item once and never exceeds its bound.
+    seen = zeros(Int, 64)
+    active = Ref(0)
+    peak = Ref(0)
+    guard = ReentrantLock()
+    K._taskforeach(eachindex(seen), 2) do i
+        lock(guard) do
+            active[] += 1
+            peak[] = max(peak[], active[])
+        end
+        yield()
+        sleep(0.001)
+        seen[i] += 1
+        lock(guard) do
+            active[] -= 1
+        end
+    end
+    @test all(==(1), seen)
+    @test peak[] <= 2
+
+    lines = ["a,b,c"]
+    for i in 1:500
+        b = i % 17 == 0 ? "\"escaped \"\"value\"\" $i\"" : "plain value $i"
+        c = i % 23 == 0 ? "" : string(i / 3)
+        push!(lines, "$i,$b,$c")
+    end
+    input = join(lines, '\n') * "\n"
+    reference = K.parse(input; chunkbytes=64, parallel=true, ntasks=1)
+    mask = [isodd(i) for i in 1:500]
+    maskedreference = K.parse(input; chunkbytes=64, parallel=true, ntasks=1,
+                              rowmask=mask)
+    for nt in (2, 4)
+        parsed = K.parse(input; chunkbytes=64, parallel=true, ntasks=nt)
+        @test parsed.names == reference.names
+        @test collect(parsed[:a]) == collect(reference[:a])
+        @test K.materialize(parsed[:b]) == K.materialize(reference[:b])
+        @test isequal(collect(parsed[:c]), collect(reference[:c]))
+        @test K.problems(parsed) == K.problems(reference)
+
+        masked = K.parse(input; chunkbytes=64, parallel=true, ntasks=nt,
+                         rowmask=mask)
+        @test collect(masked[:a]) == collect(maskedreference[:a])
+        @test K.materialize(masked[:b]) == K.materialize(maskedreference[:b])
+        @test isequal(collect(masked[:c]), collect(maskedreference[:c]))
+        @test K.problems(masked) == K.problems(maskedreference)
     end
 end
 

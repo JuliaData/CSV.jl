@@ -5,13 +5,13 @@
 #
 #   select/rename : bound against the header; unselected columns are never
 #                   sampled, parsed, or stitched (zero per-cell cost)
-#   types         : seed the column type — inference skipped for that column
+#   types         : convert retained output rows after filtering and bounds
 #   limit/offset  : exact row bounds; trailing chunks are never value-parsed
 #   filter        : the TWO-PHASE MASKED PARSE — parse only the predicate's
 #                   columns first, evaluate the mask, then parse the remaining
 #                   selected columns only where the mask is true. Excluded rows
 #                   never cost value parsing, string materialization, pooling,
-#                   or problem reports, and type inference for phase-2 columns
+#                   or output-conversion problems, and type inference for phase-2 columns
 #                   sees only qualifying rows.
 #
 # The structural index is built ONCE and shared by both phases.
@@ -94,9 +94,11 @@ function execute(buf::Vector{UInt8}, bi::K.BufferIndex, names::Vector{Symbol}, s
     b = Tables.bind(scan, names)
 
     # -- translate the bound scan into kernel pushdown --------------------------
-    # types: seed every column the scan pins (duplicate selections of one source
-    # column must agree)
+    # Requested output types: duplicate selections of one source column must
+    # agree. Narrow types parse through their native kernel type and convert
+    # only after filter/offset/limit, exactly like generic Tables.scan.
     seedtypes = Dict{Int, Type}()
+    requested = Vector{Union{Nothing, Type}}(nothing, length(names))
     for c in b.columns
         c.type === nothing && continue
         newT = c.type === Missing ? Missing : Base.nonmissingtype(c.type)
@@ -104,16 +106,22 @@ function execute(buf::Vector{UInt8}, bi::K.BufferIndex, names::Vector{Symbol}, s
         T === nothing || T === newT ||
             throw(ArgumentError("column $(names[c.index]) selected twice with conflicting types $T and $newT"))
         seedtypes[c.index] = newT
+        haskey(K.NARROW_TYPES, newT) && (requested[c.index] = newT)
     end
     outidx = [c.index for c in b.columns]
     predidx = b.filtercols
 
     if b.filter === nothing
-        # single phase: selection + exact row bounds straight into the driver
-        lim = b.limit === nothing ? nothing : b.offset + b.limit
+        # Generic Tables semantics apply offset/limit before requested type
+        # conversion. A row mask preserves that order while keeping excluded
+        # values out of the typed parse and its diagnostics.
+        bounded = b.offset > 0 || b.limit !== nothing
+        mask = bounded ? fill(true, sum(K.nrows, bi.chunks; init=0)) : nothing
+        mask === nothing || _cliprows!(mask, b.offset, b.limit)
         t = K.parse(buf; index=bi, header=names, select=unique(outidx),
-                    types=seedtypes, limit=lim, phasekw...)
-        b.offset > 0 && (t = _droprows(t, b.offset))
+                    types=seedtypes, rowmask=mask, phasekw...)
+        sourcerows = mask === nothing ? nothing : findall(mask)
+        t = _narrowphase(t, requested, unique(outidx), bi, phasecap; sourcerows)
         t = _project(t, b, names)
         return _finishproblems(t, maxproblems, on_error, headerlog, t)
     end
@@ -121,37 +129,29 @@ function execute(buf::Vector{UInt8}, bi::K.BufferIndex, names::Vector{Symbol}, s
     # -- two-phase masked parse --------------------------------------------------
     # phase 1: only the predicate's columns, every row
     predsel = sort(unique(predidx))
-    t1 = K.parse(buf; index=bi, header=names, select=predsel,
-                 types=Dict(i => T for (i, T) in seedtypes if i in predsel), phasekw...)
+    t1 = K.parse(buf; index=bi, header=names, select=predsel, phasekw...)
     mask = Tables.filtermask(b.filter, t1)
     # bake offset/limit into the mask: phase 2 parses EXACTLY the output rows
     _cliprows!(mask, b.offset, b.limit)
 
-    # phase 2: the remaining selected columns, only where the mask is true
-    rest = sort(unique(i for i in outidx if !(i in predsel)))
-    t2 = isempty(rest) ? nothing :
-         K.parse(buf; index=bi, header=names, select=rest,
-                 types=Dict(i => T for (i, T) in seedtypes if i in rest),
-                 rowmask=mask, reportstructural=false, phasekw...)
-
-    # combine: phase-1 columns compact under the same mask; phase-2 columns are
-    # already compact
+    # phase 2: parse every requested output column only for qualifying rows.
+    # Predicate columns are intentionally parsed again here: the predicate saw
+    # native source values, while requested type conversion is an output step.
+    outsel = sort(unique(outidx))
+    t2 = K.parse(buf; index=bi, header=names, select=outsel,
+                 types=seedtypes, rowmask=mask, reportstructural=false, phasekw...)
     kept = findall(mask)
-    cols = Vector{AbstractVector}(undef, length(b.columns))
-    outnames = Vector{Symbol}(undef, length(b.columns))
-    for (o, c) in enumerate(b.columns)
-        outnames[o] = c.name
-        if c.index in predsel
-            src = Tables.getcolumn(Tables.columns(t1), names[c.index])
-            col = src[kept]
-            # a type pinned on a predicate column was already seeded in phase 1
-            cols[o] = col
-        else
-            cols[o] = Tables.getcolumn(Tables.columns(t2), names[c.index])
-        end
-    end
-    t = K.ParsedTable(outnames, cols, length(kept), K.Problem[], 0)
+    t2 = _narrowphase(t2, requested, outsel, bi, phasecap; sourcerows=kept)
+    t = _project(t2, b, names)
     return _finishproblems(t, maxproblems, on_error, headerlog, t1, t2)
+end
+
+function _narrowphase(t::K.ParsedTable, requested, selected, bi::K.BufferIndex,
+                      maxproblems::Int; sourcerows=nothing)
+    A = Base.parentmodule(@__MODULE__).CSVApi
+    narrowed, _ = A._narrowtypes(t, requested, selected, bi.chunks, maxproblems;
+                                 sourcerows)
+    return narrowed
 end
 
 # keep only the first `limit` trues after skipping `offset` trues
@@ -165,12 +165,6 @@ function _cliprows!(mask::Vector{Bool}, offset::Int, limit::Union{Nothing, Int})
         end
     end
     return mask
-end
-
-function _droprows(t::K.ParsedTable, offset::Int)
-    n = max(t.nrows - offset, 0)
-    cols = AbstractVector[c[(offset + 1):t.nrows] for c in K.columns(t)]
-    return K.ParsedTable(K.names(t), cols, n, K.problems(t), t.droppedproblems)
 end
 
 # reorder/rename the driver's (file-ordered, deduplicated) selection into the

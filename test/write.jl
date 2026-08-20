@@ -1,7 +1,8 @@
 # Writer battery: round-trips through CSVApi.File, byte determinism across
 # thread counts, and byte agreement with CSV.write where semantics coincide.
-using Test, Dates, Tables, CodecZlib, Random
-using CSV, LegacyCSV                # LegacyCSV = the 0.10 writer, byte-parity oracle
+using Test, Dates, Tables, CodecZlib, FilePathsBase, Random
+using CSV
+import .LegacyCSV                   # LegacyCSV = the 0.10 writer, byte-parity oracle
 const A = CSV.CSVApi
 const W = CSV.KernelWrite
 
@@ -18,6 +19,79 @@ Tables.istable(::Type{<:NoSchemaRows}) = true
 Tables.rowaccess(::Type{<:NoSchemaRows}) = true
 Tables.rows(r::NoSchemaRows) = r
 Tables.schema(::NoSchemaRows) = nothing
+
+mutable struct KnownSchemaRows{T}
+    values::Vector{T}
+    next::Int
+end
+Base.iterate(r::KnownSchemaRows, state=nothing) =
+    r.next > length(r.values) ? nothing : (r.values[r.next], (r.next += 1))
+Base.IteratorSize(::Type{<:KnownSchemaRows}) = Base.SizeUnknown()
+Tables.istable(::Type{<:KnownSchemaRows}) = true
+Tables.rowaccess(::Type{<:KnownSchemaRows}) = true
+Tables.rows(r::KnownSchemaRows) = r
+Tables.schema(::KnownSchemaRows) = Tables.Schema((:a, :b), (Int, String))
+
+struct PartitionedTable{T}
+    parts::T
+end
+Tables.partitions(t::PartitionedTable) = t.parts
+
+mutable struct OneShotPartitions{T}
+    values::Vector{T}
+    next::Int
+end
+Base.IteratorSize(::Type{<:OneShotPartitions}) = Base.SizeUnknown()
+Base.iterate(p::OneShotPartitions, state=nothing) =
+    p.next > length(p.values) ? nothing : (p.values[p.next], (p.next += 1))
+
+mutable struct PartitionWriteState
+    lock::ReentrantLock
+    active::Int
+    highwater::Int
+    completed::Int
+end
+struct PartitionSink <: IO
+    state::PartitionWriteState
+    fail::Bool
+end
+const PARTITION_SENTINEL = ErrorException("partition sentinel")
+Base.isopen(::PartitionSink) = true
+Base.iswritable(::PartitionSink) = true
+function Base.unsafe_write(io::PartitionSink, ::Ptr{UInt8}, n::UInt)
+    lock(io.state.lock) do
+        io.state.active += 1
+        io.state.highwater = max(io.state.highwater, io.state.active)
+    end
+    try
+        for _ in 1:100
+            yield()
+        end
+        io.fail && throw(PARTITION_SENTINEL)
+        return n
+    finally
+        lock(io.state.lock) do
+            io.state.active -= 1
+            io.state.completed += 1
+        end
+    end
+end
+Base.flush(::PartitionSink) = nothing
+
+struct WriterExplodes end
+const WRITER_SENTINEL = ErrorException("writer sentinel")
+Base.show(::IO, ::WriterExplodes) = throw(WRITER_SENTINEL)
+
+mutable struct FailingWriterSink <: IO
+    open::Bool
+end
+const WRITER_SINK_SENTINEL = ErrorException("writer sink sentinel")
+Base.isopen(io::FailingWriterSink) = io.open
+Base.iswritable(::FailingWriterSink) = true
+Base.unsafe_write(::FailingWriterSink, ::Ptr{UInt8}, ::UInt) =
+    throw(WRITER_SINK_SENTINEL)
+Base.flush(::FailingWriterSink) = nothing
+Base.close(io::FailingWriterSink) = (io.open = false)
 
 @testset "KernelWrite" begin
     tbl = (a=[1, 2, 3], b=[1.5, missing, -2.0], c=["x", "y,z", "q\"r"],
@@ -61,21 +135,183 @@ Tables.schema(::NoSchemaRows) = nothing
     end
     bytes = str(io -> W.write(io, rowtable; header=["a", "b", "c", "d"]))
     @test join(CSV.RowWriter(rowtable; header=["a", "b", "c", "d"])) == bytes
-    @test Base.IteratorSize(typeof(CSV.RowWriter(rowtable))) isa Base.SizeUnknown
+    legacykw = (; quotestrings=true,
+                transform=(col, value) -> col == 1 ? value + 10 : value,
+                bufsize=32)
+    bytes = str(io -> W.write(io, (id=[1, 2], text=["x", "y"]); legacykw...))
+    @test bytes == "\"id\",\"text\"\n11,\"x\"\n12,\"y\"\n"
+    @test join(CSV.RowWriter((id=[1, 2], text=["x", "y"]); legacykw...)) == bytes
+    widenames = Tuple(Symbol("c", j) for j in 1:40)
+    widetable = NamedTuple{widenames}(Tuple(fill(j, 2) for j in 1:40))
+    seen = Int[]
+    W.write(IOBuffer(), widetable; ntasks=8,
+            transform=(col, value) -> (push!(seen, col); value))
+    @test seen == repeat(collect(1:40), 2)
+    @test_throws ArgumentError W.write(IOBuffer(), (a=[12345],);
+                                       header=false, bufsize=4)
+    @test_throws ArgumentError collect(CSV.RowWriter((a=[12345],);
+                                                      writeheader=false, bufsize=4))
+    sized = CSV.RowWriter(rowtable)
+    @test Base.IteratorSize(typeof(sized)) isa Base.HasLength
+    @test length(sized) == 3
+    @test size(sized) == (3,)
+    @test length(CSV.RowWriter(rowtable; writeheader=false)) == 2
+    emptybom = CSV.RowWriter(NamedTuple(); writeheader=false, bom=true)
+    @test Base.IteratorSize(typeof(emptybom)) isa Base.HasLength
+    @test length(emptybom) == 1
+    @test size(emptybom) == (1,)
+    @test collect(emptybom) == ["\ufeff"]
 
     # Schema-free streams are prefetched once for names. The cached result is
     # also the first output row, including for stateful one-shot iterators.
     rowtype = NamedTuple{(:a, :b), Tuple{Int, String}}
     oneshot = NoSchemaRows(rowtype[(a=1, b="x"), (a=2, b="y")], 1)
     @test collect(CSV.RowWriter(oneshot)) == ["a,b\n", "1,x\n", "2,y\n"]
+    @test Base.IteratorSize(typeof(CSV.RowWriter(
+        NoSchemaRows(rowtype[(a=1, b="x")], 1)))) isa Base.SizeUnknown
     @test isempty(collect(CSV.RowWriter(NoSchemaRows(rowtype[], 1))))
     @test collect(CSV.RowWriter(NoSchemaRows(rowtype[], 1); header=["a", "b"])) == ["a,b\n"]
     @test_throws ArgumentError CSV.RowWriter(NoSchemaRows(rowtype[(a=1, b="x")], 1);
                                               header=["only"])
 
+    # CSV.write must not turn SizeUnknown row sources into columns or consume
+    # the schema-probing first row. Known and inferred schemas both stream.
+    known = KnownSchemaRows(rowtype[(a=1, b="x"), (a=2, b="y")], 1)
+    knownio = IOBuffer()
+    @test W.write(knownio, known) === knownio
+    @test String(take!(knownio)) == "a,b\n1,x\n2,y\n"
+    inferred = NoSchemaRows(rowtype[(a=1, b="x"), (a=2, b="y")], 1)
+    inferredio = IOBuffer()
+    W.write(inferredio, inferred)
+    @test String(take!(inferredio)) == "a,b\n1,x\n2,y\n"
+    emptyio = IOBuffer()
+    W.write(emptyio, NoSchemaRows(rowtype[], 1); header=["a", "b"])
+    @test String(take!(emptyio)) == "a,b\n"
+    gzipio = IOBuffer()
+    W.write(gzipio, NoSchemaRows(rowtype[(a=1, b="x"), (a=2, b="y")], 1);
+            compress=:gzip)
+    @test isopen(gzipio) && iswritable(gzipio)
+    @test String(transcode(GzipDecompressor, take!(gzipio))) == "a,b\n1,x\n2,y\n"
+    rowerrorio = IOBuffer()
+    rowerror = try
+        W.write(rowerrorio,
+                NoSchemaRows([(a="ok",), (a=WriterExplodes(),)], 1);
+                compress=:gzip)
+        nothing
+    catch err
+        err
+    end
+    @test rowerror === WRITER_SENTINEL
+    @test isopen(rowerrorio) && iswritable(rowerrorio)
+    @test String(transcode(GzipDecompressor, take!(rowerrorio))) == "a\nok\n"
+    calls = Tuple{Int, Any}[]
+    transformio = IOBuffer()
+    W.write(transformio, NoSchemaRows(rowtype[(a=1, b="x"), (a=2, b="y")], 1);
+            transform=(column, value) -> (push!(calls, (column, value)); value))
+    @test calls == [(1, 1), (2, "x"), (1, 2), (2, "y")]
+    @test String(take!(transformio)) == "a,b\n1,x\n2,y\n"
+    appendio = IOBuffer()
+    write(appendio, "a,b\n0,z\n")
+    W.write(appendio, NoSchemaRows(rowtype[(a=1, b="x"), (a=2, b="y")], 1);
+            append=true, bom=true)
+    @test String(take!(appendio)) == "a,b\n0,z\n1,x\n2,y\n"
+    @test_throws ArgumentError W.write(IOBuffer(),
+        NoSchemaRows([(a="too long",)], 1); bufsize=4)
+
+    mktempdir() do dir
+        path = joinpath(FilePathsBase.Path(dir), "rows.csv")
+        @test W.write(path, (a=[1, 2],)) === path
+        @test read(string(path), String) == "a\n1\n2\n"
+        base = joinpath(FilePathsBase.Path(dir), "parts.csv")
+        parts = PartitionedTable([(a=[1],), (a=[2],)])
+        @test W.write(base, parts; partition=true) === base
+        @test read(string(base) * "_1", String) == "a\n1\n"
+        @test read(string(base) * "_2", String) == "a\n2\n"
+    end
+
+    # Partition writes use the same bounded task ring as row blocks. The bound
+    # applies to active sink writes and failures retain their original object.
+    pstate = PartitionWriteState(ReentrantLock(), 0, 0, 0)
+    psinks = [PartitionSink(pstate, false) for _ in 1:40]
+    oneparts = OneShotPartitions([(a=[i],) for i in 1:40], 1)
+    ptable = PartitionedTable(oneparts)
+    @test W.write(psinks, ptable; partition=true, ntasks=2) === psinks
+    @test oneparts.next == 41
+    @test pstate.highwater <= min(2, Threads.nthreads())
+    @test pstate.active == 0
+    failstate = PartitionWriteState(ReentrantLock(), 0, 0, 0)
+    failsinks = [PartitionSink(failstate, true), PartitionSink(failstate, false)]
+    caughtpartition = try
+        W.write(failsinks, PartitionedTable([(a=[1],), (a=[2],)]);
+                partition=true, ntasks=2)
+        nothing
+    catch err
+        err
+    end
+    @test caughtpartition === PARTITION_SENTINEL
+    @test failstate.active == 0
+    @test failstate.completed >= min(2, Threads.nthreads())
+    @test_throws ArgumentError W.write(
+        [IOBuffer()],
+        PartitionedTable(OneShotPartitions([(a=[1],), (a=[2],)], 1));
+        partition=true, ntasks=2)
+    @test_throws ArgumentError W.write(
+        [IOBuffer(), IOBuffer()],
+        PartitionedTable(OneShotPartitions([(a=[1],)], 1));
+        partition=true, ntasks=2)
+
+    # Block rows adapt to a practical byte target. This wide shape uses the
+    # staged renderer and has about a 1 MiB output row.
+    largenames = Tuple(Symbol("large", j) for j in 1:33)
+    largecell = repeat("x", 32 << 10)
+    largetable = NamedTuple{largenames}(ntuple(_ -> fill(largecell, 6), 33))
+    largecolumns = Tables.columns(largetable)
+    largecols = AbstractVector[Tables.getcolumn(largecolumns, nm) for nm in largenames]
+    largeopts = W._writeopts(bufsize=2 << 20)
+    largerows = W._writerblockrows(largecols, largeopts, W._identity_transform)
+    @test largerows <= 4
+    largeone = str(io -> W.write(io, largetable; bufsize=2 << 20, ntasks=1))
+    largeparallel = str(io -> W.write(io, largetable; bufsize=2 << 20, ntasks=4))
+    @test largeparallel == largeone
+
     # determinism across thread splits
     big = (n=collect(1:50_000), s=[string("v", i % 97) for i in 1:50_000])
     @test str(io -> W.write(io, big; ntasks=1)) == str(io -> W.write(io, big; ntasks=8))
+
+    # Stateful transforms cross fixed-size render blocks without changing the
+    # legacy row-major callback order.
+    transformed_n = W.WRITE_BLOCK_ROWS * 2 + 17
+    transformed = (a=collect(1:transformed_n), b=collect(-1:-1:-transformed_n))
+    calls = Tuple{Int, Int}[]
+    transformed_bytes = str() do io
+        W.write(io, transformed; ntasks=8,
+                transform=(column, value) -> (push!(calls, (column, value)); value))
+    end
+    @test transformed_bytes == str(io -> W.write(io, transformed; ntasks=8))
+    @test calls == [(column, transformed[column == 1 ? :a : :b][row])
+                    for row in 1:transformed_n for column in 1:2]
+
+    # An error in a later parallel block keeps its original exception type.
+    bad = Any["ok" for _ in 1:(W.WRITE_BLOCK_ROWS + 1)]
+    bad[end] = nothing
+    @test_throws ArgumentError W.write(IOBuffer(), (a=bad,); ntasks=4,
+                                       writeheader=false)
+    exploding = Any[0 for _ in 1:(W.WRITE_BLOCK_ROWS + 1)]
+    exploding[end] = WriterExplodes()
+    caught = try
+        W.write(IOBuffer(), (a=exploding,); ntasks=4, writeheader=false)
+        nothing
+    catch err
+        err
+    end
+    @test caught === WRITER_SENTINEL
+
+    # Replacement cleanup also truncates after a later-block render error.
+    stale = IOBuffer()
+    write(stale, repeat("stale old bytes", 2_000))
+    @test_throws ArgumentError W.write(stale, (a=bad,); ntasks=4,
+                                       writeheader=false)
+    @test String(take!(stale)) == repeat("ok\n", W.WRITE_BLOCK_ROWS)
 
     # quotestyle
     q = (s=["plain", "with,delim", "wi\"th"],)
@@ -124,6 +360,16 @@ Tables.schema(::NoSchemaRows) = nothing
     write(io, "stale trailing bytes")
     W.write(io, (a=[1],))
     @test String(take!(io)) == "a\n1\n"
+    @test str(io -> W.write(io, (a=[1],); header=false)) == "1\n"
+    @test str(io -> W.write(io, (a=[1],); header=true)) == "a\n1\n"
+    @test_throws ArgumentError str(io -> W.write(io, (a=[1],);
+                                               header=false, writeheader=true))
+    @test_throws ArgumentError str(io -> W.write(io, (a=[nothing],)))
+    @test str(io -> W.write(io, (a=[nothing],);
+                            transform=(_, value) -> something(value, missing))) == "a\n\n"
+    io = IOBuffer()
+    CSV.write(io)((a=[1],))
+    @test String(take!(io)) == "a\n1\n"
 
     # bom
     s = str(io -> W.write(io, (a=[1],); bom=true))
@@ -143,8 +389,38 @@ Tables.schema(::NoSchemaRows) = nothing
     @test raw[1] == 0x1f && raw[2] == 0x8b
     io = buf()
     W.write(io, tbl; compress=:gzip)
+    @test isopen(io)
+    @test iswritable(io)
     f = A.File(take!(io))
     @test Tables.getcolumn(f, :a) == [1, 2, 3]
+    io = buf()
+    W.write(io, tbl; compress=true)
+    @test Tables.getcolumn(A.File(take!(io)), :a) == [1, 2, 3]
+    emptygzip = IOBuffer()
+    W.write(emptygzip, NamedTuple(); compress=:gzip, writeheader=false)
+    @test isopen(emptygzip)
+    @test iswritable(emptygzip)
+    @test isempty(transcode(GzipDecompressor, take!(emptygzip)))
+    gziperror = IOBuffer()
+    @test_throws ArgumentError W.write(gziperror, (a=bad,); compress=:gzip,
+                                       ntasks=4, writeheader=false)
+    @test isopen(gziperror)
+    @test iswritable(gziperror)
+    @test transcode(GzipDecompressor, take!(gziperror)) ==
+          codeunits(repeat("ok\n", W.WRITE_BLOCK_ROWS))
+    failingsink = FailingWriterSink(true)
+    sinkerror = try
+        W.write(failingsink, (a=[1],); compress=:gzip)
+        nothing
+    catch err
+        err
+    end
+    @test sinkerror === WRITER_SINK_SENTINEL
+    @test isopen(failingsink)
+    @test iswritable(failingsink)
+    plain_gzpath = joinpath(dir, "plain.csv.gz")
+    W.write(plain_gzpath, (a=[1],); compress=false)
+    @test read(plain_gzpath, String) == "a\n1\n"
 
     # partition: one sink per partition, parallel
     parts = Tables.partitioner([(a=[1, 2],), (a=[3, 4],)])
@@ -152,6 +428,19 @@ Tables.schema(::NoSchemaRows) = nothing
     W.write([p1, p2], parts; partition=true)
     @test Tables.getcolumn(A.File(p1), :a) == [1, 2]
     @test Tables.getcolumn(A.File(p2), :a) == [3, 4]
+    basepath = joinpath(dir, "legacy-part")
+    generated = W.write(basepath,
+                        Tables.partitioner([(a=[5],), (a=[6],)]);
+                        partition=true, compress=false)
+    @test generated == [basepath * "_1", basepath * "_2"]
+    @test A.File(generated[1]).a == [5] && A.File(generated[2]).a == [6]
+    extensionbase = joinpath(dir, "legacy.csv.gz")
+    extensionparts = W.write(extensionbase,
+                             Tables.partitioner([(a=[7],), (a=[8],)]);
+                             partition=true)
+    @test extensionparts == [extensionbase * "_1", extensionbase * "_2"]
+    @test read(extensionparts[1])[1:2] == UInt8[0x1f, 0x8b]
+    @test A.File(extensionparts[2]).a == [8]
     many = Tables.partitioner([(part=fill(i, 200), s=["p$(i),r$(j)" for j in 1:200])
                                for i in 1:12])
     paths = [joinpath(dir, "part-$i.csv.gz") for i in 1:12]
@@ -228,6 +517,48 @@ Tables.schema(::NoSchemaRows) = nothing
                       (table.id, table.x, table.flag,
                        Any[v === missing ? missing : String(v) for v in table.text]))
     end
+end
+
+@testset "bounded ordered writer scheduler" begin
+    # Count completed, not-yet-emitted blocks. This tests the actual retained
+    # block bound without depending on allocator or RSS measurements.
+    guard = ReentrantLock()
+    live = Ref(0)
+    highwater = Ref(0)
+    emitted = Int[]
+    renderblock = function (block)
+        lock(guard) do
+            live[] += 1
+            highwater[] = max(highwater[], live[])
+        end
+        return UInt8[block]
+    end
+    emitblock = function (bytes)
+        push!(emitted, Int(only(bytes)))
+        lock(guard) do
+            live[] -= 1
+        end
+    end
+    W._ordered_parallel_blocks!(emitblock, renderblock, 37, 3)
+    @test emitted == collect(1:37)
+    @test highwater[] <= 3
+    @test live[] == 0
+
+    # A failed ordered block waits for every task that was already started.
+    finished = Ref(0)
+    failrender = function (block)
+        try
+            block == 1 && error("scheduled failure")
+            return UInt8[block]
+        finally
+            lock(guard) do
+                finished[] += 1
+            end
+        end
+    end
+    @test_throws ErrorException W._ordered_parallel_blocks!(_ -> nothing,
+                                                             failrender, 20, 3)
+    @test finished[] == 3
 end
 
 @testset "staged renderer: direct paths are byte-identical to the Base spellings" begin

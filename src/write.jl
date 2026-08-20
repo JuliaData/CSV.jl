@@ -1,5 +1,5 @@
 
-# The kernel-era writer: CSV.write's surface with the 1.0 modernizations.
+# CSV.write implementation and formatting options.
 #
 #   quotestyle   :minimal (default) — quote only when the value contains the
 #                delimiter, the quote, CR/LF, or leading/trailing whitespace;
@@ -12,22 +12,16 @@
 #   compress     :auto (by .gz extension) | :gzip | :none
 #   partition    write a Vector of sinks in parallel, one table partition each
 #
-# The engine renders from Tables.columns, in parallel: rows split into
-# contiguous blocks, each block renders on its own task. Within a block every
-# COLUMN renders first, through a loop specialized on that column's element
-# type, into a staged (bytes, ends) buffer — one dynamic dispatch per column
-# per block instead of one per cell (the per-cell `col[r]` on an
-# `AbstractVector` was 4× slower than 0.10) — and a row-gather then
-# interleaves the staged cells with delimiters and newlines. Ints emit their
-# digits directly, floats through Ryu into the buffer at the write position
-# (no `string(x)`), strings memcpy after one structural-byte scan. Blocks
-# stream to the sink in order (nothing is concatenated). Bytes out are
-# identical at any thread count and byte-identical to 0.10's writer.
+# The engine renders contiguous row blocks from `Tables.columns` in parallel.
+# Narrow tables use a type-specialized tuple renderer. Wide tables stage each
+# column once per block and then gather rows. Integers emit digits directly,
+# floats use Ryu at the output position, and strings copy after one structural
+# scan. Blocks stream to the sink in order. Output bytes do not depend on the
+# thread count.
 
 module KernelWrite
 
 using Tables, Dates, Printf, CodecZlib
-using CodecZlib.TranscodingStreams
 using ..CSVKernel
 const K = CSVKernel
 
@@ -45,6 +39,7 @@ struct WriteOpts
     dateformat::Union{Nothing, DateFormat}
     decimal::UInt8
     bom::Bool
+    bufsize::Int
 end
 
 function _writeopts(; delim::Union{Char, String}=',', quotechar::Char='"',
@@ -54,14 +49,20 @@ function _writeopts(; delim::Union{Char, String}=',', quotechar::Char='"',
                     newline::Union{Char, String}='\n',
                     missingstring::AbstractString="",
                     quotestyle::Symbol=:minimal,
+                    quotestrings::Bool=false,
                     floatformat::Union{Nothing, AbstractString}=nothing,
                     dateformat=nothing,
                     decimal::Char='.',
-                    bom::Bool=false)
+                    bom::Bool=false,
+                    bufsize::Integer=1 << 22)
+    bufsize >= 1 || throw(ArgumentError("bufsize must be >= 1 (got $bufsize)"))
     delim isa String && sizeof(delim) != 1 &&
         throw(ArgumentError("write delim must be a single byte (got $(repr(delim)))"))
     delim isa Char && !isascii(delim) &&
         throw(ArgumentError("write delim must be a single byte (got $(repr(delim)))"))
+    quotestrings && quotestyle === :none &&
+        throw(ArgumentError("quotestrings=true conflicts with quotestyle=:none"))
+    quotestrings && (quotestyle = :all)
     quotestyle in WRITE_QUOTESTYLES ||
         throw(ArgumentError("quotestyle must be one of $(WRITE_QUOTESTYLES) (got $quotestyle)"))
     oqc = something(openquotechar, quotechar)
@@ -86,8 +87,11 @@ function _writeopts(; delim::Union{Char, String}=',', quotechar::Char='"',
     ff = floatformat === nothing ? nothing : Printf.Format(String(floatformat))
     return WriteOpts(d, oq, cq, e, Vector{UInt8}(codeunits(string(newline))),
                      Vector{UInt8}(codeunits(String(missingstring))),
-                     quotestyle, ff, df, decimal % UInt8, bom)
+                     quotestyle, ff, df, decimal % UInt8, bom, Int(bufsize))
 end
+
+@noinline _rowtoolarge(n::Int, cap::Int) =
+    throw(ArgumentError("row size ($n) exceeds bufsize ($cap); pass a larger bufsize"))
 
 # --- cell rendering ---------------------------------------------------------
 
@@ -142,6 +146,8 @@ _writescalar(io::IO, x, o::WriteOpts) = _writescalar(io, string(x), o)
 function _writecell(io::IO, x, o::WriteOpts)
     if x === missing
         _writebytes(io, o.missingstring, o; stringcell=false)
+    elseif x === nothing
+        _nothingerror()
     elseif x isa AbstractString
         _writestring(io, x, o)
     elseif x isa AbstractFloat
@@ -170,6 +176,10 @@ function _writecell(io::IO, x, o::WriteOpts)
     end
     return
 end
+
+@noinline _nothingerror() = throw(ArgumentError(
+    "a `nothing` cell is not printable; use transform=(column, value) -> " *
+    "something(value, missing) or replace it before writing"))
 
 # --- staged column rendering ---------------------------------------------------
 #
@@ -486,6 +496,8 @@ const _TRUE = codeunits("true"); const _FALSE = codeunits("false")
 @inline function _appendcell!(out::Vector{UInt8}, x, o::WriteOpts)
     if x === missing
         _appendbytes!(out, o.missingstring, o, false)
+    elseif x === nothing
+        _nothingerror()
     elseif x isa AbstractString
         _appendstring!(out, x, o)
     elseif x isa AbstractFloat
@@ -548,11 +560,66 @@ end
 # hundreds of vectors would cost compile time out of proportion).
 const TUPLE_RENDER_MAXCOLS = 32
 
+# Keep the renderer's temporary storage independent of the total output size.
+# The row cap protects tiny rows from task overhead. The byte target protects
+# large rows from multiplying `bufsize` by 4096 for every live task. Wide-table
+# staging may use about twice the rendered-byte target (stages plus output).
+const WRITE_BLOCK_ROWS = 4096
+const WRITE_BLOCK_BYTES = 8 << 20
+
+@inline function _encodedbound(n::Int, cap::Int)
+    n > (cap - 2) >> 1 && return cap
+    return min(2n + 2, cap) # every source byte escaped, plus quote pair
+end
+
+function _columncellbound(col::AbstractVector, o::WriteOpts)
+    E = eltype(col)
+    bound = Missing <: E ? _encodedbound(length(o.missingstring), o.bufsize) : 0
+    T = Base.nonmissingtype(E)
+    T === Union{} && return bound
+    valuebound = if T <: AbstractString
+        n = 0
+        @inbounds for x in col
+            x === missing || (n = max(n, ncodeunits(x)))
+        end
+        _encodedbound(n, o.bufsize)
+    elseif T <: Bool
+        _encodedbound(5, o.bufsize)
+    elseif T <: Integer && isbitstype(T)
+        _encodedbound(3sizeof(T) + 3, o.bufsize)
+    elseif T <: Union{Float16, Float32, Float64} && o.floatfmt === nothing
+        _encodedbound(32, o.bufsize)
+    elseif T <: Dates.TimeType && o.dateformat === nothing
+        _encodedbound(64, o.bufsize)
+    else
+        # Any/custom values and custom format strings can produce up to the
+        # enforced row cap. Use that cap rather than guessing from a sample.
+        o.bufsize
+    end
+    return max(bound, valuebound)
+end
+
+function _writerblockrows(cols, o::WriteOpts, transform)
+    transform === _identity_transform ||
+        return min(WRITE_BLOCK_ROWS, max(1, WRITE_BLOCK_BYTES ÷ o.bufsize))
+    rowbound = length(o.newline) + max(length(cols) - 1, 0)
+    for col in cols
+        cellbound = _columncellbound(col, o)
+        rowbound > o.bufsize - cellbound && (rowbound = o.bufsize; break)
+        rowbound += cellbound
+    end
+    rowbound = clamp(rowbound, 1, o.bufsize)
+    return min(WRITE_BLOCK_ROWS, max(1, WRITE_BLOCK_BYTES ÷ rowbound))
+end
+
 @inline function _writerow!(out::Vector{UInt8}, r::Int, cols::Tuple, o::WriteOpts)
+    start = length(out)
     _writecells!(out, r, cols, o)
     for b in o.newline
         push!(out, b)
     end
+    rowsize = length(out) - start
+    rowsize <= o.bufsize || _rowtoolarge(rowsize, o.bufsize)
     return
 end
 @inline _writecells!(out::Vector{UInt8}, r::Int, ::Tuple{}, o::WriteOpts) = nothing
@@ -599,6 +666,7 @@ function _renderblock(cols, lo::Int, hi::Int, o::WriteOpts)
     nl = o.newline
     GC.@preserve out begin
         @inbounds for k in 1:nrows
+            rowstart = pos
             for j in 1:ncols
                 st = stages[j]
                 s = k == 1 ? 1 : st.ends[k - 1] + 1
@@ -610,9 +678,257 @@ function _renderblock(cols, lo::Int, hi::Int, o::WriteOpts)
             for b in nl
                 out[pos] = b; pos += 1
             end
+            rowsize = pos - rowstart
+            rowsize <= o.bufsize || _rowtoolarge(rowsize, o.bufsize)
         end
     end
     return out
+end
+
+# Compatibility path for `transform`: callbacks are observable and may keep
+# state, so preserve CSV 0.10's row-major, sequential call order even for wide
+# tables. This path is intentionally separate from the staged column renderer.
+function _renderblock_transformed(cols, lo::Int, hi::Int, o::WriteOpts, transform)
+    out = UInt8[]
+    ncols = length(cols)
+    @inbounds for r in lo:hi
+        start = length(out)
+        for j in 1:ncols
+            _appendcell!(out, transform(j, cols[j][r]), o)
+            j < ncols && push!(out, o.delim)
+        end
+        append!(out, o.newline)
+        rowsize = length(out) - start
+        rowsize <= o.bufsize || _rowtoolarge(rowsize, o.bufsize)
+    end
+    return out
+end
+
+# A rendering task reports its exception as data. This lets the consumer wait
+# for every already-started task before it rethrows the original exception
+# type, instead of leaking a TaskFailedException or leaving background work
+# running after `CSV.write` returns.
+struct _RenderFailure
+    exception
+    backtrace
+    block::Int
+end
+
+@inline function _capture_render(renderblock, block::Int)
+    try
+        return renderblock(block)
+    catch err
+        return _RenderFailure(err, catch_backtrace(), block)
+    end
+end
+
+@noinline function _throw_render_failure(failure::_RenderFailure)
+    # Julia has no public API for attaching an arbitrary task backtrace while
+    # rethrowing the original exception type. Keep that type and object for
+    # compatibility, and retain the render backtrace in debug diagnostics.
+    @debug "CSV writer block rendering failed" block=failure.block exception=(
+        failure.exception, failure.backtrace)
+    throw(failure.exception)
+end
+
+"""
+    _ordered_parallel_blocks!(emitblock, renderblock, nblocks, ntasks)
+
+Render numbered blocks in parallel and pass them to `emitblock` in increasing
+order. The ring contains at most `min(nblocks, ntasks)` tasks, so completed
+blocks waiting for an earlier block cannot grow with `nblocks`.
+"""
+function _ordered_parallel_blocks!(emitblock, renderblock,
+                                   nblocks::Int, ntasks::Int)
+    nblocks == 0 && return
+    window = min(nblocks, ntasks)
+    tasks = Union{Nothing, Task}[nothing for _ in 1:window]
+    nextblock = 1
+    try
+        for slot in 1:window
+            block = nextblock
+            tasks[slot] = Threads.@spawn _capture_render($renderblock, $block)
+            nextblock += 1
+        end
+        for block in 1:nblocks
+            slot = mod1(block, window)
+            task = tasks[slot]::Task
+            rendered = fetch(task)
+            # Drop the task's reference to its result before emission. After
+            # emission, drop the local reference before starting a replacement
+            # task. Thus the high-water mark stays at `window` blocks.
+            tasks[slot] = nothing
+            task = nothing
+            rendered isa _RenderFailure && _throw_render_failure(rendered)
+            emitblock(rendered)
+            rendered = nothing
+            if nextblock <= nblocks
+                queued = nextblock
+                tasks[slot] = Threads.@spawn _capture_render($renderblock, $queued)
+                nextblock += 1
+            end
+        end
+    finally
+        # Rendering catches ordinary exceptions, so these waits do not replace
+        # a sink or ordered-render exception. They only ensure no work escapes
+        # the lifetime of this call.
+        for task in tasks
+            task === nothing || wait(task)
+        end
+    end
+    return
+end
+
+
+@inline function _capture_item(f, item, index::Int)
+    try
+        f(item, index)
+        return nothing
+    catch err
+        return _RenderFailure(err, catch_backtrace(), index)
+    end
+end
+
+"""
+    _bounded_foreach!(f, iter, ntasks) -> count
+
+Apply `f(item, index)` to a possibly one-shot, size-unknown iterator with at
+most `min(ntasks, Threads.nthreads())` tasks live. Items are pulled only as a
+task slot becomes available. On failure, wait for every started task and throw
+the original exception object.
+"""
+function _bounded_foreach!(f, iter, ntasks::Int)
+    workers = min(ntasks, Threads.nthreads())
+    tasks = Union{Nothing, Task}[nothing for _ in 1:workers]
+    state = iterate(iter)
+    state === nothing && return 0
+    nextindex = 1
+    pending = 0
+    try
+        for slot in 1:workers
+            state === nothing && break
+            item, iterstate = state
+            index = nextindex
+            tasks[slot] = Threads.@spawn _capture_item($f, $item, $index)
+            nextindex += 1
+            pending += 1
+            state = iterate(iter, iterstate)
+        end
+        completed = 0
+        slot = 1
+        while pending > 0
+            while tasks[slot] === nothing
+                slot = mod1(slot + 1, workers)
+            end
+            result = fetch(tasks[slot]::Task)
+            tasks[slot] = nothing
+            pending -= 1
+            result isa _RenderFailure && _throw_render_failure(result)
+            completed += 1
+            if state !== nothing
+                item, iterstate = state
+                index = nextindex
+                tasks[slot] = Threads.@spawn _capture_item($f, $item, $index)
+                nextindex += 1
+                pending += 1
+                state = iterate(iter, iterstate)
+            end
+            slot = mod1(slot + 1, workers)
+        end
+        return completed
+    finally
+        for task in tasks
+            task === nothing || wait(task)
+        end
+    end
+end
+
+@noinline function _renderwrite_identity!(io, cols, lo::Int, hi::Int, o::WriteOpts)
+    Base.write(io, _renderblock(cols, lo, hi, o))
+    return
+end
+
+@noinline function _renderwrite_transformed!(io, cols, lo::Int, hi::Int,
+                                             o::WriteOpts, transform)
+    Base.write(io, _renderblock_transformed(cols, lo, hi, o, transform))
+    return
+end
+
+function _emitrowblocks!(io, cols, nrows::Int, o::WriteOpts,
+                         transform, ntasks::Int)
+    nrows == 0 && return
+    blockrows = _writerblockrows(cols, o, transform)
+    nblocks = cld(nrows, blockrows)
+    workers = min(ntasks, Threads.nthreads())
+    bounds(block) = ((block - 1) * blockrows + 1,
+                     min(block * blockrows, nrows))
+
+    # Transform callbacks are observable and can retain state. Run their
+    # fixed-size blocks sequentially to preserve global row-major call order.
+    if transform !== _identity_transform
+        for block in 1:nblocks
+            lo, hi = bounds(block)
+            _renderwrite_transformed!(io, cols, lo, hi, o, transform)
+        end
+        return
+    end
+
+    # Avoid task overhead when the caller requested one task or the table fits
+    # in one block. Fixed-size blocks still bound the single-task path.
+    if workers == 1 || nblocks == 1
+        for block in 1:nblocks
+            lo, hi = bounds(block)
+            _renderwrite_identity!(io, cols, lo, hi, o)
+        end
+        return
+    end
+
+    renderblock = function (block)
+        lo, hi = bounds(block)
+        return _renderblock(cols, lo, hi, o)
+    end
+    emitblock = rendered -> Base.write(io, rendered)
+    _ordered_parallel_blocks!(emitblock, renderblock, nblocks, workers)
+    return
+end
+
+# TranscodingStreams 0.9 and 0.10 close a compressor's wrapped stream even
+# when `stop_on_end=true`; 0.11 fixed that behavior. CodecZlib 0.7 permits all
+# three releases, so protect caller-owned sinks rather than depend on a
+# transitive version. Sink failures still pass through unchanged.
+struct _NonClosingIO{T <: IO} <: IO
+    io::T
+end
+Base.isopen(io::_NonClosingIO) = isopen(io.io)
+Base.isreadable(io::_NonClosingIO) = isreadable(io.io)
+Base.iswritable(io::_NonClosingIO) = iswritable(io.io)
+Base.unsafe_read(io::_NonClosingIO, p::Ptr{UInt8}, n::UInt) =
+    Base.unsafe_read(io.io, p, n)
+Base.unsafe_write(io::_NonClosingIO, p::Ptr{UInt8}, n::UInt) =
+    Base.unsafe_write(io.io, p, n)
+Base.flush(io::_NonClosingIO) = flush(io.io)
+Base.close(::_NonClosingIO) = nothing
+
+function _emitgzip!(emitpayload, io)
+    # Closing in `finally` finalizes a valid partial gzip member after a render
+    # error. The proxy makes closing safe on every supported CodecZlib stack.
+    gz = GzipCompressorStream(_NonClosingIO(io); stop_on_end=true)
+    payload_complete = false
+    try
+        Base.write(gz) # initialize a valid member even for an empty payload
+        emitpayload(gz)
+        payload_complete = true
+    finally
+        try
+            close(gz)
+            payload_complete && flush(io)
+        catch
+            # A cleanup failure must not replace the render or sink exception.
+            # When payload emission succeeded, cleanup is the primary failure.
+            payload_complete && rethrow()
+        end
+    end
+    return
 end
 
 function _renderheader(names, o::WriteOpts)
@@ -622,33 +938,57 @@ function _renderheader(names, o::WriteOpts)
         j < length(names) && Base.write(io, o.delim)
     end
     Base.write(io, o.newline)
-    return take!(io)
+    out = take!(io)
+    length(out) <= o.bufsize || _rowtoolarge(length(out), o.bufsize)
+    return out
 end
+
+function _headeroptions(source_names, header, writeheader, defaultheader::Bool)
+    if header isa Bool
+        writeheader !== nothing && writeheader != header &&
+            throw(ArgumentError("header=$header conflicts with writeheader=$writeheader"))
+        names = something(source_names, Symbol[])
+        return names, something(writeheader, header)
+    elseif header === nothing
+        return something(source_names, Symbol[]), something(writeheader, defaultheader)
+    elseif header isa AbstractVector
+        names = isempty(header) ? something(source_names, Symbol[]) : Symbol.(header)
+        source_names !== nothing && length(names) != length(source_names) &&
+            throw(ArgumentError("header has $(length(names)) names for " *
+                                "$(length(source_names)) columns"))
+        return names, something(writeheader, defaultheader)
+    end
+    throw(ArgumentError("header must be true, false, or a vector of column names"))
+end
+
+@inline _identity_transform(::Int, value) = value
 
 # --- RowWriter: the row-string iterator ---------------------------------------
 
 """
-    KernelWrite.RowWriter(table; writeheader=true, header=nothing, kw...)
+    CSV.RowWriter(table; writeheader=true, header=nothing, kw...)
 
 Iterate `table` as CSV-formatted `String`s: the header line first (unless
 `writeheader=false`), then one line per row, each rendered by exactly the
-code path `write` uses — so `join(RowWriter(t))` is byte-identical to
-`write(io, t)`. `kw` is the writer's dialect surface (delim, quotestyle,
+code path `CSV.write` uses — so `join(CSV.RowWriter(t))` is byte-identical to
+`CSV.write(io, t)`. `kw` is the writer's dialect surface (`delim`, `quotestyle`,
 floatformat, dateformat, ...). Streams: rows render on demand from a
 row-access view of the table (`Tables.rows`), no whole-table buffer.
 """
-struct RowWriter{R, I}
+struct RowWriter{R, I, F, P}
     rows::R
     initial::I
     names::Vector{Symbol}
     o::WriteOpts
     writeheader::Bool
-    prefetched::Bool
+    transform::F
 end
 
-function RowWriter(table; writeheader::Bool=true, header::Union{Nothing, Vector}=nothing,
-                   kw...)
-    o = _writeopts(; kw...)
+function _rowwriter(table, o::WriteOpts;
+                    writeheader::Union{Nothing, Bool}=nothing,
+                    header::Union{Nothing, Bool, AbstractVector}=nothing,
+                    transform::Function=_identity_transform,
+                    defaultheader::Bool=true)
     rows = Tables.rows(table)
     sch = Tables.schema(rows)
     prefetched = sch === nothing
@@ -657,29 +997,56 @@ function RowWriter(table; writeheader::Bool=true, header::Union{Nothing, Vector}
                    initial === nothing ? nothing :
                    collect(Symbol, Tables.columnnames(initial[1])) :
                    collect(Symbol, sch.names)
-    names = header === nothing ? something(source_names, Symbol[]) : Symbol.(header)
-    source_names !== nothing && length(names) != length(source_names) &&
-        throw(ArgumentError("header has $(length(names)) names for $(length(source_names)) columns"))
-    return RowWriter(rows, initial, names, o, writeheader, prefetched)
+    names, wantheader = _headeroptions(source_names, header, writeheader, defaultheader)
+    return RowWriter{typeof(rows), typeof(initial), typeof(transform), prefetched}(
+        rows, initial, names, o, wantheader, transform)
 end
 
-Base.IteratorSize(::Type{<:RowWriter}) = Base.SizeUnknown()
-Base.eltype(::Type{<:RowWriter}) = String
+function RowWriter(table; writeheader::Union{Nothing, Bool}=nothing,
+                   header::Union{Nothing, Bool, AbstractVector}=nothing,
+                   transform::Function=_identity_transform,
+                   bufsize::Integer=1 << 22, kw...)
+    return _rowwriter(table, _writeopts(; bufsize, kw...);
+                      writeheader, header, transform)
+end
 
-function _renderrow(row, names, o::WriteOpts)
+_rowwritersize(::Base.HasLength) = Base.HasLength()
+_rowwritersize(::Base.HasShape) = Base.HasLength()
+_rowwritersize(::Base.IsInfinite) = Base.IsInfinite()
+_rowwritersize(::Base.SizeUnknown) = Base.SizeUnknown()
+Base.IteratorSize(::Type{<:RowWriter{R, I, F, true}}) where {R, I, F} =
+    Base.SizeUnknown()
+Base.IteratorSize(::Type{<:RowWriter{R, I, F, false}}) where {R, I, F} =
+    _rowwritersize(Base.IteratorSize(R))
+Base.eltype(::Type{<:RowWriter}) = String
+function Base.length(rw::RowWriter{R, I, F, false}) where {R, I, F}
+    nrows = length(rw.rows)
+    hasheader = rw.writeheader && !isempty(rw.names)
+    bomonly = rw.o.bom && nrows == 0 && !hasheader
+    return nrows + hasheader + bomonly
+end
+Base.size(rw::RowWriter{R, I, F, false}) where {R, I, F} = (length(rw),)
+
+function _renderrowbytes(row, names, o::WriteOpts, transform)
     io = IOBuffer()
     ncols = length(names)
     for (j, nm) in enumerate(names)
-        _writecell(io, Tables.getcolumn(row, j), o)
+        _writecell(io, transform(j, Tables.getcolumn(row, j)), o)
         j < ncols && Base.write(io, o.delim)
     end
     Base.write(io, o.newline)
-    return String(take!(io))
+    out = take!(io)
+    length(out) <= o.bufsize || _rowtoolarge(length(out), o.bufsize)
+    return out
 end
+
+
+_renderrow(row, names, o::WriteOpts, transform) =
+    String(_renderrowbytes(row, names, o, transform))
 
 function Base.iterate(rw::RowWriter, state=nothing)
     if state === nothing
-        it = rw.prefetched ? rw.initial : iterate(rw.rows)
+        it = rw isa RowWriter{<:Any, <:Any, <:Any, true} ? rw.initial : iterate(rw.rows)
         if rw.writeheader && !isempty(rw.names)
             line = String(_renderheader(rw.names, rw.o))
             rw.o.bom && (line = string('\ufeff', line))
@@ -687,7 +1054,7 @@ function Base.iterate(rw::RowWriter, state=nothing)
         elseif rw.o.bom
             it === nothing && return "\ufeff", (nothing,)
             row, rstate = it
-            return string('\ufeff', _renderrow(row, rw.names, rw.o)),
+            return string('\ufeff', _renderrow(row, rw.names, rw.o, rw.transform)),
                    (iterate(rw.rows, rstate),)
         end
         state = (it,)
@@ -695,107 +1062,127 @@ function Base.iterate(rw::RowWriter, state=nothing)
     it = state[1]
     it === nothing && return nothing
     row, rstate = it
-    return _renderrow(row, rw.names, rw.o), (iterate(rw.rows, rstate),)
+    return _renderrow(row, rw.names, rw.o, rw.transform), (iterate(rw.rows, rstate),)
+end
+
+
+function _emitrows!(io, rw::RowWriter; bom::Bool=false)
+    bom && Base.write(io, UInt8[0xef, 0xbb, 0xbf])
+    rw.writeheader && !isempty(rw.names) && Base.write(io, _renderheader(rw.names, rw.o))
+    it = rw isa RowWriter{<:Any, <:Any, <:Any, true} ? rw.initial : iterate(rw.rows)
+    while it !== nothing
+        row, state = it
+        Base.write(io, _renderrowbytes(row, rw.names, rw.o, rw.transform))
+        it = iterate(rw.rows, state)
+    end
+    return
 end
 
 # --- the front door ---------------------------------------------------------
 
 """
-    KernelWrite.write(sink, table; kw...) -> sink
+    CSV.write(sink, table; kw...) -> sink
 
 Write any Tables.jl table as CSV. `sink` is a file path, an `IO`, or (with
 `partition=true`) a vector of paths/IOs receiving one table partition each,
-written in parallel. Rendering is parallel and byte-deterministic.
+written in parallel. Column-access tables render bounded row blocks in
+parallel. Row-access sources stream sequentially without being collected.
+Output order and bytes do not depend on `ntasks`.
 """
 function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool}=nothing,
-               header::Union{Nothing, Vector}=nothing, compress::Symbol=:auto,
+               header::Union{Nothing, Bool, AbstractVector}=nothing,
+               compress::Union{Bool, Symbol}=:auto,
                partition::Bool=false,
+               transform::Function=_identity_transform,
+               bufsize::Integer=1 << 22,
                ntasks::Int=Threads.nthreads(), kw...)
-    o = _writeopts(; kw...)
+    compression = compress isa Bool ? (compress ? :gzip : :none) : compress
+    compression in (:auto, :gzip, :none) ||
+        throw(ArgumentError("compress must be true, false, :auto, :gzip, or :none " *
+                            "(got $compress)"))
+    o = _writeopts(; bufsize, kw...)
     ntasks >= 1 || throw(ArgumentError("ntasks must be >= 1 (got $ntasks)"))
     if partition
         parts = Tables.partitions(table)
-        sinks = sink isa AbstractVector ? sink :
-                throw(ArgumentError("partition=true needs a Vector of sinks"))
-        partsv = collect(parts)
-        length(partsv) == length(sinks) ||
-            throw(ArgumentError("partition count $(length(partsv)) != sink count $(length(sinks))"))
-        @sync for (snk, part) in zip(sinks, partsv)
-            Threads.@spawn write(snk, part; append, writeheader, header,
-                                 compress, partition=false, ntasks=1, kw...)
-        end
-        return sink
-    end
-    cols0 = Tables.columns(table)
-    source_names = collect(Symbol, Tables.columnnames(cols0))
-    names = header !== nothing ? Symbol.(header) : source_names
-    length(names) == length(source_names) ||
-        throw(ArgumentError("header has $(length(names)) names for $(length(source_names)) columns"))
-    cols = AbstractVector[Tables.getcolumn(cols0, nm) for nm in source_names]
-    nrows = isempty(cols) ? 0 : length(cols[1])
-    all(col -> length(col) == nrows, cols) ||
-        throw(ArgumentError("all table columns must have the same length"))
-    wantheader = writeheader === nothing ? !append : writeheader
-
-    blocks = Vector{Vector{UInt8}}()
-    o.bom && !append && push!(blocks, UInt8[0xef, 0xbb, 0xbf])
-    if wantheader && !isempty(names)
-        push!(blocks, _renderheader(names, o))
-    end
-    if nrows > 0
-        nb = max(1, min(ntasks, cld(nrows, 4096)))
-        bounds = [1 + (b - 1) * nrows ÷ nb for b in 1:nb]
-        push!(bounds, nrows + 1)
-        rendered = Vector{Vector{UInt8}}(undef, nb)
-        if nb > 1
-            @sync for b in 1:nb
-                Threads.@spawn rendered[b] = _renderblock(cols, bounds[b], bounds[b + 1] - 1, o)
+        pathbase = sink isa AbstractString
+        sinks = pathbase ? nothing :
+                sink isa AbstractVector ? sink :
+                throw(ArgumentError("partition=true needs a path or a Vector of sinks"))
+        partcompression = compression === :auto && pathbase &&
+                          endswith(String(sink), ".gz") ? :gzip : compression
+        writepart = function (part, i)
+            if !pathbase && i > length(sinks)
+                throw(ArgumentError("more partitions than sinks (sink count $(length(sinks)))"))
             end
-        else
-            rendered[1] = _renderblock(cols, 1, nrows, o)
+            partsink = pathbase ? string(sink, "_", i) : sinks[i]
+            write(partsink, part; append, writeheader, header,
+                  compress=partcompression, partition=false, transform,
+                  bufsize, ntasks=1, kw...)
+            return nothing
         end
-        append!(blocks, rendered)
+        nparts = _bounded_foreach!(writepart, parts, ntasks)
+        !pathbase && nparts != length(sinks) &&
+            throw(ArgumentError("partition count $nparts != sink count $(length(sinks))"))
+        return pathbase ? [string(sink, "_", i) for i in 1:nparts] : sink
     end
-    gzip = compress === :gzip ||
-           (compress === :auto && sink isa AbstractString && endswith(String(sink), ".gz"))
-    compress in (:auto, :gzip, :none) ||
-        throw(ArgumentError("compress must be :auto, :gzip, or :none (got $compress)"))
-    # blocks stream to the sink in order — the output is never concatenated
-    # into a second whole-file buffer; gzip compresses through a stream
-    emit = function (io)
-        if gzip
-            gz = GzipCompressorStream(io)
-            for blk in blocks
-                Base.write(gz, blk)
-            end
-            # finish the gzip member without closing the caller's IO
-            Base.write(gz, TranscodingStreams.TOKEN_END)
-            flush(gz)
-        else
-            # an in-memory sink grows by doubling under repeated writes — for
-            # a 75 MiB output that is more copying than the rendering itself;
-            # reserve the total once (the size is known: the blocks exist)
-            io isa Base.GenericIOBuffer && Base.ensureroom(io, sum(length, blocks; init=0))
-            for blk in blocks
-                Base.write(io, blk)
-            end
+    gzip = compression === :gzip ||
+           (compression === :auto && sink isa AbstractString && endswith(String(sink), ".gz"))
+    emitpayload = if Tables.columnaccess(typeof(table))
+        cols0 = Tables.columns(table)
+        source_names = collect(Symbol, Tables.columnnames(cols0))
+        names, wantheader = _headeroptions(source_names, header, writeheader, !append)
+        cols = AbstractVector[Tables.getcolumn(cols0, nm) for nm in source_names]
+        nrows = isempty(cols) ? 0 : length(cols[1])
+        all(col -> length(col) == nrows, cols) ||
+            throw(ArgumentError("all table columns must have the same length"))
+        headerblock = wantheader && !isempty(names) ? _renderheader(names, o) : nothing
+        # Header and fixed-size row blocks stream directly to the sink. The
+        # ordered renderer retains no more than `ntasks` blocks.
+        function (io)
+            o.bom && !append && Base.write(io, UInt8[0xef, 0xbb, 0xbf])
+            headerblock === nothing || Base.write(io, headerblock)
+            _emitrowblocks!(io, cols, nrows, o, transform, ntasks)
+            return
         end
-        return
+    else
+        # A row source may be one-shot and may not know its schema until its
+        # first row. Prefetch exactly that row and retain its iterator state.
+        rw = _rowwriter(table, o; writeheader, header, transform,
+                        defaultheader=!append)
+        io -> _emitrows!(io, rw; bom=o.bom && !append)
     end
+    emit = io -> gzip ? _emitgzip!(emitpayload, io) : emitpayload(io)
     if sink isa AbstractString
         open(emit, String(sink), append ? "a" : "w")
     else
         seekable = sink isa IO && hasmethod(seek, Tuple{typeof(sink), Integer}) &&
                    hasmethod(seekend, Tuple{typeof(sink)})
         seekable && (append ? seekend(sink) : seekstart(sink))
-        emit(sink)
-        # `append=false` means replacement for seekable IOs as it does for a
-        # path opened with "w". Remove any stale suffix when the new payload
-        # is shorter than the old contents.
-        !append && seekable && applicable(truncate, sink, position(sink)) &&
-            truncate(sink, position(sink))
+        emission_complete = false
+        try
+            emit(sink)
+            emission_complete = true
+        finally
+            # `append=false` means replacement for seekable IOs as it does for
+            # a path opened with "w". Truncate even after a render failure, so
+            # a partial new payload never exposes stale bytes from old content.
+            if !append && seekable
+                try
+                    pos = position(sink)
+                    applicable(truncate, sink, pos) && truncate(sink, pos)
+                catch
+                    # Preserve the render/sink exception when cleanup also
+                    # fails. A truncation failure is primary after successful
+                    # emission and must be reported.
+                    emission_complete && rethrow()
+                end
+            end
+        end
     end
     return sink
 end
+
+
+write(sink; kw...) = table -> write(sink, table; kw...)
 
 end # module KernelWrite

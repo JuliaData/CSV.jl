@@ -156,8 +156,11 @@ end
 end
 
 @testset "problem streams merge once under the global cap" begin
-    dirty = "a,b\nbad,1\n1,bad\n2,2\n"
-    scan = T.Scan(select = (:a => Int64, :b => Int64), filter = T.col(:a) > 0)
+    # The predicate sees native source values before requested output
+    # conversion. Keep it numeric so this test isolates the merged cap for the
+    # two retained conversion failures in a and b.
+    dirty = "keep,a,b\n1,bad,1\n1,1,bad\n1,2,2\n"
+    scan = T.Scan(select = (:a => Int64, :b => Int64), filter = T.col(:keep) > 0)
     for cap in 0:3
         t = S.scan(dirty, scan; maxproblems=cap, chunkbytes=5, parallel=true)
         @test length(K.problems(t)) == min(cap, 2)

@@ -12,11 +12,13 @@
 #   • function-typed select/drop retired
 #   • Int64 overflow that fits Int128 remains exact where CSV.jl widens to Float64
 
-using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings, FilePathsBase, Random
-using CSV, LegacyCSV
+using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings, FilePathsBase, Random, Mmap
+using CSV
+import .LegacyCSV
 const A = CSV.CSVApi
 const K = CSV.CSVKernel
-corpusfile(name) = joinpath(@__DIR__, "legacy", "testfiles", name)
+const E = CSV.KernelExamples
+corpusfile(name) = joinpath(TESTFILES_DIR, name)
 
 # Minimal ordered AbstractDict for precedence tests. Base.Dict iteration order
 # is not an API contract, while CSV's rule is explicitly first matching Regex.
@@ -26,6 +28,36 @@ end
 Base.length(d::OrderedTestDict) = length(d.entries)
 Base.iterate(d::OrderedTestDict, state::Int=1) =
     state > length(d.entries) ? nothing : (d.entries[state], state + 1)
+
+struct APICustomScalar
+    value::Int
+end
+Base.tryparse(::Type{APICustomScalar}, s::String) =
+    (x = tryparse(Int, s); x === nothing ? nothing : APICustomScalar(x))
+
+struct APITaskScalar
+    value::Int
+end
+const API_TASK_LOCK = ReentrantLock()
+const API_PARSE_TASKS = Set{UInt}()
+function Base.tryparse(::Type{APITaskScalar}, s::String)
+    lock(API_TASK_LOCK) do
+        push!(API_PARSE_TASKS, objectid(current_task()))
+    end
+    x = tryparse(Int, s)
+    return x === nothing ? nothing : APITaskScalar(x)
+end
+
+# Keep the allocation probe in compiled function scope. Julia 1.10 can box the
+# UInt result when `@allocated` appears directly in a testset.
+function hashall(c)
+    h = UInt(0)
+    @inbounds for i in eachindex(c)
+        h ⊻= hash(c[i])
+    end
+    return h
+end
+allochashall(c) = @allocated hashall(c)
 # The 0.10 implementation is the behavioral ORACLE throughout this file: every
 # `LegacyCSV.File`/`LegacyCSV.write` below that means "the old behavior" is spelled LegacyCSV.
 
@@ -34,6 +66,23 @@ Base.iterate(d::OrderedTestDict, state::Int=1) =
     # it is a clear ArgumentError, never an UndefVarError
     if isdefined(Tables, :Scan)
         @test Base.names(A.File(IOBuffer("a,b\n1,2\n"); scan=Tables.Scan(select=(:b,)))) == [:b]
+        narrowsrc = "a,b\n1,x\n128,y\n2,z\n"
+        excluded = Tables.Scan(select=(:a => Int8,), filter=Tables.col(:a) < 100)
+        pushed = A.File(IOBuffer(narrowsrc); scan=excluded, pool=false)
+        generic = Tables.scan(A.File(IOBuffer(narrowsrc); pool=false), excluded)
+        @test pushed.a == generic.a == Int8[1, 2]
+        @test isempty(A.problems(pushed))
+
+        retained = Tables.Scan(select=(:a => Int8,), filter=Tables.col(:a) > 100)
+        pushed = A.File(IOBuffer(narrowsrc); scan=retained, pool=false)
+        @test isequal(pushed.a, Union{Missing, Int8}[missing])
+        @test only(A.problems(pushed)).row == 2
+        @test only(A.problems(pushed)).pos == first(findfirst("128", narrowsrc))
+        @test_throws ErrorException A.File(IOBuffer(narrowsrc); scan=retained,
+                                           strict=true, maxproblems=0, pool=false)
+        floatscan = Tables.Scan(select=(:a => Float32,))
+        floatfile = A.File(IOBuffer("a\n1.5\n"); scan=floatscan, pool=false)
+        @test floatfile.a == Float32[1.5] && eltype(floatfile.a) == Float32
     else
         @test_throws ArgumentError A.File(IOBuffer("a,b\n1,2\n"); scan=:anything)
     end
@@ -263,8 +312,45 @@ end
     @test isequal(collect(overflow.a), [Int8(127), missing])
     @test [(p.row, p.col, p.kind) for p in A.problems(overflow)] ==
           [(2, 1, :invalid_value)]
+    manyoverflows = A.File(IOBuffer("a\n" * "128\n"^20);
+                           types=Int8, maxproblems=1)
+    @test length(A.problems(manyoverflows)) == 1
+    @test getfield(manyoverflows, :table).droppedproblems == 19
+    @test_throws ErrorException A.File(IOBuffer("a\n128\n");
+                                       types=Int8, strict=true, maxproblems=0)
+    # Parse failures and post-parse narrow failures share source ordering. The
+    # retained/strict problem must be whichever field occurs first in the bytes,
+    # regardless of which phase reported it.
+    mixedproblems = [
+        ("a\nBAD\n128\n", "BAD", "cannot parse Int64"),
+        ("a\n128\nBAD\n", "128", "does not fit Int8"),
+    ]
+    for (mixed, firstfield, firstmessage) in mixedproblems
+        f = A.File(IOBuffer(mixed); types=Int8, maxproblems=1)
+        pr = only(A.problems(f))
+        @test (pr.row, pr.col, pr.pos) ==
+              (1, 1, first(findfirst(firstfield, mixed)))
+        @test occursin(firstmessage, pr.message)
+        @test getfield(f, :table).droppedproblems == 1
+        err = try
+            A.File(IOBuffer(mixed); types=Int8, strict=true, maxproblems=0)
+            nothing
+        catch ex
+            ex
+        end
+        @test err isa ErrorException
+        @test occursin(firstmessage, sprint(showerror, err))
+    end
     unsigned = A.File(IOBuffer("u\n$(typemax(UInt64))\n"); types=UInt64)
     @test unsigned.u == UInt64[typemax(UInt64)]
+    for T in (Float16, Float32)
+        floatsrc = "x\n1e100\n-1e100\n"
+        narrowed = A.File(IOBuffer(floatsrc); types=T)
+        legacy = LegacyCSV.File(IOBuffer(floatsrc); types=T, silencewarnings=true)
+        @test isequal(collect(narrowed.x), collect(legacy.x))
+        @test collect(narrowed.x) == T[Inf, -Inf]
+        @test isempty(A.problems(narrowed))
+    end
     declarednarrow = A.File(IOBuffer("a\n1\n2\n"); types=Union{Missing, Int8})
     @test eltype(declarednarrow.a) == Union{Missing, Int8}
     declaredstring = A.File(IOBuffer("a\nx\ny\n"); types=Union{Missing, String},
@@ -331,11 +417,72 @@ end
     @test collect(lt.price) == [3.5, 4.25, 5.0, 6.0] && eltype(lt.id) == Union{Int64, Missing}
     @test isequal(collect(lt.when), [Date(2024, 1, 2), Date(2024, 1, 3), missing, Date(2024, 1, 5)])
     @test ismissing(A.lazy(IOBuffer("a\nx\n"); types=Int64).a[1])          # unparsable ⇒ missing
+    narrowlazy = A.lazy(IOBuffer("x\n1\n128\n"); types=Int8)
+    @test eltype(narrowlazy.x) == Union{Int8, Missing}
+    @test isequal(collect(narrowlazy.x), Union{Int8, Missing}[1, missing])
+    customlazy = A.lazy(IOBuffer("x\n1\nbad\n"); types=APICustomScalar)
+    @test isequal(collect(customlazy.x),
+                  Union{APICustomScalar, Missing}[APICustomScalar(1), missing])
+    missinglazy = A.lazy(IOBuffer("x\nvalue\n\n"); types=Missing,
+                         ignoreemptyrows=false)
+    @test all(ismissing, missinglazy.x)
+    dateinput = "d1,d2\n15/01/2023,2023.01.16\n"
+    datetypes = Dict(:d1 => Date, :d2 => Date)
+    dateformats = Dict(:d1 => "dd/mm/yyyy", :d2 => "yyyy.mm.dd")
+    datelazy = A.lazy(IOBuffer(dateinput); types=datetypes, dateformat=dateformats)
+    @test datelazy.d1[1] == Date(2023, 1, 15)
+    @test datelazy.d2[1] == Date(2023, 1, 16)
     # File(lf) reuses the index and equals a fresh parse
     f = A.File(lf); g = A.File(IOBuffer(csv))
     @test all(isequal(collect(Tables.getcolumn(f, nm)), collect(Tables.getcolumn(g, nm))) for nm in Base.names(g))
     ft = A.File(lf; types=Dict(:price => Float32))
     @test Tables.getcolumn(ft, :price) isa Vector{Float32}
+    cleanlf = A.lazy(IOBuffer("a\n1\n"))
+    @test_throws ArgumentError A.File(cleanlf; maxproblems=-1)
+    @test_throws ArgumentError A.File(cleanlf; maxwarnings=-1)
+    @test_throws ArgumentError A.File(cleanlf; on_error=:invalid)
+    @test_throws ArgumentError A.File(cleanlf; ntasks=0)
+    @test A.File(cleanlf; ntasks=1).a == [1]
+    badlf = A.lazy(IOBuffer("a\nbad\n"))
+    warningcapped = A.File(badlf; types=Int64, maxwarnings=0)
+    @test isempty(A.problems(warningcapped))
+    @test getfield(warningcapped, :table).droppedproblems == 1
+    explicitcap = A.File(badlf; types=Int64, maxwarnings=0, maxproblems=1)
+    @test length(A.problems(explicitcap)) == 1
+    @test A.File(cleanlf; validate=false,
+                 types=Dict(:absent => Int64)).a == [1]
+    loosevalidation = A.lazy(IOBuffer("a\n1\n"); validate=false)
+    @test_throws ArgumentError A.File(loosevalidation; validate=true,
+                                      types=Dict(:absent => Int64))
+
+    # Lazy projection is stable file order with duplicate entries removed.
+    # A later eager parse can narrow that visible set, but cannot restore a
+    # column that the LazyFile already dropped.
+    projected = A.lazy(IOBuffer("a,b,c\n1,2,3\n"); select=[:c, :a, :c])
+    @test Base.names(projected) == [:a, :c]
+    projectedfile = A.File(projected; types=Dict(:a => Int8), pool=false)
+    @test Base.names(projectedfile) == [:a, :c]
+    @test projectedfile.a == Int8[1] && projectedfile.c == [3]
+    @test Base.names(A.File(projected; drop=[:a], pool=false)) == [:c]
+    @test_throws ArgumentError A.File(projected; select=[:b])
+
+    # Prepared must not freeze the default 10k cap. Value diagnostics are
+    # regenerated under the File call's cap. Header diagnostics are replayed
+    # from compact structural row references instead of retained without a cap.
+    manyproblemcount = 10_005
+    manybadlf = A.lazy(IOBuffer("a\n" * "bad\n"^manyproblemcount))
+    manybadfile = A.File(manybadlf; types=Int64,
+                         maxproblems=manyproblemcount, ntasks=1)
+    @test length(A.problems(manybadfile)) == manyproblemcount
+    @test getfield(manybadfile, :table).droppedproblems == 0
+    wideheader = join(fill("a\",b\"", manyproblemcount), ',') * "\n"
+    wideheaderlazy = A.lazy(IOBuffer(wideheader))
+    @test length(getfield(getfield(wideheaderlazy, :prepared), :headerlog).items) == 10_000
+    @test length(getfield(getfield(wideheaderlazy, :prepared), :headerrefs)) == 1
+    wideheaderfile = A.File(wideheaderlazy;
+                            maxproblems=manyproblemcount, ntasks=1)
+    @test length(A.problems(wideheaderfile)) == manyproblemcount
+    @test getfield(wideheaderfile, :table).droppedproblems == 0
     # stringtype, select, limit, header, dialect
     ls = A.lazy(IOBuffer(csv); stringtype=String, select=[:name])
     @test Base.names(ls) == [:name] && eltype(ls.name) == Union{String, Missing} && ls.name[1] == "alice"
@@ -349,6 +496,61 @@ end
     @test lb.b[4321] == "v4321" && lb.b[1] == "v1" && lb.b[5000] == "v5000"
     @test collect(lb.a) == string.(1:5000)
     @test [x for x in lb.a] == string.(1:5000)                        # iterate == getindex
+    @test getfield(lb.b, :hint) isa Threads.Atomic{Int}
+
+    # CompactString's view offset is Int32. Exercise the bounded-copy branch
+    # everywhere with an injected small limit, then its real sparse >2 GiB
+    # source position on platforms that can map it.
+    lazybytes = Vector{UInt8}(codeunits("pad" * "lazy value beyond inline storage"))
+    lazyview = A._lazycompact(lazybytes, 4, length(lazybytes) - 3)
+    lazyowned = A._lazycompact(lazybytes, 4, length(lazybytes) - 3, -1)
+    @test String(lazyowned) == String(lazyview) == "lazy value beyond inline storage"
+    @test getfield(lazyview, :data) === lazybytes
+    @test getfield(lazyowned, :data) !== lazybytes
+    rowview = E._rowcompact(lazybytes, 4, length(lazybytes) - 3)
+    rowowned = E._rowcompact(lazybytes, 4, length(lazybytes) - 3, -1)
+    @test String(rowowned) == String(rowview) == "lazy value beyond inline storage"
+    @test getfield(rowview, :data) === lazybytes
+    @test getfield(rowowned, :data) !== lazybytes
+    if Sys.WORD_SIZE == 64 && Sys.isunix()
+        mktemp() do _, io
+            offset0 = Int(typemax(Int32)) + 4096
+            value = "lazy value at a large source offset"
+            seek(io, offset0)
+            write(io, value, '\n')
+            flush(io)
+            seekstart(io)
+            mapped = Mmap.mmap(io, Vector{UInt8}, filesize(io))
+            ci = K.ChunkIndex(offset0 + 1, filesize(io))
+            dialect = K.Dialect()
+            K.indexone!(ci, mapped, dialect, :scalar)
+            column = A.LazyColumn{Union{K.CompactString, Missing}}(
+                mapped, [ci], [0], 1, K.makevalueopts(dialect), 1, K.CompactString)
+            cell = column[1]
+            @test String(cell) == value
+            @test getfield(cell, :data) !== mapped
+
+            # Exercise the public CSV.Rows iteration and cell-access path. A
+            # seeded structural index avoids scanning the sparse 2 GiB hole.
+            inner = E.Rows(mapped, [ci], [:a], Dict(:a => 1),
+                           K.makevalueopts(dialect), nothing, dialect)
+            rows = CSV.Rows(inner, [:a], Dict(:a => 1), [1], nothing, nothing,
+                            K.CompactString, :collect)
+            rowcell = Tables.getcolumn(first(rows), 1)
+            @test String(rowcell) == value
+            @test getfield(rowcell, :data) !== mapped
+        end
+    end
+
+    # A LazyColumn can be shared by Tables.jl consumers. Exercise concurrent
+    # random access across many chunks; each task races to replace the hint,
+    # while the cell lookup must remain correct.
+    order = randperm(MersenneTwister(0x6c617a79), 5000)
+    observed = Vector{String}(undef, length(order))
+    Threads.@threads for slot in eachindex(order)
+        observed[slot] = String(lb.b[order[slot]])
+    end
+    @test observed == ["v$i" for i in order]
     @test occursin("5000 rows × 2 columns", sprint(show, lb))
     @test_throws BoundsError lb.a[5001]
 end
@@ -612,7 +814,23 @@ end
     @test Tables.rowcount(fsh) == 1 && length(fsh) == 1
     @test fsh[1].name == 2
     @test Tables.columnnames(fsh[1]) == [:table, :name, :lookup]
+    @test fsh isa AbstractVector{A.FileRow}
+    @test size(fsh) == (1,) && axes(fsh) == (Base.OneTo(1),)
+    @test fsh[:name] === fsh.name && fsh["name"] === fsh.name
+    @test Base.names(fsh) == [:table, :name, :lookup]
     @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); ntasks=0)
+    tasksrc = "a\n" * join(1:2000, '\n') * "\n"
+    prepared = A._prepare(IOBuffer(tasksrc); ntasks=2)
+    @test length(getfield(prepared, :bi).chunks) <= 2
+    empty!(API_PARSE_TASKS)
+    A.File(IOBuffer(tasksrc); types=APITaskScalar, ntasks=2,
+           parallel=true, chunkbytes=64, pool=false)
+    @test 1 <= length(API_PARSE_TASKS) <= 2
+    tasklazy = A.lazy(IOBuffer(tasksrc); chunkbytes=64)
+    @test length(getfield(getfield(tasklazy, :prepared), :bi).chunks) > 2
+    empty!(API_PARSE_TASKS)
+    A.File(tasklazy; types=APITaskScalar, ntasks=2, parallel=true, pool=false)
+    @test 1 <= length(API_PARSE_TASKS) <= 2
     @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); stringtype=SubString{String})
     @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); silencewarnings=true)
 end
@@ -658,7 +876,8 @@ end
     write(io, "a,b\n1,2\n"); close(io)
     @test collect(A.File(path).a) == [1]
     @test collect(A.File(Vector{UInt8}(codeunits("a,b\n1,2\n"))).a) == [1]
-    @test collect(A.File(`cat $path`).a) == [1]
+    catcmd = `$(Base.julia_cmd()) --startup-file=no --eval "write(stdout, open(ARGS[1]))"`
+    @test collect(A.File(`$(catcmd) $path`).a) == [1]
     @test_throws ArgumentError A.File("definitely-not-a-file.csv")
     @test collect(A.File(codeunits("a,b\n1,2\n")).a) == [1]
     parent = Vector{UInt8}(codeunits("prefixa,b\n1,stable value\nsuffix"))
@@ -725,7 +944,7 @@ end
     @test collect(String, mappedcol) == collect(String, Tables.getcolumn(fb, :s))
     @test collect(String, mappedcol) == collect(String, Tables.getcolumn(fnoprefetch, :s))
     @test pooledcol isa PooledArrays.PooledArray
-    @test collect(Tables.getcolumn(mappedbatch, :n)) == collect(fb.n)[1:mappedbatch.nrows]
+    @test collect(Tables.getcolumn(mappedbatch, :n)) == collect(fb.n)[1:length(mappedbatch)]
     # This also runs K.materialize while its source is a read-only mapping.
     fm = A.File(bigpath; pool=false, stringtype=String)
     @test fm.s == collect(String, mappedcol)
@@ -751,10 +970,32 @@ end
     typed = A.Rows(IOBuffer(input); types=Dict(:a => Int64))
     @test [r.a for r in typed] == [1, 2, 3]
     @test Tables.schema(typed).types[1] == Union{Int64, Missing}
+    partial = first(A.Rows(IOBuffer("a,b\n1,text\n"); types=Dict(:a => Int64)))
+    @test partial.a == 1 && partial.b isa K.CompactString
+    partialinline = first(A.Rows(IOBuffer("a,b\n1,text\n");
+                                 types=Dict(:a => Int64), stringtype=InlineString))
+    @test partialinline.b isa String7
+    narrowrows = A.Rows(IOBuffer("a\n1\n128\n"); types=Int8)
+    @test Tables.schema(narrowrows).types[1] == Union{Int8, Missing}
+    @test isequal([r.a for r in narrowrows], Union{Int8, Missing}[1, missing])
     typedbad = A.Rows(IOBuffer("a\n1\nbad\n"); types=Union{Int64, Missing})
     csvbad = LegacyCSV.Rows(IOBuffer("a\n1\nbad\n"); types=Union{Int64, Missing},
                       silencewarnings=true)
     @test isequal([r.a for r in typedbad], [r.a for r in csvbad])
+    strictrow = first(A.Rows(IOBuffer("a\nbad\n"); types=Int64, strict=true))
+    @test_throws ErrorException strictrow.a
+    errorrow = first(A.Rows(IOBuffer("a\n128\n"); types=Int8,
+                            on_error=:error))
+    @test_throws ErrorException errorrow.a
+    collectrow = first(A.Rows(IOBuffer("a\n128\n"); types=Int8,
+                              strict=true, on_error=:collect))
+    @test ismissing(collectrow.a)
+    @test ismissing(first(A.Rows(IOBuffer("a\nvalue\n"); types=Missing)).a)
+    @test_throws ErrorException first(A.Rows(IOBuffer("a\nvalue\n");
+                                             types=Missing, on_error=:error)).a
+    malformedrow = first(A.Rows(IOBuffer("a\n\"x\"y\n"); on_error=:error))
+    @test_throws ErrorException malformedrow.a
+    @test_throws ArgumentError A.Rows(IOBuffer(input); on_error=:invalid)
     # windowing composes
     @test length(collect(A.Rows(IOBuffer(input); limit=2))) == 2
     @test [r.a for r in A.Rows(IOBuffer(input); skipto=3)] == ["2", "3"]
@@ -772,7 +1013,19 @@ end
     @test_throws ArgumentError A.Rows(IOBuffer(input); pool=true)
     @test_throws ArgumentError A.Rows(IOBuffer(input); nsample=2)
     @test_throws ArgumentError A.Rows(IOBuffer(input); maxproblems=1)
-    @test_throws ArgumentError A.Rows(IOBuffer(input); select=[:a])
+    @test_throws ArgumentError A.Rows(IOBuffer(input); maxwarnings=1)
+    selectedrows = A.Rows(IOBuffer("a,b,c\n1,2,3\n");
+                          select=[:c, :a, :c], types=Dict(:a => Int8))
+    @test Tables.schema(selectedrows).names == (:a, :c)
+    selectedrow = first(selectedrows)
+    @test selectedrow.a == Int8(1) && selectedrow.c == "3"
+    @test Tables.columnnames(selectedrow) == [:a, :c]
+    @test Tables.schema(A.Rows(IOBuffer("a,b,c\n1,2,3\n"); drop=[:b])).names == (:a, :c)
+    dateinput = "d1,d2\n15/01/2023,2023.01.16\n"
+    daterow = first(A.Rows(IOBuffer(dateinput);
+                           types=Dict(:d1 => Date, :d2 => Date),
+                           dateformat=Dict(:d1 => "dd/mm/yyyy", :d2 => "yyyy.mm.dd")))
+    @test (daterow.d1, daterow.d2) == (Date(2023, 1, 15), Date(2023, 1, 16))
 end
 
 @testset "Chunks: stable schema, values concat to File" begin
@@ -780,6 +1033,7 @@ end
     ref = colvalues(A.File(IOBuffer(input); pool=false))
     batches = collect(A.Chunks(IOBuffer(input); chunkbytes=64))
     @test length(batches) > 1
+    @test all(b -> b isa A.File && b isa AbstractVector{A.FileRow}, batches)
     @test all(b -> eltype(b[:a]) == eltype(batches[1][:a]), batches)      # stable
     @test all(b -> eltype(b[:b]) == eltype(batches[1][:b]), batches)      # even w/ late missing
     catted = [reduce(vcat, (Any[_norm(x) for x in b[j]] for b in batches))
@@ -787,7 +1041,7 @@ end
     @test isequal(catted, ref[2])
     # windowing composes with batching
     b2 = collect(A.Chunks(IOBuffer("a,b\n1,2\n3,4\n5,6\n"); chunkbytes=8, skipto=3))
-    @test sum(b -> b.nrows, b2) == 2
+    @test sum(length, b2) == 2
     @test isempty(collect(A.Chunks(IOBuffer(input); chunkbytes=32, limit=0)))
     @test isempty(collect(A.Chunks(IOBuffer(input); chunkbytes=32, footerskip=60)))
     footerparts = collect(A.Chunks(IOBuffer("a\n1\n\n2\n\n3\n");
@@ -811,13 +1065,44 @@ end
     @test isequal(got, file[2])
     bad = first(A.Chunks(IOBuffer("a\nBAD\nNOPE\n"); types=Int64,
                          chunkbytes=64, maxproblems=0))
-    @test isempty(A.problems(bad)) && bad.droppedproblems == 2
+    @test isempty(A.problems(bad)) && getfield(bad, :table).droppedproblems == 2
+    narrowbatch = first(A.Chunks(IOBuffer("a\n1\n128\n"); types=Int8,
+                                 chunkbytes=64, maxproblems=1))
+    @test isequal(collect(narrowbatch.a), Union{Int8, Missing}[1, missing])
+    @test length(A.problems(narrowbatch)) == 1
+    @test_throws ErrorException first(A.Chunks(IOBuffer("a\n128\n"); types=Int8,
+                                               chunkbytes=64, strict=true,
+                                               maxproblems=0))
+    laterbatchsrc = "a\n1\n2\n3\n4\n128\n"
+    laterbatches = collect(A.Chunks(IOBuffer(laterbatchsrc); types=Int8,
+                                    chunkbytes=4, maxproblems=1))
+    problem_batches = filter(b -> !isempty(A.problems(b)), laterbatches)
+    @test length(laterbatches) > 1
+    @test length(problem_batches) == 1
+    laterproblem = only(A.problems(only(problem_batches)))
+    @test (laterproblem.row, laterproblem.col, laterproblem.pos) ==
+          (5, 1, first(findfirst("128", laterbatchsrc)))
     # pool is now supported per batch (each batch is an independent table);
     # only a single policy — Dict/vector per-column forms stay File-only
     @test Tables.getcolumn(first(A.Chunks(IOBuffer("s\n" * "x\ny\n"^50); pool=true, chunkbytes=64)), :s) isa PooledArrays.PooledArray
     @test_throws ArgumentError A.Chunks(IOBuffer(input); pool=Dict(:a => true))
-    @test_throws ArgumentError A.Chunks(IOBuffer(input); select=[:a])
-    @test_throws ArgumentError A.Chunks(IOBuffer(input); strict=true)
+    selected = collect(A.Chunks(IOBuffer("a,b,c\n1,bad,128\n2,no,3\n");
+                                select=[:c, :a, :c], types=Dict(:c => Int8),
+                                chunkbytes=8, maxproblems=1))
+    @test all(Base.names(b) == [:a, :c] for b in selected)
+    @test reduce(vcat, (collect(b.a) for b in selected)) == [1, 2]
+    @test isequal(reduce(vcat, (collect(b.c) for b in selected)),
+                  Union{Missing, Int8}[missing, 3])
+    @test sum(length ∘ A.problems, selected) == 1
+    @test Base.names(first(A.Chunks(IOBuffer("a,b,c\n1,2,3\n");
+                                          drop=[:b], chunkbytes=64))) == [:a, :c]
+    dateinput = "d1,d2\n15/01/2023,2023.01.16\n"
+    datechunk = first(A.Chunks(IOBuffer(dateinput);
+                               types=Dict(:d1 => Date, :d2 => Date),
+                               dateformat=Dict(:d1 => "dd/mm/yyyy", :d2 => "yyyy.mm.dd"),
+                               chunkbytes=64))
+    @test (datechunk.d1[1], datechunk.d2[1]) ==
+          (Date(2023, 1, 15), Date(2023, 1, 16))
 end
 
 @testset "spec replays" begin
@@ -947,15 +1232,39 @@ end # @testset CSVApi
     @test Tables.getcolumn(f, :name) == Tables.getcolumn(o, :name) == [1, 2, 3]
     @test Tables.getcolumn(f, :score) == [1.5, 2.5, 3.5]
     @test isequal(Tables.getcolumn(f, :note), ["x", "y", missing])
+    @test Base.nonmissingtype(eltype(f.note)) == K.CompactString
     @test isequal(String.(coalesce.(Tables.getcolumn(o, :note), "")),
                   String.(coalesce.(Tables.getcolumn(f, :note), "")))
     f = A.File(IOBuffer("1,2\n3,4\n"); transpose=true, header=false)
     @test Tables.getcolumn(f, :Column1) == [1, 2] && Tables.getcolumn(f, :Column2) == [3, 4]
     @test_throws ArgumentError A.File(IOBuffer(input); transpose=true, select=[:name])
+    @test_throws ArgumentError A.File(IOBuffer(input); transpose=true, ntasks=0)
+    @test A.File(IOBuffer(input); transpose=true, ntasks=2, parallel=true).name == [1, 2, 3]
     paddedtranspose = A.File(IOBuffer("a, 1 , \" 2 \" \nb, 3.5 , 4.5 \n");
                                transpose=true)
     @test paddedtranspose.a == [1, 2]
     @test paddedtranspose.b == [3.5, 4.5]
+    narrowtranspose = A.File(IOBuffer("a,1,128\n"); transpose=true,
+                             types=Int8, maxproblems=1)
+    @test isequal(collect(narrowtranspose.a), Union{Int8, Missing}[1, missing])
+    @test length(A.problems(narrowtranspose)) == 1
+    @test_throws ErrorException A.File(IOBuffer("a,x\n"); transpose=true,
+                                       types=Int8, strict=true, maxproblems=0)
+    transposedstrings = "text,alpha,beta\nnums,1,2\n"
+    @test eltype(A.File(IOBuffer(transposedstrings); transpose=true,
+                        stringtype=String, pool=false).text) == String
+    @test eltype(A.File(IOBuffer(transposedstrings); transpose=true,
+                        stringtype=InlineString, pool=false).text) == String7
+    pooledtranspose = A.File(IOBuffer("text,x,x,x\nnums,1,2,3\n");
+                             transpose=true, pool=true)
+    @test pooledtranspose.text isa PooledArrays.PooledArray
+    @test collect(pooledtranspose.text) == ["x", "x", "x"]
+    transposeddate = A.File(IOBuffer("d1,15/01/2023\nd2,2023.01.16\n");
+                            transpose=true, types=Dict(:d1 => Date, :d2 => Date),
+                            dateformat=Dict(:d1 => "dd/mm/yyyy",
+                                            :d2 => "yyyy.mm.dd"))
+    @test (transposeddate.d1[1], transposeddate.d2[1]) ==
+          (Date(2023, 1, 15), Date(2023, 1, 16))
     # Quoted newlines, escapes, empty rows, unicode, ragged tails, and pinned
     # types retain the same names and values as LegacyCSV.jl.
     transposedcases = [
@@ -1049,9 +1358,7 @@ end
     col = K.parse(Vector{UInt8}(codeunits("a\n" * join(("v$(i)_" * "x"^(i % 30) for i in 1:500), '\n') * "\n"))).columns[1]
     @test all(hash(col[i]) == hash(String(col[i])) for i in eachindex(col))
     @test all(hash(col[i], UInt(7)) == hash(String(col[i]), UInt(7)) for i in eachindex(col))
-    hashall(c) = (h = UInt(0); @inbounds for i in eachindex(c); h ⊻= hash(c[i]); end; h)
-    hashall(col)
-    @test @allocated(hashall(col)) == 0
+    @test allochashall(col) == 0
     for n in 0:14   # every inline length + the first view lengths, incl. escaped
         s = "y"^n
         c = K.parse(Vector{UInt8}(codeunits("a\n\"" * s * "\"\n\"" * s * "\"\"z\"\n"))).columns[1]
@@ -1191,7 +1498,7 @@ end
     # a promotion that only appears late must not change the batch schema
     data = "a,b\n" * join(("$(i),value$(i)" for i in 1:40), '\n') * "X"
     chunks = collect(A.Chunks(IOBuffer(data); ntasks=2, pool=false))
-    nrows(t) = t.nrows
+    nrows(t) = length(t)
     @test sum(nrows, chunks) == 40
     @test String(last(Tables.getcolumn(last(chunks), :b))) == "value40X"
     # ints then a string in the last batch: every batch reports the widened type
@@ -1283,6 +1590,20 @@ end
     f = A.File(map(IOBuffer, ["a\n1\n", "a\n\"x\n"]); pool=false)
     @test any(p -> p.kind == :invalid_quoted_field && p.row == 2, A.problems(f))
     @test any(p -> p.kind == :unclosed_quote && p.row == 0, A.problems(f))
+    # Column names may shadow File's implementation fields. Concatenation must
+    # use getfield for its own state and keep column-first public access.
+    for nm in ("table", "lookup")
+        f = A.File([IOBuffer("$nm\n1\n"), IOBuffer("$nm\n2\n")])
+        @test collect(f[Symbol(nm)]) == [1, 2]
+    end
+    invalidsources = [IOBuffer("a\nBAD\nNOPE\n"), IOBuffer("a\nWRONG\nFAIL\n")]
+    capped = A.File(invalidsources; types=Int64, maxwarnings=2, maxproblems=1)
+    @test length(A.problems(capped)) == 1
+    @test A.problems(capped)[1].row == 1
+    @test getfield(capped, :table).droppedproblems == 3
+    @test_throws ErrorException A.File(
+        [IOBuffer("a\nBAD\n"), IOBuffer("a\nWRONG\n")];
+        types=Int64, strict=true, maxproblems=0)
     # kwargs apply per source
     f = A.File(map(IOBuffer, data); select=["a"], types=Dict(:a => Float64))
     @test Tables.columnnames(Tables.columns(f)) == [:a] && f.a == [1.0, 4.0, 7.0, 10.0, 13.0, 16.0]
@@ -1333,6 +1654,10 @@ end
         p = joinpath(FilePathsBase.Path(tmp), "in.csv")
         f = A.File(p)
         @test f.x == [1, 3] && f.y == [2, 4]
+        @test getfield(f, :name) == string(p)
+        @test getfield(A.lazy(p), :name) == string(p)
+        @test collect(A.File([p, p]; source=:src).src) == [string(p), string(p),
+                                                           string(p), string(p)]
         @test first(A.Rows(p)).x isa AbstractString
         @test first(A.Chunks(p; chunkbytes=1 << 20))[:x] == [1, 3]
         @test A.sniff(p).names == [:x, :y]

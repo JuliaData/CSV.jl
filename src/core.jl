@@ -1,8 +1,8 @@
 """
     CSVKernel
 
-A stand-alone prove-out of the proposed CSV.jl internals rewrite: a small, layered
-kernel where *structure* is separated from *values*.
+The internal CSV parsing engine. It separates structural indexing from value
+parsing and column assembly.
 
 The pipeline (and the file's layout) is:
 
@@ -33,13 +33,11 @@ The pipeline (and the file's layout) is:
                         row counts — no rowsguess, no reallocation).
     L5  driver        : `CSVKernel.parse` — eager typed table materialization
                         with task or plain-loop execution and problems-as-data.
-                        `examples.jl` builds batched
-                        (CSV.Chunks-like) and row-streaming (CSV.Rows-like) modes
-                        on the same pieces.
+                        The shared batch and row primitives use the same index
+                        and value parsers.
 
-The package-level layers for sniffing, pooling, transposed reading, streaming,
-and writing are documented in `docs/kernel-README.md`. Multi-file input and
-incremental IO remain separate follow-up work.
+The API layer adds source handling, delimiter detection, row windows, pooling,
+transposed input, multiple sources, and the public Tables.jl interfaces.
 
 Semantics note (pinned by tests): the structural layer treats *every* quote byte as
 toggling quote state, like Sep/simdcsv. This matches RFC-style well-formed fields. A
@@ -52,9 +50,8 @@ module CSVKernel
 
 using Dates
 
-# The value layer: self-contained typed parsers (int/float/bool/civil), span
-# utilities (quote/content discovery, sentinels), and format programs. No
-# Parsers.jl — this pair of modules is the Parsers-3.0 release-candidate shape.
+# Temporary snapshot of the typed value kernels shared with the Parsers.jl 3.0
+# work. The final CSV.jl 1.0 source must use the registered Parsers.jl API.
 include("values.jl")
 using .KernelValues
 using .KernelValuesDates
@@ -484,6 +481,28 @@ end
 end
 @inline parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                    scratch::Vector{UInt8}) where {T} = parsevalue(T, buf, i, j, vo)
+
+# Narrow numeric requests use the native integer/float kernels, then convert at
+# the API boundary. Keep that rule available to lazy/row-wise front doors too:
+# calling `tryparse(Int8, String(...))` here would lose decimal/groupmark
+# handling and would allocate one String per cell.
+const NarrowParseType = Union{Int8, Int16, Int32,
+                              UInt8, UInt16, UInt32, UInt64,
+                              Float16, Float32}
+@inline _narrowbase(::Type{<:Union{Int8, Int16, Int32,
+                                   UInt8, UInt16, UInt32}}) = Int64
+@inline _narrowbase(::Type{UInt64}) = Int128
+@inline _narrowbase(::Type{<:Union{Float16, Float32}}) = Float64
+@inline function _narrowvalue(::Type{T}, value, ok::Bool) where {T <: NarrowParseType}
+    ok || return (zero(T), false)
+    T <: Integer && !(typemin(T) <= value <= typemax(T)) && return (zero(T), false)
+    return (convert(T, value), true)
+end
+@inline function parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int,
+                            vo::ValueOpts, scratch::Vector{UInt8}) where {T <: NarrowParseType}
+    value, ok = parsevalue(_narrowbase(T), buf, i, j, vo, scratch)
+    return _narrowvalue(T, value, ok)
+end
 # user-only column types: never inferred, so the cascade and lattice are untouched
 @inline function _parsebigint_direct(buf::Vector{UInt8}, i::Int, j::Int)
     v, rc = V.parsebigint(buf, i, j)
@@ -533,6 +552,9 @@ end
 @inline parsevalue(::Type{BigFloat}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
     vo.groupmark == 0x00 ? _parsebigfloat_direct(buf, i, j, vo) :
                            parsevalue(BigFloat, buf, i, j, vo, Vector{UInt8}(undef, 64))
+@inline parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int,
+                   vo::ValueOpts) where {T <: NarrowParseType} =
+    parsevalue(T, buf, i, j, vo, _scratchfor(vo))
 @inline function parsevalue(::Type{Bool}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     if isempty(vo.trues) && isempty(vo.falses)
         v, rc = V.parsebool(buf, i, j)
@@ -674,7 +696,7 @@ end
 
 @inline function checktaperange(ci::ChunkIndex)
     ci.stop - ci.start < MAX_TAPE_RELPOS ||
-        throw(ArgumentError("a single row is 1 GiB or larger; not supported by the prove-out kernel"))
+        throw(ArgumentError("a single row is 1 GiB or larger and is not supported"))
     return ci
 end
 
@@ -1524,6 +1546,7 @@ TypedColumn{T}(n::Int) where {T} = TypedColumn{T}(Vector{T}(undef, n), fill(fals
 # stores have no memcpy path), which is why the write-direct mode exists.
 struct UnionColumn{T}
     uvalues::Vector{Union{T, Missing}}
+    UnionColumn{T}(uvalues::Vector{Union{T, Missing}}) where {T} = new{T}(uvalues)
 end
 UnionColumn{T}(n::Int) where {T} = UnionColumn{T}(Vector{Union{T, Missing}}(undef, n))
 
@@ -1639,17 +1662,69 @@ end
 end
 
 
-# The column builder: payloads + the two buffers views resolve into.
+# The column builder: payloads plus the input and bounded owned buffers that
+# long views resolve into.
 mutable struct StringColumn
     payloads::Vector{CompactStringPayload}
     buf::Vector{UInt8}
-    extra::Vector{UInt8}          # unescaped long values (rare); guarded by extralock
+    extra::Vector{UInt8}          # first owned buffer; guarded by extralock
+    overflow::Vector{Vector{UInt8}} # further bounded owned buffers
     extralock::ReentrantLock
     e::UInt8                      # escape char
     cq::UInt8                     # close-quote char (e == cq for RFC ""-doubling)
 end
+StringColumn(payloads::Vector{CompactStringPayload}, buf::Vector{UInt8},
+             extra::Vector{UInt8}, extralock::ReentrantLock, e::UInt8, cq::UInt8) =
+    StringColumn(payloads, buf, extra, Vector{Vector{UInt8}}(), extralock, e, cq)
 StringColumn(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8) =
     StringColumn(fill(PAYLOAD_MISSING, n), buf, UInt8[], ReentrantLock(), e, cq)
+
+@inline _ownedcount(col::StringColumn) = 1 + length(col.overflow)
+@inline function _ownedbuffer(col::StringColumn, idx::Integer)
+    idx == 1 && return col.extra
+    return @inbounds col.overflow[Int(idx) - 1]
+end
+@inline _hasowned(col::StringColumn) = !isempty(col.extra) || !isempty(col.overflow)
+
+# Append one parse-chunk staging buffer to a bounded owned buffer. A staging
+# buffer cannot exceed Int32 because field lengths in the structural tape are
+# Int32. Packing whole staging buffers keeps every cell contiguous.
+function _appendowned_unlocked!(col::StringColumn, bytes::Vector{UInt8},
+                                maxbytes::Int=COMPACTSTRING_BUFFER_BYTES)
+    0 <= maxbytes <= COMPACTSTRING_BUFFER_BYTES ||
+        throw(ArgumentError("invalid CompactString owned-buffer limit $maxbytes"))
+    n = length(bytes)
+    n <= maxbytes ||
+        throw(ArgumentError("a single CSV string staging buffer exceeds the Int32 field limit"))
+    idx = _ownedcount(col)
+    dst = _ownedbuffer(col, idx)
+    if length(dst) > maxbytes - n
+        idx < typemax(Int32) ||
+            throw(ArgumentError("too many CompactString owned buffers"))
+        push!(col.overflow, UInt8[])
+        idx += 1
+        dst = col.overflow[end]
+    end
+    base = length(dst)
+    append!(dst, bytes)
+    return Int32(idx), base
+end
+
+function _copyownedbuffers!(dst::StringColumn, src::StringColumn,
+                            maxbytes::Int=COMPACTSTRING_BUFFER_BYTES)
+    maps = Vector{Tuple{Int32, Int}}(undef, _ownedcount(src))
+    @inbounds for idx in eachindex(maps)
+        maps[idx] = _appendowned_unlocked!(dst, _ownedbuffer(src, idx), maxbytes)
+    end
+    return maps
+end
+
+@inline function _repointowned(p::CompactStringPayload,
+                               maps::Vector{Tuple{Int32, Int}})
+    oldidx = Int(csbufidx(p))
+    newidx, base = @inbounds maps[oldidx]
+    return repoint_payload(p, newidx, base + Int(csoffset(p)))
+end
 
 # The kernel's own unescape: `""` collapses to `"` when e == cq; `\X` drops the
 # backslash when e != cq. Spans are Int64/Int32 end to end, so a single field
@@ -1744,7 +1819,8 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
                         userprovided::Bool, problems,
                         problemrowbase::Int=rowbase,
                         mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
-                        reportlimit::Int=typemax(Int), fromrow::Int=0)
+                        reportlimit::Int=typemax(Int), fromrow::Int=0;
+                        viewoffsetlimit::Int=Int(typemax(Int32)))
     payloads = col.payloads
     staging::Union{Nothing, NTuple{4, Vector}} = nothing  # (bytes, rows, offs, lens) for escaped-long cells
     @inbounds for lr in max(fromrow, ci.firstdatarow):totalrows(ci)
@@ -1764,8 +1840,14 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
             problemrow = problemrowbase + localrow
             pushproblem!(problems, problemrow, j, pos, :invalid_quoted_field,
                          "malformed quoting in " * excerpt(buf, pos, len))
-            payloads[out] = len <= COMPACTSTRING_INLINE ? inline_payload(buf, pos, len) :
-                                                          view_payload(buf, pos, len, 0, pos - 1)
+            if len <= COMPACTSTRING_INLINE
+                payloads[out] = inline_payload(buf, pos, len)
+            elseif pos - 1 <= viewoffsetlimit
+                payloads[out] = view_payload(buf, pos, len, 0, pos - 1)
+            else
+                staging === nothing && (staging = (UInt8[], Int[], Int[], Int[]))
+                _stageraw!(staging, buf, pos, len, out)
+            end
             continue
         end
         if st == CELL_MISSING
@@ -1792,12 +1874,30 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
             end
         elseif clen <= COMPACTSTRING_INLINE
             payloads[out] = inline_payload(buf, cpos, clen)
+        elseif cpos - 1 > viewoffsetlimit
+            # Arrow StringView stores a signed 32-bit buffer-relative offset.
+            # Preserve large-file support by copying only this value into a
+            # bounded owned buffer; ordinary in-range values remain zero-copy.
+            staging === nothing && (staging = (UInt8[], Int[], Int[], Int[]))
+            _stageraw!(staging, buf, cpos, clen, out)
         else
             payloads[out] = view_payload(buf, cpos, clen, 0, cpos - 1)
         end
     end
     staging === nothing || _flushstaging!(col, payloads, staging)
     return 0
+end
+
+@inline function _stageraw!(staging::NTuple{4, Vector}, buf::Vector{UInt8},
+                            cpos::Int, clen::Int, out::Int)
+    sbytes = staging[1]::Vector{UInt8}
+    spos = length(sbytes) + 1
+    resize!(sbytes, length(sbytes) + clen)
+    copyto!(sbytes, spos, buf, cpos, clen)
+    push!(staging[2]::Vector{Int}, out)
+    push!(staging[3]::Vector{Int}, spos)
+    push!(staging[4]::Vector{Int}, clen)
+    return
 end
 
 # Named top-level helpers, NOT closures: the previous do-block flush captured
@@ -1823,11 +1923,10 @@ function _flushstaging!(col::StringColumn, payloads::Vector{CompactStringPayload
     slens = staging[4]::Vector{Int}
     lock(col.extralock)
     try
-        base = Int64(length(col.extra))
-        append!(col.extra, sbytes)
+        bufidx, base = _appendowned_unlocked!(col, sbytes)
         @inbounds for k in eachindex(srows)
             payloads[srows[k]] = view_payload(sbytes, soffs[k], slens[k],
-                                              1, base + Int64(soffs[k]) - 1)
+                                              bufidx, base + soffs[k] - 1)
         end
     finally
         unlock(col.extralock)
@@ -2366,6 +2465,31 @@ end
 @inline _defaultchunkbytes(nbytes::Int, nthreads::Int=Threads.nthreads()) =
     clamp(cld(nbytes, 4 * nthreads), 1 << 16, 1 << 20)
 
+# Run indexed work with at most `tasklimit` live Julia Tasks. Spawning one task
+# per chunk lets a prebuilt LazyFile index ignore a later `ntasks=N` request;
+# this bounded worker loop makes task count an execution contract independent
+# of how many structural chunks the index contains.
+function _taskforeach(f, items, tasklimit::Int)
+    n = length(items)
+    n == 0 && return nothing
+    workers = min(tasklimit, n)
+    if workers <= 1
+        foreach(f, items)
+        return nothing
+    end
+    next = Threads.Atomic{Int}(1)
+    @sync for _ in 1:workers
+        errormonitor(Threads.@spawn begin
+            while true
+                i = Threads.atomic_add!(next, 1)
+                i > n && break
+                f(@inbounds items[i])
+            end
+        end)
+    end
+    return nothing
+end
+
 """
     CSVKernel.parse(buf::Vector{UInt8}; kwargs...) -> ParsedTable
     CSVKernel.parse(str::AbstractString; kwargs...)
@@ -2386,7 +2510,7 @@ Keywords: `delim`, `quotechar`, `openquotechar`/`closequotechar`, `escapechar`,
 `quoted`, `comment`, `ignoreemptyrows`, `ignorerepeated`, `header` (true | false | Vector), `types`
 (Type | Vector | Dict), `dateformat`, `decimal`, `truestrings`/`falsestrings`,
 `sentinels` (spellings that parse as missing), `stripwhitespace`, `groupmark`,
-`chunkbytes`, `parallel`, `fastindex`, `scanner`
+`chunkbytes`, `parallel`, `ntasks`, `fastindex`, `scanner`
 (:auto | :vec | :swar | :scalar), `maxproblems`,
 `on_error` (:collect | :error), `validate`, `nsample`.
 """
@@ -2404,6 +2528,7 @@ function parse(buf::Vector{UInt8};
                colopts::Union{Nothing, Vector{ValueOpts}}=nothing,
                chunkbytes::Union{Nothing, Int}=nothing,
                parallel::Bool=Threads.nthreads() > 1,
+               ntasks::Union{Nothing, Int}=nothing,
                fastindex::Bool=true,
                scanner::Symbol=:auto,
                maxproblems::Int=10_000,
@@ -2422,6 +2547,9 @@ function parse(buf::Vector{UInt8};
         throw(ArgumentError("limit and rowmask cannot be combined; bake the limit into the mask"))
     tm = _normalizetypemap(typemap)
     nsample === nothing || nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
+    ntasks === nothing || ntasks >= 1 ||
+        throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
+    tasklimit = parallel ? something(ntasks, Threads.nthreads()) : 1
     # Size-aware defaults. chunkbytes: enough chunks to occupy every thread (4×
     # tasks per thread: at 20 MiB the straggler tail of 2×/thread measured
     # 10-17% across shapes; the 1 MiB cap keeps large-file geometry identical), capped at 1 MiB — the column-at-a-time
@@ -2466,12 +2594,10 @@ function parse(buf::Vector{UInt8};
     # is a streaming scan (multi-GiB/s per core); giving up the fused
     # index-then-parse cache warmth on ONE column costs less than the copies.
     toindex = [k for k in 1:nchall if !indexed[k]]
-    if parallel && length(toindex) > 1
-        @sync for k in toindex
-            errormonitor(Threads.@spawn begin
-                indexone!(allchunks[k], buf, d, sc)
-                indexed[k] = true
-            end)
+    if tasklimit > 1 && length(toindex) > 1
+        _taskforeach(toindex, tasklimit) do k
+            indexone!(allchunks[k], buf, d, sc)
+            indexed[k] = true
         end
     else
         for k in toindex
@@ -2586,7 +2712,7 @@ function parse(buf::Vector{UInt8};
         directwave!(cols, chunks, buf, d, opts, ncols, userprovided, promo,
                     promolock, pendingproblems, segments, segtypes, selected,
                     rowbases, ndata, rl, reportstructural, parallel,
-                    sawmissing, tm, colopts)
+                    tasklimit, sawmissing, tm, colopts)
         for k in 1:(nch - 1)
             chunks[k].unclosedquote &&
                 error("internal error: chunk $(k) ended inside a quoted field despite parity pre-scan")
@@ -2595,13 +2721,12 @@ function parse(buf::Vector{UInt8};
         # -- masked wave: chunk-local staging + compacting stitch --------------
         # (the two-phase filter path; excluded rows never parse, output
         # positions gather compactly)
-        if parallel && nch > 1
-            @sync for k in 1:nch
-                errormonitor(Threads.@spawn fusedchunk!(chunks[k], buf, d, ncols, opts,
-                                                        userprovided, promo, promolock,
-                                                        pendingproblems, segments, segtypes, k,
-                                                        selected, rowmask, mb(k), rl(k),
-                                                        reportstructural, tm, colopts))
+        if tasklimit > 1 && nch > 1
+            _taskforeach(1:nch, tasklimit) do k
+                fusedchunk!(chunks[k], buf, d, ncols, opts, userprovided, promo,
+                            promolock, pendingproblems, segments, segtypes, k,
+                            selected, rowmask, mb(k), rl(k), reportstructural,
+                            tm, colopts)
             end
         else
             for k in 1:nch
@@ -2624,12 +2749,12 @@ function parse(buf::Vector{UInt8};
             T !== finalstaged[j] && T !== Missing && push!(stale, (k, j))
         end
         if !isempty(stale)
-            if parallel && length(stale) > 1
-                @sync for (k, j) in stale
-                    errormonitor(Threads.@spawn restale!(chunks, finalstaged, segments, segtypes,
-                                                         pendingproblems, buf, opts, d,
-                                                         userprovided, k, j, rowmask, mb(k), rl(k),
-                                                         colopts))
+            if tasklimit > 1 && length(stale) > 1
+                _taskforeach(stale, tasklimit) do x
+                    k, j = x
+                    restale!(chunks, finalstaged, segments, segtypes, pendingproblems,
+                             buf, opts, d, userprovided, k, j, rowmask, mb(k), rl(k),
+                             colopts)
                 end
             else
                 for (k, j) in stale
@@ -2643,10 +2768,8 @@ function parse(buf::Vector{UInt8};
                                                  rowbases, ndata, buf, opts.e, d.cq,
                                                  rowmask, rowbases0))
         # single-chunk stitches are zero-copy finalizes — never worth a task spawn
-        if parallel && length(stitchjs) > 1 && ndata > 0 && length(chunks) > 1
-            @sync for j in stitchjs
-                errormonitor(Threads.@spawn stitchcol(j))
-            end
+        if tasklimit > 1 && length(stitchjs) > 1 && ndata > 0 && length(chunks) > 1
+            _taskforeach(stitchcol, stitchjs, tasklimit)
         else
             foreach(stitchcol, stitchjs)
         end
@@ -2839,6 +2962,7 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
                      selected::Union{Nothing, Vector{Bool}},
                      rowbases::Vector{Int}, ndata::Int, rl,
                      reportstructural::Bool, parallel::Bool,
+                     tasklimit::Int,
                      unioncols::Vector{Bool}=fill(false, ncols), tm=nothing, colopts=nothing)
     nch = length(chunks)
     finals = Vector{Any}(nothing, ncols)
@@ -2847,26 +2971,22 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
     # initializes its selector bytes at allocation, which is a serial memset
     # per union column if done on one task — measured +17-21% at 8T on
     # missing-heavy shapes before this went parallel
-    if parallel && length(allocjs) > 1 && ndata > (1 << 16)
-        @sync for j in allocjs
-            errormonitor(Threads.@spawn begin
-                finals[j] = _allocdirect(promo[j], ndata, buf, opts, d, j,
-                                         unioncols[j])
-            end)
+    if tasklimit > 1 && length(allocjs) > 1 && ndata > (1 << 16)
+        _taskforeach(allocjs, tasklimit) do j
+            finals[j] = _allocdirect(promo[j], ndata, buf, opts, d, j,
+                                     unioncols[j])
         end
     else
         for j in allocjs
             finals[j] = _allocdirect(promo[j], ndata, buf, opts, d, j, unioncols[j])
         end
     end
-    if parallel && nch > 1
-        @sync for k in 1:nch
-            errormonitor(Threads.@spawn directchunk!(chunks[k], buf, d, opts, ncols,
-                                                     userprovided, promo, promolock, finals,
-                                                     pendingproblems, segments, segtypes, k,
-                                                     selected, rowbases[k], rl(k), ndata,
-                                                     reportstructural, unioncols,
-                                                     tm, colopts))
+    if tasklimit > 1 && nch > 1
+        _taskforeach(1:nch, tasklimit) do k
+            directchunk!(chunks[k], buf, d, opts, ncols, userprovided, promo,
+                         promolock, finals, pendingproblems, segments, segtypes, k,
+                         selected, rowbases[k], rl(k), ndata, reportstructural,
+                         unioncols, tm, colopts)
         end
     else
         for k in 1:nch
@@ -2886,39 +3006,22 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
         scol isa StringColumn || continue
         payloads = scol.payloads
         ks = [k for k in 1:nch if segments[k][j] isa StringColumn &&
-                                  !isempty((segments[k][j]::StringColumn).extra)]
+                                  _hasowned(segments[k][j]::StringColumn)]
         isempty(ks) && continue
-        # reserve every chunk's region serially (bases are order-dependent),
-        # then copy bytes and rebase each chunk's rows in parallel — regions
-        # and row ranges are disjoint
-        base0 = Int64(length(scol.extra))
-        bases = Vector{Int64}(undef, length(ks))
-        total = Int64(0)
-        for (x, k) in enumerate(ks)
-            bases[x] = base0 + total
-            total += length((segments[k][j]::StringColumn).extra)
-        end
-        resize!(scol.extra, base0 + total)
-        rebaseone = x -> begin
-            k = ks[x]
+        # Copy whole chunk-owned buffers in source order and update their view
+        # words. Owned buffers are rare; this serial fold also makes rollover
+        # into a new bounded buffer deterministic.
+        for k in ks
             seg = segments[k][j]::StringColumn
-            base = bases[x]
-            copyto!(scol.extra, base + 1, seg.extra, 1, length(seg.extra))
+            maps = _copyownedbuffers!(scol, seg)
             rhi = k < nch ? rowbases[k + 1] : ndata
             @inbounds for r in (rowbases[k] + 1):rhi
                 pl = payloads[r]
-                if cslen(pl) > COMPACTSTRING_INLINE && csbufidx(pl) == 1
-                    payloads[r] = rebase_payload(pl, base)
+                if cslen(pl) > COMPACTSTRING_INLINE && csbufidx(pl) > 0
+                    payloads[r] = _repointowned(pl, maps)
                 end
             end
             segments[k][j] = nothing
-        end
-        if parallel && length(ks) > 1
-            @sync for x in eachindex(ks)
-                errormonitor(Threads.@spawn rebaseone(x))
-            end
-        else
-            foreach(rebaseone, eachindex(ks))
         end
     end
 
@@ -2948,9 +3051,9 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
                           opts, userprovided, k, j, rowbases[k], rl(k), colopts)
             end
         end
-        if parallel && length(stale) > 1
-            @sync for (k, j) in stale
-                errormonitor(Threads.@spawn redo(k, j))
+        if tasklimit > 1 && length(stale) > 1
+            _taskforeach(stale, tasklimit) do x
+                redo(x[1], x[2])
             end
         else
             for (k, j) in stale
@@ -2968,10 +3071,8 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
                   finalizecolumn(T, finals[j]::Union{TypedColumn{T}, UnionColumn{T}}, ndata)
     end
     finjs = allocjs
-    if parallel && length(finjs) > 1 && ndata > (1 << 18)
-        @sync for j in finjs
-            errormonitor(Threads.@spawn finalizeone(j))
-        end
+    if tasklimit > 1 && length(finjs) > 1 && ndata > (1 << 18)
+        _taskforeach(finalizeone, finjs, tasklimit)
     else
         foreach(finalizeone, finjs)
     end
@@ -3034,7 +3135,7 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
                 conflict = parsecolchunk!(chunkcol, buf, ci, j, rowbase,
                                           _copts(colopts, opts, j),
                                           userprovided[j], log, 0, nothing, 0, reportlimit)
-                segs[j] = isempty(chunkcol.extra) ? nothing : chunkcol
+                segs[j] = _hasowned(chunkcol) ? chunkcol : nothing
             else
                 segs[j] = nothing
                 hi >= lo && _fillslice!(dest, lo, hi)
@@ -3101,7 +3202,7 @@ Base.size(c::PooledColumn) = size(c.refs)
 # where the container supports it (CompactString views / pooled refs), else a
 # converted Base vector
 _widenmissing(c::CompactStringVector{CompactString}) =
-    CompactStringVector{Union{CompactString, Missing}}(c.payloads, c.buf, c.extra)
+    CompactStringVector{Union{CompactString, Missing}}(c.payloads, c.buf, c.extra, c.overflow)
 _widenmissing(c::PooledColumn{CompactString}) =
     PooledColumn{Union{CompactString, Missing}}(c.refs, c.levels)
 _widenmissing(c::Vector{T}) where {T} = convert(Vector{Union{T, Missing}}, c)
@@ -3160,27 +3261,26 @@ function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases
     end
     if T === String
         payloads = fill(PAYLOAD_MISSING, ndata)
-        extra = UInt8[]
+        outcol = StringColumn(payloads, buf, UInt8[], ReentrantLock(), e, cq)
         for k in eachindex(chunkrows)
             seg = segments[k][j]
             seg === nothing && continue          # all-missing segment
             scol = seg::StringColumn
             rb = rowbases[k]
-            if isempty(scol.extra)
+            if !_hasowned(scol)
                 copyto!(payloads, rb + 1, scol.payloads, 1, chunkrows[k])
             else
-                base = Int64(length(extra))
-                append!(extra, scol.extra)
+                maps = _copyownedbuffers!(outcol, scol)
                 @inbounds for i in 1:chunkrows[k]
                     p = scol.payloads[i]
-                    if cslen(p) > COMPACTSTRING_INLINE && csbufidx(p) == 1
-                        p = rebase_payload(p, base)
+                    if cslen(p) > COMPACTSTRING_INLINE && csbufidx(p) > 0
+                        p = _repointowned(p, maps)
                     end
                     payloads[rb + i] = p
-                    end
+                end
             end
         end
-        return finalizecolumn(String, StringColumn(payloads, buf, extra, ReentrantLock(), e, cq), ndata)
+        return finalizecolumn(String, outcol, ndata)
     end
     values = Vector{T}(undef, ndata)
     present = fill(false, ndata)
@@ -3203,7 +3303,7 @@ function _stitchmasked(::Type{T}, segments, j::Int, chunkrows, ndata::Int,
                        mask::Vector{Bool}, inbases) where {T}
     if T === String
         payloads = fill(PAYLOAD_MISSING, ndata)
-        extra = UInt8[]
+        outcol = StringColumn(payloads, buf, UInt8[], ReentrantLock(), e, cq)
         dest = 0
         for k in eachindex(chunkrows)
             seg = segments[k][j]
@@ -3214,19 +3314,19 @@ function _stitchmasked(::Type{T}, segments, j::Int, chunkrows, ndata::Int,
                 continue
             end
             scol = seg::StringColumn
-            base = Int64(length(extra))
-            isempty(scol.extra) || append!(extra, scol.extra)
+            maps = _hasowned(scol) ? _copyownedbuffers!(outcol, scol) :
+                                     Tuple{Int32, Int}[]
             @inbounds for i in 1:chunkrows[k]
                 mask[inbases[k] + i] || continue
                 dest += 1
                 p = scol.payloads[i]
-                if cslen(p) > COMPACTSTRING_INLINE && csbufidx(p) == 1
-                    p = rebase_payload(p, base)
+                if cslen(p) > COMPACTSTRING_INLINE && csbufidx(p) > 0
+                    p = _repointowned(p, maps)
                 end
                 payloads[dest] = p
             end
         end
-        return finalizecolumn(String, StringColumn(payloads, buf, extra, ReentrantLock(), e, cq), ndata)
+        return finalizecolumn(String, outcol, ndata)
     end
     values = Vector{T}(undef, ndata)
     present = fill(false, ndata)
@@ -3256,13 +3356,13 @@ end
 finalizecolumn(::Type{Missing}, ::Nothing, n::Int, ::Bool) = fill(missing, n)
 function finalizecolumn(::Type{String}, col::StringColumn, n::Int)
     anymissing = any(p -> cslen(p) < 0, col.payloads)
-    return anymissing ? CompactStringVector{Union{CompactString, Missing}}(col.payloads, col.buf, col.extra) :
-                        CompactStringVector{CompactString}(col.payloads, col.buf, col.extra)
+    return anymissing ? CompactStringVector{Union{CompactString, Missing}}(col.payloads, col.buf, col.extra, col.overflow) :
+                        CompactStringVector{CompactString}(col.payloads, col.buf, col.extra, col.overflow)
 end
 function finalizecolumn(::Type{String}, col::StringColumn, n::Int, force_missing::Bool)
     anymissing = force_missing || any(p -> cslen(p) < 0, col.payloads)
-    return anymissing ? CompactStringVector{Union{CompactString, Missing}}(col.payloads, col.buf, col.extra) :
-                        CompactStringVector{CompactString}(col.payloads, col.buf, col.extra)
+    return anymissing ? CompactStringVector{Union{CompactString, Missing}}(col.payloads, col.buf, col.extra, col.overflow) :
+                        CompactStringVector{CompactString}(col.payloads, col.buf, col.extra, col.overflow)
 end
 # `all(::Vector{Bool})` short-circuits, so it compiles to a branchy scalar
 # loop — 1.2 ms per 4M-row column. `count` vectorizes; missing-free columns
