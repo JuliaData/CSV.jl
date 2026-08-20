@@ -1445,11 +1445,22 @@ index(buf::Vector{UInt8}; kw...) = index(buf, Dialect(); kw...)
 function _normalizetypemap(typemap)
     typemap === nothing && return nothing
     tm = Dict{Type, Type}()
+    inttarget = nothing
     for (a, b) in typemap
         a isa Type && b isa Type ||
             throw(ArgumentError("typemap entries must be Type => Type (got $a => $b)"))
-        tm[Base.nonmissingtype(a)] = Base.nonmissingtype(b)
+        key = Base.nonmissingtype(a)
+        # Inference uses Int64 on every architecture. Keep the common `Int`
+        # spelling portable by treating it as the inferred integer type on
+        # 32-bit Julia too; otherwise the same typemap silently stops applying.
+        if key === Int && Int !== Int64
+            inttarget = Base.nonmissingtype(b)
+        else
+            tm[key] = Base.nonmissingtype(b)
+        end
     end
+    # An explicit Int64 entry is more specific than the portable Int alias.
+    inttarget === nothing || haskey(tm, Int64) || (tm[Int64] = inttarget)
     return isempty(tm) ? nothing : tm
 end
 @inline _maptype(tm, T) = tm === nothing || T === Missing ? T : get(tm, T, T)

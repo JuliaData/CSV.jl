@@ -46,10 +46,13 @@ matters, vectors of one-shot IOs).
 The harness now compares row counts and normalized schema types as well as names
 and values. Two thrown calls agree only when their semantic error categories
 agree. Every delta pin states its exact expected outcome (`differ`, `new_errors`,
-or `old_errors`), so a reversed error direction also fails. The current ledger
-is 351 `agree`, 19 `both_error`, 14 `differ` (all pinned), 9 `new_errors` (all
-pinned), and 8 `old_errors` (all pinned), with no `unportable` outcome and no
-unqueued entry: 401 unique outcomes and 1,447/1,447 passing battery assertions.
+or `old_errors`), so a reversed error direction also fails. The current 64-bit
+ledger is 351 `agree`, 19 `both_error`, 14 `differ` (all pinned), 9 `new_errors`
+(all pinned), and 8 `old_errors` (all pinned), with no `unportable` outcome and
+no unqueued entry: 401 unique outcomes and 1,447/1,447 passing battery
+assertions. On 32-bit Julia, `basics:106` is one additional pinned `differ`:
+1.0 preserves large inferred integers as `Int64`, while 0.10 widened values
+above `Int32` to `Float64`.
 Duplicate or empty outcome labels are fatal, so one case cannot silently replace
 another case in the ledger.
 

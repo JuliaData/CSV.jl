@@ -58,6 +58,20 @@ function hashall(c)
     return h
 end
 allochashall(c) = @allocated hashall(c)
+
+# Mmap attached its finalizer directly to Array through Julia 1.10. Julia
+# 1.11's GenericMemory-backed Array attaches it to the memory owner instead.
+# Finalize that exact owner so Windows can remove test files deterministically.
+function finalizemapping!(mapped::Vector{UInt8})
+    if hasfield(typeof(mapped), :ref)
+        ref = getfield(mapped, :ref)
+        finalize(getfield(ref, :mem))
+    else
+        finalize(mapped)
+    end
+    return nothing
+end
+
 # The 0.10 implementation is the behavioral ORACLE throughout this file: every
 # `LegacyCSV.File`/`LegacyCSV.write` below that means "the old behavior" is spelled LegacyCSV.
 
@@ -930,7 +944,7 @@ end
     @test length(edgemapped) == A.MMAP_THRESHOLD
     # Windows does not allow an open memory mapping to be unlinked. Retain and
     # finalize the exact mapped backing instead of relying on GC reachability.
-    finalize(edgemapped)
+    finalizemapping!(edgemapped)
     rm(edgepath)
 
     # A file across the mmap threshold parses identically when mapped or
@@ -982,7 +996,7 @@ end
         @test mappedrow.s == "word1_abcdefghijklmnop"
         @test String(Tables.getcolumn(mappedbatch, :s)[1]) == "word1_abcdefghijklmnop"
     end
-    finalize(mapped)
+    finalizemapping!(mapped)
     rm(bigpath)
 end
 
@@ -1179,6 +1193,10 @@ end # @testset CSVApi
     f = A.File(IOBuffer(input); typemap=Dict(Int64 => String), types=Dict(:b => Float64))
     @test eltype(Tables.getcolumn(f, :b)) == Float64
     @test Tables.getcolumn(f, :a) isa AbstractVector{<:AbstractString}
+    # `Int` remains the portable spelling for the inferred integer type even
+    # though 1.0 makes that inferred type Int64 on 32-bit Julia too.
+    machineintmap = A.File(IOBuffer("a\n1\n2\n"); typemap=IdDict(Int => String), pool=false)
+    @test machineintmap.a == ["1", "2"]
     # A mapped parse type is a fixed point. Downward and cyclic maps must widen
     # instead of retrying the same rejecting type until the driver guard fires.
     for (mappedinput, tm) in (("a\n1.5\n2.5\n", IdDict(Float64 => Int64)),

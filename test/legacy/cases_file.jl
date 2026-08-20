@@ -27,7 +27,15 @@
     @case "basics:80" agree(IOBuffer("a,b\n1,1\n1,2\n1,3\n"); label="basics:80")
     @case "basics:96" agree(corpusfile("time.csv"); dateformat="H:M:S", label="basics:96")
     @case "basics:101" agree(corpusfile("GSM2230757_human1_umifm_counts.csv"); ntasks=1, label="basics:101")
-    @case "basics:106" agree(IOBuffer("fullVisitorId,PredictedLogRevenue\n18966949534117,0\n39738481224681,0\n"), limit=3; label="basics:106")
+    @case "basics:106" agree(
+        IOBuffer("fullVisitorId,PredictedLogRevenue\n18966949534117,0\n39738481224681,0\n"),
+        limit=3;
+        label="basics:106",
+        expect_delta=Sys.WORD_SIZE == 32 ?
+            (outcome=:differ,
+             reason="1.0 keeps large inferred integers as exact Int64 on 32-bit Julia; 0.10 widened values above Int32 to Float64") :
+            nothing,
+    )
     @case "basics:112" agree(IOBuffer("col1,col2\n1.0,hi"), limit=3; label="basics:112")
     @case "basics:116" agree(IOBuffer("x\n\",\"\n\",\""); label="basics:116")
     @case "basics:120" agree(IOBuffer("x\n1\n2\n"); label="basics:120")
