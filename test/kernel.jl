@@ -1323,7 +1323,9 @@ end
             push!(payloads, K.CompactString(K.view_payload(data, 2, n, bufidx, 1), data))
         end
     end
-    seeds = UInt[0, 1, 7, typemax(UInt), Base.memhash_seed, 0x0123456789abcdef]
+    # Keep this list portable across word sizes and Julia releases. Private
+    # Base hash seeds are not part of Julia's compatibility contract.
+    seeds = UInt[0, 1, 7, typemax(UInt), 0x89abcdef]
     @test all(hash(payloads[i], h) == hash(strings[i], h)
               for i in eachindex(payloads), h in seeds)
     @test all([codeunit(payloads[i], j) for j in 1:ncodeunits(payloads[i])] ==

@@ -85,9 +85,10 @@ function _writeopts(; delim::Union{Char, String}=',', quotechar::Char='"',
     df = dateformat === nothing ? nothing :
          dateformat isa DateFormat ? dateformat : DateFormat(string(dateformat))
     ff = floatformat === nothing ? nothing : Printf.Format(String(floatformat))
+    intbufsize = bufsize > typemax(Int) ? typemax(Int) : Int(bufsize)
     return WriteOpts(d, oq, cq, e, Vector{UInt8}(codeunits(string(newline))),
                      Vector{UInt8}(codeunits(String(missingstring))),
-                     quotestyle, ff, df, decimal % UInt8, bom, Int(bufsize))
+                     quotestyle, ff, df, decimal % UInt8, bom, intbufsize)
 end
 
 @noinline _rowtoolarge(n::Int, cap::Int) =
@@ -440,7 +441,7 @@ end
 #                                  milliseconds are nonzero (Dates' `.s` token)
 # Byte equality with `string(x)` is pinned by the test suite over adversarial
 # years (negative, 5-digit) and every millisecond value.
-@inline function _append2!(out::Vector{UInt8}, v::Int)   # two zero-padded digits, 0 ≤ v < 100
+@inline function _append2!(out::Vector{UInt8}, v::Integer)   # two zero-padded digits, 0 ≤ v < 100
     len = length(out)
     _room!(out, 2)
     @inbounds begin
@@ -449,7 +450,7 @@ end
     end
     return out
 end
-@inline function _appendyear!(out::Vector{UInt8}, y::Int)
+@inline function _appendyear!(out::Vector{UInt8}, y::Integer)
     y < 0 && (push!(out, UInt8('-')); y = -y)
     y < 1000 && push!(out, UInt8('0'))
     y < 100 && push!(out, UInt8('0'))

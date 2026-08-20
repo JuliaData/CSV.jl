@@ -563,6 +563,7 @@ end
 
 @testset "staged renderer: direct paths are byte-identical to the Base spellings" begin
     o = W._writeopts()
+    @test W._writeopts(bufsize=big(typemax(Int)) + 1).bufsize == typemax(Int)
     render(x) = (st = W.ColStage(); W._stagecolumn!(st, [x], 1, 1, o); String(copy(st.bytes)))
     # integers: every fixed width at its extremes and around zero
     for T in (Int8, Int16, Int32, Int64, Int128, UInt8, UInt16, UInt32, UInt64, UInt128)
@@ -579,6 +580,13 @@ end
     end
     @test render(big(10)^40) == string(big(10)^40)
     # dates: adversarial years and every millisecond value
+    # Use non-machine integer widths so the helpers stay valid when Dates
+    # returns Int64 on a 32-bit Julia process.
+    dateparts = UInt8[]
+    W._appendyear!(dateparts, Int32(-1))
+    push!(dateparts, UInt8('-'))
+    W._append2!(dateparts, Int16(7))
+    @test String(dateparts) == "-0001-07"
     for y in (-12345, -1, 0, 1, 99, 999, 1000, 2024, 9999, 10000, 123456), m in (1, 12), d in (1, 28)
         @test render(Date(y, m, d)) == string(Date(y, m, d))
     end

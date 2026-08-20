@@ -17,6 +17,13 @@ const K = CSV.CSVKernel
 
 const _WIDTHS = (String1, String3, String7, String15, String31, String63, String127, String255)
 
+# InlineStrings 1.1 stored String1 in one byte (with one byte of payload), while
+# newer layouts use a separate length byte. The other widths have always used
+# `sizeof(T) - 1` payload bytes. Old String1 also cannot encode the empty value.
+@inline _capacity(::Type{String1}) = 1
+@inline _capacity(::Type{T}) where {T <: InlineString} = sizeof(T) - 1
+const _STRING1_HAS_EMPTY = sizeof(String1) > 1
+
 # validation hook
 A._stringsink(::Type{InlineString}) = true
 A._stringsink(::Type{T}) where {T <: InlineString} = true
@@ -24,14 +31,15 @@ A._stringsink(::Type{T}) where {T <: InlineString} = true
 # smallest InlineString type holding `n` bytes
 function _fitwidth(n::Int)
     for T in _WIDTHS
-        n <= sizeof(T) - 1 && return T
+        n == 0 && T === String1 && !_STRING1_HAS_EMPTY && continue
+        n <= _capacity(T) && return T
     end
     throw(ArgumentError("value of $n bytes exceeds the InlineString maximum of 255"))
 end
 
 @inline function _inl(::Type{T}, s::K.CompactString) where {T <: InlineString}
     n = ncodeunits(s)
-    n > sizeof(T) - 1 &&
+    n > _capacity(T) &&
         throw(ArgumentError("value of $n bytes does not fit $T"))
     if n > K.COMPACTSTRING_INLINE
         GC.@preserve s begin

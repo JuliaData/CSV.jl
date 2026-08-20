@@ -875,6 +875,7 @@ const _POW10 = Float64[10.0^k for k in 0:22]
 
 const _POW10_INT = Int64[Int64(10)^k for k in 0:17]
 const _POW10_18 = Int64(10)^18
+const _POW10_9 = Int64(10)^9
 
 # Powers of five for the BigFloat scaling path, built at precompile time.
 # Covers every exponent reachable from ~150 significant digits around the
@@ -919,17 +920,51 @@ function _assemble(M::BigInt, e::Int, neg::Bool, prec::Int)
     return v
 end
 
-# 18-digit chunks flush through in-place GMP ops — one BigInt allocated per
-# value, zero per chunk (the allocating `big = big*10^18 + acc` form measured
-# ~40% slower than mpz_set_str; this form beats it).
-@inline function _flushchunk!(big::BigInt, started::Bool, acc::Int64, mult::Int64)
-    if started
-        Base.GMP.MPZ.mul_si!(big, mult)
-        Base.GMP.MPZ.add_ui!(big, acc % UInt64)
-    else
-        Base.GMP.MPZ.set_si!(big, acc)
+# Windows uses LLP64, so Clong is Int32 even in a 64-bit Julia process. GMP's
+# *_si/*_ui entry points therefore cannot accept an 18-digit chunk directly.
+# Split that chunk into base-10^9 pieces, preserving the same value with no
+# temporary BigInt allocation. This helper is separate so every platform can
+# exercise the exact Windows arithmetic in focused tests.
+@inline function _flushchunk_clong32!(big::BigInt, started::Bool,
+                                      acc::Int64, mult::Int64)
+    MPZ = Base.GMP.MPZ
+    if mult <= _POW10_9
+        if started
+            MPZ.mul_si!(big, mult)
+            MPZ.add_ui!(big, acc % UInt64)
+        else
+            MPZ.set_si!(big, acc)
+        end
+        return true
     end
+    highmult = div(mult, _POW10_9)
+    high, low = divrem(acc, _POW10_9)
+    if started
+        MPZ.mul_si!(big, highmult)
+        MPZ.add_ui!(big, high % UInt64)
+    else
+        MPZ.set_si!(big, high)
+    end
+    MPZ.mul_si!(big, _POW10_9)
+    MPZ.add_ui!(big, low % UInt64)
     return true
+end
+
+# 18-digit chunks flush through in-place GMP ops — one BigInt allocated per
+# value, zero per chunk. Unix can pass each chunk directly. Windows routes the
+# same chunk through the C-long-safe split above.
+@inline function _flushchunk!(big::BigInt, started::Bool, acc::Int64, mult::Int64)
+    @static if sizeof(Clong) == 4
+        return _flushchunk_clong32!(big, started, acc, mult)
+    else
+        if started
+            Base.GMP.MPZ.mul_si!(big, mult)
+            Base.GMP.MPZ.add_ui!(big, acc % UInt64)
+        else
+            Base.GMP.MPZ.set_si!(big, acc)
+        end
+        return true
+    end
 end
 
 """
@@ -937,8 +972,8 @@ end
 
 Exact-span BigInt: sign and decimal digits only (the strict integer grammar,
 same as `parseint64` without the width limit). Digits accumulate through
-18-digit Int64 chunks, so the big-number work is O(n/18) multiply-adds on the
-result type rather than per-digit ops or a string round-trip.
+18-digit Int64 chunks rather than per-digit operations or a string round-trip.
+On Windows, each flush splits into C-long-safe 9-digit GMP operations.
 """
 function parsebigint(buf::Vector{UInt8}, i::Int, j::Int)
     i > j && return (BigInt(0), RC_INVALID)

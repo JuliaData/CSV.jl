@@ -247,6 +247,20 @@ end
             kw=(; header=3, comment="#", skipto=5))
     against("a,b\n1,2\n"; kw=(; skipto=100))
     against("a,b\n1,2\n"; kw=(; header=100))
+    # Integer row options are source positions, not machine-size allocations.
+    # A BigInt beyond typemax(Int) models UInt32 row options on 32-bit Julia.
+    huge = big(typemax(Int)) + 1
+    bounded = "a,b\n1,2\n3,4\n"
+    unlimited = A.File(IOBuffer(bounded); limit=huge)
+    @test unlimited.a == [1, 3] && unlimited.b == [2, 4]
+    @test isempty(A.File(IOBuffer(bounded); skipto=huge))
+    @test isempty(A.File(IOBuffer(bounded); header=huge))
+    @test isempty(A.File(IOBuffer(bounded); header=[huge, huge + 1]))
+    @test isempty(A.File(IOBuffer(bounded); footerskip=huge))
+    # Every non-transposed front door shares the same bounded preparation.
+    @test isempty(collect(A.Rows(IOBuffer(bounded); skipto=huge)))
+    @test isempty(collect(A.Chunks(IOBuffer(bounded); footerskip=huge)))
+    @test length(A.lazy(IOBuffer(bounded); header=huge)) == 0
     # 0.10 rule: default header 1 + skipto=1 means "no header, data at row 1"
     against("a,b\n1,2\n"; kw=(; skipto=1))
     @test_throws ArgumentError A.File(IOBuffer("a,b\n1,2\n"); header=2, skipto=1)
@@ -674,6 +688,11 @@ end
     pc = A._poolcolumn(col, (1.0, 10))
     @test pc isa K.PooledColumn && K.poolrefs(pc) == UInt32[1, 2, 1]
     @test A._poolcolumn(col, (0.5, 10)) === nothing         # 2 levels > floor(0.5·3)=1
+    @test A._poolpolicy((1.0, typemax(UInt32)))[2] ==
+          Int(min(UInt128(typemax(Int)), UInt128(typemax(UInt32))))
+    @test A._poolpolicy((1.0, big(typemax(Int)) + 1))[2] == typemax(Int)
+    @test UInt64(A._MAX_POOL_LEVELS) ==
+          min(UInt64(typemax(Int)), UInt64(typemax(UInt32)))
 end
 
 @testset "pooling agrees on values" begin
@@ -907,7 +926,12 @@ end
     edgepath, edgeio = mktemp()
     write(edgeio, fill(UInt8('x'), A.MMAP_THRESHOLD))
     close(edgeio)
-    @test length(A.resolvesource(edgepath)) == A.MMAP_THRESHOLD
+    let mapped = A.resolvesource(edgepath; prefetch=false)
+        @test length(mapped) == A.MMAP_THRESHOLD
+    end
+    # Windows does not allow an open memory mapping to be unlinked. Keep the
+    # mapped value out of scope, then run its finalizer before removing the file.
+    GC.gc(true)
     rm(edgepath)
 
     # A file across the mmap threshold parses identically when mapped or
@@ -918,41 +942,44 @@ end
                  "\n")
     close(bigio)
     @test filesize(bigpath) >= A.MMAP_THRESHOLD
-    mappedcol = let f = A.File(bigpath; pool=false)
-        f.s
+    let
+        mappedcol = let f = A.File(bigpath; pool=false)
+            f.s
+        end
+        pooledcol = let f = A.File(bigpath; pool=true)
+            f.s
+        end
+        mappedrow = first(A.Rows(bigpath))
+        mappedbatch = first(A.Chunks(bigpath; ntasks=2))
+        fb = A.File(bigpath; buffer_in_memory=true)
+        fnoprefetch = A.File(bigpath; prefetch=false, pool=false)
+        @test first(A.Rows(bigpath; buffer_in_memory=true)).s == mappedrow.s
+        @test first(A.Rows(bigpath; prefetch=false)).s == mappedrow.s
+        bufferedbatch = first(A.Chunks(bigpath; ntasks=2, buffer_in_memory=true))
+        noprefetchbatch = first(A.Chunks(bigpath; ntasks=2, prefetch=false))
+        @test colvalues(bufferedbatch) == colvalues(mappedbatch)
+        @test colvalues(noprefetchbatch) == colvalues(mappedbatch)
+        sm = A.sniff(bigpath)
+        sb = A.sniff(bigpath; buffer_in_memory=true)
+        sn = A.sniff(bigpath; prefetch=false)
+        @test (sm.delim, sm.header, sm.names, sm.types) ==
+              (sb.delim, sb.header, sb.names, sb.types)
+        @test (sm.delim, sm.header, sm.names, sm.types) ==
+              (sn.delim, sn.header, sn.names, sn.types)
+        @test collect(String, mappedcol) == collect(String, Tables.getcolumn(fb, :s))
+        @test collect(String, mappedcol) == collect(String, Tables.getcolumn(fnoprefetch, :s))
+        @test pooledcol isa PooledArrays.PooledArray
+        @test collect(Tables.getcolumn(mappedbatch, :n)) == collect(fb.n)[1:length(mappedbatch)]
+        # This also runs K.materialize while its source is a read-only mapping.
+        fm = A.File(bigpath; pool=false, stringtype=String)
+        @test fm.s == collect(String, mappedcol)
+        GC.gc()
+        @test String(mappedcol[1]) == "word1_abcdefghijklmnop"
+        @test String(pooledcol[1]) == "word1_abcdefghijklmnop"
+        @test mappedrow.s == "word1_abcdefghijklmnop"
+        @test String(Tables.getcolumn(mappedbatch, :s)[1]) == "word1_abcdefghijklmnop"
     end
-    pooledcol = let f = A.File(bigpath; pool=true)
-        f.s
-    end
-    mappedrow = first(A.Rows(bigpath))
-    mappedbatch = first(A.Chunks(bigpath; ntasks=2))
-    fb = A.File(bigpath; buffer_in_memory=true)
-    fnoprefetch = A.File(bigpath; prefetch=false, pool=false)
-    @test first(A.Rows(bigpath; buffer_in_memory=true)).s == mappedrow.s
-    @test first(A.Rows(bigpath; prefetch=false)).s == mappedrow.s
-    bufferedbatch = first(A.Chunks(bigpath; ntasks=2, buffer_in_memory=true))
-    noprefetchbatch = first(A.Chunks(bigpath; ntasks=2, prefetch=false))
-    @test colvalues(bufferedbatch) == colvalues(mappedbatch)
-    @test colvalues(noprefetchbatch) == colvalues(mappedbatch)
-    sm = A.sniff(bigpath)
-    sb = A.sniff(bigpath; buffer_in_memory=true)
-    sn = A.sniff(bigpath; prefetch=false)
-    @test (sm.delim, sm.header, sm.names, sm.types) ==
-          (sb.delim, sb.header, sb.names, sb.types)
-    @test (sm.delim, sm.header, sm.names, sm.types) ==
-          (sn.delim, sn.header, sn.names, sn.types)
-    @test collect(String, mappedcol) == collect(String, Tables.getcolumn(fb, :s))
-    @test collect(String, mappedcol) == collect(String, Tables.getcolumn(fnoprefetch, :s))
-    @test pooledcol isa PooledArrays.PooledArray
-    @test collect(Tables.getcolumn(mappedbatch, :n)) == collect(fb.n)[1:length(mappedbatch)]
-    # This also runs K.materialize while its source is a read-only mapping.
-    fm = A.File(bigpath; pool=false, stringtype=String)
-    @test fm.s == collect(String, mappedcol)
-    GC.gc()
-    @test String(mappedcol[1]) == "word1_abcdefghijklmnop"
-    @test String(pooledcol[1]) == "word1_abcdefghijklmnop"
-    @test mappedrow.s == "word1_abcdefghijklmnop"
-    @test String(Tables.getcolumn(mappedbatch, :s)[1]) == "word1_abcdefghijklmnop"
+    GC.gc(true)
     rm(bigpath)
 end
 
@@ -1305,6 +1332,17 @@ end # @testset CSVApi
     ragged = A.File(IOBuffer("a,1,2,3\nb,4\n"); transpose=true, limit=2)
     @test ragged.a == [1, 2] && isequal(ragged.b, [4, missing])
     @test A.File(IOBuffer("a,1,2\n"); transpose=true, limit=99).a == [1, 2]
+    huge = big(typemax(Int)) + 1
+    unlimited = A.File(IOBuffer("a,1,2\nb,3,4\n"); transpose=true, limit=huge)
+    @test unlimited.a == [1, 2] && unlimited.b == [3, 4]
+    @test isempty(A.File(IOBuffer("a,1,2\nb,3,4\n"); transpose=true,
+                         skipto=huge))
+    @test isempty(A.File(IOBuffer("a,1,2\nb,3,4\n"); transpose=true,
+                         header=huge))
+    @test isempty(A.File(IOBuffer("a,1,2\nb,3,4\n"); transpose=true,
+                         header=huge, skipto=huge + 1))
+    @test_throws ArgumentError A.File(IOBuffer("a,1\n"); transpose=true,
+                                      header=huge, skipto=huge)
     @test_throws ArgumentError A.File(IOBuffer("a,1\n"); transpose=true, limit=-1)
 
     # legacy kwargs error with migration text
@@ -1372,6 +1410,7 @@ end
 end
 
 @testset "InlineStrings extension" begin
+    IE = Base.get_extension(CSV, :CSVInlineStringsExt)
     csv = "s,t,n\n" * join(("a$(i),$(i % 3 == 0 ? "" : "longer value number $(i)"),$(i)" for i in 1:300), '\n') * "\n"
     auto = A.File(IOBuffer(csv); stringtype=InlineString)
     @test eltype(Tables.getcolumn(auto, :s)) == String7           # auto width per column
@@ -1383,7 +1422,7 @@ end
     @test_throws ArgumentError A.File(IOBuffer(csv); stringtype=String7)   # too narrow
     widths = (String1, String3, String7, String15, String31, String63, String127, String255)
     for T in widths
-        n = sizeof(T) - 1
+        n = IE._capacity(T)
         value = "x"^n
         @test String(only(A.File(IOBuffer("s\n$value\n"); stringtype=T, pool=false).s)) == value
         @test_throws ArgumentError A.File(IOBuffer("s\n" * "x"^(n + 1) * "\n");
@@ -1391,11 +1430,12 @@ end
     end
     @test_throws ArgumentError A.File(IOBuffer("s\n" * "x"^256 * "\n");
                                       stringtype=InlineString, pool=false)
+    emptytype = sizeof(String1) == 1 ? String3 : String1
     empty = A.File(IOBuffer("s\n"); types=String, stringtype=InlineString, pool=false)
-    @test isempty(empty.s) && eltype(empty.s) == String1
+    @test isempty(empty.s) && eltype(empty.s) == emptytype
     allmissing = A.File(IOBuffer("id,s\n1,\n2,\n"); types=Dict(:s => String),
                         stringtype=InlineString, pool=false)
-    @test eltype(allmissing.s) == Union{Missing, String1}
+    @test eltype(allmissing.s) == Union{Missing, emptytype}
     @test all(ismissing, allmissing.s)
     # pooled levels take the inline type; missing joins the pool
     f = A.File(IOBuffer(csv); stringtype=InlineString, pool=Dict(:s => false, :t => (1.0, 5000)))
@@ -1684,7 +1724,10 @@ end
             end
         end
         @test filesize(string(big)) >= A.MMAP_THRESHOLD
-        @test A.File(big; prefetch=false, limit=2).x == [1, 2]
+        let mapped = A.File(big; prefetch=false, limit=2)
+            @test mapped.x == [1, 2]
+        end
         @test A.File(big; buffer_in_memory=true, limit=2).y == [2, 3]
+        GC.gc(true)
     end
 end

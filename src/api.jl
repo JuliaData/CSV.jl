@@ -39,6 +39,10 @@ const E = KernelExamples
 # dictionary/categorical encoding opt-in. `pool=(0.2, 500)` restores the old
 # behavior; `pool=true` pools every string column.
 const DEFAULT_POOL = false
+# Pooled references are UInt32, but a 32-bit Julia process cannot represent
+# UInt32's full maximum as Int. Cap at the smaller index space without an
+# overflowing conversion during precompile.
+const _MAX_POOL_LEVELS = Int(min(UInt64(typemax(Int)), UInt64(typemax(UInt32))))
 
 const _DIALECTKW = (:quotechar, :openquotechar, :closequotechar, :escapechar,
                     :quoted, :comment, :ignoreemptyrows, :ignorerepeated)
@@ -493,6 +497,14 @@ end
 # never even enter the index; `skipto` advances `firstdatarow` by byte
 # offset, so hygiene-dropped rows cannot skew the count.
 
+# Public row/field positions accept any Integer for 0.10 compatibility. Keep
+# oversized UInt/BigInt values as an unreachable sentinel instead of narrowing
+# them before the source geometry is known. The saturated successor is needed
+# for `header + 1` and EOF positions at the machine-Int boundary.
+@inline _saturatedint(x::Integer) = x > typemax(Int) ? typemax(Int) :
+                                    x < typemin(Int) ? typemin(Int) : Int(x)
+@inline _saturatedinc(x::Int) = x == typemax(Int) ? x : x + 1
+
 # byte offset of PHYSICAL line `n` (1-based from `start`): CR, LF, or CRLF end a
 # line and quotes mean nothing. This is how skipped PREFIX rows are counted —
 # rows before a numbered header, or before `skipto` when there is no header
@@ -502,7 +514,7 @@ function _physicallineoffset(buf::Vector{UInt8}, start::Int, n::Int)
     off = start
     len = length(buf)
     for _ in 1:(n - 1)
-        off > len && return len + 1
+        off > len && return _saturatedinc(len)
         @inbounds while off <= len
             b = buf[off]
             if b == UInt8('\n')
@@ -522,7 +534,7 @@ end
 function _rawrowoffset(buf::Vector{UInt8}, d::K.Dialect, datastart::Int, n::Int)
     off = datastart
     for _ in 1:(n - 1)
-        off > length(buf) && return length(buf) + 1
+        off > length(buf) && return _saturatedinc(length(buf))
         off = K.nextrowstart(buf, off, length(buf), d, false, true)
     end
     return off
@@ -551,19 +563,28 @@ end
 # Byte start of the first raw footer row. Empty rows count even when hygiene
 # drops them; comment rows do not count, matching CSV.jl's reverse scan.
 function _footeroffset(buf::Vector{UInt8}, d::K.Dialect, rawstart::Int, footerskip::Int)
-    footerskip == 0 && return length(buf) + 1
-    starts = fill(0, footerskip)
+    footerskip == 0 && return _saturatedinc(length(buf))
+    # Count first, then locate the first footer row. This is two structural
+    # scans but constant memory; a ring of `footerskip` Ints lets a valid public
+    # option allocate many GiB before discovering that the file has fewer rows.
     nrows = 0
     rowstart = rawstart
     while rowstart <= length(buf)
-        if !_iscommentrow(buf, rowstart, d)
-            nrows += 1
-            starts[mod1(nrows, footerskip)] = rowstart
-        end
+        !_iscommentrow(buf, rowstart, d) && (nrows += 1)
         rowstart = K.nextrowstart(buf, rowstart, length(buf), d, false, true)
     end
     footerskip >= nrows && return rawstart
-    return starts[mod1(nrows - footerskip + 1, footerskip)]
+    target = nrows - footerskip + 1
+    seen = 0
+    rowstart = rawstart
+    while rowstart <= length(buf)
+        if !_iscommentrow(buf, rowstart, d)
+            seen += 1
+            seen == target && return rowstart
+        end
+        rowstart = K.nextrowstart(buf, rowstart, length(buf), d, false, true)
+    end
+    return rawstart # target is guaranteed by the count pass
 end
 
 function _rowsbefore(chunks::Vector{K.ChunkIndex}, byteoff::Int)
@@ -650,6 +671,14 @@ function _prepare(source;
                   prefetch::Bool=true,
                   validate::Bool=true,
                   kw...)
+    header isa Integer && header < 0 &&
+        throw(ArgumentError("header must be ≥ 0 (got $header)"))
+    if header isa AbstractVector{<:Integer} && !isempty(header)
+        (issorted(header) && first(header) >= 1 && allunique(header)) ||
+            throw(ArgumentError("header rows must be increasing and ≥ 1 (got $header)"))
+    end
+    skipto === nothing || skipto >= 1 ||
+        throw(ArgumentError("skipto must be ≥ 1 (got $skipto)"))
     footerskip >= 0 || throw(ArgumentError("footerskip must be ≥ 0 (got $footerskip)"))
     limit === nothing || limit >= 0 || throw(ArgumentError("limit must be ≥ 0 (got $limit)"))
     samplebytes >= 1 || throw(ArgumentError("samplebytes must be ≥ 1 (got $samplebytes)"))
@@ -657,6 +686,14 @@ function _prepare(source;
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
     allowed = (_DIALECTKW..., _VALUEKW..., _INDEXKW..., _DRIVERKW...)
     _checkkwargs("File/Rows/Chunks", kw, allowed)
+    # 0.10 rule: the default header row 1 with skipto=1 means "no header, data
+    # starts at row 1" (the header row and the first data row cannot coincide).
+    if header isa Integer && header == 1 && skipto !== nothing && skipto == 1
+        header = false
+    end
+    rawheaderrow = header === true ? 1 : header === false ? 0 :
+                   header isa Integer ? header :
+                   header isa AbstractVector{<:Integer} && !isempty(header) ? last(header) : 0
     buf = resolvesource(source; buffer_in_memory, prefetch)
     dialectonly = _pickkwargs(kw, _DIALECTKW)
     indexonly = _pickkwargs(kw, _INDEXKW)
@@ -664,11 +701,12 @@ function _prepare(source;
     # there is no header row. Everything before it is a skipped prefix: counted
     # as physical lines (quote-blind), never indexed, never sniffed. Row
     # offsets at or after it are quote-aware from that anchor.
-    firstrow = header isa Integer && header > 1 ? Int(header) :
-               header isa AbstractVector{<:Integer} && !isempty(header) ? Int(first(header)) :
+    firstrow = header isa Integer && header > 1 ? _saturatedint(header) :
+               header isa AbstractVector{<:Integer} && !isempty(header) ?
+               _saturatedint(first(header)) :
                (header === false || (header isa Integer && header == 0) ||
                 (header isa AbstractVector && !(header isa AbstractVector{<:Integer}))) &&
-               skipto !== nothing ? Int(skipto) : 1
+               skipto !== nothing ? _saturatedint(skipto) : 1
     rawstart = _datastart(buf)
     anchoroff = firstrow > 1 ? _physicallineoffset(buf, rawstart, firstrow) : rawstart
     if delim === nothing
@@ -700,20 +738,10 @@ function _prepare(source;
           min(max(cld(length(buf), ntasks), 1), 1 << 30)) : chunkbytes
 
     # -- the row window, in RAW rows: header rows, skipto, footerskip ---------
-    header isa Integer && header < 0 &&
-        throw(ArgumentError("header must be ≥ 0 (got $header)"))
-    # 0.10 rule: the default header row 1 with skipto=1 means "no header, data
-    # starts at row 1" (the header row and the first data row cannot coincide)
-    if header isa Integer && header == 1 && skipto !== nothing && skipto == 1
-        header = false
-    end
-    header isa Integer && (header = header == 0 ? false : Int(header))
-    headerrows = header isa AbstractVector{<:Integer} ? Int.(header) :
+    header isa Integer && !(header isa Bool) &&
+        (header = header == 0 ? false : _saturatedint(header))
+    headerrows = header isa AbstractVector{<:Integer} ? _saturatedint.(header) :
                  header isa Int ? [header] : Int[]
-    if !isempty(headerrows)
-        (issorted(headerrows) && first(headerrows) >= 1 && allunique(headerrows)) ||
-            throw(ArgumentError("header rows must be increasing and ≥ 1 (got $header)"))
-    end
     headerrow = header === true ? 1 : isempty(headerrows) ? 0 : last(headerrows)
     # Skipped prefix rows never enter the index (a generated column count would
     # otherwise come from a junk first row; 0.10 took it from the first DATA
@@ -760,7 +788,7 @@ function _prepare(source;
         for (ci, firstrow) in zip(chunks, firstrows)
             ci.firstdatarow = firstrow
         end
-        _skiptobyte!(chunks, rowoff(headerrow + 1))
+        _skiptobyte!(chunks, rowoff(_saturatedinc(headerrow)))
         if isempty(parts)
             Symbol[]
         else
@@ -773,13 +801,18 @@ function _prepare(source;
     names = K.makeunique!(names)
 
     if skipto !== nothing
-        skipto > headerrow ||
-            throw(ArgumentError("skipto=$skipto must be past the header (row $headerrow)"))
-        _skiptobyte!(chunks, rowoff(Int(skipto)))
+        skipto > rawheaderrow ||
+            throw(ArgumentError("skipto=$skipto must be past the header (row $rawheaderrow)"))
+        _skiptobyte!(chunks, rowoff(_saturatedint(skipto)))
     end
-    footer = _footeroffset(buf, d, rawstart, Int(footerskip))
+    # A non-comment physical row consumes at least one source byte. A footer
+    # count larger than the buffer therefore removes every possible row; avoid
+    # narrowing the count or scanning the source in that known-empty case.
+    footer = footerskip > 0 && footerskip >= length(buf) ? rawstart :
+             _footeroffset(buf, d, rawstart, Int(footerskip))
     keep = footerskip == 0 ? sum(K.nrows, chunks; init=0) : _rowsbefore(chunks, footer)
-    lim = limit === nothing ? (footerskip > 0 ? keep : nothing) : min(Int(limit), keep)
+    lim = limit === nothing ? (footerskip > 0 ? keep : nothing) :
+          limit >= keep ? keep : Int(limit)
 
     # engine + diagnostics kwargs the kernel driver consumes directly
     colopts = nothing
@@ -1361,21 +1394,25 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
         throw(ArgumentError("on_error must be :collect or :error"))
     allowed = (_DIALECTKW..., _VALUEKW...)
     _checkkwargs("File(transpose=true)", kw, allowed)
+    header isa Integer && header < 0 &&
+        throw(ArgumentError("header must be ≥ 0 (got $header)"))
+    header isa AbstractVector{<:Integer} &&
+        throw(ArgumentError("transpose=true takes a single header field index, not a range"))
+    skipto === nothing || skipto >= 1 ||
+        throw(ArgumentError("skipto must be ≥ 1 (got $skipto)"))
+    limit === nothing || limit >= 0 || throw(ArgumentError("limit must be ≥ 0 (got $limit)"))
     # transposed geometry (0.10 semantics): header=N takes each row's Nth field
     # as that column's name; skipto=M starts data at field M (default: the field
     # after the header, or field 1 without one); header=[names] is explicit
-    namefield = header === true ? 1 : header === false ? 0 :
-                header isa Integer ? Int(header) : 0
+    rawnamefield = header === true ? 1 : header === false ? 0 :
+                   header isa Integer ? header : 0
+    namefield = _saturatedint(rawnamefield)
     explicitnames = header isa AbstractVector && !(header isa AbstractVector{<:Integer}) ?
                     Symbol.(header) : nothing
-    header isa AbstractVector{<:Integer} &&
-        throw(ArgumentError("transpose=true takes a single header field index, not a range"))
-    hasnames = namefield > 0
-    startf = skipto === nothing ? namefield + 1 : Int(skipto)
-    startf >= 1 || throw(ArgumentError("skipto must be ≥ 1 (got $skipto)"))
-    limit === nothing || limit >= 0 || throw(ArgumentError("limit must be ≥ 0 (got $limit)"))
-    hasnames && startf <= namefield &&
-        throw(ArgumentError("skipto=$skipto must be past the header field $namefield"))
+    hasnames = rawnamefield > 0
+    startf = skipto === nothing ? _saturatedinc(namefield) : _saturatedint(skipto)
+    skipto !== nothing && hasnames && skipto <= rawnamefield &&
+        throw(ArgumentError("skipto=$skipto must be past the header field $rawnamefield"))
     buf = resolvesource(source; buffer_in_memory, prefetch)
     dialectkw = _pickkwargs(kw, _DIALECTKW)
     valuekw = _pickkwargs(kw, _VALUEKW)
@@ -1395,7 +1432,7 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
     n = ncols == 0 ? 0 :
         maximum(K.nfields(r[1], r[2]) - (startf - 1) for r in rows)
     n = max(n, 0)
-    limit === nothing || (n = min(n, max(Int(limit), 0)))
+    limit === nothing || (n = limit >= n ? n : Int(limit))
     _tname(j, r) = (nm = hasnames ? _cellstring(buf, r[1], r[2], namefield, opts) : "";
                     isempty(nm) ? Symbol("Column", j) : Symbol(nm))
     names = explicitnames !== nothing ? copy(explicitnames) :
@@ -1456,8 +1493,12 @@ function _poolpolicy(pool)
     ratio = pool[1]
     0.0 <= ratio <= 1.0 ||
         throw(ArgumentError("pool ratio must be in [0, 1] (got $ratio)"))
-    cap = Int(pool[2])
-    cap >= 0 || throw(ArgumentError("pool cap must be nonnegative (got $cap)"))
+    rawcap = pool[2]
+    rawcap >= 0 || throw(ArgumentError("pool cap must be nonnegative (got $rawcap)"))
+    # Normalize only after checking in the caller's integer domain. Unsigned
+    # and arbitrary-precision caps can exceed typemax(Int), especially on a
+    # 32-bit process; they mean "no practical cap" and clamp safely.
+    cap = rawcap > typemax(Int) ? typemax(Int) : Int(rawcap)
     return (Float64(ratio), cap)
 end
 
@@ -1490,7 +1531,7 @@ function _poolcolumn(c::K.CompactStringVector, ps::Tuple{Float64, Int}; parallel
     n = length(c)
     n == 0 && return nothing
     ratiolevels = ps[1] == 1.0 ? n : floor(Int, ps[1] * n)
-    maxlevels = min(ratiolevels, ps[2], Int(typemax(UInt32)))
+    maxlevels = min(ratiolevels, ps[2], _MAX_POOL_LEVELS)
     maxlevels <= 0 && return nothing
     nt = parallel ? clamp(n ÷ 65_536, 1, 4 * Threads.nthreads()) : 1
     bounds = [1 + (t - 1) * n ÷ nt for t in 1:nt]

@@ -224,21 +224,21 @@ end
     # across the band, ties above 2^54, decimal .5 ties, and ties under the
     # exact-product exponent range -4..23.
     okall = true
-    for x in (2^53 + 1):2:(2^53 + 40_001)
+    for x in (Int64(2)^53 + 1):2:(Int64(2)^53 + 40_001)
         s = string(x); v, rc = pflt(s)
         okall &= rc == V.RC_OK && reinterpret(UInt64, v) == reinterpret(UInt64, parse(Float64, s))
     end
-    for x in (2^54 + 2):4:(2^54 + 40_002)
+    for x in (Int64(2)^54 + 2):4:(Int64(2)^54 + 40_002)
         s = string(x); v, rc = pflt(s)
         okall &= rc == V.RC_OK && reinterpret(UInt64, v) == reinterpret(UInt64, parse(Float64, s))
     end
-    for x in (2^52):(2^52 + 20_000)
+    for x in (Int64(2)^52):(Int64(2)^52 + 20_000)
         s = string(x) * ".5"; v, rc = pflt(s)
         okall &= rc == V.RC_OK && reinterpret(UInt64, v) == reinterpret(UInt64, parse(Float64, s))
     end
     rng = MersenneTwister(9)
     for _ in 1:40_000
-        s = string((2^53 + 1) + 2 * rand(rng, 0:10^6)) * "e" * string(rand(rng, -4:23)); v, rc = pflt(s)
+        s = string((Int64(2)^53 + 1) + 2 * rand(rng, 0:10^6)) * "e" * string(rand(rng, -4:23)); v, rc = pflt(s)
         okall &= rc == V.RC_OK && reinterpret(UInt64, v) == reinterpret(UInt64, parse(Float64, s))
     end
     @test okall
@@ -581,6 +581,18 @@ end
 end
 
 @testset "parsebigint: oracle differential" begin
+    # GMP's *_si entry points use Clong, which is Int32 on 64-bit Windows.
+    # These values exceed Int32 and span several ABI-sized chunks.
+    z = BigInt(0)
+    started = V._flushchunk_clong32!(z, false, 987654321012345678, V._POW10_18)
+    started = V._flushchunk_clong32!(z, started, 909876543210123456, V._POW10_18)
+    V._flushchunk_clong32!(z, started, 789, V._POW10_INT[4])
+    @test z == parse(BigInt, "987654321012345678909876543210123456789")
+    for s in ("2147483648", "123456789012345678", "-123456789012345678",
+              "987654321012345678909876543210123456789")
+        v, rc = V.parsebigint(b(s), 1, ncodeunits(s))
+        @test rc == V.RC_OK && v == parse(BigInt, s)
+    end
     rng = MersenneTwister(23)
     for len in (1, 5, 17, 18, 19, 20, 37, 100, 300), _ in 1:500
         s = (rand(rng, Bool) ? "-" : "") * String(rand(rng, '0':'9', len))
@@ -604,6 +616,13 @@ end
         @test rc == V.RC_OK
         o = parse(BigFloat, s)
         @test (isnan(v) && isnan(o)) || (v == o && signbit(v) == signbit(o))
+    end
+    # BigFloat builds its decimal mantissa with the same ABI-sized BigInt
+    # chunks. Pin the large mantissas that failed on Windows' 32-bit Clong ABI.
+    setprecision(BigFloat, 256) do
+        for s in ("175000000000000000.125", "-987654321012345678909876543210.5")
+            check(s)
+        end
     end
     for prec in (2, 24, 53, 65, 113, 256, 1000)
         setprecision(BigFloat, prec) do
