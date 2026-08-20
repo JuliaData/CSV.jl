@@ -926,12 +926,11 @@ end
     edgepath, edgeio = mktemp()
     write(edgeio, fill(UInt8('x'), A.MMAP_THRESHOLD))
     close(edgeio)
-    let mapped = A.resolvesource(edgepath; prefetch=false)
-        @test length(mapped) == A.MMAP_THRESHOLD
-    end
-    # Windows does not allow an open memory mapping to be unlinked. Keep the
-    # mapped value out of scope, then run its finalizer before removing the file.
-    GC.gc(true)
+    edgemapped = A.resolvesource(edgepath; prefetch=false)
+    @test length(edgemapped) == A.MMAP_THRESHOLD
+    # Windows does not allow an open memory mapping to be unlinked. Retain and
+    # finalize the exact mapped backing instead of relying on GC reachability.
+    finalize(edgemapped)
     rm(edgepath)
 
     # A file across the mmap threshold parses identically when mapped or
@@ -942,26 +941,30 @@ end
                  "\n")
     close(bigio)
     @test filesize(bigpath) >= A.MMAP_THRESHOLD
+    # Resolve one non-prefetched mapping. Pass the retained backing through all
+    # lazy public surfaces so its lifetime is explicit and Windows cleanup is
+    # deterministic. Buffered calls below never hold an OS mapping.
+    mapped = A.resolvesource(bigpath; prefetch=false)
     let
-        mappedcol = let f = A.File(bigpath; pool=false)
+        mappedcol = let f = A.File(mapped; pool=false)
             f.s
         end
-        pooledcol = let f = A.File(bigpath; pool=true)
+        pooledcol = let f = A.File(mapped; pool=true)
             f.s
         end
-        mappedrow = first(A.Rows(bigpath))
-        mappedbatch = first(A.Chunks(bigpath; ntasks=2))
+        mappedrow = first(A.Rows(mapped))
+        mappedbatch = first(A.Chunks(mapped; ntasks=2))
         fb = A.File(bigpath; buffer_in_memory=true)
-        fnoprefetch = A.File(bigpath; prefetch=false, pool=false)
+        fnoprefetch = A.File(mapped; prefetch=false, pool=false)
         @test first(A.Rows(bigpath; buffer_in_memory=true)).s == mappedrow.s
-        @test first(A.Rows(bigpath; prefetch=false)).s == mappedrow.s
+        @test first(A.Rows(mapped; prefetch=false)).s == mappedrow.s
         bufferedbatch = first(A.Chunks(bigpath; ntasks=2, buffer_in_memory=true))
-        noprefetchbatch = first(A.Chunks(bigpath; ntasks=2, prefetch=false))
+        noprefetchbatch = first(A.Chunks(mapped; ntasks=2, prefetch=false))
         @test colvalues(bufferedbatch) == colvalues(mappedbatch)
         @test colvalues(noprefetchbatch) == colvalues(mappedbatch)
-        sm = A.sniff(bigpath)
+        sm = A.sniff(mapped)
         sb = A.sniff(bigpath; buffer_in_memory=true)
-        sn = A.sniff(bigpath; prefetch=false)
+        sn = A.sniff(mapped; prefetch=false)
         @test (sm.delim, sm.header, sm.names, sm.types) ==
               (sb.delim, sb.header, sb.names, sb.types)
         @test (sm.delim, sm.header, sm.names, sm.types) ==
@@ -971,7 +974,7 @@ end
         @test pooledcol isa PooledArrays.PooledArray
         @test collect(Tables.getcolumn(mappedbatch, :n)) == collect(fb.n)[1:length(mappedbatch)]
         # This also runs K.materialize while its source is a read-only mapping.
-        fm = A.File(bigpath; pool=false, stringtype=String)
+        fm = A.File(mapped; pool=false, stringtype=String)
         @test fm.s == collect(String, mappedcol)
         GC.gc()
         @test String(mappedcol[1]) == "word1_abcdefghijklmnop"
@@ -979,7 +982,7 @@ end
         @test mappedrow.s == "word1_abcdefghijklmnop"
         @test String(Tables.getcolumn(mappedbatch, :s)[1]) == "word1_abcdefghijklmnop"
     end
-    GC.gc(true)
+    finalize(mapped)
     rm(bigpath)
 end
 
@@ -1169,7 +1172,9 @@ end # @testset CSVApi
     # typemap: detected types remap; user-pinned ones don't
     input = "a,b\n1,1.5\n2,2.5\n"
     f = A.File(IOBuffer(input); typemap=Dict(Int64 => Float64))
-    o = LegacyCSV.File(IOBuffer(input); typemap=Dict(Int64 => Float64))
+    # Legacy inference follows the machine word, while 1.0 inference is
+    # platform-stable Int64.
+    o = LegacyCSV.File(IOBuffer(input); typemap=Dict(Int => Float64))
     @test eltype(Tables.getcolumn(f, :a)) == eltype(Tables.getcolumn(o, :a)) == Float64
     f = A.File(IOBuffer(input); typemap=Dict(Int64 => String), types=Dict(:b => Float64))
     @test eltype(Tables.getcolumn(f, :b)) == Float64

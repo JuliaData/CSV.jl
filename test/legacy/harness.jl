@@ -69,6 +69,22 @@ function _table(f)
            [_legacynormvec(Tables.getcolumn(cols, nm)) for nm in names]
 end
 
+# CSV 1.0 infers Int64 on every platform. Frozen 0.10 inferred the machine Int,
+# which is Int32 on 32-bit Julia. Normalize only that exact schema pair, and
+# require identical missingness; all values and every other type remain exact.
+function _schemasagree(newtypes, oldtypes)
+    newtypes == oldtypes && return true
+    Sys.WORD_SIZE == 32 || return false
+    (newtypes === nothing || oldtypes === nothing ||
+     length(newtypes) != length(oldtypes)) && return false
+    return all(zip(newtypes, oldtypes)) do (newtype, oldtype)
+        newtype == oldtype && return true
+        (Missing <: newtype) == (Missing <: oldtype) || return false
+        return Base.nonmissingtype(newtype) === Int64 &&
+               Base.nonmissingtype(oldtype) === Int32
+    end
+end
+
 # kwargs the 0.10 side accepts but the new side spells differently / retired
 function _newkw(kw)
     d = Dict{Symbol, Any}(pairs(kw))
@@ -152,7 +168,7 @@ function agree(input; expect_delta=nothing, label::String="", kw...)
     else
         nn, rn, tn, vn = _table(fnew)
         no, ro, to, vo = _table(fold)
-        (nn == no && rn == ro && tn == to && isequal(vn, vo)) ? :agree : :differ
+        (nn == no && rn == ro && _schemasagree(tn, to) && isequal(vn, vo)) ? :agree : :differ
     end
     _recordoutcome!(label, outcome)
     if expect_delta === nothing

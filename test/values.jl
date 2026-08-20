@@ -586,7 +586,7 @@ end
     z = BigInt(0)
     started = V._flushchunk_clong32!(z, false, 987654321012345678, V._POW10_18)
     started = V._flushchunk_clong32!(z, started, 909876543210123456, V._POW10_18)
-    V._flushchunk_clong32!(z, started, 789, V._POW10_INT[4])
+    V._flushchunk_clong32!(z, started, Int64(789), V._POW10_INT[4])
     @test z == parse(BigInt, "987654321012345678909876543210123456789")
     for s in ("2147483648", "123456789012345678", "-123456789012345678",
               "987654321012345678909876543210123456789")
