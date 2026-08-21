@@ -111,16 +111,6 @@ end
     return CompactStringPayload(p.a, _viewword(bufidx, offset0))
 end
 
-"""
-    CSV.CompactString <: AbstractString
-
-A compact string value used by CSV text columns. Short values fit in a 16-byte
-inline payload. Long values view a retained backing buffer. Byte access,
-direct comparisons, and iteration do not allocate.
-Hashing and ordering operate on the payload bytes without allocation and agree
-with `String`. `String(s)` copies the value into a standard Julia string.
-A long value keeps its source buffer alive for as long as the value is alive.
-"""
 struct CompactString <: AbstractString
     p::CompactStringPayload
     data::Vector{UInt8}    # dereferenced only when len > COMPACTSTRING_INLINE
@@ -342,7 +332,7 @@ Base.promote_rule(::Type{CompactString}, ::Type{String}) = String
 function Base.write(io::IO, s::CompactString)
     n = 0
     @inbounds for i in 1:ncodeunits(s)
-        n += write(io, codeunit(s, i))
+        n += Base.write(io, codeunit(s, i))
     end
     return n
 end
@@ -351,10 +341,10 @@ end
     # intersection method, that method is ambiguous with the byte-preserving
     # CompactString writer above on Julia versions that provide annotated IO.
     function Base.write(io::Base.AnnotatedIOBuffer, s::CompactString)
-        return invoke(write, Tuple{IO, CompactString}, io, s)
+        return invoke(Base.write, Tuple{IO, CompactString}, io, s)
     end
 end
-Base.print(io::IO, s::CompactString) = (write(io, s); nothing)
+Base.print(io::IO, s::CompactString) = (Base.write(io, s); nothing)
 
 # The user-facing string column. getindex returns a `CompactString` (or `missing`) with
 # NO allocation: inline values live in the payload, long values view into `buf`

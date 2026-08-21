@@ -1,10 +1,8 @@
-# Writer battery: round-trips through CSVApi.File, byte determinism across
-# thread counts, and byte agreement with CSV.write where semantics coincide.
+# Writer battery: round-trips through CSV.File, explicit byte contracts,
+# and byte determinism across thread counts.
 using Test, Dates, Tables, CodecZlib, FilePathsBase, Random
 using CSV
-import .LegacyCSV                   # LegacyCSV = the 0.10 writer, byte-parity oracle
-const A = CSV.CSVApi
-const W = CSV.KernelWrite
+const W = CSV
 
 buf() = IOBuffer()
 str(f) = (io = buf(); f(io); String(take!(io)))
@@ -93,23 +91,22 @@ Base.unsafe_write(::FailingWriterSink, ::Ptr{UInt8}, ::UInt) =
 Base.flush(::FailingWriterSink) = nothing
 Base.close(io::FailingWriterSink) = (io.open = false)
 
-@testset "KernelWrite" begin
+@testset "CSV writer" begin
     tbl = (a=[1, 2, 3], b=[1.5, missing, -2.0], c=["x", "y,z", "q\"r"],
            d=[Date(2024, 1, 2), Date(2024, 3, 4), Date(2024, 5, 6)])
 
     # round-trip: values survive File(write(table))
     out = str(io -> W.write(io, tbl))
-    f = A.File(IOBuffer(out))
+    f = CSV.File(IOBuffer(out))
     @test Tables.getcolumn(f, :a) == [1, 2, 3]
     @test isequal(Tables.getcolumn(f, :b), [1.5, missing, -2.0])
     @test String.(Tables.getcolumn(f, :c)) == ["x", "y,z", "q\"r"]
     @test Tables.getcolumn(f, :d) == tbl.d
 
-    # byte agreement with CSV.write on plain content (both quote minimally)
+    # Plain content quotes only fields that need it.
     plain = (x=[1, 2], y=["ab", "c,d"], z=[1.25, -3.5])
-    ours = str(io -> W.write(io, plain))
-    theirs = str(io -> LegacyCSV.write(io, plain))
-    @test ours == theirs
+    @test str(io -> W.write(io, plain)) ==
+          "x,y,z\n1,ab,1.25\n2,\"c,d\",-3.5\n"
 
     # RowWriter uses the same renderer for every supported writer option.
     rowtable = (id=[1, 2], text=["a,b", "q\"r"], value=[1.25, missing],
@@ -135,12 +132,12 @@ Base.close(io::FailingWriterSink) = (io.open = false)
     end
     bytes = str(io -> W.write(io, rowtable; header=["a", "b", "c", "d"]))
     @test join(CSV.RowWriter(rowtable; header=["a", "b", "c", "d"])) == bytes
-    legacykw = (; quotestrings=true,
+    optionkw = (; quotestrings=true,
                 transform=(col, value) -> col == 1 ? value + 10 : value,
                 bufsize=32)
-    bytes = str(io -> W.write(io, (id=[1, 2], text=["x", "y"]); legacykw...))
+    bytes = str(io -> W.write(io, (id=[1, 2], text=["x", "y"]); optionkw...))
     @test bytes == "\"id\",\"text\"\n11,\"x\"\n12,\"y\"\n"
-    @test join(CSV.RowWriter((id=[1, 2], text=["x", "y"]); legacykw...)) == bytes
+    @test join(CSV.RowWriter((id=[1, 2], text=["x", "y"]); optionkw...)) == bytes
     widenames = Tuple(Symbol("c", j) for j in 1:40)
     widetable = NamedTuple{widenames}(Tuple(fill(j, 2) for j in 1:40))
     seen = Int[]
@@ -279,7 +276,7 @@ Base.close(io::FailingWriterSink) = (io.open = false)
     @test str(io -> W.write(io, big; ntasks=1)) == str(io -> W.write(io, big; ntasks=8))
 
     # Stateful transforms cross fixed-size render blocks without changing the
-    # legacy row-major callback order.
+    # documented row-major callback order.
     transformed_n = W.WRITE_BLOCK_ROWS * 2 + 17
     transformed = (a=collect(1:transformed_n), b=collect(-1:-1:-transformed_n))
     calls = Tuple{Int, Int}[]
@@ -324,15 +321,14 @@ Base.close(io::FailingWriterSink) = (io.open = false)
     empties = (id=[1, 2], s=Union{Missing, String}["", missing])
     emptyout = str(io -> W.write(io, empties))
     @test emptyout == "id,s\n1,\"\"\n2,\n"
-    emptyfile = A.File(IOBuffer(emptyout); types=Dict(:s => String))
+    emptyfile = CSV.File(IOBuffer(emptyout); types=Dict(:s => String))
     @test isequal(Any[x === missing ? missing : String(x) for x in emptyfile.s],
                   Any["", missing])
-    @test str(io -> LegacyCSV.write(io, empties)) == "id,s\n1,\n2,\n" # pinned 1.0 delta: the 0.10 writer conflates "" and missing
     @test_throws ArgumentError str(io -> W.write(io, (s=[""],); quotestyle=:none))
     # leading/trailing whitespace quotes under :minimal (round-trip safety)
     ws = str(io -> W.write(io, (s=[" pad "],)))
     @test ws == "s\n\" pad \"\n"
-    @test String(Tables.getcolumn(A.File(IOBuffer(ws)), :s)[1]) == " pad "
+    @test String(Tables.getcolumn(CSV.File(IOBuffer(ws)), :s)[1]) == " pad "
 
     # floatformat (issue #492 surface)
     ff = str(io -> W.write(io, (x=[1.23456, 2.0],); floatformat="%.2f"))
@@ -383,7 +379,7 @@ Base.close(io::FailingWriterSink) = (io.open = false)
     dir = mktempdir()
     gzpath = joinpath(dir, "t.csv.gz")
     W.write(gzpath, tbl)
-    f = A.File(gzpath)
+    f = CSV.File(gzpath)
     @test Tables.getcolumn(f, :a) == [1, 2, 3]
     raw = read(gzpath)
     @test raw[1] == 0x1f && raw[2] == 0x8b
@@ -391,11 +387,11 @@ Base.close(io::FailingWriterSink) = (io.open = false)
     W.write(io, tbl; compress=:gzip)
     @test isopen(io)
     @test iswritable(io)
-    f = A.File(take!(io))
+    f = CSV.File(take!(io))
     @test Tables.getcolumn(f, :a) == [1, 2, 3]
     io = buf()
     W.write(io, tbl; compress=true)
-    @test Tables.getcolumn(A.File(take!(io)), :a) == [1, 2, 3]
+    @test Tables.getcolumn(CSV.File(take!(io)), :a) == [1, 2, 3]
     emptygzip = IOBuffer()
     W.write(emptygzip, NamedTuple(); compress=:gzip, writeheader=false)
     @test isopen(emptygzip)
@@ -426,40 +422,40 @@ Base.close(io::FailingWriterSink) = (io.open = false)
     parts = Tables.partitioner([(a=[1, 2],), (a=[3, 4],)])
     p1, p2 = joinpath(dir, "p1.csv"), joinpath(dir, "p2.csv")
     W.write([p1, p2], parts; partition=true)
-    @test Tables.getcolumn(A.File(p1), :a) == [1, 2]
-    @test Tables.getcolumn(A.File(p2), :a) == [3, 4]
-    basepath = joinpath(dir, "legacy-part")
-    generated = W.write(basepath,
+    @test Tables.getcolumn(CSV.File(p1), :a) == [1, 2]
+    @test Tables.getcolumn(CSV.File(p2), :a) == [3, 4]
+    partitionbase = joinpath(dir, "partition-base")
+    generated = W.write(partitionbase,
                         Tables.partitioner([(a=[5],), (a=[6],)]);
                         partition=true, compress=false)
-    @test generated == [basepath * "_1", basepath * "_2"]
-    @test A.File(generated[1]).a == [5] && A.File(generated[2]).a == [6]
-    extensionbase = joinpath(dir, "legacy.csv.gz")
-    extensionparts = W.write(extensionbase,
+    @test generated == [partitionbase * "_1", partitionbase * "_2"]
+    @test CSV.File(generated[1]).a == [5] && CSV.File(generated[2]).a == [6]
+    gzipbase = joinpath(dir, "partition.csv.gz")
+    extensionparts = W.write(gzipbase,
                              Tables.partitioner([(a=[7],), (a=[8],)]);
                              partition=true)
-    @test extensionparts == [extensionbase * "_1", extensionbase * "_2"]
+    @test extensionparts == [gzipbase * "_1", gzipbase * "_2"]
     @test read(extensionparts[1])[1:2] == UInt8[0x1f, 0x8b]
-    @test A.File(extensionparts[2]).a == [8]
+    @test CSV.File(extensionparts[2]).a == [8]
     many = Tables.partitioner([(part=fill(i, 200), s=["p$(i),r$(j)" for j in 1:200])
                                for i in 1:12])
     paths = [joinpath(dir, "part-$i.csv.gz") for i in 1:12]
     @test W.write(paths, many; partition=true) === paths
     @test all(i -> begin
-        pf = A.File(paths[i])
+        pf = CSV.File(paths[i])
         pf.part == fill(i, 200) && String(pf.s[end]) == "p$(i),r200"
     end, eachindex(paths))
 
     # types beyond the basics: Bool, Int128, unicode
     s = str(io -> W.write(io, (b=[true, false], w=[Int128(2)^100, Int128(-1)], u=["αβ", "cd"])))
-    f = A.File(IOBuffer(s))
+    f = CSV.File(IOBuffer(s))
     @test Tables.getcolumn(f, :b) == [true, false]
     @test Tables.getcolumn(f, :w) == [Int128(2)^100, Int128(-1)]
     @test String.(Tables.getcolumn(f, :u)) == ["αβ", "cd"]
     float_edges = [0.0, -0.0, Inf, -Inf, NaN, nextfloat(0.0),
                    floatmax(Float64), floatmin(Float64)]
     s = str(io -> W.write(io, (id=collect(eachindex(float_edges)), x=float_edges)))
-    f = A.File(IOBuffer(s); types=[Int64, Float64])
+    f = CSV.File(IOBuffer(s); types=[Int64, Float64])
     @test isequal(collect(f.x), float_edges)
 
     # header override + writeheader=false
@@ -467,7 +463,7 @@ Base.close(io::FailingWriterSink) = (io.open = false)
     @test str(io -> W.write(io, (a=[1],); writeheader=false)) == "1\n"
     numericdialect = str(io -> W.write(io, (n=[-12], v=[3]); delim='-'))
     @test numericdialect == "n-v\n\"-12\"-3\n"
-    numericfile = A.File(IOBuffer(numericdialect); delim='-', types=[Int64, Int64])
+    numericfile = CSV.File(IOBuffer(numericdialect); delim='-', types=[Int64, Int64])
     @test numericfile.n == [-12] && numericfile.v == [3]
     @test_throws ArgumentError str(io -> W.write(io, (a=[1], b=[2]); header=["one"]))
     @test_throws ArgumentError str(io -> W.write(io, (a=[1], b=[2]);
@@ -501,7 +497,7 @@ Base.close(io::FailingWriterSink) = (io.open = false)
                  text=[rand(rng, atoms) for _ in 1:n])
         bytes = str(io -> W.write(io, table; ntasks=rand(rng, 1:8), dialect...))
         @test join(CSV.RowWriter(table; dialect...)) == bytes
-        f = A.File(IOBuffer(bytes);
+        f = CSV.File(IOBuffer(bytes);
                    delim=dialect.delim,
                    quotechar=get(dialect, :quotechar, '"'),
                    openquotechar=get(dialect, :openquotechar, nothing),

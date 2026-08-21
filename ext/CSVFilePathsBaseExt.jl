@@ -10,13 +10,13 @@ module CSVFilePathsBaseExt
 
 using CSV, FilePathsBase
 
-CSV.CSVApi.resolvesource(p::FilePathsBase.AbstractPath; kw...) =
-    CSV.CSVApi.resolvesource(string(p); kw...)
-CSV.CSVApi._sourcename(p::FilePathsBase.AbstractPath) = string(p)
-CSV.CSVApi._sourceprovenance(p::FilePathsBase.AbstractPath, ::Int) = string(p)
+CSV.resolvesource(p::FilePathsBase.AbstractPath; kw...) =
+    CSV.resolvesource(string(p); kw...)
+CSV._sourcename(p::FilePathsBase.AbstractPath) = string(p)
+CSV._sourceprovenance(p::FilePathsBase.AbstractPath, ::Int) = string(p)
 
-function CSV.KernelWrite.write(sink::FilePathsBase.AbstractPath, table; kw...)
-    CSV.KernelWrite.write(string(sink), table; kw...)
+function CSV.write(sink::FilePathsBase.AbstractPath, table; kw...)
+    CSV.write(string(sink), table; kw...)
     return sink
 end
 

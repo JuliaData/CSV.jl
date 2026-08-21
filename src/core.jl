@@ -1,69 +1,63 @@
-"""
-    CSVKernel
+#=
+    CSV parser core
 
-The internal CSV parsing engine. It separates structural indexing from value
-parsing and column assembly.
+The internal CSV parsing engine. It first finds all rows and fields. It then
+parses field values and builds columns.
 
 The pipeline (and the file's layout) is:
 
-    L0  bytes         : a `Vector{UInt8}` covering the whole input (mmap/read/gunzip
-                        live above this file; the kernel only sees bytes)
-    L1  structural    : a quote-aware scan producing a `ChunkIndex` per row-aligned
-        index           chunk — a compact event tape plus assembled row boundaries.
-                        Three interchangeable scanners: a scalar reference state
-                        machine (all dialects and the test oracle), a width-generic
-                        vector default, and a portable SWAR fallback. The fast
-                        scanners share 64-byte prefix-XOR quote masks.
-    L1' parallelism   : chunk entry quote-states are *computed*, not guessed:
-                        quote-toggle parity is associative, so a parallel per-range
-                        parity count + an exclusive XOR scan gives every range its
-                        true entry state (the 2-state specialization of ParPaRaw's
-                        FSM-composition; strictly stronger than DuckDB's
-                        speculate-then-validate). Row starts follow deterministically.
-    L2  schema        : type inference seeds from a *stratified* sample of the index
-                        (evenly spaced rows, not a prefix), then...
-    L3  values        : ...each column of each chunk is parsed in its own
-                        *monomorphic* loop over the index (the self-contained
-                        `KernelValues` kernels on exact field spans). Type
-                        conflicts promote through a small lattice
-                        and re-parse ONLY that column — never the whole chunk.
-    L4  columns       : plain `Vector{T}` + `Vector{Bool}` presence (no sentinels),
-                        string columns as lazy views into the input buffer
-                        (unescaped on access), sized exactly (the index gives exact
-                        row counts — no rowsguess, no reallocation).
-    L5  driver        : `CSVKernel.parse` — eager typed table materialization
-                        with task or plain-loop execution and problems-as-data.
-                        The shared batch and row primitives use the same index
-                        and value parsers.
+    L0  bytes         : The input is one `Vector{UInt8}`. Other code reads,
+                        maps, or decompresses the source before this step.
+    L1  rows and      : A quote-aware scan finds delimiters and row endings. It
+        fields          stores their byte positions in one `ChunkIndex` for each
+                        chunk. A scalar scanner supports all CSV options. Two
+                        fast scanners process 64 bytes at a time.
+    L1' chunks        : For standard CSV quote rules, the parser first divides
+                        the input into fixed byte ranges. It counts the quote
+                        bytes in each range. These counts show whether each
+                        range starts inside or outside a quoted field. The
+                        parser then moves each range start to the next complete
+                        row boundary. It can index the resulting chunks at the
+                        same time.
+    L2  types         : The parser reads rows from across the input. It uses
+                        these rows to choose an initial type for each column.
+    L3  values        : The parser reads each column from the stored field
+                        positions. If a later value needs a different type, it
+                        changes that column type. It reads only the affected
+                        parts of that column again.
+    L4  columns       : Each non-string column stores its values and a separate
+                        present-or-missing flag. String values refer to the
+                        input bytes and remove escapes when a caller reads them.
+                        Known row counts let the parser allocate each column once.
+    L5  result        : `CSV.parse` runs the steps above and returns a
+                        typed table. It also returns details about invalid data.
 
 The API layer adds source handling, delimiter detection, row windows, pooling,
 transposed input, multiple sources, and the public Tables.jl interfaces.
 
-Semantics note (pinned by tests): the structural layer treats *every* quote byte as
-toggling quote state, like Sep/simdcsv. This matches RFC-style well-formed fields. A
-bare quote in the middle of an unquoted field therefore opens a quoted region.
-CSV.jl's current value-level parser only honors quotes at field start; for such
-malformed inputs the two designs can split rows differently. This tradeoff makes
-quote state composable across parallel byte ranges.
-"""
-module CSVKernel
+The index scan changes between inside and outside a quoted field at each quote
+byte. Two quote bytes leave it in the same state. This rule supports standard
+CSV fields and doubled quotes. A quote in the middle of an unquoted field starts
+a quoted region during this scan. The value parser only starts a quoted value at
+the start of a field, after allowed leading blanks. Invalid input with a bare
+quote can therefore produce different row boundaries in these two steps. This
+choice lets the parser find safe range starts without reading all earlier bytes
+again. Tests preserve this behavior.
+=#
 
 using Dates
+import Parsers
 
-# Temporary snapshot of the typed value kernels shared with the Parsers.jl 3.0
-# work. The final CSV.jl 1.0 source must use the registered Parsers.jl API.
-include("values.jl")
-using .KernelValues
-using .KernelValuesDates
-const V = KernelValues
-
-export Dialect, index, ParsedTable, Problem
+# Parsers owns scalar value conversion. CSV owns rows, fields, quotes, missing
+# values, and column assembly.
+const _ISO_DATE_PATTERN = Parsers.compilepattern("yyyy-mm-dd")
+const _ISO_DATETIME_PATTERN = Parsers.compilepattern("yyyy-mm-ddTHH:MM:SS.s")
+const _ISO_TIME_PATTERN = Parsers.compilepattern("HH:MM:SS.s")
 
 # ---------------------------------------------------------------------------
 # Dialect: the structural options. Value-level options (sentinels, dateformats,
 # true/false spellings, decimal char) live in `ValueOpts`, built once in
-# `makevalueopts` and applied to exact field spans by the `KernelValues`
-# kernels.
+# `makevalueopts` and applied to exact field spans by the Parsers kernels.
 # ---------------------------------------------------------------------------
 
 struct Dialect
@@ -112,30 +106,29 @@ function Dialect(; delim::Union{Char, String}=',',
     return Dialect(d, oq, cq, e, quoted, cmt, ignoreemptyrows, ignorerepeated)
 end
 
-# Quote-toggle parity composes across arbitrary byte ranges only when a quote byte
-# always means "toggle": true for unquoted dialects and for RFC ""-style escaping
-# (an escaped quote is two toggles — parity-neutral). A distinct escape char (e.g.
-# backslash) or asymmetric open/close quotes breaks parity, so those dialects run
-# on the sequential scalar path.
+# The range planner can use quote counts with standard CSV quote rules. The same
+# byte must open and close a quoted field. An escaped quote must use two quote
+# bytes. Each quote changes the state between inside and outside a quoted field.
+# Two quotes change the state twice, so the final state is the same. If quote
+# handling is off, every range starts outside a quoted field.
+#
+# A different escape byte or different open and close bytes need more context.
+# The parser uses one scalar scan for those options.
 parityclean(d::Dialect) = !d.quoted || (d.oq == d.cq && d.e == d.cq)
-# A comment dialect breaks PARALLEL parity composition (a `"` inside a comment
-# row is not a quote toggle, and a mid-range popcount cannot see row starts) and
-# needs the scalar scanner (comment rows are skipped whole at row starts). Such
-# files still get bounded chunks: the planner walks true row starts.
+# Quote bytes in a comment row do not change the CSV quote state. A byte range
+# that starts in the middle of a row cannot know whether that row is a comment.
+# The planner therefore finds row starts in order for files with comment rows.
+# It can still index the completed chunks at the same time.
 commentaware(d::Dialect) = d.comment !== nothing
 
 # The fast scanners additionally need a single-byte delimiter.
 swareligible(d::Dialect) = parityclean(d) && d.delim isa UInt8 && !commentaware(d)
 
-# Value-level options: everything a cell needs beyond structure. Temporal
-# parsing always runs a compiled format program — the ISO trio by default; a
-# user `dateformat` replaces all three (its `hasdate`/`hastime` flags say which
-# single type it detects as). Empty trues/falses ⇒ canonical `true`/`false`.
-# `sentinels` is the custom-missing-strings seam (the CSV front end's
-# `missingstring`): spellings whose exact (possibly quoted) content ⇒ missing.
-# Sentinels cannot break sample-independence — `cellcontent` resolves them
-# before ANY type machinery sees the span, so detection and parsing agree by
-# construction (contrast `inferbool`).
+# These options control how CSV reads one field. Date and time parsing uses a
+# compiled pattern. The default patterns accept ISO date, date-time, and time
+# text. A user `dateformat` replaces these patterns. Empty true and false lists
+# select the standard `true` and `false` text. A sentinel is text that means
+# missing. `cellcontent` checks sentinels before it detects or parses a type.
 struct ValueOpts
     oq::UInt8
     cq::UInt8
@@ -145,15 +138,68 @@ struct ValueOpts
     decimal::UInt8
     stripws::Bool
     sentinels::Vector{Vector{UInt8}}
-    sentfirst::NTuple{4, UInt64}  # first-byte bitmap: skip matchsentinel for ~every cell
+    sentfirst::NTuple{4, UInt64}  # first-byte map: skip comparisons for most cells
     trues::Vector{Vector{UInt8}}
     falses::Vector{Vector{UInt8}}
-    datepat::V.DatePattern
-    datetimepat::V.DatePattern
-    timepat::V.DatePattern
+    datepat::Parsers.DatePattern
+    datetimepat::Parsers.DatePattern
+    timepat::Parsers.DatePattern
     customfmt::Bool
-    inferbool::Bool   # false when a user Bool spelling collides with an earlier cascade type
+    inferbool::Bool   # false when another type also accepts a user Bool spelling
     groupmark::UInt8  # digit-group separator for numeric cells; 0x00 = off
+end
+
+# Parsers returns signed zero or signed infinity with a range code. CSV accepts
+# these rounded values.
+@inline _fixedfloatusable(rc) =
+    rc == Parsers.RC_OK || rc == Parsers.RC_OVERFLOW || rc == Parsers.RC_UNDERFLOW
+
+# Return true when `buf[i:j]` contains `byte`. Check eight bytes at a time when
+# the range is long enough. This check avoids copying cells that have no group
+# mark.
+@inline function _containsbyte(buf::Vector{UInt8}, i::Int, j::Int, byte::UInt8)
+    k = i
+    if k + 7 <= j
+        GC.@preserve buf begin
+            p = pointer(buf)
+            @inbounds while k + 7 <= j
+                _eqmask8_c(ltoh(unsafe_load(Ptr{UInt64}(p + k - 1))), byte) != 0 &&
+                    return true
+                k += 8
+            end
+        end
+    end
+    @inbounds while k <= j
+        buf[k] == byte && return true
+        k += 1
+    end
+    return false
+end
+
+# Copy one numeric field into `scratch` and remove valid group marks. A group
+# mark must be between two digits in the integer part. Return `-1` when the
+# field has no group mark. Return `-2` when a group mark is invalid.
+function _degroup!(scratch::Vector{UInt8}, buf::Vector{UInt8}, i::Int, j::Int,
+                   groupmark::UInt8, decimal::UInt8)
+    _containsbyte(buf, i, j, groupmark) || return -1
+    n = j - i + 1
+    length(scratch) < n && resize!(scratch, max(n, 64))
+    copied = 0
+    integerpart = true
+    @inbounds for k in i:j
+        byte = buf[k]
+        if byte == groupmark
+            integerpart || return -2
+            (k > i && (buf[k - 1] - UInt8('0')) <= 0x09 &&
+             k < j && (buf[k + 1] - UInt8('0')) <= 0x09) || return -2
+        else
+            (byte == decimal || byte == UInt8('e') || byte == UInt8('E')) &&
+                (integerpart = false)
+            copied += 1
+            scratch[copied] = byte
+        end
+    end
+    return copied
 end
 
 function _bytelist(x, name::Symbol)
@@ -171,37 +217,37 @@ function _bytelist(x, name::Symbol)
 end
 
 function _earlierbooltype(s::Vector{UInt8}, decimal::UInt8,
-                          dp::V.DatePattern, dtp::V.DatePattern, tp::V.DatePattern,
+                          dp::Parsers.DatePattern, dtp::Parsers.DatePattern,
+                          tp::Parsers.DatePattern,
                           customfmt::Bool, gm::UInt8)
     i, j = 1, length(s)
     if gm != 0x00
         scratch = Vector{UInt8}(undef, 64)
-        n = V.degroup!(scratch, s, i, j, gm, decimal)
+        n = _degroup!(scratch, s, i, j, gm, decimal)
         if n >= 0
-            V.parseint64(scratch, 1, n)[2] == V.RC_OK && return Int64
-            V.parsefloat64(scratch, 1, n, decimal)[2] == V.RC_OK && return Float64
+            Parsers.parseint(Int64, scratch, 1, n)[2] == Parsers.RC_OK && return Int64
+            _fixedfloatusable(Parsers.parsefloat(Float64, scratch, 1, n, decimal)[2]) &&
+                return Float64
         end
     end
-    V.parseint64(s, i, j)[2] == V.RC_OK && return Int64
-    V.parsefloat64(s, i, j, decimal)[2] == V.RC_OK && return Float64
+    Parsers.parseint(Int64, s, i, j)[2] == Parsers.RC_OK && return Int64
+    _fixedfloatusable(Parsers.parsefloat(Float64, s, i, j, decimal)[2]) && return Float64
     if customfmt
-        if V.parsecivil(s, i, j, dp)[2] == V.RC_OK
+        if Parsers.parsecivil(s, i, j, dp)[2] == Parsers.RC_OK
             return dp.hasdate ? (dp.hastime ? DateTime : Date) : Time
         end
     else
-        V.parsecivil(s, i, j, dp)[2] == V.RC_OK && return Date
-        V.parsecivil(s, i, j, dtp)[2] == V.RC_OK && return DateTime
-        V.parsecivil(s, i, j, tp)[2] == V.RC_OK && return Time
+        Parsers.parsecivil(s, i, j, dp)[2] == Parsers.RC_OK && return Date
+        Parsers.parsecivil(s, i, j, dtp)[2] == Parsers.RC_OK && return DateTime
+        Parsers.parsecivil(s, i, j, tp)[2] == Parsers.RC_OK && return Time
     end
     return nothing
 end
 
-# A user Bool spelling that an EARLIER cascade type also accepts (e.g.
-# truestrings=["1"]) would make an inferred column's type depend on which rows
-# the sampler saw — "1" detects as Int64, but a Bool-seeded column would accept
-# it. Instead of rejecting the (common, legitimate) spellings outright, Bool
-# leaves the INFERENCE cascade: such columns are never inferred as Bool, while
-# user-provided Bool columns still parse the lists — deterministic either way.
+# Another type can also accept a user Bool spelling. For example, Int64 accepts
+# `"1"`. In this case, CSV does not infer Bool for the column. A user can still
+# set the column type to Bool and use the custom spelling. This rule makes the
+# result independent of the sampled rows.
 function _validatebools(trues, falses, decimal, dp, dtp, tp, customfmt, gm)
     for t in trues, f in falses
         t == f && throw(ArgumentError("Bool spelling $(repr(String(t))) is both true and false"))
@@ -229,11 +275,12 @@ function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
         # which the indexer already handles (the mark is content, not structure)
     end
     if dateformat === nothing
-        dp, dtp, tp, custom = V.ISO_DATE, V.ISO_DATETIME, V.ISO_TIME, false
+        dp, dtp, tp, custom =
+            _ISO_DATE_PATTERN, _ISO_DATETIME_PATTERN, _ISO_TIME_PATTERN, false
     else
         dateformat isa AbstractString ||
             throw(ArgumentError("dateformat must be a format String (got $(typeof(dateformat)))"))
-        p = V.compilepattern(dateformat)
+        p = Parsers.compilepattern(dateformat)
         (p.hasdate || p.hastime) ||
             throw(ArgumentError("dateformat must contain a date or time token"))
         dp = dtp = tp = p
@@ -281,22 +328,96 @@ const CELL_BADQUOTE = 0x02
 @inline _maybesentinel(vo::ValueOpts, b::UInt8) =
     (vo.sentfirst[(b >> 6) + 1] >> (b & 0x3f)) & UInt64(1) != 0
 
-# Typed values and sentinel matching tolerate surrounding blanks (0.10 /
-# Parsers.jl semantics). String columns still retain these bytes because this
-# helper only changes the span used by those two checks.
+# Typed values and sentinel matching accept surrounding blanks. String columns
+# keep these bytes. This helper changes only the span used for value parsing and
+# sentinel checks.
 @inline function _trimblanks(buf::Vector{UInt8}, i::Int, j::Int)
     @inbounds while i <= j && _isot(buf[i]); i += 1; end
     @inbounds while j >= i && _isot(buf[j]); j -= 1; end
     return i, j
 end
 
+@inline function _spanmatches(buf::Vector{UInt8}, i::Int, j::Int,
+                              choices::Vector{Vector{UInt8}})
+    n = j - i + 1
+    @inbounds for choice in choices
+        length(choice) == n || continue
+        k = 1
+        while k <= n && buf[i + k - 1] == choice[k]
+            k += 1
+        end
+        k > n && return true
+    end
+    return false
+end
+
 @inline function _matchsentinel(buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     i <= j && _maybesentinel(vo, @inbounds(buf[i])) &&
-        V.matchsentinel(buf, i, j, vo.sentinels) && return true
+        _spanmatches(buf, i, j, vo.sentinels) && return true
     ti, tj = _trimblanks(buf, i, j)
     return ti <= tj && (ti != i || tj != j) &&
            _maybesentinel(vo, @inbounds(buf[ti])) &&
-           V.matchsentinel(buf, ti, tj, vo.sentinels)
+           _spanmatches(buf, ti, tj, vo.sentinels)
+end
+
+"""
+    findcontent(buf, i, j, openquote, closequote, escape)
+
+Find the content bytes in one field. An unquoted field keeps its full span. A
+quoted field drops its outer quotes. The returned Boolean is true when the
+content contains an escape sequence. The return code is `Parsers.RC_INVALID`
+when the closing quote is absent or extra bytes follow it.
+"""
+function findcontent(buf::Vector{UInt8}, i::Int, j::Int,
+                     openquote::UInt8, closequote::UInt8, escape::UInt8)
+    @inbounds if i > j || buf[i] != openquote
+        return (i, j - i + 1, false, Parsers.RC_OK)
+    end
+
+    k = i + 1
+    escaped = false
+    if escape == closequote
+        GC.@preserve buf begin
+            p = pointer(buf)
+            @inbounds while k <= j
+                if k + 7 <= j
+                    marks = _eqmask8_c(ltoh(unsafe_load(Ptr{UInt64}(p + k - 1))), closequote)
+                    if marks == 0
+                        k += 8
+                        continue
+                    end
+                    k += trailing_zeros(marks) >> 3
+                else
+                    while k <= j && buf[k] != closequote
+                        k += 1
+                    end
+                    k > j && break
+                end
+                if k < j && buf[k + 1] == closequote
+                    escaped = true
+                    k += 2
+                else
+                    return k == j ? (i + 1, j - i - 1, escaped, Parsers.RC_OK) :
+                                    (i + 1, j - i - 1, escaped, Parsers.RC_INVALID)
+                end
+            end
+        end
+        return (i + 1, j - i, escaped, Parsers.RC_INVALID)
+    end
+
+    @inbounds while k <= j
+        b = buf[k]
+        if b == escape
+            escaped = true
+            k += 2
+        elseif b == closequote
+            return k == j ? (i + 1, j - i - 1, escaped, Parsers.RC_OK) :
+                            (i + 1, j - i - 1, escaped, Parsers.RC_INVALID)
+        else
+            k += 1
+        end
+    end
+    return (i + 1, j - i, escaped, Parsers.RC_INVALID)
 end
 
 """
@@ -352,8 +473,8 @@ and blanks inside quotes are stripped as content (`"  x  "` → `x`).
             while ii <= jj && _isot(buf[ii]); ii += 1; end
             if ii <= jj && buf[ii] == vo.oq
                 while jj > ii && _isot(buf[jj]); jj -= 1; end
-                cpos, clen, esc, rc = V.findcontent(buf, ii, jj, vo.oq, vo.cq, vo.e)
-                rc == V.RC_OK || return (cpos, clen, esc, CELL_BADQUOTE)
+                cpos, clen, esc, rc = findcontent(buf, ii, jj, vo.oq, vo.cq, vo.e)
+                rc == Parsers.RC_OK || return (cpos, clen, esc, CELL_BADQUOTE)
                 if vo.stripws
                     cj = cpos + clen - 1
                     while cpos <= cj && _isot(buf[cpos]); cpos += 1; end
@@ -429,12 +550,24 @@ end
 # `parsevalue(T, buf, i, j, vo) -> (value, ok)` over a CONTENT span. Strictness
 # principle: each kernel accepts exactly the spellings `detecttype` assigns to
 # it (Bool is `true`/`false` or the user lists; temporals are pattern-exact), so
-# parse-set ≡ detect-set and an inferred column's type can never depend on which
-# rows the sampler saw — the property the old per-value canonical-conflict guard
-# existed to enforce, now free by construction.
+# Value parsing and type detection accept the same text. The inferred type does
+# not depend on which rows the sample contains.
 const _DATE0 = Date(1)
 const _DATETIME0 = DateTime(1)
 const _TIME0 = Time(0)
+
+# Parsers returns calendar fields without choosing a Dates representation. CSV
+# owns this conversion because it chooses the final column type.
+@inline todate(c::Parsers.CivilParts) = Date(c.year, c.month, c.day)
+
+@inline function todatetime(c::Parsers.CivilParts)
+    milliseconds = Int64(c.nanosecond) ÷ 1_000_000
+    return DateTime(c.year, c.month, c.day, c.hour, c.minute, c.second, milliseconds)
+end
+
+@inline totime(c::Parsers.CivilParts) =
+    Time(Dates.Nanosecond(((Int64(c.hour) * 60 + c.minute) * 60 + c.second) *
+                          1_000_000_000 + c.nanosecond))
 
 # Numeric kernels take a scratch buffer so grouped digits (groupmark) degroup
 # without per-cell allocation; the hot loops pass a per-(column × chunk)
@@ -443,41 +576,41 @@ const _TIME0 = Time(0)
 @inline function parsevalue(::Type{Int64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                             scratch::Vector{UInt8})
     if vo.groupmark != 0x00
-        # marks are the exception even in grouped columns: one word-scan says
-        # whether this cell has any; only then run the run-gather parser
-        if V._hasbyte(buf, i, j, vo.groupmark)
-            v, rc = V.parsegroupedint64(buf, i, j, vo.groupmark, scratch)
-            return (v, rc == V.RC_OK)
+        n = _degroup!(scratch, buf, i, j, vo.groupmark, 0xff)
+        n == -2 && return (Int64(0), false)
+        if n >= 0
+            v, rc = Parsers.parseint(Int64, scratch, 1, n)
+            return (v, rc == Parsers.RC_OK)
         end
     end
-    v, rc = V.parseint64(buf, i, j)
-    return (v, rc == V.RC_OK)
+    v, rc = Parsers.parseint(Int64, buf, i, j)
+    return (v, rc == Parsers.RC_OK)
 end
 @inline function parsevalue(::Type{Int128}, buf::Vector{UInt8}, i::Int, j::Int,
                             vo::ValueOpts, scratch::Vector{UInt8})
     if vo.groupmark != 0x00
-        n = V.degroup!(scratch, buf, i, j, vo.groupmark, 0xff)
+        n = _degroup!(scratch, buf, i, j, vo.groupmark, 0xff)
         n == -2 && return (Int128(0), false)
         if n >= 0
-            v, rc = V.parseint128(scratch, 1, n)
-            return (v, rc == V.RC_OK)
+            v, rc = Parsers.parseint(Int128, scratch, 1, n)
+            return (v, rc == Parsers.RC_OK)
         end
     end
-    v, rc = V.parseint128(buf, i, j)
-    return (v, rc == V.RC_OK)
+    v, rc = Parsers.parseint(Int128, buf, i, j)
+    return (v, rc == Parsers.RC_OK)
 end
 @inline function parsevalue(::Type{Float64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                             scratch::Vector{UInt8})
     if vo.groupmark != 0x00
-        n = V.degroup!(scratch, buf, i, j, vo.groupmark, vo.decimal)
+        n = _degroup!(scratch, buf, i, j, vo.groupmark, vo.decimal)
         n == -2 && return (0.0, false)
         if n >= 0
-            v, rc = V.parsefloat64(scratch, 1, n, vo.decimal)
-            return (v, rc == V.RC_OK)
+            v, rc = Parsers.parsefloat(Float64, scratch, 1, n, vo.decimal)
+            return (v, _fixedfloatusable(rc))
         end
     end
-    v, rc = V.parsefloat64(buf, i, j, vo.decimal)
-    return (v, rc == V.RC_OK)
+    v, rc = Parsers.parsefloat(Float64, buf, i, j, vo.decimal)
+    return (v, _fixedfloatusable(rc))
 end
 @inline parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                    scratch::Vector{UInt8}) where {T} = parsevalue(T, buf, i, j, vo)
@@ -503,36 +636,37 @@ end
     value, ok = parsevalue(_narrowbase(T), buf, i, j, vo, scratch)
     return _narrowvalue(T, value, ok)
 end
-# user-only column types: never inferred, so the cascade and lattice are untouched
+# CSV uses these types only when the user requests them. Type inference does not
+# select them.
 @inline function _parsebigint_direct(buf::Vector{UInt8}, i::Int, j::Int)
-    v, rc = V.parsebigint(buf, i, j)
-    return (v, rc == V.RC_OK)
+    v, rc = Parsers.parsebigint(buf, i, j)
+    return (v, rc == Parsers.RC_OK)
 end
 @inline function parsevalue(::Type{BigInt}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                             scratch::Vector{UInt8})
     if vo.groupmark != 0x00
-        n = V.degroup!(scratch, buf, i, j, vo.groupmark, 0xff)
+        n = _degroup!(scratch, buf, i, j, vo.groupmark, 0xff)
         n == -2 && return (BigInt(0), false)
         n >= 0 && return _parsebigint_direct(scratch, 1, n)
     end
     return _parsebigint_direct(buf, i, j)
 end
 @inline function _parsebigfloat_direct(buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
-    v, rc = V.parsebigfloat(buf, i, j, vo.decimal)
-    return (v, rc == V.RC_OK)
+    value = Parsers.tryparse(BigFloat, buf, i, j; decimal=Char(vo.decimal))
+    return value === nothing ? (BigFloat(0), false) : (value, true)
 end
 @inline function parsevalue(::Type{BigFloat}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                             scratch::Vector{UInt8})
     if vo.groupmark != 0x00
-        n = V.degroup!(scratch, buf, i, j, vo.groupmark, vo.decimal)
+        n = _degroup!(scratch, buf, i, j, vo.groupmark, vo.decimal)
         n == -2 && return (BigFloat(0), false)
         n >= 0 && return _parsebigfloat_direct(scratch, 1, n, vo)
     end
     return _parsebigfloat_direct(buf, i, j, vo)
 end
 @inline function parsevalue(::Type{Base.UUID}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
-    u, rc = V.parseuuid(buf, i, j)
-    return (Base.UUID(u), rc == V.RC_OK)
+    u, rc = Parsers.parseuuid(buf, i, j)
+    return (Base.UUID(u), rc == Parsers.RC_OK)
 end
 _scratchfor(vo::ValueOpts) = vo.groupmark == 0x00 ? EMPTY_BYTES : Vector{UInt8}(undef, 64)
 @inline parsevalue(::Type{Int64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
@@ -543,8 +677,8 @@ _scratchfor(vo::ValueOpts) = vo.groupmark == 0x00 ? EMPTY_BYTES : Vector{UInt8}(
     vo.groupmark == 0x00 ? _parsebigint_direct(buf, i, j) :
                            parsevalue(BigInt, buf, i, j, vo, Vector{UInt8}(undef, 64))
 @inline function _parsefloat_direct(buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
-    v, rc = V.parsefloat64(buf, i, j, vo.decimal)
-    return (v, rc == V.RC_OK)
+    v, rc = Parsers.parsefloat(Float64, buf, i, j, vo.decimal)
+    return (v, _fixedfloatusable(rc))
 end
 @inline parsevalue(::Type{Float64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
     vo.groupmark == 0x00 ? _parsefloat_direct(buf, i, j, vo) :
@@ -557,47 +691,34 @@ end
     parsevalue(T, buf, i, j, vo, _scratchfor(vo))
 @inline function parsevalue(::Type{Bool}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     if isempty(vo.trues) && isempty(vo.falses)
-        v, rc = V.parsebool(buf, i, j)
-        return (v, rc == V.RC_OK)
+        v, rc = Parsers.parsebool(buf, i, j)
+        return (v, rc == Parsers.RC_OK)
     end
-    V.matchsentinel(buf, i, j, vo.trues) && return (true, true)
-    V.matchsentinel(buf, i, j, vo.falses) && return (false, true)
+    _spanmatches(buf, i, j, vo.trues) && return (true, true)
+    _spanmatches(buf, i, j, vo.falses) && return (false, true)
     return (false, false)
 end
 @inline function parsevalue(::Type{Date}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     vo.customfmt && (!vo.datepat.hasdate || vo.datepat.hastime) && return (_DATE0, false)
-    if !vo.customfmt && j - i + 1 == 10
-        c, rc = V.parseiso10(buf, i)
-        rc == V.RC_OK && return (todate(c), true)
-        # not the fixed shape or not a real date — the interpreter agrees either way
-    end
-    c, rc = V.parsecivil(buf, i, j, vo.datepat)
-    rc == V.RC_OK || return (_DATE0, false)
+    c, rc = Parsers.parsecivil(buf, i, j, vo.datepat)
+    rc == Parsers.RC_OK || return (_DATE0, false)
     return (todate(c), true)
 end
 @inline function parsevalue(::Type{DateTime}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     vo.customfmt && (!vo.datetimepat.hasdate || !vo.datetimepat.hastime) && return (_DATETIME0, false)
-    if !vo.customfmt && j - i + 1 == 19
-        c, rc = V.parseiso19(buf, i)
-        rc == V.RC_OK && return (todatetime(c), true)
-    end
-    c, rc = V.parsecivil(buf, i, j, vo.datetimepat)
-    rc == V.RC_OK || return (_DATETIME0, false)
+    c, rc = Parsers.parsecivil(buf, i, j, vo.datetimepat)
+    rc == Parsers.RC_OK || return (_DATETIME0, false)
     return (todatetime(c), true)
 end
 @inline function parsevalue(::Type{Time}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     vo.customfmt && (vo.timepat.hasdate || !vo.timepat.hastime) && return (_TIME0, false)
-    if !vo.customfmt && j - i + 1 == 8
-        c, rc = V.parseiso8(buf, i)
-        rc == V.RC_OK && return (totime(c), true)
-    end
-    c, rc = V.parsecivil(buf, i, j, vo.timepat)
-    rc == V.RC_OK || return (_TIME0, false)
+    c, rc = Parsers.parsecivil(buf, i, j, vo.timepat)
+    rc == Parsers.RC_OK || return (_TIME0, false)
     return (totime(c), true)
 end
 
-# User-defined scalar types are a cold path. Match CSV 0.10's contract: a
-# concrete type is accepted when it defines `tryparse(T, ::String)` or
+# User-defined scalar types are not a common path. A concrete type is accepted
+# when it defines `tryparse(T, ::String)` or
 # `parse(T, ::String)`. Keep failures as ordinary invalid cells; a custom
 # parser must not escape the parse loop and abort the whole file.
 @noinline function parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int,
@@ -616,21 +737,20 @@ end
 end
 
 # ---------------------------------------------------------------------------
-# L1: the structural index — tape edition.
+# L1: the row and field index.
 #
-# The scanners emit ONE UInt32 per structural event into a flat tape:
+# The scanners store one UInt32 for each delimiter or row ending:
 #     (relpos << 2) | kind
 #     kind: 0 = delimiter, 1 = CR, 2 = LF, 3 = CRLF at the CR
-# and nothing else — no field structs, no row bookkeeping, no hygiene. Everything
-# else that is row-shaped (comment/empty-row dropping and row boundaries) happens
-# in `assemblerows!`, one cheap pass over the compact tape (4 bytes/event ≈ 1/10th
-# of the input bytes) instead of inside the byte loop. This is the Sep/simdcsv tape
-# design: the hot loop's only per-event work is one store and a cursor bump.
+# The stored position is relative to the chunk start. `assemblerows!` then reads
+# this list once. It finds row boundaries and removes comment rows and empty
+# rows. The byte scanner does not do this row work.
+#
 # After assembly, tape kinds become: 0 = delimiter (next field starts
 # `delimskip` bytes later), 1 = row end (+1 byte), 2 = row end (+2 bytes, CRLF).
 # Every event closes exactly one field, so a row's field count is its event count.
-# relpos is chunk-relative and capped below 2^30 (chunks are ~1 MiB; only a single
-# giant row can exceed this, and that is rejected up front).
+# A stored relative position must be less than 2^30. A very large row can exceed
+# this limit. The parser rejects that row before it builds the index.
 # ---------------------------------------------------------------------------
 
 mutable struct ChunkIndex
@@ -703,11 +823,11 @@ end
 # raw event kinds during scanning
 @inline rawkind(b::UInt8) = UInt32((b == CR) + 2 * (b == LF))   # 0 delim, 1 CR, 2 LF, 3 CRLF (pre-paired)
 
-# --- row assembly (the deferred hygiene pass) --------------------------------
+# --- build rows from stored events ------------------------------------------
 #
-# Consumes pre-paired raw events in place, drops comment and (optionally) empty
-# rows, records each surviving row's start offset, and builds rowfirst. Reads
-# input bytes only at row starts (comment prefix check).
+# Read the stored events in place. Remove comment rows and, when requested,
+# empty rows. Store the start of each remaining row. Read input bytes only when
+# a row can start with the comment prefix.
 function assemblerows!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int)
     d.ignorerepeated && return assemblecollapsed!(ci, buf, d, n)
     tape = ci.tape
@@ -735,7 +855,7 @@ function assemblerows!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int)
             tape[w] = (e & ~UInt32(0x03)) | (wide ? UInt32(2) : UInt32(1))
             i += 1
             nextrow = pos + (wide ? 2 : 1)
-            # hygiene, at row granularity, over the tape (never re-scanning bytes)
+            # Decide whether to keep this row. Do not scan its bytes again.
             drop = false
             if d.ignoreemptyrows && w == roweventw && pos == rowstart
                 drop = true                # a row that is one empty field
@@ -774,9 +894,9 @@ end
 # event is dropped and the row-end event takes the run's first-delimiter
 # position, excluding the padding from the last field (its kind bits are
 # unread past assembly — only its relpos is, as that field's stop).
-# Hygiene still reads the RAW row start: an all-delimiter row is one empty
-# field (a short row), NOT an empty row, and comment bytes only match at the
-# true line start ("  #x" is data). Both pinned against CSV.jl.
+# Use the original row start for these checks. A row that contains only
+# delimiters has one empty field. It is not an empty row. A comment prefix must
+# start at the first byte of the row. Tests check both rules.
 function assemblecollapsed!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int)
     tape = ci.tape
     skip = ci.delimskip = d.delim isa UInt8 ? 1 : length(d.delim::Vector{UInt8})
@@ -789,7 +909,7 @@ function assemblecollapsed!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::I
     cmt = d.comment
     w = 0
     roweventw = 1          # tape index where the current row's events begin
-    rowstart = ci.start    # RAW row start: hygiene (comment / empty-row) anchor
+    rowstart = ci.start    # original row start for comment and empty-row checks
     fieldstart = ci.start  # row start advanced past leading delimiter padding
     runend = 0             # absolute byte just past the last kept event's run
     i = 1
@@ -873,12 +993,12 @@ function finishscan!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int, inq
     return ci
 end
 
-# --- scalar reference scanner ----------------------------------------------
+# --- scalar scanner ---------------------------------------------------------
 #
-# A direct state machine over bytes. Handles every dialect (multi-byte delimiters,
-# distinct escape chars, asymmetric quotes) and is the correctness oracle the fast
-# paths are property-tested against. Entry state is always "outside quotes"
-# because chunk starts are true row starts by construction.
+# Read one byte at a time. This scanner supports multi-byte delimiters, a
+# separate escape byte, and different open and close quote bytes. Tests compare
+# the fast scanners with this scanner. Each chunk starts at a complete row, so
+# this scan always starts outside a quoted field.
 
 function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
     start, stop = ci.start, ci.stop
@@ -954,31 +1074,28 @@ end
     return true
 end
 
-# --- fast scanners: SWAR and vector block-mask engines -----------------------
+# --- fast scanners -----------------------------------------------------------
 #
-# Both produce, per 64-byte block, a quote bitmask and a specials
-# (delim|CR|LF) bitmask; a shared branch-light event loop turns the masked
-# specials into tape entries. The engines differ only in how the masks are built:
+# Both fast scanners read 64 bytes at a time. Each 64-bit mask uses one bit for
+# each input byte. One mask marks quotes. A second mask marks delimiters,
+# carriage returns, and line feeds. The quote marks show which bytes are inside
+# quoted fields. Only delimiters and line endings outside quoted fields become
+# index events.
 #
-#   :swar — portable 8-bytes-per-word marks + movemask multiplies (no SIMD
-#           assumptions at all; the fallback everywhere).
-#   :vec  — width-generic LLVM vector IR (<64 x i8> compare → <64 x i1> →
-#           bitcast i64). LLVM lowers this per HOST: one vpcmpeqb into a mask
-#           register on AVX-512, paired 32-byte compares + vpmovmskb on AVX2,
-#           and compare + bit-select reductions on NEON. One implementation,
-#           no per-platform intrinsics, optimal where the hardware has direct
-#           support — this is deliberately not tuned to any single machine.
+# `:swar` processes the block as eight 64-bit words. It does not require vector
+# instructions. `:vec` lets LLVM select vector instructions for the current CPU.
 #
-# The in-quote region mask is a prefix-XOR over the quote mask; on x86_64 and
-# Apple aarch64 it uses the carry-less multiply instruction (PCLMULQDQ / PMULL),
-# elsewhere the 6-step shift-XOR ladder.
+# `prefix_xor64` converts the quote marks into a running inside-or-outside mask.
+# Each quote changes the value for all later bytes in the block. Supported x86-64
+# and Apple ARM CPUs can calculate this mask with one instruction. Other CPUs
+# use six shift-and-XOR steps.
 
 const ONES8   = 0x0101010101010101
 const LOWS7   = 0x7f7f7f7f7f7f7f7f
 const MOVEMASK_MAGIC = 0x0102040810204080
 
-# Exact per-byte equality marks: 0x80 at each byte of `w` equal to `b` (the
-# subtract-borrow variant has false positives) — safe to OR across classes.
+# Set the high bit of each byte in `w` that equals `b`. This form does not mark
+# a byte that differs from `b`, so callers can safely combine several results.
 @inline function eqmarks(w::UInt64, b::UInt8)::UInt64
     x = w ⊻ (ONES8 * b)
     return ~(((x & LOWS7) + LOWS7) | x | LOWS7)
@@ -998,7 +1115,7 @@ end
 
 @static if Sys.ARCH === :x86_64
     @inline function prefix_xor64(m::UInt64)::UInt64
-        # clmul(m, ~0) = prefix XOR; PCLMULQDQ ships on every x86_64 CPU since ~2010
+        # This CPU instruction calculates the running quote mask in one step.
         v = Base.llvmcall(("""
             declare <2 x i64> @llvm.x86.pclmulqdq(<2 x i64>, <2 x i64>, i8)
             define i64 @entry(i64 %m) #0 {
@@ -1013,7 +1130,7 @@ end
     end
 elseif Sys.ARCH === :aarch64 && Sys.isapple()
     @inline function prefix_xor64(m::UInt64)::UInt64
-        # PMULL (crypto extension — present on all Apple silicon)
+        # This Apple ARM instruction calculates the running quote mask in one step.
         v = Base.llvmcall(("""
             declare <16 x i8> @llvm.aarch64.neon.pmull64(i64, i64)
             define i64 @entry(i64 %m) #0 {
@@ -1029,9 +1146,9 @@ else
     @inline prefix_xor64(m::UInt64) = prefix_xor64_shift(m)
 end
 
-# vector mask kernels (width-generic IR; unaligned loads; element 0 = bit 0 on
-# the little-endian targets this kernel supports). Julia 1.10's LLVM parser uses
-# typed pointers; Julia 1.11+ uses opaque pointers.
+# LLVM code that creates the 64-byte masks. A load can start at any address. The
+# first input byte maps to bit 0 on the supported little-endian systems. Julia
+# 1.10 requires a typed pointer. Later Julia versions require an opaque pointer.
 @static if VERSION < v"1.11"
     const LLVM_BYTE_PTR = "i8*"
     const LLVM_LOAD64 = """
@@ -1090,9 +1207,8 @@ end
     q64 = zero(UInt64)
     s64 = zero(UInt64)
     if quoted
-        for k in 0:7   # fixed trip count; unrolled by the compiler
-            # ltoh: the movemask constants number bytes from the least-
-            # significant end, matching little-endian loads.
+        for k in 0:7   # This loop always runs eight times. The compiler can unroll it.
+            # Use little-endian byte order so the mask bits follow input order.
             w = ltoh(unsafe_load(Ptr{UInt64}(p + 8k)))
             q64 |= movemask(eqmarks(w, oq)) << (8k)
             sm = eqmarks(w, delim) | eqmarks(w, LF) | eqmarks(w, CR)
@@ -1117,8 +1233,8 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
     tape = ci.tape
     length(tape) < 256 && resize!(tape, min(max((stop - start + 1) >> 3, 256), MAX_TAPE_HINT))
     n = 0
-    inq = false        # quote parity carried between blocks
-    pairskip = false   # CR at a block's last bit already consumed the next LF
+    inq = false        # whether this block starts inside a quoted field
+    pairskip = false   # The last CR in a block already consumed the next LF.
     pos = start
     GC.@preserve buf begin
         p = pointer(buf)
@@ -1150,7 +1266,7 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
         end
     end
     ci.tape = tape
-    # Scalar tail for the last <64 bytes, continuing the carried quote state.
+    # Read the final bytes one at a time. Keep the state from the last full block.
     @inbounds while pos <= stop
         b = buf[pos]
         if inq
@@ -1185,26 +1301,38 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
     return finishscan!(ci, buf, d, n, inq)
 end
 
-# --- parallel indexing -------------------------------------------------------
+# --- find safe chunk boundaries ---------------------------------------------
 #
-# Three deterministic steps (no speculation, no retry):
-#   1. Split [datastart, len] into fixed-size ranges; compute each range's
-#      quote-toggle parity in parallel (a pure popcount — memory-bandwidth bound).
-#   2. Exclusive XOR-scan of parities ⇒ every range knows its TRUE entry quote
-#      state. This is FSM composition specialized to the 2-state quote automaton.
-#   3. From each range start, scan (with known state) to the first structural row
-#      terminator ⇒ the range's first true row start. Consecutive distinct row
-#      starts become row-aligned chunks, each indexed independently in parallel.
-# A row larger than a range simply collapses that range's chunk to zero bytes
-# (its row start equals the next range's), which is dropped.
+# A fixed byte range can start in the middle of a row or a quoted field. The
+# parser must know whether each range starts inside a quoted field before it can
+# use a line ending as a row boundary.
+#
+# For standard CSV quote rules, the parser does these steps:
+#
+#   1. Divide the input into fixed byte ranges.
+#   2. Count the quote bytes in each range. Different tasks can count different
+#      ranges at the same time.
+#   3. Read the counts in file order. The input starts outside a quoted field.
+#      An odd count means that the next range starts on the other side of a
+#      quote. An even count means that the next range starts on the same side.
+#      This tells the parser whether each range starts inside a quoted field.
+#   4. Scan forward from each range start. Ignore line endings inside quoted
+#      fields. The first line ending outside a quoted field gives a safe start
+#      for the next chunk.
+#   5. Remove empty chunks. An empty chunk can occur when one row crosses one or
+#      more complete byte ranges.
+#   6. Index the remaining chunks. This work can run at the same time.
+#
+# This process does not guess a boundary. Task order does not change the result.
 
+# Return true when this range contains an odd number of quote bytes.
 function quoteparity(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect)::Bool
     d.quoted || return false
     q = d.oq
     n = 0
     i = from
-    # word-at-a-time: the byte loop's autovectorization ran at ~7 GB/s; the
-    # SWAR eq-mask popcount streams at memory speed
+    # Check eight bytes at a time. Count matching quote bytes without creating
+    # a separate value for each byte.
     GC.@preserve buf begin
         p = pointer(buf)
         @inbounds while i + 7 <= to
@@ -1220,17 +1348,17 @@ function quoteparity(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect)::Bool
     return isodd(n)
 end
 
-# First row start after a terminator at or after `from`, given the entry quote
-# state. `atrowstart=true` permits comment skipping because it proves `from` is
-# not a mid-row range probe. CRLF returns the byte after LF. Returns `to + 1`
-# when no terminator exists; callers treat a result > `to` as no row start.
+# Scan from `from` to the first row ending outside a quoted field. `inquote`
+# tells whether `from` is inside a quoted field. Return the byte after the row
+# ending. Return `to + 1` if this range has no complete row ending.
+#
+# Set `atrowstart` only when `from` is a known row start. This lets the function
+# identify a comment row. Quote bytes in a comment row have no CSV meaning, so
+# the function scans directly to that row's end.
 function nextrowstart(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect, inquote::Bool,
                       atrowstart::Bool=false)::Int
     pos = from
     cq, oq, e = d.cq, d.oq, d.e
-    # a comment row's bytes are not structural: when `from` is a row start
-    # (inquote=false) that begins with the comment prefix, run straight to the
-    # terminator without honoring quotes
     cmt = d.comment
     if atrowstart && !inquote && cmt !== nothing &&
        from + length(cmt) - 1 <= to && _matchbytes(buf, from, cmt)
@@ -1271,28 +1399,26 @@ function nextrowstart(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect, inquot
     return to + 1
 end
 
-# Plan row-aligned chunks WITHOUT indexing them: per-range quote parity (parallel
-# popcount) → exclusive XOR scan → true entry states → first row start per range.
-# Shared by `index` (which then indexes every chunk) and the fused driver in
-# `parse` (which indexes each chunk inside the task that immediately parses it).
+# Choose the start and end of each chunk. This function does not build the field
+# index. `index` and `parse` both use this plan. They build the indexes for the
+# planned chunks before they parse field values.
 function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::Int,
-                   parallel::Bool)
+                   parallel::Bool, tasklimit::Int; _taskobserver=nothing)
     len = length(buf)
-    # Range splitting is gated on the DIALECT (parity composition must be sound),
-    # not on `parallel`: sequential runs also want bounded chunks because the
-    # column-at-a-time parse re-walks each chunk once per column and needs it
-    # cache-resident. `parallel` only decides tasks vs a plain loop.
+    # Split compatible input into bounded chunks even when `parallel` is false.
+    # Bounded chunks keep each parsing pass on a smaller part of the input.
+    # `parallel` only controls whether this work uses tasks or a plain loop.
     if commentaware(d) && parityclean(d) && len - datastart + 1 > chunkbytes
-        # comment dialect: parity popcounts cannot see comment rows, so chunk
-        # bounds come from a sequential row-start walk (nextrowstart is
-        # comment-aware). One pass at chunk granularity, no per-byte work
-        # beyond the quote/terminator scan the index pays anyway.
+        # Raw quote counts are not valid for comment rows. Start at a known row
+        # boundary and find later row boundaries in file order. The later index
+        # work can still use multiple tasks.
         chunks = ChunkIndex[]
         b0 = datastart
         while b0 <= len
             target = min(b0 + chunkbytes - 1, len)
-            # walk row starts from the known start b0 (a mid-row probe could not
-            # know its quote state); quoted newlines and comment rows are honored
+            # Start at the known row boundary `b0`. Move through complete rows
+            # until the scan passes `target`. This keeps quoted line endings and
+            # comment rows intact.
             b1 = target >= len ? len + 1 : _rowstartatorafter(buf, b0, target, len, d)
             push!(chunks, ChunkIndex(b0, b1 - 1))
             b0 = b1
@@ -1305,12 +1431,10 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
     entry = falses(nranges)
     if nranges > 1
         par = Vector{Bool}(undef, nranges)
-        if parallel
-            @sync for i in 1:nranges
-                errormonitor(Threads.@spawn begin
-                    to = i == nranges ? len : starts[i + 1] - 1
-                    par[i] = quoteparity(buf, starts[i], to, d)
-                end)
+        if parallel && tasklimit > 1
+            _taskforeach(1:nranges, tasklimit, _taskobserver) do i
+                to = i == nranges ? len : starts[i + 1] - 1
+                par[i] = quoteparity(buf, starts[i], to, d)
             end
         else
             for i in 1:nranges
@@ -1327,11 +1451,9 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
     bounds = Vector{Int}(undef, nranges)
     bounds[1] = datastart
     if nranges > 1
-        if parallel
-            @sync for i in 2:nranges
-                errormonitor(Threads.@spawn begin
-                    bounds[i] = nextrowstart(buf, starts[i], len, d, entry[i])
-                end)
+        if parallel && tasklimit > 1
+            _taskforeach(2:nranges, tasklimit, _taskobserver) do i
+                bounds[i] = nextrowstart(buf, starts[i], len, d, entry[i])
             end
         else
             for i in 2:nranges
@@ -1340,21 +1462,22 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
         end
     end
     push!(bounds, len + 1)
-    # Row-aligned chunks (drop empties: a row spanning ≥1 whole range).
+    # Each chunk starts at a row boundary. Drop an empty chunk. This can occur
+    # when one row crosses one or more complete byte ranges.
     chunks = ChunkIndex[]
     for i in 1:nranges
         b0, b1 = bounds[i], bounds[i + 1]
         b0 < b1 && push!(chunks, ChunkIndex(b0, b1 - 1))
     end
-    # Tape offsets are chunk-relative and packed as (relpos << 2) in a UInt32. A
-    # chunk only exceeds `chunkbytes` when a single row straddles whole ranges, so
-    # this bound is about one giant row.
+    # Each event stores a 30-bit offset from the chunk start. A very large row
+    # can make a chunk larger than `chunkbytes`. Reject the chunk if an event
+    # offset cannot fit.
     foreach(checktaperange, chunks)
     return chunks
 end
 
-# first row start strictly after `target`, walking rows from the known row
-# start `from` (quote- and comment-aware); len+1 at EOF
+# Start at the known row boundary `from`. Return the first row start after
+# `target`. Return `len + 1` when `target` is in the final row.
 function _rowstartatorafter(buf::Vector{UInt8}, from::Int, target::Int, len::Int, d::Dialect)
     pos = from
     while pos <= target
@@ -1369,9 +1492,9 @@ function indexone!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Symb
                           indexchunk_fast!(ci, buf, d, Val(:vec))
 end
 
-# Resolve the scanner: exotic dialects need the scalar reference machine; the
-# vector engine is the default fast path everywhere (LLVM lowers its generic IR
-# per host), with :swar as the no-SIMD-assumptions fallback and for testing.
+# Choose the scanner. Complex quote, escape, or delimiter options require the
+# scalar scanner. Use the vector scanner by default for supported input. The
+# `:swar` scanner does not require vector instructions. Tests can select it.
 function resolvescanner(d::Dialect, fastindex::Bool, scanner::Symbol)
     scanner in (:auto, :vec, :swar, :scalar) ||
         throw(ArgumentError("scanner must be :auto, :vec, :swar, or :scalar (got $(repr(scanner)))"))
@@ -1381,43 +1504,50 @@ end
 
 """
     index(buf, d::Dialect; datastart=1, chunkbytes=2^23, parallel=true,
-          fastindex=true, scanner=:auto)
+          ntasks=nothing, fastindex=true, scanner=:auto)
 
-Build the structural index for `buf[datastart:end]`: row-aligned chunks, each with
-per-field spans. Deterministic for any `chunkbytes`/thread count (pinned by tests).
+Build an index of the rows and fields in `buf[datastart:end]`. Each chunk starts
+and ends at a complete row boundary. Each stored field has its exact byte
+position and length. The same input gives the same index for every valid
+`chunkbytes` value and thread count.
 """
 function index(buf::Vector{UInt8}, d::Dialect;
                datastart::Int=1,
                chunkbytes::Int=1 << 23,
                parallel::Bool=Threads.nthreads() > 1,
+               ntasks::Union{Nothing, Int}=nothing,
                fastindex::Bool=true,
-               scanner::Symbol=:auto)
+               scanner::Symbol=:auto,
+               _taskobserver=nothing)
     len = length(buf)
     # No lower bound beyond 1: tests deliberately use tiny chunkbytes to force row
     # boundaries everywhere. The standalone index default is 8 MiB; `parse`
     # passes its size-aware 64 KiB–1 MiB default.
     chunkbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $chunkbytes)"))
     datastart >= 1 || throw(ArgumentError("datastart must be ≥ 1 (got $datastart)"))
+    ntasks === nothing || ntasks >= 1 ||
+        throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
+    tasklimit = parallel ? min(something(ntasks, Threads.nthreads()), Threads.nthreads()) : 1
     sc = resolvescanner(d, fastindex, scanner)
     datastart > len && return BufferIndex(ChunkIndex[], 0, false)
 
-    chunks = chunkplan(buf, d, datastart, chunkbytes, parallel)
-    if length(chunks) == 1 || !parallel
+    chunks = chunkplan(buf, d, datastart, chunkbytes, parallel, tasklimit;
+                       _taskobserver)
+    if length(chunks) == 1 || tasklimit <= 1
         for ci in chunks
             indexone!(ci, buf, d, sc)
         end
     else
-        @sync for ci in chunks
-            errormonitor(Threads.@spawn indexone!(ci, buf, d, sc))
+        _taskforeach(chunks, tasklimit, _taskobserver) do ci
+            indexone!(ci, buf, d, sc)
         end
     end
 
-    # Non-final chunks end at a row terminator, so they must exit outside quotes;
-    # parity composition guarantees it for parityclean dialects. Defensive check —
-    # a failure here is a kernel bug, not bad input.
+    # Every non-final chunk ends after a complete row. It must therefore end
+    # outside a quoted field. A failure here means that chunk planning is wrong.
     for (k, ci) in enumerate(chunks)
         k < length(chunks) && ci.unclosedquote &&
-            error("internal error: chunk $(k) ended inside a quoted field despite parity pre-scan")
+            error("internal error: chunk $(k) ended inside a quoted field")
     end
     # Capture malformed-EOF before filtering: an unclosed quote inside a dropped
     # (e.g. all-comment) chunk must still surface as a Problem.
@@ -1432,16 +1562,12 @@ index(buf::Vector{UInt8}; kw...) = index(buf, Dialect(); kw...)
 # L2/L3: typed parsing over the index.
 # ---------------------------------------------------------------------------
 
-# The kernel's standard column types. The promotion lattice is intentionally small:
+# CSV changes a column type in this order:
 #   Missing → Int64 → Int128 → Float64 → String
 #   Missing → (Date | DateTime | Time | Bool) → String
-# Everything else (mixed temporals, bool/number mixes, …) promotes to String.
-# InlineString widths, Int downcasting, and user "typemap"s are API-layer concerns
-# built on the same machinery (see README).
-# `typemap` rewrites DETECTED types (never user-pinned ones): applied to the
-# sampled seed and to every promotion join, so a mapped type is a fixed point
-# of inference. Missing never maps (a mapped all-missing column would lose its
-# free upgrade).
+# Other type combinations change to String. The API layer handles smaller
+# integer and string types. `typemap` changes an inferred type. It does not
+# change a type that the user set. Missing does not use `typemap`.
 function _normalizetypemap(typemap)
     typemap === nothing && return nothing
     tm = Dict{Type, Type}()
@@ -1466,14 +1592,12 @@ end
 @inline _maptype(tm, T) = tm === nothing || T === Missing ? T : get(tm, T, T)
 @inline function _promotemapped(tm, current::Type, detected::Type)
     joined = promote_kernel(current, detected)
-    # A typemap result is already the column's chosen parse type. Do not feed
-    # that result through the map again when a concurrent/stale join does not
-    # widen it (for example Int64=>Float64, Float64=>String).
+    # A mapped result is already the selected parse type. Do not map it again
+    # when a later result keeps the same type.
     joined === current && return current
     mapped = _maptype(tm, joined)
-    # A downward or cyclic mapping can collapse a real promotion back to the
-    # type that just rejected the cell (Float64=>Int64 is the minimal case).
-    # String is the finite lattice join that accepts both spellings.
+    # A map can return to the type that rejected the field. Use String in this
+    # case because String accepts both field forms.
     return mapped === current ? String : mapped
 end
 @inline _copts(colopts, opts, j::Int) = colopts === nothing ? opts : @inbounds colopts[j]
@@ -1488,11 +1612,9 @@ promote_kernel(a::Type, b::Type) =
     a === Float64 && b in (Int64, Int128) ? Float64 :
     String
 
-# Detect the type of one raw field span (mirrors CSV.jl's cascade, minus the
-# Int-width games). Detection and parsing run the SAME kernels on the same
-# content span, so detect-set ≡ parse-set exactly and a conflict always
-# advances the finite promotion lattice. The strict kernels reject foreign
-# shapes within a byte or two, so a full cascade probe is cheap.
+# Detect the type of one field. Detection and value parsing use the same Parsers
+# functions on the same content bytes. A type conflict therefore always changes
+# the column to a type that can accept both field forms.
 function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::ValueOpts)
     len == 0 && return Missing
     cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
@@ -1508,21 +1630,23 @@ function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::ValueOpts)
         parsevalue(Int128, buf, cpos, cj, opts, scratch)[2] && return Int128
         parsevalue(Float64, buf, cpos, cj, opts, scratch)[2] && return Float64
     else
-        rc = V.parseint64(buf, cpos, cj)[2]
-        rc == V.RC_OK && return Int64
-        rc == V.RC_OVERFLOW && V.parseint128(buf, cpos, cj)[2] == V.RC_OK && return Int128
-        V.parsefloat64(buf, cpos, cj, opts.decimal)[2] == V.RC_OK && return Float64
+        rc = Parsers.parseint(Int64, buf, cpos, cj)[2]
+        rc == Parsers.RC_OK && return Int64
+        rc == Parsers.RC_OVERFLOW &&
+            Parsers.parseint(Int128, buf, cpos, cj)[2] == Parsers.RC_OK && return Int128
+        _fixedfloatusable(Parsers.parsefloat(Float64, buf, cpos, cj, opts.decimal)[2]) &&
+            return Float64
     end
     if opts.customfmt
         # one probe: the user format's own components say which type it detects
-        if V.parsecivil(buf, cpos, cj, opts.datepat)[2] == V.RC_OK
+        if Parsers.parsecivil(buf, cpos, cj, opts.datepat)[2] == Parsers.RC_OK
             p = opts.datepat
             return p.hasdate ? (p.hastime ? DateTime : Date) : Time
         end
     else
-        V.parsecivil(buf, cpos, cj, opts.datepat)[2] == V.RC_OK && return Date
-        V.parsecivil(buf, cpos, cj, opts.datetimepat)[2] == V.RC_OK && return DateTime
-        V.parsecivil(buf, cpos, cj, opts.timepat)[2] == V.RC_OK && return Time
+        Parsers.parsecivil(buf, cpos, cj, opts.datepat)[2] == Parsers.RC_OK && return Date
+        Parsers.parsecivil(buf, cpos, cj, opts.datetimepat)[2] == Parsers.RC_OK && return DateTime
+        Parsers.parsecivil(buf, cpos, cj, opts.timepat)[2] == Parsers.RC_OK && return Time
     end
     opts.inferbool && parsevalue(Bool, buf, cpos, cj, opts)[2] && return Bool
     return String
@@ -1767,17 +1891,10 @@ _unescape(buf::Vector{UInt8}, pos::Int64, len::Int32, e::UInt8, cq::UInt8) =
 
 # --- per-(column × chunk) parse loops ---------------------------------------
 #
-# THE point of the whole design: each call below is monomorphic in the column type.
-# Dynamic dispatch happens once per (column, chunk) — thousands of times per file —
-# instead of once per cell. A mid-chunk type surprise returns the offending row so
-# the driver can promote and re-run *this column only*.
-
-# Strictness dividend: because every kernel accepts exactly the spellings the
-# detection cascade assigns to it (parse-set ≡ detect-set), a value that parses
-# as an inferred column's type T can never detect as a type earlier in the
-# cascade. The per-value "canonical conflict" guard the Parsers-based kernel
-# needed here — six prefix probes on the hot path of every inferred
-# Bool/temporal column — is free by construction.
+# Each call below parses one column type in one chunk. Julia selects the method
+# once for that work. It does not select a method for each field. If a field
+# needs a different type, the function returns that row. The driver then changes
+# and reads only this column again.
 
 # Returns 0 on success, or the local row of the first conflicting value.
 function parsecolchunk!(col::Union{TypedColumn{T}, UnionColumn{T}}, buf::Vector{UInt8},
@@ -1845,9 +1962,9 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
         len == 0 && continue                            # unquoted empty ⇒ missing; quoted "" survives below
         cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
         if st == CELL_BADQUOTE
-            # malformed quoting: report it AND keep the raw field bytes as the
-            # value (quotes included, nothing unescaped) — 0.10 users rely on
-            # seeing what was there (#1118, #522) rather than a silent missing
+            # Report invalid quoting and keep the original field bytes as the
+            # value. Keep the quotes and do not remove escape bytes. This lets
+            # the caller inspect the invalid input.
             problemrow = problemrowbase + localrow
             pushproblem!(problems, problemrow, j, pos, :invalid_quoted_field,
                          "malformed quoting in " * excerpt(buf, pos, len))
@@ -2201,17 +2318,15 @@ function Base.getindex(t::ParsedTable, nm::Symbol)
 end
 
 function Base.show(io::IO, t::ParsedTable)
-    print(io, "CSVKernel.ParsedTable: $(t.nrows) × $(length(t.names))")
+    print(io, "CSV.ParsedTable: $(t.nrows) × $(length(t.names))")
     for (nm, col) in zip(t.names, t.columns)
         print(io, "\n  ", nm, "::", eltype(col))
     end
     isempty(t.problems) || print(io, "\n  ($(length(t.problems)) problem(s) recorded)")
 end
 
-# Stratified type inference: sample up to `nsample` rows evenly spaced across the
-# WHOLE index — the index makes late-file type surprises as visible as early ones,
-# which is what keeps mid-parse promotions rare. (Contrast: prefix-only sampling,
-# the root of most "worked until row 2 million" issues.)
+# Read up to `nsample` rows at even positions across the full input. This checks
+# both early and late rows before value parsing starts.
 function sampletypes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncols::Int,
                      opts::ValueOpts; nsample::Int=128,
                      selected::Union{Nothing, Vector{Bool}}=nothing,
@@ -2291,8 +2406,8 @@ end
 end
 
 
-# Stratified sampling restricted to a set of qualifying global rows (the
-# filter's two-phase parse: inference must see only rows that will be output).
+# Read sample rows only from the rows that pass the filter. Type detection must
+# not use rows that the result excludes.
 function sampletypesrows(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, rowbases0,
                          qrows::Vector{Int}, ncols::Int, opts::ValueOpts,
                          selected::Union{Nothing, Vector{Bool}}; nsample::Int=128,
@@ -2367,8 +2482,8 @@ end
 # (by name or index). `Union{T,Missing}` collapses to T (missingness is tracked
 # per-value, never in the column type).
 # Narrow numeric types parse through their native kernel type and convert at
-# the API door (0.10 semantics: `types=Int8` parses Int64 and narrows; an
-# out-of-range value is a problem, not a crash).
+# the API layer. For example, `types=Int8` parses with Int64 and then converts.
+# An out-of-range value produces a problem.
 const NARROW_TYPES = Dict{Type, Type}(
     Int8 => Int64, Int16 => Int64, Int32 => Int64,
     UInt8 => Int64, UInt16 => Int64, UInt32 => Int64, UInt64 => Int128,
@@ -2378,8 +2493,8 @@ _customparseable(T::Type) = isconcretetype(T) &&
     (hasmethod(Base.tryparse, Tuple{Type{T}, String}) ||
      hasmethod(Base.parse, Tuple{Type{T}, String}))
 
-# Dict keys: Integer (position), name (Symbol/String), or Regex (every
-# matching name; exact keys take precedence — 0.10 semantics)
+# Dict keys can be an integer position, a name, or a regular expression. An
+# exact key takes precedence over a regular expression.
 function _resolvekeys(dict::AbstractDict, names::Vector{Symbol}, ncols::Int, what::String;
                       validate::Bool=true)
     out = Dict{Int, Any}()
@@ -2436,8 +2551,7 @@ function resolvetypes(types, names::Vector{Symbol}, ncols::Int; validate::Bool=t
     return seed
 end
 
-# columns the user declared as Union{Missing, T}: honored even when no missing
-# value appears (0.10 semantics — the declared type is the column type)
+# Keep a declared `Union{Missing,T}` column type even when all values are present.
 function declaredmissing(types, names::Vector{Symbol}, ncols::Int; validate::Bool=true)
     wm = fill(false, ncols)
     types === nothing && return wm
@@ -2476,11 +2590,10 @@ end
 @inline _defaultchunkbytes(nbytes::Int, nthreads::Int=Threads.nthreads()) =
     clamp(cld(nbytes, 4 * nthreads), 1 << 16, 1 << 20)
 
-# Run indexed work with at most `tasklimit` live Julia Tasks. Spawning one task
-# per chunk lets a prebuilt LazyFile index ignore a later `ntasks=N` request;
-# this bounded worker loop makes task count an execution contract independent
-# of how many structural chunks the index contains.
-function _taskforeach(f, items, tasklimit::Int)
+# Run work with no more than `tasklimit` Julia tasks. Do not start one task for
+# each chunk. A stored index can have more chunks than a later `ntasks=N`
+# request allows.
+function _taskforeach(f, items, tasklimit::Int, taskobserver=nothing)
     n = length(items)
     n == 0 && return nothing
     workers = min(tasklimit, n)
@@ -2491,10 +2604,19 @@ function _taskforeach(f, items, tasklimit::Int)
     next = Threads.Atomic{Int}(1)
     @sync for _ in 1:workers
         errormonitor(Threads.@spawn begin
-            while true
-                i = Threads.atomic_add!(next, 1)
-                i > n && break
-                f(@inbounds items[i])
+            started = false
+            try
+                if taskobserver !== nothing
+                    taskobserver(true)
+                    started = true
+                end
+                while true
+                    i = Threads.atomic_add!(next, 1)
+                    i > n && break
+                    f(@inbounds items[i])
+                end
+            finally
+                started && taskobserver(false)
             end
         end)
     end
@@ -2502,20 +2624,21 @@ function _taskforeach(f, items, tasklimit::Int)
 end
 
 """
-    CSVKernel.parse(buf::Vector{UInt8}; kwargs...) -> ParsedTable
-    CSVKernel.parse(str::AbstractString; kwargs...)
-    CSVKernel.parse(io::IO; kwargs...)
+    CSV.parse(buf::Vector{UInt8}; kwargs...) -> ParsedTable
+    CSV.parse(str::AbstractString; kwargs...)
+    CSV.parse(io::IO; kwargs...)
 
-Eagerly parse delimited data: plan row-aligned chunks, probe a stratified set for
-the header and initial types, then fuse each chunk's index and monomorphic column
-loops. Conflicts promote per column and stale segments re-parse under the joined
-final type. `parallel` selects tasks or plain loops without changing the chunk
-layout. The default `chunkbytes` is
+Read delimited data and return a `ParsedTable`. The parser first sets chunk
+boundaries at complete row endings. It builds the row and field index for all
+chunks. It then reads rows from across the input to select an initial type for
+each column. If a later value needs a different type, the parser changes that
+column type and reads only the affected parts again. `parallel` selects tasks
+or plain loops. It does not change the chunk layout. The default `chunkbytes` is
 `clamp(cld(length(buf), 4 * Threads.nthreads()), 64 KiB, 1 MiB)`; the default
 `nsample` is `clamp(probe_rows >> 6, 8, 128)`. Explicit values override both
 defaults.
-The default records malformed data as problems;
-`on_error=:error` escalates the source-earliest problem after parsing.
+By default, the result records invalid data in its problem list.
+`on_error=:error` throws the first problem in source order after parsing.
 
 Keywords: `delim`, `quotechar`, `openquotechar`/`closequotechar`, `escapechar`,
 `quoted`, `comment`, `ignoreemptyrows`, `ignorerepeated`, `header` (true | false | Vector), `types`
@@ -2560,17 +2683,14 @@ function parse(buf::Vector{UInt8};
     nsample === nothing || nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
     ntasks === nothing || ntasks >= 1 ||
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
-    tasklimit = parallel ? something(ntasks, Threads.nthreads()) : 1
-    # Size-aware defaults. chunkbytes: enough chunks to occupy every thread (4×
-    # tasks per thread: at 20 MiB the straggler tail of 2×/thread measured
-    # 10-17% across shapes; the 1 MiB cap keeps large-file geometry identical), capped at 1 MiB — the column-at-a-time
-    # parse re-walks each chunk once per column, so chunks must stay cache-
-    # resident (measured on a 200 MiB × 200-column file: 8 MiB chunks 623 MiB/s
-    # → 1 MiB chunks 911 MiB/s), with a 64 KiB floor so per-chunk setup never
-    # dominates. nsample: sampled rows pay the full detect cascade and are then
-    # parsed again, so tiny files sample a handful of rows and lean on cheap
-    # per-column promotion instead, while big files keep the 128-row stratified
-    # sample that makes promotion rare.
+    tasklimit = parallel ? min(something(ntasks, Threads.nthreads()), Threads.nthreads()) : 1
+    # The default chunk size aims for four chunks per thread. It stays between
+    # 64 KiB and 1 MiB. The lower limit avoids too much setup work for small
+    # chunks. The upper limit keeps each column pass on a small part of the input.
+    #
+    # The default type sample grows with the row count. It stays between 8 and
+    # 128 rows. This limits repeated work on small files and checks more of a
+    # large file before value parsing starts.
     if chunkbytes === nothing
         chunkbytes = _defaultchunkbytes(length(buf))
     else
@@ -2581,29 +2701,26 @@ function parse(buf::Vector{UInt8};
                          stripwhitespace, groupmark)
     datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1  # BOM
     sc = resolvescanner(d, fastindex, scanner)
-    # A caller holding a prebuilt index (the Scan integration indexes once for
-    # header binding and reuses it across the filter's two parse phases) hands
-    # it in; the chunk geometry and dialect must match how it was built.
-    # Single-assignment discipline for everything a spawned task or closure
-    # captures (`allchunks`, `indexed`, `chunks`, `rowbases0`, the per-branch
-    # `final*`): a captured variable assigned twice is boxed (`Core.Box`),
-    # which is both the shared-mutable-capture hazard `\$x` interpolation exists
-    # for and a type-instability inside every task body that reads it. The
-    # test suite lowers this method and asserts no boxes remain.
+    # A caller can supply an index that it built earlier. The Scan integration
+    # does this when it applies a filter in two steps. The chunk boundaries and
+    # CSV options must match the options used to build that index.
+    #
+    # Assign each captured local value only once. Julia can put a captured value
+    # in a `Core.Box` when the code assigns it more than once. Tasks would then
+    # share a mutable value, and the compiler could not know its exact type. A
+    # test checks that this method does not contain a `Core.Box`.
     allchunks::Vector{ChunkIndex} = index === nothing ?
-        chunkplan(buf, d, datastart, chunkbytes, parallel) : index.chunks
+        chunkplan(buf, d, datastart, chunkbytes, parallel, tasklimit) : index.chunks
     indexed = fill(index !== nothing, length(allchunks))
     indexunclosed = index !== nothing && index.unclosedquote
     nchall = length(allchunks)
     headerlog = ProblemLog(maxproblems)
 
-    # -- index wave -----------------------------------------------------------
-    # Index EVERY chunk up front. Row counts and bases are then known before
-    # any value work, which is what lets the unmasked driver write parsed
-    # values straight into exact-size final columns — no per-chunk staging, no
-    # stitch copies, no transient 2×-file-size allocation churn. The index pass
-    # is a streaming scan (multi-GiB/s per core); giving up the fused
-    # index-then-parse cache warmth on ONE column costs less than the copies.
+    # -- build all chunk indexes ---------------------------------------------
+    # Index every chunk before parsing field values. This gives the exact row
+    # count and output position for each chunk. The parser can then allocate the
+    # final columns once and write values directly into them. It does not need
+    # temporary columns for each chunk or a later copy step.
     toindex = [k for k in 1:nchall if !indexed[k]]
     if tasklimit > 1 && length(toindex) > 1
         _taskforeach(toindex, tasklimit) do k
@@ -2616,8 +2733,8 @@ function parse(buf::Vector{UInt8};
             indexed[k] = true
         end
     end
-    # the header lives in the first chunk that still has rows after comment/empty
-    # hygiene
+    # The header is in the first chunk that remains after empty and comment rows
+    # are removed.
     headerchunk = something(findfirst(k -> totalrows(allchunks[k]) > 0, 1:nchall), 0)
 
     # -- header & column names ------------------------------------------------
@@ -2651,7 +2768,7 @@ function parse(buf::Vector{UInt8};
     chunks = nch == nchall ? allchunks : allchunks[1:nch]
     rowbases0 = nch == nchall ? rowbasesall : rowbasesall[1:nch]
 
-    # -- type seeding (stratified over the probe chunks) -----------------------
+    # -- select initial column types ------------------------------------------
     seed = resolvetypes(types, names, ncols; validate)
     userprovided = [T !== nothing for T in seed]
     wantmissing = declaredmissing(types, names, ncols; validate)   # user wrote Union{Missing,T}
@@ -2715,18 +2832,18 @@ function parse(buf::Vector{UInt8};
               clamp(limit - rowbases0[k], 0, nrows(chunks[k]))
 
     if rowmask === nothing
-        # -- direct wave: parse straight into exact-size final columns --------
-        # Row bases are known (everything is indexed), so every chunk writes
-        # its values at its global offsets — no per-chunk staging and no stitch
-        # copies. (Dictionary encoding is a finalize-time pass at the API
-        # layer over the CompactString column; the kernel never pools.)
+        # -- write directly into the final columns ----------------------------
+        # All chunk indexes are complete, so each chunk knows its output rows.
+        # It writes values into the final columns. It does not need temporary
+        # columns or a later copy step. The API layer can encode repeated strings
+        # after this step. The kernel does not encode them.
         directwave!(cols, chunks, buf, d, opts, ncols, userprovided, promo,
                     promolock, pendingproblems, segments, segtypes, selected,
                     rowbases, ndata, rl, reportstructural, parallel,
                     tasklimit, sawmissing, tm, colopts)
         for k in 1:(nch - 1)
             chunks[k].unclosedquote &&
-                error("internal error: chunk $(k) ended inside a quoted field despite parity pre-scan")
+                error("internal error: chunk $(k) ended inside a quoted field")
         end
     else
         # -- masked wave: chunk-local staging + compacting stitch --------------
@@ -2749,7 +2866,7 @@ function parse(buf::Vector{UInt8};
         end
         for k in 1:(nch - 1)
             chunks[k].unclosedquote &&
-                error("internal error: chunk $(k) ended inside a quoted field despite parity pre-scan")
+                error("internal error: chunk $(k) ended inside a quoted field")
         end
         # unify: re-parse the (rare) segments parsed under a stale type.
         # `promo` is frozen now; a Missing segment upgrades without work.
@@ -2803,7 +2920,7 @@ function parse(buf::Vector{UInt8};
     if on_error === :error && log.first !== nothing
         p = log.first
         nproblems = length(log.items) + log.dropped
-        throw(ErrorException("CSVKernel: $(p.kind) at data row $(p.row), column $(p.col): $(p.message)" *
+        throw(ErrorException("CSV: $(p.kind) at data row $(p.row), column $(p.col): $(p.message)" *
                              (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
     end
     # a user-declared Union{Missing,T} is the column type even without missings
@@ -2818,7 +2935,7 @@ function parse(buf::Vector{UInt8};
 end
 
 parse(str::AbstractString; kw...) = parse(Vector{UInt8}(codeunits(str)); kw...)
-parse(io::IO; kw...) = parse(read(io); kw...)
+parse(io::IO; kw...) = parse(Base.read(io); kw...)
 
 chunkrowbase(chunks::Vector{ChunkIndex}, target::ChunkIndex) =
     sum(nrows(c) for c in chunks if c.start < target.start; init=0)
@@ -3454,5 +3571,3 @@ function makeunique!(names::Vector{Symbol})
     end
     return names
 end
-
-end # module CSVKernel

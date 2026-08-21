@@ -1,24 +1,22 @@
-# Differential battery: CSVApi (the kernel's front doors) vs frozen CSV 0.10.
+# Regression battery for CSV's reading front doors.
 #
 # Run:  julia --startup-file=no --project=test -t4 test/api.jl
 #
-# Strategy: every behavior CSV.jl and the new API share is asserted by VALUE
-# equality on the same input (string containers and pooling wrappers
-# normalized away). The 1.0 divergences are each pinned in their own testset
-# with the CSV.jl behavior shown alongside — a conscious delta, not a gap:
+# Strategy: behavior is pinned with explicit values and with source-mode
+# equivalence between IOBuffer and byte-vector inputs. String containers and
+# pooling wrappers are normalized only where their representation is not the
+# contract. Intentional 1.0 behavior is asserted directly:
 #   • empty unquoted cells are ALWAYS missing (custom missingstring ADDS)
 #   • long rows do not widen the schema (extra fields ⇒ problem, not Column4)
 #   • warnings are data (problems(f)), not log lines
 #   • function-typed select/drop retired
-#   • Int64 overflow that fits Int128 remains exact where CSV.jl widens to Float64
+#   • wide integers that fit Int128 remain exact
 
 using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings, FilePathsBase, Random, Mmap
 using CSV
-import .LegacyCSV
-const A = CSV.CSVApi
-const K = CSV.CSVKernel
-const E = CSV.KernelExamples
-corpusfile(name) = joinpath(TESTFILES_DIR, name)
+const A = CSV
+const K = CSV
+const E = CSV
 
 # Minimal ordered AbstractDict for precedence tests. Base.Dict iteration order
 # is not an API contract, while CSV's rule is explicitly first matching Regex.
@@ -72,9 +70,6 @@ function finalizemapping!(mapped::Vector{UInt8})
     return nothing
 end
 
-# The 0.10 implementation is the behavioral ORACLE throughout this file: every
-# `LegacyCSV.File`/`LegacyCSV.write` below that means "the old behavior" is spelled LegacyCSV.
-
 @testset "Scan front door tracks the Tables proposal" begin
     # `scan=` is accepted exactly when the loaded Tables carries Scan; otherwise
     # it is a clear ArgumentError, never an UndefVarError
@@ -109,70 +104,68 @@ function colvalues(f)
     return names, [Any[_norm(x) for x in Tables.getcolumn(Tables.columns(f), nm)] for nm in names]
 end
 
-# LegacyCSV.jl side always runs silencewarnings=true: its warnings are our problems.
-function against(input; kw=NamedTuple(), api=kw, csv=kw)
-    fa = A.File(IOBuffer(input); api...)
-    fc = LegacyCSV.File(IOBuffer(input); silencewarnings=true, csv...)
-    na, va = colvalues(fa)
-    nc, vc = colvalues(fc)
-    @test na == nc
-    if na == nc
-        ok = isequal(va, vc)
-        @test ok
-        ok || @info "value mismatch" input api csv va vc
-    end
-    return fa
+# Exercise both in-memory source-resolution paths with the same public options.
+function sourceparity(input; kw=NamedTuple())
+    fromio = A.File(IOBuffer(input); kw...)
+    frombytes = A.File(Vector{UInt8}(codeunits(input)); kw...)
+    nio, vio = colvalues(fromio)
+    nbytes, vbytes = colvalues(frombytes)
+    @test nio == nbytes
+    @test isequal(vio, vbytes)
+    return fromio
 end
 
-@testset "CSVApi" begin
+@testset "CSV readers" begin
 
-@testset "values and inference agree with LegacyCSV.jl" begin
-    against("a,b,c\n1,2,3\n4,5,6\n")
-    against("a,b\n1.5,2\n-3.25e2,4\n")
-    against("x\ntrue\nfalse\n")
-    against("d,t,dt\n2024-01-02,01:02:03,2024-01-02T01:02:03\n")
-    against("s\nhello\nworld\n")
-    against("m,x\n,1\n,2\n")                       # all-missing column
-    against("p\n1\n2.5\n")                         # int → float promotion
-    against("p\n1\nx\n")                           # int → string promotion
-    big = against("p\n1\n99999999999999999999999999\n"; kw=(; pool=false))
+@testset "values, inference, and source modes" begin
+    ints = sourceparity("a,b,c\n1,2,3\n4,5,6\n")
+    @test (ints.a, ints.b, ints.c) == ([1, 4], [2, 5], [3, 6])
+    floats = sourceparity("a,b\n1.5,2\n-3.25e2,4\n")
+    @test floats.a == [1.5, -325.0] && floats.b == [2, 4]
+    bools = sourceparity("x\ntrue\nfalse\n")
+    @test bools.x == [true, false]
+    temporal = sourceparity("d,t,dt\n2024-01-02,01:02:03,2024-01-02T01:02:03\n")
+    @test temporal.d == [Date(2024, 1, 2)]
+    @test temporal.t == [Time(1, 2, 3)]
+    @test temporal.dt == [DateTime(2024, 1, 2, 1, 2, 3)]
+    sourceparity("s\nhello\nworld\n")
+    sourceparity("m,x\n,1\n,2\n")                       # all-missing column
+    sourceparity("p\n1\n2.5\n")                         # int → float promotion
+    sourceparity("p\n1\nx\n")                           # int → string promotion
+    big = sourceparity("p\n1\n99999999999999999999999999\n"; kw=(; pool=false))
     @test eltype(big.p) === Int128
     @test collect(big.p) == Int128[1, 99999999999999999999999999]
-    csvbig = LegacyCSV.File(IOBuffer("p\n1\n99999999999999999999999999\n"); pool=false)
-    @test eltype(csvbig.p) === Int128
     wideinput = "p\n99999999999999999999999999\n"
     wide = A.File(IOBuffer(wideinput); pool=false)
-    csvwide = LegacyCSV.File(IOBuffer(wideinput); pool=false)
     @test eltype(wide.p) === Int128
     @test wide.p[1] == Int128(99999999999999999999999999)
-    @test eltype(csvwide.p) === Float64
-    against("p\n9999999999999999999999999999999999999999\n"; kw=(; pool=false))
-    against("q\n\"a,b\"\n\"c\nd\"\n\"e\"\"f\"\n")  # quoted delim/newline/escape
-    against("u\nα\n∀\n")                           # unicode passthrough
-    against("neg\n-1\n+2\n")
-    against("sci\n1e3\n-2.5E-2\n")
+    sourceparity("p\n9999999999999999999999999999999999999999\n"; kw=(; pool=false))
+    sourceparity("q\n\"a,b\"\n\"c\nd\"\n\"e\"\"f\"\n")  # quoted delim/newline/escape
+    sourceparity("u\nα\n∀\n")                           # unicode passthrough
+    sourceparity("neg\n-1\n+2\n")
+    sourceparity("sci\n1e3\n-2.5E-2\n")
 end
 
 @testset "dialects agree" begin
-    against("a;b\n1;2\n"; kw=(; delim=';'))
-    against("a\tb\n1\t2\n"; kw=(; delim='\t'))
-    against("a|b\n1|2\n"; kw=(; delim='|'))
-    against("a,b\n'x,y',2\n"; kw=(; quotechar='\''))
-    against("a,b\n\"x\\\"y\",2\n"; kw=(; escapechar='\\'))
-    against("a,b\n[x,y],2\n"; kw=(; openquotechar='[', closequotechar=']'))
-    against("a,b\n#c\n1,2\n#d\n3,4\n"; kw=(; comment="#"))
-    against("a,b\n\n1,2\n\n\n3,4\n")                              # empty rows dropped
-    against("a,b\n\n1,2\n"; kw=(; ignoreemptyrows=false))
-    against("a b\n1  2\n 3 4 \n"; kw=(; delim=' ', ignorerepeated=true))
-    against("a::b\n1::2\n"; csv=(; delim="::"), api=(; delim="::"))
+    sourceparity("a;b\n1;2\n"; kw=(; delim=';'))
+    sourceparity("a\tb\n1\t2\n"; kw=(; delim='\t'))
+    sourceparity("a|b\n1|2\n"; kw=(; delim='|'))
+    sourceparity("a,b\n'x,y',2\n"; kw=(; quotechar='\''))
+    sourceparity("a,b\n\"x\\\"y\",2\n"; kw=(; escapechar='\\'))
+    sourceparity("a,b\n[x,y],2\n"; kw=(; openquotechar='[', closequotechar=']'))
+    sourceparity("a,b\n#c\n1,2\n#d\n3,4\n"; kw=(; comment="#"))
+    sourceparity("a,b\n\n1,2\n\n\n3,4\n")                              # empty rows dropped
+    sourceparity("a,b\n\n1,2\n"; kw=(; ignoreemptyrows=false))
+    sourceparity("a b\n1  2\n 3 4 \n"; kw=(; delim=' ', ignorerepeated=true))
+    sourceparity("a::b\n1::2\n"; kw=(; delim="::"))
     # multi-byte delim + ignorerepeated
-    against("a::b::::c\n1::2::3\n"; kw=(; delim="::", ignorerepeated=true))
+    sourceparity("a::b::::c\n1::2::3\n"; kw=(; delim="::", ignorerepeated=true))
 end
 
 @testset "delimiter sniffing agrees" begin
     for (d, s) in ((',', "a,b\n1,2\n3,4\n"), (';', "a;b\n1;2\n3;4\n"),
                    ('\t', "a\tb\n1\t2\n3\t4\n"), ('|', "a|b\n1|2\n3|4\n"))
-        against(s)                                 # neither side told the delim
+        sourceparity(s)                                 # neither side told the delim
         spec = A.sniff(IOBuffer(s))
         @test spec.delim == d
         @test spec.header === true
@@ -183,7 +176,7 @@ end
     @test spec.delim == ';'
     # A colon repeated in Time values is not a delimiter when the header does
     # not contain it. Both front doors retain one Time column.
-    against("t\n12:34:56\n13:45:00\n")
+    sourceparity("t\n12:34:56\n13:45:00\n")
     @test A.sniff(IOBuffer("t\n12:34:56\n13:45:00\n")).delim == ','
     # Value and index options reach the post-detection parse without being sent
     # to Dialect, and a quote-cut bounded sample remains safe.
@@ -215,52 +208,50 @@ end
     @test A.sniff(IOBuffer("header, text\n1:2\n3:4\n")).delim == ','
     @test A.sniff(IOBuffer("header text\n1:2\n3:4\n")).delim == ':'
     @test_throws ArgumentError A.File(IOBuffer("a b\n1  2\n"); ignorerepeated=true)
-    @test_throws ArgumentError LegacyCSV.File(IOBuffer("a b\n1  2\n"); ignorerepeated=true)
 end
 
-@testset "headers agree" begin
-    against("1,2\n3,4\n"; kw=(; header=false))
-    against("junk\na,b\n1,2\n"; kw=(; header=2))
-    against("h1,h2\nx,y\n1,2\n"; kw=(; header=[1, 2]))
-    against("h1,\nx,y\n1,2\n"; kw=(; header=[1, 2]))          # blank part → ColumnN_y
-    # LegacyCSV.jl skips the comment while reading merged name parts, but starts data
-    # at the raw row after `last(header)`, so the second part is also data.
-    against("a,b\n#middle\nx,y\n1,2\n"; kw=(; header=[1, 2], comment="#"))
-    against("a,b\n"; kw=(; header=[1, 2]))                    # partial header at EOF
-    against("1,2\n3,4\n"; kw=(; header=["l", "r"]))
-    against("1,2\n3,4\n"; kw=(; header=[:l, :r]))
-    against("my col,2x,for,,my col\n1,2,3,4,5\n"; kw=(; normalizenames=true))
-    against("a,a,a_1\n1,2,3\n")                               # makeunique
-    against("a,b\n")                                          # only a header
+@testset "headers and source modes" begin
+    sourceparity("1,2\n3,4\n"; kw=(; header=false))
+    sourceparity("junk\na,b\n1,2\n"; kw=(; header=2))
+    sourceparity("h1,h2\nx,y\n1,2\n"; kw=(; header=[1, 2]))
+    sourceparity("h1,\nx,y\n1,2\n"; kw=(; header=[1, 2]))          # blank part → ColumnN_y
+    # A comment between merged name parts is skipped while the raw row after
+    # `last(header)` starts the data.
+    sourceparity("a,b\n#middle\nx,y\n1,2\n"; kw=(; header=[1, 2], comment="#"))
+    sourceparity("a,b\n"; kw=(; header=[1, 2]))                    # partial header at EOF
+    sourceparity("1,2\n3,4\n"; kw=(; header=["l", "r"]))
+    sourceparity("1,2\n3,4\n"; kw=(; header=[:l, :r]))
+    sourceparity("my col,2x,for,,my col\n1,2,3,4,5\n"; kw=(; normalizenames=true))
+    sourceparity("a,a,a_1\n1,2,3\n")                               # makeunique
+    sourceparity("a,b\n")                                          # only a header
     # header row consumed even when it is the only content in early chunks
     f = A.File(IOBuffer("a,b\n1,2\n"); chunkbytes=4)
     @test collect(f.a) == [1]
-    # non-consecutive header rows join like 0.10 (rows 1 and 3, skipping row 2)
-    against("a,b\nx,y\n1,2\n3,4\n"; kw=(; header=[1, 3]))
+    # Non-consecutive header rows join rows 1 and 3 while skipping row 2.
+    sourceparity("a,b\nx,y\n1,2\n3,4\n"; kw=(; header=[1, 3]))
     @test_throws ArgumentError A.File(IOBuffer("a,b\nx,y\n1,2\n"); header=[3, 1])
 end
 
-@testset "row windowing agrees (raw-row semantics)" begin
-    against("a,b\n1,2\n3,4\n5,6\n"; kw=(; limit=2))
-    against("a,b\n1,2\n3,4\n5,6\n"; kw=(; footerskip=2))
-    against("a\n1\n\n2\n\n3\n"; kw=(; footerskip=2))       # empty rows COUNT
-    against("a\n1\n\n2\n\n3\n"; kw=(; footerskip=2, ignoreemptyrows=false))
-    against("a\n1\n#x\n2\n#y\n3\n"; kw=(; comment="#", footerskip=2))
-    against("a,b\n\"x\ny\",1\nz,2\n"; kw=(; footerskip=1))
-    against("a,b\n1,2\n3,4\n5,6\n"; kw=(; skipto=3))
-    against("a,b\n1,2\n3,4\n5,6\n7,8\n"; kw=(; skipto=3, limit=1))
-    against("a,b\n1,2\n3,4\n5,6\n"; kw=(; skipto=3, footerskip=1))
-    against("a,b\n#skip\n1,2\n3,4\n"; kw=(; comment="#", skipto=3))   # comments COUNT
-    against("junk\nmore junk\na,b\n1,2\n"; kw=(; header=3))
-    against("a,b\n1,2\n"; kw=(; limit=0))
-    against("a\n1\n2\n"; kw=(; limit=0, footerskip=1))
+@testset "row windowing and source modes (raw-row semantics)" begin
+    sourceparity("a,b\n1,2\n3,4\n5,6\n"; kw=(; limit=2))
+    sourceparity("a,b\n1,2\n3,4\n5,6\n"; kw=(; footerskip=2))
+    sourceparity("a\n1\n\n2\n\n3\n"; kw=(; footerskip=2))       # empty rows COUNT
+    sourceparity("a\n1\n\n2\n\n3\n"; kw=(; footerskip=2, ignoreemptyrows=false))
+    sourceparity("a\n1\n#x\n2\n#y\n3\n"; kw=(; comment="#", footerskip=2))
+    sourceparity("a,b\n\"x\ny\",1\nz,2\n"; kw=(; footerskip=1))
+    sourceparity("a,b\n1,2\n3,4\n5,6\n"; kw=(; skipto=3))
+    sourceparity("a,b\n1,2\n3,4\n5,6\n7,8\n"; kw=(; skipto=3, limit=1))
+    sourceparity("a,b\n1,2\n3,4\n5,6\n"; kw=(; skipto=3, footerskip=1))
+    sourceparity("a,b\n#skip\n1,2\n3,4\n"; kw=(; comment="#", skipto=3))   # comments COUNT
+    sourceparity("junk\nmore junk\na,b\n1,2\n"; kw=(; header=3))
+    sourceparity("a,b\n1,2\n"; kw=(; limit=0))
+    sourceparity("a\n1\n2\n"; kw=(; limit=0, footerskip=1))
     fa0 = A.File(IOBuffer("a\n1\n2\n"); limit=0, footerskip=1)
-    fc0 = LegacyCSV.File(IOBuffer("a\n1\n2\n"); limit=0, footerskip=1)
-    @test Tables.schema(fa0).types == Tables.schema(fc0).types == (Missing,)
-    against("﻿junk\n#ignore\na,b\n1,2\n3,4\n";
+    @test Tables.schema(fa0).types == (Missing,)
+    sourceparity("﻿junk\n#ignore\na,b\n1,2\n3,4\n";
             kw=(; header=3, comment="#", skipto=5))
-    against("a,b\n1,2\n"; kw=(; skipto=100))
-    against("a,b\n1,2\n"; kw=(; header=100))
+    sourceparity("a,b\n1,2\n"; kw=(; skipto=100))
+    sourceparity("a,b\n1,2\n"; kw=(; header=100))
     # Integer row options are source positions, not machine-size allocations.
     # A BigInt beyond typemax(Int) models UInt32 row options on 32-bit Julia.
     huge = big(typemax(Int)) + 1
@@ -275,8 +266,8 @@ end
     @test isempty(collect(A.Rows(IOBuffer(bounded); skipto=huge)))
     @test isempty(collect(A.Chunks(IOBuffer(bounded); footerskip=huge)))
     @test length(A.lazy(IOBuffer(bounded); header=huge)) == 0
-    # 0.10 rule: default header 1 + skipto=1 means "no header, data at row 1"
-    against("a,b\n1,2\n"; kw=(; skipto=1))
+    # Default header 1 + skipto=1 means "no header, data at row 1".
+    sourceparity("a,b\n1,2\n"; kw=(; skipto=1))
     @test_throws ArgumentError A.File(IOBuffer("a,b\n1,2\n"); header=2, skipto=1)
     @test_throws ArgumentError A.File(IOBuffer("a,b\n1,2\n"); limit=-1)
     @test A.File(IOBuffer("a,b\n1,2\n"); footerskip=5).table.nrows == 0
@@ -293,37 +284,34 @@ end
     @test limitedtype.a == [1]
 
     # A blank or comment row may sit between explicitly listed header rows.
-    against("a,b\n\nA,B\n1,2\n"; kw=(; header=[1, 2]))
-    against("a,b\n# gap\nA,B\n1,2\n"; kw=(; header=[1, 2], comment="#"))
+    sourceparity("a,b\n\nA,B\n1,2\n"; kw=(; header=[1, 2]))
+    sourceparity("a,b\n# gap\nA,B\n1,2\n"; kw=(; header=[1, 2], comment="#"))
 end
 
-@testset "missingstring agrees (modulo the pinned empty delta)" begin
-    # align semantics for comparison: LegacyCSV.jl gets "" appended so empties stay missing
-    against("a,b\nNA,1\n2,NA\n"; api=(; missingstring="NA"), csv=(; missingstring=["NA", ""]))
-    against("a,b\nNA,N/A\nx,2\n"; api=(; missingstring=["NA", "N/A"]),
-            csv=(; missingstring=["NA", "N/A", ""]))
-    against("a\n999\n1\n"; api=(; missingstring="999"), csv=(; missingstring=["999", ""]))
+@testset "missingstring behavior and source modes" begin
+    f = sourceparity("a,b\nNA,1\n2,NA\n"; kw=(; missingstring="NA"))
+    @test isequal(f.a, [missing, 2]) && isequal(f.b, [1, missing])
+    f = sourceparity("a,b\nNA,N/A\nx,2\n";
+                     kw=(; missingstring=["NA", "N/A"]))
+    @test isequal(_norm.(f.a), [missing, "x"]) && isequal(f.b, [missing, 2])
+    f = sourceparity("a\n999\n1\n"; kw=(; missingstring="999"))
+    @test isequal(f.a, [missing, 1])
     @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); missingstring="N\"A")
-    @test_throws ArgumentError LegacyCSV.File(IOBuffer("a\n1\n"); missingstring="N\"A")
-    # the PINNED DELTA itself: ours keeps empties missing; LegacyCSV.jl makes them ""
+    # Empty unquoted cells remain missing even with a custom missing sentinel.
     fa = A.File(IOBuffer("a\n\nx\n"); missingstring="NA", ignoreemptyrows=false)
-    fc = LegacyCSV.File(IOBuffer("a\n\nx\n"); missingstring="NA", ignoreemptyrows=false,
-                  silencewarnings=true)
     @test isequal(collect(fa.a), [missing, "x"])
-    @test isequal([_norm(x) for x in Tables.getcolumn(fc, :a)], ["", "x"])
 end
 
-@testset "types agree" begin
-    against("a,b\n1,2\n"; kw=(; types=Dict(:a => Float64)))
-    against("a,b\n1,2\n"; kw=(; types=Dict(1 => Float64)))
-    against("a,b\n1,2\n"; kw=(; types=[Float64, String]))
-    against("a,b\n1,2\n"; kw=(; types=String))
-    against("a,b\n1,2\n,3\n"; kw=(; types=Dict(:a => Union{Int64, Missing})))
-    against("a\n1\nbad\n2\n"; kw=(; types=Int64))              # invalid → missing + diagnostic
+@testset "types and source modes" begin
+    sourceparity("a,b\n1,2\n"; kw=(; types=Dict(:a => Float64)))
+    sourceparity("a,b\n1,2\n"; kw=(; types=Dict(1 => Float64)))
+    sourceparity("a,b\n1,2\n"; kw=(; types=[Float64, String]))
+    sourceparity("a,b\n1,2\n"; kw=(; types=String))
+    sourceparity("a,b\n1,2\n,3\n"; kw=(; types=Dict(:a => Union{Int64, Missing})))
+    sourceparity("a\n1\nbad\n2\n"; kw=(; types=Int64))              # invalid → missing + diagnostic
     f = A.File(IOBuffer("a\n1\nbad\n"); types=Int64)
     @test any(p -> p.kind == :invalid_value, A.problems(f))
     @test_throws Exception A.File(IOBuffer("a\n1\nbad\n"); types=Int64, strict=true)
-    @test_throws Exception LegacyCSV.File(IOBuffer("a\n1\nbad\n"); types=Int64, strict=true)
 
     # Narrow conversion is an API-door operation. Requests remain indexed by
     # file column while selected output columns remain in file order.
@@ -374,8 +362,6 @@ end
     for T in (Float16, Float32)
         floatsrc = "x\n1e100\n-1e100\n"
         narrowed = A.File(IOBuffer(floatsrc); types=T)
-        legacy = LegacyCSV.File(IOBuffer(floatsrc); types=T, silencewarnings=true)
-        @test isequal(collect(narrowed.x), collect(legacy.x))
         @test collect(narrowed.x) == T[Inf, -Inf]
         @test isempty(A.problems(narrowed))
     end
@@ -414,17 +400,17 @@ end
 
 @testset "select and drop agree" begin
     input = "a,b,c\n1,2,3\n4,5,6\n"
-    against(input; kw=(; select=[:a, :c]))
-    against(input; kw=(; select=[1, 3]))
-    against(input; kw=(; select=[1, 1, 3]))                  # duplicates collapse
-    against(input; kw=(; select=[true, false, true]))
-    against(input; kw=(; drop=[:b]))
-    against(input; kw=(; drop=[2]))
-    against(input; kw=(; drop=[false, true, false]))
+    sourceparity(input; kw=(; select=[:a, :c]))
+    sourceparity(input; kw=(; select=[1, 3]))
+    sourceparity(input; kw=(; select=[1, 1, 3]))                  # duplicates collapse
+    sourceparity(input; kw=(; select=[true, false, true]))
+    sourceparity(input; kw=(; drop=[:b]))
+    sourceparity(input; kw=(; drop=[2]))
+    sourceparity(input; kw=(; drop=[false, true, false]))
     @test_throws ArgumentError A.File(IOBuffer(input); select=[:a], drop=[:b])
     @test_throws ArgumentError A.File(IOBuffer(input); select=(nm, i) -> i == 1)
     @test_throws ArgumentError A.File(IOBuffer(input); select=[:nope])
-    f = against("my col,b\n1,2\n"; kw=(; normalizenames=true, select=[:my_col]))
+    f = sourceparity("my col,b\n1,2\n"; kw=(; normalizenames=true, select=[:my_col]))
     @test Base.names(f) == [:my_col]
 end
 
@@ -560,8 +546,8 @@ end
 
             # Exercise the public CSV.Rows iteration and cell-access path. A
             # seeded structural index avoids scanning the sparse 2 GiB hole.
-            inner = E.Rows(mapped, [ci], [:a], Dict(:a => 1),
-                           K.makevalueopts(dialect), nothing, dialect)
+            inner = E._IndexedRows(mapped, [ci], [:a], Dict(:a => 1),
+                                   K.makevalueopts(dialect), nothing, dialect)
             rows = CSV.Rows(inner, [:a], Dict(:a => 1), [1], nothing, nothing,
                             K.CompactString, :collect)
             rowcell = Tables.getcolumn(first(rows), 1)
@@ -631,9 +617,8 @@ end
     seekstart(csv)
     nt = A.read(csv, Tables.columntable)
     @test nt.a == [1, 3] && nt.b == [2, 4]
-    # 0.10 legacy oracle agrees for the function sink
-    seekstart(csv)
-    @test A.read(csv, Tables.matrix) == LegacyCSV.read(IOBuffer("a,b\n1,2\n3,4\n"), Tables.matrix)
+    @test A.read(Vector{UInt8}(codeunits("a,b\n1,2\n3,4\n")), Tables.matrix) ==
+          [1 2; 3 4]
 end
 
 @testset "delimiter sniff ignores rows before a numbered header / skipto" begin
@@ -643,7 +628,7 @@ end
     f = A.File(IOBuffer("skip me\n" * body); header=2)
     @test Base.names(f) == [:region, :price, :qty]
     f = A.File(IOBuffer("skip me\nand me too\n" * body); header=false, skipto=3)
-    @test length(Base.names(f)) == 3            # column count from the first DATA row (0.10 parity)
+    @test length(Base.names(f)) == 3            # column count from the first data row
     @test Tables.getcolumn(f, 1)[1] == "region" && length(Tables.getcolumn(f, 1)) == 301
     f = A.File(IOBuffer("skip me\nx\n" * body); header=[:r, :p, :q], skipto=3)
     @test Base.names(f) == [:r, :p, :q] && length(Tables.getcolumn(f, :q)) == 301
@@ -712,16 +697,15 @@ end
 @testset "pooling agrees on values" begin
     vals = rand(["alpha", "beta", "gamma"], 400)
     input = "k\n" * join(vals, "\n") * "\n"
-    # 1.0 default is NO pooling (values must still agree with 0.10, which pools
-    # by default — the differential compares values, not container types)
-    f = against(input)
+    # The default is no pooling. Explicit policies change only the container.
+    f = sourceparity(input)
     @test !(Tables.getcolumn(Tables.columns(f), :k) isa PooledArrays.PooledArray)
-    f = against(input; kw=(; pool=(0.2, 500)))               # 0.10's default policy, opted in
+    f = sourceparity(input; kw=(; pool=(0.2, 500)))
     @test Tables.getcolumn(Tables.columns(f), :k) isa PooledArrays.PooledArray
-    f = against(input; kw=(; pool=false))
+    f = sourceparity(input; kw=(; pool=false))
     @test !(Tables.getcolumn(Tables.columns(f), :k) isa PooledArrays.PooledArray)
-    against(input; kw=(; pool=true))
-    against(input; kw=(; pool=0.9))
+    sourceparity(input; kw=(; pool=true))
+    sourceparity(input; kw=(; pool=0.9))
 
     # Missing is an ordinary final pool level. Conversion remaps kernel ref 0
     # without changing the kernel-owned refs, while an all-present conversion
@@ -748,20 +732,16 @@ end
 end
 
 @testset "value options agree" begin
-    against("d\n15/01/2023\n16/01/2023\n"; kw=(; dateformat="dd/mm/yyyy"))
-    against("x;y\n1,5;2\n"; kw=(; delim=';', decimal=','))
-    against("b\nYES\nNO\n"; kw=(; truestrings=["YES"], falsestrings=["NO"]))
-    against("n;m\n1,234;5\n"; kw=(; delim=';', groupmark=','))
+    sourceparity("d\n15/01/2023\n16/01/2023\n"; kw=(; dateformat="dd/mm/yyyy"))
+    sourceparity("x;y\n1,5;2\n"; kw=(; delim=';', decimal=','))
+    sourceparity("b\nYES\nNO\n"; kw=(; truestrings=["YES"], falsestrings=["NO"]))
+    sourceparity("n;m\n1,234;5\n"; kw=(; delim=';', groupmark=','))
     groupedinput = "n;m\n99,999,999,999,999,999,999,999,999;5\n"
     grouped = A.File(IOBuffer(groupedinput); delim=';', groupmark=',')
-    csvgrouped = LegacyCSV.File(IOBuffer(groupedinput); delim=';', groupmark=',')
     @test eltype(grouped.n) === Int128
     @test grouped.n[1] == Int128(99999999999999999999999999)
-    @test eltype(csvgrouped.n) === Float64
-    against("s,t\n  x  ,1\n"; kw=(; delim=',', stripwhitespace=true))
-    # NOTE: without an explicit delim, "s\n  x  \n" splits on ' ' under LegacyCSV.jl's
-    # byte-divisibility detector (5 ragged columns); our sniffer requires
-    # field-count consistency and keeps 1 column. Deliberate improvement.
+    sourceparity("s,t\n  x  ,1\n"; kw=(; delim=',', stripwhitespace=true))
+    # Without an explicit delimiter, field-count consistency keeps this as one column.
 end
 
 @testset "stringtype=String materializes" begin
@@ -790,20 +770,19 @@ end
     @test [collect(codeunits(x)) for x in f.s] == [collect(codeunits(x)) for x in expected]
     @test isequal(collect(f.m), [fill("ok", length(payloads)); missing])
 
-    # Differential coverage must use the same String materialization route with
-    # escaped long cells and missing values in one parse.
-    differential = "s,m\n\"a long \"\"escaped\"\" value\",NA\nplain,\n"
-    against(differential;
-            api=(; stringtype=String, pool=false, missingstring="NA"),
-            csv=(; stringtype=String, pool=false, missingstring=["NA", ""]))
+    # Source-mode coverage uses the String materialization route with an escaped
+    # long cell and missing values in one parse.
+    materialized = "s,m\n\"a long \"\"escaped\"\" value\",NA\nplain,\n"
+    sourceparity(materialized;
+                 kw=(; stringtype=String, pool=false, missingstring="NA"))
 end
 
 @testset "structural edge cases agree" begin
-    against("a,b\r\n1,2\r\n3,4\r\n")                          # CRLF
-    against("a,b\r1,2\r3,4\r")                              # CR-only
-    against("﻿a,b\n1,2\n")                               # BOM
-    against("a,b\n1,2")                                       # no trailing newline
-    against("a,b\n\"x\ny\",2\n")                              # quoted newline
+    sourceparity("a,b\r\n1,2\r\n3,4\r\n")                          # CRLF
+    sourceparity("a,b\r1,2\r3,4\r")                              # CR-only
+    sourceparity("﻿a,b\n1,2\n")                               # BOM
+    sourceparity("a,b\n1,2")                                       # no trailing newline
+    sourceparity("a,b\n\"x\ny\",2\n")                              # quoted newline
     f = A.File(IOBuffer(""))
     @test length(f) == 0 && isempty(Base.names(f))
     # tiny chunks: same values as one-chunk parse (kernel-side determinism)
@@ -814,13 +793,11 @@ end
     end
 end
 
-@testset "pinned delta: long rows do not widen the schema" begin
+@testset "long rows do not widen the schema" begin
     fa = A.File(IOBuffer("a,b\n1,2,3\n4,5\n"))
-    fc = LegacyCSV.File(IOBuffer("a,b\n1,2,3\n4,5\n"); silencewarnings=true)
     @test Base.names(fa) == [:a, :b]                          # extra field ⇒ problem
     @test any(p -> p.kind == :long_row, A.problems(fa))
     @test collect(fa.a) == [1, 4] && collect(fa.b) == [2, 5]
-    @test :Column3 in Tables.columnnames(fc)                  # LegacyCSV.jl widens instead
 end
 
 @testset "File surface: rows, properties, show, problems" begin
@@ -855,6 +832,7 @@ end
     tasksrc = "a\n" * join(1:2000, '\n') * "\n"
     prepared = A._prepare(IOBuffer(tasksrc); ntasks=2)
     @test length(getfield(prepared, :bi).chunks) <= 2
+    @test 1 <= length(A.Chunks(IOBuffer(tasksrc); ntasks=2, pool=false)) <= 2
     empty!(API_PARSE_TASKS)
     A.File(IOBuffer(tasksrc); types=APITaskScalar, ntasks=2,
            parallel=true, chunkbytes=64, pool=false)
@@ -1000,15 +978,13 @@ end
     rm(bigpath)
 end
 
-@testset "Rows agrees with LegacyCSV.Rows" begin
+@testset "Rows behavior and source modes" begin
     input = "a,b\n1,x\n2,\n3,z\n"
     ra = collect(A.Rows(IOBuffer(input)))
-    rc = collect(LegacyCSV.Rows(IOBuffer(input)))
-    @test length(ra) == length(rc) == 3
-    for (x, y) in zip(ra, rc)
-        @test isequal(_norm.(collect(Tables.getcolumn.(Ref(x), 1:2))),
-                      _norm.(collect(Tables.getcolumn.(Ref(y), 1:2))))
-    end
+    rb = collect(A.Rows(Vector{UInt8}(codeunits(input))))
+    @test length(ra) == length(rb) == 3
+    @test [_norm(r.a) for r in ra] == [_norm(r.a) for r in rb] == ["1", "2", "3"]
+    @test isequal([_norm(r.b) for r in ra], [_norm(r.b) for r in rb])
     @test isequal([r.b for r in A.Rows(IOBuffer(input))], ["x", missing, "z"])
     # typed access parses on demand through the kernel value layer
     typed = A.Rows(IOBuffer(input); types=Dict(:a => Int64))
@@ -1023,9 +999,7 @@ end
     @test Tables.schema(narrowrows).types[1] == Union{Int8, Missing}
     @test isequal([r.a for r in narrowrows], Union{Int8, Missing}[1, missing])
     typedbad = A.Rows(IOBuffer("a\n1\nbad\n"); types=Union{Int64, Missing})
-    csvbad = LegacyCSV.Rows(IOBuffer("a\n1\nbad\n"); types=Union{Int64, Missing},
-                      silencewarnings=true)
-    @test isequal([r.a for r in typedbad], [r.a for r in csvbad])
+    @test isequal([r.a for r in typedbad], Union{Int64, Missing}[1, missing])
     strictrow = first(A.Rows(IOBuffer("a\nbad\n"); types=Int64, strict=true))
     @test_throws ErrorException strictrow.a
     errorrow = first(A.Rows(IOBuffer("a\n128\n"); types=Int8,
@@ -1048,12 +1022,10 @@ end
     @test isequal([r.a for r in A.Rows(IOBuffer("a\nNA\n1\n"); missingstring="NA")],
                   [missing, "1"])
     quoted = "a,b\n\"x\ny\",1\nz,2\n"
-    @test [_norm(r.a) for r in A.Rows(IOBuffer(quoted))] ==
-          [_norm(r.a) for r in LegacyCSV.Rows(IOBuffer(quoted))]
+    @test [_norm(r.a) for r in A.Rows(IOBuffer(quoted))] == ["x\ny", "z"]
     @test length(collect(A.Rows(IOBuffer(input); footerskip=2))) == 1
     footer = "a\n1\n\n2\n\n3\n"
-    @test [r.a for r in A.Rows(IOBuffer(footer); footerskip=2)] ==
-          [r.a for r in LegacyCSV.Rows(IOBuffer(footer); footerskip=2)]
+    @test [_norm(r.a) for r in A.Rows(IOBuffer(footer); footerskip=2)] == ["1", "2"]
     @test_throws ArgumentError A.Rows(IOBuffer(input); pool=true)
     @test_throws ArgumentError A.Rows(IOBuffer(input); nsample=2)
     @test_throws ArgumentError A.Rows(IOBuffer(input); maxproblems=1)
@@ -1158,9 +1130,9 @@ end
     @test occursin("delim=';'", sprint(show, spec))
 end
 
-end # @testset CSVApi
+end # @testset CSV readers
 
-@testset "1.0 parity batch: gzip, typemap, dateformat/pool Dicts, downcast, transpose, deprecations" begin
+@testset "gzip, typemap, dateformat/pool Dicts, downcast, transpose, deprecations" begin
     # auto-gzip: every source kind decompresses by magic bytes
     plain = "a,b\n1,x\n2,y\n"
     gz = transcode(CodecZlib.GzipCompressor, Vector{UInt8}(codeunits(plain)))
@@ -1180,16 +1152,11 @@ end # @testset CSVApi
     gzpath = joinpath(mktempdir(), "t.csv.gz")
     write(gzpath, gz)
     @test Tables.getcolumn(A.File(gzpath), :a) == [1, 2]
-    oracle = LegacyCSV.File(gzpath)
-    @test Tables.getcolumn(oracle, :a) == [1, 2]
 
     # typemap: detected types remap; user-pinned ones don't
     input = "a,b\n1,1.5\n2,2.5\n"
     f = A.File(IOBuffer(input); typemap=Dict(Int64 => Float64))
-    # Legacy inference follows the machine word, while 1.0 inference is
-    # platform-stable Int64.
-    o = LegacyCSV.File(IOBuffer(input); typemap=Dict(Int => Float64))
-    @test eltype(Tables.getcolumn(f, :a)) == eltype(Tables.getcolumn(o, :a)) == Float64
+    @test f.a == [1.0, 2.0] && eltype(f.a) == Float64
     f = A.File(IOBuffer(input); typemap=Dict(Int64 => String), types=Dict(:b => Float64))
     @test eltype(Tables.getcolumn(f, :b)) == Float64
     @test Tables.getcolumn(f, :a) isa AbstractVector{<:AbstractString}
@@ -1222,8 +1189,7 @@ end # @testset CSVApi
     # per-column dateformat
     input = "d1,d2\n03/04/2020,2020-01-02\n05/06/2021,2021-07-08\n"
     f = A.File(IOBuffer(input); dateformat=Dict(:d1 => "dd/mm/yyyy"))
-    o = LegacyCSV.File(IOBuffer(input); dateformat=Dict(:d1 => "dd/mm/yyyy"))
-    @test Tables.getcolumn(f, :d1) == Tables.getcolumn(o, :d1) == [Date(2020, 4, 3), Date(2021, 6, 5)]
+    @test Tables.getcolumn(f, :d1) == [Date(2020, 4, 3), Date(2021, 6, 5)]
     @test Tables.getcolumn(f, :d2) == [Date(2020, 1, 2), Date(2021, 7, 8)]
 
     # per-column pool: Dict pools only the listed column
@@ -1253,14 +1219,12 @@ end # @testset CSVApi
     @test !(degraded.a isa PooledArrays.PooledArray)
     @test degraded.b isa PooledArrays.PooledArray
 
-    # downcast (oracle agreement on eltypes and values)
+    # downcast chooses the narrowest signed integer type per column
     input = "a,b,c\n1,300,70000\n2,-40,100000\n"
     f = A.File(IOBuffer(input); downcast=true)
-    o = LegacyCSV.File(IOBuffer(input); downcast=true)
-    for nm in (:a, :b, :c)
-        @test eltype(Tables.getcolumn(f, nm)) == eltype(Tables.getcolumn(o, nm))
-        @test Tables.getcolumn(f, nm) == Tables.getcolumn(o, nm)
-    end
+    @test f.a == Int8[1, 2] && eltype(f.a) == Int8
+    @test f.b == Int16[300, -40] && eltype(f.b) == Int16
+    @test f.c == Int32[70000, 100000] && eltype(f.c) == Int32
     # downcast with missings keeps Union eltype
     f = A.File(IOBuffer("a\n1\n\n2\n"); downcast=true, ignoreemptyrows=false)
     @test eltype(Tables.getcolumn(f, :a)) == Union{Int8, Missing}
@@ -1274,17 +1238,14 @@ end # @testset CSVApi
     end
     @test A.File(IOBuffer("a\n\n"); downcast=true, ignoreemptyrows=false).a isa Vector{Missing}
 
-    # transpose: names in field 1, ragged pad, oracle value agreement
+    # transpose: names in field 1 and ragged rows are padded
     input = "name,1,2,3\nscore,1.5,2.5,3.5\nnote,x,y\n"
     f = A.File(IOBuffer(input); transpose=true)
-    o = LegacyCSV.File(IOBuffer(input); transpose=true)
-    @test Tables.columnnames(Tables.columns(f)) == Tables.columnnames(Tables.columns(o))
-    @test Tables.getcolumn(f, :name) == Tables.getcolumn(o, :name) == [1, 2, 3]
+    @test Tables.columnnames(Tables.columns(f)) == [:name, :score, :note]
+    @test Tables.getcolumn(f, :name) == [1, 2, 3]
     @test Tables.getcolumn(f, :score) == [1.5, 2.5, 3.5]
     @test isequal(Tables.getcolumn(f, :note), ["x", "y", missing])
     @test Base.nonmissingtype(eltype(f.note)) == K.CompactString
-    @test isequal(String.(coalesce.(Tables.getcolumn(o, :note), "")),
-                  String.(coalesce.(Tables.getcolumn(f, :note), "")))
     f = A.File(IOBuffer("1,2\n3,4\n"); transpose=true, header=false)
     @test Tables.getcolumn(f, :Column1) == [1, 2] && Tables.getcolumn(f, :Column2) == [3, 4]
     @test_throws ArgumentError A.File(IOBuffer(input); transpose=true, select=[:name])
@@ -1316,26 +1277,21 @@ end # @testset CSVApi
     @test (transposeddate.d1[1], transposeddate.d2[1]) ==
           (Date(2023, 1, 15), Date(2023, 1, 16))
     # Quoted newlines, escapes, empty rows, unicode, ragged tails, and pinned
-    # types retain the same names and values as LegacyCSV.jl.
+    # types retain exact names and values across in-memory source modes.
     transposedcases = [
-        ("name,\"a\nb\",c\nnum,1,2\n", (;)),
-        ("name,\"a\"\"b\",c\nnum,1,2\n", (;)),
-        ("a,1,2\n\nb,3,4\n", (;)),
-        ("α,β,γ\nδ,日,月\n", (;)),
+        ("name,\"a\nb\",c\nnum,1,2\n", (;), [:name, :num], Any[Any["a\nb", "c"], Any[1, 2]]),
+        ("name,\"a\"\"b\",c\nnum,1,2\n", (;), [:name, :num], Any[Any["a\"b", "c"], Any[1, 2]]),
+        ("a,1,2\n\nb,3,4\n", (;), [:a, :b], Any[Any[1, 2], Any[3, 4]]),
+        ("α,β,γ\nδ,日,月\n", (;), [:α, :δ], Any[Any["β", "γ"], Any["日", "月"]]),
         ("a,1,x,3\nb,2020-01-01,2020-01-02,\n",
-         (; types=Dict(:a => Int64, :b => Date))),
+         (; types=Dict(:a => Int64, :b => Date)), [:a, :b],
+         Any[Any[1, missing, 3], Any[Date(2020, 1, 1), Date(2020, 1, 2), missing]]),
     ]
-    for (transposedinput, transposedkw) in transposedcases
-        tf = A.File(IOBuffer(transposedinput); transpose=true, transposedkw...)
-        to = LegacyCSV.File(IOBuffer(transposedinput); transpose=true, transposedkw...)
-        @test Tables.columnnames(tf) == Tables.columnnames(to)
-        for nm in Tables.columnnames(tf)
-            av = Any[ismissing(x) ? missing : x isa AbstractString ? String(x) : x
-                     for x in Tables.getcolumn(tf, nm)]
-            ov = Any[ismissing(x) ? missing : x isa AbstractString ? String(x) : x
-                     for x in Tables.getcolumn(to, nm)]
-            @test isequal(av, ov)
-        end
+    for (transposedinput, transposedkw, expectednames, expectedvalues) in transposedcases
+        tf = sourceparity(transposedinput; kw=(; transpose=true, transposedkw...))
+        actualnames, actualvalues = colvalues(tf)
+        @test actualnames == expectednames
+        @test isequal(actualvalues, expectedvalues)
     end
     # limit scopes inference as well as output. Values after the retained
     # prefix cannot promote an Int column to Float64 or String.
@@ -1368,7 +1324,7 @@ end # @testset CSVApi
                                       header=huge, skipto=huge)
     @test_throws ArgumentError A.File(IOBuffer("a,1\n"); transpose=true, limit=-1)
 
-    # legacy kwargs error with migration text
+    # Removed kwargs error with migration text.
     for (kwname, kwval) in ((:silencewarnings, true), (:debug, true), (:lazystrings, true),
                             (:tasks, 2), (:threaded, true), (:rows_to_check, 5),
                             (:lines_to_check, 5), (:ignoreemptylines, true),
@@ -1388,8 +1344,8 @@ end # @testset CSVApi
     r = A.Rows(IOBuffer("a\n1\n2\n"); reusebuffer=true)
     @test length(collect(r)) == 2
 
-    # validate=false: types/dateformat/pool keys naming absent columns are
-    # ignored (0.10 semantics); the default validates, Regex misses included
+    # validate=false ignores types/dateformat/pool keys that name absent
+    # columns. The default validates them, including Regex misses.
     novalidate = A.File(IOBuffer("a,b,c\n1,2,3\n"); types=Dict(4 => Float64, r"_x$" => Int8),
                         dateformat=Dict(:e => "dd/mm/yyyy"), pool=Dict("f" => true),
                         validate=false)
@@ -1473,13 +1429,9 @@ end
     @test collect(String.(Tables.getcolumn(escaped, :a))) ==
           ["q\"x", "a long \"escaped\" value", "αβγδεζηθ"]
     @test eltype(Tables.getcolumn(escaped, :a)) == String31
-    # oracle: values agree with 0.10's InlineString default
-    o = LegacyCSV.File(IOBuffer(csv))
-    for nm in (:s, :t)
-        ours = Any[x === missing ? missing : String(x) for x in Tables.getcolumn(auto, nm)]
-        theirs = Any[x === missing ? missing : String(x) for x in Tables.getcolumn(o, nm)]
-        @test isequal(ours, theirs)
-    end
+    @test all(i -> String(auto.s[i]) == "a$i", eachindex(auto.s))
+    @test all(i -> i % 3 == 0 ? ismissing(auto.t[i]) :
+                   String(auto.t[i]) == "longer value number $i", eachindex(auto.t))
 end
 
 @testset "RowWriter" begin
@@ -1499,9 +1451,8 @@ end
     # streams over a row-access table (a File) without materializing columns
     f = A.File(IOBuffer("a,b\n1,x\n2,y\n"))
     @test collect(CSV.RowWriter(f)) == ["a,b\n", "1,x\n", "2,y\n"]
-    # 0.10 oracle agreement on plain content
-    io2 = IOBuffer(); LegacyCSV.write(io2, (x=[1, 2], y=["ab", "c,d"]))
-    @test join(collect(CSV.RowWriter((x=[1, 2], y=["ab", "c,d"])))) == String(take!(io2))
+    @test join(collect(CSV.RowWriter((x=[1, 2], y=["ab", "c,d"])))) ==
+          "x,y\n1,ab\n2,\"c,d\"\n"
 end
 
 @testset "stringtype × pool matrix: File / Rows / Chunks agree" begin
@@ -1557,7 +1508,7 @@ end
     @test first(A.Rows(IOBuffer("s\nabcdefghijklmnop\n"); types=String)).s isa String
 end
 
-@testset "Chunks: schema stable across batches (0.10 port)" begin
+@testset "Chunks: schema stable across batches" begin
     # a promotion that only appears late must not change the batch schema
     data = "a,b\n" * join(("$(i),value$(i)" for i in 1:40), '\n') * "X"
     chunks = collect(A.Chunks(IOBuffer(data); ntasks=2, pool=false))
@@ -1587,11 +1538,19 @@ end
                          pool=(1.0, 2)))[:s] isa PooledArrays.PooledArray
     @test !(first(A.Chunks(IOBuffer(threelvl); chunkbytes=1 << 20,
                            pool=(1.0, 2)))[:s] isa PooledArrays.PooledArray)
-    # oracle: same row counts and values as 0.10 on the corpus file
-    gzpath = corpusfile("randoms.csv.gz")
-    ours = collect(A.Chunks(gzpath; ntasks=2))
-    theirs = collect(LegacyCSV.Chunks(gzpath; ntasks=2))
-    @test sum(nrows, ours) == sum(length, theirs) == 70_000
+    # Generated gzip data covers magic-byte decompression without a test artifact.
+    generatedrows = 70_000
+    gziptext = "id,value\n" *
+               join(("$i,v$(i % 17)" for i in 1:generatedrows), '\n') * "\n"
+    gzipdata = transcode(CodecZlib.GzipCompressor,
+                         Vector{UInt8}(codeunits(gziptext)))
+    compressedchunks = collect(A.Chunks(gzipdata; ntasks=2, chunkbytes=64 * 1024))
+    @test length(compressedchunks) > 1
+    @test sum(nrows, compressedchunks) == generatedrows
+    ids = reduce(vcat, (collect(c.id) for c in compressedchunks))
+    values = reduce(vcat, (String.(c.value) for c in compressedchunks))
+    @test ids == Int64.(1:generatedrows)
+    @test values == ["v$(i % 17)" for i in 1:generatedrows]
 end
 
 @testset "vector of sources + source= column" begin

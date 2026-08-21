@@ -1,27 +1,22 @@
-# Broad performance matrix: CSVApi.File (the real front door) vs CSV.jl,
-# across shapes × sizes × type combinations — the sharp-edge finder.
+# Broad performance matrix for the current CSV.File front door and parsing
+# kernel, across shapes × sizes × type combinations.
 #
 # Extends bench.jl's breadth probe up to the API layer and across many more
 # type combinations: pooling tiers (low/high/over-cap), temporal/bool columns,
 # missing-density and quote/escape-density sweeps, long text (CompactString view path),
 # very wide, grouped digits, ignorerepeated, CRLF, dirty/ragged, sentinels.
-# Same honesty rules as bench.jl: CSV.File runs silencewarnings=true; string
-# columns stay in their native containers on both sides (CSV materializes
-# InlineStrings/pooled, we return CompactString/PooledColumn) — per-cell work is what
-# is being compared, and the `api_str` config adds stringtype=String where the
-# owned-data comparison matters.
+# CSV.File includes public option handling. The `kparse` configuration starts
+# at the lower-level byte parser. String columns stay in their native
+# CompactString/PooledColumn containers unless `api_str` requests owned Strings.
 #
 # Run:  julia --project=test -t8 bench/bench_matrix.jl LABEL [sizes...]
 #       results append to kernel-bench-LABEL.tsv next to this file, table to stdout.
 #       julia --project=test -t1 bench/bench_matrix.jl LABEL-1t 20 --core
 
-using CSV; const CSVApi = CSV.CSVApi; const CSVKernel = CSV.CSVKernel
+using CSV
 using Dates, Random, Tables
-const K = CSVKernel
-const A = CSVApi
-
-include(joinpath(@__DIR__, "legacycsv.jl"))
-const CSVMOD = LegacyCSV
+const K = CSV
+const A = CSV
 
 # ---------------------------------------------------------------------------
 # shapes — each returns bytes; header names say what the type mix is
@@ -242,15 +237,12 @@ function makedata(shape::Symbol, targetbytes::Int)
     return take!(io)
 end
 
-# per-shape kwargs (api side, csv side)
-shapekw(shape) =
-    shape === :groupmark ? ((; delim=';', groupmark=','), (; delim=';', groupmark=',')) :
-    shape === :irspace   ? ((; delim=' ', ignorerepeated=true), (; delim=' ', ignorerepeated=true)) :
-    shape === :sentinel  ? ((; missingstring="NA"), (; missingstring=["NA", ""])) :
-                           (NamedTuple(), NamedTuple())
-
-# shapes whose schemas deliberately diverge (long-row widening) — rowcount only
-const NOPARITY = (:dirty,)
+# Current API options for shapes that need a non-default dialect.
+shapeoptions(shape) =
+    shape === :groupmark ? (; delim=';', groupmark=',') :
+    shape === :irspace   ? (; delim=' ', ignorerepeated=true) :
+    shape === :sentinel  ? (; missingstring="NA") :
+                           NamedTuple()
 
 # ---------------------------------------------------------------------------
 # timing
@@ -289,7 +281,7 @@ end
 function runcell(label, shape::Symbol, mb::Float64; core::Bool)
     buf = makedata(shape, round(Int, mb * 2^20))
     bytes = length(buf)
-    apikw, csvkw = shapekw(shape)
+    apikw = shapeoptions(shape)
     fa = A.File(copy(buf); apikw...)
     nrows = Tables.rowcount(fa)
     cells = Vector{NamedTuple}()
@@ -315,17 +307,7 @@ function runcell(label, shape::Symbol, mb::Float64; core::Bool)
         record(label, shape, mb, "kparse", bytes, nrows, t4, al4)
     end
 
-    tcsv = NaN
-    if CSVMOD !== nothing
-        fc = Base.invokelatest(CSVMOD.File, copy(buf); silencewarnings=true, csvkw...)
-        ncsv = Base.invokelatest(length, fc)
-        shape in NOPARITY || ncsv == nrows ||
-            @warn "row count mismatch" shape mb api=nrows csv=ncsv
-        tcsv, alcsv = besttime(() -> Base.invokelatest(CSVMOD.File, copy(buf);
-                                                       silencewarnings=true, csvkw...))
-        record(label, shape, mb, "csv", bytes, nrows, tcsv, alcsv)
-    end
-    return (; shape, mb, bytes, nrows, cells, tcsv)
+    return (; shape, mb, bytes, nrows, cells)
 end
 
 # ---------------------------------------------------------------------------
@@ -349,7 +331,7 @@ function main(args)
     println(RESULTS[], "# threads=$(Threads.nthreads()) julia=$(VERSION) at=$(now())")
     println("threads=$(Threads.nthreads())  label=$label  sizes=$sizes  → $path")
     header = rpad("shape", 15) * rpad("size", 9) * lpad("rows", 10) * " │" *
-             lpad("CSV.File", 10) * lpad("api", 9) * lpad("api/CSV", 9) * "  other configs (MiB/s)"
+             lpad("api", 10) * "  other configs (MiB/s)"
     println(header); println("─"^length(header))
     for mb in sizes
         shapes = (core || mb >= 100) ? CORESHAPES : ALLSHAPES
@@ -361,9 +343,7 @@ function main(args)
                            for c in r.cells if c.config != "api"), "  ")
             println(rpad(string(r.shape), 15), rpad(sizelabel, 9),
                     lpad(string(r.nrows), 10), " │",
-                    lpad(isnan(r.tcsv) ? "—" : fmt(mibs(r.bytes, r.tcsv)), 10),
-                    lpad(fmt(mibs(r.bytes, api.t)), 9),
-                    lpad(isnan(r.tcsv) ? "—" : string(round(r.tcsv / api.t, digits=2)), 9),
+                    lpad(fmt(mibs(r.bytes, api.t)), 10),
                     "  ", extras)
             flush(stdout)
         end

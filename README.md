@@ -47,11 +47,10 @@ Use `CSV.read("input.csv", DataFrame)` after you load DataFrames.jl. Use
 CSV.jl 1.0 CI tests Julia 1.10, the current stable release, and Julia nightly.
 It also tests Linux, macOS, Windows, x86-64, 32-bit x86, and Apple silicon.
 
-## Contributing and support
+## Support
 
-Read the [contribution guide](.github/CONTRIBUTING.md) before you submit a
-change. Use [GitHub Issues](https://github.com/JuliaData/CSV.jl/issues) for bug
-reports, feature requests, and questions.
+Use [GitHub Issues](https://github.com/JuliaData/CSV.jl/issues) for bug reports,
+feature requests, and questions.
 
 ## Generative-AI contribution disclosure
 

@@ -1,52 +1,31 @@
-# Test fixtures
+# Test suite
 
-The small legacy fixtures are exact byte literals in `legacy/corpus_inline.jl`.
-The 24 large real-world fixtures come from the lazy `testfiles` artifact in
-`Artifacts.toml`. Running `Pkg.test()` downloads the artifact once and caches
-it in the Julia depot. Package users do not download these test-only files.
-
-`artifacts/testfiles.sha256` is the source-of-truth file list and checksum
-manifest. To replace the corpus, first put the original fixture files in one
-source directory. Build and verify the archive twice with the checked-in tool:
+Run all tests from the repository root:
 
 ```sh
-julia --project=test test/artifacts/build_testfiles.jl \
-    /path/to/original/testfiles /tmp/testfiles-artifact.tar.gz
+julia --project=. -e 'using Pkg; Pkg.add([PackageSpec(url="https://github.com/JuliaStrings/InlineStrings.jl.git", rev="ce4c3549691c4b3443cc14ffa90ebdd6636eff2f"), PackageSpec(url="https://github.com/JuliaData/Parsers.jl.git", rev="83c7142fb714cb87261ef38eec7ab103444eb30d")]); Pkg.test()'
 ```
 
-The tool rejects missing files, checksum changes, symbolic links, nested paths,
-and non-reproducible output. It also extracts the result, verifies its exact file
-list and contents, and prints the `git-tree-sha1` and `sha256` values needed by
-`Artifacts.toml`.
+CSV.jl depends on Parsers 3 for the reviewed low-level kernels. Until
+registration, CI temporarily pins
+[Parsers.jl PR #210](https://github.com/JuliaData/Parsers.jl/pull/210) at exact
+commit `83c7142fb714cb87261ef38eec7ab103444eb30d`. Use the same commit for local
+tests. Registered InlineStrings releases still require Parsers 2. Tests also
+pin [InlineStrings.jl PR #93](https://github.com/JuliaStrings/InlineStrings.jl/pull/93)
+at `ce4c3549691c4b3443cc14ffa90ebdd6636eff2f`. Install both source revisions in
+one operation so the test environment can resolve.
 
-Publish the archive under a new immutable release tag and asset URL. Never
-replace an existing asset because old checkouts must remain reproducible. Update
-both hashes and the URL in `Artifacts.toml`, then verify a clean download:
+The suite has focused checks for the parser kernel, typed values, public reader
+APIs, the writer, and deterministic fuzz input. The fuzz tests print their fixed
+seed in each failure context.
 
-```sh
-julia --startup-file=no --project=test -e '
-    using Pkg.Artifacts
-    ensure_artifact_installed("testfiles", "test/Artifacts.toml")
-    @assert artifact_hash("testfiles", "test/Artifacts.toml") ==
-        Base.SHA1("EXPECTED_GIT_TREE_SHA1")
-'
-```
+Tables.Scan tests run when the loaded Tables.jl version provides that API. CI
+has a separate job that pins the reviewed Tables.Scan revision until a release
+includes it.
 
-Run the legacy test set and the full package test suite after the download
-check.
-
-## Frozen 0.10 oracle
-
-`runtests.jl` includes `LegacyCSV/src/LegacyCSV.jl` directly. It is test source,
-not a registry package or a nested Julia environment. `Project.toml` therefore
-lists the frozen source's direct dependencies. Its four oracle-only dependencies
-are pinned to exact versions, so a dependency update cannot silently change the
-comparison behavior. CSV itself does not depend on Parsers.
-
-The benchmark scripts use the same loader. Prepare the test environment once
-before running them from a fresh checkout:
+Prepare the test environment before you run a benchmark script:
 
 ```sh
-julia --project=test -e 'using Pkg; Pkg.develop(path=pwd()); Pkg.instantiate()'
+julia --project=test -e 'using Pkg; Pkg.add([PackageSpec(path=pwd()), PackageSpec(url="https://github.com/JuliaStrings/InlineStrings.jl.git", rev="ce4c3549691c4b3443cc14ffa90ebdd6636eff2f"), PackageSpec(url="https://github.com/JuliaData/Parsers.jl.git", rev="83c7142fb714cb87261ef38eec7ab103444eb30d")]); Pkg.develop(path=pwd()); Pkg.instantiate()'
 julia --project=test -t4 bench/bench_matrix.jl local 0.01 --core
 ```

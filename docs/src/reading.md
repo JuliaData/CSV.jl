@@ -137,7 +137,8 @@ file = CSV.File(IOBuffer("value\nalpha\nbeta\n"))
 
 Use `stringtype=String` to materialize strings. When InlineStrings.jl is
 loaded, its extension also accepts `InlineString` and fixed inline string
-types.
+types. During Parsers 3 development, use the compatible InlineStrings revision
+listed in the [migration guide](migration.md#Parsers-3-and-internal-layout).
 
 Pooling is independent of `stringtype`. `pool=false` is the 1.0 default. The
 accepted forms are:

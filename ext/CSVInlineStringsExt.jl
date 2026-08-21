@@ -12,8 +12,6 @@
 module CSVInlineStringsExt
 
 using CSV, InlineStrings
-const A = CSV.CSVApi
-const K = CSV.CSVKernel
 
 const _WIDTHS = (String1, String3, String7, String15, String31, String63, String127, String255)
 
@@ -25,8 +23,8 @@ const _WIDTHS = (String1, String3, String7, String15, String31, String63, String
 const _STRING1_HAS_EMPTY = sizeof(String1) > 1
 
 # validation hook
-A._stringsink(::Type{InlineString}) = true
-A._stringsink(::Type{T}) where {T <: InlineString} = true
+CSV._stringsink(::Type{InlineString}) = true
+CSV._stringsink(::Type{T}) where {T <: InlineString} = true
 
 # smallest InlineString type holding `n` bytes
 function _fitwidth(n::Int)
@@ -37,13 +35,13 @@ function _fitwidth(n::Int)
     throw(ArgumentError("value of $n bytes exceeds the InlineString maximum of 255"))
 end
 
-@inline function _inl(::Type{T}, s::K.CompactString) where {T <: InlineString}
+@inline function _inl(::Type{T}, s::CSV.CompactString) where {T <: InlineString}
     n = ncodeunits(s)
     n > _capacity(T) &&
         throw(ArgumentError("value of $n bytes does not fit $T"))
-    if n > K.COMPACTSTRING_INLINE
+    if n > CSV.COMPACTSTRING_INLINE
         GC.@preserve s begin
-            return T(pointer(s.data, K.cspos(s.p)), n)
+            return T(pointer(s.data, CSV.cspos(s.p)), n)
         end
     end
     # inline payload: build through a stack scratch (≤12 bytes)
@@ -57,7 +55,7 @@ end
     end
 end
 
-function _widthfor(col::K.CompactStringVector)
+function _widthfor(col::CSV.CompactStringVector)
     m = 0
     @inbounds for i in eachindex(col)
         x = col[i]
@@ -67,10 +65,10 @@ function _widthfor(col::K.CompactStringVector)
     return _fitwidth(m)
 end
 
-function A._materializecolumn(::Type{InlineString}, col::K.CompactStringVector)
-    return A._materializecolumn(_widthfor(col), col)
+function CSV._materializecolumn(::Type{InlineString}, col::CSV.CompactStringVector)
+    return CSV._materializecolumn(_widthfor(col), col)
 end
-function A._materializecolumn(::Type{T}, col::K.CompactStringVector) where {T <: InlineString}
+function CSV._materializecolumn(::Type{T}, col::CSV.CompactStringVector) where {T <: InlineString}
     n = length(col)
     if Missing <: eltype(col)
         out = Vector{Union{T, Missing}}(undef, n)
@@ -94,12 +92,12 @@ function A._materializecolumn(::Type{T}, col::K.CompactStringVector) where {T <:
 end
 
 # Rows(stringtype=InlineString): per-cell, smallest fitting width
-A._rowstring(::Type{InlineString}, x::K.CompactString) = _inl(_fitwidth(ncodeunits(x)), x)
-A._rowstring(::Type{T}, x::K.CompactString) where {T <: InlineString} = _inl(T, x)
+CSV._rowstring(::Type{InlineString}, x::CSV.CompactString) = _inl(_fitwidth(ncodeunits(x)), x)
+CSV._rowstring(::Type{T}, x::CSV.CompactString) where {T <: InlineString} = _inl(T, x)
 
-A._levelvector(::Type{InlineString}, levels::K.CompactStringVector, n::Int) =
-    A._levelvector(_widthfor(levels), levels, n)
-A._levelvector(::Type{T}, levels::K.CompactStringVector, n::Int) where {T <: InlineString} =
+CSV._levelvector(::Type{InlineString}, levels::CSV.CompactStringVector, n::Int) =
+    CSV._levelvector(_widthfor(levels), levels, n)
+CSV._levelvector(::Type{T}, levels::CSV.CompactStringVector, n::Int) where {T <: InlineString} =
     T[_inl(T, levels[i]) for i in 1:n]
 
 end # module

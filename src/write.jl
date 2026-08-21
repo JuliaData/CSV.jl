@@ -19,11 +19,7 @@
 # scan. Blocks stream to the sink in order. Output bytes do not depend on the
 # thread count.
 
-module KernelWrite
-
 using Tables, Dates, Printf, CodecZlib
-using ..CSVKernel
-const K = CSVKernel
 
 const WRITE_QUOTESTYLES = (:minimal, :all, :none)
 
@@ -113,7 +109,7 @@ function _writebytes(io::IO, bytes::AbstractVector{UInt8}, o::WriteOpts;
         return Base.write(io, bytes)
     end
     # Empty quoted content is the parser's present-empty-string spelling.
-    # Empty unquoted content is missing, matching the kernel's pinned 1.0
+    # Empty unquoted content is missing, matching the parser's pinned 1.0
     # convention (and intentionally differing from CSV.write's ambiguity).
     quote_it = stringcell && (o.quotestyle === :all || isempty(bytes))
     if !quote_it
@@ -966,16 +962,6 @@ end
 
 # --- RowWriter: the row-string iterator ---------------------------------------
 
-"""
-    CSV.RowWriter(table; writeheader=true, header=nothing, kw...)
-
-Iterate `table` as CSV-formatted `String`s: the header line first (unless
-`writeheader=false`), then one line per row, each rendered by exactly the
-code path `CSV.write` uses — so `join(CSV.RowWriter(t))` is byte-identical to
-`CSV.write(io, t)`. `kw` is the writer's dialect surface (`delim`, `quotestyle`,
-floatformat, dateformat, ...). Streams: rows render on demand from a
-row-access view of the table (`Tables.rows`), no whole-table buffer.
-"""
 struct RowWriter{R, I, F, P}
     rows::R
     initial::I
@@ -1081,15 +1067,6 @@ end
 
 # --- the front door ---------------------------------------------------------
 
-"""
-    CSV.write(sink, table; kw...) -> sink
-
-Write any Tables.jl table as CSV. `sink` is a file path, an `IO`, or (with
-`partition=true`) a vector of paths/IOs receiving one table partition each,
-written in parallel. Column-access tables render bounded row blocks in
-parallel. Row-access sources stream sequentially without being collected.
-Output order and bytes do not depend on `ntasks`.
-"""
 function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool}=nothing,
                header::Union{Nothing, Bool, AbstractVector}=nothing,
                compress::Union{Bool, Symbol}=:auto,
@@ -1185,5 +1162,3 @@ end
 
 
 write(sink; kw...) = table -> write(sink, table; kw...)
-
-end # module KernelWrite

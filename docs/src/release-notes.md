@@ -16,6 +16,7 @@ CSV.jl entry points. It requires Julia 1.10 or later.
   accessed. `CSV.File(lazyfile)` reuses the existing index.
 - Inferred text uses `CSV.CompactString` by default. Short text is stored in
   the value. Long text can refer to the retained input buffer.
+- Typed value parsing uses the reviewed low-level kernels from Parsers 3.
 - Parse recovery produces structured `CSV.problems(file)` data. Applications
   can select collection or fail-fast behavior.
 - `CSV.Chunks` uses one stable schema for its complete row window.
@@ -42,7 +43,19 @@ compatibility, source-memory behavior, and upgrade examples.
 ## Before final publication
 
 The final release depends on a registered Tables.jl version that contains the
-reviewed scan API. Maintainers must also resolve the Parsers 3.0 and shared
-compact-string dependency choices, run the full release matrix, and hand-review
-all generated contributions. The tagged release notes must replace this
-section with the final dependency versions and verified test results.
+reviewed scan API. The Parsers 3 integration decision is complete. CSV.jl
+depends on Parsers 3 for its reviewed low-level kernels. It keeps
+`CSV.CompactString` as the default text type. CI temporarily pins
+[Parsers.jl PR #210](https://github.com/JuliaData/Parsers.jl/pull/210) at exact
+`83c7142fb714cb87261ef38eec7ab103444eb30d` until registration. A registered
+Parsers 3 release and removal of this pin are 1.0 tag gates. Registered
+InlineStrings releases still require Parsers 2. CI pins
+[InlineStrings.jl PR #93](https://github.com/JuliaStrings/InlineStrings.jl/pull/93)
+at exact `ce4c3549691c4b3443cc14ffa90ebdd6636eff2f`. A compatible InlineStrings
+release and removal of this pin are also 1.0 tag gates.
+
+The final source layout has one runtime module: `CSV`. Implementation files are
+includes, not public submodules. Maintainers must run the full release matrix
+and hand-review all generated contributions. The tagged release notes must
+replace this section with the final dependency versions and verified test
+results.

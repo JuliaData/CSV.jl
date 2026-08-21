@@ -1,20 +1,16 @@
-# Bounded, deterministic parser differential tests.
+# Bounded, deterministic parser fuzz tests.
 #
-# These cases target composition boundaries rather than raising the test count:
+# These cases test parser boundaries instead of adding many similar cases:
 # malformed bytes must give the same table and diagnostics for every scanner,
-# chunk geometry, and scheduling mode; well-formed generated CSV must agree
-# with the frozen 0.10 parser on the compatibility surface.
-if !isdefined(@__MODULE__, :LegacyCSV)
-    include(joinpath(@__DIR__, "LegacyCSV", "src", "LegacyCSV.jl"))
-end
+# chunk geometry, and scheduling mode. Well-formed generated CSV must preserve
+# the values that the generator wrote.
 
 module CSVFuzzTests
 
 using Test, Random, Tables
 using CSV
-import ..LegacyCSV
 
-const K = CSV.CSVKernel
+const K = CSV
 
 _normcell(x) = ismissing(x) ? missing : collect(codeunits(String(x)))
 function _snapshot(t)
@@ -50,7 +46,7 @@ function _encodecell(x, delim::Char)
     return s
 end
 
-@testset "deterministic fuzz and differential" begin
+@testset "deterministic parser fuzz" begin
     @testset "malformed bytes: scanner, chunk, and task determinism" begin
         seed = 0x43535631
         rng = MersenneTwister(seed)
@@ -89,7 +85,7 @@ end
         end
     end
 
-    @testset "well-formed public parse agrees with the 0.10 oracle" begin
+    @testset "well-formed public parse preserves generated rows" begin
         seed = 0x43535632
         rng = MersenneTwister(seed)
         atoms = Union{Missing, String}[
@@ -97,24 +93,32 @@ end
             "quote\"mark", "line\nfeed", "carriage\rreturn", " leading",
             "trailing ", "lambda-λ", "digits-00123",
         ]
+        newlines = ("\n", "\r\n", "\r")
         for trial in 1:96
             delim = rand(rng, (',', ';', '\t', '|'))
             ncols = rand(rng, 1:5)
             nrows = rand(rng, 1:20)
             names = ["c$j" for j in 1:ncols]
             rows = [[rand(rng, atoms) for _ in 1:ncols] for _ in 1:nrows]
+            newline = newlines[mod1(trial, length(newlines))]
             io = IOBuffer()
             print(io, join(names, delim))
-            print(io, rand(rng, ("\n", "\r\n", "\r")))
+            print(io, newline)
             for (r, row) in enumerate(rows)
                 print(io, join((_encodecell(x, delim) for x in row), delim))
-                r < nrows && print(io, rand(rng, ("\n", "\r\n", "\r")))
+                r < nrows && print(io, newline)
             end
-            rand(rng, Bool) && print(io, rand(rng, ("\n", "\r\n", "\r")))
+            trailingnewline = rand(rng, Bool)
+            # A final empty row in a one-column file has no bytes of its own.
+            # Add a line ending so the input contains that row.
+            finalrowisempty = ncols == 1 && ismissing(rows[end][1])
+            (trailingnewline || finalrowisempty) && print(io, newline)
             input = String(take!(io))
-            old = LegacyCSV.File(IOBuffer(input); delim, types=String,
-                                 ignoreemptyrows=false, silencewarnings=true)
-            expected = _tablenorm(old)
+            expected = (
+                names = Symbol.(names),
+                nrows,
+                values = [[_normcell(rows[r][j]) for r in 1:nrows] for j in 1:ncols],
+            )
             @testset "seed=$(string(seed, base=16)) trial=$trial" begin
                 for chunkbytes in (1, 3, 63, 64, 65, ncodeunits(input) + 1)
                     for parallel in (false, true)

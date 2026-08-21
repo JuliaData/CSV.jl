@@ -3,9 +3,6 @@ using Documenter
 
 DocMeta.setdocmeta!(CSV, :DocTestSetup, :(using CSV); recursive=true)
 
-internal_modules = Module[CSV.CSVKernel, CSV.CSVApi, CSV.KernelExamples, CSV.KernelWrite]
-isdefined(CSV, :KernelScan) && push!(internal_modules, CSV.KernelScan)
-
 makedocs(;
     root=@__DIR__,
     sitename="CSV.jl",
@@ -13,10 +10,9 @@ makedocs(;
     modules=[CSV],
     pagesonly=true,
     checkdocs=:public,
-    checkdocs_ignored_modules=internal_modules,
     doctest=true,
     format=Documenter.HTML(;
-        prettyurls=get(ENV, "CI", "false") == "true",
+        prettyurls=true,
         canonical="https://JuliaData.github.io/CSV.jl/stable",
         repolink="https://github.com/JuliaData/CSV.jl",
         edit_link="main",

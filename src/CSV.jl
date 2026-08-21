@@ -13,36 +13,24 @@ for any supported thread count.
 """
 module CSV
 
-using Tables   # optional Tables.Scan support; submodules import their own
+using Tables
 
-include("core.jl")       # CSVKernel: index, values, driver, columns
-include("examples.jl")   # KernelExamples: Tables.jl glue + streaming primitives
-include("api.jl")        # CSVApi: File / read / Rows / Chunks / sniff / Spec
-include("write.jl")      # KernelWrite: write
+# These files form one `CSV` module. The split keeps each implementation area
+# small enough to read without adding private module boundaries.
+include("core.jl")       # indexing, values, parsing, and columns
+include("examples.jl")   # Tables.jl support and row access
+include("api.jl")        # File, read, Rows, Chunks, and option handling
+include("write.jl")      # write and RowWriter
 if isdefined(Tables, :Scan)
-    include("scan.jl")   # optional Tables.Scan pushdown
+    include("scan.jl")   # optional Tables.Scan support
 end
 
-using .CSVKernel, .CSVApi, .KernelWrite
-
-# -- public surface -----------------------------------------------------------
-const File = CSVApi.File
-const lazy = CSVApi.lazy
-const LazyFile = CSVApi.LazyFile
-const Rows = CSVApi.Rows
-const Chunks = CSVApi.Chunks
-const read = CSVApi.read
-const problems = CSVApi.problems
-# Delimiter/header sniffing (`CSVApi.sniff` → `Spec`) is internal machinery
+# Delimiter and header detection (`sniff` and `Spec`) is internal machinery
 # behind `delim=nothing`; it is not part of the 1.0 public surface (0.10 had
 # no such API). It can be promoted later if there is demand.
-const write = KernelWrite.write
-const RowWriter = KernelWrite.RowWriter
-const CompactString = CSVKernel.CompactString
 
-# These are namespace APIs, not exports. Attach fresh docstrings in this module:
-# copying an implementation DocStr retains its private-module metadata, which
-# makes Documenter filter it from the public API reference.
+# These are namespace APIs, not exports. Their public docs stay here so the
+# complete supported surface is easy to review.
 @doc """
     CSV.File(source; keywords...) -> CSV.File
 
@@ -128,7 +116,8 @@ returns the generated path vector; other forms return the supplied sink.
 
 Iterate complete CSV-formatted row strings. The header is first unless it is
 disabled. Rows render on demand with the same dialect and value formatting as
-[`CSV.write`](@ref CSV.write).
+[`CSV.write`](@ref CSV.write). With the same formatting options, joining the
+iterator gives the same uncompressed bytes as `CSV.write`.
 """ RowWriter
 @doc """
     CSV.CompactString <: AbstractString
@@ -176,7 +165,7 @@ import Dates, CodecZlib
         File(compressed)
         foreach(identity, Rows(IOBuffer("a,b\n1,x\n2,y\n")))
         first(Chunks(IOBuffer(pooled); chunkbytes=1 << 16))
-        CSVApi.sniff(IOBuffer(mixed))
+        sniff(IOBuffer(mixed))
         out = IOBuffer()
         write(out, (a=[1, 2], b=["x", "y,z"], c=[1.5, missing],
                     d=[Dates.Date(2024, 1, 2), Dates.Date(2024, 3, 4)]))

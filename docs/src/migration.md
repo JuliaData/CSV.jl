@@ -126,6 +126,22 @@ and a missing value.
 `floatformat` is new and accepts a Printf-style format. Writer output is
 deterministic across `ntasks` values.
 
+## Parsers 3 and internal layout
+
+CSV.jl 1.0 depends on Parsers 3 for the reviewed low-level value kernels. The
+integration decision is complete. CI temporarily pins
+[Parsers.jl PR #210](https://github.com/JuliaData/Parsers.jl/pull/210) at exact
+`83c7142fb714cb87261ef38eec7ab103444eb30d` until registration. A registered
+Parsers 3 release and removal of this pin are 1.0 tag gates. Registered
+InlineStrings releases still require Parsers 2. Development CI pins
+[InlineStrings.jl PR #93](https://github.com/JuliaStrings/InlineStrings.jl/pull/93)
+at exact `ce4c3549691c4b3443cc14ffa90ebdd6636eff2f`. A compatible InlineStrings
+release and removal of this pin are also tag gates.
+
+The final source layout has one runtime module: `CSV`. Implementation files are
+includes, not public submodules. Use only the public names documented in the
+[API reference](reference.md).
+
 ## Tables.Scan transition
 
 CSV.jl 1.0 supports parser pushdown through `Tables.Scan`. The feature requires
@@ -141,8 +157,12 @@ Before the `1.0.0` tag:
 - replace the development version with `1.0.0` and verify the package resolves
   from a clean environment;
 - depend on a registered Tables.jl release that contains `Tables.Scan`, then
-  replace the temporary branch-pinned integration lane with that release;
-- make and document the final Parsers 3.0 and compact-string ownership choices;
+  replace the temporary exact-revision integration lane with that release;
+- depend on a registered Parsers 3 release that contains the reviewed kernels,
+  then remove the exact PR pin from every CI lane;
+- depend on a registered InlineStrings release that supports Parsers 3, then
+  remove its exact PR pin from every CI lane;
+- verify the one-module source layout and the strict public docs check;
 - run the full test matrix, fuzz suite, strict documentation build, downstream
   integration tests, and package evaluation;
 - prepare compatibility updates for important reverse dependencies; packages

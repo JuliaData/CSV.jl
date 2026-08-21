@@ -1,28 +1,22 @@
-# Throughput matrix: frozen CSV 0.10 vs the new kernel, across data shapes and sizes.
+# Throughput matrix: the public CSV.File front door and the parsing kernel,
+# across data shapes and sizes.
 #
 # NOT a rigorous benchmark suite — a breadth probe to check the architecture's
 # performance is broadly applicable rather than tuned to one shape. Caveats on
 # comparability, stated up front:
-#   * CSV.File materializes columns eagerly (incl. InlineString/pooled string
-#     columns); the kernel returns inline-or-view CompactString columns. The "kernel+str"
-#     column therefore ALSO materializes every string column to Vector{String} —
-#     that is the fair "owned data" comparison. Non-string columns are directly
-#     comparable (both engines hand back materialized values).
-#   * CSV.File is run with silencewarnings=true (the quoted shape triggers its
-#     multithreaded chunking fallback warnings).
+#   * CSV.File includes public API validation and option normalization. K.parse
+#     starts from bytes at the lower-level kernel boundary.
+#   * The "kernel+str" column also materializes every CompactString column to
+#     owned strings. This makes the cost of owning text visible.
 #   * Timings are best-of-N wall clock with auto-repetition for tiny inputs.
 #
-# Run:   julia --project=test -t8 bench/bench.jl           # full matrix vs LegacyCSV
+# Run:   julia --project=test -t8 bench/bench.jl           # full matrix
 #        julia --project=test -t8 bench/bench.jl 0.01 20   # just these sizes (MiB)
 #        julia --project=test -t1 bench/bench.jl 20        # single-thread story
 
-using CSV; const CSVKernel = CSV.CSVKernel
-using .CSVKernel
-using Dates, Random
-const K = CSVKernel
-
-include(joinpath(@__DIR__, "legacycsv.jl"))
-const CSVMOD = LegacyCSV
+using CSV
+using Dates, Random, Tables
+const K = CSV
 
 # ---------------------------------------------------------------------------
 # data shapes
@@ -142,52 +136,49 @@ materializestrings(t::K.ParsedTable) =
 function runcell(shape::Symbol, mb::Float64)
     buf = makedata(shape, round(Int, mb * 2^20))
     bytes = length(buf)
-    # row-count sanity between engines
-    tk = K.parse(buf)
-    nrows = tk.nrows
+    # The public and kernel paths must agree on the generated row count.
+    file = CSV.File(buf)
+    kernel = K.parse(buf)
+    nrows = kernel.nrows
+    file_rows = Tables.rowcount(file)
+    file_rows == nrows ||
+        @warn "row count mismatch" shape mb file=file_rows kernel=nrows
+    tfile = besttime(() -> CSV.File(buf))
     tkern = besttime(() -> K.parse(buf))
     tkernstr = besttime(() -> materializestrings(K.parse(buf)))
-    tcsv = NaN
-    if CSVMOD !== nothing
-        f = Base.invokelatest(CSVMOD.File, buf; silencewarnings=true)
-        Base.invokelatest(length, f) == nrows ||
-            @warn "row count mismatch" shape mb kernel=nrows csv=Base.invokelatest(length, f)
-        tcsv = besttime(() -> Base.invokelatest(CSVMOD.File, buf; silencewarnings=true))
-    end
-    return (; shape, bytes, nrows, tkern, tkernstr, tcsv)
+    return (; shape, bytes, nrows, tfile, tkern, tkernstr)
 end
 
 function main(sizes)
     shapes = (:numeric, :mixed, :strings, :quoted, :wide, :longnarrow, :sparse)
     println("threads=$(Threads.nthreads())  julia=$(VERSION)  CSV.jl=",
-            LEGACYCSV_VERSION)
+            Base.pkgversion(CSV))
     println()
     header = rpad("shape", 11) * rpad("size", 9) * lpad("rows", 10) * " │" *
              lpad("CSV.File", 10) * lpad("kernel", 10) * lpad("kernel+str", 12) * " │" *
-             lpad("k/CSV", 7) * lpad("k+s/CSV", 9)
+             lpad("k/file", 8) * lpad("k+s/file", 10)
     println(header)
     println("─"^length(header))
     for mb in sizes, shape in shapes
         r = runcell(shape, mb)
-        csvs = isnan(r.tcsv) ? lpad("—", 10) : lpad(fmt(mibs(r.bytes, r.tcsv)), 10)
         sizelabel = r.bytes >= 2^20 ? "$(round(Int, r.bytes / 2^20)) MiB" : "$(round(Int, r.bytes / 2^10)) KiB"
         line = rpad(string(r.shape), 11) * rpad(sizelabel, 9) *
                lpad(string(r.nrows), 10) * " │" *
-               csvs *
+               lpad(fmt(mibs(r.bytes, r.tfile)), 10) *
                lpad(fmt(mibs(r.bytes, r.tkern)), 10) *
                lpad(fmt(mibs(r.bytes, r.tkernstr)), 12) * " │" *
-               (isnan(r.tcsv) ? lpad("—", 7) : lpad(string(round(r.tcsv / r.tkern, digits=2)), 7)) *
-               (isnan(r.tcsv) ? lpad("—", 9) : lpad(string(round(r.tcsv / r.tkernstr, digits=2)), 9))
+               lpad(string(round(r.tfile / r.tkern, digits=2)), 8) *
+               lpad(string(round(r.tfile / r.tkernstr, digits=2)), 10)
         println(line)
         # absolute times matter more than MiB/s for tiny files
         if r.bytes < 2^20
-            println(" "^11, "(abs: CSV.File ", isnan(r.tcsv) ? "—" : fmttime(r.tcsv),
+            println(" "^11, "(abs: CSV.File ", fmttime(r.tfile),
                     "  kernel ", fmttime(r.tkern), "  kernel+str ", fmttime(r.tkernstr), ")")
         end
         flush(stdout)
     end
     println()
-    println("ratios > 1 mean the kernel is faster; kernel+str collects string columns to Vector{String}")
+    println("ratios > 1 mean the kernel path is faster; kernel+str owns CompactString columns")
 end
 
 main(isempty(ARGS) ? (0.01, 1.0, 20.0, 200.0) : Tuple(Base.parse(Float64, a) for a in ARGS))

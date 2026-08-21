@@ -2,8 +2,8 @@
 #
 # Run:  julia --startup-file=no --project=test -t4 test/kernel.jl
 #
-# Strategy: the scalar scanner is the correctness oracle. Every structural case is
-# run through each eligible scanner (scalar / SWAR / vector) both sequentially
+# Strategy: use the scalar scanner as the expected result. Run every structural
+# case through each supported scanner (scalar, SWAR, and vector) both sequentially
 # and in parallel with deliberately tiny chunk sizes (3, 7, 16, 64 bytes), so
 # range boundaries land inside fields, inside quoted sections, and between bytes of
 # CRLF pairs. Results must be identical everywhere — that IS the parallelism
@@ -13,9 +13,9 @@
 using Test, Random, Dates, Tables, Mmap
 
 using CSV
-const K = CSV.CSVKernel
-const E = CSV.KernelExamples
-using .K
+import Parsers
+const K = CSV
+const E = CSV
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -171,7 +171,7 @@ function tablesnapshot(t::K.ParsedTable)
 end
 
 # ---------------------------------------------------------------------------
-@testset "CSVKernel" begin
+@testset "CSV parser core" begin
 # ---------------------------------------------------------------------------
 
 @testset "structural: basics" begin
@@ -321,17 +321,17 @@ end
     @test idxall("\"\",c\n")               == [["\"\"","c"]]           # quoted empty field
     @test idxall("\"\"\"\",c\n")           == [["\"\"\"\"","c"]]       # field that is one escaped quote
     @test idxall("a,\"b\"\n\"c\",d\n")     == [["a","\"b\""], ["\"c\"","d"]]
-    # a quoted field spanning many tiny chunks (the parity/boundary stress case)
+    # A quoted field crosses many tiny byte ranges. This checks quote counts and
+    # row-boundary selection together.
     long = "\"" * join(fill("line with, commas", 20), "\n") * "\""
     @test idxall(long * ",x\n") == [[long, "x"]]
     # quotes disabled: quote bytes are ordinary content
     @test idxall("\"a,b\",c\n"; quoted=false) == [["\"a","b\"","c"]]
 end
 
-@testset "structural: pinned semantics for malformed quoting" begin
-    # A bare quote mid-field opens a quoted region (structural quotes always
-    # toggle — the Sep/simdcsv rule; see the module docstring). Pinned so any
-    # future change to this tradeoff is a conscious one.
+@testset "structural: malformed quote behavior" begin
+    # A bare quote in the middle of a field starts a quoted region during the
+    # row scan. See the parser-core comment at the start of core.jl.
     # No closing quote ever appears here, so the field runs to EOF — trailing
     # newline included (it is "inside quotes"):
     @test idxall("ab\"cd,e\nf,g\n"; chunks=(3, 7)) == [["ab\"cd,e\nf,g\n"]]
@@ -385,7 +385,7 @@ end
     @test idxall("a:b::c\n"; delim="::")           == [["a:b","c"]]
     longdelim = "xy"^128
     @test idxall("left" * longdelim * "right\n"; delim=longdelim) == [["left", "right"]]
-    # distinct escape char (backslash) — parity-unclean, scalar/sequential only
+    # A separate backslash escape needs the scalar scanner.
     @test idxall("\"a\\\"b\",c\n"; escapechar='\\') == [["\"a\\\"b\"","c"]]
     # unicode content passes through untouched (spans are byte-exact)
     @test idxall("α,β\n∀,∃\n") == [["α","β"], ["∀","∃"]]
@@ -395,11 +395,11 @@ end
 end
 
 @testset "structural: ignorerepeated" begin
-    # Semantics pinned against CSV.jl by the legacy differential probes:
-    # runs collapse, leading runs are consumed, trailing runs fold into the row
-    # end (also at EOF and before CRLF), an all-delimiter row is ONE empty field
-    # (a short row, not an empty row), and comments only match at the raw line
-    # start — "  #x" is data.
+    # These tests define how repeated delimiters work. A run becomes one
+    # boundary. A leading run is removed. A trailing run becomes part of the row
+    # ending, including at end of input and before CRLF. A row with only
+    # delimiters has one empty field. A comment prefix must start at the first
+    # byte of a row, so "  #x" is data.
     sp = (delim=' ', ignorerepeated=true)
     @test idxall("a b\n1 2\n"; sp...)        == [["a","b"], ["1","2"]]
     @test idxall("a  b\n1   2\n"; sp...)     == [["a","b"], ["1","2"]]
@@ -573,6 +573,60 @@ end
 
 # ---------------------------------------------------------------------------
 
+@testset "Parsers 3 integration" begin
+    @test !isdefined(K, :V)
+
+    quotechar = UInt8('"')
+    quoted = Vector{UInt8}(codeunits("\"a\"\"b\""))
+    @test K.findcontent(quoted, 1, length(quoted), quotechar, quotechar, quotechar) ==
+          (2, 4, true, Parsers.RC_OK)
+
+    opts = K.makevalueopts(K.Dialect())
+    intbytes = Vector{UInt8}(codeunits("99999999999999999999999999"))
+    @test K.parsevalue(Int128, intbytes, 1, length(intbytes), opts) ==
+          (Int128(99999999999999999999999999), true)
+
+    overflow = Vector{UInt8}(codeunits("1e9999"))
+    overvalue, overok = K.parsevalue(Float64, overflow, 1, length(overflow), opts)
+    @test overok && overvalue == Inf
+    @test K.detecttype(overflow, 1, length(overflow), opts) === Float64
+
+    underflow = Vector{UInt8}(codeunits("-1e-9999"))
+    undervalue, underok = K.parsevalue(Float64, underflow, 1, length(underflow), opts)
+    @test underok && iszero(undervalue) && signbit(undervalue)
+    @test K.detecttype(underflow, 1, length(underflow), opts) === Float64
+
+    groupedopts = K.makevalueopts(K.Dialect(delim=';'); groupmark=',')
+    grouped = Vector{UInt8}(codeunits("1,0e9999"))
+    groupedvalue, groupedok =
+        K.parsevalue(Float64, grouped, 1, length(grouped), groupedopts)
+    @test groupedok && groupedvalue == Inf
+
+    ranged = K.parse("x\n1e9999\n-1e-9999\n")
+    @test ranged[:x] isa Vector{Float64}
+    @test ranged[:x][1] == Inf
+    @test iszero(ranged[:x][2]) && signbit(ranged[:x][2])
+    @test isempty(K.problems(ranged))
+
+    datebytes = Vector{UInt8}(codeunits("2024-02-29"))
+    civil, rc = Parsers.parsecivil(datebytes, 1, length(datebytes), K._ISO_DATE_PATTERN)
+    @test rc == Parsers.RC_OK
+    @test K.todate(civil) == Date(2024, 2, 29)
+
+    fartext = "1e70000"
+    farbytes = Vector{UInt8}(codeunits(fartext))
+    farexpected = Base.parse(BigFloat, fartext)
+    @test Parsers.tryparse(BigFloat, farbytes, 1, length(farbytes)) == farexpected
+    farvalue, farok = K.parsevalue(BigFloat, farbytes, 1, length(farbytes), opts)
+    @test farok && farvalue == farexpected
+
+    groupedfar = Vector{UInt8}(codeunits("1,0e70000"))
+    groupedfarexpected = Base.parse(BigFloat, "10e70000")
+    groupedfarvalue, groupedfarok =
+        K.parsevalue(BigFloat, groupedfar, 1, length(groupedfar), groupedopts)
+    @test groupedfarok && groupedfarvalue == groupedfarexpected
+end
+
 @testset "typed: inference & values" begin
     t = K.parse("a,b,c,d,e,f\n1,1.5,x,2023-01-15,true,10:30:00\n2,2.5,y,2023-01-16,false,11:30:00\n")
     @test K.names(t) == [:a, :b, :c, :d, :e, :f]
@@ -586,27 +640,27 @@ end
     @test isempty(K.problems(t))
 end
 
-@testset "typed: ISO fast paths preserve interpreter sets" begin
+@testset "typed: default ISO patterns match Parsers" begin
     opts = K.makevalueopts(K.Dialect())
     function checktemporal(T, pat, adapt, s)
         buf = Vector{UInt8}(codeunits(s))
-        c, rc = K.V.parsecivil(buf, 1, length(buf), pat)
+        c, rc = Parsers.parsecivil(buf, 1, length(buf), pat)
         value, ok = K.parsevalue(T, buf, 1, length(buf), opts)
-        @test ok == (rc == K.V.RC_OK)
+        @test ok == (rc == Parsers.RC_OK)
         @test (K.detecttype(buf, 1, length(buf), opts) === T) == ok
         ok && @test value == adapt(c)
     end
 
     for s in ("0000-01-01", "9999-12-31", "2000-02-29", "1900-02-29",
               "2400-02-29", "2020-1-01", "2020-1-01x", "2020/01-01")
-        checktemporal(Date, K.V.ISO_DATE, K.todate, s)
+        checktemporal(Date, K._ISO_DATE_PATTERN, K.todate, s)
     end
     for s in ("2024-01-02T03:04:05", "2024-01-02 03:04:05",
               "2024-01-02T03:04:05.", "2024-01-02T03:04:05.1")
-        checktemporal(DateTime, K.V.ISO_DATETIME, K.todatetime, s)
+        checktemporal(DateTime, K._ISO_DATETIME_PATTERN, K.todatetime, s)
     end
     for s in ("00:00:00", "23:59:59", "24:00:00")
-        checktemporal(Time, K.V.ISO_TIME, K.totime, s)
+        checktemporal(Time, K._ISO_TIME_PATTERN, K.totime, s)
     end
 
     # A user format identical to a default is still custom. It must use the
@@ -673,10 +727,9 @@ end
     # date → string on mixed temporals
     t = K.parse("a\n2023-01-15\n10:30:00\n")
     @test eltype(t[:a]) == K.CompactString
-    # Strictness principle: each kernel accepts exactly the spellings detection
-    # assigns to it (Bool is true/false only; temporals are pattern-exact), so
-    # values that OLD Parsers accepted more loosely ("1" as Bool, a bare date as
-    # DateTime) now conflict and promote to String — sample-independently.
+    # Each value parser accepts the same text that type detection accepts. Bool
+    # accepts true and false. Date and time values must match their patterns.
+    # Other text changes the column type to String for every sample size.
     for ns in (1, 2, 3)
         @test eltype(K.parse("a\nfalse\n1\n1\n"; nsample=ns)[:a]) == K.CompactString
         @test eltype(K.parse("a\n2024-01-02T03:04:05\n2024-01-03\n"; nsample=ns)[:a]) == K.CompactString
@@ -1045,10 +1098,10 @@ end
     @test pvg(Float64, "5,678.25") == (5678.25, true)
     @test !pvg(Int64, ",123")[2] && !pvg(Float64, "1.5,0")[2]
     scratch = Vector{UInt8}(undef, 64)
-    @test K.V.degroup!(scratch, Vector{UInt8}(codeunits("1.5,0")), 1, 5,
-                       UInt8(','), UInt8('.')) == -2
-    @test K.V.degroup!(scratch, Vector{UInt8}(codeunits("1e1,0")), 1, 5,
-                       UInt8(','), UInt8('.')) == -2
+    @test K._degroup!(scratch, Vector{UInt8}(codeunits("1.5,0")), 1, 5,
+                      UInt8(','), UInt8('.')) == -2
+    @test K._degroup!(scratch, Vector{UInt8}(codeunits("1e1,0")), 1, 5,
+                      UInt8(','), UInt8('.')) == -2
     groupedbytes = Vector{UInt8}(codeunits("1,234,567"))
     @test allocsumgrouped(groupedbytes, gmo, scratch) == 0
     # groupmark == delim works through quoting (the mark is content there)
@@ -1112,9 +1165,8 @@ end
     @test !K._maybesentinel(byteopts, 0x7f)
     t = K.parse("NA,b\n1,2\n"; sentinels=["NA"])                     # sentinel header auto-names
     @test K.names(t) == [:Column1, :b]
-    # PINNED DELTA vs CSV.jl: an empty unquoted cell is ALWAYS missing here —
-    # structural, not spelling-dependent. (CSV.jl's custom missingstring
-    # replaces the "" default, turning empties into present empty strings.)
+    # An empty unquoted cell is always missing. A custom sentinel does not
+    # change this rule.
     t = K.parse("a,b\n,1\nx,2\n"; sentinels=["NA"])
     @test isequal(collect(t[:a]), [missing, "x"])
     # a quoted empty is a present empty string even when sentinels are active
@@ -1268,8 +1320,7 @@ end
     # materialize detaches from the buffer
     v = K.materialize(t[:a])
     @test v == ["x\"y"] && v isa Vector{String}
-    # Spans are Int64/Int32 end to end — a >2^20-byte field survives exactly
-    # (the old Parsers.PosLen intermediate silently kept only the final 7 bytes).
+    # A field longer than 2^20 bytes keeps all of its bytes.
     longvalue = repeat("x", (1 << 20) + 7)
     t = K.parse("a\n" * longvalue * "\n"; types=String, chunkbytes=1 << 16)
     @test t[:a][1] == longvalue
@@ -1440,7 +1491,7 @@ end
     t3 = K.parse("a\n\"\"\n\nαβγδεζηθικλμ\n"; ignoreemptyrows=false)
     @test isequal(collect(t3[:a]), ["", missing, "αβγδεζηθικλμ"])
     @test Symbol(t3[:a][3]) == :αβγδεζηθικλμ
-    # iteration parity with the String oracle, including invalid UTF-8
+    # Iteration must match String, including invalid UTF-8.
     rng = MersenneTwister(99)
     for trial in 1:200
         n = rand(rng, 0:24)
@@ -1499,7 +1550,7 @@ end
 @testset "examples: the layered APIs" begin
     csv = "a,b,c\n1,x,2.5\n2,y,3.5\n3,\"z,w\",4.5\n"
     # eager reader is a Tables.jl table
-    t = E.read(csv)
+    t = E._readtable(csv)
     nt = Tables.columntable(t)
     @test nt.a == [1, 2, 3]
     @test nt.c == [2.5, 3.5, 4.5]
@@ -1525,9 +1576,8 @@ end
     for batch in E.batches(csv2; chunkbytes=16)
         @test eltype(batch[:x]) == Float64
     end
-    # A sample cannot guarantee a stable schema. Put the only float beyond the
-    # old 128-row sample and put a missing in only one batch; all batches must
-    # still expose the same Union element type.
+    # Put the only float after 1,000 integer rows. Put a missing value in only
+    # one batch. All batches must still have the same Union element type.
     csv3 = "x\n" * join(1:1000, "\n") * "\n\n3.5\n"
     bs = collect(E.batches(csv3; chunkbytes=256, ignoreemptyrows=false))
     @test all(eltype(batch[:x]) == Union{Float64, Missing} for batch in bs)
@@ -1541,24 +1591,24 @@ end
     probs = [p for batch in bs for p in K.problems(batch)]
     @test [(p.kind, p.row) for p in probs] == [(:short_row, 1), (:long_row, 2)]
     # row streaming: lazy untyped + on-demand typed access
-    rs = collect(E.rows(csv))
+    rs = collect(E._indexedrows(csv))
     @test length(rs) == 3
     @test rs[1].a == "1"                          # untyped access materializes strings
     @test rs[3][:b] == "z,w"
-    @test E.typedvalue(Int64, rs[1], :a) == 1
-    @test E.typedvalue(Float64, rs[2], 3) == 3.5
-    @test E.typedvalue(String, rs[3], :b) == "z,w"
-    @test ismissing(E.typedvalue(Int64, rs[1], :b))  # not parseable as Int
-    prs = collect(E.rows(padded; delim=' ', ignorerepeated=true, chunkbytes=3))
+    @test E._typedvalue(Int64, rs[1], :a) == 1
+    @test E._typedvalue(Float64, rs[2], 3) == 3.5
+    @test E._typedvalue(String, rs[3], :b) == "z,w"
+    @test ismissing(E._typedvalue(Int64, rs[1], :b))  # not parseable as Int
+    prs = collect(E._indexedrows(padded; delim=' ', ignorerepeated=true, chunkbytes=3))
     @test [row.a for row in prs] == ["1", "3"]
-    @test [E.typedvalue(Int64, row, :b) for row in prs] == [2, 4]
+    @test [E._typedvalue(Int64, row, :b) for row in prs] == [2, 4]
     # ragged row: missing beyond the row's fields
-    rs2 = collect(E.rows("a,b\n1\n"))
+    rs2 = collect(E._indexedrows("a,b\n1\n"))
     @test ismissing(rs2[1][:b])
     @test_throws BoundsError rs2[1][0]
-    @test_throws BoundsError E.typedvalue(Int64, rs2[1], 3)
+    @test_throws BoundsError E._typedvalue(Int64, rs2[1], 3)
     # Rows declares the Tables.jl row interface, including a concrete schema.
-    rows = E.rows(csv)
+    rows = E._indexedrows(csv)
     @test Tables.istable(typeof(rows)) && Tables.rowaccess(typeof(rows))
     @test Tables.rows(rows) === rows
     # untyped rows are lazy CompactString views (zero-copy); == against String literals holds
@@ -1566,11 +1616,11 @@ end
           (Union{K.CompactString, Missing}, Union{K.CompactString, Missing}, Union{K.CompactString, Missing})
     @test Tables.rowtable(rows)[1] == (a="1", b="x", c="2.5")
     # A CSV column name takes priority over RowView's private storage fields.
-    row = first(E.rows("r,rownumber\nvalue,7\n"))
+    row = first(E._indexedrows("r,rownumber\nvalue,7\n"))
     @test row.r == "value" && row.rownumber == "7"
 end
 
-@testset "sequential multi-chunk driver parity" begin
+@testset "sequential multi-chunk driver consistency" begin
     input = "i,mix,txt,strict\n" *
             "1,1,alpha,10\n" *
             "2,2,\"line\nbreak\",bad\n" *
@@ -1700,6 +1750,7 @@ end
 
 @testset "bounded reader task count" begin
     @test_throws ArgumentError K.parse("a\n1\n"; ntasks=0)
+    @test_throws ArgumentError K.index(UInt8[0x61]; ntasks=0)
 
     # The worker helper visits every item once and never exceeds its bound.
     seen = zeros(Int, 64)
@@ -1720,6 +1771,44 @@ end
     end
     @test all(==(1), seen)
     @test peak[] <= 2
+
+    # Exercise the complete index path with many small byte ranges. The
+    # observer counts live index workers. A short wait lets all allowed workers
+    # start before any one worker can finish.
+    indexactive = Ref(0)
+    indexpeak = Ref(0)
+    indexguard = ReentrantLock()
+    function observeindex(started::Bool)
+        if started
+            lock(indexguard) do
+                indexactive[] += 1
+                indexpeak[] = max(indexpeak[], indexactive[])
+            end
+            sleep(0.01)
+        else
+            lock(indexguard) do
+                indexactive[] -= 1
+            end
+        end
+        return nothing
+    end
+    indexinput = Vector{UInt8}(codeunits(repeat("a,\"line\nvalue\"\n", 80)))
+    indexreference = K.index(indexinput; chunkbytes=3, parallel=false)
+    boundedindex = K.index(indexinput; chunkbytes=3, parallel=true, ntasks=2,
+                           _taskobserver=observeindex)
+    expectedlimit = min(2, Threads.nthreads())
+    @test length(boundedindex.chunks) > 10
+    @test indexsnapshot(indexinput, boundedindex) ==
+          indexsnapshot(indexinput, indexreference)
+    @test indexactive[] == 0
+    @test indexpeak[] <= expectedlimit
+    Threads.nthreads() > 1 && @test(indexpeak[] == expectedlimit)
+
+    indexpeak[] = 0
+    K.index(indexinput; chunkbytes=3, parallel=true,
+            ntasks=Threads.nthreads() + 7, _taskobserver=observeindex)
+    @test indexactive[] == 0
+    @test indexpeak[] <= Threads.nthreads()
 
     lines = ["a,b,c"]
     for i in 1:500
@@ -1759,7 +1848,7 @@ end
     # than eyeball 17 spawn sites, lower every method that spawns and assert
     # no box survives.
     boxed = String[]
-    for m in (K, CSV.CSVApi, CSV.KernelWrite)
+    for m in (CSV,)
         for name in names(m; all=true)
             f = try getfield(m, name) catch; continue end
             f isa Function || continue
@@ -1775,8 +1864,7 @@ end
         end
     end
     @test isempty(boxed)
-    # and the loop-variable question itself, pinned: each spawned task sees its
-    # own iteration value even when tasks outlive the loop
+    # Each task must keep its own loop value after the loop starts later tasks.
     seen = zeros(Int, 64)
     @sync for b in 1:64
         Threads.@spawn begin
