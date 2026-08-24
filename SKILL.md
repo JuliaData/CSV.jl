@@ -28,7 +28,7 @@ editing, then the full minimum-version suite and strict documentation build.
 The Parsers 3 integration decision is complete. CSV.jl depends on Parsers 3 for
 the reviewed low-level kernels. CI temporarily pins
 [Parsers.jl PR #210](https://github.com/JuliaData/Parsers.jl/pull/210) at exact
-commit `83c7142fb714cb87261ef38eec7ab103444eb30d` until registration. Do not restore
+commit `e4adc5ba720e5668b726f65a574e2037c866d6df` until registration. Do not restore
 a local copy of those kernels. Registered InlineStrings releases still require
 Parsers 2. CI pins
 [InlineStrings.jl PR #93](https://github.com/JuliaStrings/InlineStrings.jl/pull/93)

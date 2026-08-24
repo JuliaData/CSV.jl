@@ -1,4 +1,4 @@
-# Implementation of CSV.jl's public reading front doors and its internal
+# Implementation of CSV.jl's public readers and its internal
 # delimiter/shape detection.
 #
 # Every entry point uses the same pipeline: resolve source bytes → settle the
@@ -829,38 +829,17 @@ const _PREPKW = (:header, :normalizenames, :skipto, :footerskip, :missingstring,
                  :delim, :limit, :samplebytes, :chunkbytes, :parallel,
                  :buffer_in_memory, :prefetch, :validate)
 
-# select/drop: list forms only (function forms retired — Tables.Scan is the
-# expression channel). Returns a kernel `select` Int vector or nothing.
-function _resolveselect(select, drop, names::Vector{Symbol})
-    select !== nothing && drop !== nothing &&
-        throw(ArgumentError("select and drop are mutually exclusive"))
-    spec = select === nothing ? drop : select
-    spec === nothing && return nothing
-    spec isa Base.Callable &&
-        throw(ArgumentError("function-typed select/drop is retired; pass a list " *
-                            "(or use Tables.Scan for expressions)"))
-    idx = if spec isa AbstractVector{Bool}
-        length(spec) == length(names) ||
-            throw(ArgumentError("Bool select/drop length $(length(spec)) != $(length(names)) columns"))
-        findall(spec)
-    elseif spec isa AbstractVector{<:Integer}
-        Int.(spec)
-    else
-        map(spec) do s
-            # match the name as spelled OR as `normalizenames` would spell it
-            # (#990: users pass the raw header text after normalization)
-            j = findfirst(==(Symbol(s)), names)
-            j === nothing && (j = findfirst(==(Symbol(normalizename(String(s)))), names))
-            j === nothing && throw(ArgumentError("select/drop name $s does not match any column"))
-            j
-        end
-    end
-    all(j -> 1 <= j <= length(names), idx) ||
-        throw(ArgumentError("select/drop index out of range"))
-    # All classic reader doors use file-order, unique projection semantics.
-    # This matches the kernel and CSV 0.10 even when callers repeat or reorder
-    # entries in a list.
-    return drop === nothing ? sort!(unique(idx)) : setdiff(1:length(names), idx)
+@inline _preparedcolopts(p::Prepared) = get(p.parsekw, :colopts, nothing)
+
+# Create the column plan from the names and value rules found during source
+# preparation. Name selection also accepts the spelling used before
+# `normalizenames=true` changed the header.
+function settlecolumns(p::Prepared; select=nothing, drop=nothing, types=nothing,
+                       available::Union{Nothing, Vector{Int}}=nothing,
+                       validate::Bool=true)
+    return settlecolumns(p.names, p.opts; select, drop, types, available,
+                         colopts=_preparedcolopts(p), validate,
+                         matchnormalized=true)
 end
 
 # ---------------------------------------------------------------------------
@@ -943,23 +922,12 @@ _sourcename(source) = source isa AbstractString ? String(source) : "<$(nameof(ty
 _sourceprovenance(source, i::Int) =
     source isa AbstractString ? String(source) : "<source $i>"
 
-# the typed parse over an existing index — File's classic path, and what
-# File(::LazyFile) reuses so the scan is never repeated
-function _remapcolumnspec(spec, names::Vector{Symbol}, sourceindices::Vector{Int},
-                          fulln::Int, what::String; validate::Bool=true)
-    spec === nothing && return nothing
-    n = length(names)
-    if spec isa Type
-        return Dict(sourceindices[j] => spec for j in 1:n)
-    elseif spec isa AbstractVector
-        length(spec) == n ||
-            throw(ArgumentError("$what vector length $(length(spec)) != $n columns"))
-        return Dict(sourceindices[j] => spec[j] for j in 1:n)
-    elseif spec isa AbstractDict
-        resolved = _resolvekeys(spec, names, n, what; validate)
-        return Dict(sourceindices[j] => value for (j, value) in resolved)
+function _setemptytypes!(plan::ColumnPlan)
+    for j in plan.sources
+        plan.columns[j].parsetype === nothing &&
+            (plan.columns[j] = _columndecision(Missing))
     end
-    throw(ArgumentError("unsupported $what specification: $(typeof(spec))"))
+    return plan
 end
 
 function _filefromprepared(p::Prepared, nm::String; types=nothing, select=nothing, drop=nothing,
@@ -968,19 +936,9 @@ function _filefromprepared(p::Prepared, nm::String; types=nothing, select=nothin
                            parallel::Bool=Threads.nthreads() > 1, validate::Bool=true,
                            ntasks::Union{Nothing, Int}=nothing,
                            available::Union{Nothing, Vector{Int}}=nothing)
-    sourceindices = available === nothing ? collect(1:p.ncols) : available
-    viewnames = p.names[sourceindices]
-    localsel = _resolveselect(select, drop, viewnames)
-    keep = localsel === nothing ? collect(eachindex(sourceindices)) : localsel
-    sel = sourceindices[keep]
-    fulltypes = available === nothing ? types :
-                _remapcolumnspec(types, viewnames, sourceindices, p.ncols, "types"; validate)
-    parsetypes = if p.limit == 0
-        Type[T === nothing ? Missing : T
-             for T in resolvetypes(fulltypes, p.names, p.ncols; validate)]
-    else
-        fulltypes
-    end
+    viewnames = available === nothing ? p.names : p.names[available]
+    plan = settlecolumns(p; select, drop, types, available, validate)
+    p.limit == 0 && _setemptytypes!(plan)
     # File(::LazyFile) resolves pool keys against the columns exposed by the
     # LazyFile, not against columns that were already dropped.
     poolspecs = _resolvepool(pool, viewnames, length(viewnames); validate)
@@ -990,15 +948,13 @@ function _filefromprepared(p::Prepared, nm::String; types=nothing, select=nothin
     # silently cap a later larger maxproblems request at 10,000.
     parsekw = merge(p.parsekw,
                     (; parallel, ntasks, validate, maxproblems=max(maxproblems, 1)))
-    t = parse(p.buf; index=p.bi, header=p.names, types=parsetypes, select=sel, limit=p.limit,
-                on_error=:collect, parsekw...)
+    t = parse(p.buf; index=p.bi, header=p.names, columnplan=plan, limit=p.limit,
+              on_error=:collect, parsekw...)
     headerlog = _headerproblems(p.buf, p.headerrefs, p.opts, max(maxproblems, 1))
     t, firstproblem = _mergeproblems(t, headerlog, maxproblems)
-    t, firstproblem = _narrowtypes(t,
-        requestedtypes(fulltypes, p.names, p.ncols; validate), sel,
-        p.bi.chunks, maxproblems, firstproblem)
+    t, firstproblem = _narrowtypes(t, plan, p.bi.chunks, maxproblems, firstproblem)
     on_error === :error && firstproblem !== nothing && _throwproblem(t, firstproblem)
-    t = _poolcolumns(t, poolspecs[keep]; parallel)
+    t = _poolcolumns(t, poolspecs[plan.positions]; parallel)
     poolS = stringtype === CompactString ? String : stringtype   # pool levels are never views
     t = _pooledarrays(t, poolS)
     downcast && (t = _downcast(t))
@@ -1010,14 +966,13 @@ end
 # version without Scan never reaches this call because the type check above
 # fails first with a clear error.
 function _executescan(p::Prepared, scan; parsekw, maxproblems::Int, on_error::Symbol)
-    return _executescanplan(p.buf, p.bi, p.names, scan;
-                            parsekw, headerlog=p.headerlog,
+    return _executescanplan(p, scan; parsekw, headerlog=p.headerlog,
                             maxproblems, on_error)
 end
 
 function File(sources::AbstractVector; source=nothing, kw...)
     if eltype(sources) === UInt8
-        # a byte buffer IS a vector; route it to the single-source door
+        # A byte buffer is a vector. Read it as one source.
         source === nothing ||
             throw(ArgumentError("source= requires a vector of sources, not a byte buffer"))
         return invoke(File, Tuple{Any}, sources; kw...)
@@ -1168,19 +1123,6 @@ end
                          pr.message * (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
 end
 
-# Rows, lazy columns, and transpose parse cells directly instead of producing a
-# native-width ParsedTable followed by `_narrowtypes`. Restore the user's narrow
-# numeric request at those access doors; `parsevalue` still uses the native
-# kernels internally and performs the checked conversion once.
-function _accessparsetypes(types, names::Vector{Symbol}, ncols::Int; validate::Bool=true)
-    seed = resolvetypes(types, names, ncols; validate)
-    requested = requestedtypes(types, names, ncols; validate)
-    for j in eachindex(seed)
-        requested[j] === nothing || (seed[j] = requested[j])
-    end
-    return seed
-end
-
 # ---------------------------------------------------------------------------
 # transpose=true — the compatibility path. Rows are columns: input row j is
 # output column j; with header=true the first field of each row is that
@@ -1203,7 +1145,8 @@ function _cellstring(buf::Vector{UInt8}, ci, lr::Int, f::Int, opts)
 end
 
 function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
-                           T0, opts, log::ProblemLog, col::Int)
+                           T0, opts, log::ProblemLog, col::Int,
+                           declaredmissing::Bool=false)
     nf = nfields(ci, lr)
     T = T0
     if T === nothing
@@ -1251,7 +1194,7 @@ function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
             end
         end
         staging === nothing || _flushstaging!(scol, payloads, staging)
-        return finalizecolumn(String, scol, n, sawmiss)
+        return finalizecolumn(String, scol, n, sawmiss || declaredmissing)
     end
     out = Vector{Union{T, Missing}}(missing, n)
     scratch = _scratchfor(opts)
@@ -1264,9 +1207,10 @@ function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
             continue
         end
         cpos, clen, esc, st = cellcontent(buf, sp[1], sp[2], opts)
-            if st != CELL_VALUE || esc || clen == 0
-                st == CELL_VALUE && (esc || clen == 0) && T0 === nothing &&
-                return _transposedcolumn(buf, ci, lr, startf, n, String, opts, log, col)
+        if st != CELL_VALUE || esc || clen == 0
+            st == CELL_VALUE && (esc || clen == 0) && T0 === nothing &&
+                return _transposedcolumn(buf, ci, lr, startf, n, String, opts,
+                                         log, col, declaredmissing)
             if T0 !== nothing && st != CELL_MISSING
                 kind = st == CELL_BADQUOTE ? :invalid_quoted_field : :invalid_value
                 pushproblem!(log, i, col, sp[1], kind,
@@ -1284,7 +1228,8 @@ function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
             # exact inference cannot conflict; a user-pinned type leaves the
             # cell missing (strict=false File semantics)
             T0 === nothing &&
-                return _transposedcolumn(buf, ci, lr, startf, n, String, opts, log, col)
+                return _transposedcolumn(buf, ci, lr, startf, n, String, opts,
+                                         log, col, declaredmissing)
             pushproblem!(log, i, col, sp[1], :invalid_value,
                            "cannot parse transposed value as $T0")
             sawmiss = true
@@ -1292,7 +1237,7 @@ function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
         end
         out[i] = v
     end
-    return sawmiss ? out : convert(Vector{T}, out)
+    return sawmiss || declaredmissing ? out : convert(Vector{T}, out)
 end
 
 function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Bool=false,
@@ -1356,7 +1301,6 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
         throw(ArgumentError("header has $(length(names)) names for $ncols transposed rows"))
     normalizenames && (names = [normalizename(String(nm)) for nm in names])
     names = makeunique!(names)
-    seed = _accessparsetypes(types, names, ncols; validate)
     colopts = if dfdict === nothing
         fill(opts, ncols)
     else
@@ -1366,9 +1310,11 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
                                     dateformat=overrides[j]) : opts
                     for j in 1:ncols]
     end
+    plan = settlecolumns(names, opts; types, colopts, validate)
+    seed = Union{Nothing, Type}[accessparsetype(d) for d in plan.columns]
     log = ProblemLog(maxproblems)
     cols = AbstractVector[_transposedcolumn(buf, r[1], r[2], startf, n, seed[j], colopts[j],
-                                            log, j)
+                                            log, j, plan.columns[j].declaredmissing)
                           for (j, r) in enumerate(rows)]
     sortproblems!(log)
     t = ParsedTable(names, cols, n, log.items, log.dropped)
@@ -1574,20 +1520,17 @@ function _narrowlocation(chunks, row::Int, col::Int, problemrowbase::Int,
     error("internal error: narrow value row is outside the structural index")
 end
 
-# user-requested narrow types (Int8/16/32, UInt*, Float16/32): the kernel
-# parsed the native type; convert here. A value outside the narrow range
-# becomes missing with a recorded problem (0.10 semantics, strict=false).
-function _narrowtypes(t::ParsedTable, req, sel, chunks, maxproblems::Int,
+# The scalar parser uses a wider type for a narrow numeric request. Convert the
+# result here. An integer outside the requested range becomes `missing` and
+# adds a problem.
+function _narrowtypes(t::ParsedTable, plan::ColumnPlan, chunks, maxproblems::Int,
                       firstproblem::Union{Nothing, Problem}=nothing;
                       problemrowbase::Int=0,
                       sourcerows::Union{Nothing, AbstractVector{Int}}=nothing)
-    all(x -> x === nothing, req) && return t, firstproblem
+    all(j -> plan.columns[j].resulttype === nothing, plan.sources) &&
+        return t, firstproblem
     sourcerows === nothing || length(sourcerows) == t.nrows ||
         throw(ArgumentError("source-row map length $(length(sourcerows)) != $(t.nrows) rows"))
-    # The kernel emits selected columns in file order. `sel` retains the user's
-    # request order and may contain duplicates, so normalize it before mapping
-    # output position back to the file-column-indexed `req` vector.
-    keep = sel === nothing ? collect(1:length(req)) : sort!(unique(sel))
     cols = AbstractVector[t.columns...]
     # Narrow conversion is part of parsing, not a later unbounded side channel.
     # Seed the same bounded log with the parse/header diagnostics, then add
@@ -1598,13 +1541,13 @@ function _narrowtypes(t::ParsedTable, req, sel, chunks, maxproblems::Int,
         pushproblem!(log, pr.row, pr.col, pr.pos, pr.kind, pr.message)
     end
     log.dropped += t.droppedproblems
-    for (o, j) in enumerate(keep)
-        T = req[j]
+    for (o, j) in enumerate(plan.sources)
+        T = plan.columns[j].resulttype
         T === nothing && continue
         c = cols[o]
         Base.nonmissingtype(eltype(c)) in (Int64, Int128, Float64) || continue
         out = Vector{Union{T, Missing}}(undef, length(c))
-        # The kernel widens a user-declared Union{Missing,T} before this door.
+        # The parser widens a user-declared Union{Missing,T} before this step.
         # Preserve that declaration even when every value is present.
         anymissing = Missing <: eltype(c)
         chunkidx = 1
@@ -1802,19 +1745,16 @@ function lazy(source; types=nothing, stringtype::Type=CompactString,
     _checkstringtype(stringtype)
     p = _prepare(source; kw...)
     validate = get(kw, :validate, true)
-    sel = _resolveselect(select, drop, p.names)
-    seed = types === nothing ? nothing :
-           _accessparsetypes(types, p.names, p.ncols; validate)
+    plan = settlecolumns(p; select, drop, types, validate)
     chunks = p.bi.chunks
     rowbases = cumsum([0; Int[nrows(ci) for ci in chunks[1:max(length(chunks) - 1, 0)]]])
     total = sum(nrows, chunks; init=0)
     nr = p.limit === nothing ? total : min(total, p.limit)
-    js = sel === nothing ? collect(1:p.ncols) : sel
-    colopts = get(p.parsekw, :colopts, nothing)
+    js = plan.sources
     cols = AbstractVector[]
     for j in js
-        T = seed === nothing ? nothing : seed[j]
-        opts = colopts === nothing ? p.opts : colopts[j]
+        T = accessparsetype(plan.columns[j])
+        opts = columnopts(plan, j)
         c = T === nothing || T === String ?
                 LazyColumn{_lazyeltype(stringtype)}(p.buf, chunks, rowbases, j, opts, nr, stringtype) :
                 LazyColumn{Union{T, Missing}}(p.buf, chunks, rowbases, j, opts, nr, T)
@@ -2014,29 +1954,33 @@ function Rows(source; types=nothing, reusebuffer::Bool=false, select=nothing, dr
         throw(ArgumentError("on_error must be :collect or :error"))
     _checkstringtype(stringtype)
     p = _prepare(source; kw...)
-    js = something(_resolveselect(select, drop, p.names), collect(1:p.ncols))
-    fullseed = types === nothing ? nothing :
-               _accessparsetypes(types, p.names, p.ncols;
-                                 validate=get(kw, :validate, true))
-    seed = fullseed === nothing ? nothing : fullseed[js]
-    names = p.names[js]
-    colopts = get(p.parsekw, :colopts, nothing)
+    plan = settlecolumns(p; select, drop, types,
+                         validate=get(kw, :validate, true))
+    names = p.names[plan.sources]
+    # Keep the settled source type beside its output position. Row access uses
+    # these two short lists for each requested cell.
+    rowtypes = Union{Nothing, Type}[
+        accessparsetype(plan.columns[j]) for j in plan.sources
+    ]
+    all(isnothing, rowtypes) && (rowtypes = nothing)
     inner = _IndexedRows(p.buf, p.bi.chunks, p.names,
                          Dict(nm => j for (j, nm) in enumerate(p.names)),
-                         p.opts, colopts, p.d)
-    return Rows(inner, names, Dict(nm => j for (j, nm) in enumerate(names)), js,
-                seed, p.limit, stringtype, on_error)
+                         plan, p.d)
+    return Rows(inner, names, Dict(nm => j for (j, nm) in enumerate(names)),
+                plan.sources, rowtypes, p.limit, stringtype, on_error)
 end
 
 Tables.istable(::Type{Rows}) = true
 Tables.rowaccess(::Type{Rows}) = true
 Tables.rows(r::Rows) = r
-Tables.schema(r::Rows) = r.types === nothing ?
-    Tables.Schema(r.names, fill(Union{_rowstringtype(r.stringtype), Missing},
-                                length(r.names))) :
-    Tables.Schema(r.names,
-                  Type[T === nothing ? Union{_rowstringtype(r.stringtype), Missing} :
-                       Union{T, Missing} for T in r.types])
+Tables.schema(r::Rows) = getfield(r, :types) === nothing ?
+    Tables.Schema(getfield(r, :names),
+                  fill(Union{_rowstringtype(getfield(r, :stringtype)), Missing},
+                       length(getfield(r, :names)))) :
+    Tables.Schema(getfield(r, :names),
+                  Type[T === nothing ?
+                       Union{_rowstringtype(getfield(r, :stringtype)), Missing} :
+                       Union{T, Missing} for T in getfield(r, :types)])
 _rowstringtype(T) = T === CompactString ? CompactString : T
 
 struct Row <: Tables.AbstractRow
@@ -2143,8 +2087,7 @@ struct Chunks
     inner::Batches
     headerlog::ProblemLog
     maxproblems::Int
-    requestedtypes::Vector{Union{Nothing, Type}}
-    sourceindices::Vector{Int}
+    plan::ColumnPlan
     on_error::Symbol
     stringtype::Type
     poolspec::Union{Nothing, Tuple{Float64, Int}}
@@ -2164,14 +2107,12 @@ function Base.iterate(c::Chunks, state::Int=1)
     t, firstproblem = _mergeproblems(t, headerlog, cap)
     ci = getfield(inner, :chunks)[state]
     problemrowbase = chunkrowbase(getfield(inner, :chunks), ci)
-    t, firstproblem = _narrowtypes(t, getfield(c, :requestedtypes),
-                                   getfield(c, :sourceindices),
+    t, firstproblem = _narrowtypes(t, getfield(c, :plan),
                                    (ci,), cap, firstproblem; problemrowbase)
     getfield(c, :on_error) === :error && firstproblem !== nothing &&
         _throwproblem(t, firstproblem)
-    # every batch leaves through the same door as File: PooledArray for
-    # pooled columns (levels in the output string type), then the string
-    # materialization the caller asked for
+    # Apply the same final steps as File. Build each requested PooledArray, then
+    # build the requested string type.
     st = getfield(c, :stringtype)
     poolS = st === CompactString ? String : st
     ps = getfield(c, :poolspec)
@@ -2213,30 +2154,24 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     fullrows = sum(nrows, chunks; init=0)
     p.limit === nothing || _limitrows!(chunks, p.limit)
     filter!(ci -> nrows(ci) > 0, chunks)
-    requested = requestedtypes(types, p.names, p.ncols;
-                                 validate=get(kw, :validate, true))
-    seed = resolvetypes(types, p.names, p.ncols; validate=get(kw, :validate, true))
-    js = something(_resolveselect(select, drop, p.names), collect(1:p.ncols))
-    userprovided = [seed[j] !== nothing for j in js]
-    if any(j -> seed[j] === nothing, js)
+    plan = settlecolumns(p; select, drop, types,
+                         validate=get(kw, :validate, true))
+    seed = Union{Nothing, Type}[d.parsetype for d in plan.columns]
+    if any(j -> seed[j] === nothing, plan.sources)
         total = sum(nrows, chunks; init=0)
-        selected = fill(false, p.ncols)
-        selected[js] .= true
-        colopts = get(p.parsekw, :colopts, nothing)
+        selected = _selectedmask(plan, p.ncols)
         inferred = sampletypes(p.buf, chunks, p.ncols, p.opts;
-                                 nsample=max(1, total), selected, colopts)
-        for j in js
+                               nsample=max(1, total), selected,
+                               colopts=plan.colopts)
+        for j in plan.sources
             seed[j] === nothing && (seed[j] = inferred[j])
         end
     end
-    seedtypes = Type[seed[j] for j in js]
-    colopts = get(p.parsekw, :colopts, nothing)
-    allowmissing = schemamissing(p.buf, chunks, seedtypes, p.opts;
-                                 sourceindices=js, colopts)
+    seedtypes = Type[seed[j] for j in plan.sources]
+    allowmissing = schemamissing(p.buf, chunks, seedtypes, plan)
     unclosedquote = p.bi.unclosedquote && (p.limit === nothing || p.limit >= fullrows)
-    inner = Batches(p.buf, chunks, p.names[js], js, p.ncols, seedtypes,
-                    userprovided, allowmissing, p.opts, colopts, p.d,
-                    capturecap, unclosedquote)
-    return Chunks(name, inner, p.headerlog, maxproblems, requested, js, on_error,
+    inner = Batches(p.buf, chunks, p.names[plan.sources], plan, seedtypes,
+                    allowmissing, p.d, capturecap, unclosedquote)
+    return Chunks(name, inner, p.headerlog, maxproblems, plan, on_error,
                   stringtype, poolspec)
 end

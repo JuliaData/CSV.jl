@@ -18,7 +18,7 @@ using Tables
 # These files form one `CSV` module. The split keeps each implementation area
 # small enough to read without adding private module boundaries.
 include("core.jl")       # indexing, values, parsing, and columns
-include("examples.jl")   # Tables.jl support and row access
+include("tables.jl")     # Tables.jl support and row access
 include("api.jl")        # File, read, Rows, Chunks, and option handling
 include("write.jl")      # write and RowWriter
 if isdefined(Tables, :Scan)
@@ -140,8 +140,9 @@ end
 # -- precompile workload -------------------------------------------------------
 # The specialized per-column loops are exactly what makes first-File
 # expensive to compile (~4 s cold on an M3). One small in-memory pass through
-# every front door caches those specializations: File (inference, promotion,
-# pooling, missing, all eight lattice types, gzip, parallel driver,
+# each public reader and writer caches those specializations: File (type
+# inference, type changes, pooling, missing values, each built-in value type,
+# gzip, parallel parsing,
 # stringtype=String materializer), Rows, Chunks, the sniffer, write, RowWriter.
 using PrecompileTools: @setup_workload, @compile_workload
 import Dates, CodecZlib

@@ -16,7 +16,7 @@ export them. Add a public name only when a namespace API is necessary.
   are includes, not public submodules. Do not add internal submodules.
 - `src/core.jl` builds the structural index and typed columns.
 - `src/api.jl` implements the reader entry points and Tables.jl interfaces.
-- `src/examples.jl` implements shared Tables.jl row and batch adapters.
+- `src/tables.jl` implements shared Tables.jl row and batch adapters.
 - `src/write.jl` implements the writer and row iterator.
 - `src/compactstring.jl` implements the default text value and column.
 - `src/scan.jl` implements Tables.Scan pushdown when that API is available.
@@ -24,7 +24,7 @@ export them. Add a public name only when a namespace API is necessary.
 CSV.jl now depends on Parsers 3 for the reviewed low-level value kernels. CI
 temporarily pins
 [Parsers.jl PR #210](https://github.com/JuliaData/Parsers.jl/pull/210) at exact
-commit `83c7142fb714cb87261ef38eec7ab103444eb30d`. Registered InlineStrings
+commit `e4adc5ba720e5668b726f65a574e2037c866d6df`. Registered InlineStrings
 releases still require Parsers 2, so CI also pins
 [InlineStrings.jl PR #93](https://github.com/JuliaStrings/InlineStrings.jl/pull/93)
 at `ce4c3549691c4b3443cc14ffa90ebdd6636eff2f`.
@@ -36,7 +36,7 @@ InlineStrings releases are registered, install both exact revisions in one
 operation:
 
 ```sh
-julia --project=. -e 'using Pkg; Pkg.add([PackageSpec(url="https://github.com/JuliaStrings/InlineStrings.jl.git", rev="ce4c3549691c4b3443cc14ffa90ebdd6636eff2f"), PackageSpec(url="https://github.com/JuliaData/Parsers.jl.git", rev="83c7142fb714cb87261ef38eec7ab103444eb30d")]); Pkg.test()'
+julia --project=. -e 'using Pkg; Pkg.add([PackageSpec(url="https://github.com/JuliaStrings/InlineStrings.jl.git", rev="ce4c3549691c4b3443cc14ffa90ebdd6636eff2f"), PackageSpec(url="https://github.com/JuliaData/Parsers.jl.git", rev="e4adc5ba720e5668b726f65a574e2037c866d6df")]); Pkg.test()'
 ```
 
 Use Julia 1.10 for the minimum-version check. Use `--check-bounds=yes` and
@@ -46,7 +46,7 @@ deterministic and print the seed in any failure context.
 Build documentation strictly:
 
 ```sh
-julia --project=docs -e 'using Pkg; Pkg.add([PackageSpec(path=pwd()), PackageSpec(url="https://github.com/JuliaData/Parsers.jl.git", rev="83c7142fb714cb87261ef38eec7ab103444eb30d")]); Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
+julia --project=docs -e 'using Pkg; Pkg.add([PackageSpec(path=pwd()), PackageSpec(url="https://github.com/JuliaData/Parsers.jl.git", rev="e4adc5ba720e5668b726f65a574e2037c866d6df")]); Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
 julia --project=docs docs/make.jl
 ```
 

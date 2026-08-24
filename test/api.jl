@@ -1,4 +1,4 @@
-# Regression battery for CSV's reading front doors.
+# Regression tests for CSV readers.
 #
 # Run:  julia --startup-file=no --project=test -t4 test/api.jl
 #
@@ -16,7 +16,6 @@ using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings, FilePathsBase
 using CSV
 const A = CSV
 const K = CSV
-const E = CSV
 
 # Minimal ordered AbstractDict for precedence tests. Base.Dict iteration order
 # is not an API contract, while CSV's rule is explicitly first matching Regex.
@@ -70,7 +69,7 @@ function finalizemapping!(mapped::Vector{UInt8})
     return nothing
 end
 
-@testset "Scan front door tracks the Tables proposal" begin
+@testset "Scan reader tracks the Tables proposal" begin
     # `scan=` is accepted exactly when the loaded Tables carries Scan; otherwise
     # it is a clear ArgumentError, never an UndefVarError
     if isdefined(Tables, :Scan)
@@ -175,7 +174,7 @@ end
     spec = A.sniff(IOBuffer("a;b\n\"1;2;3;4;5\";6\n\"7;8\";9\n"))
     @test spec.delim == ';'
     # A colon repeated in Time values is not a delimiter when the header does
-    # not contain it. Both front doors retain one Time column.
+    # not contain it. Both readers retain one Time column.
     sourceparity("t\n12:34:56\n13:45:00\n")
     @test A.sniff(IOBuffer("t\n12:34:56\n13:45:00\n")).delim == ','
     # Value and index options reach the post-detection parse without being sent
@@ -262,7 +261,7 @@ end
     @test isempty(A.File(IOBuffer(bounded); header=huge))
     @test isempty(A.File(IOBuffer(bounded); header=[huge, huge + 1]))
     @test isempty(A.File(IOBuffer(bounded); footerskip=huge))
-    # Every non-transposed front door shares the same bounded preparation.
+    # Every non-transposed reader uses the same bounded preparation.
     @test isempty(collect(A.Rows(IOBuffer(bounded); skipto=huge)))
     @test isempty(collect(A.Chunks(IOBuffer(bounded); footerskip=huge)))
     @test length(A.lazy(IOBuffer(bounded); header=huge)) == 0
@@ -302,6 +301,40 @@ end
     @test isequal(collect(fa.a), [missing, "x"])
 end
 
+@testset "one column plan per read" begin
+    opts = K.makevalueopts(K.Dialect())
+    colopts = fill(opts, 3)
+    plan = K.settlecolumns([:a_b, :b, :c], opts;
+                           select=[:c, "a b", :c],
+                           types=Dict(r"^[ab]" => Float32,
+                                      :a_b => Union{Missing, Int8}),
+                           colopts, matchnormalized=true)
+    @test plan.sources == [1, 3]
+    @test plan.positions == [1, 3]
+    @test plan.columns[1].parsetype === Int64
+    @test plan.columns[1].resulttype === Int8
+    @test plan.columns[1].declaredmissing
+    @test plan.columns[2].parsetype === Float64
+    @test plan.columns[2].resulttype === Float32
+    @test plan.columns[3].parsetype === nothing
+    @test K.columnopts(plan, 2) === colopts[2]
+
+    visible = K.settlecolumns([:a, :b, :c], opts;
+                              available=[1, 3], select=[:c],
+                              types=[Int8, Float32])
+    @test visible.sources == [3]
+    @test visible.positions == [2]
+    @test visible.columns[1].resulttype === Int8
+    @test visible.columns[2].parsetype === nothing
+    @test visible.columns[3].resulttype === Float32
+
+    @test_throws ArgumentError K.settlecolumns([:a], opts;
+                                               select=[:a], drop=[:a])
+    @test_throws ArgumentError K.settlecolumns([:a], opts; select=[:missing])
+    @test K.settlecolumns([:a], opts; types=Dict(:missing => Int64),
+                          validate=false).columns[1].parsetype === nothing
+end
+
 @testset "types and source modes" begin
     sourceparity("a,b\n1,2\n"; kw=(; types=Dict(:a => Float64)))
     sourceparity("a,b\n1,2\n"; kw=(; types=Dict(1 => Float64)))
@@ -313,7 +346,7 @@ end
     @test any(p -> p.kind == :invalid_value, A.problems(f))
     @test_throws Exception A.File(IOBuffer("a\n1\nbad\n"); types=Int64, strict=true)
 
-    # Narrow conversion is an API-door operation. Requests remain indexed by
+    # Narrow conversion is an API step. Requests remain indexed by
     # file column while selected output columns remain in file order.
     selected = A.File(IOBuffer("a,b,c\n1,2,300\n3,4,500\n");
                       types=Dict(:a => Int8, :c => Int16), select=[:c, :a])
@@ -367,6 +400,12 @@ end
     end
     declarednarrow = A.File(IOBuffer("a\n1\n2\n"); types=Union{Missing, Int8})
     @test eltype(declarednarrow.a) == Union{Missing, Int8}
+    declaredtranspose = A.File(IOBuffer("a,1,2\n"); transpose=true,
+                               types=Union{Missing, Int8})
+    @test eltype(declaredtranspose.a) == Union{Missing, Int8}
+    declaredchunk = first(A.Chunks(IOBuffer("a\n1\n2\n");
+                                   types=Union{Missing, Int8}, pool=false))
+    @test eltype(declaredchunk.a) == Union{Missing, Int8}
     declaredstring = A.File(IOBuffer("a\nx\ny\n"); types=Union{Missing, String},
                             pool=false)
     @test eltype(declaredstring.a) == Union{Missing, K.CompactString}
@@ -521,8 +560,8 @@ end
     @test String(lazyowned) == String(lazyview) == "lazy value beyond inline storage"
     @test getfield(lazyview, :data) === lazybytes
     @test getfield(lazyowned, :data) !== lazybytes
-    rowview = E._rowcompact(lazybytes, 4, length(lazybytes) - 3)
-    rowowned = E._rowcompact(lazybytes, 4, length(lazybytes) - 3, -1)
+    rowview = A._rowcompact(lazybytes, 4, length(lazybytes) - 3)
+    rowowned = A._rowcompact(lazybytes, 4, length(lazybytes) - 3, -1)
     @test String(rowowned) == String(rowview) == "lazy value beyond inline storage"
     @test getfield(rowview, :data) === lazybytes
     @test getfield(rowowned, :data) !== lazybytes
@@ -544,13 +583,13 @@ end
             @test String(cell) == value
             @test getfield(cell, :data) !== mapped
 
-            # Exercise the public CSV.Rows iteration and cell-access path. A
-            # seeded structural index avoids scanning the sparse 2 GiB hole.
-            inner = E._IndexedRows(mapped, [ci], [:a], Dict(:a => 1),
-                                   K.makevalueopts(dialect), nothing, dialect)
-            rows = CSV.Rows(inner, [:a], Dict(:a => 1), [1], nothing, nothing,
-                            K.CompactString, :collect)
-            rowcell = Tables.getcolumn(first(rows), 1)
+            # Exercise indexed row access. The prepared index avoids a scan of
+            # the sparse 2 GiB hole. Public Rows tests cover source preparation.
+            opts = K.makevalueopts(dialect)
+            plan = A.settlecolumns([:a], opts)
+            inner = A._IndexedRows(mapped, [ci], [:a], Dict(:a => 1), plan,
+                                   dialect)
+            rowcell = first(inner)[1]
             @test String(rowcell) == value
             @test getfield(rowcell, :data) !== mapped
         end
@@ -709,7 +748,7 @@ end
 
     # Missing is an ordinary final pool level. Conversion remaps kernel ref 0
     # without changing the kernel-owned refs, while an all-present conversion
-    # can transfer its exclusively owned refs at the File door.
+    # can transfer its exclusively owned refs during File conversion.
     kernelmissing = A._poolcolumn(K.parse("k\nx\n\ny\nx\n"; ignoreemptyrows=false)[:k], (1.0, 10))
     oldrefs = copy(K.poolrefs(kernelmissing))
     missingpool = A._topooledarray(kernelmissing)
@@ -1094,6 +1133,7 @@ end
                                     chunkbytes=4, maxproblems=1))
     problem_batches = filter(b -> !isempty(A.problems(b)), laterbatches)
     @test length(laterbatches) > 1
+    @test all(eltype(b.a) == Union{Int8, Missing} for b in laterbatches)
     @test length(problem_batches) == 1
     laterproblem = only(A.problems(only(problem_batches)))
     @test (laterproblem.row, laterproblem.col, laterproblem.pos) ==
@@ -1473,7 +1513,7 @@ end
         @test (ca isa PooledArrays.PooledArray) == pooled
         @test eltype(ca) == ea && eltype(cb) == eb
         @test String(ca[5]) == "p1" && String(cb[5]) == "v5"
-        # Chunks batches leave through the SAME door
+        # Chunks batches use the same final steps.
         c = first(A.Chunks(IOBuffer(csv); ntasks=2, stringtype=st, pool))
         @test (Tables.getcolumn(c, :a) isa PooledArrays.PooledArray) == pooled
         @test eltype(Tables.getcolumn(c, :a)) == ea && eltype(Tables.getcolumn(c, :b)) == eb
@@ -1632,7 +1672,7 @@ end
     @test A.File(map(IOBuffer, data); limit=1).a == [1, 7, 13]
     readback = CSV.read(map(IOBuffer, data), Tables.columntable; limit=1)
     @test readback.a == [1, 7, 13]
-    # byte buffers still route to the single-source door
+    # Byte buffers are still read as one source.
     @test A.File(Vector{UInt8}("a\n1\n")).a == [1]
     @test A.File(codeunits("a\n1\n")).a == [1]
     bytes = Vector{UInt8}("xa\n1\ny")

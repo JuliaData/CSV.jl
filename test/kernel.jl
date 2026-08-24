@@ -15,7 +15,6 @@ using Test, Random, Dates, Tables, Mmap
 using CSV
 import Parsers
 const K = CSV
-const E = CSV
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -1545,79 +1544,6 @@ end
     io = IOBuffer()
     print(io, colv[2])
     @test String(take!(io)) == "value2_pp"
-end
-
-@testset "examples: the layered APIs" begin
-    csv = "a,b,c\n1,x,2.5\n2,y,3.5\n3,\"z,w\",4.5\n"
-    # eager reader is a Tables.jl table
-    t = E._readtable(csv)
-    nt = Tables.columntable(t)
-    @test nt.a == [1, 2, 3]
-    @test nt.c == [2.5, 3.5, 4.5]
-    @test collect(nt.b) == ["x", "y", "z,w"]
-    @test Tables.schema(t).names == (:a, :b, :c)
-    # batches: stable schema across tiny chunks; concatenation covers everything
-    total = 0
-    for batch in E.batches(csv; chunkbytes=8)
-        @test K.names(batch) == [:a, :b, :c]
-        @test eltype(batch[:a]) == Int64          # global inference ⇒ same type every batch
-        @test batch.nrows > 0
-        total += batch.nrows
-    end
-    @test total == 3
-    @test Tables.partitions(E.batches(csv; chunkbytes=8)) isa E.Batches
-    padded = "a   b\r 1  2 \r3   4\r"
-    pbs = collect(E.batches(padded; delim=' ', ignorerepeated=true, chunkbytes=3))
-    @test reduce(vcat, (collect(batch[:a]) for batch in pbs)) == [1, 3]
-    @test reduce(vcat, (collect(batch[:b]) for batch in pbs)) == [2, 4]
-    # global prepass fixes types even when an early batch is type-ambiguous:
-    # first rows are ints, floats only appear later — every batch still Float64
-    csv2 = "x\n" * join(1:20, "\n") * "\n3.5\n"
-    for batch in E.batches(csv2; chunkbytes=16)
-        @test eltype(batch[:x]) == Float64
-    end
-    # Put the only float after 1,000 integer rows. Put a missing value in only
-    # one batch. All batches must still have the same Union element type.
-    csv3 = "x\n" * join(1:1000, "\n") * "\n\n3.5\n"
-    bs = collect(E.batches(csv3; chunkbytes=256, ignoreemptyrows=false))
-    @test all(eltype(batch[:x]) == Union{Float64, Missing} for batch in bs)
-    @test last(bs)[:x][end] == 3.5
-    # User types are strict in batches, as they are in the eager driver.
-    bs = collect(E.batches("x\n1\nbad\n3\n"; types=Int64, chunkbytes=2))
-    @test all(eltype(batch[:x]) == Union{Int64, Missing} for batch in bs)
-    @test only([p for batch in bs for p in K.problems(batch)]).row == 2
-    # Row-shape problems use global data-row ids across chunks.
-    bs = collect(E.batches("a,b\n1\n2,3,4\n"; chunkbytes=3))
-    probs = [p for batch in bs for p in K.problems(batch)]
-    @test [(p.kind, p.row) for p in probs] == [(:short_row, 1), (:long_row, 2)]
-    # row streaming: lazy untyped + on-demand typed access
-    rs = collect(E._indexedrows(csv))
-    @test length(rs) == 3
-    @test rs[1].a == "1"                          # untyped access materializes strings
-    @test rs[3][:b] == "z,w"
-    @test E._typedvalue(Int64, rs[1], :a) == 1
-    @test E._typedvalue(Float64, rs[2], 3) == 3.5
-    @test E._typedvalue(String, rs[3], :b) == "z,w"
-    @test ismissing(E._typedvalue(Int64, rs[1], :b))  # not parseable as Int
-    prs = collect(E._indexedrows(padded; delim=' ', ignorerepeated=true, chunkbytes=3))
-    @test [row.a for row in prs] == ["1", "3"]
-    @test [E._typedvalue(Int64, row, :b) for row in prs] == [2, 4]
-    # ragged row: missing beyond the row's fields
-    rs2 = collect(E._indexedrows("a,b\n1\n"))
-    @test ismissing(rs2[1][:b])
-    @test_throws BoundsError rs2[1][0]
-    @test_throws BoundsError E._typedvalue(Int64, rs2[1], 3)
-    # Rows declares the Tables.jl row interface, including a concrete schema.
-    rows = E._indexedrows(csv)
-    @test Tables.istable(typeof(rows)) && Tables.rowaccess(typeof(rows))
-    @test Tables.rows(rows) === rows
-    # untyped rows are lazy CompactString views (zero-copy); == against String literals holds
-    @test Tables.schema(rows).types ==
-          (Union{K.CompactString, Missing}, Union{K.CompactString, Missing}, Union{K.CompactString, Missing})
-    @test Tables.rowtable(rows)[1] == (a="1", b="x", c="2.5")
-    # A CSV column name takes priority over RowView's private storage fields.
-    row = first(E._indexedrows("r,rownumber\nvalue,7\n"))
-    @test row.r == "value" && row.rownumber == "7"
 end
 
 @testset "sequential multi-chunk driver consistency" begin

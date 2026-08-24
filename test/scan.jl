@@ -2,12 +2,9 @@
 #
 # Run:  julia --startup-file=no --project=test test/scan.jl
 #
-# THE contract: pushing a Scan into CSV must produce the same table as
-# parsing everything and applying the Scan generically with Tables.scan. That equivalence is asserted across scan shapes, chunk
-# geometries, and parallelism — with one deliberate, pinned divergence:
-# phase-2 type inference sees only qualifying rows, so values excluded by the
-# filter cannot degrade a column's inferred type (the generic path, which must
-# parse everything first, has no way to offer this).
+# A pushed scan must give the same result as a full parse followed by
+# `Tables.scan`. One documented case differs: a filter excludes rows before
+# CSV infers result-column types. An excluded value cannot change that type.
 
 using Test, Random, Dates, Tables, PooledArrays
 
@@ -24,6 +21,8 @@ function sametable(a, b)
     return all(isequal(collect(Tables.getcolumn(ca, nm)), collect(Tables.getcolumn(cb, nm)))
                for nm in ka)
 end
+
+scanfile(source, scan; kw...) = CSV.File(IOBuffer(source); scan, pool=false, kw...)
 
 @testset "Tables.Scan pushdown" begin
 
@@ -56,18 +55,18 @@ scans = [
     T.Scan(filter = T.colne(T.col(:region), "east")),              # != never matches missing
 ]
 
-@testset "contract: pushdown ≅ generic finish" begin
+@testset "pushdown matches a generic scan" begin
     for (i, scan) in enumerate(scans)
         ref = T.scan(S.parse(csv), scan)
         for cb in (256, 4096, 1 << 20), par in (false, true)
-            t = S._scanraw(csv, scan; chunkbytes=cb, parallel=par,
-                           ntasks=par ? 2 : 1)
+            t = scanfile(csv, scan; chunkbytes=cb, parallel=par,
+                         ntasks=par ? 2 : 1)
             @test sametable(t, ref) || error("scan $i, chunkbytes=$cb, parallel=$par diverged")
         end
     end
 end
 
-@testset "the public door: CSV.File(source; scan=) composes with File keywords" begin
+@testset "CSV.File(source; scan=) composes with File keywords" begin
     scan = T.Scan(select = (:region, :price => Float64 => :cost, :qty), filter = T.col(:qty) > 25, limit = 50)
     f = CSV.File(IOBuffer(csv); scan)
     ref = T.scan(S.parse(csv), scan)
@@ -98,11 +97,11 @@ end
                    T.Scan(select=select, filter=T.AlwaysTrue())
         falsescan = select === nothing ? T.Scan(filter=T.AlwaysFalse()) :
                     T.Scan(select=select, filter=T.AlwaysFalse())
-        t = S._scanraw(csv, truescan)
-        @test t.nrows == 2_000
+        t = scanfile(csv, truescan)
+        @test length(t) == 2_000
         @test S.names(t) == (select === nothing ? [:region, :price, :qty, :notes, :flag] : Symbol[])
-        t = S._scanraw(csv, falsescan)
-        @test t.nrows == 0
+        t = scanfile(csv, falsescan)
+        @test length(t) == 0
         @test S.names(t) == (select === nothing ? [:region, :price, :qty, :notes, :flag] : Symbol[])
     end
 end
@@ -115,7 +114,7 @@ end
     @test Tables.getcolumn(f, :region) isa PooledArrays.PooledArray   # pooled after the masked parse
     gcsv = "a;n\nx;\"1,234\"\ny;\"22\"\nz;\"5,678\"\n"
     gscan = T.Scan(filter = T.col(:n) > 1000)
-    tg = S._scanraw(gcsv, gscan; delim=';', groupmark=',')
+    tg = scanfile(gcsv, gscan; delim=';', groupmark=',')
     @test tg[:n] == [1234, 5678] && collect(tg[:a]) == ["x", "z"]
 
     # ignorerepeated flows through both phases of the masked parse
@@ -124,7 +123,7 @@ end
     irscan = T.Scan(select = (:region,), filter = T.col(:qty) > 25)
     ref = T.scan(S.parse(padded; irkw...), irscan)
     for cb in (8, 1 << 20), par in (false, true)
-        t = S._scanraw(padded, irscan; chunkbytes=cb, parallel=par, irkw...)
+        t = scanfile(padded, irscan; chunkbytes=cb, parallel=par, irkw...)
         @test sametable(t, ref)
         @test collect(String, t[:region]) == ["west", "east"]
     end
@@ -133,7 +132,7 @@ end
 @testset "masked inference: excluded garbage cannot degrade a type (pinned divergence)" begin
     dirty = "region,qty\neast,1\nwest,oops\neast,3\n"
     scan = T.Scan(filter = T.coleq(T.col(:region), "east"))
-    t = S._scanraw(dirty, scan)
+    t = scanfile(dirty, scan)
     @test t[:qty] isa Vector{Int64} && t[:qty] == [1, 3]            # pushdown: Int64
     ref = T.scan(S.parse(dirty), scan)
     @test eltype(Tables.getcolumn(ref, :qty)) != Int64              # generic path: strings
@@ -142,10 +141,10 @@ end
 @testset "problems reference input rows; excluded rows do not report" begin
     dirty = "a,b\n1,x\n2,y\nbad,z\n4,w\n"
     scan = T.Scan(select = (:a => Int64, :b), filter = T.colne(T.col(:b), "z"))
-    t = S._scanraw(dirty, scan)
+    t = scanfile(dirty, scan)
     @test isequal(collect(t[:a]), [1, 2, 4]) && isempty(S.problems(t))   # bad row excluded ⇒ silent
     scan2 = T.Scan(select = (:a => Int64,), filter = T.colne(T.col(:b), "y"))
-    t2 = S._scanraw(dirty, scan2)
+    t2 = scanfile(dirty, scan2)
     @test any(p -> p.row == 3 && p.col == 1, S.problems(t2))        # row 3 in INPUT numbering
 
     unclosed = "a\n1\n\"unterminated"
@@ -161,28 +160,28 @@ end
     dirty = "keep,a,b\n1,bad,1\n1,1,bad\n1,2,2\n"
     scan = T.Scan(select = (:a => Int64, :b => Int64), filter = T.col(:keep) > 0)
     for cap in 0:3
-        t = S._scanraw(dirty, scan; maxproblems=cap, chunkbytes=5, parallel=true)
+        t = scanfile(dirty, scan; maxproblems=cap, chunkbytes=5, parallel=true)
         @test length(S.problems(t)) == min(cap, 2)
-        @test t.droppedproblems == 2 - min(cap, 2)
+        @test getfield(t, :table).droppedproblems == 2 - min(cap, 2)
         @test issorted(S.problems(t); by=S.problemkey)
     end
 
     ragged = "a,b\n1\n2,x\n"
-    t = S._scanraw(ragged, T.Scan(select=:b, filter=T.col(:a) > 0); chunkbytes=5)
+    t = scanfile(ragged, T.Scan(select=:b, filter=T.col(:a) > 0); chunkbytes=5)
     @test count(p -> p.kind == :short_row, S.problems(t)) == 1
 
     malformed = "\"bad,header\na,b\n"
     ref = S.parse(malformed; chunkbytes=2, parallel=false)
-    t = S._scanraw(malformed, T.Scan(); chunkbytes=2, parallel=false)
+    t = scanfile(malformed, T.Scan(); chunkbytes=2, parallel=false)
     @test S.names(t) == S.names(ref)
     @test S.problemkey.(S.problems(t)) == S.problemkey.(S.problems(ref))
 
     commentonly = "#\"unterminated"
     ref = S.parse(commentonly; comment="#", chunkbytes=2)
-    t = S._scanraw(commentonly, T.Scan(); comment="#", chunkbytes=2)
+    t = scanfile(commentonly, T.Scan(); comment="#", chunkbytes=2)
     @test S.problemkey.(S.problems(t)) == S.problemkey.(S.problems(ref))
-    @test_throws ErrorException S._scanraw(malformed, T.Scan(); maxproblems=0,
-                                           on_error=:error, chunkbytes=2)
+    @test_throws ErrorException scanfile(malformed, T.Scan(); maxproblems=0,
+                                         on_error=:error, chunkbytes=2)
 end
 
 @testset "masked stitch preserves compact positions and escaped strings" begin
@@ -281,7 +280,7 @@ end
     dirty = "a,b\n1,x\n2,y\noops,z\n"
     scan = T.Scan(limit=2)
     for cb in (8, 16, 1 << 20), par in (false, true)
-        t = S._scanraw(dirty, scan; chunkbytes=cb, parallel=par)
+        t = scanfile(dirty, scan; chunkbytes=cb, parallel=par)
         @test t[:a] isa Vector{Int64}
         @test t[:a] == [1, 2]
         @test String.(t[:b]) == ["x", "y"]
@@ -290,18 +289,40 @@ end
 end
 
 @testset "errors: contradictions, not gaps" begin
-    @test_throws ArgumentError S._scanraw(csv, T.Scan(select = :nope))
-    @test_throws ArgumentError S._scanraw(csv, T.Scan(select = (:qty => Int64, :qty => Float64)))
+    @test_throws ArgumentError scanfile(csv, T.Scan(select = :nope))
+    @test_throws ArgumentError scanfile(csv, T.Scan(select = (:qty => Int64, :qty => Float64)))
     normalized = T.Scan(select = (:qty => Int64,
                                   :qty => Union{Int64, Missing} => :qty2))
-    @test sametable(S._scanraw(csv, normalized), T.scan(S.parse(csv), normalized))
-    @test_throws ArgumentError S._scanraw(csv, T.Scan(select = :region); types=Dict(:qty => Int64))
-    @test_throws ArgumentError S._scanraw(csv, T.Scan(); limit=3)
-    @test_throws ArgumentError S._scanraw(csv, T.Scan(); rowmask=fill(true, 2_000))
-    @test_throws ArgumentError S._scanraw(csv, T.Scan(); index=nothing)
+    @test sametable(scanfile(csv, normalized), T.scan(S.parse(csv), normalized))
+    duplicateorders = (
+        (:qty => Union{Missing, Int64} => :first,
+         :qty => Int64 => :second),
+        (:qty => Int64 => :first,
+         :qty => Union{Missing, Int64} => :second),
+    )
+    for select in duplicateorders
+        t = scanfile(csv, T.Scan(; select))
+        @test eltype(t.first) == Union{Missing, Int64}
+        @test eltype(t.second) == Union{Missing, Int64}
+    end
+    @test_throws ArgumentError scanfile(csv, T.Scan(select = :region); types=Dict(:qty => Int64))
+    @test_throws ArgumentError scanfile(csv, T.Scan(); limit=3)
+    @test_throws ArgumentError scanfile(csv, T.Scan(); rowmask=fill(true, 2_000))
+    @test_throws ArgumentError scanfile(csv, T.Scan(); index=nothing)
     # validate=false: unmatched reference quietly drops
-    t = S._scanraw(csv, T.Scan(select = (:nope, :qty), validate = false))
+    t = scanfile(csv, T.Scan(select = (:nope, :qty), validate = false))
     @test S.names(t) == [:qty]
+    missingfilter = "a\n1\n2\n3\n"
+    t = scanfile(missingfilter,
+                 T.Scan(filter=T.isnull(T.col(:gone)), validate=false))
+    @test t.a == [1, 2, 3]
+    t = scanfile(missingfilter,
+                 T.Scan(filter=T.col(:gone) > 1, validate=false))
+    @test isempty(t.a)
+    positionalfilter = "a,b,c\n1,10,x\n2,20,y\n"
+    t = scanfile(positionalfilter,
+                 T.Scan(select=:a, filter=T.col(2) > 10))
+    @test t.a == [2]
 end
 
 @testset "driver primitives directly (select/limit/rowmask/index)" begin
@@ -328,7 +349,7 @@ end
 
 end # testset
 
-@testset "front-door Scan sources (File(src; scan=))" begin
+@testset "Scan source forms (File(src; scan=))" begin
     using CodecZlib
     csv = "a,b,c\n" * join(("$(i),$(i / 2),v$(i % 7)_abcdefghijklmnop" for i in 1:30_000), '\n') * "\n"
     bytes = Vector{UInt8}(codeunits(csv))

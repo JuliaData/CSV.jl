@@ -1065,7 +1065,7 @@ function _emitrows!(io, rw::RowWriter; bom::Bool=false)
     return
 end
 
-# --- the front door ---------------------------------------------------------
+# --- public write methods ---------------------------------------------------
 
 function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool}=nothing,
                header::Union{Nothing, Bool, AbstractVector}=nothing,

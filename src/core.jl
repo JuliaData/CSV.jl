@@ -547,11 +547,11 @@ end
 
 # --- typed value dispatch ------------------------------------------------------
 #
-# `parsevalue(T, buf, i, j, vo) -> (value, ok)` over a CONTENT span. Strictness
-# principle: each kernel accepts exactly the spellings `detecttype` assigns to
-# it (Bool is `true`/`false` or the user lists; temporals are pattern-exact), so
-# Value parsing and type detection accept the same text. The inferred type does
-# not depend on which rows the sample contains.
+# `parsevalue(T, buf, i, j, vo) -> (value, ok)` reads one content span.
+# It accepts the same forms that `detecttype` accepts. Boolean values use
+# `true`, `false`, or a user list. Date and time values must use the selected
+# format and consume the full span. The inferred type does not depend on which
+# rows are in the sample.
 const _DATE0 = Date(1)
 const _DATETIME0 = DateTime(1)
 const _TIME0 = Time(0)
@@ -616,7 +616,7 @@ end
                    scratch::Vector{UInt8}) where {T} = parsevalue(T, buf, i, j, vo)
 
 # Narrow numeric requests use the native integer/float kernels, then convert at
-# the API boundary. Keep that rule available to lazy/row-wise front doors too:
+# the API boundary. Keep that rule available to lazy and row readers too:
 # calling `tryparse(Int8, String(...))` here would lose decimal/groupmark
 # handling and would allocate one String per cell.
 const NarrowParseType = Union{Int8, Int16, Int32,
@@ -2453,37 +2453,47 @@ function _limitchunks(chunks::Vector{ChunkIndex}, rowbases::Vector{Int}, limit::
     return lastk
 end
 
-# Resolve the `select` keyword against the discovered names: nothing (all) or
-# a vector of Bool (positional mask), Int, Symbol, or String. Unselected
-# columns are never sampled, parsed, or stitched — they simply don't exist to
-# the value layer. Output keeps file order; reordering/renaming is the caller's
-# (the Scan layer permutes the returned columns).
-function resolveselect(select, names::Vector{Symbol}, ncols::Int)
-    select === nothing && return nothing
-    keep = fill(false, ncols)
-    if select isa AbstractVector{Bool}
-        length(select) == ncols ||
-            throw(ArgumentError("select mask length $(length(select)) != $ncols columns"))
-        copyto!(keep, select)
-    elseif select isa AbstractVector
-        for r in select
-            j = r isa Integer ? Int(r) : findfirst(==(Symbol(r)), names)
-            (j isa Int && 1 <= j <= ncols) ||
-                throw(ArgumentError("select reference $(repr(r)) does not match any column"))
-            keep[j] = true
-        end
-    else
-        throw(ArgumentError("select must be a vector of Bool/Int/Symbol/String (got $(typeof(select)))"))
-    end
-    return keep
+# A column request records the user's type intent for one source column.
+# `parsetype` is the type used by the scalar parser. `resulttype` is set only
+# when the requested type needs a checked conversion after parsing.
+struct ColumnDecision
+    parsetype::Union{Nothing, Type}
+    resulttype::Union{Nothing, Type}
+    declaredmissing::Bool
 end
 
-# Resolve the `types` keyword: nothing | Type | AbstractVector | AbstractDict
-# (by name or index). `Union{T,Missing}` collapses to T (missingness is tracked
-# per-value, never in the column type).
-# Narrow numeric types parse through their native kernel type and convert at
-# the API layer. For example, `types=Int8` parses with Int64 and then converts.
-# An out-of-range value produces a problem.
+ColumnDecision() = ColumnDecision(nothing, nothing, false)
+
+# One plan holds the final column rules for one read. `columns` has one item for
+# each input column. `sources` lists the input columns to read, in file order.
+# `positions` gives their positions in the columns available to this read. A
+# scan can also list the input columns needed by its filter.
+struct ColumnPlan
+    columns::Vector{ColumnDecision}
+    sources::Vector{Int}
+    positions::Vector{Int}
+    predicate::Vector{Int}
+    opts::ValueOpts
+    colopts::Union{Nothing, Vector{ValueOpts}}
+end
+
+@inline columnopts(p::ColumnPlan, j::Int) =
+    p.colopts === nothing ? p.opts : @inbounds(p.colopts[j])
+
+@inline function accessparsetype(d::ColumnDecision)
+    return d.resulttype === nothing ? d.parsetype : d.resulttype
+end
+
+function _selectedmask(p::ColumnPlan, ncols::Int)
+    length(p.sources) == ncols &&
+        all(j -> @inbounds(p.sources[j]) == j, 1:ncols) && return nothing
+    selected = fill(false, ncols)
+    selected[p.sources] .= true
+    return selected
+end
+
+# Narrow numeric requests use a wider scalar parser, followed by a checked
+# conversion. This keeps the scalar kernels small and preserves range errors.
 const NARROW_TYPES = Dict{Type, Type}(
     Int8 => Int64, Int16 => Int64, Int32 => Int64,
     UInt8 => Int64, UInt16 => Int64, UInt32 => Int64, UInt64 => Int128,
@@ -2522,69 +2532,112 @@ function _resolvekeys(dict::AbstractDict, names::Vector{Symbol}, ncols::Int, wha
     return out
 end
 
-function resolvetypes(types, names::Vector{Symbol}, ncols::Int; validate::Bool=true)
-    seed = Vector{Union{Nothing, Type}}(nothing, ncols)
-    types === nothing && return seed
-    function normalize(T)
-        T === nothing && return nothing
-        T isa Type || throw(ArgumentError("column type must be a Type or nothing (got $(repr(T)))"))
-        T = T === Missing ? Missing : Base.nonmissingtype(T)
-        T = _nativetype(T)
-        parseable = T === Missing ||
-                    T in (Int64, Int128, Float64, Bool, Date, DateTime, Time, String,
-                          BigInt, BigFloat, Base.UUID) || _customparseable(T)
-        parseable || throw(ArgumentError("unsupported column type $T"))
-        return T
+function _columndecision(T)
+    T === nothing && return ColumnDecision()
+    T isa Type ||
+        throw(ArgumentError("column type must be a Type or nothing (got $(repr(T)))"))
+    declaredmissing = T !== Missing && Missing <: T
+    requested = T === Missing ? Missing : Base.nonmissingtype(T)
+    parsetype = _nativetype(requested)
+    parseable = parsetype === Missing ||
+                parsetype in (Int64, Int128, Float64, Bool, Date, DateTime, Time,
+                              String, BigInt, BigFloat, Base.UUID) ||
+                _customparseable(parsetype)
+    parseable || throw(ArgumentError("unsupported column type $parsetype"))
+    resulttype = haskey(NARROW_TYPES, requested) ? requested : nothing
+    return ColumnDecision(parsetype, resulttype, declaredmissing)
+end
+
+function _selectpositions(select, drop, names::Vector{Symbol};
+                          matchnormalized::Bool=false)
+    select !== nothing && drop !== nothing &&
+        throw(ArgumentError("select and drop are mutually exclusive"))
+    spec = select === nothing ? drop : select
+    spec === nothing && return collect(eachindex(names))
+    spec isa Base.Callable &&
+        throw(ArgumentError("function-typed select/drop is retired; pass a list " *
+                            "(or use Tables.Scan for expressions)"))
+    idx = Int[]
+    if spec isa AbstractVector{Bool}
+        length(spec) == length(names) ||
+            throw(ArgumentError("Bool select/drop length $(length(spec)) != " *
+                                "$(length(names)) columns"))
+        append!(idx, findall(spec))
+    elseif spec isa AbstractVector{<:Integer}
+        append!(idx, Int.(spec))
+    else
+        (spec isa AbstractString || spec isa Symbol || spec isa Integer) &&
+            throw(ArgumentError("select/drop must be a list (got $(typeof(spec)))"))
+        for s in spec
+            j = findfirst(==(Symbol(s)), names)
+            if j === nothing && matchnormalized
+                j = findfirst(==(Symbol(normalizename(String(s)))), names)
+            end
+            j === nothing &&
+                throw(ArgumentError("select/drop name $s does not match any column"))
+            push!(idx, j)
+        end
     end
+    all(j -> 1 <= j <= length(names), idx) ||
+        throw(ArgumentError("select/drop index out of range"))
+    return drop === nothing ? sort!(unique(idx)) : setdiff(1:length(names), idx)
+end
+
+function _applytypes!(columns::Vector{ColumnDecision}, types, names::Vector{Symbol},
+                      available::Vector{Int}; validate::Bool=true)
+    types === nothing && return columns
     if types isa Type
-        fill!(seed, normalize(types))
+        decision = _columndecision(types)
+        for j in available
+            columns[j] = decision
+        end
     elseif types isa AbstractVector
-        length(types) == ncols || throw(ArgumentError("types vector length $(length(types)) != $ncols columns"))
-        seed .= normalize.(types)
+        length(types) == length(available) ||
+            throw(ArgumentError("types vector length $(length(types)) != " *
+                                "$(length(available)) columns"))
+        for (k, j) in enumerate(available)
+            columns[j] = _columndecision(types[k])
+        end
     elseif types isa AbstractDict
-        for (j, T) in _resolvekeys(types, names, ncols, "types"; validate)
-            seed[j] = normalize(T)
+        visible = names[available]
+        for (k, T) in _resolvekeys(types, visible, length(visible), "types"; validate)
+            columns[available[k]] = _columndecision(T)
         end
     else
         throw(ArgumentError("unsupported types specification: $(typeof(types))"))
     end
-    return seed
+    return columns
 end
 
-# Keep a declared `Union{Missing,T}` column type even when all values are present.
-function declaredmissing(types, names::Vector{Symbol}, ncols::Int; validate::Bool=true)
-    wm = fill(false, ncols)
-    types === nothing && return wm
-    ismiss(T) = T isa Type && T !== Missing && Missing <: T
-    if types isa Type
-        fill!(wm, ismiss(types))
-    elseif types isa AbstractVector
-        length(types) == ncols && (wm .= ismiss.(types))
-    elseif types isa AbstractDict
-        for (j, T) in _resolvekeys(types, names, ncols, "types"; validate)
-            wm[j] = ismiss(T)
-        end
-    end
-    return wm
-end
+"""
+    settlecolumns(names, opts; keywords...) -> ColumnPlan
 
-# the user-REQUESTED types per column (narrow ones included), for the API
-# door's post-parse narrowing; nothing where the kernel type is the answer
-function requestedtypes(types, names::Vector{Symbol}, ncols::Int; validate::Bool=true)
-    req = Vector{Union{Nothing, Type}}(nothing, ncols)
-    types === nothing && return req
-    narrow(T) = (T isa Type && haskey(NARROW_TYPES, Base.nonmissingtype(T))) ?
-                Base.nonmissingtype(T) : nothing
-    if types isa Type
-        fill!(req, narrow(types))
-    elseif types isa AbstractVector
-        length(types) == ncols && (req .= narrow.(types))
-    elseif types isa AbstractDict
-        for (j, T) in _resolvekeys(types, names, ncols, "types"; validate)
-            req[j] = narrow(T)
-        end
+Resolve selection, types, missing values, input positions, and field parsing
+options once for one read. The result has one item for each input column.
+Selected input columns stay unique and in file order.
+"""
+function settlecolumns(names::Vector{Symbol}, opts::ValueOpts;
+                       select=nothing, drop=nothing, types=nothing,
+                       available::Union{Nothing, Vector{Int}}=nothing,
+                       colopts::Union{Nothing, Vector{ValueOpts}}=nothing,
+                       validate::Bool=true, matchnormalized::Bool=false)
+    ncols = length(names)
+    allavailable = available === nothing
+    visible = allavailable ? collect(1:ncols) : copy(available)
+    (issorted(visible) && allunique(visible) && all(j -> 1 <= j <= ncols, visible)) ||
+        throw(ArgumentError("available columns must be unique, in file order, and in range"))
+    colopts === nothing || length(colopts) == ncols ||
+        throw(ArgumentError("colopts length $(length(colopts)) != $ncols columns"))
+    if select === nothing && drop === nothing
+        sources = visible
+        positions = allavailable ? sources : collect(eachindex(visible))
+    else
+        positions = _selectpositions(select, drop, names[visible]; matchnormalized)
+        sources = visible[positions]
     end
-    return req
+    columns = [ColumnDecision() for _ in 1:ncols]
+    _applytypes!(columns, types, names, visible; validate)
+    return ColumnPlan(columns, sources, positions, Int[], opts, colopts)
 end
 
 @inline _defaultchunkbytes(nbytes::Int, nthreads::Int=Threads.nthreads()) =
@@ -2670,6 +2723,7 @@ function parse(buf::Vector{UInt8};
                validate::Bool=true,
                nsample::Union{Nothing, Int}=nothing,
                select=nothing,
+               columnplan::Union{Nothing, ColumnPlan}=nothing,
                limit::Union{Nothing, Int}=nothing,
                rowmask::Union{Nothing, Vector{Bool}}=nothing,
                index::Union{Nothing, BufferIndex}=nothing,
@@ -2697,8 +2751,8 @@ function parse(buf::Vector{UInt8};
         chunkbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $chunkbytes)"))
     end
     d = Dialect(; dialectkw...)
-    opts = makevalueopts(d; dateformat, decimal, truestrings, falsestrings, sentinels,
-                         stripwhitespace, groupmark)
+    baseopts = makevalueopts(d; dateformat, decimal, truestrings, falsestrings, sentinels,
+                             stripwhitespace, groupmark)
     datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1  # BOM
     sc = resolvescanner(d, fastindex, scanner)
     # A caller can supply an index that it built earlier. The Scan integration
@@ -2741,7 +2795,7 @@ function parse(buf::Vector{UInt8};
     local names::Vector{Symbol}
     if header === true && headerchunk > 0
         ci = allchunks[headerchunk]
-        names = parseheader!(buf, ci, opts, d, headerlog)
+        names = parseheader!(buf, ci, baseopts, d, headerlog)
     elseif header isa AbstractVector
         names = Symbol.(header)
     else
@@ -2753,8 +2807,23 @@ function parse(buf::Vector{UInt8};
     ncols = length(names)
     fullrows = sum(nrows, allchunks; init=0)
 
-    # -- selection & row geometry ----------------------------------------------
-    selected = resolveselect(select, names, ncols)
+    # -- column requests and row geometry ---------------------------------------
+    if columnplan !== nothing
+        types === nothing ||
+            throw(ArgumentError("types cannot be combined with a settled column plan"))
+        select === nothing ||
+            throw(ArgumentError("select cannot be combined with a settled column plan"))
+        length(columnplan.columns) == ncols ||
+            throw(ArgumentError("column plan has $(length(columnplan.columns)) columns; " *
+                                "input has $ncols"))
+        colopts === nothing || colopts === columnplan.colopts ||
+            throw(ArgumentError("colopts do not match the settled column plan"))
+    end
+    plan = columnplan === nothing ?
+           settlecolumns(names, baseopts; select, types, colopts, validate) : columnplan
+    opts = plan.opts
+    columnopts = plan.colopts
+    selected = _selectedmask(plan, ncols)
     # every chunk is indexed: global row bases are simply known
     rowbasesall = cumsum([0; Int[nrows(ci) for ci in allchunks[1:max(nchall - 1, 0)]]])
     if rowmask !== nothing
@@ -2769,30 +2838,27 @@ function parse(buf::Vector{UInt8};
     rowbases0 = nch == nchall ? rowbasesall : rowbasesall[1:nch]
 
     # -- select initial column types ------------------------------------------
-    seed = resolvetypes(types, names, ncols; validate)
-    userprovided = [T !== nothing for T in seed]
-    wantmissing = declaredmissing(types, names, ncols; validate)   # user wrote Union{Missing,T}
+    seed = Union{Nothing, Type}[d.parsetype for d in plan.columns]
+    userprovided = [d.parsetype !== nothing for d in plan.columns]
+    wantmissing = [d.declaredmissing for d in plan.columns]
     # typed columns whose sample shows a missing cell get union-direct finals
     # (the parse writes Vector{Union{T,Missing}} in place; conversion is never
     # paid). Sample-missed sparse missings fall back to a finalize conversion.
     sawmissing = copy(wantmissing)   # declared Union{Missing,T} ⇒ union finals
-    # Validate before sampling: `_copts` is deliberately inbounds in hot loops.
-    colopts === nothing || length(colopts) == ncols ||
-        throw(ArgumentError("colopts length $(length(colopts)) != $ncols columns"))
     if any(j -> seed[j] === nothing && (selected === nothing || selected[j]), 1:ncols)
         if rowmask === nothing
             probechunks = ChunkIndex[ci for ci in chunks if nrows(ci) > 0]
             probetotal = sum(nrows, probechunks; init=0)
             ns = nsample === nothing ? clamp(probetotal >> 6, 8, 128) : nsample
             inferred = sampletypes(buf, probechunks, ncols, opts; nsample=max(ns, 1), selected,
-                                   sawmissing, colopts, maxrows=limit)
+                                   sawmissing, colopts=columnopts, maxrows=limit)
         else
             # inference reflects the rows that will actually be output: a
             # masked-out malformed value must not promote a qualifying column
             qrows = findall(rowmask)
             ns = nsample === nothing ? clamp(length(qrows) >> 6, 8, 128) : nsample
             inferred = sampletypesrows(buf, chunks, rowbases0, qrows, ncols, opts, selected;
-                                       nsample=max(ns, 1), sawmissing, colopts)
+                                       nsample=max(ns, 1), sawmissing, colopts=columnopts)
         end
         for j in 1:ncols
             seed[j] === nothing && (seed[j] = _maptype(tm, inferred[j]))
@@ -2826,7 +2892,7 @@ function parse(buf::Vector{UInt8};
     rowbases = cumsum([0; chunkrows[1:max(nch - 1, 0)]])
     ndata = rowmask === nothing ? sum(chunkrows; init=0) : count(rowmask)
     cols = Vector{AbstractVector}(undef, ncols)
-    stitchjs = selected === nothing ? collect(1:ncols) : findall(selected)
+    stitchjs = plan.sources
     mb = k -> rowmask === nothing ? 0 : rowbases0[k]
     rl = k -> limit === nothing ? typemax(Int) :
               clamp(limit - rowbases0[k], 0, nrows(chunks[k]))
@@ -2840,7 +2906,7 @@ function parse(buf::Vector{UInt8};
         directwave!(cols, chunks, buf, d, opts, ncols, userprovided, promo,
                     promolock, pendingproblems, segments, segtypes, selected,
                     rowbases, ndata, rl, reportstructural, parallel,
-                    tasklimit, sawmissing, tm, colopts)
+                    tasklimit, sawmissing, tm, columnopts)
         for k in 1:(nch - 1)
             chunks[k].unclosedquote &&
                 error("internal error: chunk $(k) ended inside a quoted field")
@@ -2854,14 +2920,14 @@ function parse(buf::Vector{UInt8};
                 fusedchunk!(chunks[k], buf, d, ncols, opts, userprovided, promo,
                             promolock, pendingproblems, segments, segtypes, k,
                             selected, rowmask, mb(k), rl(k), reportstructural,
-                            tm, colopts)
+                            tm, columnopts)
             end
         else
             for k in 1:nch
                 fusedchunk!(chunks[k], buf, d, ncols, opts, userprovided,
                             promo, promolock, pendingproblems, segments, segtypes, k,
                             selected, rowmask, mb(k), rl(k), reportstructural,
-                            tm, colopts)
+                            tm, columnopts)
             end
         end
         for k in 1:(nch - 1)
@@ -2882,13 +2948,13 @@ function parse(buf::Vector{UInt8};
                     k, j = x
                     restale!(chunks, finalstaged, segments, segtypes, pendingproblems,
                              buf, opts, d, userprovided, k, j, rowmask, mb(k), rl(k),
-                             colopts)
+                             columnopts)
                 end
             else
                 for (k, j) in stale
                     restale!(chunks, finalstaged, segments, segtypes, pendingproblems, buf,
                              opts, d, userprovided, k, j, rowmask, mb(k), rl(k),
-                             colopts)
+                             columnopts)
                 end
             end
         end

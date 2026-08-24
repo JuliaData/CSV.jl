@@ -131,7 +131,7 @@ deterministic across `ntasks` values.
 CSV.jl 1.0 depends on Parsers 3 for the reviewed low-level value kernels. The
 integration decision is complete. CI temporarily pins
 [Parsers.jl PR #210](https://github.com/JuliaData/Parsers.jl/pull/210) at exact
-`83c7142fb714cb87261ef38eec7ab103444eb30d` until registration. A registered
+`e4adc5ba720e5668b726f65a574e2037c866d6df` until registration. A registered
 Parsers 3 release and removal of this pin are 1.0 tag gates. Registered
 InlineStrings releases still require Parsers 2. Development CI pins
 [InlineStrings.jl PR #93](https://github.com/JuliaStrings/InlineStrings.jl/pull/93)
