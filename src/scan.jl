@@ -89,9 +89,9 @@ options `K.parse` takes (dialect, value options, pool, engine knobs).
 """
 function execute(buf::Vector{UInt8}, bi::K.BufferIndex, names::Vector{Symbol}, scan::Tables.Scan;
                  parsekw, headerlog::K.ProblemLog, maxproblems::Int, on_error::Symbol)
-    phasecap = max(maxproblems, on_error === :error ? 1 : 0)
+    phasecap = max(maxproblems, on_error === :collect ? 0 : 1)
     phasekw = merge(NamedTuple(parsekw), (; maxproblems=phasecap, on_error=:collect))
-    b = Tables.bind(scan, names)
+    b = Tables.resolve(scan, names)
 
     # -- translate the bound scan into kernel pushdown --------------------------
     # types: seed every column the scan pins (duplicate selections of one source
