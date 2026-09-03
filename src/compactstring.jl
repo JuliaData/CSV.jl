@@ -106,8 +106,10 @@ into (a shared empty vector for inline values). Byte access, direct comparisons,
 and iteration do not allocate; they use the inline bytes or retained buffer.
 Hashing and ordering operate on the payload bytes without allocation and agree
 with `String`. `String(s)` (or `materialize` on the column) copies out.
-Lifetime: a view pins its buffer, exactly like today's `PosLenString` — the
-production compaction story is `materialize`.
+`CompactString(s::AbstractString)` builds one from any string (short content
+inline, longer content in a private buffer), so plain strings convert on
+assignment. Lifetime: a view pins its buffer — the compaction story is
+`materialize`.
 """
 struct CompactString <: AbstractString
     p::CompactStringPayload
@@ -327,19 +329,31 @@ Base.convert(::Type{String}, s::CompactString) = String(s)
 Base.Symbol(s::CompactString) = Symbol(String(s))
 Base.promote_rule(::Type{CompactString}, ::Type{String}) = String
 
+# Views write straight from the retained buffer; inline values go through a
+# 16-byte stack scratch (two word stores) — one `unsafe_write` either way. The
+# per-byte loop this replaces measured 55× slower on 1 KB values and sat under
+# `print`, `join`, `string`, and DataFrame display.
 function Base.write(io::IO, s::CompactString)
-    n = 0
-    @inbounds for i in 1:ncodeunits(s)
-        n += write(io, codeunit(s, i))
+    n = ncodeunits(s)
+    n == 0 && return 0
+    if n > COMPACTSTRING_INLINE
+        GC.@preserve s begin
+            return Int(unsafe_write(io, pointer(s.data, cspos(s.p)), n))
+        end
     end
-    return n
+    r = Ref(_cs_scratch(s))
+    GC.@preserve r begin
+        return Int(unsafe_write(io, Ptr{UInt8}(Base.unsafe_convert(Ptr{Tuple{UInt64, UInt64}}, r)), n))
+    end
 end
 Base.print(io::IO, s::CompactString) = (write(io, s); nothing)
 
 # The user-facing string column. getindex returns a `CompactString` (or `missing`) with
 # NO allocation: inline values live in the payload, long values view into `buf`
-# (input) or `extra` (unescaped-at-parse-time). `materialize` copies out to
-# `Vector{String}`, detaching from both buffers.
+# (input) or `extra` (unescaped-at-parse-time). It is a mutable vector: values
+# assigned or pushed from elsewhere copy their bytes into `extra` (the
+# column-owned arena; see the mutation section below). `materialize` copies out
+# to `Vector{String}`, detaching from both buffers.
 struct CompactStringVector{ELT} <: AbstractVector{ELT}
     payloads::Vector{CompactStringPayload}
     buf::Vector{UInt8}
@@ -388,3 +402,134 @@ function materialize(v::CompactStringVector{ELT}) where {ELT}
     end
     return out
 end
+
+# --- construction from ordinary strings ------------------------------------------
+# `CompactString("text")` and `convert(CompactString, s)` are what lets a
+# CompactString column accept plain strings — `push!(df, row)`,
+# `col[i] = "x"`, `CompactString["a", "b"]`. Short content is inline; longer
+# content is copied ONCE into a private byte vector the value then views
+# (buffer index 0, offset 0 — the buffer index only means something inside a
+# column, see `_payloadfor!`).
+@inline function _inline_payload_ptr(p::Ptr{UInt8}, len::Int)
+    a = UInt64(len % UInt32)
+    b = zero(UInt64)
+    for i in 1:min(len, 4)
+        a |= UInt64(unsafe_load(p, i)) << (32 + 8 * (i - 1))
+    end
+    for i in 5:len
+        b |= UInt64(unsafe_load(p, i)) << (8 * (i - 5))
+    end
+    return CompactStringPayload(a, b)
+end
+# the 4-byte prefix load needs len > 12 (guaranteed by every caller)
+@inline function _view_payload_ptr(p::Ptr{UInt8}, len::Int, bufidx::Integer, offset0::Integer)
+    (0 <= offset0 <= typemax(Int32) && 0 <= bufidx <= typemax(Int32)) ||
+        throw(ArgumentError("CompactString view (buffer $bufidx, offset $offset0) " *
+                            "does not fit Arrow's Int32 view words; buffers must stay under 2 GiB"))
+    pre = ltoh(unsafe_load(Ptr{UInt32}(p)))
+    return CompactStringPayload(UInt64(len % UInt32) | (UInt64(pre) << 32),
+                                _viewword(bufidx, offset0))
+end
+
+function CompactString(s::Union{String, SubString{String}})
+    n = ncodeunits(s)
+    GC.@preserve s begin
+        p = pointer(s)
+        n <= COMPACTSTRING_INLINE && return CompactString(_inline_payload_ptr(p, n), EMPTY_BYTES)
+        bytes = Vector{UInt8}(undef, n)
+        GC.@preserve bytes unsafe_copyto!(pointer(bytes), p, n)
+        return CompactString(_view_payload_ptr(p, n, 0, 0), bytes)
+    end
+end
+CompactString(s::AbstractString) = CompactString(String(s))
+CompactString(s::CompactString) = s
+Base.convert(::Type{CompactString}, s::AbstractString) = CompactString(s)
+
+# --- regex and the other Base entry points that insist on `String` ---------------
+# PCRE wants a String; mirror InlineStrings' shims. `occursin`, `replace`, and
+# `eachmatch` already go through these or convert on their own.
+Base.match(r::Regex, s::CompactString, i::Integer=1, add_opts::UInt32=UInt32(0)) =
+    match(r, String(s), i, add_opts)
+Base.findnext(r::Regex, s::CompactString, i::Integer) = findnext(r, String(s), i)
+Base.reverse(s::CompactString) = reverse(String(s))
+
+# --- mutation: the column-owned arena --------------------------------------------
+# A CompactStringVector is a real mutable vector. Inline payloads store as-is.
+# A view already into this vector's input buffer or its `extra` arena keeps its
+# bytes (only the buffer index is re-derived, since a value carries the buffer
+# it views but not the index its origin column used). Any other content is
+# appended to `extra` — appending never moves existing bytes, so every live
+# view stays valid — and the stored payload views it there. Deleted or
+# overwritten values leave their bytes in the arena (the Arrow StringView
+# trade; `materialize` compacts).
+@noinline _arenafull(n) =
+    throw(ArgumentError("CompactString column arena exceeds 2 GiB (offset $n); " *
+                        "materialize the column to Vector{String}"))
+@inline function _appendextra!(v::CompactStringVector, p::Ptr{UInt8}, n::Int)
+    extra = v.extra
+    off = length(extra)
+    off + n <= typemax(Int32) || _arenafull(off + n)
+    resize!(extra, off + n)
+    GC.@preserve extra unsafe_copyto!(pointer(extra, off + 1), p, n)
+    return _view_payload_ptr(p, n, 1, off)
+end
+@inline function _payloadfor!(v::CompactStringVector, x::CompactString)
+    p = x.p
+    n = Int(cslen(p))
+    n <= COMPACTSTRING_INLINE && return p
+    x.data === v.buf && return CompactStringPayload(p.a, _viewword(0, csoffset(p)))
+    x.data === v.extra && return CompactStringPayload(p.a, _viewword(1, csoffset(p)))
+    GC.@preserve x return _appendextra!(v, pointer(x.data, cspos(p)), n)
+end
+@inline function _payloadfor!(v::CompactStringVector, s::Union{String, SubString{String}})
+    n = ncodeunits(s)
+    GC.@preserve s begin
+        p = pointer(s)
+        return n <= COMPACTSTRING_INLINE ? _inline_payload_ptr(p, n) : _appendextra!(v, p, n)
+    end
+end
+_payloadfor!(v::CompactStringVector, s::AbstractString) = _payloadfor!(v, String(s))
+@noinline _nomissing(::Type{ELT}) where {ELT} =
+    throw(ArgumentError("cannot store missing in a CompactStringVector{$ELT}; " *
+                        "widen the column first (e.g. allowmissing!)"))
+_payloadfor!(::CompactStringVector{ELT}, ::Missing) where {ELT} =
+    Missing <: ELT ? PAYLOAD_MISSING : _nomissing(ELT)
+# what a freshly grown slot holds: missing when the eltype allows it, else ""
+_emptypayload(::Type{ELT}) where {ELT} = Missing <: ELT ? PAYLOAD_MISSING : CompactStringPayload(0, 0)
+
+Base.IndexStyle(::Type{<:CompactStringVector}) = IndexLinear()
+Base.@propagate_inbounds function Base.setindex!(v::CompactStringVector, x, i::Int)
+    @boundscheck checkbounds(v.payloads, i)
+    @inbounds v.payloads[i] = _payloadfor!(v, x)
+    return v
+end
+Base.push!(v::CompactStringVector, x) = (push!(v.payloads, _payloadfor!(v, x)); v)
+Base.pushfirst!(v::CompactStringVector, x) = (pushfirst!(v.payloads, _payloadfor!(v, x)); v)
+Base.insert!(v::CompactStringVector, i::Integer, x) = (insert!(v.payloads, i, _payloadfor!(v, x)); v)
+function Base.pop!(v::CompactStringVector)
+    x = v[end]
+    pop!(v.payloads)
+    return x
+end
+function Base.popfirst!(v::CompactStringVector)
+    x = v[1]
+    popfirst!(v.payloads)
+    return x
+end
+Base.deleteat!(v::CompactStringVector, i) = (deleteat!(v.payloads, i); v)
+Base.keepat!(v::CompactStringVector, i) = (keepat!(v.payloads, i); v)
+Base.empty!(v::CompactStringVector) = (empty!(v.payloads); v)
+Base.sizehint!(v::CompactStringVector, n::Integer) = (sizehint!(v.payloads, n); v)
+function Base.resize!(v::CompactStringVector{ELT}, n::Integer) where {ELT}
+    old = length(v.payloads)
+    resize!(v.payloads, n)
+    @inbounds for i in (old + 1):n          # grown slots are missing / "", never garbage views
+        v.payloads[i] = _emptypayload(ELT)
+    end
+    return v
+end
+# a copy shares the (append-only) buffers and gets its own payload vector
+Base.copy(v::CompactStringVector{ELT}) where {ELT} =
+    CompactStringVector{ELT}(copy(v.payloads), v.buf, v.extra)
+Base.convert(::Type{Vector{String}}, v::CompactStringVector{CompactString}) = materialize(v)
+Base.convert(::Type{Vector{Union{String, Missing}}}, v::CompactStringVector) = materialize(v)

@@ -1412,6 +1412,109 @@ end
     @test String(take!(io)) == "value2_pp"
 end
 
+@testset "CompactString: construction, mutation, regex, output" begin
+    # construction from ordinary strings: inline ≤ 12 bytes, owned copy above
+    short = K.CompactString("abc")
+    long = K.CompactString("longer-than-twelve-bytes")
+    @test short isa K.CompactString && long isa K.CompactString
+    @test short == "abc" && long == "longer-than-twelve-bytes"
+    @test hash(short) == hash("abc") && hash(long) == hash("longer-than-twelve-bytes")
+    @test ncodeunits(long) == 24 && K.cslen(long.p) == 24 && length(long.data) == 24
+    @test short.data === K.EMPTY_BYTES
+    @test K.CompactString(SubString("xabcx", 2, 4)) == "abc"
+    @test K.CompactString(short) === short
+    @test convert(K.CompactString, "abc") == short
+    @test K.CompactString["a", "bb"] isa Vector{K.CompactString}
+    v0 = K.CompactString["a"]
+    push!(v0, "b")                                  # convert on push into Vector{CompactString}
+    @test v0 == ["a", "b"]
+    # an owned long string survives its source String being collected
+    owned = K.CompactString(String(rand('a':'z', 40)))
+    s0 = String(owned)
+    GC.gc()
+    @test String(owned) == s0
+
+    # the column is a real mutable vector; the arena owns foreign bytes
+    src = "s,i\nabc,1\nxyz,2\nlonger-than-twelve-bytes,3\n"
+    col() = K.parse(src)[:s]::K.CompactStringVector{K.CompactString}
+    @test Base.IndexStyle(K.CompactStringVector{K.CompactString}) === IndexLinear()
+    c = col()
+    c[1] = "q"                                      # inline
+    @test c[1] == "q"
+    c[1] = "a much longer string than twelve"      # copied into `extra`
+    @test c[1] == "a much longer string than twelve" && c[3] == "longer-than-twelve-bytes"
+    @test length(c.extra) == ncodeunits("a much longer string than twelve")
+    c[2] = c[3]                                     # same input buffer: no arena growth
+    @test c[2] == "longer-than-twelve-bytes" && length(c.extra) == ncodeunits(c[1])
+    other = col()
+    c[3] = other[3]                                 # a view into ANOTHER buffer copies
+    @test c[3] == "longer-than-twelve-bytes" && length(c.extra) == ncodeunits(c[1]) + 24
+    c[3] = c[1]                                     # already in this arena: no growth
+    @test length(c.extra) == ncodeunits(c[1]) + 24
+    push!(c, "new-and-longer-than-12")
+    pushfirst!(c, "first")
+    insert!(c, 2, "ins")
+    @test collect(String, c) == ["first", "ins", "a much longer string than twelve",
+                                 "longer-than-twelve-bytes", "a much longer string than twelve",
+                                 "new-and-longer-than-12"]
+    @test pop!(c) == "new-and-longer-than-12" && popfirst!(c) == "first"
+    deleteat!(c, 1)
+    @test length(c) == 3
+    keepat!(c, [1, 3])
+    @test collect(String, c) == ["a much longer string than twelve", "a much longer string than twelve"]
+    resize!(c, 4)
+    @test c[3] == "" && c[4] == ""                  # grown slots are "", never garbage
+    empty!(c)
+    @test isempty(c)
+    # in-place algorithms over setindex!
+    c2 = col()
+    sort!(c2)
+    @test issorted(c2) && collect(String, c2) == ["abc", "longer-than-twelve-bytes", "xyz"]
+    reverse!(c2)
+    @test c2[1] == "xyz"
+    replace!(c2, "xyz" => "replaced-with-a-long-one")
+    @test c2[1] == "replaced-with-a-long-one"
+    fill!(c2, "z")
+    @test all(==("z"), c2)
+    # copy shares buffers, owns its payloads
+    c3 = col()
+    c4 = copy(c3)
+    c4[1] = "changed-long-string-here"
+    @test c3[1] == "abc" && c4[1] == "changed-long-string-here"
+    @test convert(Vector{String}, c3) isa Vector{String}
+    # missing handling per eltype
+    cm = K.parse("s,t\nabc,1\n,2\nlonger-than-twelve-bytes,3\n")[:s]::K.CompactStringVector{Union{K.CompactString, Missing}}
+    cm[1] = missing
+    push!(cm, missing)
+    resize!(cm, 6)
+    @test isequal(collect(cm), [missing, missing, "longer-than-twelve-bytes", missing, missing, missing])
+    @test_throws ArgumentError col()[1] = missing
+    # arena offsets stay right across many appends (50 000 long values)
+    ca = col()
+    for i in 1:50_000
+        push!(ca, "value-number-$i-padding")
+    end
+    @test ca[end] == "value-number-50000-padding" && ca[3 + 25_000] == "value-number-25000-padding"
+    @test hash(ca[3 + 7]) == hash("value-number-7-padding")
+
+    # regex entry points that need a String underneath
+    s = col()[3]
+    @test match(r"than", s).match == "than"
+    @test match(r"(\d+)", K.CompactString("abc123")).captures[1] == "123"
+    @test findfirst(r"twelve", s) == 13:18
+    @test split(s, r"-") == ["longer", "than", "twelve", "bytes"]
+    @test reverse(K.CompactString("abc")) == "cba"
+
+    # write/print: one unsafe_write, byte-exact for inline and view values
+    for x in (K.CompactString(""), K.CompactString("abc"), K.CompactString("x"^12), s)
+        io = IOBuffer()
+        @test write(io, x) == ncodeunits(x)
+        @test String(take!(io)) == String(x)
+        @test sprint(print, x) == String(x)
+        @test string(x, "!") == String(x) * "!"
+    end
+end
+
 @testset "examples: the layered APIs" begin
     csv = "a,b,c\n1,x,2.5\n2,y,3.5\n3,\"z,w\",4.5\n"
     # eager reader is a Tables.jl table
