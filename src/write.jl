@@ -29,12 +29,14 @@ module KernelWrite
 using Tables, Dates, Printf, CodecZlib
 using CodecZlib.TranscodingStreams
 using ..CSVKernel
+using ..CSVApi
 const K = CSVKernel
 
 const WRITE_QUOTESTYLES = (:minimal, :all, :none)
 
 struct WriteOpts
-    delim::UInt8
+    delim::UInt8                  # first delimiter byte (structural-byte scans)
+    delimbytes::Vector{UInt8}     # the whole delimiter, as written
     oq::UInt8
     cq::UInt8
     e::UInt8
@@ -47,47 +49,69 @@ struct WriteOpts
     bom::Bool
 end
 
-function _writeopts(; delim::Union{Char, String}=',', quotechar::Char='"',
-                    openquotechar::Union{Nothing, Char}=nothing,
-                    closequotechar::Union{Nothing, Char}=nothing,
-                    escapechar::Union{Nothing, Char}=nothing,
-                    newline::Union{Char, String}='\n',
-                    missingstring::AbstractString="",
-                    quotestyle::Symbol=:minimal,
+# 0.10 writer keywords that no longer exist, with the 1.0 spelling (the
+# reader has the same table); `quotestrings` is a pure alias and is mapped
+const _WRITE_LEGACYKW = Dict{Symbol, String}(
+    :transform => "transform the table before writing (e.g. Tables.transform / map over columns)",
+    :bufsize => "the writer streams rendered blocks, there is no buffer to size",
+    :silencewarnings => "the writer never warned; removed in 1.0",
+)
+
+# one ASCII character, spelled as a Char or a one-character string
+function _onechar(name::String, c)
+    c isa AbstractString && (length(c) == 1 || throw(ArgumentError("$name must be a single character (got $(repr(c))")); c = first(c))
+    c isa Char || throw(ArgumentError("$name must be a Char (got $(repr(c)))"))
+    isascii(c) || throw(ArgumentError("$name must be ASCII (got $(repr(c)))"))
+    return c
+end
+
+function _writeopts(; delim::Union{Char, AbstractString}=',', quotechar='"',
+                    openquotechar=nothing, closequotechar=nothing, escapechar=nothing,
+                    newline::Union{Char, AbstractString}='\n',
+                    missingstring::Union{Nothing, AbstractString}="",
+                    quotestyle::Union{Symbol, AbstractString}=:minimal,
+                    quotestrings::Bool=false,
                     floatformat::Union{Nothing, AbstractString}=nothing,
                     dateformat=nothing,
-                    decimal::Char='.',
-                    bom::Bool=false)
-    delim isa String && sizeof(delim) != 1 &&
-        throw(ArgumentError("write delim must be a single byte (got $(repr(delim)))"))
-    delim isa Char && !isascii(delim) &&
-        throw(ArgumentError("write delim must be a single byte (got $(repr(delim)))"))
-    quotestyle in WRITE_QUOTESTYLES ||
-        throw(ArgumentError("quotestyle must be one of $(WRITE_QUOTESTYLES) (got $quotestyle)"))
-    oqc = something(openquotechar, quotechar)
-    cqc = something(closequotechar, quotechar)
-    ec = something(escapechar, cqc)
-    for (nm, c) in (("quotechar", quotechar), ("openquotechar", oqc),
-                    ("closequotechar", cqc), ("escapechar", ec),
-                    ("decimal", decimal))
-        isascii(c) || throw(ArgumentError("$nm must be ASCII (got $(repr(c)))"))
+                    decimal='.',
+                    bom::Bool=false, kw...)
+    for k in keys(kw)
+        haskey(_WRITE_LEGACYKW, k) && throw(ArgumentError("$k was removed in 1.0: $(_WRITE_LEGACYKW[k])"))
+        throw(ArgumentError("unsupported write keyword $k"))
     end
+    quotestyle = Symbol(quotestyle)
+    quotestrings && (quotestyle = :all)            # 0.10 spelling of quotestyle=:all
+    quotestyle in WRITE_QUOTESTYLES ||
+        throw(ArgumentError("quotestyle must be one of $(WRITE_QUOTESTYLES) (got $(repr(quotestyle)))"))
+    quotechar = _onechar("quotechar", quotechar)
+    oqc = openquotechar === nothing ? quotechar : _onechar("openquotechar", openquotechar)
+    cqc = closequotechar === nothing ? quotechar : _onechar("closequotechar", closequotechar)
+    ec = escapechar === nothing ? cqc : _onechar("escapechar", escapechar)
+    decimal = _onechar("decimal", decimal)
     oq = oqc % UInt8
     cq = cqc % UInt8
     e = ec % UInt8
-    d = delim isa Char ? delim % UInt8 : codeunit(delim, 1)
-    d in (UInt8('\r'), UInt8('\n')) &&
-        throw(ArgumentError("write delimiter may not be \\r or \\n"))
-    d == oq && throw(ArgumentError("write delimiter may not equal the open quote character"))
+    # the delimiter may be any byte sequence the reader accepts (`delim="::"`);
+    # quoting decisions key off its first byte, which is conservative (a cell
+    # containing the first byte alone is quoted — harmless)
+    delimbytes = Vector{UInt8}(codeunits(string(delim)))
+    isempty(delimbytes) && throw(ArgumentError("write delim must not be empty"))
+    any(b -> b in (UInt8('\r'), UInt8('\n')), delimbytes) &&
+        throw(ArgumentError("write delimiter may not contain \\r or \\n"))
+    d = delimbytes[1]
+    d == oq && throw(ArgumentError("write delimiter may not begin with the open quote character"))
     any(c -> c in ('\r', '\n'), (oqc, cqc, ec)) &&
         throw(ArgumentError("write quote/escape characters may not be \\r or \\n"))
     df = dateformat === nothing ? nothing :
-         dateformat isa DateFormat ? dateformat : DateFormat(string(dateformat))
+         dateformat isa DateFormat ? dateformat :
+         dateformat isa AbstractString ? DateFormat(String(dateformat)) :
+         throw(ArgumentError("dateformat must be a format String or DateFormat (got $(typeof(dateformat)))"))
     ff = floatformat === nothing ? nothing : Printf.Format(String(floatformat))
-    return WriteOpts(d, oq, cq, e, Vector{UInt8}(codeunits(string(newline))),
-                     Vector{UInt8}(codeunits(String(missingstring))),
+    return WriteOpts(d, delimbytes, oq, cq, e, Vector{UInt8}(codeunits(string(newline))),
+                     Vector{UInt8}(codeunits(something(missingstring, ""))),
                      quotestyle, ff, df, decimal % UInt8, bom)
 end
+
 
 # --- cell rendering ---------------------------------------------------------
 
@@ -548,6 +572,11 @@ end
 # hundreds of vectors would cost compile time out of proportion).
 const TUPLE_RENDER_MAXCOLS = 32
 
+@inline function _appenddelim!(out::Vector{UInt8}, o::WriteOpts)
+    db = o.delimbytes
+    length(db) == 1 ? push!(out, o.delim) : append!(out, db)
+    return
+end
 @inline function _writerow!(out::Vector{UInt8}, r::Int, cols::Tuple, o::WriteOpts)
     _writecells!(out, r, cols, o)
     for b in o.newline
@@ -559,7 +588,7 @@ end
 @inline function _writecells!(out::Vector{UInt8}, r::Int, cols::Tuple, o::WriteOpts)
     @inbounds _appendcell!(out, first(cols)[r], o)
     rest = Base.tail(cols)
-    isempty(rest) || push!(out, o.delim)
+    isempty(rest) || _appenddelim!(out, o)
     return _writecells!(out, r, rest, o)
 end
 
@@ -594,7 +623,8 @@ function _renderblock(cols, lo::Int, hi::Int, o::WriteOpts)
         _stagecolumn!(stages[j], cols[j], lo, hi, o)   # one dynamic dispatch per column
         total += length(stages[j].bytes)
     end
-    out = Vector{UInt8}(undef, total + nrows * (max(ncols - 1, 0) + length(o.newline)))
+    db = o.delimbytes
+    out = Vector{UInt8}(undef, total + nrows * (max(ncols - 1, 0) * length(db) + length(o.newline)))
     pos = 1
     nl = o.newline
     GC.@preserve out begin
@@ -605,7 +635,11 @@ function _renderblock(cols, lo::Int, hi::Int, o::WriteOpts)
                 e = st.ends[k]
                 n = e - s + 1
                 n > 0 && (unsafe_copyto!(pointer(out, pos), pointer(st.bytes, s), n); pos += n)
-                j < ncols && (out[pos] = o.delim; pos += 1)
+                if j < ncols
+                    for b in db
+                        out[pos] = b; pos += 1
+                    end
+                end
             end
             for b in nl
                 out[pos] = b; pos += 1
@@ -619,7 +653,7 @@ function _renderheader(names, o::WriteOpts)
     io = IOBuffer()
     for (j, nm) in enumerate(names)
         _writestring(io, String(nm), o)
-        j < length(names) && Base.write(io, o.delim)
+        j < length(names) && Base.write(io, o.delimbytes)
     end
     Base.write(io, o.newline)
     return take!(io)
@@ -671,7 +705,7 @@ function _renderrow(row, names, o::WriteOpts)
     ncols = length(names)
     for (j, nm) in enumerate(names)
         _writecell(io, Tables.getcolumn(row, j), o)
-        j < ncols && Base.write(io, o.delim)
+        j < ncols && Base.write(io, o.delimbytes)
     end
     Base.write(io, o.newline)
     return String(take!(io))
@@ -701,18 +735,39 @@ end
 # --- the front door ---------------------------------------------------------
 
 """
-    KernelWrite.write(sink, table; kw...) -> sink
+    CSV.write(sink, table; kw...) -> sink
+    CSV.write(sink; kw...)             # curried: `table |> CSV.write(sink)`
 
-Write any Tables.jl table as CSV. `sink` is a file path, an `IO`, or (with
-`partition=true`) a vector of paths/IOs receiving one table partition each,
-written in parallel. Rendering is parallel and byte-deterministic.
+Write any Tables.jl table as CSV. `sink` is a file path (`.gz` ⇒ gzip), an
+`IO` (written at its current position), or, with `partition=true`, a vector
+of paths/IOs receiving one `Tables.partitions` element each, written in
+parallel. Rendering is parallel and byte-deterministic.
+
+Keywords: `delim=','` · `quotechar='"'` (or `openquotechar`/`closequotechar`)
+· `escapechar` (default: the quote char, RFC `""` doubling) · `newline='\\n'`
+· `missingstring=""` · `quotestyle` (`:minimal` — quote only when needed,
+`:all` — every string cell, `:none` — never; structural bytes then error) ·
+`floatformat` (a printf format such as `"%.3f"`; default shortest round-trip)
+· `dateformat` (applied to `Date`/`DateTime`/`Time` cells) · `decimal='.'` ·
+`bom=false` · `writeheader=true` (`header=false` also accepted) · `header`
+(a vector of replacement names) · `append=false` (paths open in append mode;
+the header is suppressed) · `compress=:auto` (`:gzip` | `:none`) ·
+`partition=false` · `ntasks=Threads.nthreads()`.
 """
+write(sink; kw...) = table -> write(sink, table; kw...)   # `table |> CSV.write(path)`
 function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool}=nothing,
-               header::Union{Nothing, Vector}=nothing, compress::Symbol=:auto,
+               header::Union{Nothing, Bool, AbstractVector}=nothing,
+               compress::Union{Symbol, Bool}=:auto,
                partition::Bool=false,
                ntasks::Int=Threads.nthreads(), kw...)
     o = _writeopts(; kw...)
     ntasks >= 1 || throw(ArgumentError("ntasks must be >= 1 (got $ntasks)"))
+    # 0.10 spellings: `header=false` (its recommended form) and `compress=true`
+    if header isa Bool
+        writeheader = header
+        header = nothing
+    end
+    compress isa Bool && (compress = compress ? :gzip : :none)
     if partition
         parts = Tables.partitions(table)
         sinks = sink isa AbstractVector ? sink :
@@ -757,7 +812,7 @@ function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool
         append!(blocks, rendered)
     end
     gzip = compress === :gzip ||
-           (compress === :auto && sink isa AbstractString && endswith(String(sink), ".gz"))
+           (compress === :auto && sink isa AbstractString && endswith(lowercase(String(sink)), ".gz"))
     compress in (:auto, :gzip, :none) ||
         throw(ArgumentError("compress must be :auto, :gzip, or :none (got $compress)"))
     # blocks stream to the sink in order — the output is never concatenated
@@ -784,16 +839,32 @@ function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool
     end
     if sink isa AbstractString
         open(emit, String(sink), append ? "a" : "w")
-    else
-        seekable = sink isa IO && hasmethod(seek, Tuple{typeof(sink), Integer}) &&
-                   hasmethod(seekend, Tuple{typeof(sink)})
-        seekable && (append ? seekend(sink) : seekstart(sink))
+    elseif sink isa Base.GenericIOBuffer
+        # an in-memory buffer handed to us is the output: `append=false`
+        # replaces its contents (like a path opened "w"), `append=true` adds
+        # after them
+        append ? seekend(sink) : seekstart(sink)
         emit(sink)
-        # `append=false` means replacement for seekable IOs as it does for a
-        # path opened with "w". Remove any stale suffix when the new payload
-        # is shorter than the old contents.
-        !append && seekable && applicable(truncate, sink, position(sink)) &&
-            truncate(sink, position(sink))
+        append || truncate(sink, position(sink))
+    else
+        # every other IO — a file stream, stdout, a pipe, a compressor — is
+        # written at its current position, exactly like `Base.write`: never
+        # rewound, never truncated (a redirected stdout IS a seekable IOStream)
+        emit(sink)
+    end
+    return sink
+end
+
+# a Chunks source streams batch by batch under one header (`Tables.partitions`
+# aware sinks get the same rows; `partition=true` still writes one sink per batch)
+function write(sink, chunks::CSVApi.Chunks; append::Bool=false,
+               writeheader::Union{Nothing, Bool}=nothing, partition::Bool=false, kw...)
+    partition && return invoke(write, Tuple{Any, Any}, sink, chunks; append, writeheader, partition, kw...)
+    first = true
+    for batch in chunks
+        write(sink, batch; append=append || !first,
+              writeheader=(first ? writeheader : false), kw...)
+        first = false
     end
     return sink
 end

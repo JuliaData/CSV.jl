@@ -14,6 +14,7 @@ CSV.CSVApi.resolvesource(p::FilePathsBase.AbstractPath; kw...) =
     CSV.CSVApi.resolvesource(string(p); kw...)
 
 CSV.KernelWrite.write(sink::FilePathsBase.AbstractPath, table; kw...) =
-    CSV.KernelWrite.write(string(sink), table; kw...)
+    (CSV.KernelWrite.write(string(sink), table; kw...); sink)
+CSV.CSVApi._sourcename(p::FilePathsBase.AbstractPath) = string(p)
 
 end # module

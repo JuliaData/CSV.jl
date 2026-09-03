@@ -306,4 +306,52 @@ end
     io = IOBuffer(); W.write(io, tbl; compress=:gzip, ntasks=4, writeheader=false)
     @test transcode(GzipDecompressor, take!(io)) == refbytes
 end
+@testset "1.0 hardening pass: writer keywords and sinks" begin
+    t = (a=[1, 2], b=["x", "y,z"])
+    s(f) = (io = IOBuffer(); f(io); String(take!(io)))
+    # 0.10 spellings map or explain themselves
+    @test s(io -> W.write(io, t; quotestrings=true)) == s(io -> W.write(io, t; quotestyle=:all))
+    @test s(io -> W.write(io, t; quotestyle="all")) == s(io -> W.write(io, t; quotestyle=:all))
+    @test s(io -> W.write(io, t; header=false)) == "1,x\n2,\"y,z\"\n"
+    @test s(io -> W.write(io, t; compress=false)) == "a,b\n1,x\n2,\"y,z\"\n"
+    @test transcode(GzipDecompressor, Vector{UInt8}(s(io -> W.write(io, t; compress=true)))) ==
+          Vector{UInt8}("a,b\n1,x\n2,\"y,z\"\n")
+    @test_throws ArgumentError W.write(IOBuffer(), t; transform=(c, v) -> v)
+    @test_throws ArgumentError W.write(IOBuffer(), t; bufsize=10)
+    @test_throws ArgumentError W.write(IOBuffer(), t; bogus=1)
+    @test_throws ArgumentError W.write(IOBuffer(), (d=[Date(2020)],); dateformat=Dict(:d => "yyyy"))
+    @test collect(W.RowWriter(t; quotestrings=true)) == ["\"a\",\"b\"\n", "1,\"x\"\n", "2,\"y,z\"\n"]
+    # one-character strings where a Char is meant
+    @test s(io -> W.write(io, t; quotechar="'")) == "a,b\n1,x\n2,'y,z'\n"
+    @test s(io -> W.write(io, (x=[1.5],); decimal=",")) == "x\n1,5\n"
+    @test s(io -> W.write(io, (x=[1, missing],); missingstring=nothing)) == "x\n1\n\n"
+    # multi-byte delimiters write (both render paths) and round-trip
+    @test s(io -> W.write(io, t; delim="::")) == "a::b\n1::x\n2::y,z\n"
+    wide = NamedTuple(Symbol("c$i") => [i] for i in 1:40)
+    @test startswith(s(io -> W.write(io, wide; delim="::")), "c1::c2::c3")
+    @test A.File(IOBuffer(s(io -> W.write(io, t; delim="::"))); delim="::").b == ["x", "y,z"]
+    # curried form
+    @test (t |> W.write(IOBuffer())) isa IOBuffer
+    # sinks: an IOBuffer is replaced (or appended to); every other IO is
+    # written at its current position, never rewound or truncated
+    io = IOBuffer(); write(io, "stale trailing bytes"); W.write(io, (a=[1],))
+    @test String(take!(io)) == "a\n1\n"
+    io = IOBuffer(); W.write(io, (a=[1],)); seekstart(io); W.write(io, (a=[2],); append=true)
+    @test String(take!(io)) == "a\n1\n2\n"
+    p = tempname()
+    open(p, "w") do io
+        write(io, "PRIOR\n")
+        W.write(io, (a=[1],))
+    end
+    @test read(p, String) == "PRIOR\na\n1\n"
+    rm(p)
+    # a Chunks source streams under one header
+    @test s(io -> W.write(io, A.Chunks(IOBuffer("a,b\n1,x\n2,y\n3,z\n"); chunkbytes=8))) == "a,b\n1,x\n2,y\n3,z\n"
+    # compression by extension is case-insensitive
+    pg = tempname() * ".GZ"
+    W.write(pg, t)
+    @test read(pg)[1:2] == UInt8[0x1f, 0x8b]
+    rm(pg)
+end
+
 println("WRITE BATTERY OK")
