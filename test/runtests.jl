@@ -525,6 +525,26 @@ f = CSV.File(map(IOBuffer, data); source=:source=>["1", "2", "3"])
 @test eltype(f.source) == String
 @test f.source isa PooledArray
 
+# issue #1197: use all available parser tasks for vector inputs
+nrows = max(3000, 6 * Threads.nthreads())
+data = "a,b\n" * join(("$i,$(2i)" for i in 1:nrows), '\n')
+inputs = [IOBuffer(data) for _ in 1:3]
+f = CSV.File(inputs)
+expected_chains = length(inputs) < Threads.nthreads() ? length(inputs) * Threads.nthreads() : length(inputs)
+@test length(f.a.arrays) == expected_chains
+
+data = "a,b\n" * join(("$i,$(2i)" for i in 1:100), '\n')
+f = CSV.File([IOBuffer(data) for _ in 1:3]; ntasks=2)
+@test f.a isa ChainedVector
+@test length(f.a.arrays) == 6
+
+integer_data = "a,b\n" * join(("$i,$(2i)" for i in 1:100), '\n')
+float_data = "a,b\n" * join(("$(i + 0.5),$(2i)" for i in 1:100), '\n')
+f = CSV.File(map(IOBuffer, [integer_data, float_data]); ntasks=2)
+@test eltype(f.a) == Float64
+@test f.a[[1, 100, 101, 200]] == [1.0, 100.0, 1.5, 100.5]
+@test length(f.a.arrays) == 4
+
 end
 
 end

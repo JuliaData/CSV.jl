@@ -63,9 +63,10 @@ manually via the `types` keyword argument. Note that passing column types manual
 for each column type provided (column types can be given as a `Vector` for all columns, or specified per column via
 name or index in a `Dict`).
 
-When a `Vector` of inputs is provided, the column names and types of each separate file/input must match to be vertically concatenated. Separate threads will
-be used to parse each input, which will each parse their input using just the single thread. The results of all threads are then vertically concatenated using
-`ChainedVector`s to lazily concatenate each thread's columns.
+When a `Vector` of inputs is provided, the column names and types of each separate file/input must match to be vertically concatenated. When there are fewer
+inputs than threads, the default scheduler parses each input in turn with all available parser threads. Otherwise, it parses inputs concurrently with one
+task per input. An explicit `ntasks` value applies to each input. The scheduler parses inputs concurrently for `ntasks=1` and in turn for larger values to
+avoid nested parser task groups. The results are then vertically concatenated using `ChainedVector`s.
 
 For text encodings other than UTF-8, load the [StringEncodings.jl](https://github.com/JuliaStrings/StringEncodings.jl)
 package and call e.g. `CSV.File(open(read, input, enc"ISO-8859-1"))`.
@@ -920,21 +921,37 @@ function File(sources::Vector;
     end
     length(sources) == 1 && return File(sources[1]; kw...)
     all(x -> x isa ValidSources, sources) || throw(ArgumentError("all provided sources must be one of: `$ValidSources`"))
-    kws = merge(values(kw), (ntasks=1,))
-    f = File(sources[1]; kws...)
+    kws = values(kw)
+    parser_ntasks = get(kws, :ntasks, nothing)
+    deprecated_tasks = get(kws, :tasks, nothing)
+    deprecated_threaded = get(kws, :threaded, nothing)
+    deprecated_tasks !== nothing && (parser_ntasks = deprecated_tasks)
+    if deprecated_threaded !== nothing
+        parser_ntasks = deprecated_threaded ? Threads.nthreads() : 1
+    end
+    scheduling_is_explicit = parser_ntasks !== nothing
+    parse_concurrently = scheduling_is_explicit ? parser_ntasks == 1 : length(sources) >= Threads.nthreads()
+    !scheduling_is_explicit && parse_concurrently && (kws = merge(kws, (ntasks=1,)))
+    files = Vector{File}(undef, length(sources))
+    if parse_concurrently
+        @sync for i in eachindex(sources)
+            Threads.@spawn begin
+                files[i] = File(sources[i]; kws...)
+            end
+        end
+    else
+        for i in eachindex(sources)
+            files[i] = File(sources[i]; kws...)
+        end
+    end
+    f = files[1]
     rows = getrows(f)
     for col in getcolumns(f)
-        col.column = ChainedVector([col.column])
-    end
-    files = Vector{File}(undef, length(sources) - 1)
-    @sync for i = 2:length(sources)
-        Threads.@spawn begin
-            files[i - 1] = File(sources[i]; kws...)
-        end
+        col.column isa ChainedVector || (col.column = ChainedVector([col.column]))
     end
     lookup = getlookup(f)
     for i = 2:length(sources)
-        f2 = files[i - 1]
+        f2 = files[i]
         rows += getrows(f2)
         fl2 = getlookup(f2)
         for (nm, col) in lookup
@@ -947,7 +964,6 @@ function File(sources::Vector;
     end
     if source !== nothing
         # add file name of each "partition" as 1st column
-        pushfirst!(files, f)
         vals = source isa Pair ? source.second : [getname(f) for f in files]
         pool = Dict(x => UInt32(i) for (i, x) in enumerate(vals))
         arr = PooledArray(PooledArrays.RefArray(ChainedVector([fill(UInt32(i), getrows(f)) for (i, f) in enumerate(files)])), pool)
