@@ -928,15 +928,17 @@ end
         @test !log.heaped
     end
     # on_error=:error escalates the first problem
-    @test_throws ErrorException K.parse("a\n1\nxyz\n"; types=Dict(:a => Int64), on_error=:error)
-    @test_throws ErrorException K.parse("a\nxyz\n"; types=Int64, on_error=:error, maxproblems=0)
+    @test_throws K.ParseError K.parse("a\n1\nxyz\n"; types=Dict(:a => Int64), on_error=:error)
+    @test_throws K.ParseError K.parse("a\nxyz\n"; types=Int64, on_error=:error, maxproblems=0)
     err = try
         K.parse("\"unclosed"; header=false, types=String, on_error=:error)
         nothing
     catch e
         e
     end
-    @test err isa ErrorException && occursin("invalid_quoted_field at data row 1", err.msg)
+    @test err isa K.ParseError && err.problem.kind == :invalid_quoted_field && err.problem.row == 1
+    @test occursin("invalid_quoted_field", sprint(showerror, err)) &&
+          occursin("data row 1", sprint(showerror, err))
     @test_throws ArgumentError K.parse("a\n1\n"; maxproblems=-1)
     # bad types keyword arguments throw
     @test_throws ArgumentError K.parse("a,b\n1,2\n"; types=[Int64])

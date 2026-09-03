@@ -59,8 +59,13 @@ function _widthfor(col::K.CompactStringVector)
     return _fitwidth(m)
 end
 
+# Auto width stops at String31 (0.10's rule): the wide InlineString
+# constructors are byte loops over a 256-bit integer (2.3 µs per String255
+# value — 86× the parse), and text that long gains nothing from being inline.
+# Longer columns come back as String.
+_autowidth(w::Type) = sizeof(w) > 32 ? String : w
 function A._materializecolumn(::Type{InlineString}, col::K.CompactStringVector)
-    return A._materializecolumn(_widthfor(col), col)
+    return A._materializecolumn(_autowidth(_widthfor(col)), col)
 end
 function A._materializecolumn(::Type{T}, col::K.CompactStringVector) where {T <: InlineString}
     n = length(col)
@@ -86,11 +91,12 @@ function A._materializecolumn(::Type{T}, col::K.CompactStringVector) where {T <:
 end
 
 # Rows(stringtype=InlineString): per-cell, smallest fitting width
-A._rowstring(::Type{InlineString}, x::K.CompactString) = _inl(_fitwidth(ncodeunits(x)), x)
+A._rowstring(::Type{InlineString}, x::K.CompactString) =
+    (w = _autowidth(_fitwidth(ncodeunits(x))); w === String ? String(x) : _inl(w, x))
 A._rowstring(::Type{T}, x::K.CompactString) where {T <: InlineString} = _inl(T, x)
 
 A._levelvector(::Type{InlineString}, levels::K.CompactStringVector, n::Int) =
-    A._levelvector(_widthfor(levels), levels, n)
+    A._levelvector(_autowidth(_widthfor(levels)), levels, n)
 A._levelvector(::Type{T}, levels::K.CompactStringVector, n::Int) where {T <: InlineString} =
     T[_inl(T, levels[i]) for i in 1:n]
 

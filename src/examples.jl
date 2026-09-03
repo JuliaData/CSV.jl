@@ -131,25 +131,32 @@ function _batches(source, rowmode::Bool;
                    opts, d, maxproblems, bi.unclosedquote)
 end
 
+# Column by column through a barrier: `_colmissing` is monomorphic in the
+# column's type, so the per-cell loop has no dynamic dispatch and no boxing
+# (the row-major loop over `types[j]::Type` allocated 20 objects per row —
+# 2 s and 1 GiB on a 45 MiB file, 60× the parse it preceded).
 function schemamissing(buf, chunks, types, opts)
     missing = fill(false, length(types))
-    for ci in chunks, lr in ci.firstdatarow:K.totalrows(ci), j in eachindex(types)
-        missing[j] && continue
-        sp = K.fieldspan(ci, lr, j)
-        if sp === nothing || sp[2] == 0 || types[j] === Missing
-            missing[j] = true
-            continue
-        end
-        pos, len = sp
-        cpos, clen, esc, st = K.cellcontent(buf, pos, len, opts)
-        if st != K.CELL_VALUE
-            missing[j] = true
-        elseif types[j] !== String
-            missing[j] = clen == 0 || esc ||
-                         !K.parsevalue(types[j], buf, cpos, cpos + clen - 1, opts)[2]
-        end
+    for j in eachindex(types)
+        missing[j] = _colmissing(types[j], buf, chunks, j, opts)
     end
     return missing
+end
+function _colmissing(::Type{T}, buf::Vector{UInt8}, chunks::Vector{K.ChunkIndex}, j::Int,
+                     opts::K.ValueOpts) where {T}
+    T === Missing && return true
+    @inbounds for ci in chunks, lr in ci.firstdatarow:K.totalrows(ci)
+        sp = K.fieldspan(ci, lr, j)
+        (sp === nothing || sp[2] == 0) && return true
+        pos, len = sp
+        cpos, clen, esc, st = K.cellcontent(buf, pos, len, opts)
+        st == K.CELL_VALUE || return true
+        if T !== String
+            (clen == 0 || esc) && return true
+            K.parsevalue(T, buf, cpos, cpos + clen - 1, opts)[2] || return true
+        end
+    end
+    return false
 end
 
 function headername(buf, ci, hrow, j, opts, cq::UInt8)
@@ -181,17 +188,8 @@ function parsebatch(b::Batches, ci::K.ChunkIndex)
     rowbase = K.chunkrowbase(b.chunks, ci)
 
     for lr in ci.firstdatarow:K.totalrows(ci)
-        nf = K.nfields(ci, lr)
         grow = rowbase + (lr - ci.firstdatarow) + 1
-        if nf < ncols
-            sp = K.fieldspan(ci, lr, 1)::Tuple{Int, Int}
-            K.pushproblem!(log, grow, 0, sp[1], :short_row,
-                           "expected $ncols fields, found $nf (remaining columns set to missing)")
-        elseif nf > ncols
-            sp = K.fieldspan(ci, lr, ncols + 1)::Tuple{Int, Int}
-            K.pushproblem!(log, grow, 0, sp[1], :long_row,
-                           "expected $ncols fields, found $nf (extra fields ignored)")
-        end
+        K.pushrowproblem!(log, grow, ci, lr, K.nfields(ci, lr), ncols)
     end
     b.unclosedquote && ci === last(b.chunks) &&
         K.pushproblem!(log, 0, 0, length(b.buf), :unclosed_quote,
@@ -310,6 +308,7 @@ function Base.getproperty(row::RowView, nm::Symbol)
 end
 
 # Typed access on demand — the CSV.Rows `parse(T, row, i)` pattern.
+typedvalue(::Type{K.CompactString}, row::RowView, j::Int) = row[j]
 function typedvalue(::Type{String}, row::RowView, j::Int)
     x = row[j]
     return x === missing ? missing : String(x)

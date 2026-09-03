@@ -3,9 +3,10 @@
 
 Fast, flexible reading and writing of delimited text.
 
-Reading — `CSV.File`, `CSV.read`, `CSV.Rows`, `CSV.Chunks`.
-Writing — `CSV.write`.
-Diagnostics — `CSV.problems`.
+Reading — `CSV.File`, `CSV.read`, `CSV.Rows`, `CSV.Chunks`, `CSV.lazy` (→ `CSV.LazyFile`).
+Writing — `CSV.write`, `CSV.RowWriter`.
+Diagnostics — `CSV.problems` (→ `CSV.Problem`), `CSV.ParseError`, `CSV.rownumber`.
+Strings — `CSV.CompactString`, the default string column element type.
 
 The implementation is an index-then-columnar kernel (`CSV.CSVKernel`): a
 quote-aware structural index is built once per file, then every column
@@ -24,7 +25,8 @@ if isdefined(Tables, :Scan)
     include("scan.jl")   # KernelScan: Tables.Scan pushdown (Tables proposal)
 end
 
-using .CSVKernel, .CSVApi, .KernelWrite
+# (no `using` of the submodules: their exports — `index`, `Dialect`, ... —
+# are not part of CSV's surface; everything public is bound by name below)
 
 # -- public surface -----------------------------------------------------------
 const File = CSVApi.File
@@ -34,12 +36,33 @@ const Rows = CSVApi.Rows
 const Chunks = CSVApi.Chunks
 const read = CSVApi.read
 const problems = CSVApi.problems
+const Problem = CSVKernel.Problem
+const ParseError = CSVKernel.ParseError
+const rownumber = CSVApi.rownumber
 # Delimiter/header sniffing (`CSVApi.sniff` → `Spec`) is internal machinery
 # behind `delim=nothing`; it is not part of the 1.0 public surface (0.10 had
 # no such API). It can be promoted later if there is demand.
 const write = KernelWrite.write
+"""
+    CSV.RowWriter(table; writeheader=true, header=nothing, kw...)
+
+Iterate `table` as CSV-formatted `String`s: the header line first (unless
+`writeheader=false`), then one line per row, rendered exactly as `CSV.write`
+renders them — `join(CSV.RowWriter(t))` is byte-identical to `CSV.write(io, t)`.
+`kw` is the writer's dialect surface (`delim`, `quotestyle`, `floatformat`,
+`dateformat`, ...). Streams: rows render on demand.
+"""
 const RowWriter = KernelWrite.RowWriter
 const CompactString = CSVKernel.CompactString
+const CompactStringVector = CSVKernel.CompactStringVector
+"""
+    CSV.materialize(col::CompactStringVector) -> Vector{String}
+
+Copy a `CompactString` column out to plain `String`s, detaching it from the
+input buffer it may view (the "own the memory" idiom; `String.(col)` is the
+same thing one allocation at a time).
+"""
+const materialize = CSVKernel.materialize
 
 # -- precompile workload -------------------------------------------------------
 # The kernel's monomorphic per-column loops are exactly what makes first-File

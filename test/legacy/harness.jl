@@ -128,7 +128,7 @@ _errorclass(e) = e isa ArgumentError ? :argument :
                  e isa TypeError ? :type :
                  e isa BoundsError ? :bounds :
                  e isa EOFError || e isa Base.IOError || e isa SystemError ? :io :
-                 e isa LegacyCSV.Error || e isa ErrorException ? :parse :
+                 e isa LegacyCSV.Error || e isa ErrorException || e isa CSV.ParseError ? :parse :
                  :other
 
 function agree(input; expect_delta=nothing, label::String="", kw...)

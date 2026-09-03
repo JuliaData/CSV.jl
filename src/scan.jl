@@ -48,9 +48,9 @@ function scan(source, sc::Tables.Scan; header::Union{Bool, AbstractVector}=true,
     maxproblems = haskey(parsekw, :maxproblems) ? parsekw.maxproblems : 10_000
     maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
     on_error = haskey(parsekw, :on_error) ? parsekw.on_error : :collect
-    on_error in (:collect, :error) ||
-        throw(ArgumentError("on_error must be :collect or :error"))
-    phasecap = max(maxproblems, on_error === :error ? 1 : 0)
+    on_error in (:collect, :warn, :error) ||
+        throw(ArgumentError("on_error must be :collect, :warn, or :error"))
+    phasecap = max(maxproblems, on_error === :collect ? 0 : 1)
 
     # -- index once; extract the header --------------------------------------
     cb = chunkbytes === nothing ? K._defaultchunkbytes(length(buf)) : chunkbytes
@@ -196,11 +196,10 @@ function _finishproblems(t::K.ParsedTable, maxproblems::Int, on_error::Symbol,
     nkeep = min(length(items), maxproblems)
     dropped += length(items) - nkeep
     resize!(items, nkeep)
-    if on_error === :error && firstproblem !== nothing
+    if firstproblem !== nothing
         nproblems = length(items) + dropped
-        p = firstproblem
-        throw(ErrorException("CSVKernel: $(p.kind) at data row $(p.row), column $(p.col): $(p.message)" *
-                             (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
+        on_error === :error && throw(K.ParseError(firstproblem, nproblems))
+        on_error === :warn && K.warnproblems("", firstproblem, nproblems)
     end
     return K.ParsedTable(K.names(t), K.columns(t), t.nrows, items, dropped)
 end

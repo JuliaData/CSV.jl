@@ -179,7 +179,7 @@ end
     ref = K.parse(commentonly; comment="#", chunkbytes=2)
     t = S.scan(commentonly, T.Scan(); comment="#", chunkbytes=2)
     @test K.problemkey.(K.problems(t)) == K.problemkey.(K.problems(ref))
-    @test_throws ErrorException S.scan(malformed, T.Scan(); maxproblems=0,
+    @test_throws K.ParseError S.scan(malformed, T.Scan(); maxproblems=0,
                                        on_error=:error, chunkbytes=2)
 end
 
@@ -227,7 +227,7 @@ end
         catch e
             e
         end
-        @test err isa ErrorException
+        @test err isa K.ParseError
         @test occursin("data row 1, column 1", sprint(showerror, err))
     end
     @test K.parse(bad; types=Int64, limit=0, on_error=:error).nrows == 0

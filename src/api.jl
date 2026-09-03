@@ -59,8 +59,8 @@ end
 
 const _LEGACYKW = Dict{Symbol, String}(
     :silencewarnings => "warnings are data now: problems(f) returns them; maxproblems caps retention",
-    :debug => "removed in 1.0; parse problems and the structural index are inspectable directly",
-    :lazystrings => "use stringtype=CSVKernel.CompactString (the default) or stringtype=String",
+    :debug => "parse problems and the structural index are inspectable directly",
+    :lazystrings => "use stringtype=CSV.CompactString (the default) or stringtype=String",
     :tasks => "use ntasks",
     :threaded => "use ntasks (ntasks=1 disables threading)",
     :rows_to_check => "use nsample",
@@ -98,8 +98,9 @@ function _sentinels(missingstring)
 end
 
 function _probedelim(dialectkw)
-    quotechar = haskey(dialectkw, :quotechar) ? dialectkw.quotechar : '"'
-    openquotechar = haskey(dialectkw, :openquotechar) ? dialectkw.openquotechar : nothing
+    # `get`, not property access: `_sample` hands its keyword Pairs here
+    quotechar = get(dialectkw, :quotechar, '"')
+    openquotechar = get(dialectkw, :openquotechar, nothing)
     oq = something(openquotechar, quotechar)
     for c in ('\x1f', '\x1e', '\x1d')
         c == oq || return c
@@ -245,7 +246,7 @@ struct Spec
 end
 
 function Base.show(io::IO, s::Spec)
-    print(io, "CSVApi.Spec(delim=", repr(s.delim), ", header=", s.header,
+    print(io, "CSV.Spec(delim=", repr(s.delim), ", header=", s.header,
           ", ", s.ncols, " column(s))")
     for (nm, T) in zip(s.names, s.types)
         print(io, "\n  ", nm, "::", T)
@@ -555,7 +556,10 @@ function _iscommentrow(buf::Vector{UInt8}, rowstart::Int, d::K.Dialect)
 end
 
 # Byte start of the first raw footer row. Empty rows count even when hygiene
-# drops them; comment rows do not count, matching CSV.jl's reverse scan.
+# drops them; comment rows do not count, matching CSV.jl's reverse scan. The
+# walk starts at the ANCHOR (the first row that matters): skipped prefix rows
+# are physical lines whose quotes are inert, so they must not open a quoted
+# region that swallows the file here either.
 function _footeroffset(buf::Vector{UInt8}, d::K.Dialect, rawstart::Int, footerskip::Int)
     footerskip == 0 && return length(buf) + 1
     starts = fill(0, footerskip)
@@ -744,7 +748,7 @@ function _prepare(source;
             throw(ArgumentError("skipto=$skipto must be past the header (row $headerrow)"))
         _skiptobyte!(chunks, rowoff(Int(skipto)))
     end
-    footer = _footeroffset(buf, d, rawstart, Int(footerskip))
+    footer = _footeroffset(buf, d, anchoroff, Int(footerskip))
     keep = footerskip == 0 ? sum(K.nrows, chunks; init=0) : _rowsbefore(chunks, footer)
     lim = limit === nothing ? (footerskip > 0 ? keep : nothing) : min(Int(limit), keep)
 
@@ -906,8 +910,8 @@ function File(source;
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
     maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
     _checkstringtype(stringtype)
-    on_error in (:collect, :error) ||
-        throw(ArgumentError("on_error must be :collect or :error"))
+    on_error in (:collect, :warn, :error) ||
+        throw(ArgumentError("on_error must be :collect, :warn, or :error"))
     capturecap = max(maxproblems, 1)
     if scan !== nothing
         # -- Tables.Scan pushdown: the scan owns selection, types, and row
@@ -937,7 +941,24 @@ function File(source;
                              stringtype, on_error, maxproblems, parallel, validate)
 end
 
-_sourcename(source) = source isa AbstractString ? String(source) : "<$(nameof(typeof(source)))>"
+# what `show` and problem messages call the source: the path for paths, a
+# short kind label otherwise (extensions add methods, e.g. FilePathsBase)
+_sourcename(source::AbstractString) = String(source)
+_sourcename(::Base.GenericIOBuffer) = "<IOBuffer>"
+_sourcename(io::IO) = "<$(nameof(typeof(io)))>"
+_sourcename(::AbstractVector{UInt8}) = "<bytes>"
+_sourcename(::Base.AbstractCmd) = "<Cmd>"
+_sourcename(source) = "<$(nameof(typeof(source)))>"
+
+# With no rows to parse, nothing can be inferred: unspecified columns are
+# `Missing`, declared ones keep their declaration — including a declared
+# `Union{Missing, T}`, which the column type honors even without a missing value
+function _zerorowtypes(types, names::Vector{Symbol}, ncols::Int; validate::Bool=true)
+    seed = K.resolvetypes(types, names, ncols; validate)
+    wm = K.declaredmissing(types, names, ncols; validate)
+    return Type[T === nothing ? Missing : (wm[j] ? Union{T, Missing} : T)
+                for (j, T) in enumerate(seed)]
+end
 
 # the typed parse over an existing index — File's classic path, and what
 # File(::LazyFile) reuses so the scan is never repeated
@@ -945,21 +966,20 @@ function _filefromprepared(p::Prepared, nm::String; types=nothing, select=nothin
                            pool=DEFAULT_POOL, downcast::Bool=false, stringtype::Type=K.CompactString,
                            on_error::Symbol=:collect, maxproblems::Int=10_000,
                            parallel::Bool=Threads.nthreads() > 1, validate::Bool=true)
+    # an explicit string type in `types` (String, InlineString, String15, ...)
+    # names that column's OUTPUT type; the kernel parses it as text and the
+    # column materializes at the door. `stringtype` governs inferred text only.
+    types, stringreq = _stringsinktypes(types, p.names, p.ncols; validate)
     sel = _resolveselect(select, drop, p.names)
-    parsetypes = if p.limit == 0
-        Type[T === nothing ? Missing : T for T in K.resolvetypes(types, p.names, p.ncols; validate)]
-    else
-        types
-    end
+    parsetypes = p.limit == 0 ? _zerorowtypes(types, p.names, p.ncols; validate) : types
     poolspecs = _resolvepool(pool, p.names, p.ncols; validate)   # by SOURCE column
     t = K.parse(p.buf; index=p.bi, header=p.names, types=parsetypes, select=sel, limit=p.limit,
                 on_error=:collect, p.parsekw...)
     t, firstproblem = _mergeproblems(t, p.headerlog, maxproblems)
-    if on_error === :error && firstproblem !== nothing
-        pr = firstproblem
+    if firstproblem !== nothing
         nproblems = length(t.problems) + t.droppedproblems
-        throw(ErrorException("CSVKernel: $(pr.kind) at data row $(pr.row), column $(pr.col): " *
-                             pr.message * (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
+        on_error === :error && throw(K.ParseError(nm, firstproblem, nproblems))
+        on_error === :warn && K.warnproblems(nm, firstproblem, nproblems)
     end
     t = _narrowtypes(t, K.requestedtypes(types, p.names, p.ncols; validate), sel)
     # the kernel emits selected columns in file order: map source specs to them
@@ -969,7 +989,47 @@ function _filefromprepared(p::Prepared, nm::String; types=nothing, select=nothin
     t = _pooledarrays(t, poolS)
     downcast && (t = _downcast(t))
     stringtype === K.CompactString || (t = _materializestrings(t, stringtype))
+    t = _materializerequested(t, stringreq, keep)
     return File(nm, t, Dict(n => j for (j, n) in enumerate(K.names(t))))
+end
+
+# Split the `types` spec into what the kernel parses (string sink types become
+# `String`, the kernel's text type) and the per-column OUTPUT string type the
+# user asked for (nothing where they did not). `CSV.CompactString` is accepted
+# and means the default.
+function _stringsinktypes(types, names::Vector{Symbol}, ncols::Int; validate::Bool=true)
+    req = Vector{Union{Nothing, Type}}(nothing, ncols)
+    types === nothing && return types, req
+    sink(T) = T isa Type && (S = Base.nonmissingtype(T); S !== Union{} && S !== Missing && _stringsink(S)) ? Base.nonmissingtype(T) : nothing
+    tostring(T) = (S = sink(T); S === nothing ? T : (Missing <: T ? Union{String, Missing} : String))
+    if types isa Type
+        S = sink(types)
+        S === nothing && return types, req
+        fill!(req, S)
+        return tostring(types), req
+    elseif types isa AbstractVector
+        length(types) == ncols || return types, req     # the kernel reports the length mismatch
+        req .= sink.(types)
+        return Any[tostring(T) for T in types], req
+    elseif types isa AbstractDict
+        any(v -> sink(v) !== nothing, values(types)) || return types, req
+        for (j, T) in K._resolvekeys(types, names, ncols, "types"; validate)
+            req[j] = sink(T)
+        end
+        return Dict(k => tostring(v) for (k, v) in types), req
+    end
+    return types, req
+end
+function _materializerequested(t::K.ParsedTable, req, keep)
+    all(x -> x === nothing, req) && return t
+    cols = AbstractVector[t.columns...]
+    for (o, j) in enumerate(keep)
+        S = req[j]
+        (S === nothing || S === K.CompactString) && continue
+        c = cols[o]
+        c isa K.CompactStringVector && (cols[o] = _materializecolumn(S, c))
+    end
+    return K.ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
 end
 
 # KernelScan is a sibling submodule included after CSVApi; resolve it through
@@ -1071,9 +1131,7 @@ function _chaincolumn(pieces::Vector{AbstractVector}, counts::Vector{Int}, total
         else
             S = Base.nonmissingtype(eltype(c))
             if S !== Union{} && S <: AbstractString
-                @inbounds for (k, x) in enumerate(c)
-                    out[off+k] = x === missing ? missing : String(x)
-                end
+                _chainstrings!(out, off, c)   # barrier: one dispatch per piece, not per cell
             else
                 copyto!(out, off + 1, c, 1, n)
             end
@@ -1081,6 +1139,12 @@ function _chaincolumn(pieces::Vector{AbstractVector}, counts::Vector{Int}, total
         off += n
     end
     return pooled ? PooledArray(out) : out
+end
+function _chainstrings!(out::Vector, off::Int, c::AbstractVector)
+    @inbounds for (k, x) in enumerate(c)
+        out[off + k] = x === missing ? missing : String(x)
+    end
+    return out
 end
 
 function _mergeproblems(t::K.ParsedTable, headerlog::Union{Nothing, K.ProblemLog}, cap::Int)
@@ -1438,26 +1502,31 @@ function _narrowtypes(t::K.ParsedTable, req, sel)
         T === nothing && continue
         c = cols[o]
         Base.nonmissingtype(eltype(c)) in (Int64, Int128, Float64) || continue
-        out = Vector{Union{T, Missing}}(undef, length(c))
-        # The kernel widens a user-declared Union{Missing,T} before this door.
-        # Preserve that declaration even when every value is present.
-        anymissing = Missing <: eltype(c)
-        @inbounds for i in eachindex(c)
-            x = c[i]
-            if x === missing
-                out[i] = missing
-                anymissing = true
-            elseif T <: Integer && !(typemin(T) <= x <= typemax(T))
-                out[i] = missing
-                anymissing = true
-                push!(problems, K.Problem(i, j, 0, :invalid_value, "value $x does not fit $T"))
-            else
-                out[i] = convert(T, x)
-            end
-        end
-        cols[o] = anymissing ? out : convert(Vector{T}, out)
+        cols[o] = _narrowcol(T, c, j, problems)   # one dynamic dispatch per column
     end
     return K.ParsedTable(t.names, cols, t.nrows, problems, t.droppedproblems)
+end
+# monomorphic in (T, typeof(c)): the loop below compiles to a plain convert
+# (the untyped loop was 926 ms vs 0.5 ms per million cells)
+function _narrowcol(::Type{T}, c::AbstractVector, j::Int, problems::Vector{K.Problem}) where {T}
+    out = Vector{Union{T, Missing}}(undef, length(c))
+    # The kernel widens a user-declared Union{Missing,T} before this door.
+    # Preserve that declaration even when every value is present.
+    anymissing = Missing <: eltype(c)
+    @inbounds for i in eachindex(c)
+        x = c[i]
+        if x === missing
+            out[i] = missing
+            anymissing = true
+        elseif T <: Integer && !(typemin(T) <= x <= typemax(T))
+            out[i] = missing
+            anymissing = true
+            push!(problems, K.Problem(i, j, 0, :invalid_value, "value $x does not fit $T"))
+        else
+            out[i] = convert(T, x)
+        end
+    end
+    return anymissing ? out : convert(Vector{T}, out)
 end
 
 # downcast=true: Int64 columns shrink to the smallest of Int8/Int16/Int32 that
@@ -1539,7 +1608,7 @@ _stringsink(::Type{String}) = true
 _stringsink(::Type) = false
 _checkstringtype(T) =
     (T isa Type && _stringsink(T)) ||
-        throw(ArgumentError("stringtype must be CSVKernel.CompactString, String, or a " *
+        throw(ArgumentError("stringtype must be CSV.CompactString, String, or a " *
                             "type provided by an extension (e.g. InlineString with " *
                             "InlineStrings loaded); got $T"))
 
@@ -1574,6 +1643,13 @@ Tables.getcolumn(f::File, nm::Symbol) = getfield(f, :table)[nm]
 Tables.rowcount(f::File) = getfield(f, :table).nrows
 Tables.schema(f::File) = Tables.schema(getfield(f, :table))
 
+"""
+    CSV.problems(f) -> Vector{CSV.Problem}
+
+The parse problems recorded while building `f` (a `File`, or one `Chunks`
+batch), sorted by position in the source and capped at `maxproblems`. Empty
+when the input parsed cleanly. See [`Problem`](@ref) for the kinds.
+"""
 problems(f::File) = K.problems(getfield(f, :table))
 problems(t::K.ParsedTable) = K.problems(t)
 
@@ -1591,25 +1667,47 @@ struct FileRow <: Tables.AbstractRow
 end
 
 Base.length(f::File) = getfield(f, :table).nrows
+Base.size(f::File) = (length(f), length(K.names(getfield(f, :table))))
+Base.size(f::File, d::Integer) = size(f)[d]
 Base.eltype(::Type{File}) = FileRow
 Base.iterate(f::File, i::Int=1) = i > length(f) ? nothing : (FileRow(f, i), i + 1)
+Base.firstindex(::File) = 1
+Base.lastindex(f::File) = length(f)
 Base.getindex(f::File, i::Int) = (1 <= i <= length(f) || throw(BoundsError(f, i)); FileRow(f, i))
+Base.getindex(f::File, r::AbstractVector{<:Integer}) = [f[Int(i)] for i in r]
+# `f[:col]` / `f["col"]` are the column (0.10 spelling); `f[i]` is row i
+Base.getindex(f::File, nm::Symbol) = Tables.getcolumn(f, nm)
+Base.getindex(f::File, nm::AbstractString) = Tables.getcolumn(f, Symbol(nm))
+Tables.getcolumn(f::File, nm::AbstractString) = Tables.getcolumn(f, Symbol(nm))
 
 Tables.columnnames(r::FileRow) = K.names(getfield(getfield(r, :f), :table))
 Tables.getcolumn(r::FileRow, j::Int) =
     K.columns(getfield(getfield(r, :f), :table))[j][getfield(r, :row)]
 Tables.getcolumn(r::FileRow, nm::Symbol) =
     Tables.getcolumn(r, getfield(getfield(r, :f), :lookup)[nm])
+Base.getindex(r::FileRow, nm::AbstractString) = Tables.getcolumn(r, Symbol(nm))
+"""
+    CSV.rownumber(row) -> Int
+
+The 1-based data-row number of a row from `File` iteration or `Rows`.
+"""
 rownumber(r::FileRow) = getfield(r, :row)
 
+# type names as the user spells them (`CSV.CompactString`), not the submodule path
+_typestr(T) = replace(string(T), "CSV.CSVKernel." => "CSV.", "CSV.CSVApi." => "CSV.")
+function _showschema(io::IO, names, cols)
+    for (nm, c) in zip(names, cols)
+        print(io, "\n  ", nm, "::", _typestr(eltype(c)))
+    end
+end
 function Base.show(io::IO, f::File)
     t = getfield(f, :table)
-    println(io, "CSVApi.File($(repr(getfield(f, :name)))):")
-    println(io, "Size: $(t.nrows) x $(length(K.names(t)))")
-    show(io, Tables.schema(t))
+    print(io, "CSV.File(", repr(getfield(f, :name)), "): ", t.nrows, " × ", length(K.names(t)))
+    _showschema(io, K.names(t), K.columns(t))
     nproblems = length(t.problems) + t.droppedproblems
     nproblems > 0 &&
-        print(io, "\n$nproblems problem(s) recorded — $(length(t.problems)) retained by problems(f)")
+        print(io, "\n  ", nproblems, " parse problem", nproblems == 1 ? "" : "s",
+              " recorded (", length(t.problems), " retained; CSV.problems(f))")
 end
 
 """
@@ -1624,6 +1722,11 @@ parsed columns are freshly allocated, so they are handed over as
 without copying.
 """
 read(source, sink; kw...) = sink(Tables.CopiedColumns(File(source; kw...)))
+read(source, ::Type{M}; kw...) where {M <: AbstractMatrix} = Tables.matrix(File(source; kw...))
+read(source; kw...) =
+    throw(ArgumentError("CSV.read needs a sink: CSV.read(source, DataFrame) (with DataFrames " *
+                        "loaded), CSV.read(source, Tables.columntable), ...; for CSV's own " *
+                        "table use CSV.File(source)"))
 
 # ---------------------------------------------------------------------------
 # lazy / LazyFile — the structural index AS a table
@@ -1794,6 +1897,7 @@ Base.size(lf::LazyFile) = (getfield(lf, :nrows), length(getfield(lf, :columns)))
 Base.size(lf::LazyFile, d::Int) = size(lf)[d]
 Base.length(lf::LazyFile) = getfield(lf, :nrows)
 Base.getindex(lf::LazyFile, nm::Symbol) = getfield(lf, :columns)[getfield(lf, :lookup)[nm]]
+Base.getindex(lf::LazyFile, nm::AbstractString) = lf[Symbol(nm)]
 Base.getindex(lf::LazyFile, j::Int) = getfield(lf, :columns)[j]
 Base.getindex(lf::LazyFile, i::Int, j::Int) = getfield(lf, :columns)[j][i]
 Base.getindex(lf::LazyFile, i::Int, nm::Symbol) = lf[nm][i]
@@ -1811,11 +1915,8 @@ Tables.schema(lf::LazyFile) =
     Tables.Schema(getfield(lf, :names), Type[eltype(c) for c in getfield(lf, :columns)])
 function Base.show(io::IO, lf::LazyFile)
     n, m = size(lf)
-    print(io, "CSV.LazyFile(", repr(getfield(lf, :name)), "): ", n, " row", n == 1 ? "" : "s",
-          " × ", m, " column", m == 1 ? "" : "s", " (indexed, cells lazy)")
-    for (nm, c) in zip(getfield(lf, :names), getfield(lf, :columns))
-        print(io, "\n  ", nm, "::", eltype(c))
-    end
+    print(io, "CSV.LazyFile(", repr(getfield(lf, :name)), "): ", n, " × ", m, " (indexed, cells lazy)")
+    _showschema(io, getfield(lf, :names), getfield(lf, :columns))
 end
 
 """
@@ -1827,8 +1928,22 @@ the scan is not repeated. `kw` are `File`'s type/string/pool/engine keywords
 """
 function File(lf::LazyFile; types=nothing, select=nothing, drop=nothing, pool=DEFAULT_POOL,
               downcast::Bool=false, stringtype::Type=K.CompactString, strict::Bool=false,
-              on_error::Symbol=strict ? :error : :collect, maxproblems::Int=10_000,
-              parallel::Bool=Threads.nthreads() > 1, validate::Bool=true)
+              on_error::Symbol=strict ? :error : :collect,
+              maxwarnings::Union{Nothing, Int}=nothing,
+              maxproblems::Int=something(maxwarnings, 10_000),
+              ntasks::Union{Nothing, Int}=nothing,
+              parallel::Bool=ntasks === nothing ? Threads.nthreads() > 1 : ntasks > 1,
+              validate::Bool=true, kw...)
+    for k in keys(kw)
+        haskey(_LEGACYKW, k) && throw(ArgumentError("$k was removed in 1.0: $(_LEGACYKW[k])"))
+        k in _PREPKW || k in _DIALECTKW || k in _VALUEKW || k in _INDEXKW ?
+            throw(ArgumentError("$k was fixed when the LazyFile was created; pass it to CSV.lazy")) :
+            throw(ArgumentError("unsupported File(::LazyFile) keyword $k"))
+    end
+    ntasks === nothing || ntasks >= 1 || throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
+    maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
+    on_error in (:collect, :warn, :error) ||
+        throw(ArgumentError("on_error must be :collect, :warn, or :error"))
     _checkstringtype(stringtype)
     return _filefromprepared(getfield(lf, :prepared), getfield(lf, :name); types, select, drop,
                              pool, downcast, stringtype, on_error, maxproblems, parallel, validate)
@@ -1839,42 +1954,50 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    CSVApi.Rows(source; types=nothing, kw...)
+    CSV.Rows(source; types=nothing, stringtype=CompactString, kw...)
 
-`CSV.Rows` analog: iterate lightweight row views; each cell materializes only
-on access (`Union{String, Missing}` by default). `types` (Type | Vector |
-Dict) makes indexing return typed values parsed on demand through the same
-kernel value layer. Row-positional keywords (`header`, `skipto`, `limit`,
-`footerskip`) and dialect/value keywords match [`File`](@ref).
+Stream rows without materializing columns: iterating yields lightweight row
+views (`row.col`, `row[:col]`, `row[i]`) whose cells materialize only on
+access — `CompactString` views for text (`missing` for empty cells), or
+typed values parsed on demand for columns named in `types` (Type | Vector |
+Dict). `stringtype=String` (or an extension type such as `InlineString`)
+materializes each string cell as it is accessed. Row-positional keywords
+(`header`, `skipto`, `limit`, `footerskip`) and dialect/value keywords match
+[`File`](@ref). `reusebuffer` is accepted for 0.10 compatibility and inert.
 """
 struct Rows
+    name::String
     inner::E.Rows
     types::Union{Nothing, Vector{Type}}
     limit::Union{Nothing, Int}
     stringtype::Type
 end
 
-"""
-    CSVApi.Rows(source; types=nothing, stringtype=CompactString, kw...)
-
-`CSV.Rows` analog: stream rows without materializing columns. Cells are lazy
-views by default (`CompactString` for text, on-demand typed access when
-`types` is given); `stringtype=String` (or an extension type such as
-`InlineString`) materializes each string cell as it is accessed. `reusebuffer`
-is accepted for 0.10 compatibility and inert: there is no per-row buffer.
-"""
 function Rows(source; types=nothing, reusebuffer::Bool=false,
               stringtype::Type=K.CompactString, kw...)
     allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...)
     _checkkwargs("Rows", kw, allowed)
     _checkstringtype(stringtype)
     p = _prepare(source; kw...)
+    # columns `types` leaves unspecified keep the untyped door's lazy cells
+    # (CompactString views, materialized per `stringtype` on access) — the
+    # same thing they are without `types=`
     seed = types === nothing ? nothing :
-           Type[T === nothing ? String : T
+           Type[T === nothing ? K.CompactString : T
                 for T in K.resolvetypes(types, p.names, p.ncols; validate=get(kw, :validate, true))]
     inner = E.Rows(p.buf, p.bi.chunks, p.names,
                    Dict(nm => j for (j, nm) in enumerate(p.names)), p.opts, p.d)
-    return Rows(inner, seed, p.limit, stringtype)
+    return Rows(_sourcename(source), inner, seed, p.limit, stringtype)
+end
+Base.names(r::Rows) = getfield(r, :inner).names
+Base.propertynames(r::Rows) = ()
+function Base.show(io::IO, r::Rows)
+    sch = Tables.schema(r)
+    print(io, "CSV.Rows(", repr(getfield(r, :name)), "): ", length(sch.names), " column",
+          length(sch.names) == 1 ? "" : "s")
+    for (nm, T) in zip(sch.names, sch.types)
+        print(io, "\n  ", nm, "::", _typestr(T))
+    end
 end
 
 Tables.istable(::Type{Rows}) = true
@@ -1883,7 +2006,9 @@ Tables.rows(r::Rows) = r
 Tables.schema(r::Rows) = r.types === nothing ?
     Tables.Schema(r.inner.names, fill(Union{_rowstringtype(r.stringtype), Missing},
                                       length(r.inner.names))) :
-    Tables.Schema(r.inner.names, Type[Union{T, Missing} for T in r.types])
+    Tables.Schema(r.inner.names,
+                  Type[Union{T === K.CompactString || T === String ? _rowstringtype(r.stringtype) : T,
+                             Missing} for T in r.types])
 _rowstringtype(T) = T === K.CompactString ? K.CompactString : T
 
 struct Row <: Tables.AbstractRow
@@ -1917,6 +2042,7 @@ Tables.getcolumn(row::Row, nm::Symbol) =
     Tables.getcolumn(row, getfield(getfield(row, :view), :r).lookup[nm])
 Base.getindex(row::Row, j::Int) = Tables.getcolumn(row, j)
 Base.getindex(row::Row, nm::Symbol) = Tables.getcolumn(row, nm)
+Base.getindex(row::Row, nm::AbstractString) = Tables.getcolumn(row, Symbol(nm))
 rownumber(row::Row) = getfield(getfield(row, :view), :rownumber)
 
 # ---------------------------------------------------------------------------
@@ -1924,15 +2050,18 @@ rownumber(row::Row) = getfield(getfield(row, :view), :rownumber)
 # ---------------------------------------------------------------------------
 
 """
-    CSVApi.Chunks(source; ntasks=Threads.nthreads(), kw...)
+    CSV.Chunks(source; ntasks=Threads.nthreads(), kw...)
 
-`CSV.Chunks` analog: iterate the file as a sequence of `File`-shaped tables.
-Unlike `CSV.Chunks`, every batch reports the SAME column types — a whole-window
-schema prepass over the index makes the batch schema stable by construction.
-`ntasks` sizes the batches (or pass `chunkbytes` directly). `stringtype` and
-`pool` behave as in [`File`](@ref) (pooling is per batch; a single policy).
+Iterate the file as a sequence of [`File`](@ref)s, one per batch. Every batch
+reports the SAME column types — a whole-window schema prepass over the index
+makes the batch schema stable by construction (0.10 re-inferred per chunk).
+`ntasks` is the number of batches (or pass `chunkbytes` directly).
+`stringtype` and `pool` behave as in `File` (pooling is per batch; a single
+policy). Satisfies `Tables.partitions`, so partition-aware sinks consume it
+directly; `CSV.write(sink, chunks)` streams every batch under one header.
 """
 struct Chunks
+    name::String
     inner::E.Batches
     headerlog::K.ProblemLog
     maxproblems::Int
@@ -1941,8 +2070,19 @@ struct Chunks
 end
 
 Base.length(c::Chunks) = length(getfield(c, :inner))
-Base.eltype(::Type{Chunks}) = K.ParsedTable
+Base.eltype(::Type{Chunks}) = File
 Tables.partitions(c::Chunks) = c
+Base.names(c::Chunks) = getfield(c, :inner).names
+Base.propertynames(c::Chunks) = ()
+function Base.show(io::IO, c::Chunks)
+    b = getfield(c, :inner)
+    print(io, "CSV.Chunks(", repr(getfield(c, :name)), "): ", length(b), " batch",
+          length(b) == 1 ? "" : "es", ", ", length(b.names), " column",
+          length(b.names) == 1 ? "" : "s")
+    for (nm, T, am) in zip(b.names, b.seedtypes, b.allowmissing)
+        print(io, "\n  ", nm, "::", _typestr(am ? Union{T, Missing} : T))
+    end
+end
 
 function Base.iterate(c::Chunks, state::Int=1)
     it = iterate(getfield(c, :inner), state)
@@ -1959,7 +2099,8 @@ function Base.iterate(c::Chunks, state::Int=1)
     ps === nothing || (t = _poolcolumns(t, fill(ps, length(t.columns))))
     t = _pooledarrays(t, poolS)
     st === K.CompactString || (t = _materializestrings(t, st))
-    return t, next
+    nm = getfield(c, :name) * "[" * string(state) * "]"
+    return File(nm, t, Dict(n => j for (j, n) in enumerate(K.names(t)))), next
 end
 
 function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
@@ -1974,6 +2115,7 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
         throw(ArgumentError("Chunks takes a single pool policy (Bool / ratio / (ratio, cap))"))
     allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...)
     _checkkwargs("Chunks", kw, allowed)
+    nm = _sourcename(source)
     if !haskey(kw, :chunkbytes)
         buf = resolvesource(source;
                             buffer_in_memory=get(kw, :buffer_in_memory, false),
@@ -2002,7 +2144,7 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     unclosedquote = p.bi.unclosedquote && (p.limit === nothing || p.limit >= fullrows)
     inner = E.Batches(p.buf, chunks, p.names, seedtypes, userprovided, allowmissing,
                       p.opts, p.d, capturecap, unclosedquote)
-    return Chunks(inner, p.headerlog, maxproblems, stringtype, poolspec)
+    return Chunks(nm, inner, p.headerlog, maxproblems, stringtype, poolspec)
 end
 
 end # module CSVApi
