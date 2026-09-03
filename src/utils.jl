@@ -183,6 +183,12 @@ _promote(::Type{PooledVector{T, R, RA}}, x::PooledVector{T, R, RA}) where {T, R,
 _promote(::Type{PooledVector{T, R, RA}}, x::PooledVector{T, R, RA}) where {T>:Missing, R, RA} = x  # avoid ambiguity
 
 function chaincolumns!(@nospecialize(a), @nospecialize(b))
+    if b isa ChainedVector
+        for x in b.arrays
+            a = chaincolumns!(a, x)
+        end
+        return a
+    end
     if a isa PooledArray || b isa PooledArray
         # special-case PooledArrays apart from other container types
         # because we want the outermost array to be PooledArray instead of ChainedVector
