@@ -6,7 +6,7 @@
 # default behavior); a specific `String15` etc. pins the width, erroring on
 # an over-long value like `String15("...")` would.
 #
-# Conversion runs from the CompactString payloads directly: inline values
+# Conversion runs from the DataString payloads directly: inline values
 # rebuild from the payload words, views copy out of the retained buffer — one
 # pass, no intermediate Vector{String}.
 module CSVInlineStringsExt
@@ -15,12 +15,7 @@ using CSV, InlineStrings
 
 const _WIDTHS = (String1, String3, String7, String15, String31, String63, String127, String255)
 
-# InlineStrings 1.1 stored String1 in one byte (with one byte of payload), while
-# newer layouts use a separate length byte. The other widths have always used
-# `sizeof(T) - 1` payload bytes. Old String1 also cannot encode the empty value.
-@inline _capacity(::Type{String1}) = 1
 @inline _capacity(::Type{T}) where {T <: InlineString} = sizeof(T) - 1
-const _STRING1_HAS_EMPTY = sizeof(String1) > 1
 
 # validation hook
 CSV._stringsink(::Type{InlineString}) = true
@@ -29,13 +24,12 @@ CSV._stringsink(::Type{T}) where {T <: InlineString} = true
 # smallest InlineString type holding `n` bytes
 function _fitwidth(n::Int)
     for T in _WIDTHS
-        n == 0 && T === String1 && !_STRING1_HAS_EMPTY && continue
         n <= _capacity(T) && return T
     end
     throw(ArgumentError("value of $n bytes exceeds the InlineString maximum of 255"))
 end
 
-@inline function _inl(::Type{T}, s::CSV.CompactString) where {T <: InlineString}
+@inline function _inl(::Type{T}, s::CSV.DataString) where {T <: InlineString}
     n = ncodeunits(s)
     n > _capacity(T) &&
         throw(ArgumentError("value of $n bytes does not fit $T"))
@@ -55,7 +49,7 @@ end
     end
 end
 
-function _widthfor(col::CSV.CompactStringVector)
+function _widthfor(col::CSV.DataStringVector)
     m = 0
     @inbounds for i in eachindex(col)
         x = col[i]
@@ -65,10 +59,10 @@ function _widthfor(col::CSV.CompactStringVector)
     return _fitwidth(m)
 end
 
-function CSV._materializecolumn(::Type{InlineString}, col::CSV.CompactStringVector)
+function CSV._materializecolumn(::Type{InlineString}, col::CSV.DataStringVector)
     return CSV._materializecolumn(_widthfor(col), col)
 end
-function CSV._materializecolumn(::Type{T}, col::CSV.CompactStringVector) where {T <: InlineString}
+function CSV._materializecolumn(::Type{T}, col::CSV.DataStringVector) where {T <: InlineString}
     n = length(col)
     if Missing <: eltype(col)
         out = Vector{Union{T, Missing}}(undef, n)
@@ -92,12 +86,12 @@ function CSV._materializecolumn(::Type{T}, col::CSV.CompactStringVector) where {
 end
 
 # Rows(stringtype=InlineString): per-cell, smallest fitting width
-CSV._rowstring(::Type{InlineString}, x::CSV.CompactString) = _inl(_fitwidth(ncodeunits(x)), x)
-CSV._rowstring(::Type{T}, x::CSV.CompactString) where {T <: InlineString} = _inl(T, x)
+CSV._rowstring(::Type{InlineString}, x::CSV.DataString) = _inl(_fitwidth(ncodeunits(x)), x)
+CSV._rowstring(::Type{T}, x::CSV.DataString) where {T <: InlineString} = _inl(T, x)
 
-CSV._levelvector(::Type{InlineString}, levels::CSV.CompactStringVector, n::Int) =
+CSV._levelvector(::Type{InlineString}, levels::CSV.DataStringVector, n::Int) =
     CSV._levelvector(_widthfor(levels), levels, n)
-CSV._levelvector(::Type{T}, levels::CSV.CompactStringVector, n::Int) where {T <: InlineString} =
+CSV._levelvector(::Type{T}, levels::CSV.DataStringVector, n::Int) where {T <: InlineString} =
     T[_inl(T, levels[i]) for i in 1:n]
 
 end # module

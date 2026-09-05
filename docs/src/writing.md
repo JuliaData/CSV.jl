@@ -6,7 +6,7 @@ the generated string path vector. A FilePathsBase path returns the original
 path object.
 
 ```@example writing
-using CSV
+using CSV, DataStrings
 
 table = (name=["Ada", "Grace"], score=[9.5, missing])
 output = IOBuffer()
@@ -37,7 +37,7 @@ header unless `writeheader=true` is explicit. For a seekable `IO`,
 again during append.
 
 ```@example writing-header
-using CSV
+using CSV, DataStrings
 
 output = IOBuffer()
 CSV.write(output, (a=[1, 2], b=[3, 4]); header=["left", "right"])
@@ -68,7 +68,7 @@ The delimiter and quote-related characters must be single ASCII bytes. A
 newline can be a character or string such as `"\r\n"`.
 
 ```@example writing-quotes
-using CSV
+using CSV, DataStrings
 
 output = IOBuffer()
 CSV.write(output, (value=["plain", "with,comma", ""]); quotestyle=:minimal)
@@ -158,7 +158,7 @@ row strings. It yields the header first unless `writeheader=false`. It accepts
 the same dialect, value-format, and BOM options as `CSV.write`.
 
 ```@example row-writer
-using CSV
+using CSV, DataStrings
 
 rows = collect(CSV.RowWriter((id=[1, 2], label=["a", "b"])))
 join(rows)
@@ -166,3 +166,7 @@ join(rows)
 
 Rows render on demand. `join(CSV.RowWriter(table))` is byte-identical to
 `CSV.write(io, table)` with the same row-writer options.
+
+DataDecimals values retain their decimal spelling. The `decimal` option applies
+to these values as well as floating-point values. For example, `decimal=','`
+writes `1.20` as `1,20` and quotes the field when the delimiter is also a comma.

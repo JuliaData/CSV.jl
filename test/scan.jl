@@ -43,16 +43,16 @@ scans = [
     T.Scan(select = T.Not((:notes, :flag))),
     T.Scan(select = (:qty => Int64, :qty => Int64 => :qty2)),      # dup w/ rename
     T.Scan(filter = T.col(:price) > 150.0),
-    T.Scan(filter = (T.col(:price) > 100) & T.in_(T.col(:region), ("east", "west"))),
+    T.Scan(filter = (T.col(:price) > 100) & T.colin(T.col(:region), ("east", "west"))),
     T.Scan(filter = T.isnull(T.col(:region)) | startswith(T.col(:notes), "note a")),
     T.Scan(filter = !T.isnull(T.col(:notes)), select = (:notes, :region)),
-    T.Scan(filter = T.coleq(T.col(:flag), true), select = (:qty, :flag => :f)),
+    T.Scan(filter = T.colcmp(==, T.col(:flag), true), select = (:qty, :flag => :f)),
     T.Scan(limit = 17),
     T.Scan(limit = 17, offset = 5),
     T.Scan(offset = 1990),
     T.Scan(filter = T.col(:qty) >= 25, limit = 100, offset = 10,
            select = (:qty, :price => Float64 => :p)),
-    T.Scan(filter = T.colne(T.col(:region), "east")),              # != never matches missing
+    T.Scan(filter = T.colcmp(!=, T.col(:region), "east")),              # != never matches missing
 ]
 
 @testset "pushdown matches a generic scan" begin
@@ -87,7 +87,7 @@ end
     @test keys(nt) == (:region,) && length(nt.region) == 2
     # a residual handed to Tables.scan agrees with full pushdown
     partial = CSV.File(IOBuffer(csv); scan=T.Scan(scan; filter=nothing, limit=nothing))
-    @test all(isequal(collect(Tables.getcolumn(T.scan(partial, T.Scan(scan; select=nothing)), nm)),
+    @test all(isequal(collect(Tables.getcolumn(T.scan(partial, T.Scan(scan; select=T.All())), nm)),
                       collect(ref[nm])) for nm in keys(ref))
 end
 
@@ -131,7 +131,7 @@ end
 
 @testset "masked inference: excluded garbage cannot degrade a type (pinned divergence)" begin
     dirty = "region,qty\neast,1\nwest,oops\neast,3\n"
-    scan = T.Scan(filter = T.coleq(T.col(:region), "east"))
+    scan = T.Scan(filter = T.colcmp(==, T.col(:region), "east"))
     t = scanfile(dirty, scan)
     @test t[:qty] isa Vector{Int64} && t[:qty] == [1, 3]            # pushdown: Int64
     ref = T.scan(S.parse(dirty), scan)
@@ -140,10 +140,10 @@ end
 
 @testset "problems reference input rows; excluded rows do not report" begin
     dirty = "a,b\n1,x\n2,y\nbad,z\n4,w\n"
-    scan = T.Scan(select = (:a => Int64, :b), filter = T.colne(T.col(:b), "z"))
+    scan = T.Scan(select = (:a => Int64, :b), filter = T.colcmp(!=, T.col(:b), "z"))
     t = scanfile(dirty, scan)
     @test isequal(collect(t[:a]), [1, 2, 4]) && isempty(S.problems(t))   # bad row excluded ⇒ silent
-    scan2 = T.Scan(select = (:a => Int64,), filter = T.colne(T.col(:b), "y"))
+    scan2 = T.Scan(select = (:a => Int64,), filter = T.colcmp(!=, T.col(:b), "y"))
     t2 = scanfile(dirty, scan2)
     @test any(p -> p.row == 3 && p.col == 1, S.problems(t2))        # row 3 in INPUT numbering
 
@@ -243,7 +243,7 @@ end
     escaped = "a\nx\ny\n\"long " * repeat("q", 40) * " \"\"escaped\"\" tail\"\n"
     t = S.parse(escaped; limit=2, chunkbytes=1 << 20, parallel=false)
     @test String.(t[:a]) == ["x", "y"]
-    @test isempty(t[:a].extra)                                    # excluded row was not materialized
+    @test isempty(t[:a].buffers[2])                                    # excluded row was not materialized
 
     # Direct String chunks own private escaped buffers. A limit inside a chunk
     # must concatenate and rebase only included rows, including with a reused
@@ -270,7 +270,7 @@ end
         t = S.parse(directbuf; index=directindex, header=[:id, :s], select=[:s],
                     limit=directlimit, parallel=par, nsample=1)
         @test String.(t[:s]) == directvalues[1:directlimit]
-        @test t[:s].extra == expectedextra
+        @test t[:s].buffers[2] == expectedextra
         @test all(i -> (S.csbufidx(t[:s].payloads[i]) == 1) == occursin('\"', directvalues[i]),
                   1:directlimit)
     end

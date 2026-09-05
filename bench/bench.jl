@@ -6,7 +6,7 @@
 # comparability, stated up front:
 #   * CSV.File includes public API validation and option normalization. K.parse
 #     starts from bytes at the lower-level kernel boundary.
-#   * The "kernel+str" column also materializes every CompactString column to
+#   * The "kernel+str" column also materializes every DataString column to
 #     owned strings. This makes the cost of owning text visible.
 #   * Timings are best-of-N wall clock with auto-repetition for tiny inputs.
 #
@@ -131,7 +131,7 @@ fmttime(t) = t >= 1 ? string(round(t, digits=2), " s ") :
              string(round(t * 1e6, digits=0), " µs")
 
 materializestrings(t::K.ParsedTable) =
-    foreach(c -> c isa K.CompactStringVector && K.materialize(c), K.columns(t))
+    foreach(c -> c isa K.DataStringVector && K.materialize(c), K.columns(t))
 
 function runcell(shape::Symbol, mb::Float64)
     buf = makedata(shape, round(Int, mb * 2^20))
@@ -178,7 +178,7 @@ function main(sizes)
         flush(stdout)
     end
     println()
-    println("ratios > 1 mean the kernel path is faster; kernel+str owns CompactString columns")
+    println("ratios > 1 mean the kernel path is faster; kernel+str owns DataString columns")
 end
 
 main(isempty(ARGS) ? (0.01, 1.0, 20.0, 200.0) : Tuple(Base.parse(Float64, a) for a in ARGS))

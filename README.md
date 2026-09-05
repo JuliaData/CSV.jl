@@ -24,7 +24,7 @@ existing application.
 ## Quick start
 
 ```julia
-using CSV
+using CSV, DataStrings
 
 file = CSV.File("input.csv")
 CSV.write("output.csv", file)
@@ -67,3 +67,9 @@ changes and own the final approval.
   `load` and `save` integration.
 - [DLMReader.jl](https://github.com/sl-solution/DLMReader.jl) reads delimited
   data and integrates with InMemoryDatasets.jl.
+
+The 1.0 rewrite uses shared string columns from DataStrings.jl and supports
+exact DataDecimals.jl schemas. Decimal inference is optional:
+`CSV.File(source; inferdecimal=true)` selects decimals for columns with a
+consistent written scale. Default numeric inference remains Float64. See the
+[decimal guide](https://csv.juliadata.org/dev/decimals/) for the rules and cost.

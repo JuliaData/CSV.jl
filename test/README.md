@@ -1,31 +1,19 @@
 # Test suite
 
-Run all tests from the repository root:
+From the repository root:
 
 ```sh
-julia --project=. -e 'using Pkg; Pkg.add([PackageSpec(url="https://github.com/JuliaStrings/InlineStrings.jl.git", rev="ce4c3549691c4b3443cc14ffa90ebdd6636eff2f"), PackageSpec(url="https://github.com/JuliaData/Parsers.jl.git", rev="e4adc5ba720e5668b726f65a574e2037c866d6df")]); Pkg.test()'
+julia --project=test test/dependencies.jl
+julia --project=test --check-bounds=yes -t4 test/runtests.jl
+julia --project=test test/quality.jl
 ```
 
-CSV.jl depends on Parsers 3 for the reviewed low-level kernels. Until
-registration, CI temporarily pins
-[Parsers.jl PR #210](https://github.com/JuliaData/Parsers.jl/pull/210) at exact
-commit `e4adc5ba720e5668b726f65a574e2037c866d6df`. Use the same commit for local
-tests. Registered InlineStrings releases still require Parsers 2. Tests also
-pin [InlineStrings.jl PR #93](https://github.com/JuliaStrings/InlineStrings.jl/pull/93)
-at `ce4c3549691c4b3443cc14ffa90ebdd6636eff2f`. Install both source revisions in
-one operation so the test environment can resolve.
+The dependency helper pins only DataStrings and DataDecimals while their initial
+registrations are pending. Parsers 3, InlineStrings 2, and Tables 1.14 resolve
+from General. Tables.Scan runs in every main test job.
 
-The suite has focused checks for the parser kernel, typed values, public reader
-APIs, the writer, and deterministic fuzz input. The fuzz tests print their fixed
-seed in each failure context.
+Tests cover structural geometry, reader modes, exact decimals and inference,
+string ownership, ordered writers, and deterministic malformed-input fuzzing.
+Run Julia 1.10 and current Julia. Benchmark scripts use the same test environment.
 
-Tables.Scan tests run when the loaded Tables.jl version provides that API. CI
-has a separate job that pins the reviewed Tables.Scan revision until a release
-includes it.
-
-Prepare the test environment before you run a benchmark script:
-
-```sh
-julia --project=test -e 'using Pkg; Pkg.add([PackageSpec(path=pwd()), PackageSpec(url="https://github.com/JuliaStrings/InlineStrings.jl.git", rev="ce4c3549691c4b3443cc14ffa90ebdd6636eff2f"), PackageSpec(url="https://github.com/JuliaData/Parsers.jl.git", rev="e4adc5ba720e5668b726f65a574e2037c866d6df")]); Pkg.develop(path=pwd()); Pkg.instantiate()'
-julia --project=test -t4 bench/bench_matrix.jl local 0.01 --core
-```
+The documentation environment also pins JSON PR #480 at `bcb8e334682e8135c08913781bf8200832cf752e` until a JSON release supports Parsers 3. This is a docs dependency gate, not a CSV runtime dependency.

@@ -14,14 +14,14 @@ must use an older Julia release.
 
 | Area | CSV.jl 0.10 | CSV.jl 1.0 | Migration |
 |:-----|:------------|:-----------|:----------|
-| Text values | InlineStrings.jl values by default | `CSV.CompactString` by default | Pass `stringtype=String`, or load InlineStrings.jl and select its type |
+| Text values | InlineStrings.jl values by default | `DataStrings.DataString` by default | Pass `stringtype=String`, or load InlineStrings.jl and select its type |
 | Pooling | `(0.2, 500)` default policy | `pool=false` | Pass `pool=(0.2, 500)` to restore the old policy |
 | Empty unquoted field | Missing sentinel behavior could be disabled | Always `missing` | Use a quoted empty field for present empty text |
 | Problems | Warnings printed during recovery | Structured `CSV.problems(file)` | Inspect problems, or set `on_error=:error` |
 | Row limit | Could be approximate with multiple tasks | Exact at every thread count | Remove `ntasks=1` workarounds used only for exact limits |
 | Boolean inference | Accepted the 0.10 parser's broader spellings | Exact lowercase `true` and `false` | Add explicit `truestrings` and `falsestrings` as required |
 
-`CSV.CompactString` is an `AbstractString`. Convert one value with `String(x)`
+`DataStrings.DataString` is an `AbstractString`. Convert one value with `String(x)`
 when a consumer requires `String`. Use `stringtype=String` when all text values
 must own their bytes.
 
@@ -32,7 +32,7 @@ must own their bytes.
 | `rows_to_check=n` or `lines_to_check=n` | `nsample=n` for type sampling |
 | `threaded=false` | `ntasks=1` or `parallel=false` |
 | `tasks=n` | `ntasks=n` |
-| `lazystrings=true` | `stringtype=CSV.CompactString`, which is the default |
+| `lazystrings=true` | `stringtype=DataStrings.DataString`, which is the default |
 | `silencewarnings=true` | Do not inspect `CSV.problems(file)`, or set `maxproblems=0` |
 | `maxwarnings=n` | Still accepted by problem-retaining readers; `maxproblems=n` is the explicit form |
 | `strict=true` | Still accepted; `on_error=:error` is the explicit form. For `CSV.Rows`, either form throws when an invalid typed cell is accessed |
@@ -45,7 +45,7 @@ must own their bytes.
 | `parsingdebug=true` | Removed; inspect structured problems |
 | `CSV.detect(...)` | Removed; use `delim=nothing` on a reader |
 
-The `PosLenString` output type is retired. Use `CSV.CompactString`, `String`,
+The `PosLenString` output type is retired. Use `DataStrings.DataString`, `String`,
 or an InlineStrings.jl type.
 
 `types`, `select`, `drop`, and `pool` no longer accept functions. Use type or
@@ -126,56 +126,34 @@ and a missing value.
 `floatformat` is new and accepts a Printf-style format. Writer output is
 deterministic across `ntasks` values.
 
-## Parsers 3 and internal layout
+## Shared data types and released dependencies
 
-CSV.jl 1.0 depends on Parsers 3 for the reviewed low-level value kernels. The
-integration decision is complete. CI temporarily pins
-[Parsers.jl PR #210](https://github.com/JuliaData/Parsers.jl/pull/210) at exact
-`e4adc5ba720e5668b726f65a574e2037c866d6df` until registration. A registered
-Parsers 3 release and removal of this pin are 1.0 tag gates. Registered
-InlineStrings releases still require Parsers 2. Development CI pins
-[InlineStrings.jl PR #93](https://github.com/JuliaStrings/InlineStrings.jl/pull/93)
-at exact `ce4c3549691c4b3443cc14ffa90ebdd6636eff2f`. A compatible InlineStrings
-release and removal of this pin are also tag gates.
+CSV now uses Parsers 3, InlineStrings 2, Tables 1.14, DataStrings 1, and
+DataDecimals 1. DataStrings and DataDecimals initial registrations are pending.
+The draft rewrite's `CSV.CompactString` has moved to `DataStrings.DataString`.
+Import DataStrings when referring to that type. Text columns are mutable
+`DataStrings.StringVector` values. Shared string methods belong in DataStrings.
 
-The final source layout has one runtime module: `CSV`. Implementation files are
-includes, not public submodules. Use only the public names documented in the
-[API reference](reference.md).
+Explicit decimal schemas reject values that need rounding. Extra trailing zeros
+are exact and accepted. Recoverable failures use the normal missing/problem
+policy; `strict=true` throws. [Decimal columns](decimals.md) describes opt-in
+inference. Ordinary Float64 inference stays unchanged.
 
-## Tables.Scan transition
-
-CSV.jl 1.0 supports parser pushdown through `Tables.Scan`. The feature requires
-a Tables.jl release that defines the scan API. Until that dependency is
-registered, development CI must install and test the reviewed Tables.jl commit
-explicitly. A final CSV.jl 1.0 tag must set a Tables.jl compatibility bound that
-cannot resolve to a release without `Tables.Scan`.
+Tables.Scan now resolves through Tables 1.14 in every CI job. CSV retains format
+metadata independently of the opaque Parsers.DatePattern handle.
 
 ## Maintainer release-readiness checklist
 
-Before the `1.0.0` tag:
+Before the 1.0.0 tag:
 
-- replace the development version with `1.0.0` and verify the package resolves
-  from a clean environment;
-- depend on a registered Tables.jl release that contains `Tables.Scan`, then
-  replace the temporary exact-revision integration lane with that release;
-- depend on a registered Parsers 3 release that contains the reviewed kernels,
-  then remove the exact PR pin from every CI lane;
-- depend on a registered InlineStrings release that supports Parsers 3, then
-  remove its exact PR pin from every CI lane;
-- verify the one-module source layout and the strict public docs check;
-- run the full test matrix, fuzz suite, strict documentation build, downstream
-  integration tests, and package evaluation;
-- prepare compatibility updates for important reverse dependencies; packages
-  bounded to CSV.jl 0.10 will not select 1.0 automatically;
-- confirm that the source archive does not include large test-only fixtures;
-- review every generated change by hand, as required by the disclosure in the
-  repository README;
-- verify TagBot, the documentation deploy key, CompatHelper, and Codecov on the
-  release branch;
-- verify that GitHub private vulnerability reports reach the maintainers named
-  in [`SECURITY.md`](https://github.com/JuliaData/CSV.jl/security/policy); and
-- prepare release notes that call out the runtime, string, pooling, missing,
-  diagnostics, memory, and writer changes on this page.
+- Wait for DataStrings and DataDecimals registration, remove their temporary
+  pins, and verify a fresh registry-only installation.
+- Change 1.0.0-DEV only on the final reviewed release commit.
+- Run the full platform matrix, lower-bound Julia tests, deterministic fuzz,
+  strict documentation, and downstream compatibility tests.
+- Run package evaluation and prepare updates for important reverse dependencies;
+  packages bounded to CSV 0.10 will not select 1.0 automatically.
+- Complete maintainer review and verify release CI, TagBot, documentation, and
+  Codecov on the final source commit.
 
-Do not tag 1.0 while a mandatory integration lane is skipped because an
-unreleased API is absent.
+The documentation environment also pins JSON PR #480 at `bcb8e334682e8135c08913781bf8200832cf752e` until a JSON release supports Parsers 3. This is a docs dependency gate, not a CSV runtime dependency.

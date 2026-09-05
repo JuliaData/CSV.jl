@@ -4,7 +4,7 @@
 column-oriented Tables.jl table.
 
 ```@example reading
-using CSV
+using CSV, DataStrings
 
 data = IOBuffer("id,name,active\n1,Ada,true\n2,Grace,false\n")
 file = CSV.File(data)
@@ -39,7 +39,7 @@ from its magic bytes for every source type and is fully decompressed into
 memory before parsing. Other compression formats must be decompressed before
 they are passed to CSV.jl.
 
-The parsed table can refer to retained source bytes through `CSV.CompactString`
+The parsed table can refer to retained source bytes through `DataStrings.DataString`
 values. Keep the table alive while you use those values. Use
 `stringtype=String` when each text value must own its bytes.
 
@@ -61,7 +61,7 @@ Comment rows do not count toward `footerskip`. Empty rows and comment rows keep
 their physical positions for header and `skipto` handling.
 
 ```@example reading-window
-using CSV
+using CSV, DataStrings
 
 data = IOBuffer("metadata\nfirst value,second value\n1,2\n3,4\n5,6\n")
 file = CSV.File(data; header=2, normalizenames=true, limit=2)
@@ -96,7 +96,7 @@ adds one sentinel or a vector of sentinels. It does not turn off the empty-field
 rule. The writer uses a quoted empty field for a present empty string.
 
 ```@example reading-missing
-using CSV
+using CSV, DataStrings
 
 data = IOBuffer("value,label\n,empty field\nNA,sentinel\n\"\",present empty string\n")
 file = CSV.File(data; missingstring="NA", stringtype=String)
@@ -126,10 +126,10 @@ return selected columns once, in file order, even when the list is repeated or
 reordered. Function-valued selection is not supported. Use a `Tables.Scan`
 request for expression-based projection and filtering.
 
-CSV.jl uses `CSV.CompactString` for inferred text columns by default:
+CSV.jl uses `DataStrings.DataString` for inferred text columns by default:
 
 ```@example reading-strings
-using CSV
+using CSV, DataStrings
 
 file = CSV.File(IOBuffer("value\nalpha\nbeta\n"))
 (eltype(file.value), String(file.value[1]))
@@ -137,8 +137,7 @@ file = CSV.File(IOBuffer("value\nalpha\nbeta\n"))
 
 Use `stringtype=String` to materialize strings. When InlineStrings.jl is
 loaded, its extension also accepts `InlineString` and fixed inline string
-types. During Parsers 3 development, use the compatible InlineStrings revision
-listed in the [migration guide](migration.md#Parsers-3-and-internal-layout).
+types. InlineStrings 2 is supported.
 
 Pooling is independent of `stringtype`. `pool=false` is the 1.0 default. The
 accepted forms are:
@@ -150,7 +149,7 @@ accepted forms are:
 
 The old 0.10 default policy is available as `pool=(0.2, 500)`. Pooled output
 uses PooledArrays.jl. Pool levels own their strings even when
-`stringtype=CSV.CompactString`.
+`stringtype=DataStrings.DataString`.
 
 With `transpose=true`, input rows become output columns. `types`, per-output
 `dateformat` dictionaries, `stringtype`, and `pool` use those output column
@@ -166,7 +165,7 @@ items with `CSV.problems(file)`. Each item contains `row`, `col`, `pos`,
 `kind`, and `message` fields.
 
 ```@example reading-problems
-using CSV
+using CSV, DataStrings
 
 file = CSV.File(IOBuffer("count\n1\ninvalid\n"); types=Int)
 [(p.row, p.col, p.kind) for p in CSV.problems(file)]
@@ -195,7 +194,7 @@ single-task parses have the same row order and exact row limit.
 Pass a vector of sources to concatenate them vertically:
 
 ```@example reading-multiple
-using CSV
+using CSV, DataStrings
 
 sources = [IOBuffer("id,value\n1,10\n"), IOBuffer("value,id\n20,2\n")]
 file = CSV.File(sources; source=:origin => ["first", "second"], stringtype=String)
@@ -235,7 +234,7 @@ long cell starts beyond the compact view format's Int32 source-offset limit,
 CSV copies only that cell into a bounded backing buffer when it is accessed.
 
 ```@example reading-lazy
-using CSV
+using CSV, DataStrings
 
 lazyfile = CSV.lazy(IOBuffer("id,price\n1,3.5\n2,4.0\n");
                     types=Dict(:price => Float64))
@@ -250,12 +249,12 @@ visible on the lazy file and can only select or drop further columns.
 ## Row iteration
 
 `CSV.Rows` avoids eager column allocation. It still reads or maps the source
-and builds an index before iteration. Text cells are lazy `CSV.CompactString`
+and builds an index before iteration. Text cells are lazy `DataStrings.DataString`
 views by default. Provide `types` for typed cell access, or
 `stringtype=String` for standalone strings.
 
 ```@example reading-rows
-using CSV
+using CSV, DataStrings
 
 rows = CSV.Rows(IOBuffer("id,value\n1,10\n2,20\n"); types=[Int, Int])
 [row[:value] for row in rows]
@@ -308,6 +307,4 @@ file = CSV.File("orders.csv"; scan=request)
 ```
 
 A scan owns selection, types, and row bounds. Do not combine `scan` with
-`select`, `drop`, `types`, or `limit`. The release workflow must keep the
-Tables.Scan integration lane mandatory until the required Tables.jl version is
-registered.
+`select`, `drop`, `types`, or `limit`. Tables 1.14 is the minimum dependency.

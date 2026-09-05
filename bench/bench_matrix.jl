@@ -3,11 +3,11 @@
 #
 # Extends bench.jl's breadth probe up to the API layer and across many more
 # type combinations: pooling tiers (low/high/over-cap), temporal/bool columns,
-# missing-density and quote/escape-density sweeps, long text (CompactString view path),
+# missing-density and quote/escape-density sweeps, long text (DataString view path),
 # very wide, grouped digits, ignorerepeated, CRLF, dirty/ragged, sentinels.
 # CSV.File includes public option handling. The `kparse` configuration starts
 # at the lower-level byte parser. String columns stay in their native
-# CompactString/PooledColumn containers unless `api_str` requests owned Strings.
+# DataString/PooledColumn containers unless `api_str` requests owned Strings.
 #
 # Run:  julia --project=test -t8 bench/bench_matrix.jl LABEL [sizes...]
 #       results append to kernel-bench-LABEL.tsv next to this file, table to stdout.
@@ -82,7 +82,7 @@ function genrows(io, shape::Symbol, targetbytes::Int, rng)
             println(io, "\"a\"\"b$(i % 97)\"\"c\",\"\"\"lead$(i % 89)\",\"tail$(i % 83)\"\"\",", i)
         end
     elseif shape === :longtext
-        # 80–240 byte fields: every string takes the CompactString view (non-inline) path
+        # 80–240 byte fields: every string takes the DataString view (non-inline) path
         println(io, "id,doc1,doc2")
         i = 0
         while position(io) < targetbytes
@@ -290,7 +290,7 @@ function runcell(label, shape::Symbol, mb::Float64; core::Bool)
     push!(cells, (; config="api", t, al))
     record(label, shape, mb, "api", bytes, nrows, t, al)
 
-    if any(c -> eltype(c) <: Union{K.CompactString, Missing} || c isa K.PooledColumn,
+    if any(c -> eltype(c) <: Union{K.DataString, Missing} || c isa K.PooledColumn,
            K.columns(Tables.columns(fa)))
         t2, al2 = besttime(() -> A.File(copy(buf); pool=false, apikw...))
         push!(cells, (; config="api_nopool", t=t2, al=al2))

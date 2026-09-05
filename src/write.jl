@@ -60,7 +60,7 @@ function _writeopts(; delim::Union{Char, String}=',', quotechar::Char='"',
         throw(ArgumentError("quotestrings=true conflicts with quotestyle=:none"))
     quotestrings && (quotestyle = :all)
     quotestyle in WRITE_QUOTESTYLES ||
-        throw(ArgumentError("quotestyle must be one of $(WRITE_QUOTESTYLES) (got $quotestyle)"))
+        throw(ArgumentError("quotestyle must be :minimal, :all, or :none"))
     oqc = something(openquotechar, quotechar)
     cqc = something(closequotechar, quotechar)
     ec = something(escapechar, cqc)
@@ -157,6 +157,10 @@ function _writecell(io::IO, x, o::WriteOpts)
             o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
             _writescalar(io, s, o)
         end
+    elseif x isa DataDecimals.AbstractDecimal
+        s = string(x)
+        o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
+        _writescalar(io, s, o)
     elseif x isa Dates.TimeType
         _writescalar(io, o.dateformat === nothing ? string(x) : Dates.format(x, o.dateformat), o)
     elseif x isa Bool
@@ -509,6 +513,10 @@ const _TRUE = codeunits("true"); const _FALSE = codeunits("false")
             o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
             _appendscalar!(out, s, o)
         end
+    elseif x isa DataDecimals.AbstractDecimal
+        s = string(x)
+        o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
+        _appendscalar!(out, s, o)
     elseif x isa Dates.TimeType
         if o.dateformat === nothing && !any(_numericsyntax, (o.delim, o.oq, o.cq)) &&
            o.delim != UInt8('T') && o.delim != UInt8(':') && o.delim != UInt8('.') &&
@@ -851,12 +859,12 @@ end
     return
 end
 
-function _emitrowblocks!(io, cols, nrows::Int, o::WriteOpts,
-                         transform, ntasks::Int)
+Base.@constprop :aggressive function _emitrowblocks!(io, cols, nrows::Int, o::WriteOpts,
+                         transform::F, ntasks::Int, ::Val{SERIAL}) where {F, SERIAL}
     nrows == 0 && return
     blockrows = _writerblockrows(cols, o, transform)
     nblocks = cld(nrows, blockrows)
-    workers = min(ntasks, Threads.nthreads())
+    workers = SERIAL ? 1 : min(ntasks, Threads.nthreads())
     bounds(block) = ((block - 1) * blockrows + 1,
                      min(block * blockrows, nrows))
 
@@ -872,7 +880,7 @@ function _emitrowblocks!(io, cols, nrows::Int, o::WriteOpts,
 
     # Avoid task overhead when the caller requested one task or the table fits
     # in one block. Fixed-size blocks still bound the single-task path.
-    if workers == 1 || nblocks == 1
+    if SERIAL || workers == 1 || nblocks == 1
         for block in 1:nblocks
             lo, hi = bounds(block)
             _renderwrite_identity!(io, cols, lo, hi, o)
@@ -1065,15 +1073,42 @@ function _emitrows!(io, rw::RowWriter; bom::Bool=false)
     return
 end
 
+# A typed callable keeps column and scheduler types across the sink boundary.
+# An untyped closure here loses its captured schema before emitting any rows.
+struct _ColumnEmitter{C,F,S} <: Function
+    cols::C
+    nrows::Int
+    opts::WriteOpts
+    transform::F
+    ntasks::Int
+    header::Vector{UInt8}
+    append::Bool
+    serial::S
+end
+function (emit::_ColumnEmitter)(io)
+    o = emit.opts
+    o.bom && !emit.append && Base.write(io, UInt8[0xef, 0xbb, 0xbf])
+    isempty(emit.header) || Base.write(io, emit.header)
+    _emitrowblocks!(io, emit.cols, emit.nrows, o, emit.transform, emit.ntasks, emit.serial)
+    return nothing
+end
+
 # --- public write methods ---------------------------------------------------
 
-function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool}=nothing,
+# Preserve a statically known schema. Erasing a NamedTuple's column types into
+# Vector{AbstractVector} adds dispatch and blocks compilation without a JIT.
+_writecolumns(cols::NamedTuple, names) =
+    length(cols) <= TUPLE_RENDER_MAXCOLS ? values(cols) :
+    AbstractVector[Tables.getcolumn(cols, nm) for nm in names]
+_writecolumns(cols, names) = AbstractVector[Tables.getcolumn(cols, nm) for nm in names]
+
+@inline function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool}=nothing,
                header::Union{Nothing, Bool, AbstractVector}=nothing,
                compress::Union{Bool, Symbol}=:auto,
                partition::Bool=false,
-               transform::Function=_identity_transform,
+               transform::F=_identity_transform,
                bufsize::Integer=1 << 22,
-               ntasks::Int=Threads.nthreads(), kw...)
+               ntasks::Int=Threads.nthreads(), kw...) where {F <: Function}
     compression = compress isa Bool ? (compress ? :gzip : :none) : compress
     compression in (:auto, :gzip, :none) ||
         throw(ArgumentError("compress must be true, false, :auto, :gzip, or :none " *
@@ -1109,18 +1144,17 @@ function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool
         cols0 = Tables.columns(table)
         source_names = collect(Symbol, Tables.columnnames(cols0))
         names, wantheader = _headeroptions(source_names, header, writeheader, !append)
-        cols = AbstractVector[Tables.getcolumn(cols0, nm) for nm in source_names]
+        cols = _writecolumns(cols0, source_names)
         nrows = isempty(cols) ? 0 : length(cols[1])
         all(col -> length(col) == nrows, cols) ||
             throw(ArgumentError("all table columns must have the same length"))
-        headerblock = wantheader && !isempty(names) ? _renderheader(names, o) : nothing
+        headerblock = wantheader && !isempty(names) ? _renderheader(names, o) : EMPTY_BYTES
         # Header and fixed-size row blocks stream directly to the sink. The
         # ordered renderer retains no more than `ntasks` blocks.
-        function (io)
-            o.bom && !append && Base.write(io, UInt8[0xef, 0xbb, 0xbf])
-            headerblock === nothing || Base.write(io, headerblock)
-            _emitrowblocks!(io, cols, nrows, o, transform, ntasks)
-            return
+        if ntasks == 1
+            _ColumnEmitter(cols, nrows, o, transform, ntasks, headerblock, append, Val(true))
+        else
+            _ColumnEmitter(cols, nrows, o, transform, ntasks, headerblock, append, Val(false))
         end
     else
         # A row source may be one-shot and may not know its schema until its
@@ -1129,7 +1163,7 @@ function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool
                         defaultheader=!append)
         io -> _emitrows!(io, rw; bom=o.bom && !append)
     end
-    emit = io -> gzip ? _emitgzip!(emitpayload, io) : emitpayload(io)
+    emit = gzip ? (io -> _emitgzip!(emitpayload, io)) : emitpayload
     if sink isa AbstractString
         open(emit, String(sink), append ? "a" : "w")
     else

@@ -21,6 +21,7 @@ makedocs(;
     pages=[
         "Home" => "index.md",
         "Reading" => "reading.md",
+        "Decimal columns" => "decimals.md",
         "Writing" => "writing.md",
         "Examples" => "examples.md",
         "API reference" => "reference.md",

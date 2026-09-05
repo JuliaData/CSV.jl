@@ -136,24 +136,24 @@ Tables.istable(::Type{_IndexedRows}) = true
 Tables.rowaccess(::Type{_IndexedRows}) = true
 Tables.rows(r::_IndexedRows) = r
 Tables.schema(r::_IndexedRows) =
-    Tables.Schema(r.names, fill(Union{CompactString, Missing}, length(r.names)))
+    Tables.Schema(r.names, fill(Union{DataString, Missing}, length(r.names)))
 
 @inline _rowopts(r::_IndexedRows, j::Int) =
     r.colopts === nothing ? r.opts : @inbounds(r.colopts[j])
 
-# CompactString's view word has an Int32 offset. Row access normally retains
+# DataString's view word has an Int32 offset. Row access normally retains
 # the source buffer with no copy. For a long cell beyond that absolute offset,
 # copy only the cell into a private backing buffer. The returned value owns the
 # buffer, so separate rows and concurrent consumers do not share mutable state.
 @inline function _rowcompact(buf::Vector{UInt8}, pos::Int, len::Int,
                              viewoffsetlimit::Int=Int(typemax(Int32)))
     len <= COMPACTSTRING_INLINE &&
-        return CompactString(inline_payload(buf, pos, len), EMPTY_BYTES)
+        return DataString(inline_payload(buf, pos, len), EMPTY_BYTES)
     pos - 1 <= viewoffsetlimit &&
-        return CompactString(view_payload(buf, pos, len, 0, pos - 1), buf)
+        return DataString(view_payload(buf, pos, len, 0, pos - 1), buf)
     bytes = Vector{UInt8}(undef, len)
     copyto!(bytes, 1, buf, pos, len)
-    return CompactString(view_payload(bytes, 1, len, 0, 0), bytes)
+    return DataString(view_payload(bytes, 1, len, 0, 0), bytes)
 end
 
 struct _IndexedRow <: Tables.AbstractRow
@@ -187,9 +187,9 @@ Tables.columnnames(row::_IndexedRow) = getfield(row, :r).names
 Tables.getcolumn(row::_IndexedRow, j::Int) = row[j]
 Tables.getcolumn(row::_IndexedRow, nm::Symbol) = row[nm]
 
-# Untyped access: Union{CompactString, Missing} — a lazy view. Short cells
+# Untyped access: Union{DataString, Missing} — a lazy view. Short cells
 # are inline payloads, long cells view the input buffer (zero-copy); an
-# escaped cell unescapes into a small owned buffer that the CompactString
+# escaped cell unescapes into a small owned buffer that the DataString
 # then views. No String allocation on the plain path.
 function Base.getindex(row::_IndexedRow, j::Int)
     r = getfield(row, :r)
@@ -204,7 +204,7 @@ function Base.getindex(row::_IndexedRow, j::Int)
     st == CELL_VALUE || return missing
     if esc
         inl = _unescape_inline(buf, cpos, clen, opts.e, r.d.cq)
-        inl === nothing || return CompactString(inl, EMPTY_BYTES)
+        inl === nothing || return DataString(inl, EMPTY_BYTES)
         own = UInt8[]
         n = _unescape_append!(own, buf, cpos, clen, opts.e, r.d.cq)
         return _rowcompact(own, 1, n)

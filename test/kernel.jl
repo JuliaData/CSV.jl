@@ -85,7 +85,7 @@ end
 
 # Top-level (not testset-local) so the allocation probe measures the loop, not
 # closure machinery.
-function sumncodeunits(c::K.CompactStringVector{K.CompactString})
+function sumncodeunits(c::K.DataStringVector{K.DataString})
     t = 0
     for i in eachindex(c)
         t += ncodeunits(c[i])
@@ -96,7 +96,7 @@ end
 # Keep `@allocated` inside a compiled, typed function. Julia 1.10 otherwise
 # boxes the scalar return at a testset-local measurement site (16 bytes), even
 # when the loop itself is allocation-free.
-allocsumncodeunits(c::K.CompactStringVector{K.CompactString}) =
+allocsumncodeunits(c::K.DataStringVector{K.DataString}) =
     @allocated sumncodeunits(c)
 
 function sumgrouped(buf::Vector{UInt8}, opts::K.ValueOpts, scratch::Vector{UInt8})
@@ -130,11 +130,11 @@ end
 function csfrombytes(bytes::Vector{UInt8})
     p = length(bytes) <= K.COMPACTSTRING_INLINE ? K.inline_payload(bytes, 1, length(bytes)) :
                                          K.view_payload(bytes, 1, length(bytes), 0, 0)
-    return K.CompactString(p, length(bytes) <= K.COMPACTSTRING_INLINE ? K.EMPTY_BYTES : bytes)
+    return K.DataString(p, length(bytes) <= K.COMPACTSTRING_INLINE ? K.EMPTY_BYTES : bytes)
 end
 
-function csscratchbytes(s::K.CompactString)
-    r = Ref(K._cs_scratch(s))
+function csscratchbytes(s::K.DataString)
+    r = Ref((htol((s.p.a >> 32) | (s.p.b << 32)), htol(s.p.b >> 32)))
     out = Vector{UInt8}(undef, 16)
     GC.@preserve r begin
         p = Ptr{UInt8}(Base.unsafe_convert(Ptr{Tuple{UInt64, UInt64}}, r))
@@ -150,7 +150,7 @@ function foldcshash(v, h::UInt)
     return h
 end
 
-allocfoldcshash(v::Vector{K.CompactString}, h::UInt) = @allocated foldcshash(v, h)
+allocfoldcshash(v::Vector{K.DataString}, h::UInt) = @allocated foldcshash(v, h)
 
 function foldcscmp(v)
     s = 0
@@ -160,7 +160,7 @@ function foldcscmp(v)
     return s
 end
 
-allocfoldcscmp(v::Vector{K.CompactString}) = @allocated foldcscmp(v)
+allocfoldcscmp(v::Vector{K.DataString}) = @allocated foldcscmp(v)
 
 function tablesnapshot(t::K.ParsedTable)
     probs = [(p.row, p.col, p.pos, p.kind, p.message) for p in K.problems(t)]
@@ -632,7 +632,7 @@ end
     @test t.nrows == 2
     @test K.columns(t)[1] isa Vector{Int64} && t[:a] == [1, 2]
     @test K.columns(t)[2] isa Vector{Float64} && t[:b] == [1.5, 2.5]
-    @test eltype(t[:c]) == K.CompactString && collect(t[:c]) == ["x", "y"]
+    @test eltype(t[:c]) == K.DataString && collect(t[:c]) == ["x", "y"]
     @test t[:d] == [Date(2023, 1, 15), Date(2023, 1, 16)]
     @test t[:e] == [true, false]
     @test t[:f] == [Time(10, 30), Time(11, 30)]
@@ -687,7 +687,7 @@ end
     t = K.parse("a,b\n1,x\n,\n3,z\n")
     @test eltype(t[:a]) == Union{Int64, Missing}
     @test isequal(collect(t[:a]), [1, missing, 3])
-    @test eltype(t[:b]) == Union{K.CompactString, Missing}
+    @test eltype(t[:b]) == Union{K.DataString, Missing}
     @test isequal(collect(t[:b]), ["x", missing, "z"])
     # quoted empty is an empty STRING, not missing
     t2 = K.parse("a\n\"\"\nx\n")
@@ -725,18 +725,18 @@ end
     @test collect(t[:a]) == ["1", "2", "xyz"]
     # date → string on mixed temporals
     t = K.parse("a\n2023-01-15\n10:30:00\n")
-    @test eltype(t[:a]) == K.CompactString
+    @test eltype(t[:a]) == K.DataString
     # Each value parser accepts the same text that type detection accepts. Bool
     # accepts true and false. Date and time values must match their patterns.
     # Other text changes the column type to String for every sample size.
     for ns in (1, 2, 3)
-        @test eltype(K.parse("a\nfalse\n1\n1\n"; nsample=ns)[:a]) == K.CompactString
-        @test eltype(K.parse("a\n2024-01-02T03:04:05\n2024-01-03\n"; nsample=ns)[:a]) == K.CompactString
-        @test eltype(K.parse("a\n03:04:05\n1\n"; nsample=ns)[:a]) == K.CompactString
+        @test eltype(K.parse("a\nfalse\n1\n1\n"; nsample=ns)[:a]) == K.DataString
+        @test eltype(K.parse("a\n2024-01-02T03:04:05\n2024-01-03\n"; nsample=ns)[:a]) == K.DataString
+        @test eltype(K.parse("a\n03:04:05\n1\n"; nsample=ns)[:a]) == K.DataString
     end
     # Quotes strip before detection AND parsing, so a quoted numeric overlap
     # follows the same lattice.
-    @test eltype(K.parse("a\nfalse\n\"1\"\n"; nsample=1)[:a]) == K.CompactString
+    @test eltype(K.parse("a\nfalse\n\"1\"\n"; nsample=1)[:a]) == K.DataString
 
     # Detection pins across custom Bool spellings, explicit date formats,
     # numeric special values, custom decimal bytes, and quoted fields.
@@ -1015,7 +1015,7 @@ end
     @test isequal(collect(tb[:n]), [parse(BigInt, "123456789012345678901234567890"), missing])
     @test isequal(collect(tb[:x]), [parse(BigFloat, "0.1"), missing])
     ti = K.parse("u\n123e4567-e89b-12d3-a456-426614174000\n")
-    @test eltype(ti[:u]) == K.CompactString    # inference never yields UUID/Big types
+    @test eltype(ti[:u]) == K.DataString    # inference never yields UUID/Big types
     @test_throws ArgumentError K.parse("a\n1\n"; types=AbstractString)
     @test_throws ArgumentError K.parse("a\n1\n"; types=Union{Int64, String})
     @test_throws ArgumentError K.parse("a\n1\n"; types=["Int64"])
@@ -1118,7 +1118,7 @@ end
     @test isempty(K.problems(tgb))
     # off ⇒ marked numbers are strings, exactly as before the feature existed
     tg = K.parse("a;b\n1,234;9\n"; delim=';')
-    @test eltype(tg[:a]) == K.CompactString
+    @test eltype(tg[:a]) == K.DataString
     for gm in ('0', '5', '9', '.', 'e', 'E', '+', '-', '"', '\0')
         @test_throws ArgumentError K.makevalueopts(K.Dialect(); groupmark=gm)
     end
@@ -1338,11 +1338,11 @@ end
 end
 
 
-@testset "CompactString: inline-else-view strings" begin
+@testset "DataString: inline-else-view strings" begin
     # inline/view boundary: 12 bytes inline, 13 views the buffer
     t = K.parse("a\n" * "x"^12 * "\n" * "y"^13 * "\n")
     col = t[:a]
-    @test col isa K.CompactStringVector{K.CompactString}
+    @test col isa K.DataStringVector{K.DataString}
     @test col[1] == "x"^12 && col[2] == "y"^13
     @test ncodeunits(col[1]) == 12 && ncodeunits(col[2]) == 13
     @test String(col[1]) == "x"^12 && String(col[2]) == "y"^13
@@ -1361,16 +1361,16 @@ end
     pattern = UInt8[0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
                     0xff, 0xff, 0xff, 0xff, 0x80, 0xc0, 0x7f, 0x41, 0xfe]
     strings = String[]
-    payloads = K.CompactString[]
+    payloads = K.DataString[]
     for n in 0:255
         bytes = UInt8[xor(pattern[mod1(i, length(pattern))], UInt8(i % 251)) for i in 1:n]
         push!(strings, String(copy(bytes)))
         if n <= K.COMPACTSTRING_INLINE
-            push!(payloads, K.CompactString(K.inline_payload(bytes, 1, n), K.EMPTY_BYTES))
+            push!(payloads, K.DataString(K.inline_payload(bytes, 1, n), K.EMPTY_BYTES))
         else
             data = vcat(UInt8[0x11], bytes, UInt8[0x22])
             bufidx = isodd(n) ? 1 : 0                 # either buffer index hashes alike
-            push!(payloads, K.CompactString(K.view_payload(data, 2, n, bufidx, 1), data))
+            push!(payloads, K.DataString(K.view_payload(data, 2, n, bufidx, 1), data))
         end
     end
     # Keep this list portable across word sizes and Julia releases. Private
@@ -1421,14 +1421,14 @@ end
     # escaped values: short ones inline, long ones land in the extra buffer
     t2 = K.parse("a\n\"in\"\"line\"\n\"a long escaped \"\"string\"\" beyond inline\"\n")
     @test collect(t2[:a]) == ["in\"line", "a long escaped \"string\" beyond inline"]
-    @test !isempty(t2[:a].extra)                      # long unescaped value stored out-of-line
+    @test !isempty(t2[:a].buffers[2])                      # long unescaped value stored out-of-line
     @test K.csbufidx(t2[:a].payloads[2]) == 1       # buffer index 1 ⇒ extra buffer
     # Buffer indices above one select later bounded owned buffers.
     overflowvalue = "a value in the second owned buffer"
     overflowbytes = Vector{UInt8}(codeunits(overflowvalue))
     overflowpayload = K.view_payload(overflowbytes, 1, length(overflowbytes), 2, 0)
-    overflowcol = K.CompactStringVector{K.CompactString}(
-        [overflowpayload], UInt8[], UInt8[], [overflowbytes])
+    overflowcol = K.DataStringVector{K.DataString}(
+        [overflowpayload], Vector{UInt8}[UInt8[], UInt8[], overflowbytes])
     @test String(overflowcol[1]) == overflowvalue
     @test K.materialize(overflowcol) == [overflowvalue]
 
@@ -1453,7 +1453,7 @@ end
                               UInt8('"'), UInt8('"'))
     maps = K._copyownedbuffers!(rollover, forcedcol, 32)
     repointed = K._repointowned(forcedcol.payloads[1], maps)
-    rollovervec = K.CompactStringVector{K.CompactString}(
+    rollovervec = K._stringvector(K.DataString,
         [repointed], forcedbuf, rollover.extra, rollover.overflow)
     @test K.csbufidx(repointed) == 2
     @test String(rollovervec[1]) == forcedvalue
@@ -1481,8 +1481,8 @@ end
             parsed = K.finalizecolumn(String, stringcol, 1)
             @test String(parsed[1]) == largeposvalue
             @test K.csbufidx(parsed.payloads[1]) == 1
-            @test parsed.extra == Vector{UInt8}(codeunits(largeposvalue))
-            @test isempty(parsed.overflow)
+            @test parsed.buffers[2] == Vector{UInt8}(codeunits(largeposvalue))
+            @test all(isempty, parsed.buffers[3:end])
             @test isempty(log.items)
         end
     end
@@ -1535,7 +1535,7 @@ end
     end
     # access is allocation-free for inline AND view strings
     big = K.parse("a\n" * join(("value$(i)_" * "p"^(i % 20) for i in 1:1000), "\n") * "\n")
-    colv = big[:a]::K.CompactStringVector{K.CompactString}
+    colv = big[:a]::K.DataStringVector{K.DataString}
     @test allocsumncodeunits(colv) == 0
     # materialize detaches to plain Strings
     m = K.materialize(colv)
@@ -1568,7 +1568,7 @@ end
     end
     @test K.names(seq) == [:i, :mix, :txt, :strict]
     @test seq.nrows == 6
-    @test eltype(seq[:mix]) == Union{K.CompactString, Missing}
+    @test eltype(seq[:mix]) == Union{K.DataString, Missing}
     @test seq.droppedproblems == 1
 
     malformed = "a\n\"unclosed"
@@ -1630,7 +1630,7 @@ end
         @test isequal(collect(t[:num]), nums[1:n])
         @test isequal(K.materialize(t[:txt]), texts[1:n])
         expectedextra = Vector{UInt8}(codeunits(join(texts[i] for i in 1:n if escaped[i])))
-        @test t[:txt].extra == expectedextra
+        @test t[:txt].buffers[2] == expectedextra
     end
     one = K.parse(buf; header=[:num, :txt], types=[Int64, String], comment="#",
                   chunkbytes=length(buf) + 1, parallel=false)

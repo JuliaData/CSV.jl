@@ -1,66 +1,53 @@
 # CSV.jl maintenance guide
 
-## Scope
+CSV.jl reads and writes delimited text through Tables.jl. Keep its public entry
+points qualified and unexported. The supported surface is listed in
+`docs/src/reference.md`.
 
-CSV.jl reads and writes delimited text through the Tables.jl interface. The
-1.0 code supports Julia 1.10 and later.
+## Ownership and layout
 
-Keep the user-facing namespace small. The public names are `CSV.File`,
-`CSV.read`, `CSV.lazy`, `CSV.LazyFile`, `CSV.Rows`, `CSV.Chunks`,
-`CSV.problems`, `CSV.write`, `CSV.RowWriter`, and `CSV.CompactString`. Do not
-export them. Add a public name only when a namespace API is necessary.
+One runtime module, CSV, includes the implementation files. `core.jl` owns
+structural indexing, quote handling, inference, and column assembly. `api.jl`
+owns reader options and source handling. `scan.jl` integrates Tables.Scan.
+`write.jl` owns ordered rendering and writer workers.
 
-## Source layout
+DataStrings owns string scalars and columns; `strings.jl` contains CSV builder
+glue only. Use the trusted column constructor only after CSV proves payload
+ranges and missing-value invariants. Retained scalar values must survive column
+edits. DataDecimals owns decimal arithmetic and conversion; `decimals.jl` owns
+CSV's exactness and inference policy. Infer scale from field bytes before any
+rounding or Float64 conversion. Full-column decimal profiling must respect
+selection, row windows, and filter masks.
 
-- The final source layout has one runtime module: `CSV`. Implementation files
-  are includes, not public submodules. Do not add internal submodules.
-- `src/core.jl` builds the structural index and typed columns.
-- `src/api.jl` implements the reader entry points and Tables.jl interfaces.
-- `src/tables.jl` implements shared Tables.jl row and batch adapters.
-- `src/write.jl` implements the writer and row iterator.
-- `src/compactstring.jl` implements the default text value and column.
-- `src/scan.jl` implements Tables.Scan pushdown when that API is available.
-
-CSV.jl now depends on Parsers 3 for the reviewed low-level value kernels. CI
-temporarily pins
-[Parsers.jl PR #210](https://github.com/JuliaData/Parsers.jl/pull/210) at exact
-commit `e4adc5ba720e5668b726f65a574e2037c866d6df`. Registered InlineStrings
-releases still require Parsers 2, so CI also pins
-[InlineStrings.jl PR #93](https://github.com/JuliaStrings/InlineStrings.jl/pull/93)
-at `ce4c3549691c4b3443cc14ffa90ebdd6636eff2f`.
+Parsers.DatePattern is opaque. Retain date/time inference metadata when compiling
+a format instead of reading parser storage fields. Use Tables.resolve and the
+resolved filter when evaluating projected predicate columns.
 
 ## Validation
 
-Run the full suite from the repository root. Until compatible Parsers and
-InlineStrings releases are registered, install both exact revisions in one
-operation:
+Dependency setup lives in `test/dependencies.jl`. It pins only the two pending
+new package registrations. Parsers 3, InlineStrings 2, and Tables 1.14 resolve
+from General. Run from the repository root:
 
 ```sh
-julia --project=. -e 'using Pkg; Pkg.add([PackageSpec(url="https://github.com/JuliaStrings/InlineStrings.jl.git", rev="ce4c3549691c4b3443cc14ffa90ebdd6636eff2f"), PackageSpec(url="https://github.com/JuliaData/Parsers.jl.git", rev="e4adc5ba720e5668b726f65a574e2037c866d6df")]); Pkg.test()'
-```
-
-Use Julia 1.10 for the minimum-version check. Use `--check-bounds=yes` and
-multiple threads for parser, writer, or concurrency changes. Keep fuzz tests
-deterministic and print the seed in any failure context.
-
-Build documentation strictly:
-
-```sh
-julia --project=docs -e 'using Pkg; Pkg.add([PackageSpec(path=pwd()), PackageSpec(url="https://github.com/JuliaData/Parsers.jl.git", rev="e4adc5ba720e5668b726f65a574e2037c866d6df")]); Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
+julia --project=test test/dependencies.jl
+julia --project=test --check-bounds=yes -t4 test/runtests.jl
+julia --project=test test/quality.jl
+julia --project=docs test/dependencies.jl
 julia --project=docs docs/make.jl
 ```
 
-For performance changes, compare the change with the branch baseline on fresh,
-seeded data. Use a separate temporary environment if a released-version
-comparison is useful. Report the Julia version, platform, thread count, input
-shape, time, and allocations. Do not use one selected benchmark as the only
-proof.
+Test Julia 1.10 and current Julia. Keep fuzz inputs deterministic. For hot-path
+changes, compare time and allocations with the original PR head on fresh seeded
+inputs, including eager reads, Rows, pooling, and writing. Verify task budgets
+and source-ordered diagnostics for multi-file and parallel changes.
 
-## Release gates
+## Release boundary
 
-Do not tag CSV.jl 1.0 until a registered Tables.jl release provides
-`Tables.Scan`, a registered Parsers 3 release provides the reviewed low-level
-kernel API, and a registered InlineStrings release supports Parsers 3. Remove
-all temporary source pins. CSV.jl must resolve those releases through compatible
-bounds. All mandatory CI jobs must pass. A human maintainer must review every
-generated change.
+Keep version 1.0.0-DEV until the final release is authorized. Before tagging,
+remove the DataStrings/DataDecimals source pins after registration, verify clean
+registry resolution, run all CI and downstream checks, and update migration and
+release notes. Preserve unrelated source checkouts. Keep the existing PR draft
+status while human review and release gates remain open.
+
+The documentation environment also pins JSON PR #480 at `bcb8e334682e8135c08913781bf8200832cf752e` until a JSON release supports Parsers 3. This is a docs dependency gate, not a CSV runtime dependency.

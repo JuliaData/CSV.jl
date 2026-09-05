@@ -2,17 +2,13 @@ name: CI
 
 on:
   pull_request:
+  workflow_dispatch:
   push:
     branches: [main]
     tags: ["*"]
 
 permissions:
   contents: read
-
-env:
-  # Keep these exact revisions until compatible releases are registered.
-  PARSERS_REV: e4adc5ba720e5668b726f65a574e2037c866d6df
-  INLINESTRINGS_REV: ce4c3549691c4b3443cc14ffa90ebdd6636eff2f
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -60,21 +56,8 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v3
-      - name: Install the reviewed dependency revisions
-        shell: julia --color=yes --project=. {0}
-        run: |
-          using Pkg
-          Pkg.add([
-              PackageSpec(
-                  url="https://github.com/JuliaStrings/InlineStrings.jl.git",
-                  rev=ENV["INLINESTRINGS_REV"],
-              ),
-              PackageSpec(
-                  url="https://github.com/JuliaData/Parsers.jl.git",
-                  rev=ENV["PARSERS_REV"],
-              ),
-          ])
-          Pkg.instantiate()
+      - name: Install release dependencies and pending review sources
+        run: julia --color=yes --project=. test/dependencies.jl
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
       - uses: julia-actions/julia-processcoverage@v1
@@ -85,60 +68,20 @@ jobs:
           slug: ${{ github.repository }}
           use_oidc: true
 
-  tables-scan:
-    name: Tables.Scan integration (pinned)
+  trim:
+    name: Trim compile and execute
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      JULIA_NUM_THREADS: 2
-      # Keep this immutable until a registered Tables.jl release contains Scan.
-      TABLES_SCAN_REV: 6be83de366499e7a428ecea1f6adab1c4f8eeff0
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
-          version: '1.10'
+          version: '1'
       - uses: julia-actions/cache@v3
-      - name: Install the reviewed dependency revisions
-        shell: julia --color=yes --project=. {0}
-        run: |
-          using Pkg
-          Pkg.add([
-              PackageSpec(
-                  url="https://github.com/JuliaData/Tables.jl.git",
-                  rev=ENV["TABLES_SCAN_REV"],
-              ),
-              PackageSpec(
-                  url="https://github.com/JuliaStrings/InlineStrings.jl.git",
-                  rev=ENV["INLINESTRINGS_REV"],
-              ),
-              PackageSpec(
-                  url="https://github.com/JuliaData/Parsers.jl.git",
-                  rev=ENV["PARSERS_REV"],
-              ),
-          ])
-          Pkg.instantiate()
-      - name: Require the scan API
-        shell: julia --color=yes --project=. {0}
-        run: |
-          using CSV
-          isdefined(CSV.Tables, :Scan) ||
-              error("the pinned Tables.jl revision does not define Tables.Scan")
-          isdefined(CSV, :_executescanplan) ||
-              error("CSV.jl did not load its Tables.Scan integration")
-      - uses: julia-actions/julia-buildpkg@v1
-      - uses: julia-actions/julia-runtest@v1
-      - uses: julia-actions/julia-processcoverage@v1
-      - uses: codecov/codecov-action@v7
-        with:
-          fail_ci_if_error: true
-          files: lcov.info
-          flags: tables-scan
-          slug: ${{ github.repository }}
-          use_oidc: true
+      - name: Instantiate trim environment
+        run: julia --color=yes --project=test/trim test/dependencies.jl
+      - name: Compile and execute the public writer
+        run: julia --color=yes --project=test/trim test/trim/runtests.jl
 
   quality:
     name: Package quality
@@ -151,22 +94,7 @@ jobs:
           version: '1'
       - uses: julia-actions/cache@v3
       - name: Instantiate the test environment
-        shell: julia --color=yes --project=test {0}
-        run: |
-          using Pkg
-          Pkg.add([
-              PackageSpec(path=pwd()),
-              PackageSpec(
-                  url="https://github.com/JuliaStrings/InlineStrings.jl.git",
-                  rev=ENV["INLINESTRINGS_REV"],
-              ),
-              PackageSpec(
-                  url="https://github.com/JuliaData/Parsers.jl.git",
-                  rev=ENV["PARSERS_REV"],
-              ),
-          ])
-          Pkg.develop(PackageSpec(path=pwd()))
-          Pkg.instantiate()
+        run: julia --color=yes --project=test test/dependencies.jl
       - name: Run Aqua
         run: julia --color=yes --project=test test/quality.jl
 
@@ -185,18 +113,7 @@ jobs:
           version: '1'
       - uses: julia-actions/cache@v3
       - name: Instantiate the documentation environment
-        shell: julia --color=yes --project=docs {0}
-        run: |
-          using Pkg
-          Pkg.add([
-              PackageSpec(path=pwd()),
-              PackageSpec(
-                  url="https://github.com/JuliaData/Parsers.jl.git",
-                  rev=ENV["PARSERS_REV"],
-              ),
-          ])
-          Pkg.develop(PackageSpec(path=pwd()))
-          Pkg.instantiate()
+        run: julia --color=yes --project=docs test/dependencies.jl
       - name: Build strict documentation
         run: julia --color=yes --project=docs docs/make.jl
         env:

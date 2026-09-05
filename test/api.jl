@@ -69,7 +69,7 @@ function finalizemapping!(mapped::Vector{UInt8})
     return nothing
 end
 
-@testset "Scan reader tracks the Tables proposal" begin
+@testset "Scan reader uses the released Tables API" begin
     # `scan=` is accepted exactly when the loaded Tables carries Scan; otherwise
     # it is a clear ArgumentError, never an UndefVarError
     if isdefined(Tables, :Scan)
@@ -408,7 +408,7 @@ end
     @test eltype(declaredchunk.a) == Union{Missing, Int8}
     declaredstring = A.File(IOBuffer("a\nx\ny\n"); types=Union{Missing, String},
                             pool=false)
-    @test eltype(declaredstring.a) == Union{Missing, K.CompactString}
+    @test eltype(declaredstring.a) == Union{Missing, K.DataString}
     declaredpoolinput = "a\n" * join(fill("x", 40), '\n') * "\n"
     declaredpool = A.File(IOBuffer(declaredpoolinput);
                           types=Union{Missing, String}, pool=true)
@@ -458,7 +458,7 @@ end
     lf = A.lazy(IOBuffer(csv))
     @test lf isa A.LazyFile && size(lf) == (4, 4) && Base.names(lf) == [:id, :name, :price, :when]
     @test lf.name[2] == "bob, jr" && lf[4, :name] == "say \"hi\"" && ismissing(lf[3, :name])   # quotes/escapes/empties
-    @test lf[1, 3] == "3.5" && lf.price isa A.LazyColumn && eltype(lf.price) == Union{K.CompactString, Missing}
+    @test lf[1, 3] == "3.5" && lf.price isa A.LazyColumn && eltype(lf.price) == Union{K.DataString, Missing}
     @test isequal(collect(lf.when), ["2024-01-02", "2024-01-03", missing, "2024-01-05"])
     @test isequal(collect(lf.name), [lf.name[i] for i in 1:4])       # sequential and random access agree
     # Tables.jl columns; materialization is on demand
@@ -551,7 +551,7 @@ end
     @test [x for x in lb.a] == string.(1:5000)                        # iterate == getindex
     @test getfield(lb.b, :hint) isa Threads.Atomic{Int}
 
-    # CompactString's view offset is Int32. Exercise the bounded-copy branch
+    # DataString's view offset is Int32. Exercise the bounded-copy branch
     # everywhere with an injected small limit, then its real sparse >2 GiB
     # source position on platforms that can map it.
     lazybytes = Vector{UInt8}(codeunits("pad" * "lazy value beyond inline storage"))
@@ -577,8 +577,8 @@ end
             ci = K.ChunkIndex(offset0 + 1, filesize(io))
             dialect = K.Dialect()
             K.indexone!(ci, mapped, dialect, :scalar)
-            column = A.LazyColumn{Union{K.CompactString, Missing}}(
-                mapped, [ci], [0], 1, K.makevalueopts(dialect), 1, K.CompactString)
+            column = A.LazyColumn{Union{K.DataString, Missing}}(
+                mapped, [ci], [0], 1, K.makevalueopts(dialect), 1, K.DataString)
             cell = column[1]
             @test String(cell) == value
             @test getfield(cell, :data) !== mapped
@@ -675,7 +675,7 @@ end
     @test Base.names(f) == [:region, :price, :qty]
 end
 
-@testset "pooling is a finalize-time API pass over CompactString columns" begin
+@testset "pooling is a finalize-time API pass over DataString columns" begin
     # values never change; container/policy/levels are the observable contract
     rng = Random.MersenneTwister(77)
     cats = ["aa", "bb", "a much longer categorical value", "q\"\"z"]
@@ -1030,7 +1030,7 @@ end
     @test [r.a for r in typed] == [1, 2, 3]
     @test Tables.schema(typed).types[1] == Union{Int64, Missing}
     partial = first(A.Rows(IOBuffer("a,b\n1,text\n"); types=Dict(:a => Int64)))
-    @test partial.a == 1 && partial.b isa K.CompactString
+    @test partial.a == 1 && partial.b isa K.DataString
     partialinline = first(A.Rows(IOBuffer("a,b\n1,text\n");
                                  types=Dict(:a => Int64), stringtype=InlineString))
     @test partialinline.b isa String7
@@ -1285,7 +1285,7 @@ end # @testset CSV readers
     @test Tables.getcolumn(f, :name) == [1, 2, 3]
     @test Tables.getcolumn(f, :score) == [1.5, 2.5, 3.5]
     @test isequal(Tables.getcolumn(f, :note), ["x", "y", missing])
-    @test Base.nonmissingtype(eltype(f.note)) == K.CompactString
+    @test Base.nonmissingtype(eltype(f.note)) == K.DataString
     f = A.File(IOBuffer("1,2\n3,4\n"); transpose=true, header=false)
     @test Tables.getcolumn(f, :Column1) == [1, 2] && Tables.getcolumn(f, :Column2) == [3, 4]
     @test_throws ArgumentError A.File(IOBuffer(input); transpose=true, select=[:name])
@@ -1410,8 +1410,8 @@ end # @testset CSV readers
     @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); drop=[:z], validate=false)
 end
 
-@testset "CompactString hash + stringtype extension hook" begin
-    # hash contract: CompactString hashes like its String, allocation-free
+@testset "DataString hash + stringtype extension hook" begin
+    # hash contract: DataString hashes like its String, allocation-free
     col = K.parse(Vector{UInt8}(codeunits("a\n" * join(("v$(i)_" * "x"^(i % 30) for i in 1:500), '\n') * "\n"))).columns[1]
     @test all(hash(col[i]) == hash(String(col[i])) for i in eachindex(col))
     @test all(hash(col[i], UInt(7)) == hash(String(col[i]), UInt(7)) for i in eachindex(col))
@@ -1422,7 +1422,7 @@ end
         @test hash(c[1]) == hash(s) && hash(c[2]) == hash(s * "\"z")
     end
     d = Dict{AbstractString, Int}(String(col[3]) => 3)
-    @test d[col[3]] == 3                    # CompactString finds the String key
+    @test d[col[3]] == 3                    # DataString finds the String key
     # stringtype validation and String path unchanged
     @test_throws ArgumentError A.File(IOBuffer("a\nx\n"); stringtype=Int)
     @test eltype(Tables.getcolumn(A.File(IOBuffer("a\nx\n"); stringtype=String), :a)) == String
@@ -1449,7 +1449,7 @@ end
     end
     @test_throws ArgumentError A.File(IOBuffer("s\n" * "x"^256 * "\n");
                                       stringtype=InlineString, pool=false)
-    emptytype = sizeof(String1) == 1 ? String3 : String1
+    emptytype = String1
     empty = A.File(IOBuffer("s\n"); types=String, stringtype=InlineString, pool=false)
     @test isempty(empty.s) && eltype(empty.s) == emptytype
     allmissing = A.File(IOBuffer("id,s\n1,\n2,\n"); types=Dict(:s => String),
@@ -1499,8 +1499,8 @@ end
     csv = "a,b,n\n" * join(("p$(i % 4),v$(i),$(i)" for i in 1:2000), '\n') * "\n"
     # File: (stringtype, pool) -> (a is pooled?, eltype of a, eltype of b)
     expect = Dict(
-        (K.CompactString, true)  => (true,  String,           K.CompactString),
-        (K.CompactString, false) => (false, K.CompactString,  K.CompactString),
+        (K.DataString, true)  => (true,  String,           K.DataString),
+        (K.DataString, false) => (false, K.DataString,  K.DataString),
         (String, true)           => (true,  String,           String),
         (String, false)          => (false, String,           String),
         (InlineString, true)     => (true,  String3,          String7),
@@ -1520,7 +1520,7 @@ end
     end
     # Rows: lazy views by default; stringtype materializes per cell
     r = first(A.Rows(IOBuffer(csv)))
-    @test r[:a] isa K.CompactString && r.b isa K.CompactString
+    @test r[:a] isa K.DataString && r.b isa K.DataString
     @test first(A.Rows(IOBuffer(csv); stringtype=String))[:a] isa String
     @test first(A.Rows(IOBuffer(csv); stringtype=InlineString))[:b] isa String3   # per-cell smallest fit ("v1")
     @test first(A.Rows(IOBuffer(csv); stringtype=String15))[:a] isa String15
@@ -1751,5 +1751,16 @@ end
         end
         @test A.File(big; buffer_in_memory=true, limit=2).y == [2, 3]
         GC.gc(true)
+    end
+end
+
+@testset "Multiple sources share a bounded task budget" begin
+    inputs = [Vector{UInt8}("a\n" * join(1:50, '\n') * "\n") for _ in 1:8]
+    for ntasks in (1,2), parallel in (false,true)
+        empty!(API_PARSE_TASKS)
+        result = A.File(inputs; types=APITaskScalar, ntasks, parallel, delim=',')
+        @test getfield.(result.a, :value) == repeat(collect(1:50), 8)
+        budget = parallel ? min(ntasks, Threads.nthreads()) : 1
+        @test 1 <= length(API_PARSE_TASKS) <= budget
     end
 end

@@ -16,7 +16,7 @@
 #     (CSV.jl 0.10 could turn empties into present "" values)
 #   • function-typed `select`/`drop`/`types` are retired (Tables.Scan is the
 #     expression channel); list/Dict forms keep working
-#   • `stringtype` defaults to the kernel string (CompactString);
+#   • `stringtype` defaults to the kernel string (DataString);
 #     `stringtype=String` materializes; InlineStrings become an extension
 #   • Bool columns are strictly `true`/`false` unless truestrings/falsestrings
 #   • integer spellings that fit Int128 stay exact, including initially-wide
@@ -42,7 +42,7 @@ const _DIALECTKW = (:quotechar, :openquotechar, :closequotechar, :escapechar,
 const _VALUEKW = (:dateformat, :decimal, :truestrings, :falsestrings,
                   :stripwhitespace, :groupmark)
 const _INDEXKW = (:fastindex, :scanner)
-const _DRIVERKW = (:maxproblems, :nsample, :typemap)
+const _DRIVERKW = (:maxproblems, :nsample, :typemap, :inferdecimal)
 
 function _pickkwargs(kw, allowed)
     return NamedTuple(p for p in pairs(kw) if p.first in allowed)
@@ -51,7 +51,7 @@ end
 const _REMOVED_KW = Dict{Symbol, String}(
     :silencewarnings => "warnings are data now: problems(f) returns them; maxproblems caps retention",
     :debug => "removed in 1.0; parse problems and the structural index are inspectable directly",
-    :lazystrings => "use stringtype=CSV.CompactString (the default) or stringtype=String",
+    :lazystrings => "use stringtype=DataStrings.DataString (the default) or stringtype=String",
     :tasks => "use ntasks",
     :threaded => "use ntasks (ntasks=1 disables threading)",
     :rows_to_check => "use nsample",
@@ -465,7 +465,7 @@ function sniff(source; samplebytes::Int=1 << 16, missingstring=nothing,
     headerlikely = tnoheader.nrows > theader.nrows &&
         any(zip(columns(theader), columns(tnoheader))) do (ch, cnh)
             Base.nonmissingtype(eltype(ch)) !== String && eltype(ch) !== Missing &&
-                Base.nonmissingtype(eltype(cnh)) in (String, CompactString)
+                Base.nonmissingtype(eltype(cnh)) in (String, DataString)
         end
     t = headerlikely ? theader : tnoheader
     return Spec(bestdelim, get(dialectkw, :quoted, true), headerlikely,
@@ -868,7 +868,7 @@ function File(source;
               pool=DEFAULT_POOL,
               downcast::Bool=false,
               transpose::Bool=false,
-              stringtype::Type=CompactString,
+              stringtype::Type=DataString,
               strict::Bool=false, on_error::Symbol=strict ? :error : :collect,
               maxwarnings::Union{Nothing, Int}=nothing,
               maxproblems::Int=something(maxwarnings, 10_000),
@@ -907,10 +907,10 @@ function File(source;
         # pool keys name the scan's OUTPUT columns (the request already renamed
         # and reordered them)
         t = _poolcolumns(t, _resolvepool(pool, names(t), length(names(t)); validate); parallel)
-        poolS = stringtype === CompactString ? String : stringtype
+        poolS = stringtype === DataString ? String : stringtype
         t = _pooledarrays(t, poolS)
         downcast && (t = _downcast(t))
-        stringtype === CompactString || (t = _materializestrings(t, stringtype))
+        stringtype === DataString || (t = _materializestrings(t, stringtype))
         return File(_sourcename(source), t, Dict(n => j for (j, n) in enumerate(names(t))))
     end
     p = _prepare(source; parallel, ntasks, maxproblems=capturecap, validate, kw...)
@@ -931,10 +931,11 @@ function _setemptytypes!(plan::ColumnPlan)
 end
 
 function _filefromprepared(p::Prepared, nm::String; types=nothing, select=nothing, drop=nothing,
-                           pool=DEFAULT_POOL, downcast::Bool=false, stringtype::Type=CompactString,
+                           pool=DEFAULT_POOL, downcast::Bool=false, stringtype::Type=DataString,
                            on_error::Symbol=:collect, maxproblems::Int=10_000,
                            parallel::Bool=Threads.nthreads() > 1, validate::Bool=true,
                            ntasks::Union{Nothing, Int}=nothing,
+                           inferdecimal::Bool=get(p.parsekw, :inferdecimal, false),
                            available::Union{Nothing, Vector{Int}}=nothing)
     viewnames = available === nothing ? p.names : p.names[available]
     plan = settlecolumns(p; select, drop, types, available, validate)
@@ -947,7 +948,7 @@ function _filefromprepared(p::Prepared, nm::String; types=nothing, select=nothin
     # method exposes; in particular, a LazyFile prepared with defaults must not
     # silently cap a later larger maxproblems request at 10,000.
     parsekw = merge(p.parsekw,
-                    (; parallel, ntasks, validate, maxproblems=max(maxproblems, 1)))
+                    (; parallel, ntasks, validate, inferdecimal, maxproblems=max(maxproblems, 1)))
     t = parse(p.buf; index=p.bi, header=p.names, columnplan=plan, limit=p.limit,
               on_error=:collect, parsekw...)
     headerlog = _headerproblems(p.buf, p.headerrefs, p.opts, max(maxproblems, 1))
@@ -955,10 +956,10 @@ function _filefromprepared(p::Prepared, nm::String; types=nothing, select=nothin
     t, firstproblem = _narrowtypes(t, plan, p.bi.chunks, maxproblems, firstproblem)
     on_error === :error && firstproblem !== nothing && _throwproblem(t, firstproblem)
     t = _poolcolumns(t, poolspecs[plan.positions]; parallel)
-    poolS = stringtype === CompactString ? String : stringtype   # pool levels are never views
+    poolS = stringtype === DataString ? String : stringtype   # pool levels are never views
     t = _pooledarrays(t, poolS)
     downcast && (t = _downcast(t))
-    stringtype === CompactString || (t = _materializestrings(t, stringtype))
+    stringtype === DataString || (t = _materializestrings(t, stringtype))
     return File(nm, t, Dict(n => j for (j, n) in enumerate(names(t))))
 end
 
@@ -1004,7 +1005,24 @@ function File(sources::AbstractVector; source=nothing, kw...)
     # the globally first problem was known.
     childkw = merge(NamedTuple(kw), (; strict=false, on_error=:collect,
                                      maxwarnings=nothing, maxproblems=capturecap))
-    files = [File(s; childkw...) for s in sources]
+    nt = get(kw, :ntasks, nothing)
+    nt === nothing || nt >= 1 || throw(ArgumentError("ntasks must be ≥ 1 (got $nt)"))
+    parallel = get(kw, :parallel, nt === nothing ? Threads.nthreads() > 1 : nt > 1)
+    budget = parallel ? min(something(nt, Threads.nthreads()), Threads.nthreads()) : 1
+    files = Vector{File}(undef, length(sources))
+    if budget > 1 && length(sources) >= budget
+        # Bound the outer workers and avoid nested parser task groups. Each
+        # worker owns a source; collection and diagnostics stay in source order.
+        singlekw = merge(childkw, (; ntasks=1, parallel=false))
+        _taskforeach(eachindex(sources), budget) do i
+            files[i] = File(sources[i]; singlekw...)
+        end
+    else
+        # A few large sources can each use the full parser budget.
+        for i in eachindex(sources)
+            files[i] = File(sources[i]; childkw...)
+        end
+    end
     counts = [getfield(f, :table).nrows for f in files]
     total = sum(counts)
     outnames = copy(names(getfield(files[1], :table)))
@@ -1241,7 +1259,7 @@ function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
 end
 
 function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Bool=false,
-                         stringtype::Type=CompactString,
+                         stringtype::Type=DataString, inferdecimal::Bool=false,
                          on_error::Symbol=:collect, maxproblems::Int=10_000,
                          header::Union{Bool, Integer, AbstractVector}=true,
                          skipto::Union{Nothing, Integer}=nothing,
@@ -1312,6 +1330,13 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
     end
     plan = settlecolumns(names, opts; types, colopts, validate)
     seed = Union{Nothing, Type}[accessparsetype(d) for d in plan.columns]
+    if inferdecimal
+        for (j, (ci, lr)) in enumerate(rows)
+            seed[j] === nothing || continue
+            spans = (fieldspan(ci, lr, f) for f in startf:min(nfields(ci, lr), startf + n - 1))
+            seed[j] = _decimalcandidate(buf, spans, colopts[j])
+        end
+    end
     log = ProblemLog(maxproblems)
     cols = AbstractVector[_transposedcolumn(buf, r[1], r[2], startf, n, seed[j], colopts[j],
                                             log, j, plan.columns[j].declaredmissing)
@@ -1320,18 +1345,18 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
     t = ParsedTable(names, cols, n, log.items, log.dropped)
     on_error === :error && log.first !== nothing && _throwproblem(t, log.first)
     t = _poolcolumns(t, _resolvepool(pool, names, ncols; validate); parallel=false)
-    poolS = stringtype === CompactString ? String : stringtype
+    poolS = stringtype === DataString ? String : stringtype
     t = _pooledarrays(t, poolS)
     downcast && (t = _downcast(t))
-    stringtype === CompactString || (t = _materializestrings(t, stringtype))
+    stringtype === DataString || (t = _materializestrings(t, stringtype))
     nm = _sourcename(source)
     return File(nm, t, Dict(nm2 => j for (j, nm2) in enumerate(names)))
 end
 
 # --- pooling: a finalize-time pass at the API layer ---------------------------
 #
-# The kernel never pools. When asked, each CompactString column is interned
-# ONCE, allocation-free (CompactString hashing/equality are content-based),
+# The kernel never pools. When asked, each DataString column is interned
+# ONCE, allocation-free (DataString hashing/equality are content-based),
 # into first-occurrence levels; the policy bound `min(floor(ratio·n), cap)`
 # abandons a column the moment its distinct count exceeds it (a unique-valued
 # column costs the walk up to that bound, nothing more). Columns pool in
@@ -1381,14 +1406,14 @@ function _resolvepool(pool, names::Vector{Symbol}, ncols::Int; validate::Bool=tr
     return Union{Nothing, Tuple{Float64, Int}}[sp for _ in 1:ncols]
 end
 
-# intern one CompactString column; nothing when the policy bound is exceeded.
+# intern one DataString column; nothing when the policy bound is exceeded.
 # Rows split into contiguous ranges interned in parallel (each range's local
-# table is a Dict{CompactString,UInt32}; the CompactString hash walks the
+# table is a Dict{DataString,UInt32}; the DataString hash walks the
 # bytes, no allocation); the local level lists then merge in range order — so
 # level ids are first-occurrence-in-file order exactly as a serial pass would
 # assign them — and each range's refs remap through a small local→global
 # vector. A range exceeding the bound locally proves the column exceeds it.
-function _poolcolumn(c::CompactStringVector, ps::Tuple{Float64, Int}; parallel::Bool=true)
+function _poolcolumn(c::DataStringVector, ps::Tuple{Float64, Int}; parallel::Bool=true)
     n = length(c)
     n == 0 && return nothing
     ratiolevels = ps[1] == 1.0 ? n : floor(Int, ps[1] * n)
@@ -1398,7 +1423,7 @@ function _poolcolumn(c::CompactStringVector, ps::Tuple{Float64, Int}; parallel::
     bounds = [1 + (t - 1) * n ÷ nt for t in 1:nt]
     push!(bounds, n + 1)
     refs = zeros(UInt32, n)
-    locals = Vector{Tuple{Vector{CompactStringPayload}, Vector{CompactString}}}(undef, nt)
+    locals = Vector{Tuple{Vector{DataStringPayload}, Vector{DataString}}}(undef, nt)
     aborted = Threads.Atomic{Bool}(false)
     # task bodies are named functions (a closure that assigned `levels`/`keys`
     # here would rebind the merge scope's variables — shared across tasks)
@@ -1416,8 +1441,8 @@ function _poolcolumn(c::CompactStringVector, ps::Tuple{Float64, Int}; parallel::
     else
         # merge levels in range order (first-occurrence-in-file ids); remap
         # each range's refs through its local→global vector
-        levels = CompactStringPayload[]
-        globalof = Dict{CompactString, UInt32}()
+        levels = DataStringPayload[]
+        globalof = Dict{DataString, UInt32}()
         remaps = Vector{Vector{UInt32}}(undef, nt)
         for t in 1:nt
             lkeys = locals[t][2]
@@ -1438,17 +1463,17 @@ function _poolcolumn(c::CompactStringVector, ps::Tuple{Float64, Int}; parallel::
             Threads.@spawn _remaprange!(refs, remaps[t], bounds[t], bounds[t + 1] - 1)
         end
     end
-    lv = CompactStringVector{CompactString}(levels, c.buf, c.extra, c.overflow)
-    return Missing <: eltype(c) ? PooledColumn{Union{CompactString, Missing}}(refs, lv) :
-                                  PooledColumn{CompactString}(refs, lv)
+    lv = DataStringVector{DataString}(levels, c.buffers, Val(:trusted))
+    return Missing <: eltype(c) ? PooledColumn{Union{DataString, Missing}}(refs, lv) :
+                                  PooledColumn{DataString}(refs, lv)
 end
 
 # intern rows lo..hi of `c` into a fresh local table; refs get LOCAL ids
-function _internrange!(refs::Vector{UInt32}, c::CompactStringVector, lo::Int, hi::Int,
+function _internrange!(refs::Vector{UInt32}, c::DataStringVector, lo::Int, hi::Int,
                        maxlevels::Int, aborted::Threads.Atomic{Bool})
-    table = Dict{CompactString, UInt32}()
-    levels = CompactStringPayload[]
-    keys = CompactString[]
+    table = Dict{DataString, UInt32}()
+    levels = DataStringPayload[]
+    keys = DataString[]
     @inbounds for i in lo:hi
         aborted[] && break
         x = c[i]
@@ -1477,15 +1502,15 @@ function _remaprange!(refs::Vector{UInt32}, remap::Vector{UInt32}, lo::Int, hi::
     return
 end
 
-# pool the table's CompactString columns per `specs` (one per output column),
+# pool the table's DataString columns per `specs` (one per output column),
 # in parallel across columns
 function _poolcolumns(t::ParsedTable, specs::AbstractVector; parallel::Bool=true)
     js = [j for (j, c) in enumerate(t.columns)
-          if c isa CompactStringVector && j <= length(specs) && specs[j] !== nothing]
+          if c isa DataStringVector && j <= length(specs) && specs[j] !== nothing]
     isempty(js) && return t
     cols = AbstractVector[t.columns...]
     pooled = Vector{Any}(nothing, length(js))
-    poolone = i -> (pooled[i] = _poolcolumn(cols[js[i]]::CompactStringVector, specs[js[i]]; parallel))
+    poolone = i -> (pooled[i] = _poolcolumn(cols[js[i]]::DataStringVector, specs[js[i]]; parallel))
     if parallel && length(js) > 1
         @sync for i in eachindex(js)
             Threads.@spawn poolone(i)
@@ -1645,32 +1670,32 @@ end
 
 # --- the string-output hook -------------------------------------------------
 # `stringtype` names the element type string columns come out as. The core
-# knows CompactString (the default; zero-copy views) and String (bulk
+# knows DataString (the default; zero-copy views) and String (bulk
 # materialization). Extensions register more by adding methods to
 # `_stringsink` (validation) and `_materializecolumn` / `_levelvector`
 # (conversion): CSVInlineStringsExt registers InlineString (auto-width per
 # column) and the fixed String1..String255.
-_stringsink(::Type{CompactString}) = true
+_stringsink(::Type{DataString}) = true
 _stringsink(::Type{String}) = true
 _stringsink(::Type) = false
 _checkstringtype(T) =
     (T isa Type && _stringsink(T)) ||
-        throw(ArgumentError("stringtype must be CSV.CompactString, String, or a " *
+        throw(ArgumentError("stringtype must be DataStrings.DataString, String, or a " *
                             "type provided by an extension (e.g. InlineString with " *
                             "InlineStrings loaded); got $T"))
 
-# a CompactStringVector to Vector{S} / Vector{Union{S,Missing}}. String goes
+# a DataStringVector to Vector{S} / Vector{Union{S,Missing}}. String goes
 # through materialize's bulk path — one shared scratch, word-store inline
 # reconstruction, unsafe_string per cell; a per-cell String() broadcast ran the
 # generic AbstractString path and was a measured 55–110 MiB/s cliff on
 # string-heavy shapes.
-_materializecolumn(::Type{String}, col::CompactStringVector) = materialize(col)
-# pool levels (a CompactStringVector) to Vector{S}
-_levelvector(::Type{String}, levels::CompactStringVector, n::Int) =
+_materializecolumn(::Type{String}, col::DataStringVector) = materialize(col)
+# pool levels (a DataStringVector) to Vector{S}
+_levelvector(::Type{String}, levels::DataStringVector, n::Int) =
     String[String(levels[i]) for i in 1:n]
 
 function _materializestrings(t::ParsedTable, ::Type{S}=String) where {S}
-    cols = AbstractVector[col isa CompactStringVector ? _materializecolumn(S, col) : col
+    cols = AbstractVector[col isa DataStringVector ? _materializecolumn(S, col) : col
                           for col in t.columns]
     return ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
 end
@@ -1738,7 +1763,7 @@ read(source, sink; kw...) = sink(Tables.CopiedColumns(File(source; kw...)))
 # ---------------------------------------------------------------------------
 # lazy / LazyFile — the structural index AS a table
 # ---------------------------------------------------------------------------
-function lazy(source; types=nothing, stringtype::Type=CompactString,
+function lazy(source; types=nothing, stringtype::Type=DataString,
               select=nothing, drop=nothing, kw...)
     allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW..., :validate)
     _checkkwargs("lazy", kw, allowed)
@@ -1764,12 +1789,12 @@ function lazy(source; types=nothing, stringtype::Type=CompactString,
     return LazyFile(_sourcename(source), p, js, names, cols, nr,
                     Dict(nm => i for (i, nm) in enumerate(names)))
 end
-_lazyeltype(::Type{CompactString}) = Union{CompactString, Missing}
+_lazyeltype(::Type{DataString}) = Union{DataString, Missing}
 _lazyeltype(::Type{S}) where {S} = Union{S, Missing}
 
 # Internal lazy-vector implementation. Public callers interact with it through
 # `CSV.LazyFile` and the AbstractVector/Tables.jl interfaces.
-struct LazyColumn{ELT, T} <: AbstractVector{ELT}   # T: CompactString | String | extension string type | a value type
+struct LazyColumn{ELT, T} <: AbstractVector{ELT}   # T: DataString | String | extension string type | a value type
     buf::Vector{UInt8}
     chunks::Vector{ChunkIndex}
     rowbases::Vector{Int}
@@ -1822,7 +1847,7 @@ end
         else
             _lazycompact(c.buf, cpos, clen)
         end
-        return T === CompactString ? s : convert(T, String(s))
+        return T === DataString ? s : convert(T, String(s))
     end
     # `types=Missing` is an intentional sink: every present value recovers to
     # missing, as it does in the eager parser's default collecting mode.
@@ -1833,19 +1858,19 @@ end
     return ok ? v : missing
 end
 
-# CompactString's view word has an Int32 offset. Lazy access normally retains
+# DataString's view word has an Int32 offset. Lazy access normally retains
 # the source buffer with no copy. For a long cell beyond that absolute offset,
 # copy only the cell into its own small backing buffer. The returned value owns
 # that buffer, so this fallback is lifetime- and concurrency-safe.
 @inline function _lazycompact(buf::Vector{UInt8}, pos::Int, len::Int,
                               viewoffsetlimit::Int=Int(typemax(Int32)))
     len <= COMPACTSTRING_INLINE &&
-        return CompactString(inline_payload(buf, pos, len), EMPTY_BYTES)
+        return DataString(inline_payload(buf, pos, len), EMPTY_BYTES)
     pos - 1 <= viewoffsetlimit &&
-        return CompactString(view_payload(buf, pos, len, 0, pos - 1), buf)
+        return DataString(view_payload(buf, pos, len, 0, pos - 1), buf)
     bytes = Vector{UInt8}(undef, len)
     copyto!(bytes, 1, buf, pos, len)
-    return CompactString(view_payload(bytes, 1, len, 0, 0), bytes)
+    return DataString(view_payload(bytes, 1, len, 0, 0), bytes)
 end
 
 # Sequential access (collect, sum, DataFrame(lf), display) walks chunk by
@@ -1911,8 +1936,8 @@ function Base.show(io::IO, lf::LazyFile)
     end
 end
 
-function File(lf::LazyFile; types=nothing, select=nothing, drop=nothing, pool=DEFAULT_POOL,
-              downcast::Bool=false, stringtype::Type=CompactString, strict::Bool=false,
+function File(lf::LazyFile; inferdecimal::Bool=false, types=nothing, select=nothing, drop=nothing, pool=DEFAULT_POOL,
+              downcast::Bool=false, stringtype::Type=DataString, strict::Bool=false,
               on_error::Symbol=strict ? :error : :collect,
               maxwarnings::Union{Nothing, Int}=nothing,
               maxproblems::Int=something(maxwarnings, 10_000),
@@ -1927,7 +1952,7 @@ function File(lf::LazyFile; types=nothing, select=nothing, drop=nothing, pool=DE
     _checkstringtype(stringtype)
     return _filefromprepared(getfield(lf, :prepared), getfield(lf, :name); types, select, drop,
                              pool, downcast, stringtype, on_error, maxproblems, parallel, ntasks,
-                             validate,
+                             validate, inferdecimal,
                              available=getfield(lf, :sourceindices))
 end
 
@@ -1946,7 +1971,7 @@ struct Rows
 end
 
 function Rows(source; types=nothing, reusebuffer::Bool=false, select=nothing, drop=nothing,
-              stringtype::Type=CompactString, strict::Bool=false,
+              stringtype::Type=DataString, strict::Bool=false,
               on_error::Symbol=strict ? :error : :collect, kw...)
     allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...)
     _checkkwargs("Rows", kw, allowed)
@@ -1981,7 +2006,7 @@ Tables.schema(r::Rows) = getfield(r, :types) === nothing ?
                   Type[T === nothing ?
                        Union{_rowstringtype(getfield(r, :stringtype)), Missing} :
                        Union{T, Missing} for T in getfield(r, :types)])
-_rowstringtype(T) = T === CompactString ? CompactString : T
+_rowstringtype(T) = T === DataString ? DataString : T
 
 struct Row <: Tables.AbstractRow
     view::_IndexedRow
@@ -2068,10 +2093,10 @@ function Tables.getcolumn(row::Row, j::Int)
                         _typedvalue(T, v, sourcej)
     end
     st = getfield(row, :stringtype)
-    return st === CompactString || !(x isa CompactString) ? x : _rowstring(st, x)
+    return st === DataString || !(x isa DataString) ? x : _rowstring(st, x)
 end
 # per-cell string materialization for Rows(stringtype=...); extensions may add
-_rowstring(::Type{String}, x::CompactString) = String(x)
+_rowstring(::Type{String}, x::DataString) = String(x)
 Tables.getcolumn(row::Row, nm::Symbol) =
     Tables.getcolumn(row, getfield(row, :lookup)[nm])
 Base.getindex(row::Row, j::Int) = Tables.getcolumn(row, j)
@@ -2114,18 +2139,18 @@ function Base.iterate(c::Chunks, state::Int=1)
     # Apply the same final steps as File. Build each requested PooledArray, then
     # build the requested string type.
     st = getfield(c, :stringtype)
-    poolS = st === CompactString ? String : st
+    poolS = st === DataString ? String : st
     ps = getfield(c, :poolspec)
     ps === nothing || (t = _poolcolumns(t, fill(ps, length(t.columns))))
     t = _pooledarrays(t, poolS)
-    st === CompactString || (t = _materializestrings(t, st))
+    st === DataString || (t = _materializestrings(t, st))
     f = File(getfield(c, :name), t,
              Dict(nm => j for (j, nm) in enumerate(names(t))))
     return f, next
 end
 
-function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
-                maxproblems::Int=10_000, stringtype::Type=CompactString,
+function Chunks(source; types=nothing, inferdecimal::Bool=false, ntasks::Union{Nothing, Int}=nothing,
+                maxproblems::Int=10_000, stringtype::Type=DataString,
                 pool=DEFAULT_POOL, select=nothing, drop=nothing, strict::Bool=false,
                 on_error::Symbol=strict ? :error : :collect, kw...)
     nt = something(ntasks, Threads.nthreads())
@@ -2157,6 +2182,7 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     plan = settlecolumns(p; select, drop, types,
                          validate=get(kw, :validate, true))
     seed = Union{Nothing, Type}[d.parsetype for d in plan.columns]
+    inferdecimal && _inferdecimaltypes!(seed, p.buf, chunks, plan)
     if any(j -> seed[j] === nothing, plan.sources)
         total = sum(nrows, chunks; init=0)
         selected = _selectedmask(plan, p.ncols)

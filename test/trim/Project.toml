@@ -2,12 +2,13 @@
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 DataDecimals = "3e2245cb-6932-498d-a7cf-39d39de8bde3"
 DataStrings = "48204bd6-5611-42ea-b167-fc1d713f9be2"
-Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
-JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+JuliaC = "acedd4c2-ced6-4a15-accc-2607eb759ba2"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [compat]
-CSV = "1"
 DataDecimals = "1"
 DataStrings = "1"
-JSON = "1"
-Documenter = "1.17"
+CSV = "1"
+JuliaC = "0.3"
+Test = "1"
+julia = "1.12"

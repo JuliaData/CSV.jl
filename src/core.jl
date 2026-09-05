@@ -145,6 +145,7 @@ struct ValueOpts
     datetimepat::Parsers.DatePattern
     timepat::Parsers.DatePattern
     customfmt::Bool
+    customkind::UInt8 # 1=date, 2=time, 3=date and time; independent of parser storage
     inferbool::Bool   # false when another type also accepts a user Bool spelling
     groupmark::UInt8  # digit-group separator for numeric cells; 0x00 = off
 end
@@ -219,7 +220,7 @@ end
 function _earlierbooltype(s::Vector{UInt8}, decimal::UInt8,
                           dp::Parsers.DatePattern, dtp::Parsers.DatePattern,
                           tp::Parsers.DatePattern,
-                          customfmt::Bool, gm::UInt8)
+                          customfmt::Bool, kind::UInt8, gm::UInt8)
     i, j = 1, length(s)
     if gm != 0x00
         scratch = Vector{UInt8}(undef, 64)
@@ -234,7 +235,7 @@ function _earlierbooltype(s::Vector{UInt8}, decimal::UInt8,
     _fixedfloatusable(Parsers.parsefloat(Float64, s, i, j, decimal)[2]) && return Float64
     if customfmt
         if Parsers.parsecivil(s, i, j, dp)[2] == Parsers.RC_OK
-            return dp.hasdate ? (dp.hastime ? DateTime : Date) : Time
+            return kind == 0x03 ? DateTime : kind == 0x01 ? Date : Time
         end
     else
         Parsers.parsecivil(s, i, j, dp)[2] == Parsers.RC_OK && return Date
@@ -248,14 +249,35 @@ end
 # `"1"`. In this case, CSV does not infer Bool for the column. A user can still
 # set the column type to Bool and use the custom spelling. This rule makes the
 # result independent of the sampled rows.
-function _validatebools(trues, falses, decimal, dp, dtp, tp, customfmt, gm)
+function _validatebools(trues, falses, decimal, dp, dtp, tp, customfmt, kind, gm)
     for t in trues, f in falses
         t == f && throw(ArgumentError("Bool spelling $(repr(String(t))) is both true and false"))
     end
     for s in Iterators.flatten((trues, falses))
-        _earlierbooltype(s, decimal, dp, dtp, tp, customfmt, gm) === nothing || return false
+        _earlierbooltype(s, decimal, dp, dtp, tp, customfmt, kind, gm) === nothing || return false
     end
     return true
+end
+
+# Keep type inference metadata from the format spelling. DatePattern is an
+# opaque Parsers handle. Backslash runs escape the following character, as in
+# Dates and Parsers; escaped token letters are literals.
+function _dateformatkind(fmt::AbstractString)
+    kind = UInt8(0)
+    i = firstindex(fmt)
+    while i <= lastindex(fmt)
+        c = fmt[i]
+        if c == '\\'
+            while i <= lastindex(fmt) && fmt[i] == '\\'
+                i = nextind(fmt, i)
+            end
+        else
+            c in ('y', 'Y', 'm', 'd', 'u', 'U') && (kind |= 0x01)
+            c in ('H', 'M', 'S', 's', 'I', 'p') && (kind |= 0x02)
+        end
+        i <= lastindex(fmt) && (i = nextind(fmt, i))
+    end
+    return kind
 end
 
 function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
@@ -274,6 +296,7 @@ function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
         # groupmark == delim is allowed: such fields are only expressible quoted,
         # which the indexer already handles (the mark is content, not structure)
     end
+    kind = UInt8(0)
     if dateformat === nothing
         dp, dtp, tp, custom =
             _ISO_DATE_PATTERN, _ISO_DATETIME_PATTERN, _ISO_TIME_PATTERN, false
@@ -281,7 +304,8 @@ function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
         dateformat isa AbstractString ||
             throw(ArgumentError("dateformat must be a format String (got $(typeof(dateformat)))"))
         p = Parsers.compilepattern(dateformat)
-        (p.hasdate || p.hastime) ||
+        kind = _dateformatkind(dateformat)
+        kind != 0x00 ||
             throw(ArgumentError("dateformat must contain a date or time token"))
         dp = dtp = tp = p
         custom = true
@@ -296,7 +320,7 @@ function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
                 throw(ArgumentError("sentinels cannot contain quote or escape characters"))
         end
     end
-    inferbool = _validatebools(trues, falses, decimal % UInt8, dp, dtp, tp, custom, gm)
+    inferbool = _validatebools(trues, falses, decimal % UInt8, dp, dtp, tp, custom, kind, gm)
     sf = (zero(UInt64), zero(UInt64), zero(UInt64), zero(UInt64))
     for s in sentinelbytes
         b = s[1]
@@ -304,7 +328,7 @@ function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
     end
     return ValueOpts(d.oq, d.cq, d.e, d.quoted, delimbytes, decimal % UInt8, stripwhitespace,
                      sentinelbytes, sf, trues, falses,
-                     dp, dtp, tp, custom, inferbool, gm)
+                     dp, dtp, tp, custom, kind, inferbool, gm)
 end
 
 # --- the cell layer -----------------------------------------------------------
@@ -699,19 +723,19 @@ end
     return (false, false)
 end
 @inline function parsevalue(::Type{Date}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
-    vo.customfmt && (!vo.datepat.hasdate || vo.datepat.hastime) && return (_DATE0, false)
+    vo.customfmt && vo.customkind != 0x01 && return (_DATE0, false)
     c, rc = Parsers.parsecivil(buf, i, j, vo.datepat)
     rc == Parsers.RC_OK || return (_DATE0, false)
     return (todate(c), true)
 end
 @inline function parsevalue(::Type{DateTime}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
-    vo.customfmt && (!vo.datetimepat.hasdate || !vo.datetimepat.hastime) && return (_DATETIME0, false)
+    vo.customfmt && vo.customkind != 0x03 && return (_DATETIME0, false)
     c, rc = Parsers.parsecivil(buf, i, j, vo.datetimepat)
     rc == Parsers.RC_OK || return (_DATETIME0, false)
     return (todatetime(c), true)
 end
 @inline function parsevalue(::Type{Time}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
-    vo.customfmt && (vo.timepat.hasdate || !vo.timepat.hastime) && return (_TIME0, false)
+    vo.customfmt && vo.customkind != 0x02 && return (_TIME0, false)
     c, rc = Parsers.parsecivil(buf, i, j, vo.timepat)
     rc == Parsers.RC_OK || return (_TIME0, false)
     return (totime(c), true)
@@ -1641,7 +1665,7 @@ function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::ValueOpts)
         # one probe: the user format's own components say which type it detects
         if Parsers.parsecivil(buf, cpos, cj, opts.datepat)[2] == Parsers.RC_OK
             p = opts.datepat
-            return p.hasdate ? (p.hastime ? DateTime : Date) : Time
+            return opts.customkind == 0x03 ? DateTime : opts.customkind == 0x01 ? Date : Time
         end
     else
         Parsers.parsecivil(buf, cpos, cj, opts.datepat)[2] == Parsers.RC_OK && return Date
@@ -1696,11 +1720,11 @@ end
 end
 
 # --- strings ------------------------------------------------------------------
-# The CompactString type family (payload, accessors, AbstractString interface,
-# CompactStringVector, materialize) lives in its own kernel-independent file;
+# The DataString type family (payload, accessors, AbstractString interface,
+# DataStringVector, materialize) lives in its own kernel-independent file;
 # the quote/escape-aware helpers and the StringColumn staging below are the
 # CSV-specific layer over it.
-include("compactstring.jl")
+include("strings.jl")
 
 # Next `""` pair at or after i (RFC doubling; the span passed findcontent, so
 # quotes only occur doubled) — word-scan for the quote byte, verify adjacency
@@ -1757,7 +1781,7 @@ end
             b |= UInt64(c) << (8 * (n - 5))
         end
     end
-    return CompactStringPayload(a | UInt64(n % UInt32), b)
+    return DataStringPayload(a | UInt64(n % UInt32), b)
 end
 
 @inline function _unescape_append!(dst::Vector{UInt8}, buf::Vector{UInt8}, pos::Int, len::Int,
@@ -1800,7 +1824,7 @@ end
 # The column builder: payloads plus the input and bounded owned buffers that
 # long views resolve into.
 mutable struct StringColumn
-    payloads::Vector{CompactStringPayload}
+    payloads::Vector{DataStringPayload}
     buf::Vector{UInt8}
     extra::Vector{UInt8}          # first owned buffer; guarded by extralock
     overflow::Vector{Vector{UInt8}} # further bounded owned buffers
@@ -1808,7 +1832,7 @@ mutable struct StringColumn
     e::UInt8                      # escape char
     cq::UInt8                     # close-quote char (e == cq for RFC ""-doubling)
 end
-StringColumn(payloads::Vector{CompactStringPayload}, buf::Vector{UInt8},
+StringColumn(payloads::Vector{DataStringPayload}, buf::Vector{UInt8},
              extra::Vector{UInt8}, extralock::ReentrantLock, e::UInt8, cq::UInt8) =
     StringColumn(payloads, buf, extra, Vector{Vector{UInt8}}(), extralock, e, cq)
 StringColumn(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8) =
@@ -1827,7 +1851,7 @@ end
 function _appendowned_unlocked!(col::StringColumn, bytes::Vector{UInt8},
                                 maxbytes::Int=COMPACTSTRING_BUFFER_BYTES)
     0 <= maxbytes <= COMPACTSTRING_BUFFER_BYTES ||
-        throw(ArgumentError("invalid CompactString owned-buffer limit $maxbytes"))
+        throw(ArgumentError("invalid DataString owned-buffer limit $maxbytes"))
     n = length(bytes)
     n <= maxbytes ||
         throw(ArgumentError("a single CSV string staging buffer exceeds the Int32 field limit"))
@@ -1835,7 +1859,7 @@ function _appendowned_unlocked!(col::StringColumn, bytes::Vector{UInt8},
     dst = _ownedbuffer(col, idx)
     if length(dst) > maxbytes - n
         idx < typemax(Int32) ||
-            throw(ArgumentError("too many CompactString owned buffers"))
+            throw(ArgumentError("too many DataString owned buffers"))
         push!(col.overflow, UInt8[])
         idx += 1
         dst = col.overflow[end]
@@ -1854,7 +1878,7 @@ function _copyownedbuffers!(dst::StringColumn, src::StringColumn,
     return maps
 end
 
-@inline function _repointowned(p::CompactStringPayload,
+@inline function _repointowned(p::DataStringPayload,
                                maps::Vector{Tuple{Int32, Int}})
     oldidx = Int(csbufidx(p))
     newidx, base = @inbounds maps[oldidx]
@@ -1987,7 +2011,7 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
                          "bare quote engaged structural protection in " * excerpt(buf, pos, len))
         end
         if esc
-            # escaped values are unescaped ONCE, at parse time (CompactString needs O(1)
+            # escaped values are unescaped ONCE, at parse time (DataString needs O(1)
             # codeunit access): short results build inline payloads allocation-
             # free; long ones stage locally and flush to the shared extra buffer
             # under a single lock per (column × chunk), not per cell
@@ -2043,7 +2067,7 @@ end
     return
 end
 
-function _flushstaging!(col::StringColumn, payloads::Vector{CompactStringPayload},
+function _flushstaging!(col::StringColumn, payloads::Vector{DataStringPayload},
                         staging::NTuple{4, Vector})
     sbytes = staging[1]::Vector{UInt8}
     srows = staging[2]::Vector{Int}
@@ -2706,6 +2730,7 @@ function parse(buf::Vector{UInt8};
                types=nothing,
                dateformat=nothing,
                decimal::Char='.',
+               inferdecimal::Bool=false,
                truestrings=nothing,
                falsestrings=nothing,
                sentinels=nothing,
@@ -2840,6 +2865,12 @@ function parse(buf::Vector{UInt8};
     # -- select initial column types ------------------------------------------
     seed = Union{Nothing, Type}[d.parsetype for d in plan.columns]
     userprovided = [d.parsetype !== nothing for d in plan.columns]
+    if inferdecimal
+        _inferdecimaltypes!(seed, buf, chunks, plan; limit, rowmask)
+        for j in plan.sources
+            !userprovided[j] && seed[j] !== nothing && (seed[j] = _maptype(tm, seed[j]))
+        end
+    end
     wantmissing = [d.declaredmissing for d in plan.columns]
     # typed columns whose sample shows a missing cell get union-direct finals
     # (the parse writes Vector{Union{T,Missing}} in place; conversion is never
@@ -3109,7 +3140,7 @@ end
 # fed. What it costs: on the rare promotion, completed chunks re-parse the
 # column instead of stitch-time converting — promotions are what stratified
 # sampling exists to make rare. (Dictionary encoding is not a kernel concern:
-# the API layer pools a finished CompactString column in one pass when asked.)
+# the API layer pools a finished DataString column in one pass when asked.)
 
 # Direct finals allocate UNDEF: each chunk task fills its own slice right
 # before parsing it (one page touch, in the task that writes it, parallel at
@@ -3119,7 +3150,7 @@ end
 function _allocdirect(::Type{T}, ndata::Int, buf::Vector{UInt8}, opts::ValueOpts,
                       d::Dialect, j::Int, wantunion::Bool=false) where {T}
     T === Missing && return nothing
-    T === String && return StringColumn(Vector{CompactStringPayload}(undef, ndata), buf,
+    T === String && return StringColumn(Vector{DataStringPayload}(undef, ndata), buf,
                                         UInt8[], ReentrantLock(), opts.e, d.cq)
     wantunion && return UnionColumn{T}(ndata)
     return TypedColumn{T}(Vector{T}(undef, ndata), Vector{Bool}(undef, ndata))
@@ -3388,17 +3419,17 @@ end
 # flat string stitch without reparsing.
 struct PooledColumn{ELT} <: AbstractVector{ELT}
     refs::Vector{UInt32}          # 0 = missing (ELT includes Missing then)
-    levels::CompactStringVector{CompactString}
+    levels::DataStringVector{DataString}
 end
 Base.size(c::PooledColumn) = size(c.refs)
 
 # widen a missing-free column to its Union{Missing,T} counterpart, zero-copy
-# where the container supports it (CompactString views / pooled refs), else a
+# where the container supports it (DataString views / pooled refs), else a
 # converted Base vector
-_widenmissing(c::CompactStringVector{CompactString}) =
-    CompactStringVector{Union{CompactString, Missing}}(c.payloads, c.buf, c.extra, c.overflow)
-_widenmissing(c::PooledColumn{CompactString}) =
-    PooledColumn{Union{CompactString, Missing}}(c.refs, c.levels)
+_widenmissing(c::DataStringVector{DataString}) =
+    DataStringVector{Union{DataString, Missing}}(c.payloads, c.buffers, Val(:trusted))
+_widenmissing(c::PooledColumn{DataString}) =
+    PooledColumn{Union{DataString, Missing}}(c.refs, c.levels)
 _widenmissing(c::Vector{T}) where {T} = convert(Vector{Union{T, Missing}}, c)
 _widenmissing(c::AbstractVector) = c
 
@@ -3408,7 +3439,7 @@ Base.@propagate_inbounds function Base.getindex(c::PooledColumn{ELT}, i::Int) wh
     r == 0 && return missing
     return c.levels[Int(r)]
 end
-Base.@propagate_inbounds function Base.getindex(c::PooledColumn{CompactString}, i::Int)
+Base.@propagate_inbounds function Base.getindex(c::PooledColumn{DataString}, i::Int)
     @boundscheck checkbounds(c.refs, i)
     @inbounds return c.levels[Int(c.refs[i])]
 end
@@ -3420,7 +3451,7 @@ poollevels(c::PooledColumn) = c.levels
 
 function materialize(c::PooledColumn{ELT}) where {ELT}
     lv = materialize(c.levels)
-    out = Vector{ELT === CompactString ? String : Union{String, Missing}}(undef, length(c.refs))
+    out = Vector{ELT === DataString ? String : Union{String, Missing}}(undef, length(c.refs))
     @inbounds for i in eachindex(c.refs)
         r = c.refs[i]
         out[i] = r == 0 ? missing : lv[Int(r)]
@@ -3550,13 +3581,13 @@ end
 finalizecolumn(::Type{Missing}, ::Nothing, n::Int, ::Bool) = fill(missing, n)
 function finalizecolumn(::Type{String}, col::StringColumn, n::Int)
     anymissing = any(p -> cslen(p) < 0, col.payloads)
-    return anymissing ? CompactStringVector{Union{CompactString, Missing}}(col.payloads, col.buf, col.extra, col.overflow) :
-                        CompactStringVector{CompactString}(col.payloads, col.buf, col.extra, col.overflow)
+    return anymissing ? _stringvector(Union{DataString, Missing}, col.payloads, col.buf, col.extra, col.overflow) :
+                        _stringvector(DataString, col.payloads, col.buf, col.extra, col.overflow)
 end
 function finalizecolumn(::Type{String}, col::StringColumn, n::Int, force_missing::Bool)
     anymissing = force_missing || any(p -> cslen(p) < 0, col.payloads)
-    return anymissing ? CompactStringVector{Union{CompactString, Missing}}(col.payloads, col.buf, col.extra, col.overflow) :
-                        CompactStringVector{CompactString}(col.payloads, col.buf, col.extra, col.overflow)
+    return anymissing ? _stringvector(Union{DataString, Missing}, col.payloads, col.buf, col.extra, col.overflow) :
+                        _stringvector(DataString, col.payloads, col.buf, col.extra, col.overflow)
 end
 # `all(::Vector{Bool})` short-circuits, so it compiles to a branchy scalar
 # loop — 1.2 ms per 4M-row column. `count` vectorizes; missing-free columns

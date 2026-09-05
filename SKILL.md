@@ -9,7 +9,7 @@ Load CSV.jl and call its APIs through the package namespace. The package does
 not export its entry points.
 
 ```julia
-using CSV
+using CSV, DataStrings
 
 file = CSV.File("input.csv")
 CSV.write("output.csv", file)
@@ -20,21 +20,19 @@ Use `CSV.read(source, sink)` for a Tables.jl sink, `CSV.Rows` for row access,
 only on access. Call `CSV.problems(file)` after a recovering read, or pass
 `on_error=:error` for fail-fast behavior.
 
-Text columns use `CSV.CompactString` by default. Pass `stringtype=String` when
+Text columns use `DataStrings.DataString` by default. Pass `stringtype=String` when
 the result must own each string. Pooling is independent and is off by default.
 
 For repository work, read `AGENTS.md` before editing. Run focused tests while
 editing, then the full minimum-version suite and strict documentation build.
-The Parsers 3 integration decision is complete. CSV.jl depends on Parsers 3 for
-the reviewed low-level kernels. CI temporarily pins
-[Parsers.jl PR #210](https://github.com/JuliaData/Parsers.jl/pull/210) at exact
-commit `e4adc5ba720e5668b726f65a574e2037c866d6df` until registration. Do not restore
-a local copy of those kernels. Registered InlineStrings releases still require
-Parsers 2. CI pins
-[InlineStrings.jl PR #93](https://github.com/JuliaStrings/InlineStrings.jl/pull/93)
-at `ce4c3549691c4b3443cc14ffa90ebdd6636eff2f` until a compatible release exists.
+Use registered Parsers 3, InlineStrings 2, and Tables 1.14. Pending DataStrings
+and DataDecimals revisions are centralized in `test/dependencies.jl`; remove
+those pins only after General registration. Keep the runtime in one module and
+validate registry resolution before a 1.0 tag.
 
-The final runtime has one module: `CSV`. Implementation files are includes, not
-public submodules. The Tables.Scan gate, a registered Parsers 3 release, and
-a Parsers-3-compatible InlineStrings release are mandatory for a CSV.jl 1.0
-tag. Remove both temporary source pins before the tag.
+For exact numeric columns, supply `types=Dict(:amount => DataDecimals.Decimal64{2})`.
+Use `inferdecimal=true` to opt into full-column consistent-scale inference for
+File and Chunks. It is a formatting heuristic, not currency detection. See
+`docs/src/decimals.md` for its exactness and fallback rules.
+
+The documentation environment also pins JSON PR #480 at `bcb8e334682e8135c08913781bf8200832cf752e` until a JSON release supports Parsers 3. This is a docs dependency gate, not a CSV runtime dependency.

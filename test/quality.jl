@@ -1,10 +1,7 @@
-using Test
-using Aqua
-using CSV
+using Test, Aqua, CSV
 
 @testset "package quality" begin
-    # Aqua starts a new environment for this check. That environment cannot
-    # install Parsers 3 until Parsers 3 is registered.
-    # TODO: Turn this check on after the Parsers 3 release.
+    # The isolated fresh-process check cannot resolve the two packages until
+    # their initial General registrations merge. All other Aqua checks run.
     Aqua.test_all(CSV; persistent_tasks=false)
 end

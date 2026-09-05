@@ -8,7 +8,7 @@ the documentation build.
 A `String` source means a path or URL. Use `IOBuffer` for literal data.
 
 ```@example examples-literal
-using CSV
+using CSV, DataStrings
 
 text = "city,temp\nDenver,31.5\nBoston,25.0\n"
 file = CSV.File(IOBuffer(text); stringtype=String)
@@ -19,7 +19,7 @@ collect(zip(file.city, file.temp))
 ## Supply or normalize column names
 
 ```@example examples-header
-using CSV
+using CSV, DataStrings
 
 without_header = CSV.File(IOBuffer("1,2\n3,4\n"); header=false)
 manual_header = CSV.File(IOBuffer("1,2\n3,4\n"); header=[:left, :right])
@@ -32,7 +32,7 @@ normalized = CSV.File(IOBuffer("first value,2nd value\n1,2\n");
 ## Select columns and set types
 
 ```@example examples-select
-using CSV
+using CSV, DataStrings
 
 text = "id,amount,note\n1,10.5,first\n2,20.0,second\n"
 file = CSV.File(IOBuffer(text);
@@ -52,7 +52,7 @@ names(file)
 ## Parse a custom dialect
 
 ```@example examples-dialect
-using CSV
+using CSV, DataStrings
 
 text = "name;amount\nAda;1,25\nGrace;2,50\n"
 file = CSV.File(IOBuffer(text); delim=';', decimal=',', stringtype=String)
@@ -63,7 +63,7 @@ file = CSV.File(IOBuffer(text); delim=';', decimal=',', stringtype=String)
 ## Treat repeated delimiters as one
 
 ```@example examples-repeated
-using CSV
+using CSV, DataStrings
 
 text = "left   right\n1      2\n3      4\n"
 file = CSV.File(IOBuffer(text); delim=' ', ignorerepeated=true)
@@ -74,7 +74,7 @@ file = CSV.File(IOBuffer(text); delim=' ', ignorerepeated=true)
 ## Configure Boolean spellings
 
 ```@example examples-bool
-using CSV
+using CSV, DataStrings
 
 text = "id,active\n1,Y\n2,N\n"
 file = CSV.File(IOBuffer(text);
@@ -88,7 +88,7 @@ collect(file.active)
 ## Inspect bad values
 
 ```@example examples-problems
-using CSV
+using CSV, DataStrings
 
 text = "id,amount\n1,10\n2,not-a-number\n"
 file = CSV.File(IOBuffer(text); types=Dict(:amount => Int))
@@ -106,7 +106,7 @@ CSV.File(IOBuffer(text); types=Dict(:amount => Int), on_error=:error)
 ## Keep empty text distinct from missing
 
 ```@example examples-empty
-using CSV
+using CSV, DataStrings
 
 table = (value=Union{Missing, String}[missing, "", "text"],)
 output = IOBuffer()
@@ -120,7 +120,7 @@ roundtrip = CSV.File(IOBuffer(bytes); stringtype=String)
 ## Write without a temporary file
 
 ```@example examples-write
-using CSV
+using CSV, DataStrings
 
 table = (id=[1, 2], note=["plain", "comma, inside"])
 output = IOBuffer()
@@ -147,7 +147,7 @@ CSV.write("output.csv", df)
 ## Process rows or batches
 
 ```@example examples-rows
-using CSV
+using CSV, DataStrings
 
 rows = CSV.Rows(IOBuffer("id,value\n1,10\n2,20\n"); types=[Int, Int])
 total = sum(row[:value] for row in rows)
@@ -156,7 +156,7 @@ total = sum(row[:value] for row in rows)
 Use `CSV.Chunks` when a downstream operation accepts table partitions:
 
 ```@example examples-chunks
-using CSV
+using CSV, DataStrings
 
 chunks = CSV.Chunks(IOBuffer("id,value\n1,10\n2,20\n3,30\n"); ntasks=2)
 length(collect(chunks))
@@ -165,7 +165,7 @@ length(collect(chunks))
 ## Index first and parse later
 
 ```@example examples-lazy
-using CSV
+using CSV, DataStrings
 
 lazyfile = CSV.lazy(IOBuffer("id,value\n1,10.5\n2,20.0\n"))
 first_id = String(lazyfile.id[1])
@@ -177,7 +177,7 @@ eager = CSV.File(lazyfile; types=Dict(:value => Float64))
 ## Read several sources with provenance
 
 ```@example examples-sources
-using CSV
+using CSV, DataStrings
 
 inputs = [IOBuffer("id,value\n1,10\n"), IOBuffer("id,value\n2,20\n")]
 file = CSV.File(inputs; source=:file => ["north", "south"])

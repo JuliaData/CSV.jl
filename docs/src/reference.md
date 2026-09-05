@@ -33,6 +33,4 @@ CSV.RowWriter
 
 ## Text values
 
-```@docs
-CSV.CompactString
-```
+Text values and mutable string columns come from [DataStrings.jl](https://github.com/JuliaData/DataStrings.jl). Use `DataStrings.DataString` and `DataStrings.StringVector` for their APIs.

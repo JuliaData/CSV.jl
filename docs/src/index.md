@@ -19,7 +19,7 @@ before you update an application from CSV.jl 0.10.
 ## First read and write
 
 ```@example home
-using CSV
+using CSV, DataStrings
 
 input = IOBuffer("name,score\nAda,9.5\nGrace,10.0\n")
 file = CSV.File(input)
@@ -56,7 +56,7 @@ CSV.jl builds one quote-aware structural index. It then parses each selected
 column with a type-specialized loop. Parallel execution does not change row
 order, `limit` results, or output bytes.
 
-Text columns use `CSV.CompactString` by default. Short values are stored in the
+Text columns use `DataStrings.DataString` by default. Short values are stored in the
 value. Long values can refer to the retained input buffer. Convert with
 `String(value)` when a standalone `String` is required, or pass
 `stringtype=String` to a reader.

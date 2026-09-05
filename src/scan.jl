@@ -65,7 +65,7 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
     inputnames = p.names
     phasecap = max(maxproblems, on_error === :error ? 1 : 0)
     phasekw = merge(NamedTuple(parsekw), (; maxproblems=phasecap, on_error=:collect))
-    b = Tables.bind(scan, inputnames)
+    b = Tables.resolve(scan, inputnames)
     plan = settlecolumns(inputnames, p.opts, b; colopts=_preparedcolopts(p))
 
     if b.filter === nothing
@@ -86,7 +86,7 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
     predplan = ColumnPlan(predcolumns, plan.predicate, Int[], Int[],
                           plan.opts, plan.colopts)
     t1 = parse(buf; index=bi, header=inputnames, columnplan=predplan, phasekw...)
-    mask = Tables.filtermask(scan, PredicateColumns(t1, inputnames, plan.predicate))
+    mask = Tables.filtermask(b, PredicateColumns(t1, inputnames, plan.predicate))
     _cliprows!(mask, b.offset, b.limit)
 
     # Then, read result columns only for rows that passed the filter. A result

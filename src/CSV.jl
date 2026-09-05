@@ -18,6 +18,7 @@ using Tables
 # These files form one `CSV` module. The split keeps each implementation area
 # small enough to read without adding private module boundaries.
 include("core.jl")       # indexing, values, parsing, and columns
+include("decimals.jl")   # exact decimal parsing and optional scale inference
 include("tables.jl")     # Tables.jl support and row access
 include("api.jl")        # File, read, Rows, Chunks, and option handling
 include("write.jl")      # write and RowWriter
@@ -36,7 +37,7 @@ end
 
 Read delimited data into an eager Tables.jl table. `source` can be a path or
 HTTP(S) URL, an `IO`, a `Cmd`, bytes, or a vector of sources. CSV.jl detects
-the delimiter and column types by default. Text uses `CSV.CompactString`,
+the delimiter and column types by default. Text uses `DataStrings.DataString`,
 pooling is off, and recoverable parse problems are available through
 [`CSV.problems`](@ref CSV.problems). Use `on_error=:error` for fail-fast
 parsing. Reader keywords control the header and row window, dialect, missing
@@ -66,7 +67,7 @@ on access. Convert it with [`CSV.File`](@ref CSV.File) to reuse its index for an
 eager typed parse.
 """ LazyFile
 @doc """
-    CSV.Rows(source; types=nothing, stringtype=CSV.CompactString, keywords...)
+    CSV.Rows(source; types=nothing, stringtype=DataStrings.DataString, keywords...)
 
 Iterate lightweight Tables.jl row views without allocating eager columns.
 Cells materialize on access. The source bytes and complete structural index
@@ -119,22 +120,13 @@ disabled. Rows render on demand with the same dialect and value formatting as
 [`CSV.write`](@ref CSV.write). With the same formatting options, joining the
 iterator gives the same uncompressed bytes as `CSV.write`.
 """ RowWriter
-@doc """
-    CSV.CompactString <: AbstractString
-
-The default text value for CSV.jl readers. Short text is stored in the value;
-long text can refer to the retained input buffer. Comparisons, hashing, and
-iteration agree with ordinary strings. `String(value)` makes an owning Julia
-`String` copy.
-""" CompactString
-
 # Julia 1.11 added `public`. Build the expression at runtime so Julia 1.10 can
 # still parse this file. The surface remains deliberately unexported: users
 # call it through the `CSV` namespace.
 @static if VERSION >= v"1.11"
     Core.eval(@__MODULE__, Expr(:public, :File, :lazy, :LazyFile, :Rows,
                                 :Chunks, :read, :problems, :write,
-                                :RowWriter, :CompactString))
+                                :RowWriter))
 end
 
 # -- precompile workload -------------------------------------------------------
