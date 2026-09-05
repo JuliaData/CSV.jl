@@ -1,125 +1,169 @@
 """
-CSV provides fast, flexible reader & writer for delimited text files in various formats.
+    CSV
 
-Reading:
-- `CSV.File` reads delimited data and returns a `CSV.File` object, which allows dot-access to columns and iterating rows.
-- `CSV.read` is similar to `CSV.File` but used when the input will be passed directly to a sink function such as a `DataFrame`.
-- `CSV.Rows` reads delimited data and returns a `CSV.Rows` object, which allows "streaming" the data by iterating and thereby has a lower memory footprint than `CSV.File`.
-- `CSV.Chunks` allows processing extremely large files in "batches" or "chunks".
-Writing:
-- `CSV.write` writes a [Tables.jl interface input](https://github.com/JuliaData/Tables.jl) such as a `DataFrame` to a csv file or an in-memory IOBuffer.
-- `CSV.RowWriter` creates an iterator that produces csv-formatted strings for each row in the input table.
-Here is an example of reading a csv file and passing the input to a `DataFrame`:
-```julia
-using CSV, DataFrames
-ExampleInputDF = CSV.read("ExampleInputFile.csv", DataFrame)
-```
-Here is an example of writing out a `DataFrame` to a csv file:
-```julia
-using CSV, DataFrames
-ExampleOutputDF = DataFrame(rand(10,10), :auto)
-CSV.write("ExampleOutputFile.csv", ExampleOutputDF)
-```
+Fast, flexible reading and writing of delimited text.
+
+Reading — `CSV.File`, `CSV.read`, `CSV.Rows`, `CSV.Chunks`.
+Writing — `CSV.write`.
+Diagnostics — `CSV.problems`.
+
+All public names live under the `CSV` namespace. Reading supports eager,
+lazy, row-wise, and chunked workflows. Parsing and writing are deterministic
+for any supported thread count.
 """
 module CSV
 
-if !isdefined(Base, :contains)
-    contains(haystack, needle) = occursin(needle, haystack)
-end
-
-# stdlib
-using Mmap, Dates, Unicode
-# Parsers.jl is used for core type parsing from byte buffers
-# and all other parsing options (quoted fields, delimiters, dateformats etc.)
-using Parsers
-# Tables.jl allows integration with all other table/data file formats
 using Tables
-# PooledArrays.jl is used for materializing pooled columns
-using PooledArrays
-# SentinelArrays.jl allow efficient conversion from Vector{Union{T, Missing}} to Vector{T}
-# it also provides the MissingVector and ChainedVector array types
-using SentinelArrays
-# InlineStrings and WeakRefStrings provide the InlineString and PosLenString types for more gc-friendly string types
-using InlineStrings, WeakRefStrings
-export PosLenString, InlineString
-export String1, String3, String7, String15, String31, String63, String127, String255
-# CodecZlib is used for unzipping gzip files
-using CodecZlib
-# FilePathsBase allows more structured file path types
-using FilePathsBase
-# WorkerUtilities for lock/spawn utilities
-using WorkerUtilities
 
-struct Error <: Exception
-    msg::String
+# These files form one `CSV` module. The split keeps each implementation area
+# small enough to read without adding private module boundaries.
+include("core.jl")       # indexing, values, parsing, and columns
+include("decimals.jl")   # exact decimal parsing and optional scale inference
+include("tables.jl")     # Tables.jl support and row access
+include("api.jl")        # File, read, Rows, Chunks, and option handling
+include("write.jl")      # write and RowWriter
+if isdefined(Tables, :Scan)
+    include("scan.jl")   # optional Tables.Scan support
 end
 
-Base.showerror(io::IO, e::Error) = println(io, e.msg)
+# Delimiter and header detection (`sniff` and `Spec`) is internal machinery
+# behind `delim=nothing`; it is not part of the 1.0 public surface (0.10 had
+# no such API). It can be promoted later if there is demand.
 
-# constants
-const DEFAULT_STRINGTYPE = InlineString
-const DEFAULT_POOL = (0.2, 500)
-const DEFAULT_ROWS_TO_CHECK = 30
-const DEFAULT_MAX_WARNINGS = 100
-const DEFAULT_MAX_INLINE_STRING_LENGTH = 32
-const TRUE_STRINGS = ["true", "True", "TRUE", "T", "1"]
-const FALSE_STRINGS = ["false", "False", "FALSE", "F", "0"]
-const StringCodeUnits = Base.CodeUnits{UInt8, String}
-const ValidSources = Union{Vector{UInt8}, SubArray{UInt8, 1, Vector{UInt8}}, StringCodeUnits, IO, Cmd, AbstractString, AbstractPath}
-const MAX_INPUT_SIZE = Int === Int64 ? 2^42 : typemax(Int32)
-const EMPTY_INT_ARRAY = Int[]
+# These are namespace APIs, not exports. Their public docs stay here so the
+# complete supported surface is easy to review.
+@doc """
+    CSV.File(source; keywords...) -> CSV.File
 
-include("keyworddocs.jl")
-include("utils.jl")
-include("detection.jl")
-include("context.jl")
-include("file.jl")
-include("chunks.jl")
-include("rows.jl")
-include("write.jl")
+Read delimited data into an eager Tables.jl table. `source` can be a path or
+HTTP(S) URL, an `IO`, a `Cmd`, bytes, or a vector of sources. CSV.jl detects
+the delimiter and column types by default. Text uses `DataStrings.DataString`,
+pooling is off, and recoverable parse problems are available through
+[`CSV.problems`](@ref CSV.problems). Use `on_error=:error` for fail-fast
+parsing. Reader keywords control the header and row window, dialect, missing
+values, types, selected columns, strings, pooling, validation, and task count.
+`ntasks=N` bounds parsing to at most `N` worker tasks.
+Transpose mode is sequential. It accepts and validates `ntasks` and `parallel`
+for compatibility.
+""" File
+@doc """
+    CSV.lazy(source; keywords...) -> CSV.LazyFile
 
-"""
-    CSV.read(source, sink::T; kwargs...) => T
+Build the quote-aware structural index and return a table whose cells parse
+when accessed. Column, cell, and Tables.jl column access are supported.
+[`CSV.File`](@ref CSV.File)`(lazyfile)` performs a full typed parse without
+repeating the structural scan. This API retains the source bytes and index; it
+does not stream an unbounded input. List selection uses stable file order and
+removes duplicates. A later `CSV.File(lazyfile)` retains those visible columns
+and can only project them further. Ordinary text cells are zero-copy views. A
+long cell whose absolute source offset cannot fit the compact view word copies
+only that cell into a bounded backing buffer.
+""" lazy
+@doc """
+    CSV.LazyFile
 
-Read and parses a delimited file or files, materializing directly using the `sink` function. Allows avoiding excessive copies
-of columns for certain sinks like `DataFrame`.
+The indexed table returned by [`CSV.lazy`](@ref CSV.lazy). Values materialize
+on access. Convert it with [`CSV.File`](@ref CSV.File) to reuse its index for an
+eager typed parse.
+""" LazyFile
+@doc """
+    CSV.Rows(source; types=nothing, stringtype=DataStrings.DataString, keywords...)
 
-# Example
-```julia-repl
-julia> using CSV, DataFrames
+Iterate lightweight Tables.jl row views without allocating eager columns.
+Cells materialize on access. The source bytes and complete structural index
+remain in memory. `reusebuffer` is accepted for 0.10 compatibility but is
+inert because the row view has no per-row value buffer. Invalid or malformed
+cells become `missing` by default; `strict=true` or `on_error=:error` throws
+when the cell is accessed. Rows do not retain parse diagnostics, so use
+[`CSV.File`](@ref CSV.File) when `CSV.problems` or a diagnostic cap is needed.
+List `select` and `drop` forms project columns in stable file order.
+""" Rows
+@doc """
+    CSV.Chunks(source; ntasks=Threads.nthreads(), keywords...)
 
-julia> path = tempname();
+Iterate a source as stable-schema [`CSV.File`](@ref CSV.File) batches and
+provide the Tables.jl partitions interface. Pooling is evaluated per batch.
+`ntasks` influences the target batch size; use `chunkbytes` for direct size
+control. List `select` and `drop` forms project every batch in stable file
+order.
+""" Chunks
+@doc """
+    CSV.read(source, sink; keywords...)
 
-julia> write(path, "a,b,c\\n1,2,3");
+Parse with the same options as [`CSV.File`](@ref CSV.File), then call the
+Tables.jl `sink`. The new columns are passed as `Tables.CopiedColumns`, so a
+sink that honors that marker can take ownership without another copy.
+""" read
+@doc """
+    CSV.problems(file)
 
-julia> CSV.read(path, DataFrame)
-1×3 DataFrame
- Row │ a      b      c
-     │ Int64  Int64  Int64
-─────┼─────────────────────
-   1 │     1      2      3
+Return the retained parse problems for a `CSV.File`. The parser can retain at
+most `maxproblems` entries; the file display
+reports any additional dropped count. Use `strict=true` or `on_error=:error`
+to stop at the first parse problem.
+""" problems
+@doc """
+    CSV.write(sink, table; keywords...)
 
-julia> CSV.read(path, DataFrame; header=false)
-2×3 DataFrame
- Row │ Column1  Column2  Column3
-     │ String1  String1  String1
-─────┼───────────────────────────
-   1 │ a        b        c
-   2 │ 1        2        3
-```
+Write any Tables.jl table as delimited text to a path or `IO`. The writer
+supports header control, append mode, gzip, partitioned sinks, quote styles,
+number and date formats, cell transforms, and deterministic ordered output.
+Column-access tables can render row blocks in parallel. Row-access sources
+stream sequentially without being collected. A partitioned string base path
+returns the generated path vector; other forms return the supplied sink.
+""" write
+@doc """
+    CSV.RowWriter(table; keywords...)
 
-$KEYWORD_DOCS
-"""
-function read(source, sink=nothing; copycols::Bool=false, kwargs...)
-    if sink === nothing
-        throw(ArgumentError("provide a valid sink argument, like `using DataFrames; CSV.read(source, DataFrame)`"))
+Iterate complete CSV-formatted row strings. The header is first unless it is
+disabled. Rows render on demand with the same dialect and value formatting as
+[`CSV.write`](@ref CSV.write). With the same formatting options, joining the
+iterator gives the same uncompressed bytes as `CSV.write`.
+""" RowWriter
+# Julia 1.11 added `public`. Build the expression at runtime so Julia 1.10 can
+# still parse this file. The surface remains deliberately unexported: users
+# call it through the `CSV` namespace.
+@static if VERSION >= v"1.11"
+    Core.eval(@__MODULE__, Expr(:public, :File, :lazy, :LazyFile, :Rows,
+                                :Chunks, :read, :problems, :write,
+                                :RowWriter))
+end
+
+# -- precompile workload -------------------------------------------------------
+# The specialized per-column loops are exactly what makes first-File
+# expensive to compile (~4 s cold on an M3). One small in-memory pass through
+# each public reader and writer caches those specializations: File (type
+# inference, type changes, pooling, missing values, each built-in value type,
+# gzip, parallel parsing,
+# stringtype=String materializer), Rows, Chunks, the sniffer, write, RowWriter.
+using PrecompileTools: @setup_workload, @compile_workload
+import Dates, CodecZlib
+@setup_workload begin
+    mixed = "int,float,date,datetime,bool,null,str,catg,int_float\n" *
+            "1,3.14,2019-01-01,2019-01-01T01:02:03,true,,hey,abc,2\n" *
+            "2,NaN,2019-01-02,2019-01-03T01:02:03,false,,there,abc,3.14\n"
+    pooled = "s,t\na1,x1\na2,\na0,x3\na1,x4\na2,x5\n"
+    @compile_workload begin
+        f = File(IOBuffer(mixed))
+        Tables.columntable(f)
+        problems(f)
+        File(IOBuffer(pooled); pool=(0.5, 100))
+        File(IOBuffer(mixed); stringtype=String)
+        File(IOBuffer(mixed); parallel=true, ntasks=2, chunkbytes=1 << 10)
+        # `stop_on_end=true` did not preserve caller-owned IO on every
+        # TranscodingStreams version admitted by CodecZlib 0.7. Use the
+        # one-shot codec here so the lower-bound precompile workload is stable.
+        compressed = transcode(CodecZlib.GzipCompressor,
+                               Vector{UInt8}(codeunits(mixed)))
+        File(compressed)
+        foreach(identity, Rows(IOBuffer("a,b\n1,x\n2,y\n")))
+        first(Chunks(IOBuffer(pooled); chunkbytes=1 << 16))
+        sniff(IOBuffer(mixed))
+        out = IOBuffer()
+        write(out, (a=[1, 2], b=["x", "y,z"], c=[1.5, missing],
+                    d=[Dates.Date(2024, 1, 2), Dates.Date(2024, 3, 4)]))
+        join(RowWriter((a=[1], b=["x"])))
     end
-    Tables.CopiedColumns(CSV.File(source; kwargs...)) |> sink
 end
 
-include("precompile.jl")
-
-function __init__()
-end
-
-end # module
+end # module CSV

@@ -1,404 +1,644 @@
-using CSV, Dates, WeakRefStrings, Tables, CodecZlib
-using FilePathsBase
-using FilePathsBase: /
+# Writer battery: round-trips through CSV.File, explicit byte contracts,
+# and byte determinism across thread counts.
+using Test, Dates, Tables, CodecZlib, FilePathsBase, Random
+using CSV
+const W = CSV
 
-const default_table = (col1=[1,2,3], col2=[4,5,6], col3=[7,8,9])
+buf() = IOBuffer()
+str(f) = (io = buf(); f(io); String(take!(io)))
 
-const weakrefs = StringVector{WeakRefString{UInt8}}(["hey", "hey", "hey"])
-
-const table_types = (
-    col1=[true, false, true],
-    col2=[4.1,5.2,4e10],
-    col3=[NaN, Inf, -Inf],
-    col4=[Date(2017, 1, 1), Date(2018, 1, 1), Date(2019, 1, 1)],
-    col5=[DateTime(2017, 1, 1, 4, 5, 6, 7), DateTime(2018, 1, 1, 4, 5, 6, 7), DateTime(2019, 1, 1, 4, 5, 6, 7)],
-    col6=["hey", "there", "sailor"],
-    col7=[weakrefs[1], weakrefs[2], weakrefs[3]],
-    col8=weakrefs,
-)
-
-struct StructType
-    adate::Date
-    astring::Union{String, Nothing}
-    aumber::Union{Real, Nothing}
+mutable struct NoSchemaRows{T}
+    values::Vector{T}
+    next::Int
 end
+Base.iterate(r::NoSchemaRows, state=nothing) =
+    r.next > length(r.values) ? nothing : (r.values[r.next], (r.next += 1))
+Tables.istable(::Type{<:NoSchemaRows}) = true
+Tables.rowaccess(::Type{<:NoSchemaRows}) = true
+Tables.rows(r::NoSchemaRows) = r
+Tables.schema(::NoSchemaRows) = nothing
 
-struct AF <: AbstractFloat
-    f::Float64
+mutable struct KnownSchemaRows{T}
+    values::Vector{T}
+    next::Int
 end
-Base.string(x::AF) = string(x.f)
+Base.iterate(r::KnownSchemaRows, state=nothing) =
+    r.next > length(r.values) ? nothing : (r.values[r.next], (r.next += 1))
+Base.IteratorSize(::Type{<:KnownSchemaRows}) = Base.SizeUnknown()
+Tables.istable(::Type{<:KnownSchemaRows}) = true
+Tables.rowaccess(::Type{<:KnownSchemaRows}) = true
+Tables.rows(r::KnownSchemaRows) = r
+Tables.schema(::KnownSchemaRows) = Tables.Schema((:a, :b), (Int, String))
 
-@testset "CSV.write" begin
+struct PartitionedTable{T}
+    parts::T
+end
+Tables.partitions(t::PartitionedTable) = t.parts
 
-    testcases = [
-        (
-            default_table,
-            NamedTuple(),
-            "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
-        ),
-        (
-            default_table,
-            (delim='\t',),
-            "col1\tcol2\tcol3\n1\t4\t7\n2\t5\t8\n3\t6\t9\n"
-        ),
-        (
-            (col1=[1,2,3], col2=["hey", "the::re", "::sailor"], col3=[7,8,9]),
-            (delim="::",),
-            "col1::col2::col3\n1::hey::7\n2::\"the::re\"::8\n3::\"::sailor\"::9\n"
-        ),
-        (
-            default_table,
-            (header=[:Col1, :Col2, :Col3],),
-            "Col1,Col2,Col3\n1,4,7\n2,5,8\n3,6,9\n"
-        ),
-        (
-            default_table,
-            (header=["Col1", "Col2", "Col3"],),
-            "Col1,Col2,Col3\n1,4,7\n2,5,8\n3,6,9\n"
-        ),
-        (
-            default_table,
-            (bom=true,),
-            "\xEF\xBB\xBFcol1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
-        ),
-        (
-            table_types,
-            NamedTuple(),
-            "col1,col2,col3,col4,col5,col6,col7,col8\ntrue,4.1,NaN,2017-01-01,2017-01-01T04:05:06.007,hey,hey,hey\nfalse,5.2,Inf,2018-01-01,2018-01-01T04:05:06.007,there,hey,hey\ntrue,4.0e10,-Inf,2019-01-01,2019-01-01T04:05:06.007,sailor,hey,hey\n"
-        ),
-        (
-            default_table,
-            (writeheader=false,),
-            "1,4,7\n2,5,8\n3,6,9\n"
-        ),
-        (
-            default_table,
-            (writeheader=false,newline=""),
-            "1,4,72,5,83,6,9"
-        ),
-        (
-            default_table,
-            (writeheader=false,newline="",delim="::"),
-            "1::4::72::5::83::6::9"
-        ),
-        (
-            (col4=[Date(2017, 1, 1), Date(2018, 1, 1), Date(2019, 1, 1)],
-                col5=[DateTime(2017, 1, 1, 4, 5, 6, 7), DateTime(2018, 1, 1, 4, 5, 6, 7), DateTime(2019, 1, 1, 4, 5, 6, 7)],
-            ),
-            (dateformat="mm/dd/yyyy",),
-            "col4,col5\n01/01/2017,01/01/2017\n01/01/2018,01/01/2018\n01/01/2019,01/01/2019\n"
-        ),
-        (
-            (col1=[1,missing,3], col2=[missing, missing, missing], col3=[7,8,9]),
-            NamedTuple(),
-            "col1,col2,col3\n1,,7\n,,8\n3,,9\n"
-        ),
-        (
-            (col1=[1,missing,3], col2=[missing, missing, missing], col3=[7,8,9]),
-            (missingstring="NA",),
-            "col1,col2,col3\n1,NA,7\nNA,NA,8\n3,NA,9\n"
-        ),
-        (
-            (col1=[1,nothing,3], col2=[nothing, missing, missing], col3=[7,8,9]),
-            (transform=(col, val) -> something(val, missing), missingstring="NA"),
-            "col1,col2,col3\n1,NA,7\nNA,NA,8\n3,NA,9\n"
-        ),
-        (
-            (col1=["hey, there, sailor", "this, also, has, commas", "this\n has\n newlines\n", "no quoting", "just a random \" quote character", ],),
-            (escapechar='\\',),
-            "col1\n\"hey, there, sailor\"\n\"this, also, has, commas\"\n\"this\n has\n newlines\n\"\nno quoting\n\"just a random \\\" quote character\"\n"
-        ),
-        (
-            (col1=["\"hey there sailor\""],),
-            (escapechar='\\',),
-            "col1\n\"\\\"hey there sailor\\\"\"\n"
-        ),
-        (
-            (col1=["{\"key\": \"value\"}", "{\"key\": null}"],),
-            (openquotechar='{', closequotechar='}', escapechar='\\'),
-            "col1\n{\\{\"key\": \"value\"\\}}\n{\\{\"key\": null\\}}\n"
-        ),
-        (
-            default_table,
-            (newline='\r',),
-            "col1,col2,col3\r1,4,7\r2,5,8\r3,6,9\r"
-        ),
-        (
-            default_table,
-            (newline="\r\n",),
-            "col1,col2,col3\r\n1,4,7\r\n2,5,8\r\n3,6,9\r\n"
-        ),
-        (
-            default_table,
-            (delim="::", newline="\r\n"),
-            "col1::col2::col3\r\n1::4::7\r\n2::5::8\r\n3::6::9\r\n"
-        ),
-        (
-            default_table,
-            (delim="::", newline="\r"),
-            "col1::col2::col3\r1::4::7\r2::5::8\r3::6::9\r"
-        ),
-        # quotedstrings: #362
-        (
-            (col1=[1,2,3], col2=["hey", "the::re", "::sailor"], col3=[7,8,9]),
-            (delim="::", quotestrings=true),
-            "\"col1\"::\"col2\"::\"col3\"\n1::\"hey\"::7\n2::\"the::re\"::8\n3::\"::sailor\"::9\n"
-        ),
-        (
-            (col1=[1,2,3], col2=[4,5,6], col3=["hey \r\n there","sailor","ho"]),
-            (delim="::", newline="\r\n"),
-            "col1::col2::col3\r\n1::4::\"hey \r\n there\"\r\n2::5::sailor\r\n3::6::ho\r\n"
-        ),
-        (
-            (col1=[1,2,3], col2=[4,5,6], col3=["hey \r\n there","sailor","ho"]),
-            (delim="::", newline="\r\n", quotestrings=true),
-            "\"col1\"::\"col2\"::\"col3\"\r\n1::4::\"hey \r\n there\"\r\n2::5::\"sailor\"\r\n3::6::\"ho\"\r\n"
-        ),
-        # custom float decimal: #385
-        (
-            (col1=[1.1,2.2,3.3], col2=[4,5,6], col3=[7,8,9]),
-            (delim='\t', decimal=','),
-            "col1\tcol2\tcol3\n1,1\t4\t7\n2,2\t5\t8\n3,3\t6\t9\n"
-        ),
-        # custom abstract float decimal: #1108
-        (
-            (col1=AF.([1.1,2.2,3.3]), col2=[4,5,6], col3=[7,8,9]),
-            (delim='\t', decimal=','),
-            "col1\tcol2\tcol3\n1,1\t4\t7\n2,2\t5\t8\n3,3\t6\t9\n"
-        ),
-        # issue 515
-        (
-            (col1=[""],),
-            NamedTuple(),
-            "col1\n\n"
-        ),
-        # issue 540
-        (
-            NamedTuple{(Symbol("col1,col2"),), Tuple{Vector{String}}}((["hey"],)),
-            NamedTuple(),
-            "\"col1,col2\"\nhey\n"
-        ),
-        # 568
-        (
-            [(a=big(1),)],
-            NamedTuple(),
-            "a\n1\n"
-        ),
-        # 756
-        (
-            Any[(a=1,)],
-            NamedTuple(),
-            "a\n1\n"
-        ),
-        # jcunwin
-        (
-            [StructType(Date("2021-12-01"), "string 1", 123.45), StructType(Date("2021-12-02"), "string 2", 456.78)],
-            (header=["Date Column", "String Column", "Number Column"],),
-            "Date Column,String Column,Number Column\n2021-12-01,string 1,123.45\n2021-12-02,string 2,456.78\n"
-        ),
-        # 1151
-        (
-            [(a=Int128(-170141183460469231731687303715884105728),
-              b=big(-170141183460469231731687303715884105728),
-              c=big(-170141183460469231731687303715884105729),)],
-            NamedTuple(),
-            "a,b,c\n-170141183460469231731687303715884105728,-170141183460469231731687303715884105728,-170141183460469231731687303715884105729\n"
-        )
-    ]
+mutable struct OneShotPartitions{T}
+    values::Vector{T}
+    next::Int
+end
+Base.IteratorSize(::Type{<:OneShotPartitions}) = Base.SizeUnknown()
+Base.iterate(p::OneShotPartitions, state=nothing) =
+    p.next > length(p.values) ? nothing : (p.values[p.next], (p.next += 1))
 
-    io = IOBuffer()
-    for case in testcases
-        global x = case
-        if :writeheader in keys(case[2])
-            @test_deprecated case[1] |> CSV.write(io; case[2]...)
-        else
-            case[1] |> CSV.write(io; case[2]...)
-        end
-        @test String(take!(io)) == case[3]
-        @test join(collect(CSV.RowWriter(case[1]; case[2]...))) == case[3]
+mutable struct PartitionWriteState
+    lock::ReentrantLock
+    active::Int
+    highwater::Int
+    completed::Int
+end
+struct PartitionSink <: IO
+    state::PartitionWriteState
+    fail::Bool
+end
+const PARTITION_SENTINEL = ErrorException("partition sentinel")
+Base.isopen(::PartitionSink) = true
+Base.iswritable(::PartitionSink) = true
+function Base.unsafe_write(io::PartitionSink, ::Ptr{UInt8}, n::UInt)
+    lock(io.state.lock) do
+        io.state.active += 1
+        io.state.highwater = max(io.state.highwater, io.state.active)
     end
-
-    @test_throws ErrorException (col1=[1,nothing,3], col2=[nothing, missing, missing], col3=[7,8,9]) |> CSV.write(io)
-
-    default_table |> CSV.write(io)
-    default_table |> CSV.write(io; append=false) # this is the default
-    @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
-
-    default_table |> CSV.write(io)
-    default_table |> CSV.write(io; append=true)
-    @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n1,4,7\n2,5,8\n3,6,9\n"
-
-    file = "test.csv"
-    default_table |> CSV.write(file)
-    @test String(read(file)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
-    rm(file)
-
-    filepath = Path(file)
-    default_table |> CSV.write(filepath)
-    @test String(read(filepath)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
-    rm(filepath)
-
-    open(file, "w") do io
-        default_table |> CSV.write(io)
-    end
-    @test String(read(file)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
-    rm(file)
-
-    # #247
-    open(file, "w") do io
-        write(io, "or5a2ztZo\n")
-        @test_deprecated (A=1:3, B=[17, 17, 19], C=["Wg5", "SJ4", "w48"]) |> CSV.write(io; append=true, writeheader=true)
-    end
-    @test String(read(file)) == "or5a2ztZo\nA,B,C\n1,17,Wg5\n2,17,SJ4\n3,19,w48\n"
-    rm(file)
-
-    # unknown schema case
-    opts = CSV.Options(UInt8(','), UInt8('"'), UInt8('"'), UInt8('"'), UInt8('\n'), UInt8('.'), nothing, false, (), (col,val)->val, true)
-    rt = [(a=1, b=4.0, c=7), (a=2.0, b=missing, c="8"), (a=3, b=6.0, c="9")]
-    CSV.write(nothing, rt, io, opts)
-    @test String(take!(io)) == "\xEF\xBB\xBFa,b,c\n1,4.0,7\n2.0,,8\n3,6.0,9\n"
-
-    opts = CSV.Options(UInt8(','), UInt8('"'), UInt8('"'), UInt8('"'), UInt8('\n'), UInt8('.'), nothing, false, (), (col,val)->val, false)
-    io = IOBuffer()
-    CSV.write(nothing, Tables.rows(default_table), io, opts)
-    @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
-
-    rt = [(a=1, b=4.0, c=7), (a=2.0, b=missing, c="8"), (a=3, b=6.0, c="9")]
-    CSV.write(nothing, rt, io, opts)
-    @test String(take!(io)) == "a,b,c\n1,4.0,7\n2.0,,8\n3,6.0,9\n"
-
-    CSV.write(nothing, Tables.rows((col1=Int[], col2=Float64[])), io, opts)
-    @test String(take!(io)) == ""
-
-    CSV.write(nothing, Tables.rows((col1=Int[], col2=Float64[])), io, opts; header=["col1", "col2"])
-    @test String(take!(io)) == "col1,col2\n"
-
-    # 280
-    io = IOBuffer()
-    CSV.write(io, (x=[',','\n', ','],))
-    @test String(take!(io)) == "x\n\",\"\n\"\n\"\n\",\"\n"
-
-    CSV.write(io, (x=['-'],y=['-']), delim='-')
-    @test String(take!(io)) == "x-y\n\"-\"-\"-\"\n"
-
-    CSV.write(io, (x= [[1 2; 3 4]],y=[[5 6; 7 8]]), delim=';')
-    @test String(take!(io)) == "x;y\n\"[1 2; 3 4]\";\"[5 6; 7 8]\"\n"
-
-    if !Sys.iswindows()
-        try
-            io = open("$file.gz", "w")
-            open(`gzip`, "w", io) do f
-                CSV.write(f, default_table)
-            end
-            run(`gunzip $file.gz`)
-            @test String(read("$file")) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
-            rm(file)
-        catch e
-            @error "error running test" exception=(e, stacktrace(catch_backtrace()))
-        end
-    end
-
-    # 357
-    x1 = (ISBN=[9500286327, 671727680, 385333757], Book_Title=["Tres Mosqueteros, Los: Adaptacic\"n", "Romeo and Juliet", "Losing Julia"])
-    CSV.write(  "x1.csv",  x1; delim=';' ,quotechar='"' ,escapechar='\\' )
-    @test read("x1.csv", String) == "ISBN;Book_Title\n9500286327;\"Tres Mosqueteros, Los: Adaptacic\\\"n\"\n671727680;Romeo and Juliet\n385333757;Losing Julia\n"
-    rm("x1.csv")
-
-    # #137
-    tbl = (a=[11,22], dt=[Date(2017,12,7), Date(2017,12,14)], dttm=[DateTime(2017,12,7), DateTime(2017,12,14)])
-    io = IOBuffer()
-    tbl |> CSV.write(io; delim='\t')
-    seekstart(io)
-    f = CSV.File(io; delim='\t')
-    @test (f |> columntable) == tbl
-
-    # validate char args: #369
-    @test_throws ArgumentError default_table |> CSV.write(io; escapechar='☃')
-
-    # write to stdout: #465
-    old_stdout = stdout
-    (rd, wr) = redirect_stdout()
     try
-        default_table |> CSV.write(stdout)
+        for _ in 1:100
+            yield()
+        end
+        io.fail && throw(PARTITION_SENTINEL)
+        return n
     finally
-        redirect_stdout(old_stdout)
-        try
-            close(wr)
-        catch
+        lock(io.state.lock) do
+            io.state.active -= 1
+            io.state.completed += 1
         end
     end
-    @test read(rd, String) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
+end
+Base.flush(::PartitionSink) = nothing
 
-    df = (A=[1,2,3], B=["a", "b", "c"])
-    # test control character delimiters
-    for char ∈ Char.(UInt8[1,2,3,4])
-        io = IOBuffer()
-        CSV.write(io, df, delim=char)
-        seekstart(io)
-        @test columntable(CSV.File(io, delim=char)) == df
+struct WriterExplodes end
+const WRITER_SENTINEL = ErrorException("writer sentinel")
+Base.show(::IO, ::WriterExplodes) = throw(WRITER_SENTINEL)
+
+mutable struct FailingWriterSink <: IO
+    open::Bool
+end
+const WRITER_SINK_SENTINEL = ErrorException("writer sink sentinel")
+Base.isopen(io::FailingWriterSink) = io.open
+Base.iswritable(::FailingWriterSink) = true
+Base.unsafe_write(::FailingWriterSink, ::Ptr{UInt8}, ::UInt) =
+    throw(WRITER_SINK_SENTINEL)
+Base.flush(::FailingWriterSink) = nothing
+Base.close(io::FailingWriterSink) = (io.open = false)
+
+@testset "CSV writer" begin
+    tbl = (a=[1, 2, 3], b=[1.5, missing, -2.0], c=["x", "y,z", "q\"r"],
+           d=[Date(2024, 1, 2), Date(2024, 3, 4), Date(2024, 5, 6)])
+
+    # round-trip: values survive File(write(table))
+    out = str(io -> W.write(io, tbl))
+    f = CSV.File(IOBuffer(out))
+    @test Tables.getcolumn(f, :a) == [1, 2, 3]
+    @test isequal(Tables.getcolumn(f, :b), [1.5, missing, -2.0])
+    @test String.(Tables.getcolumn(f, :c)) == ["x", "y,z", "q\"r"]
+    @test Tables.getcolumn(f, :d) == tbl.d
+
+    # Plain content quotes only fields that need it.
+    plain = (x=[1, 2], y=["ab", "c,d"], z=[1.25, -3.5])
+    @test str(io -> W.write(io, plain)) ==
+          "x,y,z\n1,ab,1.25\n2,\"c,d\",-3.5\n"
+
+    # RowWriter uses the same renderer for every supported writer option.
+    rowtable = (id=[1, 2], text=["a,b", "q\"r"], value=[1.25, missing],
+                date=[Date(2024, 1, 2), Date(2025, 3, 4)])
+    rowkwargs = [
+        (;),
+        (; delim=';', quotechar='\'', escapechar='\'', newline="\r\n"),
+        (; openquotechar='<', closequotechar='>', escapechar='\\'),
+        (; quotestyle=:all),
+        (; floatformat="%.3f"),
+        (; dateformat="dd/mm/yyyy"),
+        (; decimal=',', delim=';'),
+        (; missingstring="NA"),
+        (; bom=true),
+    ]
+    for kwargs in rowkwargs
+        bytes = str(io -> W.write(io, rowtable; kwargs...))
+        @test join(CSV.RowWriter(rowtable; kwargs...)) == bytes
     end
-    # don't allow writing with delimiters we refuse to read
-    @test_throws ArgumentError CSV.write(io, df, delim='\r')
-
-    # test with FilePath
-    mktmpdir() do tmp
-        CSV.write(tmp / "test.txt", df)
-        @test columntable(CSV.File(tmp / "test.txt")) == df
+    for writeheader in (false, true)
+        bytes = str(io -> W.write(io, rowtable; writeheader, bom=true))
+        @test join(CSV.RowWriter(rowtable; writeheader, bom=true)) == bytes
     end
+    bytes = str(io -> W.write(io, rowtable; header=["a", "b", "c", "d"]))
+    @test join(CSV.RowWriter(rowtable; header=["a", "b", "c", "d"])) == bytes
+    optionkw = (; quotestrings=true,
+                transform=(col, value) -> col == 1 ? value + 10 : value,
+                bufsize=32)
+    bytes = str(io -> W.write(io, (id=[1, 2], text=["x", "y"]); optionkw...))
+    @test bytes == "\"id\",\"text\"\n11,\"x\"\n12,\"y\"\n"
+    @test join(CSV.RowWriter((id=[1, 2], text=["x", "y"]); optionkw...)) == bytes
+    widenames = Tuple(Symbol("c", j) for j in 1:40)
+    widetable = NamedTuple{widenames}(Tuple(fill(j, 2) for j in 1:40))
+    seen = Int[]
+    W.write(IOBuffer(), widetable; ntasks=8,
+            transform=(col, value) -> (push!(seen, col); value))
+    @test seen == repeat(collect(1:40), 2)
+    @test_throws ArgumentError W.write(IOBuffer(), (a=[12345],);
+                                       header=false, bufsize=4)
+    @test_throws ArgumentError collect(CSV.RowWriter((a=[12345],);
+                                                      writeheader=false, bufsize=4))
+    sized = CSV.RowWriter(rowtable)
+    @test Base.IteratorSize(typeof(sized)) isa Base.HasLength
+    @test length(sized) == 3
+    @test size(sized) == (3,)
+    @test length(CSV.RowWriter(rowtable; writeheader=false)) == 2
+    emptybom = CSV.RowWriter(NamedTuple(); writeheader=false, bom=true)
+    @test Base.IteratorSize(typeof(emptybom)) isa Base.HasLength
+    @test length(emptybom) == 1
+    @test size(emptybom) == (1,)
+    @test collect(emptybom) == ["\ufeff"]
 
-    io = Base.BufferStream()
-    CSV.write(io, (a=[1,2,3], b=[4.1, 5.2, 6.3]))
-    close(io)
-    @test read(io, String) == "a,b\n1,4.1\n2,5.2\n3,6.3\n"
+    # Schema-free streams are prefetched once for names. The cached result is
+    # also the first output row, including for stateful one-shot iterators.
+    rowtype = NamedTuple{(:a, :b), Tuple{Int, String}}
+    oneshot = NoSchemaRows(rowtype[(a=1, b="x"), (a=2, b="y")], 1)
+    @test collect(CSV.RowWriter(oneshot)) == ["a,b\n", "1,x\n", "2,y\n"]
+    @test Base.IteratorSize(typeof(CSV.RowWriter(
+        NoSchemaRows(rowtype[(a=1, b="x")], 1)))) isa Base.SizeUnknown
+    @test isempty(collect(CSV.RowWriter(NoSchemaRows(rowtype[], 1))))
+    @test collect(CSV.RowWriter(NoSchemaRows(rowtype[], 1); header=["a", "b"])) == ["a,b\n"]
+    @test_throws ArgumentError CSV.RowWriter(NoSchemaRows(rowtype[(a=1, b="x")], 1);
+                                              header=["only"])
 
-    # https://github.com/JuliaData/CSV.jl/issues/643
-    s = join(1:1000000);
-    @test_throws ArgumentError CSV.write("out.test.csv", [(a=s,)])
+    # CSV.write must not turn SizeUnknown row sources into columns or consume
+    # the schema-probing first row. Known and inferred schemas both stream.
+    known = KnownSchemaRows(rowtype[(a=1, b="x"), (a=2, b="y")], 1)
+    knownio = IOBuffer()
+    @test W.write(knownio, known) === knownio
+    @test String(take!(knownio)) == "a,b\n1,x\n2,y\n"
+    inferred = NoSchemaRows(rowtype[(a=1, b="x"), (a=2, b="y")], 1)
+    inferredio = IOBuffer()
+    W.write(inferredio, inferred)
+    @test String(take!(inferredio)) == "a,b\n1,x\n2,y\n"
+    emptyio = IOBuffer()
+    W.write(emptyio, NoSchemaRows(rowtype[], 1); header=["a", "b"])
+    @test String(take!(emptyio)) == "a,b\n"
+    gzipio = IOBuffer()
+    W.write(gzipio, NoSchemaRows(rowtype[(a=1, b="x"), (a=2, b="y")], 1);
+            compress=:gzip)
+    @test isopen(gzipio) && iswritable(gzipio)
+    @test String(transcode(GzipDecompressor, take!(gzipio))) == "a,b\n1,x\n2,y\n"
+    rowerrorio = IOBuffer()
+    rowerror = try
+        W.write(rowerrorio,
+                NoSchemaRows([(a="ok",), (a=WriterExplodes(),)], 1);
+                compress=:gzip)
+        nothing
+    catch err
+        err
+    end
+    @test rowerror === WRITER_SENTINEL
+    @test isopen(rowerrorio) && iswritable(rowerrorio)
+    @test String(transcode(GzipDecompressor, take!(rowerrorio))) == "a\nok\n"
+    calls = Tuple{Int, Any}[]
+    transformio = IOBuffer()
+    W.write(transformio, NoSchemaRows(rowtype[(a=1, b="x"), (a=2, b="y")], 1);
+            transform=(column, value) -> (push!(calls, (column, value)); value))
+    @test calls == [(1, 1), (2, "x"), (1, 2), (2, "y")]
+    @test String(take!(transformio)) == "a,b\n1,x\n2,y\n"
+    appendio = IOBuffer()
+    write(appendio, "a,b\n0,z\n")
+    W.write(appendio, NoSchemaRows(rowtype[(a=1, b="x"), (a=2, b="y")], 1);
+            append=true, bom=true)
+    @test String(take!(appendio)) == "a,b\n0,z\n1,x\n2,y\n"
+    @test_throws ArgumentError W.write(IOBuffer(),
+        NoSchemaRows([(a="too long",)], 1); bufsize=4)
 
-    # https://github.com/JuliaData/CSV.jl/issues/691
-    io = IOBuffer()
-    CSV.write(io, Tuple[(1,), (2,)], header=false)
-    @test String(take!(io)) == "1\n2\n"
-
-    # partition writing
-    io = IOBuffer()
-    io2 = IOBuffer()
-    CSV.write([io, io2], Tables.partitioner((default_table, default_table)); partition=true)
-    @test String(take!(io)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
-    @test String(take!(io2)) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
-
-    # compressed writing to IOBuffer
-    # Verify that data is written (issue #1177 fix)
-    io = IOBuffer()
-    CSV.write(io, default_table; compress=true)
-    @test isopen(io)  # IOBuffer should not be closed
-    data = take!(io)
-    @test length(data) > 0  # data should be written
-    @test data[1] == 0x1f && data[2] == 0x8b  # gzip magic bytes
-    # Verify data decompresses correctly
-    decompressed = transcode(GzipDecompressor, data)
-    @test String(decompressed) == "col1,col2,col3\n1,4,7\n2,5,8\n3,6,9\n"
-
-    # compressed writing to file
     mktempdir() do dir
-        path = joinpath(dir, "test.csv.gz")
-        CSV.write(path, default_table; compress=true)
-        ct = CSV.read(path, Tables.columntable)
-        @test ct == default_table
+        path = joinpath(FilePathsBase.Path(dir), "rows.csv")
+        @test W.write(path, (a=[1, 2],)) === path
+        @test read(string(path), String) == "a\n1\n2\n"
+        base = joinpath(FilePathsBase.Path(dir), "parts.csv")
+        parts = PartitionedTable([(a=[1],), (a=[2],)])
+        @test W.write(base, parts; partition=true) === base
+        @test read(string(base) * "_1", String) == "a\n1\n"
+        @test read(string(base) * "_2", String) == "a\n2\n"
     end
 
-    # CSV.writerow
-    row = (a=1, b=2.3, c="hey", d=Date(2022, 5, 4))
-    str = CSV.writerow(row)
-    @test str == "1,2.3,hey,2022-05-04\n"
+    # Partition writes use the same bounded task ring as row blocks. The bound
+    # applies to active sink writes and failures retain their original object.
+    pstate = PartitionWriteState(ReentrantLock(), 0, 0, 0)
+    psinks = [PartitionSink(pstate, false) for _ in 1:40]
+    oneparts = OneShotPartitions([(a=[i],) for i in 1:40], 1)
+    ptable = PartitionedTable(oneparts)
+    @test W.write(psinks, ptable; partition=true, ntasks=2) === psinks
+    @test oneparts.next == 41
+    @test pstate.highwater <= min(2, Threads.nthreads())
+    @test pstate.active == 0
+    failstate = PartitionWriteState(ReentrantLock(), 0, 0, 0)
+    failsinks = [PartitionSink(failstate, true), PartitionSink(failstate, false)]
+    caughtpartition = try
+        W.write(failsinks, PartitionedTable([(a=[1],), (a=[2],)]);
+                partition=true, ntasks=2)
+        nothing
+    catch err
+        err
+    end
+    @test caughtpartition === PARTITION_SENTINEL
+    @test failstate.active == 0
+    @test failstate.completed >= min(2, Threads.nthreads())
+    @test_throws ArgumentError W.write(
+        [IOBuffer()],
+        PartitionedTable(OneShotPartitions([(a=[1],), (a=[2],)], 1));
+        partition=true, ntasks=2)
+    @test_throws ArgumentError W.write(
+        [IOBuffer(), IOBuffer()],
+        PartitionedTable(OneShotPartitions([(a=[1],)], 1));
+        partition=true, ntasks=2)
+
+    # Block rows adapt to a practical byte target. This wide shape uses the
+    # staged renderer and has about a 1 MiB output row.
+    largenames = Tuple(Symbol("large", j) for j in 1:33)
+    largecell = repeat("x", 32 << 10)
+    largetable = NamedTuple{largenames}(ntuple(_ -> fill(largecell, 6), 33))
+    largecolumns = Tables.columns(largetable)
+    largecols = AbstractVector[Tables.getcolumn(largecolumns, nm) for nm in largenames]
+    largeopts = W._writeopts(bufsize=2 << 20)
+    largerows = W._writerblockrows(largecols, largeopts, W._identity_transform)
+    @test largerows <= 4
+    largeone = str(io -> W.write(io, largetable; bufsize=2 << 20, ntasks=1))
+    largeparallel = str(io -> W.write(io, largetable; bufsize=2 << 20, ntasks=4))
+    @test largeparallel == largeone
+
+    # determinism across thread splits
+    big = (n=collect(1:50_000), s=[string("v", i % 97) for i in 1:50_000])
+    @test str(io -> W.write(io, big; ntasks=1)) == str(io -> W.write(io, big; ntasks=8))
+
+    # Stateful transforms cross fixed-size render blocks without changing the
+    # documented row-major callback order.
+    transformed_n = W.WRITE_BLOCK_ROWS * 2 + 17
+    transformed = (a=collect(1:transformed_n), b=collect(-1:-1:-transformed_n))
+    calls = Tuple{Int, Int}[]
+    transformed_bytes = str() do io
+        W.write(io, transformed; ntasks=8,
+                transform=(column, value) -> (push!(calls, (column, value)); value))
+    end
+    @test transformed_bytes == str(io -> W.write(io, transformed; ntasks=8))
+    @test calls == [(column, transformed[column == 1 ? :a : :b][row])
+                    for row in 1:transformed_n for column in 1:2]
+
+    # An error in a later parallel block keeps its original exception type.
+    bad = Any["ok" for _ in 1:(W.WRITE_BLOCK_ROWS + 1)]
+    bad[end] = nothing
+    @test_throws ArgumentError W.write(IOBuffer(), (a=bad,); ntasks=4,
+                                       writeheader=false)
+    exploding = Any[0 for _ in 1:(W.WRITE_BLOCK_ROWS + 1)]
+    exploding[end] = WriterExplodes()
+    caught = try
+        W.write(IOBuffer(), (a=exploding,); ntasks=4, writeheader=false)
+        nothing
+    catch err
+        err
+    end
+    @test caught === WRITER_SENTINEL
+
+    # Replacement cleanup also truncates after a later-block render error.
+    stale = IOBuffer()
+    write(stale, repeat("stale old bytes", 2_000))
+    @test_throws ArgumentError W.write(stale, (a=bad,); ntasks=4,
+                                       writeheader=false)
+    @test String(take!(stale)) == repeat("ok\n", W.WRITE_BLOCK_ROWS)
+
+    # quotestyle
+    q = (s=["plain", "with,delim", "wi\"th"],)
+    @test str(io -> W.write(io, q; quotestyle=:all)) ==
+          "\"s\"\n\"plain\"\n\"with,delim\"\n\"wi\"\"th\"\n"
+    @test str(io -> W.write(io, q; quotestyle=:minimal)) ==
+          "s\nplain\n\"with,delim\"\n\"wi\"\"th\"\n"
+    @test_throws ArgumentError str(io -> W.write(io, q; quotestyle=:none))
+    @test str(io -> W.write(io, (s=["a", "b"],); quotestyle=:none)) == "s\na\nb\n"
+    empties = (id=[1, 2], s=Union{Missing, String}["", missing])
+    emptyout = str(io -> W.write(io, empties))
+    @test emptyout == "id,s\n1,\"\"\n2,\n"
+    emptyfile = CSV.File(IOBuffer(emptyout); types=Dict(:s => String))
+    @test isequal(Any[x === missing ? missing : String(x) for x in emptyfile.s],
+                  Any["", missing])
+    @test_throws ArgumentError str(io -> W.write(io, (s=[""],); quotestyle=:none))
+    # leading/trailing whitespace quotes under :minimal (round-trip safety)
+    ws = str(io -> W.write(io, (s=[" pad "],)))
+    @test ws == "s\n\" pad \"\n"
+    @test String(Tables.getcolumn(CSV.File(IOBuffer(ws)), :s)[1]) == " pad "
+
+    # floatformat (issue #492 surface)
+    ff = str(io -> W.write(io, (x=[1.23456, 2.0],); floatformat="%.2f"))
+    @test ff == "x\n1.23\n2.00\n"
+    @test str(io -> W.write(io, (x=[1.25],); floatformat="%.2f", decimal=',', delim=';')) ==
+          "x\n1,25\n"
+
+    # dateformat + decimal + missingstring + delim + newline
+    s = str(io -> W.write(io, (d=[Date(2024, 1, 2)], x=[1.5], m=[missing]);
+                          dateformat="dd/mm/yyyy", decimal=',', missingstring="NA",
+                          delim=';', newline="\r\n"))
+    @test s == "d;x;m\r\n02/01/2024;1,5;NA\r\n"
+
+    # escapechar distinct from quotechar
+    s = str(io -> W.write(io, (s=["a\"b"],); escapechar='\\'))
+    @test s == "s\n\"a\\\"b\"\n"
+
+    # append / writeheader
+    io = buf()
+    W.write(io, (a=[1],))
+    seekstart(io)
+    W.write(io, (a=[2],); append=true)
+    @test String(take!(io)) == "a\n1\n2\n"
     io = IOBuffer()
-    CSV.writerow(io, row)
-    @test String(take!(io)) == "1,2.3,hey,2022-05-04\n"
-    str = CSV.writerow(row; delim='\t')
-    @test str == "1\t2.3\they\t2022-05-04\n"
+    write(io, "stale trailing bytes")
+    W.write(io, (a=[1],))
+    @test String(take!(io)) == "a\n1\n"
+    @test str(io -> W.write(io, (a=[1],); header=false)) == "1\n"
+    @test str(io -> W.write(io, (a=[1],); header=true)) == "a\n1\n"
+    @test_throws ArgumentError str(io -> W.write(io, (a=[1],);
+                                               header=false, writeheader=true))
+    @test_throws ArgumentError str(io -> W.write(io, (a=[nothing],)))
+    @test str(io -> W.write(io, (a=[nothing],);
+                            transform=(_, value) -> something(value, missing))) == "a\n\n"
+    io = IOBuffer()
+    CSV.write(io)((a=[1],))
+    @test String(take!(io)) == "a\n1\n"
 
-    # CSV.writebom
-    # https://github.com/JuliaData/CSV.jl/pull/1179
-    @test CSV.writebom(UInt8[1,2,3], 2, 1, IOBuffer()) isa Int
+    # bom
+    s = str(io -> W.write(io, (a=[1],); bom=true))
+    @test codeunits(s)[1:3] == UInt8[0xef, 0xbb, 0xbf]
+    @test codeunits(str(io -> W.write(io, (a=[1],); bom=true, writeheader=false)))[1:3] ==
+          UInt8[0xef, 0xbb, 0xbf]
+    @test !startswith(str(io -> W.write(io, (a=[1],); append=true,
+                                       writeheader=true, bom=true)), '\ufeff')
 
-end # @testset "CSV.write"
+    # gzip: by extension and explicitly; File auto-decompresses both
+    dir = mktempdir()
+    gzpath = joinpath(dir, "t.csv.gz")
+    W.write(gzpath, tbl)
+    f = CSV.File(gzpath)
+    @test Tables.getcolumn(f, :a) == [1, 2, 3]
+    raw = read(gzpath)
+    @test raw[1] == 0x1f && raw[2] == 0x8b
+    io = buf()
+    W.write(io, tbl; compress=:gzip)
+    @test isopen(io)
+    @test iswritable(io)
+    f = CSV.File(take!(io))
+    @test Tables.getcolumn(f, :a) == [1, 2, 3]
+    io = buf()
+    W.write(io, tbl; compress=true)
+    @test Tables.getcolumn(CSV.File(take!(io)), :a) == [1, 2, 3]
+    emptygzip = IOBuffer()
+    W.write(emptygzip, NamedTuple(); compress=:gzip, writeheader=false)
+    @test isopen(emptygzip)
+    @test iswritable(emptygzip)
+    @test isempty(transcode(GzipDecompressor, take!(emptygzip)))
+    gziperror = IOBuffer()
+    @test_throws ArgumentError W.write(gziperror, (a=bad,); compress=:gzip,
+                                       ntasks=4, writeheader=false)
+    @test isopen(gziperror)
+    @test iswritable(gziperror)
+    @test transcode(GzipDecompressor, take!(gziperror)) ==
+          codeunits(repeat("ok\n", W.WRITE_BLOCK_ROWS))
+    failingsink = FailingWriterSink(true)
+    sinkerror = try
+        W.write(failingsink, (a=[1],); compress=:gzip)
+        nothing
+    catch err
+        err
+    end
+    @test sinkerror === WRITER_SINK_SENTINEL
+    @test isopen(failingsink)
+    @test iswritable(failingsink)
+    plain_gzpath = joinpath(dir, "plain.csv.gz")
+    W.write(plain_gzpath, (a=[1],); compress=false)
+    @test read(plain_gzpath, String) == "a\n1\n"
+
+    # partition: one sink per partition, parallel
+    parts = Tables.partitioner([(a=[1, 2],), (a=[3, 4],)])
+    p1, p2 = joinpath(dir, "p1.csv"), joinpath(dir, "p2.csv")
+    W.write([p1, p2], parts; partition=true)
+    @test Tables.getcolumn(CSV.File(p1), :a) == [1, 2]
+    @test Tables.getcolumn(CSV.File(p2), :a) == [3, 4]
+    partitionbase = joinpath(dir, "partition-base")
+    generated = W.write(partitionbase,
+                        Tables.partitioner([(a=[5],), (a=[6],)]);
+                        partition=true, compress=false)
+    @test generated == [partitionbase * "_1", partitionbase * "_2"]
+    @test CSV.File(generated[1]).a == [5] && CSV.File(generated[2]).a == [6]
+    gzipbase = joinpath(dir, "partition.csv.gz")
+    extensionparts = W.write(gzipbase,
+                             Tables.partitioner([(a=[7],), (a=[8],)]);
+                             partition=true)
+    @test extensionparts == [gzipbase * "_1", gzipbase * "_2"]
+    @test read(extensionparts[1])[1:2] == UInt8[0x1f, 0x8b]
+    @test CSV.File(extensionparts[2]).a == [8]
+    many = Tables.partitioner([(part=fill(i, 200), s=["p$(i),r$(j)" for j in 1:200])
+                               for i in 1:12])
+    paths = [joinpath(dir, "part-$i.csv.gz") for i in 1:12]
+    @test W.write(paths, many; partition=true) === paths
+    @test all(i -> begin
+        pf = CSV.File(paths[i])
+        pf.part == fill(i, 200) && String(pf.s[end]) == "p$(i),r200"
+    end, eachindex(paths))
+
+    # types beyond the basics: Bool, Int128, unicode
+    s = str(io -> W.write(io, (b=[true, false], w=[Int128(2)^100, Int128(-1)], u=["αβ", "cd"])))
+    f = CSV.File(IOBuffer(s))
+    @test Tables.getcolumn(f, :b) == [true, false]
+    @test Tables.getcolumn(f, :w) == [Int128(2)^100, Int128(-1)]
+    @test String.(Tables.getcolumn(f, :u)) == ["αβ", "cd"]
+    float_edges = [0.0, -0.0, Inf, -Inf, NaN, nextfloat(0.0),
+                   floatmax(Float64), floatmin(Float64)]
+    s = str(io -> W.write(io, (id=collect(eachindex(float_edges)), x=float_edges)))
+    f = CSV.File(IOBuffer(s); types=[Int64, Float64])
+    @test isequal(collect(f.x), float_edges)
+
+    # header override + writeheader=false
+    @test str(io -> W.write(io, (a=[1],); header=["renamed"])) == "renamed\n1\n"
+    @test str(io -> W.write(io, (a=[1],); writeheader=false)) == "1\n"
+    numericdialect = str(io -> W.write(io, (n=[-12], v=[3]); delim='-'))
+    @test numericdialect == "n-v\n\"-12\"-3\n"
+    numericfile = CSV.File(IOBuffer(numericdialect); delim='-', types=[Int64, Int64])
+    @test numericfile.n == [-12] && numericfile.v == [3]
+    @test_throws ArgumentError str(io -> W.write(io, (a=[1], b=[2]); header=["one"]))
+    @test_throws ArgumentError str(io -> W.write(io, (a=[1], b=[2]);
+                                               header=["one", "two", "three"]))
+    @test_throws ArgumentError str(io -> W.write(io, (a=[1], b=[2, 3])))
+    @test_throws ArgumentError str(io -> W.write(io, (a=[1],); ntasks=0))
+    @test_throws ArgumentError str(io -> W.write(io, (a=[1],); quotechar='α'))
+
+    # Seeded dialect fuzz: the parser is the oracle. Each table includes a
+    # nonmissing key, so a missing one-column cell cannot become an ignored
+    # blank row. Strings cover every structural byte and the empty/missing
+    # distinction.
+    rng = MersenneTwister(0x21c5)
+    atoms = Union{Missing, String}[
+        missing, "", "plain", "with,comma", "with;semi", "with\ttab",
+        "quote\"", "single'", "slash\\", "has\rCR", "has\nLF",
+        "has\r\nCRLF", " leading", "trailing ", "\tboth\t", "λ漢🙂",
+        "<open", "close>", "a|b",
+    ]
+    dialects = [
+        (; delim=',', newline='\n', quotechar='"', escapechar='"'),
+        (; delim=';', newline="\r\n", quotechar='"', escapechar='\\'),
+        (; delim='\t', newline='\n', quotechar='\'', escapechar='\''),
+        (; delim='|', newline="\r\n", openquotechar='<', closequotechar='>', escapechar='\\'),
+    ]
+    for dialect in dialects, _ in 1:8
+        n = rand(rng, 1:80)
+        table = (id=collect(1:n),
+                 x=randn(rng, n) .* 10.0 .^ rand(rng, -20:20, n),
+                 flag=rand(rng, Bool, n),
+                 text=[rand(rng, atoms) for _ in 1:n])
+        bytes = str(io -> W.write(io, table; ntasks=rand(rng, 1:8), dialect...))
+        @test join(CSV.RowWriter(table; dialect...)) == bytes
+        f = CSV.File(IOBuffer(bytes);
+                   delim=dialect.delim,
+                   quotechar=get(dialect, :quotechar, '"'),
+                   openquotechar=get(dialect, :openquotechar, nothing),
+                   closequotechar=get(dialect, :closequotechar, nothing),
+                   escapechar=dialect.escapechar,
+                   types=[Int64, Float64, Bool, String])
+        got = Tables.columns(f)
+        @test isequal((collect(Tables.getcolumn(got, :id)),
+                       collect(Tables.getcolumn(got, :x)),
+                       collect(Tables.getcolumn(got, :flag)),
+                       Any[v === missing ? missing : String(v)
+                           for v in Tables.getcolumn(got, :text)]),
+                      (table.id, table.x, table.flag,
+                       Any[v === missing ? missing : String(v) for v in table.text]))
+    end
+end
+
+@testset "bounded ordered writer scheduler" begin
+    # Count completed, not-yet-emitted blocks. This tests the actual retained
+    # block bound without depending on allocator or RSS measurements.
+    guard = ReentrantLock()
+    live = Ref(0)
+    highwater = Ref(0)
+    emitted = Int[]
+    renderblock = function (block)
+        lock(guard) do
+            live[] += 1
+            highwater[] = max(highwater[], live[])
+        end
+        return UInt8[block]
+    end
+    emitblock = function (bytes)
+        push!(emitted, Int(only(bytes)))
+        lock(guard) do
+            live[] -= 1
+        end
+    end
+    W._ordered_parallel_blocks!(emitblock, renderblock, 37, 3)
+    @test emitted == collect(1:37)
+    @test highwater[] <= 3
+    @test live[] == 0
+
+    # A failed ordered block waits for every task that was already started.
+    finished = Ref(0)
+    failrender = function (block)
+        try
+            block == 1 && error("scheduled failure")
+            return UInt8[block]
+        finally
+            lock(guard) do
+                finished[] += 1
+            end
+        end
+    end
+    @test_throws ErrorException W._ordered_parallel_blocks!(_ -> nothing,
+                                                             failrender, 20, 3)
+    @test finished[] == 3
+end
+
+@testset "staged renderer: direct paths are byte-identical to the Base spellings" begin
+    o = W._writeopts()
+    @test W._writeopts(bufsize=big(typemax(Int)) + 1).bufsize == typemax(Int)
+    render(x) = (st = W.ColStage(); W._stagecolumn!(st, [x], 1, 1, o); String(copy(st.bytes)))
+    # integers: every fixed width at its extremes and around zero
+    for T in (Int8, Int16, Int32, Int64, Int128, UInt8, UInt16, UInt32, UInt64, UInt128)
+        for x in (typemin(T), typemax(T), zero(T), one(T), T(9), T(10), T(99), T(100))
+            @test render(x) == string(x)
+        end
+        rng = MersenneTwister(1)
+        okall = true
+        for _ in 1:2_000
+            x = rand(rng, T)
+            okall &= render(x) == string(x)
+        end
+        @test okall
+    end
+    @test render(big(10)^40) == string(big(10)^40)
+    # dates: adversarial years and every millisecond value
+    # Use non-machine integer widths so the helpers stay valid when Dates
+    # returns Int64 on a 32-bit Julia process.
+    dateparts = UInt8[]
+    W._appendyear!(dateparts, Int32(-1))
+    push!(dateparts, UInt8('-'))
+    W._append2!(dateparts, Int16(7))
+    @test String(dateparts) == "-0001-07"
+    for y in (-12345, -1, 0, 1, 99, 999, 1000, 2024, 9999, 10000, 123456), m in (1, 12), d in (1, 28)
+        @test render(Date(y, m, d)) == string(Date(y, m, d))
+    end
+    okall = true
+    for ms in 0:999
+        x = DateTime(2020, 1, 1, 0, 0, 0, ms)
+        okall &= render(x) == string(x)
+    end
+    @test okall
+    rng = MersenneTwister(2)
+    okall = true
+    for _ in 1:20_000
+        x = DateTime(rand(rng, -100:12000), rand(rng, 1:12), rand(rng, 1:28),
+                     rand(rng, 0:23), rand(rng, 0:59), rand(rng, 0:59), rand(rng, 0:999))
+        okall &= render(x) == string(x)
+    end
+    @test okall
+    # floats: shortest round-trip, incl. specials, and decimal=','
+    okall = true
+    for _ in 1:20_000
+        x = reinterpret(Float64, rand(rng, UInt64))
+        okall &= render(x) == string(x)
+    end
+    @test okall
+    for x in (0.0, -0.0, 1.0, 1e10, 1e-10, Inf, -Inf, NaN, 1.7976931348623157e308, 5e-324, 1.0f0, Float16(1.5))
+        @test render(x) == string(x)
+    end
+    oc = W._writeopts(; decimal=',', delim=';')
+    st = W.ColStage(); W._stagecolumn!(st, [1.5, 2.25e10], 1, 2, oc)
+    @test String(copy(st.bytes)) == "1,52,25e10"
+    # bools, missings, and the union split
+    @test render(true) * render(false) == "truefalse"
+    st = W.ColStage(); W._stagecolumn!(st, Union{Int32, Missing}[1, missing, -7], 1, 3, o)
+    @test String(copy(st.bytes)) == "1-7" && st.ends == [1, 1, 3]
+    # whole-table byte identity across thread counts and vs the per-cell reference
+    rng = MersenneTwister(3)
+    n = 20_000
+    tbl = (id = collect(1:n), s = [rand(rng, ("a", "b,c", "d\"e", " lead", "")) for _ in 1:n],
+           f = rand(rng, n), d = [Date(2020) + Day(i) for i in 1:n],
+           t = [DateTime(2020) + Millisecond(i * 7) for i in 1:n],
+           m = [rand(rng) < 0.2 ? missing : rand(rng, Int64) for _ in 1:n], b = rand(rng, Bool, n))
+    ref = IOBuffer()
+    for r in 1:n
+        for (j, nm) in enumerate(keys(tbl))
+            W._writecell(ref, tbl[nm][r], o)
+            j < length(tbl) && write(ref, ',')
+        end
+        write(ref, '\n')
+    end
+    refbytes = take!(ref)
+    for nt in (1, 3, 8)
+        io = IOBuffer(); W.write(io, tbl; ntasks=nt, writeheader=false)
+        @test take!(io) == refbytes
+    end
+    # gzip streams block by block; the member must be complete and decodable
+    io = IOBuffer(); W.write(io, tbl; compress=:gzip, ntasks=4, writeheader=false)
+    @test transcode(GzipDecompressor, take!(io)) == refbytes
+end
+println("WRITE BATTERY OK")
