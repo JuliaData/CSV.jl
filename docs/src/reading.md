@@ -185,6 +185,11 @@ structural-chunk count unless `chunkbytes` is explicit. `CSV.File(lazyfile)`
 keeps the existing index geometry but applies the same worker bound.
 `chunkbytes` directly controls the target structural-index chunk size.
 
+Chunks always end at complete rows. Separate escape characters, distinct
+opening and closing quotes, and comments require a sequential scan to find
+those boundaries. CSV can then index and parse the chunks in parallel.
+A row that exceeds `chunkbytes` stays intact in a larger chunk.
+
 Type inference samples indexed rows. `nsample` controls its row sample and
 `samplebytes` controls the delimiter-detection sample. Parallel and
 single-task parses have the same row order and exact row limit.

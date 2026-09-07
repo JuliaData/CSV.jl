@@ -113,7 +113,8 @@ end
 # handling is off, every range starts outside a quoted field.
 #
 # A different escape byte or different open and close bytes need more context.
-# The parser uses one scalar scan for those options.
+# The planner finds row starts in order for those options, then the parser
+# indexes each complete chunk with the scalar scanner.
 parityclean(d::Dialect) = !d.quoted || (d.oq == d.cq && d.e == d.cq)
 # Quote bytes in a comment row do not change the CSV quote state. A byte range
 # that starts in the middle of a row cannot know whether that row is a comment.
@@ -1432,10 +1433,11 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
     # Split compatible input into bounded chunks even when `parallel` is false.
     # Bounded chunks keep each parsing pass on a smaller part of the input.
     # `parallel` only controls whether this work uses tasks or a plain loop.
-    if commentaware(d) && parityclean(d) && len - datastart + 1 > chunkbytes
-        # Raw quote counts are not valid for comment rows. Start at a known row
-        # boundary and find later row boundaries in file order. The later index
-        # work can still use multiple tasks.
+    if (commentaware(d) || !parityclean(d)) && len - datastart + 1 > chunkbytes
+        # Raw quote counts cannot determine the entry state for comment rows,
+        # separate escapes, or asymmetric quotes. Start at a known row boundary
+        # and find later row boundaries in file order. The later index work can
+        # still use multiple tasks.
         chunks = ChunkIndex[]
         b0 = datastart
         while b0 <= len
@@ -1450,7 +1452,7 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
         foreach(checktaperange, chunks)
         return chunks
     end
-    nranges = parityclean(d) ? max(1, cld(len - datastart + 1, chunkbytes)) : 1
+    nranges = max(1, cld(len - datastart + 1, chunkbytes))
     starts = [datastart + (i - 1) * chunkbytes for i in 1:nranges]
     entry = falses(nranges)
     if nranges > 1

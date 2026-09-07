@@ -85,6 +85,27 @@ end
         end
     end
 
+    @testset "stateful quote dialects: malformed chunk parity" begin
+        rng = MersenneTwister(0x43535633)
+        alphabet = Vector{UInt8}(codeunits("ab01,;[]\"\\# \r\n"))
+        for trial in 1:64
+            bytes = rand(rng, alphabet, rand(rng, 0:256))
+            for dialect in ((; escapechar='\\'),
+                            (; openquotechar='[', closequotechar=']'),
+                            (; openquotechar='[', closequotechar=']', escapechar='\\'))
+                kw = (; dialect..., comment=rand(rng, (nothing, "#")),
+                      ignoreemptyrows=rand(rng, Bool), maxproblems=3)
+                baseline = _parsesnapshot(bytes, kw, length(bytes) + 1, false, :scalar)
+                @testset "trial=$trial dialect=$dialect" begin
+                    for cb in (1, 3, 63, 64, 65), parallel in (false, true)
+                        got = _parsesnapshot(bytes, kw, cb, parallel, :auto)
+                        @test isequal(got, baseline)
+                    end
+                end
+            end
+        end
+    end
+
     @testset "well-formed public parse preserves generated rows" begin
         seed = 0x43535632
         rng = MersenneTwister(seed)

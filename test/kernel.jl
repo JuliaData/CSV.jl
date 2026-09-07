@@ -52,19 +52,17 @@ function idxvariants(input::AbstractString; chunks=(3, 7, 16, 64), kw...)
                   indexsnapshot(buf, K.index(buf, d; parallel=false, scanner=sc)))
         end
     end
-    if K.parityclean(d)
-        for cb in chunks
-            push!(variants, "scalar/seq$cb" =>
-                  indexsnapshot(buf, K.index(buf, d; parallel=false, chunkbytes=cb, fastindex=false)))
-            push!(variants, "scalar/par$cb" =>
-                  indexsnapshot(buf, K.index(buf, d; parallel=true, chunkbytes=cb, fastindex=false)))
-            if K.swareligible(d)
-                for sc in (:swar, :vec)
-                    push!(variants, "$sc/seq$cb" =>
-                          indexsnapshot(buf, K.index(buf, d; parallel=false, chunkbytes=cb, scanner=sc)))
-                    push!(variants, "$sc/par$cb" =>
-                          indexsnapshot(buf, K.index(buf, d; parallel=true, chunkbytes=cb, scanner=sc)))
-                end
+    for cb in chunks
+        push!(variants, "scalar/seq$cb" =>
+              indexsnapshot(buf, K.index(buf, d; parallel=false, chunkbytes=cb, fastindex=false)))
+        push!(variants, "scalar/par$cb" =>
+              indexsnapshot(buf, K.index(buf, d; parallel=true, chunkbytes=cb, fastindex=false)))
+        if K.swareligible(d)
+            for sc in (:swar, :vec)
+                push!(variants, "$sc/seq$cb" =>
+                      indexsnapshot(buf, K.index(buf, d; parallel=false, chunkbytes=cb, scanner=sc)))
+                push!(variants, "$sc/par$cb" =>
+                      indexsnapshot(buf, K.index(buf, d; parallel=true, chunkbytes=cb, scanner=sc)))
             end
         end
     end
@@ -391,6 +389,48 @@ end
     @test_throws ArgumentError K.Dialect(delim="")
     @test_throws ArgumentError K.makevalueopts(K.Dialect(); decimal='é')
     @test_throws ArgumentError K.index(UInt8[0x61], K.Dialect(); datastart=0)
+end
+
+@testset "structural: stateful quote dialects keep bounded chunks" begin
+    dialects = (
+        ("\"one\\\"two\n# inside\"", (; escapechar='\\')),
+        ("[one]]two\n# inside]", (; openquotechar='[', closequotechar=']')),
+        ("[one\\]two\n# inside]", (; openquotechar='[', closequotechar=']', escapechar='\\')),
+    )
+    for (field, kw) in dialects, newline in ("\n", "\r", "\r\n"),
+        delim in (",", "::"), comment in (nothing, "#")
+        quoted = replace(field, "\n" => newline)
+        rows = vcat([["a", "b"]], [["$i", quoted] for i in 1:8])
+        lines = [join(row, delim) for row in rows]
+        if comment !== nothing
+            # A comment may contain an unmatched opening quote. It must not
+            # change the quote state of the following data rows.
+            insert!(lines, 4, "# stray " * first(field))
+        end
+        input = join(lines, newline) * newline
+        @test idxall(input; chunks=(1, 3, 16, 63, 64, 65), delim, comment, kw...) == rows
+        prefix = "ignored \" [ preamble\r\n"
+        bytes = Vector{UInt8}(codeunits(prefix * input))
+        d = K.Dialect(; delim, comment, kw...)
+        # Put a proposed byte boundary exactly on each escape, quote, and
+        # newline byte in the header and first data row, including both CRLF bytes.
+        firstrows = codeunits(join(lines[1:2], newline) * newline)
+        edges = findall(b -> b in (d.e, d.oq, d.cq, UInt8('\r'), UInt8('\n')), firstrows)
+        for cb in unique([1, 3, 16, 63, 64, 65, edges...]), parallel in (false, true)
+            bi = K.index(bytes, d; datastart=ncodeunits(prefix) + 1,
+                         chunkbytes=cb, parallel, ntasks=2)
+            @test length(bi.chunks) > 1
+            @test rawrows(bytes, bi) == rows
+            @test all(ci -> ci.stop - ci.start + 1 <=
+                            cb + maximum(ncodeunits, lines) + ncodeunits(newline), bi.chunks)
+            @test !bi.unclosedquote
+        end
+        malformed = input * first(field) * "unterminated" * newline
+        variants = idxvariants(malformed; chunks=(1, 3, 16, 63, 64, 65),
+                               delim, comment, kw...)
+        @test all(x -> x.second == first(variants).second, variants)
+        @test all(x -> x.second.unclosedquote, variants)
+    end
 end
 
 @testset "structural: ignorerepeated" begin
@@ -1735,6 +1775,22 @@ end
             ntasks=Threads.nthreads() + 7, _taskobserver=observeindex)
     @test indexactive[] == 0
     @test indexpeak[] <= Threads.nthreads()
+
+    for kw in ((; escapechar='\\'),
+               (; openquotechar='[', closequotechar=']', escapechar='\\'))
+        bytes = haskey(kw, :openquotechar) ?
+            Vector{UInt8}(codeunits(repeat("a,[line\nvalue]\n", 80))) : indexinput
+        d = K.Dialect(; kw...)
+        indexpeak[] = 0
+        reference = K.index(bytes, d; chunkbytes=length(bytes), parallel=false)
+        got = K.index(bytes, d; chunkbytes=3, parallel=true, ntasks=2,
+                      _taskobserver=observeindex)
+        @test length(got.chunks) > 10
+        @test indexsnapshot(bytes, got) == indexsnapshot(bytes, reference)
+        @test indexactive[] == 0
+        @test indexpeak[] <= expectedlimit
+        Threads.nthreads() > 1 && @test(indexpeak[] == expectedlimit)
+    end
 
     lines = ["a,b,c"]
     for i in 1:500

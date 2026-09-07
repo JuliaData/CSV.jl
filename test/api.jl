@@ -1161,6 +1161,65 @@ end
           (Date(2023, 1, 15), Date(2023, 1, 16))
 end
 
+@testset "Readers: chunk boundaries with stateful quotes" begin
+    dialects = (
+        ("\"one\\\"two\n# inside\"", "one\"two\n# inside", (; escapechar='\\')),
+        ("[one]]two\n# inside]", "one]two\n# inside",
+         (; openquotechar='[', closequotechar=']')),
+        ("[one\\]two\n# inside]", "one]two\n# inside",
+         (; openquotechar='[', closequotechar=']', escapechar='\\')),
+    )
+    for (field, value, kw) in dialects, newline in ("\n", "\r", "\r\n")
+        field = replace(field, "\n" => newline)
+        value = replace(value, "\n" => newline)
+        lines = ["id,text,number"]
+        for i in 1:12
+            i == 5 && push!(lines, "# unmatched " * first(field))
+            push!(lines, "$i,$field," * (i == 12 ? "2.5" : "$i"))
+        end
+        # The final complete row deliberately has no line ending.
+        input = join(lines, newline)
+        expected = Any[collect(1:12), fill(value, 12), [Float64.(1:11); 2.5]]
+        options = (; delim=',', comment="#", kw...)
+        reference = A.File(IOBuffer(input); chunkbytes=ncodeunits(input), parallel=false, options...)
+        @test colvalues(reference)[2] == expected
+        for cb in (1, 3, 16, 63, 64, 65), parallel in (false, true)
+            f = A.File(IOBuffer(input); chunkbytes=cb, parallel, nsample=1, options...)
+            @test colvalues(f)[2] == expected
+            @test isempty(A.problems(f))
+            lazy = A.lazy(IOBuffer(input); chunkbytes=cb, parallel, options...)
+            @test colvalues(A.File(lazy))[2] == expected
+            rows = A.Rows(IOBuffer(input); chunkbytes=cb, parallel,
+                          types=Dict(:id => Int, :number => Float64), options...)
+            @test [[row.id, String(row.text), row.number] for row in rows] ==
+                  [[expected[j][i] for j in 1:3] for i in 1:12]
+            batches = collect(A.Chunks(IOBuffer(input); chunkbytes=cb, parallel, options...))
+            @test length(batches) > 1
+            @test all(b -> Tables.schema(b) == Tables.schema(reference), batches)
+            @test [reduce(vcat, (colvalues(b)[2][j] for b in batches)) for j in 1:3] == expected
+            window = A.File(IOBuffer(input); chunkbytes=cb, parallel, limit=11, options...)
+            @test window.number == collect(1:11)
+            @test eltype(window.number) == Int64
+            scan = Tables.Scan(select=(:id, :text), filter=Tables.col(:id) > 9)
+            filtered = A.File(IOBuffer(input); chunkbytes=cb, parallel, scan, options...)
+            @test colvalues(filtered)[2] == Any[collect(10:12), fill(value, 3)]
+
+            # Pin global row/byte diagnostics when a later chunk contains bad
+            # data and the final field never closes its quote.
+            bad = input * newline * "13,bad,invalid" * newline *
+                  "14," * first(field) * "unterminated" * newline
+            problemkw = (; options..., types=Dict(:number => Int64))
+            baseline = A.File(IOBuffer(bad); chunkbytes=ncodeunits(bad),
+                              parallel=false, problemkw...)
+            got = A.File(IOBuffer(bad); chunkbytes=cb, parallel, problemkw...)
+            @test isequal(colvalues(got), colvalues(baseline))
+            @test [(p.row, p.col, p.pos, p.kind, p.message) for p in A.problems(got)] ==
+                  [(p.row, p.col, p.pos, p.kind, p.message) for p in A.problems(baseline)]
+            @test any(p -> p.kind === :unclosed_quote, A.problems(got))
+        end
+    end
+end
+
 @testset "spec replays" begin
     input = "x;y\nalpha;1\nbeta;2\n"
     spec = A.sniff(IOBuffer(input))
