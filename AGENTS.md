@@ -25,9 +25,8 @@ resolved filter when evaluating projected predicate columns.
 
 ## Validation
 
-Dependency setup lives in `test/dependencies.jl`. It pins only the two pending
-new package registrations. Parsers 3, InlineStrings 2, and Tables 1.14 resolve
-from General. Run from the repository root:
+Dependency setup lives in `test/dependencies.jl`. DataStrings 1, DataDecimals 1,
+Parsers 3, InlineStrings 2, and Tables 1.14 resolve from General. Run from the repository root:
 
 ```sh
 julia --project=test test/dependencies.jl
@@ -45,9 +44,8 @@ and source-ordered diagnostics for multi-file and parallel changes.
 ## Release boundary
 
 Keep version 1.0.0-DEV until the final release is authorized. Before tagging,
-remove the DataStrings/DataDecimals source pins after registration, verify clean
-registry resolution, run all CI and downstream checks, and update migration and
-release notes. Preserve unrelated source checkouts. Keep the existing PR draft
+verify clean registry resolution, run all CI and downstream checks, and update
+migration and release notes. Preserve unrelated source checkouts. Keep the existing PR draft
 status while human review and release gates remain open.
 
-The documentation environment also pins JSON PR #480 at `bcb8e334682e8135c08913781bf8200832cf752e` until a JSON release supports Parsers 3. This is a docs dependency gate, not a CSV runtime dependency.
+The documentation environment requires JSON 1.8 or later for Parsers 3 compatibility.
