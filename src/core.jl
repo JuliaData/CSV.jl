@@ -1373,6 +1373,48 @@ function quoteparity(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect)::Bool
     return isodd(n)
 end
 
+# Find a quote, escape, or row ending. Short spans use scalar comparisons;
+# longer spans skip eight plain bytes at a time. When requested, also count
+# single-byte delimiters before the match so indexing can reserve its tape.
+# Return the match position (or to + 1) and the delimiter count.
+@inline function _nextbyte(buf::Vector{UInt8}, pos::Int, to::Int,
+                           bytes::NTuple{N, UInt8}, countbyte::C=nothing) where {N, C}
+    count = 0
+    @inbounds for _ in 1:4
+        pos > to && return to + 1, count
+        b = buf[pos]
+        b in bytes && return pos, count
+        count += b == countbyte
+        pos += 1
+    end
+    GC.@preserve buf begin
+        p = pointer(buf)
+        while pos <= to - 7
+            w = ltoh(unsafe_load(Ptr{UInt64}(p + pos - 1)))
+            marks = zero(UInt64)
+            for byte in bytes
+                marks |= eqmarks(w, byte)
+            end
+            if marks != 0
+                offset = trailing_zeros(marks) >> 3
+                if C !== Nothing
+                    count += count_ones(eqmarks(w, countbyte) & ((UInt64(1) << (8offset)) - 1))
+                end
+                return pos + offset, count
+            end
+            C !== Nothing && (count += count_ones(eqmarks(w, countbyte)))
+            pos += 8
+        end
+    end
+    @inbounds while pos <= to
+        b = buf[pos]
+        b in bytes && return pos, count
+        count += b == countbyte
+        pos += 1
+    end
+    return to + 1, count
+end
+
 # Scan from `from` to the first row ending outside a quoted field. `inquote`
 # tells whether `from` is inside a quoted field. Return the byte after the row
 # ending. Return `to + 1` if this range has no complete row ending.
@@ -1380,48 +1422,47 @@ end
 # Set `atrowstart` only when `from` is a known row start. This lets the function
 # identify a comment row. Quote bytes in a comment row have no CSV meaning, so
 # the function scans directly to that row's end.
-function nextrowstart(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect, inquote::Bool,
-                      atrowstart::Bool=false)::Int
+@inline nextrowstart(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect, inquote::Bool,
+                     atrowstart::Bool=false) =
+    first(_nextrowstart(buf, from, to, d, inquote, atrowstart, nothing))
+
+function _nextrowstart(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect, inquote::Bool,
+                       atrowstart::Bool, countbyte::C) where {C}
     pos = from
     cq, oq, e = d.cq, d.oq, d.e
     cmt = d.comment
+    fields = 1
     if atrowstart && !inquote && cmt !== nothing &&
        from + length(cmt) - 1 <= to && _matchbytes(buf, from, cmt)
-        @inbounds while pos <= to
-            b = buf[pos]
-            b == LF && return pos + 1
-            b == CR && return pos + 1 + (pos < to && buf[pos + 1] == LF)
-            pos += 1
-        end
-        return to + 1
+        pos, _ = _nextbyte(buf, pos, to, (LF, CR))
+        next = pos > to ? to + 1 :
+               pos + 1 + (@inbounds buf[pos] == CR && pos < to && buf[pos + 1] == LF)
+        return next, false, 1
     end
     @inbounds while pos <= to
+        pos, delimiters = inquote ? _nextbyte(buf, pos, to, (cq, e)) :
+              _nextbyte(buf, pos, to, (d.quoted ? oq : LF, LF, CR), countbyte)
+        fields += delimiters
+        pos > to && break
         b = buf[pos]
         if inquote
             if b == e && e != cq
                 pos += 2
-            elseif b == cq
-                if e == cq && pos < to && buf[pos + 1] == cq
-                    pos += 2
-                else
-                    inquote = false
-                    pos += 1
-                end
+            elseif e == cq && pos < to && buf[pos + 1] == cq
+                pos += 2
             else
+                inquote = false
                 pos += 1
             end
         elseif d.quoted && b == oq
             inquote = true
             pos += 1
-        elseif b == LF
-            return pos + 1
-        elseif b == CR
-            return pos + 1 + (pos < to && buf[pos + 1] == LF)
         else
-            pos += 1
+            return pos + 1 + (b == CR && pos < to && buf[pos + 1] == LF),
+                   !(d.ignoreemptyrows && pos == from), fields
         end
     end
-    return to + 1
+    return to + 1, from <= to, fields
 end
 
 # Choose the start and end of each chunk. This function does not build the field
@@ -1439,17 +1480,27 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
         # and find later row boundaries in file order. The later index work can
         # still use multiple tasks.
         chunks = ChunkIndex[]
+        hints = Tuple{Int, Int}[]
         b0 = datastart
         while b0 <= len
             target = min(b0 + chunkbytes - 1, len)
             # Start at the known row boundary `b0`. Move through complete rows
             # until the scan passes `target`. This keeps quoted line endings and
             # comment rows intact.
-            b1 = target >= len ? len + 1 : _rowstartatorafter(buf, b0, target, len, d)
+            b1, rows, fields = target >= len ? (len + 1, 0, 0) :
+                               _rowstartatorafter(buf, b0, target, len, d)
             push!(chunks, ChunkIndex(b0, b1 - 1))
+            push!(hints, (rows, fields))
             b0 = b1
         end
         foreach(checktaperange, chunks)
+        # The boundary walk already counted these rows and fields. Reserve
+        # their index storage only after every chunk passes the range check.
+        for (ci, (rows, fields)) in zip(chunks, hints)
+            sizehint!(ci.rowfirst, rows + 1)
+            sizehint!(ci.rowstartrel, rows)
+            d.delim isa UInt8 && resize!(ci.tape, fields)
+        end
         return chunks
     end
     nranges = max(1, cld(len - datastart + 1, chunkbytes))
@@ -1503,13 +1554,18 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
 end
 
 # Start at the known row boundary `from`. Return the first row start after
-# `target`. Return `len + 1` when `target` is in the final row.
-function _rowstartatorafter(buf::Vector{UInt8}, from::Int, target::Int, len::Int, d::Dialect)
+# `target`, the number of retained rows, and the number of raw tape events for
+# a single-byte delimiter. Return `len + 1` when `target` is in the final row.
+function _rowstartatorafter(buf::Vector{UInt8}, from::Int, target::Int, len::Int, d::Dialect,
+                            countbyte::C=d.delim isa UInt8 ? d.delim : nothing) where {C}
     pos = from
+    rows = fields = 0
     while pos <= target
-        pos = nextrowstart(buf, pos, len, d, false, true)
+        pos, kept, events = _nextrowstart(buf, pos, len, d, false, true, countbyte)
+        rows += kept
+        fields += events
     end
-    return min(pos, len + 1)
+    return min(pos, len + 1), rows, fields
 end
 
 function indexone!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Symbol)

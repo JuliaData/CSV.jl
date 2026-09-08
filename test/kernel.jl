@@ -391,6 +391,45 @@ end
     @test_throws ArgumentError K.index(UInt8[0x61], K.Dialect(); datastart=0)
 end
 
+@testset "structural: bounded word searches" begin
+    # Check every byte value at every word alignment. A match just past the
+    # requested end must stay invisible even when it is in the same allocation.
+    for byte in UInt8(0):UInt8(255), alignment in 0:7
+        buf = fill(byte ⊻ 0x80, 40)
+        buf[29] = byte
+        for keys in ((byte, byte), (byte, byte, byte)), stop in (24, 27, 40)
+            pos, count = K._nextbyte(buf, alignment + 1, stop, keys)
+            @test pos == (stop == 40 ? 29 : stop + 1)
+            @test count == 0
+        end
+    end
+    rng = MersenneTwister(0x726f77626f756e64)
+    for _ in 1:1000
+        buf = rand(rng, UInt8, 96)
+        from = rand(rng, 1:16)
+        stop = rand(rng, from-1:96)
+        keys = Tuple(rand(rng, UInt8, 3))
+        delimiter = rand(rng, UInt8)
+        expected = something(findnext(b -> b in keys, buf, from), length(buf) + 1)
+        expected = min(expected, stop + 1)
+        pos, count = K._nextbyte(buf, from, stop, keys, delimiter)
+        @test pos == expected
+        @test count == sum(i -> buf[i] == delimiter, from:expected-1; init=0)
+    end
+
+    # Comments and empty rows need tape events but no retained row slots.
+    # Quotes, escaped quotes, CRLF, and repeated delimiters must give the same
+    # spans after storage was reserved from the boundary scan's counts.
+    input = "# ignored,\"\r\n\r\na,,b\r\n1,\"long value \\\" next\nline\",2\r\n3,z,4"
+    for ignoreemptyrows in (false, true), ignorerepeated in (false, true)
+        @test idxall(input; chunks=(1, 4, 8, 12, 16, 32), comment="#",
+                     escapechar='\\', ignoreemptyrows, ignorerepeated) ==
+              rawrows(Vector{UInt8}(input), K.index(Vector{UInt8}(input),
+                      K.Dialect(; comment="#", escapechar='\\', ignoreemptyrows, ignorerepeated);
+                      chunkbytes=sizeof(input), parallel=false))
+    end
+end
+
 @testset "structural: stateful quote dialects keep bounded chunks" begin
     dialects = (
         ("\"one\\\"two\n# inside\"", (; escapechar='\\')),
