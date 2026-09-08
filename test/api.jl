@@ -1161,6 +1161,27 @@ end
           (Date(2023, 1, 15), Date(2023, 1, 16))
 end
 
+@testset "Chunks: inference at the retained row boundary" begin
+    for (lastvalue, T, value) in (("3.5", Float64, 3.5), ("text", String, "text"),
+                                ("9223372036854775808", Int128, Int128(2)^63))
+        input = "x,y\n" * join((string(i == 33 ? lastvalue : "1", ',',
+                                      i == 32 ? "" : "ok", '\n') for i in 1:33))
+        for limit in (31, 32, 33), cb in (1, 7, 64, 4096), parallel in (false, true)
+            batches = collect(A.Chunks(IOBuffer(input); chunkbytes=cb, parallel,
+                                       limit, stringtype=String, pool=false))
+            Tx = limit == 33 ? T : Int64
+            Ty = limit >= 32 ? Union{Missing, String} : String
+            expectedx = limit == 33 ? [fill(T === String ? "1" : T(1), 32); value] :
+                                     fill(Int64(1), limit)
+            expectedy = [i == 32 ? missing : "ok" for i in 1:limit]
+            @test all(b -> Tables.schema(b) == Tables.Schema((:x, :y), (Tx, Ty)), batches)
+            @test reduce(vcat, (collect(b.x) for b in batches)) == expectedx
+            @test isequal(reduce(vcat, (collect(b.y) for b in batches)), expectedy)
+            @test all(isempty ∘ A.problems, batches)
+        end
+    end
+end
+
 @testset "Readers: chunk boundaries with stateful quotes" begin
     dialects = (
         ("\"one\\\"two\n# inside\"", "one\"two\n# inside", (; escapechar='\\')),

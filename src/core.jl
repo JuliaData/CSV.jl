@@ -2366,11 +2366,23 @@ function sampletypes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncols::Int,
     total == 0 && return fill(Missing, ncols)
     types = fill(Missing, ncols)
     count = min(total, nsample)
+    # Sample rows increase monotonically. Walk chunks once, including empty
+    # chunks, instead of searching from the first chunk for every sampled row.
+    ki = 1
+    ci = chunks[ki]
+    rowbase = 0
+    rowend = nrows(ci)
     for k in 1:count
         # Exact integer interpolation includes both ends without duplicates.
         gr = count == 1 ? 1 :
              1 + Int(widemul(k - 1, total - 1) ÷ (count - 1))
-        ci, lr = locate(chunks, gr)
+        while gr > rowend
+            rowbase = rowend
+            ki += 1
+            ci = chunks[ki]
+            rowend += nrows(ci)
+        end
+        lr = ci.firstdatarow + (gr - rowbase) - 1
         sampledetect!(types, buf, ci, lr, ncols, opts, selected, sawmissing, colopts)
     end
     return types
@@ -2452,16 +2464,6 @@ function sampletypesrows(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, rowbase
         sampledetect!(types, buf, ci, lr, ncols, opts, selected, sawmissing, colopts)
     end
     return types
-end
-
-# Map a global data-row id to (chunk, local row).
-function locate(chunks::Vector{ChunkIndex}, grow::Int)
-    for ci in chunks
-        n = nrows(ci)
-        grow <= n && return (ci, ci.firstdatarow + grow - 1)
-        grow -= n
-    end
-    throw(BoundsError(chunks, grow))
 end
 
 allocatecolumn(::Type{Missing}, n::Int, buf, e, cq) = nothing

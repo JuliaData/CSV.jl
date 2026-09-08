@@ -909,6 +909,44 @@ end
     @test_throws ArgumentError K.parse("a\n1\n"; chunkbytes=0)
 end
 
+@testset "typed: sample positions across chunks" begin
+    input = "# prefix\n\na,b,c,d\n" * join((
+        string(i == 9 ? "2.5" : i, ',', i == 5 ? "word" : "2024-01-02", ',',
+               i in (3, 7) ? "NA" : i, i == 11 ? "" : ",true",
+               i == 6 ? "\n# between rows\n" : "\n") for i in 1:11))
+    buf = Vector{UInt8}(codeunits(input))
+    d = K.Dialect(; comment="#")
+    opts = K.makevalueopts(d)
+    colopts = [opts, opts, K.makevalueopts(d; sentinels=["NA"]), opts]
+    for cb in (1, 17, 64, 4096)
+        chunks = K.index(buf, d; chunkbytes=cb).chunks
+        chunks[findfirst(ci -> K.nrows(ci) > 0, chunks)].firstdatarow += 1
+        @test sum(K.nrows, chunks) == 11
+        cb == 1 && @test any(ci -> K.nrows(ci) == 0, chunks)
+        for ns in (1, 2, 3, 7, 11, 100), maxrows in (0, 1, 2, 5, 8, 9, 10, 11, nothing),
+            selected in (nothing, [true, false, true, true])
+            total = something(maxrows, 11)
+            count = min(ns, total)
+            rows = count == 0 ? Int[] : count == 1 ? [1] :
+                   floor.(Int, range(1, total; length=count))
+            expected = isempty(rows) ? fill(Missing, 4) :
+                       Type[9 in rows ? Float64 : Int64,
+                            5 in rows ? String : Date,
+                            all(in((3, 7)), rows) ? Missing : Int64, Bool]
+            missing = [false, false, any(in((3, 7)), rows), 11 in rows]
+            if selected !== nothing
+                expected[.!selected] .= Missing
+                missing[.!selected] .= false
+            end
+            sawmissing = fill(false, 4)
+            @test K.sampletypes(buf, chunks, 4, opts; nsample=ns, selected,
+                                sawmissing, colopts, maxrows) == expected
+            @test sawmissing == missing
+        end
+    end
+    @test K.sampletypes(buf, K.ChunkIndex[], 4, opts) == fill(Missing, 4)
+end
+
 @testset "typed: surrounding blanks on every parse path" begin
     # Detection and direct typed storage use the same trimmed span.
     padded = "a\n 1 \n 2 \n 3 \n"
