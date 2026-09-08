@@ -245,6 +245,29 @@ chunks = collect(CSV.Chunks(data; ntasks=2, rows_to_check=5, pool=false))
 @test sum(length, chunks) == 40
 @test last(last(chunks)).b == "value40X"
 
+@testset "short chunk samples (#1199)" begin
+    for newline in ("\n", "\r\n"), trailingnewline in (false, true),
+            emptyfield in (false, true), rows_to_check in (5, 30, 100)
+        rows = ["$i,$(2i)" for i in 1:100]
+        emptyfield && (rows[end] = "100,")
+        data = Vector{UInt8}("a,b" * newline * join(rows, newline) *
+            (trailingnewline ? newline : ""))
+        chunks = collect(CSV.Chunks(data; ntasks=10, rows_to_check))
+        @test length(chunks) == 10
+        @test reduce(vcat, (chunk.a for chunk in chunks)) == 1:100
+        expected = Union{Missing, Int}[2i for i in 1:100]
+        emptyfield && (expected[end] = missing)
+        @test isequal(reduce(vcat, (chunk.b for chunk in chunks)), expected)
+        @test CSV.Context(data; ntasks=10, rows_to_check).threaded
+    end
+
+    # A short sample must still reject a start inside a multiline quoted field.
+    data = Vector{UInt8}("id,text\n" * join(("$i,\"123\nabc\"" for i in 1:4000), "\n"))
+    chunks = collect(CSV.Chunks(data; ntasks=2, rows_to_check=5000))
+    @test reduce(vcat, (chunk.id for chunk in chunks)) == 1:4000
+    @test all(chunk -> all(==("123\nabc"), chunk.text), chunks)
+end
+
 end
 
 function strs(x::Vector, e=nothing)

@@ -412,6 +412,7 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
             end
         end
         for _ = 1:rows_to_check
+            pos > len && break # a chunk can contain fewer than rows_to_check rows
             n = 1
             numcolsthisrow = 0
             while pos <= len
@@ -436,11 +437,12 @@ function findchunkrowstart(ranges, i, buf, opts, typemap, downcast, ncols, rows_
                 Parsers.newline(code) && break
                 n += 1
             end
-            rowsparsed += ((pos < len) | (numcolsthisrow != 0)) # trailing newline does not count
+            # Count a final empty field only when this sampled row reaches it.
+            numcolsthisrow += addtrailingcolumn && pos > len && Parsers.delimited(code)
+            rowsparsed += 1
             parsedncols += numcolsthisrow
             matchedncols &= numcolsthisrow == ncols
         end
-        parsedncols += addtrailingcolumn
         lock(columnlock) do
             for i = 1:ncols
                 cp = columnprops[i]
