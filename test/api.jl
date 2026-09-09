@@ -2184,3 +2184,27 @@ end
     @test A.File([IOBuffer("a\nx\n"), IOBuffer("a\ny\n")]; stringtype=String15).a isa Vector{String15}
     @test A.File([IOBuffer("a\nx\n"), IOBuffer("a\ny\n")]; stringtype=InlineString).a isa Vector{String1}
 end
+
+@testset "short chunk samples (main #1199/#1200)" begin
+    # Chunk starts come from the structural index, so every chunk geometry
+    # yields the same rows: CRLF, no trailing newline, an empty last field,
+    # and a chunk never starts inside a multiline quoted field.
+    for newline in ("\n", "\r\n"), trailingnewline in (false, true),
+            emptyfield in (false, true), chunkbytes in (16, 80, 1 << 20)
+        rows = ["$i,$(2i)" for i in 1:100]
+        emptyfield && (rows[end] = "100,")
+        data = Vector{UInt8}("a,b" * newline * join(rows, newline) *
+            (trailingnewline ? newline : ""))
+        chunks = collect(A.Chunks(data; ntasks=10, chunkbytes))
+        @test reduce(vcat, (chunk.a for chunk in chunks)) == 1:100
+        expected = Union{Missing, Int}[2i for i in 1:100]
+        emptyfield && (expected[end] = missing)
+        @test isequal(reduce(vcat, (chunk.b for chunk in chunks)), expected)
+        @test A.File(data; ntasks=10, chunkbytes).a == 1:100
+    end
+    data = Vector{UInt8}("id,text\n" * join(("$i,\"123\nabc\"" for i in 1:4000), "\n"))
+    chunks = collect(A.Chunks(data; ntasks=2, chunkbytes=4096))
+    @test length(chunks) > 1
+    @test reduce(vcat, (chunk.id for chunk in chunks)) == 1:4000
+    @test all(chunk -> all(==("123\nabc"), chunk.text), chunks)
+end
