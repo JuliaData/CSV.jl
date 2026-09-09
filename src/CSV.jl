@@ -3,9 +3,9 @@
 
 Fast, flexible reading and writing of delimited text.
 
-Reading — `CSV.File`, `CSV.read`, `CSV.Rows`, `CSV.Chunks`.
-Writing — `CSV.write`.
-Diagnostics — `CSV.problems`.
+Reading — `CSV.File`, `CSV.read`, `CSV.lazy`, `CSV.Rows`, `CSV.Chunks`.
+Writing — `CSV.write`, `CSV.RowWriter`.
+Diagnostics — `CSV.problems`, `CSV.Problem`, `CSV.ParseError`.
 
 All public names live under the `CSV` namespace. Reading supports eager,
 lazy, row-wise, and chunked workflows. Parsing and writing are deterministic
@@ -39,8 +39,10 @@ Read delimited data into an eager Tables.jl table. `source` can be a path or
 HTTP(S) URL, an `IO`, a `Cmd`, bytes, or a vector of sources. CSV.jl detects
 the delimiter and column types by default. Text uses `DataStrings.DataString`,
 pooling is off, and recoverable parse problems are available through
-[`CSV.problems`](@ref CSV.problems). Use `on_error=:error` for fail-fast
-parsing. Reader keywords control the header and row window, dialect, missing
+[`CSV.problems`](@ref CSV.problems). `on_error=:warn` prints one summary
+warning per read; `on_error=:error` (or `strict=true`) throws a
+[`CSV.ParseError`](@ref CSV.ParseError) at the first problem.
+Reader keywords control the header and row window, dialect, missing
 values, types, selected columns, strings, pooling, validation, and task count.
 `ntasks=N` bounds parsing to at most `N` worker tasks.
 Transpose mode is sequential. It accepts and validates `ntasks` and `parallel`
@@ -71,12 +73,14 @@ eager typed parse.
 
 Iterate lightweight Tables.jl row views without allocating eager columns.
 Cells materialize on access. The source bytes and complete structural index
-remain in memory. `reusebuffer` is accepted for 0.10 compatibility but is
-inert because the row view has no per-row value buffer. Invalid or malformed
-cells become `missing` by default; `strict=true` or `on_error=:error` throws
-when the cell is accessed. Rows do not retain parse diagnostics, so use
-[`CSV.File`](@ref CSV.File) when `CSV.problems` or a diagnostic cap is needed.
-List `select` and `drop` forms project columns in stable file order.
+remain in memory, so `length(rows)` and `names(rows)` are known before
+iteration. `reusebuffer` is accepted for 0.10 compatibility but is inert
+because the row view has no per-row value buffer. Invalid or malformed cells
+become `missing` by default; `strict=true` or `on_error=:error` throws a
+[`CSV.ParseError`](@ref CSV.ParseError) when the cell is accessed. Rows do not
+retain parse diagnostics, so use [`CSV.File`](@ref CSV.File) when
+`CSV.problems` or a diagnostic cap is needed. `select` and `drop` (a list, one
+name, or a `Regex`) project columns in stable file order.
 """ Rows
 @doc """
     CSV.Chunks(source; ntasks=Threads.nthreads(), keywords...)
@@ -95,22 +99,31 @@ Tables.jl `sink`. The new columns are passed as `Tables.CopiedColumns`, so a
 sink that honors that marker can take ownership without another copy.
 """ read
 @doc """
-    CSV.problems(file)
+    CSV.problems(file) -> Vector{CSV.Problem}
 
-Return the retained parse problems for a `CSV.File`. The parser can retain at
-most `maxproblems` entries; the file display
-reports any additional dropped count. Use `strict=true` or `on_error=:error`
-to stop at the first parse problem.
+Return the retained parse problems for a `CSV.File`, in source order. The
+parser can retain at most `maxproblems` entries; the file display reports any
+additional dropped count. Use `on_error=:warn` for one summary warning, or
+`strict=true` / `on_error=:error` to stop at the first parse problem with a
+[`CSV.ParseError`](@ref CSV.ParseError).
 """ problems
 @doc """
     CSV.write(sink, table; keywords...)
 
 Write any Tables.jl table as delimited text to a path or `IO`. The writer
-supports header control, append mode, gzip, partitioned sinks, quote styles,
-number and date formats, cell transforms, and deterministic ordered output.
+supports header control (`writeheader`, `header`), `append` mode, gzip
+(`compress`), partitioned sinks (`partition`), quote styles (`quotestyle`,
+`quotestrings`), dialect bytes (`delim` of any length, `quotechar`,
+`openquotechar`/`closequotechar`, `escapechar`, `newline`, `decimal`,
+`missingstring`, `bom`), number and date formats (`floatformat`,
+`dateformat`), cell transforms (`transform`), a rendered-row size bound
+(`bufsize`), task count (`ntasks`), and deterministic ordered output.
 Column-access tables can render row blocks in parallel. Row-access sources
-stream sequentially without being collected. A partitioned string base path
-returns the generated path vector; other forms return the supplied sink.
+and [`CSV.Chunks`](@ref CSV.Chunks) stream without being collected. An `IO`
+sink is written at its current position and never rewound or truncated. A
+partitioned string base path returns the generated path vector; other forms
+return the supplied sink. `CSV.write(sink; keywords...)` returns a function
+of the table, for `table |> CSV.write(path)`.
 """ write
 @doc """
     CSV.RowWriter(table; keywords...)
@@ -125,8 +138,8 @@ iterator gives the same uncompressed bytes as `CSV.write`.
 # call it through the `CSV` namespace.
 @static if VERSION >= v"1.11"
     Core.eval(@__MODULE__, Expr(:public, :File, :lazy, :LazyFile, :Rows,
-                                :Chunks, :read, :problems, :write,
-                                :RowWriter))
+                                :Chunks, :read, :problems, :Problem,
+                                :ParseError, :write, :RowWriter))
 end
 
 # -- precompile workload -------------------------------------------------------

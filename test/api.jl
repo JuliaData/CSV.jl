@@ -86,7 +86,7 @@ end
         @test isequal(pushed.a, Union{Missing, Int8}[missing])
         @test only(A.problems(pushed)).row == 2
         @test only(A.problems(pushed)).pos == first(findfirst("128", narrowsrc))
-        @test_throws ErrorException A.File(IOBuffer(narrowsrc); scan=retained,
+        @test_throws CSV.ParseError A.File(IOBuffer(narrowsrc); scan=retained,
                                            strict=true, maxproblems=0, pool=false)
         floatscan = Tables.Scan(select=(:a => Float32,))
         floatfile = A.File(IOBuffer("a\n1.5\n"); scan=floatscan, pool=false)
@@ -365,7 +365,7 @@ end
                            types=Int8, maxproblems=1)
     @test length(A.problems(manyoverflows)) == 1
     @test getfield(manyoverflows, :table).droppedproblems == 19
-    @test_throws ErrorException A.File(IOBuffer("a\n128\n");
+    @test_throws CSV.ParseError A.File(IOBuffer("a\n128\n");
                                        types=Int8, strict=true, maxproblems=0)
     # Parse failures and post-parse narrow failures share source ordering. The
     # retained/strict problem must be whichever field occurs first in the bytes,
@@ -387,7 +387,7 @@ end
         catch ex
             ex
         end
-        @test err isa ErrorException
+        @test err isa CSV.ParseError
         @test occursin(firstmessage, sprint(showerror, err))
     end
     unsigned = A.File(IOBuffer("u\n$(typemax(UInt64))\n"); types=UInt64)
@@ -406,9 +406,13 @@ end
     declaredchunk = first(A.Chunks(IOBuffer("a\n1\n2\n");
                                    types=Union{Missing, Int8}, pool=false))
     @test eltype(declaredchunk.a) == Union{Missing, Int8}
+    # a requested String is the output type; DataString keeps the view column
     declaredstring = A.File(IOBuffer("a\nx\ny\n"); types=Union{Missing, String},
                             pool=false)
-    @test eltype(declaredstring.a) == Union{Missing, K.DataString}
+    @test eltype(declaredstring.a) == Union{Missing, String}
+    declaredview = A.File(IOBuffer("a\nx\ny\n"); types=Union{Missing, K.DataString},
+                          pool=false)
+    @test eltype(declaredview.a) == Union{Missing, K.DataString}
     declaredpoolinput = "a\n" * join(fill("x", 40), '\n') * "\n"
     declaredpool = A.File(IOBuffer(declaredpoolinput);
                           types=Union{Missing, String}, pool=true)
@@ -909,7 +913,7 @@ end
     catch e
         e
     end
-    @test err isa ErrorException
+    @test err isa CSV.ParseError
     @test occursin("invalid_quoted_field", sprint(showerror, err))
 end
 
@@ -1040,18 +1044,18 @@ end
     typedbad = A.Rows(IOBuffer("a\n1\nbad\n"); types=Union{Int64, Missing})
     @test isequal([r.a for r in typedbad], Union{Int64, Missing}[1, missing])
     strictrow = first(A.Rows(IOBuffer("a\nbad\n"); types=Int64, strict=true))
-    @test_throws ErrorException strictrow.a
+    @test_throws CSV.ParseError strictrow.a
     errorrow = first(A.Rows(IOBuffer("a\n128\n"); types=Int8,
                             on_error=:error))
-    @test_throws ErrorException errorrow.a
+    @test_throws CSV.ParseError errorrow.a
     collectrow = first(A.Rows(IOBuffer("a\n128\n"); types=Int8,
                               strict=true, on_error=:collect))
     @test ismissing(collectrow.a)
     @test ismissing(first(A.Rows(IOBuffer("a\nvalue\n"); types=Missing)).a)
-    @test_throws ErrorException first(A.Rows(IOBuffer("a\nvalue\n");
+    @test_throws CSV.ParseError first(A.Rows(IOBuffer("a\nvalue\n");
                                              types=Missing, on_error=:error)).a
     malformedrow = first(A.Rows(IOBuffer("a\n\"x\"y\n"); on_error=:error))
-    @test_throws ErrorException malformedrow.a
+    @test_throws CSV.ParseError malformedrow.a
     @test_throws ArgumentError A.Rows(IOBuffer(input); on_error=:invalid)
     # windowing composes
     @test length(collect(A.Rows(IOBuffer(input); limit=2))) == 2
@@ -1125,7 +1129,7 @@ end
                                  chunkbytes=64, maxproblems=1))
     @test isequal(collect(narrowbatch.a), Union{Int8, Missing}[1, missing])
     @test length(A.problems(narrowbatch)) == 1
-    @test_throws ErrorException first(A.Chunks(IOBuffer("a\n128\n"); types=Int8,
+    @test_throws CSV.ParseError first(A.Chunks(IOBuffer("a\n128\n"); types=Int8,
                                                chunkbytes=64, strict=true,
                                                maxproblems=0))
     laterbatchsrc = "a\n1\n2\n3\n4\n128\n"
@@ -1299,7 +1303,7 @@ end # @testset CSV readers
                              types=Int8, maxproblems=1)
     @test isequal(collect(narrowtranspose.a), Union{Int8, Missing}[1, missing])
     @test length(A.problems(narrowtranspose)) == 1
-    @test_throws ErrorException A.File(IOBuffer("a,x\n"); transpose=true,
+    @test_throws CSV.ParseError A.File(IOBuffer("a,x\n"); transpose=true,
                                        types=Int8, strict=true, maxproblems=0)
     transposedstrings = "text,alpha,beta\nnums,1,2\n"
     @test eltype(A.File(IOBuffer(transposedstrings); transpose=true,
@@ -1447,15 +1451,25 @@ end
         @test_throws ArgumentError A.File(IOBuffer("s\n" * "x"^(n + 1) * "\n");
                                           stringtype=T, pool=false)
     end
-    @test_throws ArgumentError A.File(IOBuffer("s\n" * "x"^256 * "\n");
-                                      stringtype=InlineString, pool=false)
-    emptytype = String1
+    # the auto width stops at String31 (0.10's rule): wider text is String, so a
+    # valid file never fails to read because of its text width
+    @test eltype(A.File(IOBuffer("s\n" * "x"^256 * "\n");
+                        stringtype=InlineString, pool=false).s) == String
+    @test eltype(A.File(IOBuffer("s\n" * "x"^32 * "\n");
+                        stringtype=InlineString, pool=false).s) == String
+    @test eltype(A.File(IOBuffer("s\n" * "x"^31 * "\n");
+                        stringtype=InlineString, pool=false).s) == String31
+    # an explicit `types=String` names the output type even under an inline
+    # stringtype; an inferred empty or all-missing text column takes String1
     empty = A.File(IOBuffer("s\n"); types=String, stringtype=InlineString, pool=false)
-    @test isempty(empty.s) && eltype(empty.s) == emptytype
+    @test isempty(empty.s) && eltype(empty.s) == String
     allmissing = A.File(IOBuffer("id,s\n1,\n2,\n"); types=Dict(:s => String),
                         stringtype=InlineString, pool=false)
-    @test eltype(allmissing.s) == Union{Missing, emptytype}
+    @test eltype(allmissing.s) == Union{Missing, String}
     @test all(ismissing, allmissing.s)
+    inferredmissing = A.File(IOBuffer("id,s\n1,\n2,\n"); types=Dict(:s => A.DataString),
+                             stringtype=InlineString, pool=false)
+    @test eltype(inferredmissing.s) == Union{Missing, String1}
     # pooled levels take the inline type; missing joins the pool
     f = A.File(IOBuffer(csv); stringtype=InlineString, pool=Dict(:s => false, :t => (1.0, 5000)))
     pooled = Tables.getcolumn(f, :t)
@@ -1663,7 +1677,7 @@ end
     @test length(A.problems(capped)) == 1
     @test A.problems(capped)[1].row == 1
     @test getfield(capped, :table).droppedproblems == 3
-    @test_throws ErrorException A.File(
+    @test_throws CSV.ParseError A.File(
         [IOBuffer("a\nBAD\n"), IOBuffer("a\nWRONG\n")];
         types=Int64, strict=true, maxproblems=0)
     # kwargs apply per source
@@ -1763,4 +1777,127 @@ end
         budget = parallel ? min(ntasks, Threads.nthreads()) : 1
         @test 1 <= length(API_PARSE_TASKS) <= budget
     end
+end
+
+@testset "ParseError, on_error=:warn, and problem display" begin
+    bad = "a\n1\nx\n"
+    err = try
+        A.File(IOBuffer(bad); types=Int, on_error=:error)
+        nothing
+    catch e
+        e
+    end
+    @test err isa CSV.ParseError
+    @test err.problem.kind == :invalid_value && err.problem.row == 2 && err.nproblems == 1
+    @test err.source == "<GenericIOBuffer>"
+    msg = sprint(showerror, err)
+    @test occursin("CSV.ParseError: invalid_value at data row 2, column 1", msg)
+    @test occursin("on_error=:collect", msg)
+    @test_throws CSV.ParseError A.File(IOBuffer(bad); types=Int, strict=true)
+    @test_throws CSV.ParseError A.File(IOBuffer(bad); types=Int, strict=true, transpose=false)
+    @test_throws CSV.ParseError first(A.Chunks(IOBuffer(bad); types=Int, on_error=:error))
+    @test_throws CSV.ParseError A.File([IOBuffer(bad), IOBuffer(bad)]; types=Int, on_error=:error)
+    @test_throws CSV.ParseError first(A.Rows(IOBuffer(bad); types=Int, on_error=:error))[2].a
+    @test_throws ArgumentError A.File(IOBuffer(bad); on_error=:ignore)
+    # :warn prints exactly one summary and returns the collected table
+    f = @test_logs (:warn, r"CSV: 2 parse problems in <GenericIOBuffer>; first: invalid_value at data row 2") begin
+        A.File(IOBuffer("a\n1\nx\ny\n"); types=Int, on_error=:warn)
+    end
+    @test length(A.problems(f)) == 2
+    @test_logs A.File(IOBuffer("a\n1\n2\n"); types=Int, on_error=:warn)
+    @test_logs (:warn, r"CSV: 1 parse problem") first(A.Chunks(IOBuffer(bad); types=Int, on_error=:warn))
+    @test_logs (:warn, r"CSV: 1 parse problem") A.File(IOBuffer(bad); types=Int, on_error=:warn, transpose=true, header=false, types=Dict(1 => Int))
+    p = first(A.problems(f))
+    @test sprint(show, p) == "CSV.Problem(invalid_value at data row 2, column 1, byte 5: \"cannot parse Int64 from \\\"x\\\"\")"
+    # Rows/Chunks display never dumps the buffer or index
+    rows = A.Rows(IOBuffer("a,b\n1,x\n2,y\n"); types=Dict(:a => Int))
+    shown = sprint(show, rows)
+    @test startswith(shown, "CSV.Rows(\"<GenericIOBuffer>\"): 2 rows × 2 columns")
+    @test occursin("a::Union{Missing, Int64}", shown) && !occursin("UInt8[", shown)
+    chunks = A.Chunks(IOBuffer("a,b\n1,x\n2,\n"); chunkbytes=8)
+    shown = sprint(show, chunks)
+    @test startswith(shown, "CSV.Chunks(\"<GenericIOBuffer>\"): ")
+    @test occursin("a::Int64", shown) && occursin("b::Union{Missing, DataString}", shown)
+    @test !occursin("ChunkIndex", shown)
+    @test names(rows) == [:a, :b] && names(chunks) == [:a, :b]
+    @test Base.IteratorSize(typeof(rows)) isa Base.HasLength && length(rows) == 2
+    @test length(A.Rows(IOBuffer("a\n1\n2\n3\n"); limit=2)) == 2
+    @test length(collect(A.Rows(IOBuffer("a\n1\n2\n3\n"); limit=2))) == 2
+    # string indexing on both row types, and a guiding error without a sink
+    @test first(rows)["a"] == 1 && first(rows)["b"] == "x"
+    ff = A.File(IOBuffer("a,b\n1,x\n"))
+    @test ff[1]["a"] == 1 && ff[1]["b"] == "x"
+    @test_throws ArgumentError A.read(IOBuffer("a\n1\n"))
+end
+
+@testset "reader option fixes: footerskip anchor, decimal, DateFormat, selection" begin
+    # a quote inside a skipped prefix row cannot swallow the footer count
+    f = A.File(IOBuffer("junk \" line\na,b\n1,2\n3,4\nfooter\n"); header=2, footerskip=1)
+    @test names(f) == [:a, :b] && collect(f.a) == [1, 3]
+    f = A.File(IOBuffer("skip \"me\nskip\na,b\n1,2\nfooter\n"); header=3, footerskip=1)
+    @test collect(f.b) == [2]
+    # decimal cannot be numeric syntax; decimal == delim stays legal (quoted values)
+    @test_throws ArgumentError A.File(IOBuffer("x\n105\n"); decimal='0')
+    @test_throws ArgumentError A.File(IOBuffer("x\n1e5\n"); decimal='e')
+    @test_throws ArgumentError A.File(IOBuffer("x\n1-5\n"); decimal='-')
+    @test_throws ArgumentError A.File(IOBuffer("x\n1\n"); decimal='"')
+    @test collect(A.File(IOBuffer("x\n\"1,5\"\n"); decimal=',').x) == [1.5]
+    # Dates.DateFormat objects are accepted alone and per column
+    fmt = dateformat"yyyy/mm/dd"
+    @test collect(A.File(IOBuffer("d\n2020/01/02\n"); dateformat=fmt).d) == [Date(2020, 1, 2)]
+    @test collect(A.File(IOBuffer("d,e\n2020/01/02,2020-01-03\n");
+                         dateformat=Dict(:d => fmt)).e) == [Date(2020, 1, 3)]
+    @test collect(A.File(IOBuffer("d\n2020/01/02 03:04\n");
+                         dateformat=dateformat"yyyy/mm/dd HH:MM").d) ==
+          [DateTime(2020, 1, 2, 3, 4)]
+    @test_throws ArgumentError A.File(IOBuffer("d\n1\n"); dateformat=1)
+    # regex and single-name selection
+    src = "ax,ay,b\n1,2,3\n"
+    @test names(A.File(IOBuffer(src); select=r"^a")) == [:ax, :ay]
+    @test names(A.File(IOBuffer(src); drop=r"^a")) == [:b]
+    @test names(A.File(IOBuffer(src); select=:b)) == [:b]
+    @test names(A.File(IOBuffer(src); select="ay")) == [:ay]
+    @test names(A.File(IOBuffer(src); drop=1)) == [:ay, :b]
+    @test names(A.lazy(IOBuffer(src); select=r"y$")) == [:ay]
+    @test Tables.columnnames(A.Rows(IOBuffer(src); select=r"^a")) == [:ax, :ay]
+    @test names(first(A.Chunks(IOBuffer(src); drop=r"^a"))) == [:b]
+    @test_throws ArgumentError A.File(IOBuffer(src); select=r"^z")
+    @test names(A.File(IOBuffer(src); drop=r"^z")) == [:ax, :ay, :b]
+    @test_throws ArgumentError A.File(IOBuffer(src); select=(i, nm) -> true)
+end
+
+@testset "types=String names the output type" begin
+    src = "s,t,u\nabc,1,x\n,2,y\n"
+    f = A.File(IOBuffer(src); types=Dict(:s => String))
+    @test eltype(f.s) == Union{Missing, String} && isequal(collect(f.s), ["abc", missing])
+    @test eltype(f.u) == A.DataString
+    f = A.File(IOBuffer(src); types=String)
+    @test eltype(f.s) == Union{Missing, String} && eltype(f.t) == String && eltype(f.u) == String
+    f = A.File(IOBuffer(src); types=[Union{Missing, String}, Int, A.DataString])
+    @test eltype(f.s) == Union{Missing, String} && eltype(f.t) == Int64 && eltype(f.u) == A.DataString
+    f = A.File(IOBuffer(src); types=Dict(:u => String15))
+    @test eltype(f.u) == String15 && collect(f.u) == [String15("x"), String15("y")]
+    f = A.File(IOBuffer(src); types=Dict(:u => InlineString))
+    @test eltype(f.u) == String1
+    # pooling keeps String levels; stringtype governs inferred text only
+    f = A.File(IOBuffer(src); types=Dict(:u => String), pool=true, stringtype=A.DataString)
+    @test f.u isa PooledVector && eltype(f.u) == String
+    # every reader honors the request
+    @test eltype(A.lazy(IOBuffer(src); types=Dict(:u => String)).u) == Union{Missing, String}
+    @test A.lazy(IOBuffer(src); types=Dict(:u => String15)).u[1] === String15("x")
+    @test first(A.Rows(IOBuffer(src); types=Dict(:u => String))).u isa String
+    @test first(A.Rows(IOBuffer(src); types=Dict(:u => String15))).u === String15("x")
+    @test first(A.Rows(IOBuffer(src); types=Dict(:u => String), on_error=:error)).u isa String
+    @test eltype(first(A.Chunks(IOBuffer(src); types=Dict(:u => String))).u) == String
+    @test eltype(A.File(IOBuffer("k,1,2\n"); transpose=true, types=Dict(:k => String)).k) == String
+    @test eltype(A.File(IOBuffer(src); scan=Tables.Scan(select=(:u => String,))).u) == String
+    # InlineString auto width stops at String31; wider text stays String
+    wide = "s\n" * repeat("x", 40) * "\ny\n"
+    @test eltype(A.File(IOBuffer(wide); stringtype=InlineString).s) == String
+    @test eltype(A.File(IOBuffer(wide); stringtype=InlineString, pool=true).s) == String
+    @test eltype(A.File(IOBuffer("s\n" * repeat("x", 300) * "\n"); stringtype=InlineString).s) == String
+    @test eltype(A.File(IOBuffer("s\nabc\n"); stringtype=InlineString).s) == String3
+    @test first(A.Rows(IOBuffer(wide); stringtype=InlineString)).s isa String
+    @test first(A.Rows(IOBuffer("s\nabc\n"); stringtype=InlineString)).s isa String3
+    @test_throws ArgumentError A.File(IOBuffer(wide); stringtype=String15)
 end

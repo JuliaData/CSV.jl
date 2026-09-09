@@ -49,6 +49,13 @@ end
     end
 end
 
+# `stringtype=InlineString` stops at String31, as 0.10 did: wider inline
+# strings copy 64–256 bytes per cell and lose to `String` on every operation.
+# A column whose longest value exceeds it comes back as `String`, so a valid
+# file never fails to read because of its text width.
+const _AUTO_MAX_WIDTH = _capacity(String31)
+
+# smallest auto width for a column, or `nothing` when the text is too wide
 function _widthfor(col::CSV.DataStringVector)
     m = 0
     @inbounds for i in eachindex(col)
@@ -56,11 +63,13 @@ function _widthfor(col::CSV.DataStringVector)
         x === missing && continue
         m = max(m, ncodeunits(x))
     end
-    return _fitwidth(m)
+    return m <= _AUTO_MAX_WIDTH ? _fitwidth(m) : nothing
 end
 
 function CSV._materializecolumn(::Type{InlineString}, col::CSV.DataStringVector)
-    return CSV._materializecolumn(_widthfor(col), col)
+    W = _widthfor(col)
+    return W === nothing ? CSV._materializecolumn(String, col) :
+                           CSV._materializecolumn(W, col)
 end
 function CSV._materializecolumn(::Type{T}, col::CSV.DataStringVector) where {T <: InlineString}
     n = length(col)
@@ -85,12 +94,18 @@ function CSV._materializecolumn(::Type{T}, col::CSV.DataStringVector) where {T <
     return out
 end
 
-# Rows(stringtype=InlineString): per-cell, smallest fitting width
-CSV._rowstring(::Type{InlineString}, x::CSV.DataString) = _inl(_fitwidth(ncodeunits(x)), x)
+# Rows(stringtype=InlineString): per-cell, smallest fitting width (String past
+# the auto ceiling)
+function CSV._rowstring(::Type{InlineString}, x::CSV.DataString)
+    n = ncodeunits(x)
+    return n <= _AUTO_MAX_WIDTH ? _inl(_fitwidth(n), x) : String(x)
+end
 CSV._rowstring(::Type{T}, x::CSV.DataString) where {T <: InlineString} = _inl(T, x)
 
-CSV._levelvector(::Type{InlineString}, levels::CSV.DataStringVector, n::Int) =
-    CSV._levelvector(_widthfor(levels), levels, n)
+function CSV._levelvector(::Type{InlineString}, levels::CSV.DataStringVector, n::Int)
+    W = _widthfor(levels)
+    return W === nothing ? CSV._levelvector(String, levels, n) : CSV._levelvector(W, levels, n)
+end
 CSV._levelvector(::Type{T}, levels::CSV.DataStringVector, n::Int) where {T <: InlineString} =
     T[_inl(T, levels[i]) for i in 1:n]
 

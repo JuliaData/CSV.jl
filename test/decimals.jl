@@ -16,7 +16,7 @@ using Test, CSV, DataDecimals, DataStrings, Tables
         vals = collect(Tables.getcolumn(Tables.columntable(f), :x))
         @test isequal(vals, [D("1.20"), missing, D("1.23"), D("12.00")])
     end
-    @test_throws ErrorException CSV.File(IOBuffer("x\n1.235\n"); types=D, strict=true)
+    @test_throws CSV.ParseError CSV.File(IOBuffer("x\n1.235\n"); types=D, strict=true)
     grouped = CSV.File(IOBuffer("x;y\n1.234,50;a\n2.000,00;b\n");
                        delim=';', decimal=',', groupmark='.', inferdecimal=true)
     @test grouped.x == D[D("1234.50"), D("2000.00")]

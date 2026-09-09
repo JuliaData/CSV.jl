@@ -59,7 +59,7 @@ end
 
 function _executescanplan(p::Prepared, scan::Tables.Scan;
                           parsekw, headerlog::ProblemLog, maxproblems::Int,
-                          on_error::Symbol)
+                          on_error::Symbol, source::String="")
     buf = p.buf
     bi = p.bi
     inputnames = p.names
@@ -77,8 +77,9 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
                   rowmask=mask, phasekw...)
         sourcerows = mask === nothing ? nothing : findall(mask)
         t = _narrowphase(t, plan, bi, phasecap; sourcerows)
+        t = _materializerequested(t, plan)
         t = _project(t, b, inputnames)
-        return _finishproblems(t, maxproblems, on_error, headerlog, t)
+        return _finishproblems(t, maxproblems, on_error, headerlog, source, t)
     end
 
     # First, read only the columns used by the filter.
@@ -96,8 +97,9 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
                rowmask=mask, reportstructural=false, phasekw...)
     kept = findall(mask)
     t2 = _narrowphase(t2, plan, bi, phasecap; sourcerows=kept)
+    t2 = _materializerequested(t2, plan)
     t = _project(t2, b, inputnames)
-    return _finishproblems(t, maxproblems, on_error, headerlog, t1, t2)
+    return _finishproblems(t, maxproblems, on_error, headerlog, source, t1, t2)
 end
 
 function _narrowphase(t::ParsedTable, plan::ColumnPlan, bi::BufferIndex,
@@ -129,7 +131,7 @@ function _project(t::ParsedTable, b::Tables.BoundScan, inputnames::Vector{Symbol
 end
 
 function _finishproblems(t::ParsedTable, maxproblems::Int, on_error::Symbol,
-                         headerlog::ProblemLog, phases...)
+                         headerlog::ProblemLog, source::String, phases...)
     items = copy(headerlog.items)
     dropped = headerlog.dropped
     for phase in phases
@@ -142,11 +144,7 @@ function _finishproblems(t::ParsedTable, maxproblems::Int, on_error::Symbol,
     nkeep = min(length(items), maxproblems)
     dropped += length(items) - nkeep
     resize!(items, nkeep)
-    if on_error === :error && firstproblem !== nothing
-        nproblems = length(items) + dropped
-        p = firstproblem
-        throw(ErrorException("CSV: $(p.kind) at data row $(p.row), column $(p.col): $(p.message)" *
-                             (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
-    end
-    return ParsedTable(names(t), columns(t), t.nrows, items, dropped)
+    out = ParsedTable(names(t), columns(t), t.nrows, items, dropped)
+    _reportproblems(out, on_error, firstproblem, source)
+    return out
 end

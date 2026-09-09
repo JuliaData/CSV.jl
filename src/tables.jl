@@ -38,28 +38,100 @@ struct Batches
     unclosedquote::Bool
 end
 
-function schemamissing(buf, chunks, types, plan::ColumnPlan)
-    missing = Bool[plan.columns[j].declaredmissing for j in plan.sources]
-    for ci in chunks, lr in ci.firstdatarow:totalrows(ci), q in eachindex(types)
-        missing[q] && continue
+# Settle the batch schema in place: `types[q]` is promoted until every cell of
+# the window parses, and the returned vector says whether column q can hold
+# `missing` (an empty or sentinel cell, a short row, or — for a requested
+# type — an invalid cell that the parse will report and leave missing).
+# Columns are independent, so they validate in parallel.
+function settlebatchschema!(types::Vector{Type}, buf, chunks, plan::ColumnPlan;
+                            parallel::Bool=false, tasklimit::Int=1)
+    allowmissing = Bool[plan.columns[j].declaredmissing for j in plan.sources]
+    settle = q -> begin
         j = plan.sources[q]
-        sp = fieldspan(ci, lr, j)
-        if sp === nothing || sp[2] == 0 || types[q] === Missing
-            missing[q] = true
-            continue
-        end
-        pos, len = sp
-        opt = columnopts(plan, j)
-        cpos, clen, esc, st = cellcontent(buf, pos, len, opt)
-        if st != CELL_VALUE
-            missing[q] = true
-        elseif types[q] !== String
-            checktype = something(accessparsetype(plan.columns[j]), types[q])
-            missing[q] = clen == 0 || esc ||
-                         !parsevalue(checktype, buf, cpos, cpos + clen - 1, opt)[2]
-        end
+        d = plan.columns[j]
+        requested = d.parsetype !== nothing
+        # a requested narrow type is checked at its own range; a requested
+        # string type is checked as text
+        checktype = requested && _requestedstring(d) === nothing ?
+                    something(accessparsetype(d), types[q]) : types[q]
+        T, sawmissing = _settlecolumn(checktype, buf, chunks, j, columnopts(plan, j),
+                                      requested, allowmissing[q])
+        allowmissing[q] = sawmissing
+        # the batch parses with the native (wide) kernel; narrowing follows
+        requested || (types[q] = T)
     end
-    return missing
+    if parallel && tasklimit > 1 && length(types) > 1
+        _taskforeach(settle, eachindex(types), tasklimit)
+    else
+        foreach(settle, eachindex(types))
+    end
+    return allowmissing
+end
+
+# Validate one column from its current type, re-entering with the promoted
+# type from the conflicting row (promotion is monotone, so cells already
+# accepted stay accepted). Each entry is monomorphic in `T`.
+function _settlecolumn(::Type{T0}, buf, chunks, j::Int, opts::ValueOpts,
+                       requested::Bool, sawmissing::Bool) where {T0}
+    T = T0
+    k, lr = 1, 0
+    while true
+        T2, sawmissing, k, lr = _settlecolumnfrom(T, buf, chunks, j, opts, requested,
+                                                  sawmissing, k, lr)
+        T2 === T && return T, sawmissing
+        T = T2
+    end
+end
+
+function _settlecolumnfrom(::Type{T}, buf::Vector{UInt8}, chunks, j::Int, opts::ValueOpts,
+                           requested::Bool, sawmissing::Bool, k::Int, lr::Int) where {T}
+    scratch = _scratchfor(opts)
+    @inbounds while k <= length(chunks)
+        ci = chunks[k]
+        lr = max(lr, ci.firstdatarow)
+        while lr <= totalrows(ci)
+            sp = fieldspan(ci, lr, j)
+            if sp === nothing || sp[2] == 0
+                sawmissing = true
+                lr += 1
+                continue
+            end
+            pos, len = sp
+            cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
+            if st == CELL_MISSING
+                sawmissing = true
+            elseif T === String
+                # every present cell is a string; only the missing flag matters
+            elseif T === Missing
+                # a present value under an all-missing seed: promote by detection
+                requested && (sawmissing = true)
+                requested || return (promote_kernel(Missing, detecttype(buf, pos, len, opts)),
+                                     sawmissing, k, lr)
+            else
+                ok = false
+                if st == CELL_VALUE && clen > 0 && !esc
+                    ti, tj = _trimblanks(buf, cpos, cpos + clen - 1)
+                    if ti > tj   # blanks only: parse the original (invalid) span
+                        ti, tj = cpos, cpos + clen - 1
+                    end
+                    ok = parsevalue(T, buf, ti, tj, opts, scratch)[2]
+                end
+                if !ok
+                    # an invalid cell under a requested type parses to missing
+                    # (with a problem); under an inferred type it promotes
+                    requested && (sawmissing = true)
+                    if !requested
+                        detected = promote_kernel(T, detecttype(buf, pos, len, opts))
+                        return (detected === T ? String : detected, sawmissing, k, lr)
+                    end
+                end
+            end
+            lr += 1
+        end
+        k += 1
+        lr = 0
+    end
+    return T, sawmissing, k, lr
 end
 
 Base.length(b::Batches) = length(b.chunks)
@@ -81,15 +153,10 @@ function parsebatch(b::Batches, ci::ChunkIndex)
 
     for lr in ci.firstdatarow:totalrows(ci)
         nf = nfields(ci, lr)
-        grow = rowbase + (lr - ci.firstdatarow) + 1
-        if nf < nsourcecols
-            sp = fieldspan(ci, lr, 1)::Tuple{Int, Int}
-            pushproblem!(log, grow, 0, sp[1], :short_row,
-                           "expected $nsourcecols fields, found $nf (remaining columns set to missing)")
-        elseif nf > nsourcecols
-            sp = fieldspan(ci, lr, nsourcecols + 1)::Tuple{Int, Int}
-            pushproblem!(log, grow, 0, sp[1], :long_row,
-                           "expected $nsourcecols fields, found $nf (extra fields ignored)")
+        if nf != nsourcecols
+            grow = rowbase + (lr - ci.firstdatarow) + 1
+            sp = fieldspan(ci, lr, nf < nsourcecols ? 1 : nsourcecols + 1)::Tuple{Int, Int}
+            pushrowproblem!(log, grow, sp[1], nsourcecols, nf)
         end
     end
     b.unclosedquote && ci === last(b.chunks) &&
@@ -223,6 +290,10 @@ function _typedvalue(::Type{String}, row::_IndexedRow, j::Int)
     return x === missing ? missing : String(x)
 end
 function _typedvalue(::Type{T}, row::_IndexedRow, j::Int) where {T}
+    if _stringsink(T)   # a requested string type: the view, converted per cell
+        x = row[j]
+        return x === missing ? missing : _rowstring(T, x)
+    end
     r = getfield(row, :r)
     @boundscheck checkbounds(r.names, j)
     sp = fieldspan(getfield(row, :ci), getfield(row, :localrow), j)

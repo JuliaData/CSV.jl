@@ -180,7 +180,7 @@ end
     ref = S.parse(commentonly; comment="#", chunkbytes=2)
     t = scanfile(commentonly, T.Scan(); comment="#", chunkbytes=2)
     @test S.problemkey.(S.problems(t)) == S.problemkey.(S.problems(ref))
-    @test_throws ErrorException scanfile(malformed, T.Scan(); maxproblems=0,
+    @test_throws CSV.ParseError scanfile(malformed, T.Scan(); maxproblems=0,
                                          on_error=:error, chunkbytes=2)
 end
 
@@ -228,7 +228,7 @@ end
         catch e
             e
         end
-        @test err isa ErrorException
+        @test err isa CSV.ParseError
         @test occursin("data row 1, column 1", sprint(showerror, err))
     end
     @test S.parse(bad; types=Int64, limit=0, on_error=:error).nrows == 0

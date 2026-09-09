@@ -280,12 +280,24 @@ function _dateformatkind(fmt::AbstractString)
     return kind
 end
 
+# A `Dates.DateFormat` carries its format string as its first type parameter.
+_dateformatstring(fmt::AbstractString) = String(fmt)
+_dateformatstring(fmt::DateFormat) = String(typeof(fmt).parameters[1])
+_dateformatstring(fmt) =
+    throw(ArgumentError("dateformat must be a format String or DateFormat (got $(typeof(fmt)))"))
+
 function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
                        truestrings=nothing, falsestrings=nothing,
                        stripwhitespace::Bool=false,
                        groupmark::Union{Nothing, Char}=nothing,
                        sentinels=nothing)
     isascii(decimal) || throw(ArgumentError("decimal must be ASCII (got $(repr(decimal)))"))
+    # A digit, sign, or exponent letter as the decimal separator would make
+    # ordinary integers parse as fractions (`decimal='0'` read 105 as 1.5).
+    # `decimal == delim` stays legal: such values are only expressible quoted.
+    (isdigit(decimal) || decimal in ('+', '-', 'e', 'E') ||
+     (d.quoted && decimal % UInt8 in (d.oq, d.cq, d.e))) &&
+        throw(ArgumentError("decimal $(repr(decimal)) conflicts with numeric or quote syntax"))
     gm = 0x00
     if groupmark !== nothing
         isascii(groupmark) || throw(ArgumentError("groupmark must be ASCII (got $(repr(groupmark)))"))
@@ -301,8 +313,7 @@ function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
         dp, dtp, tp, custom =
             _ISO_DATE_PATTERN, _ISO_DATETIME_PATTERN, _ISO_TIME_PATTERN, false
     else
-        dateformat isa AbstractString ||
-            throw(ArgumentError("dateformat must be a format String (got $(typeof(dateformat)))"))
+        dateformat = _dateformatstring(dateformat)
         p = Parsers.compilepattern(dateformat)
         kind = _dateformatkind(dateformat)
         kind != 0x00 ||
@@ -1954,10 +1965,13 @@ function parsecolchunk!(col::Union{TypedColumn{T}, UnionColumn{T}}, buf::Vector{
         # invalid for T (also: malformed quoting, quoted-empty, escaped content)
         if userprovided
             problemrow = problemrowbase + localrow
-            kind = st == CELL_BADQUOTE ? :invalid_quoted_field : :invalid_value
-            message = st == CELL_BADQUOTE ? "malformed quoting in " :
-                      "cannot parse $(T) from "
-            pushproblem!(problems, problemrow, j, pos, kind, message * excerpt(buf, pos, len))
+            if st == CELL_BADQUOTE
+                pushcellproblem!(problems, problemrow, j, pos, len, :invalid_quoted_field,
+                                 "malformed quoting in ", buf)
+            else
+                pushcellproblem!(problems, problemrow, j, pos, len, :invalid_value,
+                                 "cannot parse $(T) from ", buf)
+            end
             # value stays missing under strict=false semantics
         else
             return lr                                   # inference conflict ⇒ promote & re-parse column
@@ -1990,8 +2004,8 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
             # value. Keep the quotes and do not remove escape bytes. This lets
             # the caller inspect the invalid input.
             problemrow = problemrowbase + localrow
-            pushproblem!(problems, problemrow, j, pos, :invalid_quoted_field,
-                         "malformed quoting in " * excerpt(buf, pos, len))
+            pushcellproblem!(problems, problemrow, j, pos, len, :invalid_quoted_field,
+                             "malformed quoting in ", buf)
             if len <= COMPACTSTRING_INLINE
                 payloads[out] = inline_payload(buf, pos, len)
             elseif pos - 1 <= viewoffsetlimit
@@ -2007,8 +2021,8 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
         end
         if !_wasquoted(buf, pos, len, opts) && _delimclash(buf, cpos, clen, opts.delim)
             problemrow = problemrowbase + localrow
-            pushproblem!(problems, problemrow, j, pos, :invalid_value,
-                         "bare quote engaged structural protection in " * excerpt(buf, pos, len))
+            pushcellproblem!(problems, problemrow, j, pos, len, :invalid_value,
+                             "bare quote engaged structural protection in ", buf)
         end
         if esc
             # escaped values are unescaped ONCE, at parse time (DataString needs O(1)
@@ -2106,11 +2120,13 @@ function parsecolchunk_missing(buf::Vector{UInt8}, ci::ChunkIndex, j::Int,
         if st != CELL_MISSING
             userprovided || return lr
             out = rowbase + localrow
-            kind = st == CELL_BADQUOTE ? :invalid_quoted_field : :invalid_value
-            message = st == CELL_BADQUOTE ? "malformed quoting in " :
-                      "column typed Missing contains "
-            pushproblem!(problems, out, j, sp[1], kind,
-                         message * excerpt(buf, sp[1], len))
+            if st == CELL_BADQUOTE
+                pushcellproblem!(problems, out, j, sp[1], len, :invalid_quoted_field,
+                                 "malformed quoting in ", buf)
+            else
+                pushcellproblem!(problems, out, j, sp[1], len, :invalid_value,
+                                 "column typed Missing contains ", buf)
+            end
         end
     end
     return 0
@@ -2122,6 +2138,15 @@ end
 # order; the count of omitted reports is itself recorded.
 # ---------------------------------------------------------------------------
 
+"""
+    CSV.Problem
+
+One recoverable parse problem, as returned by [`CSV.problems`](@ref CSV.problems).
+Fields: `row` (1-based data row; 0 for a file- or header-level problem), `col`
+(1-based column; 0 for a whole-row problem), `pos` (byte offset into the parsed
+bytes), `kind`, and `message`. The kinds are `:short_row`, `:long_row`,
+`:invalid_value`, `:invalid_quoted_field`, and `:unclosed_quote`.
+"""
 struct Problem
     row::Int          # 1-based data row (0 = file-level problem)
     col::Int          # 1-based column (0 = row-level problem)
@@ -2129,6 +2154,56 @@ struct Problem
     kind::Symbol      # :short_row | :long_row | :invalid_value | :invalid_quoted_field | :unclosed_quote
     message::String
 end
+
+function Base.show(io::IO, p::Problem)
+    print(io, "CSV.Problem(", p.kind, " at data row ", p.row, ", column ", p.col,
+          ", byte ", p.pos, ": ", repr(p.message), ")")
+end
+
+"""
+    CSV.ParseError <: Exception
+
+Thrown by the readers under `on_error=:error` (or `strict=true`). `problem` is
+the source-earliest [`CSV.Problem`](@ref CSV.Problem), `nproblems` counts every
+problem found, and `source` labels the input.
+"""
+struct ParseError <: Exception
+    problem::Problem
+    nproblems::Int
+    source::String
+end
+ParseError(problem::Problem, nproblems::Int=1) = ParseError(problem, nproblems, "")
+
+function Base.showerror(io::IO, e::ParseError)
+    p = e.problem
+    print(io, "CSV.ParseError: ", p.kind, " at data row ", p.row, ", column ", p.col,
+          " (byte ", p.pos, ")")
+    isempty(e.source) || print(io, " in ", e.source)
+    print(io, ": ", p.message)
+    e.nproblems > 1 && print(io, " (+", e.nproblems - 1, " more)")
+    print(io, "\nUse on_error=:collect (the default) to keep parsing and inspect ",
+          "CSV.problems(file), or on_error=:warn for one summary warning.")
+end
+
+@noinline _throwparseerror(p::Problem, nproblems::Int, source::String="") =
+    throw(ParseError(p, nproblems, source))
+
+# `on_error=:warn`: one summary warning per read, never one line per problem.
+function _warnproblems(problems::Vector{Problem}, dropped::Int, source::String)
+    n = length(problems) + dropped
+    n == 0 && return
+    detail = isempty(problems) ? "" :
+        (p = first(problems);
+         "; first: $(p.kind) at data row $(p.row), column $(p.col): $(p.message)")
+    @warn "CSV: $n parse problem$(n == 1 ? "" : "s") in $source$detail. " *
+          "Inspect CSV.problems(file), or pass on_error=:error to throw."
+    return
+end
+
+const ON_ERROR_MODES = (:collect, :warn, :error)
+_checkonerror(on_error::Symbol) =
+    on_error in ON_ERROR_MODES ||
+        throw(ArgumentError("on_error must be :collect, :warn, or :error (got $(repr(on_error)))"))
 
 mutable struct ProblemLog
     items::Vector{Problem}
@@ -2203,6 +2278,51 @@ function sortproblems!(log::ProblemLog)
     log.heaped = false
     sort!(log.items; lt=problemless)
     return log.items
+end
+
+# Whether a problem keyed (row, col, pos) would be retained (or become the
+# source-earliest `first`). Callers use it to skip formatting a message that
+# the cap would drop: a 5%-ragged 1M-row file otherwise formats a million
+# strings to keep ten thousand. Ties on the key say yes, so `pushproblem!`
+# keeps the final decision.
+function wantsproblem(log::ProblemLog, row::Int, col::Int, pos::Int)
+    length(log.items) < log.limit && return true
+    if log.limit == 0
+        f = log.first
+        return f === nothing || _keyless(row, col, pos, f)
+    end
+    if !log.heaped
+        _heapify!(log.items, problemless)
+        log.heaped = true
+    end
+    return _keyless(row, col, pos, @inbounds(log.items[1]))
+end
+@inline _keyless(row::Int, col::Int, pos::Int, p::Problem) =
+    pos != p.pos ? pos < p.pos : row != p.row ? row < p.row : col != p.col ? col < p.col : true
+
+# A ragged-row report: the message is formatted only when it can be retained.
+function pushrowproblem!(log::ProblemLog, row::Int, pos::Int, expected::Int, found::Int)
+    if wantsproblem(log, row, 0, pos)
+        found < expected ?
+            pushproblem!(log, row, 0, pos, :short_row,
+                         "expected $expected fields, found $found (remaining columns set to missing)") :
+            pushproblem!(log, row, 0, pos, :long_row,
+                         "expected $expected fields, found $found (extra fields ignored)")
+    else
+        log.dropped += 1
+    end
+    return
+end
+
+# A cell report whose message excerpts the cell: formatted only when retained.
+function pushcellproblem!(log::ProblemLog, row::Int, col::Int, pos::Int, len::Int,
+                          kind::Symbol, prefix::String, buf::Vector{UInt8})
+    if wantsproblem(log, row, col, pos)
+        pushproblem!(log, row, col, pos, kind, prefix * excerpt(buf, pos, len))
+    else
+        log.dropped += 1
+    end
+    return
 end
 
 struct LocatedProblem
@@ -2562,6 +2682,14 @@ function _columndecision(T)
         throw(ArgumentError("column type must be a Type or nothing (got $(repr(T)))"))
     declaredmissing = T !== Missing && Missing <: T
     requested = T === Missing ? Missing : Base.nonmissingtype(T)
+    # A requested string type names the OUTPUT type: `types=String` returns
+    # `Vector{String}` (0.10's read-as-text idiom), `DataString` keeps the
+    # zero-copy column, and an extension type (InlineString) converts once
+    # after parsing. Text is always parsed as a DataString column first.
+    if requested !== Missing && _stringsink(requested)
+        return ColumnDecision(String, requested === DataString ? nothing : requested,
+                              declaredmissing)
+    end
     parsetype = _nativetype(requested)
     parseable = parsetype === Missing ||
                 parsetype in (Int64, Int128, Float64, Bool, Date, DateTime, Time,
@@ -2579,8 +2707,16 @@ function _selectpositions(select, drop, names::Vector{Symbol};
     spec = select === nothing ? drop : select
     spec === nothing && return collect(eachindex(names))
     spec isa Base.Callable &&
-        throw(ArgumentError("function-typed select/drop is retired; pass a list " *
-                            "(or use Tables.Scan for expressions)"))
+        throw(ArgumentError("function-typed select/drop is retired; pass a list, " *
+                            "a Regex, or use Tables.Scan for expressions"))
+    if spec isa Regex
+        matched = [nm for nm in names if occursin(spec, String(nm))]
+        select !== nothing && isempty(matched) &&
+            throw(ArgumentError("select regex $spec does not match any column"))
+        spec = matched
+    end
+    # one name or position is the one-element list
+    (spec isa AbstractString || spec isa Symbol || spec isa Integer) && (spec = [spec])
     idx = Int[]
     if spec isa AbstractVector{Bool}
         length(spec) == length(names) ||
@@ -2590,8 +2726,9 @@ function _selectpositions(select, drop, names::Vector{Symbol};
     elseif spec isa AbstractVector{<:Integer}
         append!(idx, Int.(spec))
     else
-        (spec isa AbstractString || spec isa Symbol || spec isa Integer) &&
-            throw(ArgumentError("select/drop must be a list (got $(typeof(spec)))"))
+        spec isa AbstractVector || spec isa Tuple ||
+            throw(ArgumentError("select/drop must be a list of names, positions, or a " *
+                                "Bool mask (got $(typeof(spec)))"))
         for s in spec
             j = findfirst(==(Symbol(s)), names)
             if j === nothing && matchnormalized
@@ -2778,8 +2915,25 @@ function parse(buf::Vector{UInt8};
     d = Dialect(; dialectkw...)
     baseopts = makevalueopts(d; dateformat, decimal, truestrings, falsestrings, sentinels,
                              stripwhitespace, groupmark)
-    datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1  # BOM
     sc = resolvescanner(d, fastindex, scanner)
+    return _parse(buf, d, baseopts, sc, tm, chunkbytes, parallel, tasklimit, maxproblems,
+                  on_error, validate, inferdecimal, reportstructural, nsample, limit,
+                  header, types, select, colopts, columnplan, rowmask, index)
+end
+
+# The driver body takes positional, concretely typed arguments so it compiles
+# once per index/mask shape rather than once per keyword combination: every
+# distinct keyword set (`delim`, `comment`, `dateformat`, `missingstring`, ...)
+# otherwise re-specialized this whole function, 150–600 ms each on first use.
+function _parse(buf::Vector{UInt8}, d::Dialect, baseopts::ValueOpts, sc::Symbol,
+                tm::Union{Nothing, Dict{Type, Type}}, chunkbytes::Int, parallel::Bool,
+                tasklimit::Int, maxproblems::Int, on_error::Symbol, validate::Bool,
+                inferdecimal::Bool, reportstructural::Bool, nsample::Union{Nothing, Int},
+                limit::Union{Nothing, Int}, @nospecialize(header), @nospecialize(types),
+                @nospecialize(select), colopts::Union{Nothing, Vector{ValueOpts}},
+                columnplan::Union{Nothing, ColumnPlan}, rowmask::Union{Nothing, Vector{Bool}},
+                index::Union{Nothing, BufferIndex})
+    datastart = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1  # BOM
     # A caller can supply an index that it built earlier. The Scan integration
     # does this when it applies a filter in two steps. The chunk boundaries and
     # CSV options must match the options used to build that index.
@@ -3014,12 +3168,8 @@ function parse(buf::Vector{UInt8};
 
     # -- finalize --------------------------------------------------------------
     sortproblems!(log)
-    if on_error === :error && log.first !== nothing
-        p = log.first
-        nproblems = length(log.items) + log.dropped
-        throw(ErrorException("CSV: $(p.kind) at data row $(p.row), column $(p.col): $(p.message)" *
-                             (nproblems > 1 ? " (+$(nproblems - 1) more)" : "")))
-    end
+    on_error === :error && log.first !== nothing &&
+        _throwparseerror(log.first, length(log.items) + log.dropped)
     # a user-declared Union{Missing,T} is the column type even without missings
     for j in stitchjs
         wantmissing[j] || continue
@@ -3056,14 +3206,9 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ncols::Int,
             mask !== nothing && !mask[maskbase + localrow] && continue
             localrow > reportlimit && continue
             nf = nfields(ci, lr)
-            if nf < ncols
-                sp = fieldspan(ci, lr, 1)::Tuple{Int, Int}
-                pushproblem!(log, localrow, 0, sp[1], :short_row,
-                             "expected $ncols fields, found $nf (remaining columns set to missing)")
-            elseif nf > ncols
-                sp = fieldspan(ci, lr, ncols + 1)::Tuple{Int, Int}
-                pushproblem!(log, localrow, 0, sp[1], :long_row,
-                             "expected $ncols fields, found $nf (extra fields ignored)")
+            if nf != ncols
+                sp = fieldspan(ci, lr, nf < ncols ? 1 : ncols + 1)::Tuple{Int, Int}
+                pushrowproblem!(log, localrow, sp[1], ncols, nf)
             end
         end
     end
@@ -3317,14 +3462,9 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
             localrow = lr - ci.firstdatarow + 1
             localrow > reportlimit && continue
             nf = nfields(ci, lr)
-            if nf < ncols
-                sp = fieldspan(ci, lr, 1)::Tuple{Int, Int}
-                pushproblem!(log, localrow, 0, sp[1], :short_row,
-                             "expected $ncols fields, found $nf (remaining columns set to missing)")
-            elseif nf > ncols
-                sp = fieldspan(ci, lr, ncols + 1)::Tuple{Int, Int}
-                pushproblem!(log, localrow, 0, sp[1], :long_row,
-                             "expected $ncols fields, found $nf (extra fields ignored)")
+            if nf != ncols
+                sp = fieldspan(ci, lr, nf < ncols ? 1 : ncols + 1)::Tuple{Int, Int}
+                pushrowproblem!(log, localrow, sp[1], ncols, nf)
             end
         end
     end
