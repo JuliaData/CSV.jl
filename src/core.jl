@@ -2053,8 +2053,8 @@ end
 # The column builder: payloads plus the bytes this column OWNS. Every cell
 # longer than the inline payload is copied out of the input at parse time, so
 # a finished column never references the source buffer: a mapped file can be
-# unmapped or rewritten as soon as parsing ends (no SIGBUS), a slice of the
-# column retains only its own bytes, and a `Vector{UInt8}` input is never
+# unmapped or rewritten as soon as parsing ends (no SIGBUS), a slice retains
+# column buffers instead of the source, and a `Vector{UInt8}` input is never
 # aliased. Payload buffer index 1 is `extra` (this column's own appends);
 # indices 2.. are chunk-segment buffers adopted without a copy.
 mutable struct StringColumn

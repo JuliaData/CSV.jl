@@ -3,14 +3,14 @@
 #
 # Every entry point uses the same pipeline: resolve source bytes → settle the
 # dialect (sniffing if asked) →
-# index once → settle names/row-window (header/skipto/footerskip/limit as
+# index (rebuild under field-start quote rules if needed) → settle names/row-window (header/skipto/footerskip/limit as
 # *index arithmetic*, before any value work) → hand the kernel driver or the
 # streaming primitives the prepared index. There is no per-entrypoint parsing
 # code and no mode flags inside the kernel: File/Rows/Chunks differ only in
 # what they do AFTER `_prepare`.
 #
 # Compatibility decisions are pinned by tests:
-#   • warnings are DATA: `problems(f)` replaces strict/silencewarnings logging
+#   • problems are retained data; eager readers also warn once by default
 #     (`strict=true` maps to `on_error=:error`, `maxwarnings` to `maxproblems`)
 #   • empty unquoted cells are ALWAYS missing; `missingstring` ADDS spellings
 #     (CSV.jl 0.10 could turn empties into present "" values)
@@ -18,7 +18,7 @@
 #     expression channel); list/Dict forms keep working
 #   • `stringtype` defaults to the kernel string (DataString);
 #     `stringtype=String` materializes; InlineStrings become an extension
-#   • Bool columns are strictly `true`/`false` unless truestrings/falsestrings
+#   • Bool defaults accept lower, title, and upper case; user lists replace them
 #   • integer spellings that fit Int128 stay exact, including initially-wide
 #     and grouped columns where CSV.jl can widen Int64 overflow to Float64
 #
@@ -49,7 +49,7 @@ function _pickkwargs(kw, allowed)
 end
 
 const _REMOVED_KW = Dict{Symbol, String}(
-    :silencewarnings => "warnings are data now: problems(f) returns them; maxproblems caps retention",
+    :silencewarnings => "use on_error=:collect to silence warnings; problems(f) returns retained problems",
     :debug => "removed in 1.0; parse problems and the structural index are inspectable directly",
     :lazystrings => "use stringtype=DataStrings.DataString (the default) or stringtype=String",
     :tasks => "use ntasks",
