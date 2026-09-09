@@ -67,11 +67,18 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
     plan = settlecolumns(inputnames, p.opts, b; colopts=_preparedcolopts(p))
     requests = _requestedstrings(plan, [c.index for c in b.columns])
 
+    # The prepared row window (`footerskip`) ends before the scan's own offset
+    # and limit apply. The kernel takes one mask, so the window is baked in.
+    total = sum(nrows, bi.chunks; init=0)
+    window = p.limit === nothing ? total : min(total, p.limit)
     if b.filter === nothing
         # Apply row bounds before a requested type conversion.
-        bounded = b.offset > 0 || b.limit !== nothing
-        mask = bounded ? fill(true, sum(nrows, bi.chunks; init=0)) : nothing
-        mask === nothing || _cliprows!(mask, b.offset, b.limit)
+        bounded = b.offset > 0 || b.limit !== nothing || window < total
+        mask = bounded ? fill(true, total) : nothing
+        if mask !== nothing
+            fill!(view(mask, (window + 1):total), false)
+            _cliprows!(mask, b.offset, b.limit)
+        end
         t = _parseprepared(p, plan; limit=nothing, rowmask=mask, maxproblems=phasecap)
         sourcerows = mask === nothing ? nothing : findall(mask)
         t = _narrowphase(t, plan, bi, phasecap; sourcerows)
@@ -79,12 +86,15 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
         return _finishproblems(t, maxproblems, on_error, headerlog, source, t), requests
     end
 
-    # First, read only the columns used by the filter.
+    # First, read only the columns used by the filter, inside the window.
     predcolumns = [ColumnDecision() for _ in inputnames]
     predplan = ColumnPlan(predcolumns, plan.predicate, Int[], Int[],
                           plan.opts, plan.colopts)
-    t1 = _parseprepared(p, predplan; limit=nothing, maxproblems=phasecap)
+    t1 = _parseprepared(p, predplan; limit=p.limit, maxproblems=phasecap)
     mask = Tables.filtermask(b, PredicateColumns(t1, inputnames, plan.predicate))
+    length(mask) == window ||
+        throw(ArgumentError("filter mask has $(length(mask)) entries for $window rows"))
+    window < total && append!(mask, Iterators.repeated(false, total - window))
     _cliprows!(mask, b.offset, b.limit)
 
     # Then, read result columns only for rows that passed the filter. A result

@@ -43,7 +43,8 @@ end
 # `missing` (an empty or sentinel cell, a short row, or — for a requested
 # type — an invalid cell that the parse will report and leave missing).
 # Columns are independent, so they validate in parallel.
-function settlebatchschema!(types::Vector{Type}, buf, chunks, plan::ColumnPlan;
+function settlebatchschema!(types::Vector{Type}, buf, chunks, plan::ColumnPlan,
+                            maxlens::Union{Nothing, Vector{Int}}=nothing;
                             parallel::Bool=false, tasklimit::Int=1)
     allowmissing = Bool[plan.columns[j].declaredmissing for j in plan.sources]
     settle = q -> begin
@@ -54,9 +55,10 @@ function settlebatchschema!(types::Vector{Type}, buf, chunks, plan::ColumnPlan;
         # string type is checked as text
         checktype = requested && _requestedstring(d) === nothing ?
                     something(accessparsetype(d), types[q]) : types[q]
-        T, sawmissing = _settlecolumn(checktype, buf, chunks, j, columnopts(plan, j),
-                                      requested, allowmissing[q])
+        T, sawmissing, maxlen = _settlecolumn(checktype, buf, chunks, j, columnopts(plan, j),
+                                              requested, allowmissing[q])
         allowmissing[q] = sawmissing
+        maxlens === nothing || (maxlens[q] = maxlen)
         # the batch parses with the native (wide) kernel; narrowing follows
         requested || (types[q] = T)
     end
@@ -70,21 +72,43 @@ end
 
 # Validate one column from its current type, re-entering with the promoted
 # type from the conflicting row (promotion is monotone, so cells already
-# accepted stay accepted). Each entry is monomorphic in `T`.
+# accepted stay accepted). Each entry is monomorphic in `T`. The longest value
+# (in output bytes) settles an auto-width string request for the whole window.
 function _settlecolumn(::Type{T0}, buf, chunks, j::Int, opts::ValueOpts,
                        requested::Bool, sawmissing::Bool) where {T0}
     T = T0
-    k, lr = 1, 0
+    k, lr, maxlen = 1, 0, 0
     while true
-        T2, sawmissing, k, lr = _settlecolumnfrom(T, buf, chunks, j, opts, requested,
-                                                  sawmissing, k, lr)
-        T2 === T && return T, sawmissing
+        T2, sawmissing, k, lr, maxlen = _settlecolumnfrom(T, buf, chunks, j, opts, requested,
+                                                          sawmissing, k, lr, maxlen)
+        T2 === T && return T, sawmissing, maxlen
         T = T2
     end
 end
 
+# The bytes a text cell has after parsing: malformed quoting keeps the raw
+# field, escapes collapse, and other cells keep their content span.
+@inline function _valuelength(buf::Vector{UInt8}, pos::Int, len::Int, cpos::Int, clen::Int,
+                              esc::Bool, st::UInt8, opts::ValueOpts)
+    st == CELL_BADQUOTE && return len
+    esc || return clen
+    return _unescapedlength(buf, cpos, clen, opts.e, opts.cq)
+end
+
+function _unescapedlength(buf::Vector{UInt8}, pos::Int, len::Int, e::UInt8, cq::UInt8)
+    n = 0
+    i = pos
+    last = pos + len - 1
+    @inbounds while i <= last
+        i += (buf[i] == e && i < last && (e != cq || buf[i + 1] == cq)) ? 2 : 1
+        n += 1
+    end
+    return n
+end
+
 function _settlecolumnfrom(::Type{T}, buf::Vector{UInt8}, chunks, j::Int, opts::ValueOpts,
-                           requested::Bool, sawmissing::Bool, k::Int, lr::Int) where {T}
+                           requested::Bool, sawmissing::Bool, k::Int, lr::Int,
+                           maxlen::Int) where {T}
     scratch = _scratchfor(opts)
     @inbounds while k <= length(chunks)
         ci = chunks[k]
@@ -98,6 +122,8 @@ function _settlecolumnfrom(::Type{T}, buf::Vector{UInt8}, chunks, j::Int, opts::
             end
             pos, len = sp
             cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
+            st == CELL_MISSING ||
+                (maxlen = max(maxlen, _valuelength(buf, pos, len, cpos, clen, esc, st, opts)))
             if st == CELL_MISSING
                 sawmissing = true
             elseif T === String
@@ -106,7 +132,7 @@ function _settlecolumnfrom(::Type{T}, buf::Vector{UInt8}, chunks, j::Int, opts::
                 # a present value under an all-missing seed: promote by detection
                 requested && (sawmissing = true)
                 requested || return (promote_kernel(Missing, detecttype(buf, pos, len, opts)),
-                                     sawmissing, k, lr)
+                                     sawmissing, k, lr, maxlen)
             else
                 ok = false
                 if st == CELL_VALUE && clen > 0 && !esc
@@ -122,7 +148,7 @@ function _settlecolumnfrom(::Type{T}, buf::Vector{UInt8}, chunks, j::Int, opts::
                     requested && (sawmissing = true)
                     if !requested
                         detected = promote_kernel(T, detecttype(buf, pos, len, opts))
-                        return (detected === T ? String : detected, sawmissing, k, lr)
+                        return (detected === T ? String : detected, sawmissing, k, lr, maxlen)
                     end
                 end
             end
@@ -131,7 +157,7 @@ function _settlecolumnfrom(::Type{T}, buf::Vector{UInt8}, chunks, j::Int, opts::
         k += 1
         lr = 0
     end
-    return T, sawmissing, k, lr
+    return T, sawmissing, k, lr, maxlen
 end
 
 Base.length(b::Batches) = length(b.chunks)

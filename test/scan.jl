@@ -22,7 +22,7 @@ function sametable(a, b)
                for nm in ka)
 end
 
-scanfile(source, scan; kw...) = CSV.File(IOBuffer(source); scan, pool=false, kw...)
+scanfile(source, scan; kw...) = CSV.File(IOBuffer(source); scan, pool=false, on_error=:collect, kw...)
 
 @testset "Tables.Scan pushdown" begin
 
@@ -264,15 +264,15 @@ end
     directlimit = directbases[boundary] + directcounts[boundary] - 1
     @test directlimit > 0 && directlimit < sum(directcounts)
     @test directlimit ∉ cumsum(directcounts)
-    escapedincluded = [v for v in directvalues[1:directlimit] if occursin('\"', v)]
-    expectedextra = Vector{UInt8}(codeunits(join(escapedincluded)))
+    # every value lives in column-owned bytes; excluded rows are never copied
+    expectedbytes = sum(ncodeunits, directvalues[1:directlimit])
     for par in (false, true)
         t = S.parse(directbuf; index=directindex, header=[:id, :s], select=[:s],
                     limit=directlimit, parallel=par, nsample=1)
         @test String.(t[:s]) == directvalues[1:directlimit]
-        @test t[:s].buffers[2] == expectedextra
-        @test all(i -> (S.csbufidx(t[:s].payloads[i]) == 1) == occursin('\"', directvalues[i]),
-                  1:directlimit)
+        @test t[:s].buffers[1] === S.EMPTY_BYTES
+        @test all(i -> S.csbufidx(t[:s].payloads[i]) >= 1, 1:directlimit)
+        @test sum(length, t[:s].buffers) == expectedbytes
     end
 end
 

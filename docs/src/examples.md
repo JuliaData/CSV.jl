@@ -91,13 +91,14 @@ collect(file.active)
 using CSV, DataStrings
 
 text = "id,amount\n1,10\n2,not-a-number\n"
-file = CSV.File(IOBuffer(text); types=Dict(:amount => Int))
+file = CSV.File(IOBuffer(text); types=Dict(:amount => Int), on_error=:collect)
 
 [(problem.row, problem.col, problem.kind, problem.message)
  for problem in CSV.problems(file)]
 ```
 
-Use `on_error=:error` when recovery is not acceptable:
+Without `on_error=:collect`, the read also prints one summary warning. Use
+`on_error=:error` when recovery is not acceptable:
 
 ```julia
 CSV.File(IOBuffer(text); types=Dict(:amount => Int), on_error=:error)

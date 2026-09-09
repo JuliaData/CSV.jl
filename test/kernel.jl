@@ -111,22 +111,6 @@ end
 allocsumgrouped(buf::Vector{UInt8}, opts::K.ValueOpts, scratch::Vector{UInt8}) =
     @allocated sumgrouped(buf, opts, scratch)
 
-function scalar_delimclash(buf::Vector{UInt8}, cpos::Int, clen::Int,
-                           delim::Vector{UInt8})
-    n = length(delim)
-    clen < n && return false
-    @inbounds for k in cpos:(cpos + clen - n)
-        if buf[k] == delim[1]
-            m = 2
-            while m <= n && buf[k + m - 1] == delim[m]
-                m += 1
-            end
-            m > n && return true
-        end
-    end
-    return false
-end
-
 function csfrombytes(bytes::Vector{UInt8})
     p = length(bytes) <= K.COMPACTSTRING_INLINE ? K.inline_payload(bytes, 1, length(bytes)) :
                                          K.view_payload(bytes, 1, length(bytes), 0, 0)
@@ -215,31 +199,77 @@ end
     @test K.fieldspan(ci, 1, 3) === nothing
 end
 
-@testset "structural: delimiter-clash SWAR differential" begin
-    rng = MersenneTwister(0xd311)
-    for align in 0:15, len in 0:64
-        cpos = align + 1
-        # A match immediately after the content span must never be observed.
-        boundary = fill(UInt8(0x00), align + len + 8)
-        boundary[cpos + len] = 0xff
-        @test !K._delimclash(boundary, cpos, len, UInt8[0xff])
-
-        for _ in 1:32
-            buf = rand(rng, UInt8, align + len + 8)
-            delim = UInt8[rand(rng, UInt8)]
-            @test K._delimclash(buf, cpos, len, delim) ==
-                  scalar_delimclash(buf, cpos, len, delim)
+@testset "structural: bare-quote detection" begin
+    # An opening quote that is not the first non-blank byte of its field (and
+    # not the second of a doubled pair) makes the toggle scan unsound. Every
+    # scanner and chunk geometry must flag exactly those inputs.
+    function bareflag(s; chunkbytes=nothing, scanner=:auto, kw...)
+        d = K.Dialect(; kw...)
+        buf = Vector{UInt8}(s)
+        return chunkbytes === nothing ?
+               K.index(buf, d; parallel=false, scanner).barequote :
+               K.index(buf, d; chunkbytes, parallel=true, scanner).barequote
+    end
+    function check(s, expected; kw...)
+        for scanner in (:vec, :swar, :scalar), chunkbytes in (nothing, 7)
+            @test bareflag(s; chunkbytes, scanner, kw...) == expected
         end
     end
-
-    # The multi-byte branch is the original scalar algorithm and stays exact.
-    for delim in (UInt8[0x61, 0x62], UInt8[0xff, 0x00, 0xff])
-        for align in 0:15, len in 0:64, _ in 1:4
-            buf = rand(rng, UInt8, align + len + 8)
-            @test K._delimclash(buf, align + 1, len, delim) ==
-                  scalar_delimclash(buf, align + 1, len, delim)
-        end
+    # well-formed input never flags
+    check("a,b\n1,2\n", false)
+    check("a,b\n\"x,y\",\"z\"\n", false)
+    check("a,b\n\"say \"\"hi\"\"\",\"\"\"\"\n", false)
+    check("a,b\n1, \"x, y\"\n2,\t\"z\"\n", false)
+    check("a,b\n\"x\" ,\"y\"\t\n", false)
+    check("a,b\n\"\",\"\"\n", false)
+    check("a,b\n\"x\ny\",\"z\r\nq\"\n", false)
+    check("a,b\r\n\"x\",\"y\"\r\n", false)
+    check("a\n\"x\"", false)
+    check("\"a\"\n\"b\"\n", false)
+    check(join(("\"c$i\"" for i in 1:200), ",") * "\n" * join(("\"v$i\"" for i in 1:200), ",") * "\n", false)
+    for pad in (60, 61, 62, 63, 64, 65)           # quotes and pairs at block edges
+        check("a" * ","^pad * "\"x\"\n", false)
+        check("a,\"" * "x"^pad * "\"\"y\"\n", false)
+        check("a," * " "^(pad + 6) * "\"x\"\n", false)   # blank run across a block
+        check("a," * "x"^pad * "\"y\n", true)
     end
+    check("#he\"llo\na,b\n1,2\n", false; comment="#")
+    check("a,b\nx\"y,z\n", false; quoted=false)
+    check("a,b\n\"x\\\"y\",z\n", false; escapechar='\\')
+    check("a,b\n<x\"y>,z\n", false; openquotechar='<', closequotechar='>')
+    # bare quotes flag
+    check("a,b\n1,x\"y\n", true)
+    check("a,b\n1,5\" long\n", true)
+    check("a\nx\"\n", true)
+    check("si\"ze,b\n1,2\n", true)
+    check("a, x\"y\n", true)
+    check("a\tb\nx\"y\tz\n", true; delim='\t')
+    check("a,b\nx<y>,z\n", true; openquotechar='<', closequotechar='>')
+    check("a::b\nx\"y::z\n", true; delim="::")
+    # the writer never produces a bare quote; injecting one is always caught
+    rng = MersenneTwister(7)
+    atoms = ["plain", "with,comma", "q\"uote", "", " lead", "trail ", "multi\nline",
+             "\"\"", "x\"\"y", "tab\there", "λ"]
+    for trial in 1:60
+        n = rand(rng, 1:40)
+        tbl = (a=[rand(rng, atoms) for _ in 1:n], b=rand(rng, 1:100, n),
+               c=[rand(rng, atoms) for _ in 1:n])
+        io = IOBuffer()
+        CSV.write(io, tbl; quotestyle=rand(rng, (:minimal, :all)))
+        s = String(take!(io))
+        check(s, false)
+        s2 = replace(s, r"\n(\d+)\n" => s"\n\1\"z\n"; count=1)
+        s2 == s || check(s2, true)
+    end
+    # the lenient scanner reads bare quotes as content, exactly like 0.10
+    lenient(s; kw...) = idxall(s; lenient=true, kw...)
+    @test lenient("a,b\n1,x\"y\n2,z\n") == [["a", "b"], ["1", "x\"y"], ["2", "z"]]
+    @test lenient("size,desc\n10,Pipe 3\" long\n") == [["size", "desc"], ["10", "Pipe 3\" long"]]
+    @test lenient("a\n \"x,y\" \n") == [["a"], [" \"x,y\" "]]
+    @test lenient("a\n\"x\"\"y\"\n") == [["a"], ["\"x\"\"y\""]]
+    @test lenient("a,b\n\"x\"y,z\n") == [["a", "b"], ["\"x\"y", "z"]]
+    @test lenient("a::b\nx\"y::z\n"; delim="::") == [["a", "b"], ["x\"y", "z"]]
+    @test lenient("a,b\n#c\"omment\n1,x\"y\n"; comment="#") == [["a", "b"], ["1", "x\"y"]]
 end
 
 @testset "structural: newlines" begin
@@ -336,6 +366,9 @@ end
     @test idxall("ab\"cd,e\nf,g\n"; chunks=(3, 7)) == [["ab\"cd,e\nf,g\n"]]
     # With a closing quote, structure resumes at the toggle:
     @test idxall("ab\"cd,e\"f,g\n") == [["ab\"cd,e\"f", "g"]]
+    # Both flag the index so the readers rebuild it under the lenient rule.
+    @test K.index(Vector{UInt8}("ab\"cd,e\nf,g\n"), K.Dialect(); parallel=false).barequote
+    @test K.index(Vector{UInt8}("ab\"cd,e\"f,g\n"), K.Dialect(); parallel=false).barequote
     # unclosed quote runs to EOF and flags the index
     buf = Vector{UInt8}(codeunits("a\n\"unclosed"))
     bi = K.index(buf, K.Dialect(); parallel=false)
@@ -643,6 +676,7 @@ end
     opts = K.makevalueopts(K.Dialect())
     function checktemporal(T, pat, adapt, s)
         buf = Vector{UInt8}(codeunits(s))
+        pat === nothing && (pat = K._datetimepattern(opts, buf, 1, length(buf)))
         c, rc = Parsers.parsecivil(buf, 1, length(buf), pat)
         value, ok = K.parsevalue(T, buf, 1, length(buf), opts)
         @test ok == (rc == Parsers.RC_OK)
@@ -654,13 +688,43 @@ end
               "2400-02-29", "2020-1-01", "2020-1-01x", "2020/01-01")
         checktemporal(Date, K._ISO_DATE_PATTERN, K.todate, s)
     end
-    for s in ("2024-01-02T03:04:05", "2024-01-02 03:04:05",
-              "2024-01-02T03:04:05.", "2024-01-02T03:04:05.1")
-        checktemporal(DateTime, K._ISO_DATETIME_PATTERN, K.todatetime, s)
+    # `T` and a space both separate the date and the time (the byte after the
+    # date selects the pattern); a `T` pattern never sees a space cell
+    for s in ("2024-01-02T03:04:05", "2024-01-02 03:04:05", "2024-01-02T03:04:05.",
+              "2024-01-02T03:04:05.1", "2024-01-02 03:04:05.250", "2024-01-02T03:04",
+              "2024-01-02  03:04:05", "2024-01-02 T03:04:05")
+        checktemporal(DateTime, nothing, K.todatetime, s)
     end
-    for s in ("00:00:00", "23:59:59", "24:00:00")
+    @test K._datetimepattern(opts, Vector{UInt8}("2024-01-02 03:04:05"), 1, 19) ===
+          K._ISO_DATETIME_SPACE_PATTERN
+    @test K._datetimepattern(opts, Vector{UInt8}("2024-01-02T03:04:05"), 1, 19) ===
+          K._ISO_DATETIME_PATTERN
+    @test K._datetimepattern(opts, Vector{UInt8}("2024-01-02"), 1, 10) === K._ISO_DATETIME_PATTERN
+    for s in ("00:00:00", "23:59:59", "24:00:00", "03:04:05.123456")
         checktemporal(Time, K._ISO_TIME_PATTERN, K.totime, s)
     end
+    # DateTime holds milliseconds: a finer fraction is not a DateTime cell.
+    # Inference keeps the text; an explicit DateTime column reports it.
+    for s in ("2024-01-02T03:04:05.123456", "2024-01-02 03:04:05.0001",
+              "2024-01-02T03:04:05.1234567")
+        buf = Vector{UInt8}(codeunits(s))
+        @test !K.parsevalue(DateTime, buf, 1, length(buf), opts)[2]
+        @test K.detecttype(buf, 1, length(buf), opts) === String
+    end
+    for s in ("2024-01-02T03:04:05.123000", "2024-01-02T03:04:05.1", "2024-01-02 03:04:05.999")
+        buf = Vector{UInt8}(codeunits(s))
+        @test K.parsevalue(DateTime, buf, 1, length(buf), opts)[2]
+        @test K.detecttype(buf, 1, length(buf), opts) === DateTime
+    end
+    subms = K.parse("t\n2024-01-02T03:04:05.123456\n2024-01-02T03:04:05\n")
+    @test eltype(subms[:t]) <: AbstractString
+    subms = K.parse("t\n2024-01-02T03:04:05.123456\n2024-01-02T03:04:05.5\n"; types=DateTime)
+    @test isequal(collect(subms[:t]), [missing, DateTime(2024, 1, 2, 3, 4, 5, 500)])
+    @test [p.row for p in K.problems(subms)] == [1]
+    custommicro = K.makevalueopts(K.Dialect(); dateformat="yyyy-mm-ddTHH:MM:SS.s")
+    bmicro = Vector{UInt8}("2024-01-02T03:04:05.123456")
+    @test !K.parsevalue(DateTime, bmicro, 1, length(bmicro), custommicro)[2]
+    @test K.detecttype(bmicro, 1, length(bmicro), custommicro) === String
 
     # A user format identical to a default is still custom. It must use the
     # compiled interpreter and retain the custom-format early type gates.
@@ -751,6 +815,26 @@ end
     @test dt("yellow", boolopts) === String
     @test dt("true", boolopts) === String        # user lists REPLACE the defaults
     @test dt("true", defaultopts) === Bool
+    # default spellings: three cases each, nothing else (no case fold)
+    for v in ("true", "True", "TRUE")
+        @test dt(v, defaultopts) === Bool
+        @test K.parsevalue(Bool, Vector{UInt8}(codeunits(v)), 1, ncodeunits(v), defaultopts) ==
+              (true, true)
+    end
+    for v in ("false", "False", "FALSE")
+        @test dt(v, defaultopts) === Bool
+        @test K.parsevalue(Bool, Vector{UInt8}(codeunits(v)), 1, ncodeunits(v), defaultopts) ==
+              (false, true)
+    end
+    for v in ("tRUE", "TRue", "truE", "FALSe", "fALSE", "T", "F", "yes", "no", "1", "0",
+              "tru", "trueX", "falsee", "")
+        @test dt(v, defaultopts) !== Bool
+        @test !K.parsevalue(Bool, Vector{UInt8}(codeunits(v * "\n")), 1, ncodeunits(v),
+                            defaultopts)[2]
+    end
+    @test dt("True", boolopts) === String        # user lists replace every default
+    @test isequal(collect(K.parse("a\nTrue\nFALSE\nfalse\n\n"; ignoreemptyrows=false)[:a]),
+                  [true, false, false, missing])
     @test dt("1", defaultopts) === Int64         # strict: never Bool
     @test dateopts.customfmt
     @test dt("Jan 02 2024", dateopts) === Date
@@ -1047,11 +1131,12 @@ end
     # empty header cell gets a generated name
     t = K.parse("a,,c\n1,2,3\n")
     @test K.names(t) == [:a, :Column2, :c]
-    # A malformed header must not be silently truncated at a delimiter that the
-    # structural quote rule assigned to the same field.
+    # A bare quote in the header is content: the parser rebuilds the index
+    # under the lenient rule, so the header keeps every delimited name.
     t = K.parse("ab\"cd,e\"f,g\n1,2\n")
-    @test K.names(t) == [Symbol("ab\"cd,e\"f"), :g]
-    @test any(p -> p.row == 0 && p.col == 1 && p.kind == :invalid_value, K.problems(t))
+    @test K.names(t) == [Symbol("ab\"cd"), Symbol("e\"f"), :g]
+    @test any(p -> p.kind == :short_row && p.row == 1, K.problems(t))
+    @test !any(p -> p.row == 0, K.problems(t))
 end
 
 @testset "typed: dialect passthrough" begin
@@ -1323,15 +1408,15 @@ end
     longvalue = repeat("x", (1 << 20) + 7)
     t = K.parse("a\n" * longvalue * "\n"; types=String, chunkbytes=1 << 16)
     @test t[:a][1] == longvalue
-    # A bare quote is structurally valid by design, but when it protects a
-    # delimiter the value-level reading of the span disagrees with the
-    # structural one; report it and preserve the exact structural-span bytes.
+    # A bare quote inside a field is content (0.10's rule): the structural
+    # scan flags it and the parser rebuilds the index under the lenient rule,
+    # so the row keeps every delimited field.
     t = K.parse("a,b\nab\"cd,e\"f,g\n"; types=String)
-    @test collect(t[:a]) == ["ab\"cd,e\"f"]
-    @test any(p -> p.kind == :invalid_value && p.row == 1 && p.col == 1, K.problems(t))
+    @test collect(t[:a]) == ["ab\"cd"] && collect(t[:b]) == ["e\"f"]
+    @test any(p -> p.kind == :long_row && p.row == 1, K.problems(t))
     t = K.parse("a::b\nab\"cd::ef\"gh::z\n"; delim="::", types=String)
-    @test collect(t[:a]) == ["ab\"cd::ef\"gh"]
-    @test any(p -> p.kind == :invalid_value && p.row == 1 && p.col == 1, K.problems(t))
+    @test collect(t[:a]) == ["ab\"cd"] && collect(t[:b]) == ["ef\"gh"]
+    @test any(p -> p.kind == :long_row && p.row == 1, K.problems(t))
     # Explicit Missing keeps malformed-quote diagnostics specific.
     t = K.parse("a\n\"unclosed"; types=Missing)
     @test any(p -> p.kind == :invalid_quoted_field && p.row == 1, K.problems(t))
@@ -1421,9 +1506,10 @@ end
     # escaped values: short ones inline, long ones land in the extra buffer
     t2 = K.parse("a\n\"in\"\"line\"\n\"a long escaped \"\"string\"\" beyond inline\"\n")
     @test collect(t2[:a]) == ["in\"line", "a long escaped \"string\" beyond inline"]
-    @test !isempty(t2[:a].buffers[2])                      # long unescaped value stored out-of-line
-    @test K.csbufidx(t2[:a].payloads[2]) == 1       # buffer index 1 ⇒ extra buffer
-    # Buffer indices above one select later bounded owned buffers.
+    @test t2[:a].buffers[1] === K.EMPTY_BYTES       # nothing views the source
+    @test K.cslen(t2[:a].payloads[2]) > K.COMPACTSTRING_INLINE
+    @test K.csbufidx(t2[:a].payloads[2]) >= 1        # long value lives in owned bytes
+    # Buffer indices above one select adopted chunk buffers.
     overflowvalue = "a value in the second owned buffer"
     overflowbytes = Vector{UInt8}(codeunits(overflowvalue))
     overflowpayload = K.view_payload(overflowbytes, 1, length(overflowbytes), 2, 0)
@@ -1432,35 +1518,47 @@ end
     @test String(overflowcol[1]) == overflowvalue
     @test K.materialize(overflowcol) == [overflowvalue]
 
-    # Exercise the large-offset fallback and owned-buffer rollover on every
-    # platform with small injected limits. The production limits remain Int32.
-    forcedvalue = "forced owned-buffer value"
-    forcedbuf = Vector{UInt8}(codeunits(forcedvalue * "\n"))
-    forcedci = K.ChunkIndex(1, length(forcedbuf))
-    forceddialect = K.Dialect()
-    K.indexone!(forcedci, forcedbuf, forceddialect, :scalar)
-    forcedcol = K.StringColumn(1, forcedbuf, UInt8('"'), UInt8('"'))
-    forcedlog = K.ProblemLog(10)
-    K.parsecolchunk!(forcedcol, forcedbuf, forcedci, 1, 0,
-                     K.makevalueopts(forceddialect), true, forcedlog;
-                     viewoffsetlimit=-1)
-    @test K.csbufidx(forcedcol.payloads[1]) == 1
-    @test forcedcol.extra == Vector{UInt8}(codeunits(forcedvalue))
-    @test isempty(forcedlog.items)
+    # A long cell is copied into the column's own bytes; the source is never
+    # referenced by a payload.
+    ownedvalue = "owned column bytes value"
+    ownedbuf = Vector{UInt8}(codeunits(ownedvalue * "\n"))
+    ownedci = K.ChunkIndex(1, length(ownedbuf))
+    owneddialect = K.Dialect()
+    K.indexone!(ownedci, ownedbuf, owneddialect, :scalar)
+    ownedcol = K.StringColumn(1, UInt8('"'), UInt8('"'))
+    ownedlog = K.ProblemLog(10)
+    K.parsecolchunk!(ownedcol, ownedbuf, ownedci, 1, 0,
+                     K.makevalueopts(owneddialect), true, ownedlog)
+    @test K.csbufidx(ownedcol.payloads[1]) == 1
+    @test ownedcol.extra == Vector{UInt8}(codeunits(ownedvalue))
+    @test isempty(ownedlog.items)
+    fill!(ownedbuf, 0x00)
+    @test String(K.finalizecolumn(String, ownedcol, 1)[1]) == ownedvalue
 
-    rollover = K.StringColumn(fill(K.PAYLOAD_MISSING, 1), forcedbuf,
-                              fill(UInt8(0xaa), 8), ReentrantLock(),
-                              UInt8('"'), UInt8('"'))
-    maps = K._copyownedbuffers!(rollover, forcedcol, 32)
-    repointed = K._repointowned(forcedcol.payloads[1], maps)
-    rollovervec = K._stringvector(K.DataString,
-        [repointed], forcedbuf, rollover.extra, rollover.overflow)
-    @test K.csbufidx(repointed) == 2
-    @test String(rollovervec[1]) == forcedvalue
-    @test length(rollover.overflow) == 1
+    # Adoption folds a chunk segment's bytes in by reference and re-points
+    # only that segment's long payloads to the new buffer index.
+    final = K.StringColumn(2, UInt8('"'), UInt8('"'))
+    seg1 = K.StringColumn(final.payloads, UInt8('"'), UInt8('"'))
+    seg2 = K.StringColumn(final.payloads, UInt8('"'), UInt8('"'))
+    segvalue1 = "first adopted segment value"
+    segvalue2 = "second adopted segment value"
+    K._own!(seg1, Vector{UInt8}(codeunits(segvalue1)), 1, ncodeunits(segvalue1), 1)
+    K._own!(seg2, Vector{UInt8}(codeunits(segvalue2)), 1, ncodeunits(segvalue2), 2)
+    K._adopt!(final, seg1, 1:1)
+    K._adopt!(final, seg2, 2:2)
+    @test K.csbufidx(final.payloads[1]) == 2 && K.csbufidx(final.payloads[2]) == 3
+    @test isempty(final.extra) && length(final.adopted) == 2
+    adoptedvec = K.finalizecolumn(String, final, 2)
+    @test adoptedvec.buffers[1] === K.EMPTY_BYTES
+    @test adoptedvec.buffers[3] === seg1.extra && adoptedvec.buffers[4] === seg2.extra
+    @test String.(adoptedvec) == [segvalue1, segvalue2]
+    @test K.materialize(adoptedvec) == [segvalue1, segvalue2]
+    # An empty segment adopts nothing.
+    K._adopt!(final, K.StringColumn(final.payloads, UInt8('"'), UInt8('"')), 1:2)
+    @test length(final.adopted) == 2
 
     # A long string whose absolute source position is beyond Int32 is copied
-    # into a small owned buffer. The sparse file consumes only the written
+    # like any other long cell. The sparse file consumes only the written
     # pages, while the mmap gives the parser a real >2 GiB Vector{UInt8}.
     if Sys.WORD_SIZE == 64 && Sys.isunix()
         mktemp() do _, io
@@ -1474,7 +1572,7 @@ end
             ci = K.ChunkIndex(offset0 + 1, filesize(io))
             dialect = K.Dialect()
             K.indexone!(ci, mapped, dialect, :scalar)
-            stringcol = K.StringColumn(1, mapped, UInt8('"'), UInt8('"'))
+            stringcol = K.StringColumn(1, UInt8('"'), UInt8('"'))
             log = K.ProblemLog(10)
             K.parsecolchunk!(stringcol, mapped, ci, 1, 0,
                              K.makevalueopts(dialect), true, log)
@@ -1482,7 +1580,6 @@ end
             @test String(parsed[1]) == largeposvalue
             @test K.csbufidx(parsed.payloads[1]) == 1
             @test parsed.buffers[2] == Vector{UInt8}(codeunits(largeposvalue))
-            @test all(isempty, parsed.buffers[3:end])
             @test isempty(log.items)
         end
     end
@@ -1629,8 +1726,13 @@ end
         n = min(lim, length(nums))
         @test isequal(collect(t[:num]), nums[1:n])
         @test isequal(K.materialize(t[:txt]), texts[1:n])
-        expectedextra = Vector{UInt8}(codeunits(join(texts[i] for i in 1:n if escaped[i])))
-        @test t[:txt].buffers[2] == expectedextra
+        # every long value lives in column-owned bytes, never in the source
+        @test t[:txt].buffers[1] === K.EMPTY_BYTES
+        @test all(K.cslen(p) <= K.COMPACTSTRING_INLINE || K.csbufidx(p) >= 1
+                  for p in t[:txt].payloads)
+        ownedbytes = sum(length, t[:txt].buffers)
+        @test ownedbytes == sum((ismissing(texts[i]) || ncodeunits(texts[i]) <= K.COMPACTSTRING_INLINE) ? 0 :
+                                ncodeunits(texts[i]) for i in 1:n; init=0)
     end
     one = K.parse(buf; header=[:num, :txt], types=[Int64, String], comment="#",
                   chunkbytes=length(buf) + 1, parallel=false)

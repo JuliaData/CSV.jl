@@ -12,7 +12,8 @@ using Test, CSV, DataDecimals, DataStrings, Tables
         @test isempty(CSV.problems(f))
     end
     for reader in (CSV.File, CSV.lazy, CSV.Rows)
-        f = reader(IOBuffer("x\n1.20\n1.235\n1.2300\n1.2e1\n"); types=Dict(:x=>D))
+        quiet = reader === CSV.File ? (; on_error=:collect) : (;)
+        f = reader(IOBuffer("x\n1.20\n1.235\n1.2300\n1.2e1\n"); types=Dict(:x=>D), quiet...)
         vals = collect(Tables.getcolumn(Tables.columntable(f), :x))
         @test isequal(vals, [D("1.20"), missing, D("1.23"), D("12.00")])
     end
@@ -80,7 +81,7 @@ end
                               ("1e10000000", missing), ("1e+", missing),
                               ("+", missing), (".", missing), ("1.2.3", missing),
                               ("1e-2x", missing)]
-        f = CSV.File(IOBuffer("x\n$token\n"); delim=',', types=D)
+        f = CSV.File(IOBuffer("x\n$token\n"); delim=',', types=D, on_error=:collect)
         @test isequal(only(f.x), expected)
     end
     @test isempty(CSV.File(IOBuffer("x\n1.20\n2.30\n"); inferdecimal=true, limit=0).x)

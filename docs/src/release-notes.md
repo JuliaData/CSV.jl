@@ -15,11 +15,15 @@ CSV.jl entry points. It requires Julia 1.10 or later.
 - `CSV.lazy` returns an indexed table that parses cells only when they are
   accessed. `CSV.File(lazyfile)` reuses the existing index.
 - Inferred text uses `DataStrings.DataString` by default. Short text is stored in
-  the value. Long text can refer to the retained input buffer.
+  the value; longer text lives in column-owned buffers, so eager tables never
+  refer to the source and a mapped file is released after parsing.
+- A quote inside a field is content, as in 0.10. The structural scan detects
+  such quotes and rebuilds its index with the field-start rule; well-formed
+  input never pays for it.
 - Typed value parsing uses the reviewed low-level kernels from Parsers 3.
 - Parse recovery produces structured `CSV.problems(file)` data. `on_error`
-  selects collection (the default), one summary warning (`:warn`), or
-  fail-fast `CSV.ParseError` (`:error`).
+  selects one summary warning (`:warn`, the default), silent collection
+  (`:collect`), or fail-fast `CSV.ParseError` (`:error`).
 - `CSV.Chunks` uses one stable schema for its complete row window.
 - Compatible Tables.jl releases can send a `Tables.Scan` projection, filter,
   type request, offset, and limit into the parser.
@@ -35,8 +39,12 @@ The most important default changes are:
 - `DataStrings.DataString` replaces InlineStrings.jl as the default text type;
 - pooling is off unless requested;
 - an unquoted empty field is always `missing`;
-- exact lowercase `true` and `false` are the default Boolean spellings; and
-- parse warnings are retained as problem objects instead of printed.
+- `true`, `True`, `TRUE`, `false`, `False`, and `FALSE` are the default Boolean
+  spellings;
+- ISO date-times accept `T` or a space, and a sub-millisecond fraction keeps a
+  column as text instead of truncating; and
+- parse problems are retained as problem objects, with one summary warning per
+  read instead of one warning per problem.
 
 See [Migrating from 0.10 to 1.0](migration.md) for option mappings, writer
 compatibility, source-memory behavior, and upgrade examples.

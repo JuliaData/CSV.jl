@@ -39,9 +39,14 @@ from its magic bytes for every source type and is fully decompressed into
 memory before parsing. Other compression formats must be decompressed before
 they are passed to CSV.jl.
 
-The parsed table can refer to retained source bytes through `DataStrings.DataString`
-values. Keep the table alive while you use those values. Use
-`stringtype=String` when each text value must own its bytes.
+`CSV.File`, `CSV.read`, and `CSV.Chunks` return columns that own their bytes:
+text longer than a `DataStrings.DataString` inline payload is copied into
+column-owned buffers during parsing, so a finished table never refers to the
+source. A mapped file is released as soon as parsing ends, rewriting the file
+afterwards cannot affect the table, one value retains at most the parse
+chunk's text buffer, and a `Vector{UInt8}` input is never aliased. `CSV.Rows` and `CSV.lazy`
+are the exceptions: their cells are views into the retained source, so keep
+the source unchanged while you use them, or convert values with `String`.
 
 ## Headers and row windows
 
@@ -89,6 +94,14 @@ The main dialect options are:
 
 Input must be ASCII or UTF-8. Convert other encodings before parsing.
 
+A quote that does not start its field is content, as it was in 0.10:
+`10,Pipe 3" long` and `1,x"y` are ordinary two-field rows. The parallel
+structural scan treats every quote as a field boundary; when it meets a quote
+that does not start its field, CSV.jl rebuilds the index with a serial pass
+that applies the field-start rule. Well-formed input never takes that path. A
+quote that does start a field and is never closed is still malformed input and
+is reported as an `:unclosed_quote` problem.
+
 ## Missing values and value syntax
 
 An unquoted empty field is always `missing` in CSV.jl 1.0. `missingstring`
@@ -104,9 +117,9 @@ file = CSV.File(data; missingstring="NA", stringtype=String)
 collect(file.value)
 ```
 
-Boolean inference recognizes the exact lowercase spellings `true` and `false`.
-Add other spellings with `truestrings` and `falsestrings`. Other value options
-include:
+Boolean inference recognizes `true`, `True`, `TRUE`, `false`, `False`, and
+`FALSE`. Add other spellings with `truestrings` and `falsestrings`; a user list
+replaces the defaults. Other value options include:
 
 - `dateformat` as one format string or `Dates.DateFormat`, or a per-column
   dictionary of them;
@@ -117,9 +130,11 @@ include:
 - `typemap` to replace an inferred type.
 
 Default date and time inference accepts the ISO forms `yyyy-mm-dd`,
-`yyyy-mm-ddTHH:MM:SS`, and `HH:MM:SS`. The latter two accept fractional seconds.
-`Dates.DateTime` holds milliseconds, so additional fractional digits are
-truncated.
+`yyyy-mm-ddTHH:MM:SS`, `yyyy-mm-dd HH:MM:SS`, and `HH:MM:SS`. The time forms
+accept fractional seconds. `Dates.DateTime` holds milliseconds, so a value with
+a finer fraction such as `12:00:00.123456` is not a `DateTime`: inference keeps
+the column as text, and an explicit `DateTime` column reports the value as a
+problem. `Dates.Time` keeps nanoseconds.
 
 ## Types, columns, strings, and pools
 
@@ -175,22 +190,25 @@ Transpose mode is sequential. It accepts and validates `ntasks` and
 
 ## Parse problems
 
-The default `on_error=:collect` keeps rows and records malformed quotes,
-invalid typed values, long rows, and other parse problems as `CSV.Problem`
-values. Inspect the retained items with `CSV.problems(file)`. Each item
-contains `row`, `col`, `pos`, `kind`, and `message` fields.
+Every eager reader keeps rows and records malformed quotes, invalid typed
+values, long rows, and other parse problems as `CSV.Problem` values. Inspect
+the retained items with `CSV.problems(file)`. Each item contains `row`, `col`,
+`pos`, `kind`, and `message` fields. The default `on_error=:warn` also prints
+one summary warning per read, so a problem is never silent; `on_error=:collect`
+records problems without the warning.
 
 ```@example reading-problems
 using CSV, DataStrings
 
-file = CSV.File(IOBuffer("count\n1\ninvalid\n"); types=Int)
+file = CSV.File(IOBuffer("count\n1\ninvalid\n"); types=Int, on_error=:collect)
 [(p.row, p.col, p.kind) for p in CSV.problems(file)]
 ```
 
 `maxproblems` caps retained diagnostics and defaults to 10,000.
-`on_error=:warn` prints one summary warning per read and still returns the
-collected table. `on_error=:error`, or the compatibility shorthand
-`strict=true`, throws a `CSV.ParseError` at the first problem in source order;
+`CSV.Chunks` warns once, for its first batch with problems; every batch still
+carries its own `CSV.problems(batch)`. `on_error=:error`, or the compatibility
+shorthand `strict=true`, throws a `CSV.ParseError` at the first problem in
+source order;
 the exception carries that `problem`, the total `nproblems`, and the `source`
 label. `validate=false` ignores `types`, `dateformat`, and `pool` dictionary
 keys that do not match an input column; validation is on by default.

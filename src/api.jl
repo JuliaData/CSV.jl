@@ -647,16 +647,9 @@ function _headerproblems(buf::Vector{UInt8}, refs::Vector{Tuple{ChunkIndex, Int}
         pos, len = fieldspan(ci, hrow, j)::Tuple{Int, Int}
         len == 0 && continue
         cpos, clen, _, st = cellcontent(buf, pos, len, opts)
-        if st == CELL_BADQUOTE
+        st == CELL_BADQUOTE &&
             pushproblem!(log, 0, j, pos, :invalid_quoted_field,
-                           "malformed quoting in header " * excerpt(buf, pos, len))
-        elseif st != CELL_MISSING && clen != 0 &&
-               !_wasquoted(buf, pos, len, opts) &&
-               _delimclash(buf, cpos, clen, opts.delim)
-            pushproblem!(log, 0, j, pos, :invalid_value,
-                           "bare quote engaged structural protection in header " *
-                           excerpt(buf, pos, len))
-        end
+                         "malformed quoting in header " * excerpt(buf, pos, len))
     end
     sortproblems!(log)
     return log
@@ -677,10 +670,11 @@ function _prepare(source;
                   buffer_in_memory::Bool=false,
                   prefetch::Bool=true,
                   validate::Bool=true,
+                  lenient::Bool=false,
                   kw...)
     return _prepare(source, header, normalizenames, skipto, footerskip, missingstring,
                     delim, limit, samplebytes, chunkbytes, parallel, ntasks,
-                    buffer_in_memory, prefetch, validate, kw)
+                    buffer_in_memory, prefetch, validate, lenient, kw)
 end
 
 # Keep source handling, sniffing and row-window construction independent of the
@@ -690,7 +684,8 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
                   @nospecialize(delim), @nospecialize(limit), samplebytes::Int,
                   @nospecialize(chunkbytes::Union{Nothing, Int}), parallel::Bool,
                   @nospecialize(ntasks::Union{Nothing, Int}),
-                  buffer_in_memory::Bool, prefetch::Bool, validate::Bool, @nospecialize(kw))
+                  buffer_in_memory::Bool, prefetch::Bool, validate::Bool, lenient::Bool,
+                  @nospecialize(kw))
     header isa Integer && header < 0 &&
         throw(ArgumentError("header must be ≥ 0 (got $header)"))
     if header isa AbstractVector{<:Integer} && !isempty(header)
@@ -721,7 +716,7 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
                 closequotechar=get(kw, :closequotechar, nothing),
                 escapechar=get(kw, :escapechar, nothing), quoted=get(kw, :quoted, true),
                 comment=get(kw, :comment, nothing), ignoreemptyrows=get(kw, :ignoreemptyrows, true),
-                ignorerepeated=get(kw, :ignorerepeated, false))
+                ignorerepeated=get(kw, :ignorerepeated, false), lenient)
     fastindex = get(kw, :fastindex, true)::Bool
     scanner = get(kw, :scanner, :auto)::Symbol
     # The first row that MATTERS — the (first) header row, or `skipto` when
@@ -775,6 +770,15 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
     rowoff(n::Int) = n < firstrow ? _physicallineoffset(buf, rawstart, n) :
                                     _rawrowoffset(buf, d, anchoroff, n - firstrow + 1)
     bi = index(buf, d; datastart, chunkbytes=cb, parallel, ntasks, fastindex, scanner)
+    if bi.barequote && !lenient
+        # A quote that did not start its field (`5' 11"`, `x"y`) made the
+        # parallel toggle scan unsound: rows may have merged into one cell.
+        # Prepare again under the lenient quote rule, from the same bytes.
+        # Well-formed input never takes this path.
+        return _prepare(buf, header, normalizenames, skipto, footerskip, missingstring,
+                        delim, limit, samplebytes, chunkbytes, parallel, ntasks,
+                        buffer_in_memory, prefetch, validate, true, kw)
+    end
     chunks = bi.chunks
     headerlog = ProblemLog(get(kw, :maxproblems, 10_000))
     headerrefs = Tuple{ChunkIndex, Int}[]
@@ -923,7 +927,7 @@ function File(source;
               downcast::Bool=false,
               transpose::Bool=false,
               stringtype::Type=DataString,
-              strict::Bool=false, on_error::Symbol=strict ? :error : :collect,
+              strict::Bool=false, on_error::Symbol=strict ? :error : :warn,
               maxwarnings::Union{Nothing, Int}=nothing,
               maxproblems::Int=something(maxwarnings, 10_000),
               ntasks::Union{Nothing, Int}=nothing,
@@ -994,7 +998,7 @@ end
 
 function _filefromprepared(p::Prepared, nm::String; types=nothing, select=nothing, drop=nothing,
                            pool=DEFAULT_POOL, downcast::Bool=false, stringtype::Type=DataString,
-                           on_error::Symbol=:collect, maxproblems::Int=10_000,
+                           on_error::Symbol=:warn, maxproblems::Int=10_000,
                            parallel::Bool=Threads.nthreads() > 1, validate::Bool=true,
                            ntasks::Union{Nothing, Int}=nothing,
                            inferdecimal::Bool=p.settings.inferdecimal,
@@ -1036,12 +1040,17 @@ end
 # final: `:error` throws the source-earliest problem as a `ParseError`,
 # `:warn` prints one summary, `:collect` keeps them for `problems(f)`.
 function _reportproblems(t::ParsedTable, on_error::Symbol,
-                         firstproblem::Union{Nothing, Problem}, source::String)
+                         firstproblem::Union{Nothing, Problem}, source::String,
+                         warned::Union{Nothing, Base.RefValue{Bool}}=nothing,
+                         note::String="")
     if on_error === :error
         firstproblem !== nothing &&
             _throwparseerror(firstproblem, length(t.problems) + t.droppedproblems, source)
     elseif on_error === :warn
-        _warnproblems(t.problems, t.droppedproblems, source)
+        # `warned` makes a Chunks warn once: its first batch with problems
+        warned !== nothing && warned[] && return
+        emitted = _warnproblems(t.problems, t.droppedproblems, source, note)
+        warned === nothing || (warned[] = emitted)
     end
     return
 end
@@ -1101,7 +1110,7 @@ function File(sources::AbstractVector; source=nothing, kw...)
     end
     source === nothing && length(sources) == 1 && return File(first(sources); kw...)
     strict = get(kw, :strict, false)
-    on_error = get(kw, :on_error, strict ? :error : :collect)
+    on_error = get(kw, :on_error, strict ? :error : :warn)
     maxwarnings = get(kw, :maxwarnings, nothing)
     maxproblems = haskey(kw, :maxproblems) ? get(kw, :maxproblems, 10_000) :
                   something(maxwarnings, 10_000)
@@ -1192,7 +1201,7 @@ function _chaincolumn(pieces::Vector{AbstractVector}, counts::Vector{Int}, total
             et = eltype(c)
             anymissing |= Missing <: et
             S = Base.nonmissingtype(et)   # Union{} for an all-missing column
-            S === Union{} || (T = promote_type(T, S <: AbstractString ? String : S))
+            S === Union{} || (T = _chaintype(T, S))
         end
     end
     T === Union{} && return fill(missing, total)   # every source's block is all-missing
@@ -1210,14 +1219,29 @@ function _chaincolumn(pieces::Vector{AbstractVector}, counts::Vector{Int}, total
     return pooled ? PooledArray(out) : out
 end
 
+# Text keeps one shared owned string type when every source produced it (an
+# explicit `types=String15` on each), and is `String` otherwise: one
+# DataString column cannot refer to several independent buffers.
+function _chaintype(T::Type, S::Type)
+    if S <: AbstractString
+        S === DataString && (S = String)
+        T === Union{} && return S
+        T === S && return S
+        T <: AbstractString && return String
+    end
+    return promote_type(T, S)
+end
+
 # Function barrier: the piece's concrete type is static inside, so string
 # materialization does not dispatch per element.
 function _copypiece!(out::Vector, off::Int, c::AbstractVector, n::Int)
     S = Base.nonmissingtype(eltype(c))
-    if S !== Union{} && S <: AbstractString
+    E = Base.nonmissingtype(eltype(out))
+    if S !== Union{} && S <: AbstractString && S !== E
+        R = E <: AbstractString ? E : String
         @inbounds for k in 1:n
             x = c[k]
-            out[off + k] = x === missing ? missing : String(x)
+            out[off + k] = x === missing ? missing : R(x)
         end
     else
         copyto!(out, off + 1, c, 1, n)
@@ -1287,9 +1311,8 @@ function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
     end
     T === Missing && return fill(missing, n)
     if T === String
-        scol = StringColumn(n, buf, opts.e, opts.cq)
+        scol = StringColumn(n, opts.e, opts.cq)
         payloads = scol.payloads
-        staging::Union{Nothing, NTuple{4, Vector}} = nothing
         sawmiss = nf - (startf - 1) < n
         for i in 1:min(n, nf - (startf - 1))
             f = startf + i - 1
@@ -1305,23 +1328,13 @@ function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
             end
             if esc
                 inl = _unescape_inline(buf, cpos, clen, opts.e, opts.cq)
-                if inl === nothing
-                    staging === nothing &&
-                        (staging = (UInt8[], Int[], Int[], Int[]))
-                    _stageescaped!(staging, buf, cpos, clen, i, opts.e, opts.cq)
-                else
-                    payloads[i] = inl
-                end
-            elseif clen > COMPACTSTRING_INLINE && cpos - 1 > typemax(Int32)
-                staging === nothing && (staging = (UInt8[], Int[], Int[], Int[]))
-                _stageraw!(staging, buf, cpos, clen, i)
+                inl === nothing ? _ownescaped!(scol, buf, cpos, clen, i) : (payloads[i] = inl)
+            elseif clen <= COMPACTSTRING_INLINE
+                payloads[i] = inline_payload(buf, cpos, clen)
             else
-                payloads[i] = clen <= COMPACTSTRING_INLINE ?
-                              inline_payload(buf, cpos, clen) :
-                              view_payload(buf, cpos, clen, 0, cpos - 1)
+                _own!(scol, buf, cpos, clen, i)
             end
         end
-        staging === nothing || _flushstaging!(scol, payloads, staging)
         return finalizecolumn(String, scol, n, sawmiss || declaredmissing)
     end
     out = Vector{Union{T, Missing}}(missing, n)
@@ -1370,7 +1383,7 @@ end
 
 function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Bool=false,
                          stringtype::Type=DataString, inferdecimal::Bool=false,
-                         on_error::Symbol=:collect, maxproblems::Int=10_000,
+                         on_error::Symbol=:warn, maxproblems::Int=10_000,
                          header::Union{Bool, Integer, AbstractVector}=true,
                          skipto::Union{Nothing, Integer}=nothing,
                          missingstring=nothing, delim=',',
@@ -1411,6 +1424,10 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
     d = Dialect(; delim, dialectkw...)
     opts = makevalueopts(d; sentinels=_sentinels(missingstring), valuekw...)
     bi = index(buf, d; datastart=_datastart(buf), parallel=false)
+    if bi.barequote   # a quote that did not start its field: use the lenient rule
+        d = withlenient(d)
+        bi = index(buf, d; datastart=_datastart(buf), parallel=false)
+    end
     rows = Tuple{Any, Int}[]
     for ci in bi.chunks, lr in ci.firstdatarow:totalrows(ci)
         push!(rows, (ci, lr))
@@ -1795,9 +1812,10 @@ end
 # column) and the fixed String1..String255.
 _stringsink(::Type{DataString}) = true
 _stringsink(::Type{String}) = true
+_stringsink(::Type{Symbol}) = true   # `types=Symbol`: text converted once after parsing
 _stringsink(::Type) = false
 _checkstringtype(T) =
-    (T isa Type && _stringsink(T)) ||
+    (T isa Type && T !== Symbol && _stringsink(T)) ||
         throw(ArgumentError("stringtype must be DataStrings.DataString, String, or a " *
                             "type provided by an extension (e.g. InlineString with " *
                             "InlineStrings loaded); got $T"))
@@ -1808,9 +1826,21 @@ _checkstringtype(T) =
 # generic AbstractString path and was a measured 55–110 MiB/s cliff on
 # string-heavy shapes.
 _materializecolumn(::Type{String}, col::DataStringVector) = materialize(col)
+function _materializecolumn(::Type{Symbol}, col::DataStringVector)
+    n = length(col)
+    Missing <: eltype(col) || return Symbol[Symbol(col[i]) for i in 1:n]
+    out = Vector{Union{Symbol, Missing}}(undef, n)   # a declared Union stays, as for String
+    @inbounds for i in 1:n
+        x = col[i]
+        out[i] = x === missing ? missing : Symbol(x)
+    end
+    return out
+end
 # pool levels (a DataStringVector) to Vector{S}
 _levelvector(::Type{String}, levels::DataStringVector, n::Int) =
     String[String(levels[i]) for i in 1:n]
+_levelvector(::Type{Symbol}, levels::DataStringVector, n::Int) =
+    Symbol[Symbol(levels[i]) for i in 1:n]
 
 function _materializestrings(t::ParsedTable, ::Type{S}=String) where {S}
     cols = AbstractVector[col isa DataStringVector ? _materializecolumn(S, col) : col
@@ -2067,7 +2097,7 @@ end
 
 function File(lf::LazyFile; inferdecimal::Bool=false, types=nothing, select=nothing, drop=nothing, pool=DEFAULT_POOL,
               downcast::Bool=false, stringtype::Type=DataString, strict::Bool=false,
-              on_error::Symbol=strict ? :error : :collect,
+              on_error::Symbol=strict ? :error : :warn,
               maxwarnings::Union{Nothing, Int}=nothing,
               maxproblems::Int=something(maxwarnings, 10_000),
               ntasks::Union{Nothing, Int}=nothing,
@@ -2212,13 +2242,6 @@ function _strictrowvalue(view::_IndexedRow, j::Int, T)
     st == CELL_BADQUOTE &&
         _throwrowproblem(view, j, pos, :invalid_quoted_field,
                          "malformed quoting in " * excerpt(r.buf, pos, len))
-    if (T === nothing || _stringsink(T)) &&
-       !_wasquoted(r.buf, pos, len, r.opts) &&
-       _delimclash(r.buf, cpos, clen, opts.delim)
-        _throwrowproblem(view, j, pos, :invalid_value,
-                         "bare quote engaged structural protection in " *
-                         excerpt(r.buf, pos, len))
-    end
     T === nothing && return view[j]
     _stringsink(T) && return _typedvalue(T, view, j)
     T === Missing &&
@@ -2252,6 +2275,7 @@ end
 # string types; extensions may add
 _rowstring(::Type{String}, x::DataString) = String(x)
 _rowstring(::Type{DataString}, x::DataString) = x
+_rowstring(::Type{Symbol}, x::DataString) = Symbol(x)
 Tables.getcolumn(row::Row, nm::Symbol) =
     Tables.getcolumn(row, getfield(row, :lookup)[nm])
 Base.getindex(row::Row, j::Int) = Tables.getcolumn(row, j)
@@ -2271,7 +2295,9 @@ struct Chunks
     plan::ColumnPlan
     on_error::Symbol
     stringtype::Type
+    stringrequests::Union{Nothing, Vector{Union{Nothing, Type}}}  # settled per column
     poolspec::Union{Nothing, Tuple{Float64, Int}}
+    warned::Base.RefValue{Bool}   # on_error=:warn reports the first batch with problems
 end
 
 Base.length(c::Chunks) = length(getfield(c, :inner))
@@ -2282,12 +2308,13 @@ function Base.show(io::IO, c::Chunks)
     inner = getfield(c, :inner)
     n = length(inner)
     st = getfield(c, :stringtype)
+    reqs = getfield(c, :stringrequests)
     print(io, "CSV.Chunks(", repr(getfield(c, :name)), "): ", n, " batch", n == 1 ? "" : "es",
           " × ", length(inner.names), " column", length(inner.names) == 1 ? "" : "s")
     for (q, (nm, T, allowmissing)) in enumerate(zip(inner.names, inner.seedtypes, inner.allowmissing))
         decision = inner.plan.columns[inner.plan.sources[q]]
-        E = T === String ? _rowstringtype(something(decision.resulttype, st)) :
-                           something(decision.resulttype, T)
+        S = reqs === nothing ? something(decision.resulttype, st) : something(reqs[q], st)
+        E = T === String ? _rowstringtype(S) : something(decision.resulttype, T)
         # A ratio/cap pool policy can materialize some DataString batches and
         # leave others as views. Display the set of possible output scalars.
         getfield(c, :poolspec) !== nothing && E === DataString && (E = Union{DataString, String})
@@ -2307,13 +2334,15 @@ function Base.iterate(c::Chunks, state::Int=1)
     problemrowbase = chunkrowbase(getfield(inner, :chunks), ci)
     t, firstproblem = _narrowtypes(t, getfield(c, :plan),
                                    (ci,), cap, firstproblem; problemrowbase)
-    _reportproblems(t, getfield(c, :on_error), firstproblem, getfield(c, :name))
+    _reportproblems(t, getfield(c, :on_error), firstproblem,
+                    "batch $state of $(getfield(c, :name))", getfield(c, :warned),
+                    " Later batches do not warn; inspect CSV.problems(batch).")
     # Apply the same final steps as File. Build each requested PooledArray, then
     # build the requested string type.
     st = getfield(c, :stringtype)
     ps = getfield(c, :poolspec)
     ps === nothing || (t = _poolcolumns(t, fill(ps, length(t.columns))))
-    t = _finishstrings(t, st, _requestedstrings(getfield(c, :plan)))
+    t = _finishstrings(t, st, getfield(c, :stringrequests))
     f = File(getfield(c, :name), t,
              Dict(nm => j for (j, nm) in enumerate(names(t))))
     return f, next
@@ -2322,7 +2351,7 @@ end
 function Chunks(source; types=nothing, inferdecimal::Bool=false, ntasks::Union{Nothing, Int}=nothing,
                 maxproblems::Int=10_000, stringtype::Type=DataString,
                 pool=DEFAULT_POOL, select=nothing, drop=nothing, strict::Bool=false,
-                on_error::Symbol=strict ? :error : :collect, kw...)
+                on_error::Symbol=strict ? :error : :warn, kw...)
     nt = something(ntasks, Threads.nthreads())
     nt >= 1 || throw(ArgumentError("ntasks must be ≥ 1 (got $nt)"))
     maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
@@ -2363,11 +2392,34 @@ function Chunks(source; types=nothing, inferdecimal::Bool=false, ntasks::Union{N
         end
     end
     seedtypes = Type[seed[j] for j in plan.sources]
-    allowmissing = settlebatchschema!(seedtypes, p.buf, chunks, plan;
+    maxlens = zeros(Int, length(seedtypes))
+    allowmissing = settlebatchschema!(seedtypes, p.buf, chunks, plan, maxlens;
                                       parallel=get(kw, :parallel, nt > 1), tasklimit=nt)
+    stringrequests = _settlestringrequests(plan, seedtypes, maxlens, stringtype)
     unclosedquote = p.bi.unclosedquote && (p.limit === nothing || p.limit >= fullrows)
     inner = Batches(p.buf, chunks, p.names[plan.sources], plan, seedtypes,
                     allowmissing, p.d, capturecap, unclosedquote)
     return Chunks(name, inner, p.headerlog, maxproblems, plan, on_error,
-                  stringtype, poolspec)
+                  stringtype, stringrequests, poolspec, Ref(false))
+end
+
+# One output string type per text column for the whole row window: an
+# auto-width request (InlineString) settles on the longest value the schema
+# pass saw, so every batch has the same element type. Extensions add methods.
+_settledstringtype(::Type{S}, maxlen::Int) where {S} = S
+function _settlestringrequests(plan::ColumnPlan, seedtypes::Vector{Type},
+                               maxlens::Vector{Int}, stringtype::Type)
+    requests = _requestedstrings(plan)
+    settled = requests === nothing ? Union{Nothing, Type}[nothing for _ in seedtypes] :
+                                     copy(requests)
+    changed = false
+    for q in eachindex(seedtypes)
+        seedtypes[q] === String || continue
+        S = something(settled[q], stringtype)
+        R = _settledstringtype(S, maxlens[q])
+        R === S && continue
+        settled[q] = R
+        changed = true
+    end
+    return changed ? settled : requests
 end

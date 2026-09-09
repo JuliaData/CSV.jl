@@ -17,15 +17,16 @@ must use an older Julia release.
 | Text values | InlineStrings.jl values by default | `DataStrings.DataString` by default | Pass `stringtype=String`, or load InlineStrings.jl and select its type |
 | Pooling | `(0.2, 500)` default policy | `pool=false` | Pass `pool=(0.2, 500)` to restore the old policy |
 | Empty unquoted field | Missing sentinel behavior could be disabled | Always `missing` | Use a quoted empty field for present empty text |
-| Problems | Warnings printed during recovery | Structured `CSV.problems(file)` | Inspect problems, set `on_error=:warn` for one summary warning, or `on_error=:error` to throw `CSV.ParseError` |
+| Problems | One warning per problem during recovery | Structured `CSV.problems(file)` plus one summary warning | Inspect problems, set `on_error=:collect` to silence the summary, or `on_error=:error` to throw `CSV.ParseError` |
 | Row limit | Could be approximate with multiple tasks | Exact at every thread count | Remove `ntasks=1` workarounds used only for exact limits |
-| Boolean inference | Accepted the 0.10 parser's broader spellings | Exact lowercase `true` and `false` | Add explicit `truestrings` and `falsestrings` as required |
+| Boolean inference | Accepted the 0.10 parser's broader spellings | `true`, `True`, `TRUE`, `false`, `False`, `FALSE` | Add explicit `truestrings` and `falsestrings` as required |
+| Date-time inference | ISO with `T` or a space; extra fraction digits truncated | ISO with `T` or a space; a sub-millisecond fraction stays text | Pass `types=DateTime` to report such values, or keep them as text |
 
 `DataStrings.DataString` is an `AbstractString`. Convert one value with `String(x)`
-when a consumer requires `String`. Use `stringtype=String` when all text values
-must own their bytes. An explicit `types=String`, alone or per column, still
-returns `String` columns as it did in 0.10; `stringtype` applies to inferred
-text only.
+when a consumer requires `String`. Eager text columns own their bytes, so
+`stringtype=String` is a choice of element type, not a safety measure. An
+explicit `types=String`, alone or per column, still returns `String` columns
+as it did in 0.10; `stringtype` applies to inferred text only.
 
 ## Removed, replaced, or preferred reader options
 
@@ -74,15 +75,21 @@ rules are:
 
 - a field that fails an explicitly requested type becomes `missing` and adds a
   problem;
+- a quote inside a field (`5' 11"`) is content, as in 0.10;
 - an unclosed quote adds a problem instead of stopping by default;
 - a long row does not widen the schema; extra fields add a problem;
 - a `types` vector must match the header width; and
 - `validate=true` rejects dictionary keys that do not name an input column.
 
-Set `on_error=:warn` for one summary warning per read, or `on_error=:error`
-for fail-fast behavior; the latter throws `CSV.ParseError`, which carries the
-source-earliest `CSV.Problem`. Use `maxproblems` to cap retained problem
-objects.
+The default `on_error=:warn` prints one summary warning per read (once per
+`CSV.Chunks`). Set `on_error=:collect` to record problems silently, or
+`on_error=:error` for fail-fast behavior; the latter throws `CSV.ParseError`,
+which carries the source-earliest `CSV.Problem`. Use `maxproblems` to cap
+retained problem objects.
+
+`types=Char` and `types=Symbol` remain supported. A `Char` cell is exactly one
+Unicode scalar; other text follows the normal missing-plus-problem policy. A
+`Symbol` column is parsed as text and converted once after parsing.
 
 ## Source and memory behavior
 

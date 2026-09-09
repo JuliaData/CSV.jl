@@ -52,6 +52,7 @@ import Parsers
 # values, and column assembly.
 const _ISO_DATE_PATTERN = Parsers.compilepattern("yyyy-mm-dd")
 const _ISO_DATETIME_PATTERN = Parsers.compilepattern("yyyy-mm-ddTHH:MM:SS.s")
+const _ISO_DATETIME_SPACE_PATTERN = Parsers.compilepattern("yyyy-mm-dd HH:MM:SS.s")
 const _ISO_TIME_PATTERN = Parsers.compilepattern("HH:MM:SS.s")
 
 # ---------------------------------------------------------------------------
@@ -69,6 +70,11 @@ struct Dialect
     comment::Union{Nothing, Vector{UInt8}}  # rows beginning with these bytes are dropped
     ignoreemptyrows::Bool
     ignorerepeated::Bool                # adjacent delimiters collapse into one boundary
+    # A quote opens a field only at the field start and closes only before the
+    # delimiter or row end (0.10's rule). This is the serial repair path the
+    # readers take when the structural scan found a quote that did not start
+    # its field (`5' 11"`, `x"y`); it is never the first pass.
+    lenient::Bool
 end
 
 const LF = UInt8('\n')
@@ -82,7 +88,8 @@ function Dialect(; delim::Union{Char, String}=',',
                    quoted::Bool=true,
                    comment::Union{String, Nothing}=nothing,
                    ignoreemptyrows::Bool=true,
-                   ignorerepeated::Bool=false)
+                   ignorerepeated::Bool=false,
+                   lenient::Bool=false)
     isempty(delim) && throw(ArgumentError("delimiter must be non-empty"))
     d = delim isa Char ? (isascii(delim) ? delim % UInt8 : Vector{UInt8}(string(delim))) :
         sizeof(delim) == 1 ? codeunit(delim, 1) : Vector{UInt8}(delim)
@@ -103,7 +110,7 @@ function Dialect(; delim::Union{Char, String}=',',
           isempty(comment) ? throw(ArgumentError("comment must be non-empty")) : Vector{UInt8}(comment)
     cmt !== nothing && (LF in cmt || CR in cmt) &&
         throw(ArgumentError("comment may not contain \\r or \\n"))
-    return Dialect(d, oq, cq, e, quoted, cmt, ignoreemptyrows, ignorerepeated)
+    return Dialect(d, oq, cq, e, quoted, cmt, ignoreemptyrows, ignorerepeated, lenient)
 end
 
 # Delimiter candidates share the already validated quote/comment options.
@@ -111,8 +118,11 @@ function withdelim(d::Dialect, delim::UInt8, ignorerepeated::Bool=d.ignorerepeat
     d.quoted && delim == d.oq &&
         throw(ArgumentError("delimiter may not equal the quote character"))
     return Dialect(delim, d.oq, d.cq, d.e, d.quoted, d.comment,
-                   d.ignoreemptyrows, ignorerepeated)
+                   d.ignoreemptyrows, ignorerepeated, d.lenient)
 end
+
+withlenient(d::Dialect) = Dialect(d.delim, d.oq, d.cq, d.e, d.quoted, d.comment,
+                                  d.ignoreemptyrows, d.ignorerepeated, true)
 
 # The range planner can use quote counts with standard CSV quote rules. The same
 # byte must open and close a quoted field. An escaped quote must use two quote
@@ -122,7 +132,7 @@ end
 #
 # A different escape byte or different open and close bytes need more context.
 # The parser uses one scalar scan for those options.
-parityclean(d::Dialect) = !d.quoted || (d.oq == d.cq && d.e == d.cq)
+parityclean(d::Dialect) = !d.lenient && (!d.quoted || (d.oq == d.cq && d.e == d.cq))
 # Quote bytes in a comment row do not change the CSV quote state. A byte range
 # that starts in the middle of a row cannot know whether that row is a comment.
 # The planner therefore finds row starts in order for files with comment rows.
@@ -151,6 +161,7 @@ struct ValueOpts
     falses::Vector{Vector{UInt8}}
     datepat::Parsers.DatePattern
     datetimepat::Parsers.DatePattern
+    datetimespacepat::Parsers.DatePattern   # `yyyy-mm-dd HH:MM:SS`; the T pattern when custom
     timepat::Parsers.DatePattern
     customfmt::Bool
     customkind::UInt8 # 1=date, 2=time, 3=date and time; independent of parser storage
@@ -248,6 +259,8 @@ function _earlierbooltype(s::Vector{UInt8}, decimal::UInt8,
     else
         Parsers.parsecivil(s, i, j, dp)[2] == Parsers.RC_OK && return Date
         Parsers.parsecivil(s, i, j, dtp)[2] == Parsers.RC_OK && return DateTime
+        Parsers.parsecivil(s, i, j, _ISO_DATETIME_SPACE_PATTERN)[2] == Parsers.RC_OK &&
+            return DateTime
         Parsers.parsecivil(s, i, j, tp)[2] == Parsers.RC_OK && return Time
     end
     return nothing
@@ -326,15 +339,15 @@ Base.@nospecializeinfer function makevalueopts(d::Dialect, @nospecialize(datefor
     end
     kind = UInt8(0)
     if dateformat === nothing
-        dp, dtp, tp, custom =
-            _ISO_DATE_PATTERN, _ISO_DATETIME_PATTERN, _ISO_TIME_PATTERN, false
+        dp, dtp, dtsp, tp, custom = _ISO_DATE_PATTERN, _ISO_DATETIME_PATTERN,
+                                    _ISO_DATETIME_SPACE_PATTERN, _ISO_TIME_PATTERN, false
     else
         dateformat = _dateformatstring(dateformat)
         p = Parsers.compilepattern(dateformat)
         kind = _dateformatkind(dateformat)
         kind != 0x00 ||
             throw(ArgumentError("dateformat must contain a date or time token"))
-        dp = dtp = tp = p
+        dp = dtp = dtsp = tp = p
         custom = true
     end
     delimbytes = d.delim isa UInt8 ? [d.delim] : copy(d.delim)
@@ -355,8 +368,21 @@ Base.@nospecializeinfer function makevalueopts(d::Dialect, @nospecialize(datefor
     end
     return ValueOpts(d.oq, d.cq, d.e, d.quoted, delimbytes, decimal % UInt8, stripwhitespace,
                      sentinelbytes, sf, trues, falses,
-                     dp, dtp, tp, custom, kind, inferbool, gm)
+                     dp, dtp, dtsp, tp, custom, kind, inferbool, gm)
 end
+
+# ISO date-times separate the date and the time with `T` or a space. The byte
+# after the date selects the pattern, so a cell parses once either way.
+@inline function _datetimepattern(vo::ValueOpts, buf::Vector{UInt8}, i::Int, j::Int)
+    vo.customfmt && return vo.datetimepat
+    return j - i >= 10 && @inbounds(buf[i + 10]) == UInt8(' ') ? vo.datetimespacepat :
+                                                                  vo.datetimepat
+end
+
+# `Dates.DateTime` holds milliseconds. A finer fraction has no exact DateTime,
+# so such a cell is not a DateTime: inference keeps the text, and an explicit
+# DateTime column reports it. `Time` keeps nanoseconds.
+@inline _wholemilliseconds(c::Parsers.CivilParts) = c.nanosecond % 1_000_000 == 0
 
 # --- the cell layer -----------------------------------------------------------
 #
@@ -545,57 +571,6 @@ and blanks inside quotes are stripped as content (`"  x  "` → `x`).
     end
 end
 
-# An UNQUOTED span can only contain the delimiter when a bare mid-field quote
-# engaged the indexer's structural protection — the value-level reading of the
-# bytes disagrees with the structural one. String cells and headers surface
-# that as a problem (typed kernels reject such spans naturally); the bytes are
-# still preserved exactly where the caller keeps them.
-function _delimclash(buf::Vector{UInt8}, cpos::Int, clen::Int, delim::Vector{UInt8})
-    n = length(delim)
-    clen < n && return false
-    # this scan runs on EVERY unquoted string cell (protection detection, not
-    # the exception path) — single-byte delimiters take the SWAR word walk
-    if n == 1
-        d = @inbounds delim[1]
-        k = cpos
-        last = cpos + clen - 1
-        GC.@preserve buf begin
-            p = pointer(buf)
-            @inbounds while k + 7 <= last
-                w = ltoh(unsafe_load(Ptr{UInt64}(p + k - 1)))
-                movemask(eqmarks(w, d)) != 0 && return true
-                k += 8
-            end
-        end
-        @inbounds while k <= last
-            buf[k] == d && return true
-            k += 1
-        end
-        return false
-    end
-    @inbounds for k in cpos:(cpos + clen - n)
-        if buf[k] == delim[1]
-            m = 2
-            while m <= n && buf[k + m - 1] == delim[m]
-                m += 1
-            end
-            m > n && return true
-        end
-    end
-    return false
-end
-
-# Was this raw span a quoted field? (Re-derives cellcontent's entry condition;
-# only called on cold/string paths.)
-@inline function _wasquoted(buf::Vector{UInt8}, pos::Int, len::Int, vo::ValueOpts)
-    vo.quoted || return false
-    i, j = pos, pos + len - 1
-    @inbounds while i <= j && _isot(buf[i])
-        i += 1
-    end
-    return i <= j && buf[i] == vo.oq
-end
-
 # --- typed value dispatch ------------------------------------------------------
 #
 # `parsevalue(T, buf, i, j, vo) -> (value, ok)` reads one content span.
@@ -740,14 +715,48 @@ end
 @inline parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int,
                    vo::ValueOpts) where {T <: NarrowParseType} =
     parsevalue(T, buf, i, j, vo, _scratchfor(vo))
-@inline function parsevalue(::Type{Bool}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
-    if isempty(vo.trues) && isempty(vo.falses)
-        v, rc = Parsers.parsebool(buf, i, j)
-        return (v, rc == Parsers.RC_OK)
+# Default Boolean spellings: `true`, `True`, `TRUE` and `false`, `False`,
+# `FALSE`. One unaligned word compare per spelling: no table, no case fold.
+@inline _load32(buf::Vector{UInt8}, i::Int) =
+    GC.@preserve buf unsafe_load(Ptr{UInt32}(pointer(buf, i)))
+_word32(s::String) = _load32(Vector{UInt8}(codeunits(s)), 1)
+const _TRUE_WORDS = (_word32("true"), _word32("True"), _word32("TRUE"))
+const _FALSE_WORDS = (_word32("fals"), _word32("Fals"), _word32("FALS"))
+@inline function _parsebool(buf::Vector{UInt8}, i::Int, j::Int)
+    n = j - i + 1
+    if n == 4
+        w = _load32(buf, i)
+        (w == _TRUE_WORDS[1] || w == _TRUE_WORDS[2] || w == _TRUE_WORDS[3]) &&
+            return (true, true)
+    elseif n == 5
+        w = _load32(buf, i)
+        last = @inbounds buf[j]
+        (((w == _FALSE_WORDS[1] || w == _FALSE_WORDS[2]) && last == UInt8('e')) ||
+         (w == _FALSE_WORDS[3] && last == UInt8('E'))) && return (false, true)
     end
+    return (false, false)
+end
+@inline function parsevalue(::Type{Bool}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    isempty(vo.trues) && isempty(vo.falses) && return _parsebool(buf, i, j)
     _spanmatches(buf, i, j, vo.trues) && return (true, true)
     _spanmatches(buf, i, j, vo.falses) && return (false, true)
     return (false, false)
+end
+# A Char cell is exactly one Unicode scalar (0.10 accepted `types=Char`).
+@inline function parsevalue(::Type{Char}, buf::Vector{UInt8}, i::Int, j::Int, ::ValueOpts)
+    n = j - i + 1
+    1 <= n <= 4 || return ('\0', false)
+    b1 = @inbounds buf[i]
+    len = b1 < 0x80 ? 1 : b1 < 0xc2 ? 0 : b1 < 0xe0 ? 2 : b1 < 0xf0 ? 3 : b1 < 0xf5 ? 4 : 0
+    len == n || return ('\0', false)
+    u = UInt32(b1) << 24
+    @inbounds for k in 1:(n - 1)
+        b = buf[i + k]
+        (b & 0xc0) == 0x80 || return ('\0', false)
+        u |= UInt32(b) << (24 - 8k)
+    end
+    c = reinterpret(Char, u)
+    return (c, isvalid(c))
 end
 @inline function parsevalue(::Type{Date}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     vo.customfmt && vo.customkind != 0x01 && return (_DATE0, false)
@@ -757,8 +766,8 @@ end
 end
 @inline function parsevalue(::Type{DateTime}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     vo.customfmt && vo.customkind != 0x03 && return (_DATETIME0, false)
-    c, rc = Parsers.parsecivil(buf, i, j, vo.datetimepat)
-    rc == Parsers.RC_OK || return (_DATETIME0, false)
+    c, rc = Parsers.parsecivil(buf, i, j, _datetimepattern(vo, buf, i, j))
+    rc == Parsers.RC_OK && _wholemilliseconds(c) || return (_DATETIME0, false)
     return (todatetime(c), true)
 end
 @inline function parsevalue(::Type{Time}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
@@ -815,10 +824,11 @@ mutable struct ChunkIndex
     delimskip::Int              # bytes a delimiter event consumes (multi-byte delims)
     firstdatarow::Int           # local row where data begins (2 when this chunk holds the header row)
     unclosedquote::Bool         # buffer ended while inside a quoted field (malformed input)
+    barequote::Bool             # an opening quote was not the first non-blank byte of its field
 end
 
 ChunkIndex(start::Int, stop::Int) =
-    ChunkIndex(start, stop, UInt32[], UInt32[], Int32[1], UInt32[], 1, 1, false)
+    ChunkIndex(start, stop, UInt32[], UInt32[], Int32[1], UInt32[], 1, 1, false, false)
 
 nrows(ci::ChunkIndex) = length(ci.rowfirst) - 1 - (ci.firstdatarow - 1)
 totalrows(ci::ChunkIndex) = length(ci.rowfirst) - 1
@@ -852,6 +862,10 @@ struct BufferIndex
     chunks::Vector{ChunkIndex}
     nrows::Int                  # total rows across chunks (header still included at this layer)
     unclosedquote::Bool         # input ended inside a quoted field (captured before empty-chunk filtering)
+    # A quote that did not start its field (`5' 11"`, `x"y`) toggled the
+    # structural scan, so this index may have merged rows: the reader must
+    # rebuild it under the lenient quote rule before trusting it.
+    barequote::Bool
 end
 
 # --- tape plumbing -----------------------------------------------------------
@@ -1059,6 +1073,8 @@ function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
     n = 0
     pos = start
     inquote = false
+    fieldstart = true      # only blanks seen since the row start or the last delimiter
+    bare = false
     cmt = d.comment
     atrowstart = true      # comment rows are skipped whole: their bytes are not structural
     @inbounds while pos <= stop
@@ -1094,7 +1110,13 @@ function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
                 pos += 1
             end
         elseif quoted && b == oq
-            inquote = true                     # structural rule: any quote toggles
+            # structural rule: any quote toggles. A quote that is not the first
+            # non-blank byte of its field (and not the second of a pair) means
+            # the toggle reading is unsound for this input: flag it so the
+            # reader rebuilds the index under the lenient rule.
+            bare |= !fieldstart && !(pos > start && buf[pos - 1] == oq)
+            inquote = true
+            fieldstart = false
             pos += 1
         elseif delim isa UInt8 ? b == delim :
                (b == delim[1] && pos + length(delim) - 1 <= stop && _matchbytes(buf, pos, delim))
@@ -1102,6 +1124,7 @@ function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
             n += 1
             tape[n] = UInt32(pos - start) << 2         # kind 0
             pos += delim isa UInt8 ? 1 : length(delim)
+            fieldstart = true
         elseif b == LF || b == CR
             # CR immediately followed by LF emits ONE pre-paired event (kind 3):
             # half the row-end tape traffic, and assembly needs no pairing pass
@@ -1110,11 +1133,14 @@ function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
             n += 1
             tape[n] = (UInt32(pos - start) << 2) | (crlf ? UInt32(3) : rawkind(b))
             pos += crlf ? 2 : 1
+            fieldstart = true
             atrowstart = true
         else
+            fieldstart &= _isblank(b)
             pos += 1
         end
     end
+    ci.barequote = bare
     return finishscan!(ci, buf, d, n, inquote)
 end
 
@@ -1123,6 +1149,127 @@ end
         buf[pos + k - 1] == bytes[k] || return false
     end
     return true
+end
+
+# --- lenient scanner --------------------------------------------------------
+#
+# 0.10's quote rule: a quote opens a field only as the field's first byte
+# (after optional blanks) and closes only when it is not doubled; everything
+# after the closing quote up to the delimiter or row end belongs to the field
+# (the value layer reports it as malformed quoting). A quote anywhere else is
+# content. Range starts cannot be derived from quote counts under this rule,
+# so the planner walks rows serially and each chunk is scanned here.
+
+@inline _isblank(b::UInt8) = b == UInt8(' ') || b == UInt8('\t')
+
+function indexchunk_lenient!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
+    start, stop = ci.start, ci.stop
+    oq, cq, e, quoted = d.oq, d.cq, d.e, d.quoted
+    delim = d.delim
+    tape = ci.tape
+    n = 0
+    pos = start
+    inquote = false
+    fieldstart = true      # only blanks seen since the row start or the last delimiter
+    cmt = d.comment
+    atrowstart = true
+    @inbounds while pos <= stop
+        if atrowstart && cmt !== nothing &&
+           pos + length(cmt) - 1 <= stop && _matchbytes(buf, pos, cmt)
+            while pos <= stop && buf[pos] != LF && buf[pos] != CR
+                pos += 1
+            end
+            pos > stop && break
+            b = buf[pos]
+            crlf = b == CR && pos < stop && buf[pos + 1] == LF
+            tape_room!(tape, n, 1)
+            n += 1
+            tape[n] = (UInt32(pos - start) << 2) | (crlf ? UInt32(3) : rawkind(b))
+            pos += crlf ? 2 : 1
+            continue
+        end
+        atrowstart = false
+        b = buf[pos]
+        if inquote
+            if b == e && e != cq
+                pos += 2
+            elseif b == cq
+                if e == cq && pos < stop && buf[pos + 1] == cq
+                    pos += 2
+                else
+                    inquote = false               # the rest of the field is content
+                    pos += 1
+                end
+            else
+                pos += 1
+            end
+        elseif delim isa UInt8 ? b == delim :
+               (b == delim[1] && pos + length(delim) - 1 <= stop && _matchbytes(buf, pos, delim))
+            tape_room!(tape, n, 1)
+            n += 1
+            tape[n] = UInt32(pos - start) << 2
+            pos += delim isa UInt8 ? 1 : length(delim)
+            fieldstart = true
+        elseif b == LF || b == CR
+            crlf = b == CR && pos < stop && buf[pos + 1] == LF
+            tape_room!(tape, n, 1)
+            n += 1
+            tape[n] = (UInt32(pos - start) << 2) | (crlf ? UInt32(3) : rawkind(b))
+            pos += crlf ? 2 : 1
+            fieldstart = true
+            atrowstart = true
+        elseif fieldstart && quoted && b == oq
+            inquote = true
+            fieldstart = false
+            pos += 1
+        else
+            fieldstart &= _isblank(b)
+            pos += 1
+        end
+    end
+    return finishscan!(ci, buf, d, n, inquote)
+end
+
+# `nextrowstart` under the lenient rule; `from` is a row start.
+function _nextrowstart_lenient(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect)::Int
+    pos = from
+    cq, oq, e = d.cq, d.oq, d.e
+    delim = d.delim
+    inquote = false
+    fieldstart = true
+    @inbounds while pos <= to
+        b = buf[pos]
+        if inquote
+            if b == e && e != cq
+                pos += 2
+            elseif b == cq
+                if e == cq && pos < to && buf[pos + 1] == cq
+                    pos += 2
+                else
+                    inquote = false
+                    pos += 1
+                end
+            else
+                pos += 1
+            end
+        elseif b == LF
+            return pos + 1
+        elseif b == CR
+            return pos + 1 + (pos < to && buf[pos + 1] == LF)
+        elseif delim isa UInt8 ? b == delim :
+               (b == delim[1] && pos + length(delim) - 1 <= to && _matchbytes(buf, pos, delim))
+            pos += delim isa UInt8 ? 1 : length(delim)
+            fieldstart = true
+        elseif fieldstart && d.quoted && b == oq
+            inquote = true
+            fieldstart = false
+            pos += 1
+        else
+            fieldstart &= _isblank(b)
+            pos += 1
+        end
+    end
+    return to + 1
 end
 
 # --- fast scanners -----------------------------------------------------------
@@ -1254,6 +1401,36 @@ end
     return q64, specials_mask_vec(p, delim)
 end
 
+# space and tab marks: the blanks a field may start with before its quote
+@inline blankmask(::Val{:vec}, p::Ptr{UInt8}) =
+    byte_mask_vec(p, UInt8(' ')) | byte_mask_vec(p, UInt8('\t'))
+@inline function blankmask(::Val{:swar}, p::Ptr{UInt8})
+    b64 = zero(UInt64)
+    for k in 0:7
+        w = ltoh(unsafe_load(Ptr{UInt64}(p + 8k)))
+        b64 |= movemask(eqmarks(w, UInt8(' ')) | eqmarks(w, UInt8('\t'))) << (8k)
+    end
+    return b64
+end
+
+# Bare-quote detection for one 64-byte block. `inmask` is the inside-quote
+# state after each byte, so a quote whose bit is set in it opened a field. An
+# opening quote must be the first non-blank byte of its field (the byte after
+# a delimiter or row ending, or after the blanks that follow one) or the
+# second byte of a doubled-quote pair. `fscarry`/`prevquote` carry the
+# field-start and previous-byte-is-quote facts across blocks. The blank-run
+# rule is one addition: a carry from each structural byte propagates through
+# the run of blank bits after it and lands on the first non-blank byte.
+@inline function barequotes(q64::UInt64, s64::UInt64, blank64::UInt64, inmask::UInt64,
+                            fscarry::Bool, prevquote::Bool)
+    run = blank64 + ((s64 << 1) | (fscarry ? one(UInt64) : zero(UInt64)))
+    fieldstart = run & ~blank64
+    prevq = (q64 << 1) | (prevquote ? one(UInt64) : zero(UInt64))
+    bare = (q64 & inmask & ~fieldstart & ~prevq) != zero(UInt64)
+    carryout = (s64 >> 63) != zero(UInt64) || run < blank64   # overflow: a blank run reached the end
+    return bare, carryout, (q64 >> 63) != zero(UInt64)
+end
+
 @inline function blockmasks(::Val{:swar}, p::Ptr{UInt8}, quoted::Bool, oq::UInt8, delim::UInt8)
     q64 = zero(UInt64)
     s64 = zero(UInt64)
@@ -1286,6 +1463,9 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
     n = 0
     inq = false        # whether this block starts inside a quoted field
     pairskip = false   # The last CR in a block already consumed the next LF.
+    fscarry = true     # the next byte is a field start (chunks begin at a row start)
+    prevquote = false  # the previous byte was a quote
+    bare = false
     pos = start
     GC.@preserve buf begin
         p = pointer(buf)
@@ -1293,6 +1473,11 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
             q64, s64 = blockmasks(Val(S), p + pos - 1, quoted, oq, delim)
             inmask = prefix_xor64(q64)
             inq && (inmask = ~inmask)
+            if quoted
+                b64 = blankmask(Val(S), p + pos - 1)
+                isbare, fscarry, prevquote = barequotes(q64, s64, b64, inmask, fscarry, prevquote)
+                bare |= isbare
+            end
             specials = s64 & ~inmask
             pairskip && (specials &= ~one(UInt64))   # LF of a CRLF split across blocks
             pairskip = false
@@ -1318,6 +1503,7 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
     end
     ci.tape = tape
     # Read the final bytes one at a time. Keep the state from the last full block.
+    fieldstart = fscarry
     @inbounds while pos <= stop
         b = buf[pos]
         if inq
@@ -1332,7 +1518,9 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
                 pos += 1
             end
         elseif quoted && b == oq
+            bare |= !fieldstart && !(pos > start && buf[pos - 1] == oq)
             inq = true
+            fieldstart = false
             pos += 1
         elseif b == delim || b == LF || b == CR
             if pairskip
@@ -1345,10 +1533,13 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
                 tape[n] = (UInt32(pos - start) << 2) | (crlf ? UInt32(3) : rawkind(b))
                 pos += crlf ? 2 : 1
             end
+            fieldstart = true
         else
+            fieldstart &= _isblank(b)
             pos += 1
         end
     end
+    ci.barequote = bare
     return finishscan!(ci, buf, d, n, inq)
 end
 
@@ -1421,6 +1612,7 @@ function nextrowstart(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect, inquot
         end
         return to + 1
     end
+    d.lenient && return _nextrowstart_lenient(buf, from, to, d)
     @inbounds while pos <= to
         b = buf[pos]
         if inquote
@@ -1459,10 +1651,11 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
     # Split compatible input into bounded chunks even when `parallel` is false.
     # Bounded chunks keep each parsing pass on a smaller part of the input.
     # `parallel` only controls whether this work uses tasks or a plain loop.
-    if commentaware(d) && parityclean(d) && len - datastart + 1 > chunkbytes
-        # Raw quote counts are not valid for comment rows. Start at a known row
-        # boundary and find later row boundaries in file order. The later index
-        # work can still use multiple tasks.
+    if (d.lenient || (commentaware(d) && parityclean(d))) && len - datastart + 1 > chunkbytes
+        # Raw quote counts are not valid for comment rows or under the lenient
+        # quote rule. Start at a known row boundary and find later row
+        # boundaries in file order. The later index work can still use
+        # multiple tasks.
         chunks = ChunkIndex[]
         b0 = datastart
         while b0 <= len
@@ -1538,9 +1731,10 @@ function _rowstartatorafter(buf::Vector{UInt8}, from::Int, target::Int, len::Int
 end
 
 function indexone!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Symbol)
-    scanner === :scalar ? indexchunk_scalar!(ci, buf, d) :
-    scanner === :swar   ? indexchunk_fast!(ci, buf, d, Val(:swar)) :
-                          indexchunk_fast!(ci, buf, d, Val(:vec))
+    scanner === :lenient ? indexchunk_lenient!(ci, buf, d) :
+    scanner === :scalar  ? indexchunk_scalar!(ci, buf, d) :
+    scanner === :swar    ? indexchunk_fast!(ci, buf, d, Val(:swar)) :
+                           indexchunk_fast!(ci, buf, d, Val(:vec))
 end
 
 # Choose the scanner. Complex quote, escape, or delimiter options require the
@@ -1549,6 +1743,7 @@ end
 function resolvescanner(d::Dialect, fastindex::Bool, scanner::Symbol)
     scanner in (:auto, :vec, :swar, :scalar) ||
         throw(ArgumentError("scanner must be :auto, :vec, :swar, or :scalar (got $(repr(scanner)))"))
+    d.lenient && return :lenient
     return !(fastindex && swareligible(d)) ? :scalar :
            scanner === :auto ? :vec : scanner
 end
@@ -1580,7 +1775,7 @@ function index(buf::Vector{UInt8}, d::Dialect;
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
     tasklimit = parallel ? min(something(ntasks, Threads.nthreads()), Threads.nthreads()) : 1
     sc = resolvescanner(d, fastindex, scanner)
-    datastart > len && return BufferIndex(ChunkIndex[], 0, false)
+    datastart > len && return BufferIndex(ChunkIndex[], 0, false, false)
 
     chunks = chunkplan(buf, d, datastart, chunkbytes, parallel, tasklimit;
                        _taskobserver)
@@ -1603,8 +1798,9 @@ function index(buf::Vector{UInt8}, d::Dialect;
     # Capture malformed-EOF before filtering: an unclosed quote inside a dropped
     # (e.g. all-comment) chunk must still surface as a Problem.
     unclosed = !isempty(chunks) && last(chunks).unclosedquote
+    bare = any(ci -> ci.barequote, chunks)
     filter!(ci -> totalrows(ci) > 0, chunks)
-    return BufferIndex(chunks, sum(totalrows, chunks; init=0), unclosed)
+    return BufferIndex(chunks, sum(totalrows, chunks; init=0), unclosed, bare)
 end
 
 index(buf::Vector{UInt8}; kw...) = index(buf, Dialect(); kw...)
@@ -1690,13 +1886,15 @@ function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::ValueOpts)
     end
     if opts.customfmt
         # one probe: the user format's own components say which type it detects
-        if Parsers.parsecivil(buf, cpos, cj, opts.datepat)[2] == Parsers.RC_OK
-            p = opts.datepat
-            return opts.customkind == 0x03 ? DateTime : opts.customkind == 0x01 ? Date : Time
+        c, rc = Parsers.parsecivil(buf, cpos, cj, opts.datepat)
+        if rc == Parsers.RC_OK
+            opts.customkind == 0x03 && return _wholemilliseconds(c) ? DateTime : String
+            return opts.customkind == 0x01 ? Date : Time
         end
     else
         Parsers.parsecivil(buf, cpos, cj, opts.datepat)[2] == Parsers.RC_OK && return Date
-        Parsers.parsecivil(buf, cpos, cj, opts.datetimepat)[2] == Parsers.RC_OK && return DateTime
+        c, rc = Parsers.parsecivil(buf, cpos, cj, _datetimepattern(opts, buf, cpos, cj))
+        rc == Parsers.RC_OK && _wholemilliseconds(c) && return DateTime
         Parsers.parsecivil(buf, cpos, cj, opts.timepat)[2] == Parsers.RC_OK && return Time
     end
     opts.inferbool && parsevalue(Bool, buf, cpos, cj, opts)[2] && return Bool
@@ -1848,68 +2046,82 @@ end
 end
 
 
-# The column builder: payloads plus the input and bounded owned buffers that
-# long views resolve into.
+# The column builder: payloads plus the bytes this column OWNS. Every cell
+# longer than the inline payload is copied out of the input at parse time, so
+# a finished column never references the source buffer: a mapped file can be
+# unmapped or rewritten as soon as parsing ends (no SIGBUS), a slice of the
+# column retains only its own bytes, and a `Vector{UInt8}` input is never
+# aliased. Payload buffer index 1 is `extra` (this column's own appends);
+# indices 2.. are chunk-segment buffers adopted without a copy.
 mutable struct StringColumn
     payloads::Vector{DataStringPayload}
-    buf::Vector{UInt8}
-    extra::Vector{UInt8}          # first owned buffer; guarded by extralock
-    overflow::Vector{Vector{UInt8}} # further bounded owned buffers
-    extralock::ReentrantLock
-    e::UInt8                      # escape char
-    cq::UInt8                     # close-quote char (e == cq for RFC ""-doubling)
+    extra::Vector{UInt8}             # bytes appended by this column's own parse
+    adopted::Vector{Vector{UInt8}}   # chunk-segment buffers folded in by reference
+    lock::ReentrantLock              # guards `adopted` under parallel re-parses
+    e::UInt8                         # escape char
+    cq::UInt8                        # close-quote char (e == cq for RFC ""-doubling)
 end
-StringColumn(payloads::Vector{DataStringPayload}, buf::Vector{UInt8},
-             extra::Vector{UInt8}, extralock::ReentrantLock, e::UInt8, cq::UInt8) =
-    StringColumn(payloads, buf, extra, Vector{Vector{UInt8}}(), extralock, e, cq)
-StringColumn(n::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8) =
-    StringColumn(fill(PAYLOAD_MISSING, n), buf, UInt8[], ReentrantLock(), e, cq)
+StringColumn(payloads::Vector{DataStringPayload}, e::UInt8, cq::UInt8) =
+    StringColumn(payloads, UInt8[], Vector{Vector{UInt8}}(), ReentrantLock(), e, cq)
+StringColumn(n::Int, e::UInt8, cq::UInt8) = StringColumn(fill(PAYLOAD_MISSING, n), e, cq)
 
-@inline _ownedcount(col::StringColumn) = 1 + length(col.overflow)
-@inline function _ownedbuffer(col::StringColumn, idx::Integer)
-    idx == 1 && return col.extra
-    return @inbounds col.overflow[Int(idx) - 1]
+# Buffer 0 is the unreferenced source slot (DataStrings appends its own edit
+# arena after the last buffer).
+_buffers(col::StringColumn) = Vector{UInt8}[EMPTY_BYTES, col.extra, col.adopted...]
+
+@noinline _extratoolarge() =
+    throw(ArgumentError("a single chunk holds more than 2 GiB of text; use a smaller chunkbytes"))
+
+# Copy one long cell into the column's bytes and store its view payload.
+@inline function _own!(col::StringColumn, buf::Vector{UInt8}, cpos::Int, clen::Int, out::Int)
+    extra = col.extra
+    spos = length(extra) + 1
+    spos - 1 <= typemax(Int32) - clen || _extratoolarge()
+    resize!(extra, spos + clen - 1)
+    GC.@preserve extra buf unsafe_copyto!(pointer(extra, spos), pointer(buf, cpos), clen)
+    @inbounds col.payloads[out] = view_payload(extra, spos, clen, 1, spos - 1)
+    return
 end
-@inline _hasowned(col::StringColumn) = !isempty(col.extra) || !isempty(col.overflow)
 
-# Append one parse-chunk staging buffer to a bounded owned buffer. A staging
-# buffer cannot exceed Int32 because field lengths in the structural tape are
-# Int32. Packing whole staging buffers keeps every cell contiguous.
-function _appendowned_unlocked!(col::StringColumn, bytes::Vector{UInt8},
-                                maxbytes::Int=COMPACTSTRING_BUFFER_BYTES)
-    0 <= maxbytes <= COMPACTSTRING_BUFFER_BYTES ||
-        throw(ArgumentError("invalid DataString owned-buffer limit $maxbytes"))
-    n = length(bytes)
-    n <= maxbytes ||
-        throw(ArgumentError("a single CSV string staging buffer exceeds the Int32 field limit"))
-    idx = _ownedcount(col)
-    dst = _ownedbuffer(col, idx)
-    if length(dst) > maxbytes - n
-        idx < typemax(Int32) ||
-            throw(ArgumentError("too many DataString owned buffers"))
-        push!(col.overflow, UInt8[])
-        idx += 1
-        dst = col.overflow[end]
+# Unescape one long cell straight into the column's bytes.
+@inline function _ownescaped!(col::StringColumn, buf::Vector{UInt8}, cpos::Int, clen::Int,
+                              out::Int)
+    extra = col.extra
+    spos = length(extra) + 1
+    spos - 1 <= typemax(Int32) - clen || _extratoolarge()
+    n = _unescape_append!(extra, buf, cpos, clen, col.e, col.cq)
+    @inbounds col.payloads[out] = n <= COMPACTSTRING_INLINE ?
+                                  inline_payload(extra, spos, n) :
+                                  view_payload(extra, spos, n, 1, spos - 1)
+    return
+end
+
+# Adopt a chunk segment's bytes as one more buffer of `col`, by reference.
+# Returns the new payload buffer index. Locked: the stale re-parse wave adopts
+# from several tasks at once.
+function _adoptbuffer!(col::StringColumn, bytes::Vector{UInt8})
+    lock(col.lock)
+    try
+        push!(col.adopted, bytes)
+        return 1 + length(col.adopted)
+    finally
+        unlock(col.lock)
     end
-    base = length(dst)
-    append!(dst, bytes)
-    return Int32(idx), base
 end
 
-function _copyownedbuffers!(dst::StringColumn, src::StringColumn,
-                            maxbytes::Int=COMPACTSTRING_BUFFER_BYTES)
-    maps = Vector{Tuple{Int32, Int}}(undef, _ownedcount(src))
-    @inbounds for idx in eachindex(maps)
-        maps[idx] = _appendowned_unlocked!(dst, _ownedbuffer(src, idx), maxbytes)
+# Fold `seg`'s owned bytes into `col` and re-point the payloads in `rows` (of
+# `col.payloads`, which the segment wrote into) from the segment's buffer 1.
+function _adopt!(col::StringColumn, seg::StringColumn, rows::AbstractUnitRange{Int})
+    isempty(seg.extra) && return
+    newidx = _adoptbuffer!(col, seg.extra)
+    payloads = col.payloads
+    @inbounds for r in rows
+        pl = payloads[r]
+        if cslen(pl) > COMPACTSTRING_INLINE && csbufidx(pl) == 1
+            payloads[r] = repoint_payload(pl, newidx, csoffset(pl))
+        end
     end
-    return maps
-end
-
-@inline function _repointowned(p::DataStringPayload,
-                               maps::Vector{Tuple{Int32, Int}})
-    oldidx = Int(csbufidx(p))
-    newidx, base = @inbounds maps[oldidx]
-    return repoint_payload(p, newidx, base + Int(csoffset(p)))
+    return
 end
 
 # The kernel's own unescape: `""` collapses to `"` when e == cq; `\X` drops the
@@ -1996,16 +2208,16 @@ function parsecolchunk!(col::Union{TypedColumn{T}, UnionColumn{T}}, buf::Vector{
     return 0
 end
 
+# The string loop writes into a column that is PRIVATE to this call (a chunk
+# segment, a batch, or a re-parse column), so owning bytes needs no lock.
 function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
                         j::Int, rowbase::Int, opts::ValueOpts,
                         userprovided::Bool, problems,
                         problemrowbase::Int=rowbase,
                         mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
-                        reportlimit::Int=typemax(Int), fromrow::Int=0;
-                        viewoffsetlimit::Int=Int(typemax(Int32)))
+                        reportlimit::Int=typemax(Int))
     payloads = col.payloads
-    staging::Union{Nothing, NTuple{4, Vector}} = nothing  # (bytes, rows, offs, lens) for escaped-long cells
-    @inbounds for lr in max(fromrow, ci.firstdatarow):totalrows(ci)
+    @inbounds for lr in ci.firstdatarow:totalrows(ci)
         localrow = lr - ci.firstdatarow + 1
         out = rowbase + localrow
         mask !== nothing && !mask[maskbase + out] && continue   # excluded row: cell never parsed
@@ -2022,98 +2234,26 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
             problemrow = problemrowbase + localrow
             pushcellproblem!(problems, problemrow, j, pos, len, :invalid_quoted_field,
                              "malformed quoting in ", buf)
-            if len <= COMPACTSTRING_INLINE
-                payloads[out] = inline_payload(buf, pos, len)
-            elseif pos - 1 <= viewoffsetlimit
-                payloads[out] = view_payload(buf, pos, len, 0, pos - 1)
-            else
-                staging === nothing && (staging = (UInt8[], Int[], Int[], Int[]))
-                _stageraw!(staging, buf, pos, len, out)
-            end
+            len <= COMPACTSTRING_INLINE ? (payloads[out] = inline_payload(buf, pos, len)) :
+                                          _own!(col, buf, pos, len, out)
             continue
         end
         if st == CELL_MISSING
             continue
         end
-        if !_wasquoted(buf, pos, len, opts) && _delimclash(buf, cpos, clen, opts.delim)
-            problemrow = problemrowbase + localrow
-            pushcellproblem!(problems, problemrow, j, pos, len, :invalid_value,
-                             "bare quote engaged structural protection in ", buf)
-        end
         if esc
-            # escaped values are unescaped ONCE, at parse time (DataString needs O(1)
-            # codeunit access): short results build inline payloads allocation-
-            # free; long ones stage locally and flush to the shared extra buffer
-            # under a single lock per (column × chunk), not per cell
+            # escaped values are unescaped ONCE, at parse time (DataString needs
+            # O(1) codeunit access): short results build inline payloads
+            # allocation-free; long ones unescape into the column's bytes
             inl = _unescape_inline(buf, cpos, clen, col.e, col.cq)
-            if inl !== nothing
-                payloads[out] = inl
-            else
-                if staging === nothing
-                    staging = (UInt8[], Int[], Int[], Int[])
-                end
-                _stageescaped!(staging, buf, cpos, clen, out, col.e, col.cq)
-            end
+            inl === nothing ? _ownescaped!(col, buf, cpos, clen, out) : (payloads[out] = inl)
         elseif clen <= COMPACTSTRING_INLINE
             payloads[out] = inline_payload(buf, cpos, clen)
-        elseif cpos - 1 > viewoffsetlimit
-            # Arrow StringView stores a signed 32-bit buffer-relative offset.
-            # Preserve large-file support by copying only this value into a
-            # bounded owned buffer; ordinary in-range values remain zero-copy.
-            staging === nothing && (staging = (UInt8[], Int[], Int[], Int[]))
-            _stageraw!(staging, buf, cpos, clen, out)
         else
-            payloads[out] = view_payload(buf, cpos, clen, 0, cpos - 1)
+            _own!(col, buf, cpos, clen, out)
         end
     end
-    staging === nothing || _flushstaging!(col, payloads, staging)
     return 0
-end
-
-@inline function _stageraw!(staging::NTuple{4, Vector}, buf::Vector{UInt8},
-                            cpos::Int, clen::Int, out::Int)
-    sbytes = staging[1]::Vector{UInt8}
-    spos = length(sbytes) + 1
-    resize!(sbytes, length(sbytes) + clen)
-    copyto!(sbytes, spos, buf, cpos, clen)
-    push!(staging[2]::Vector{Int}, out)
-    push!(staging[3]::Vector{Int}, spos)
-    push!(staging[4]::Vector{Int}, clen)
-    return
-end
-
-# Named top-level helpers, NOT closures: the previous do-block flush captured
-# locals that were also reassigned in the parse loop, so Julia boxed them —
-# every staged cell then paid allocating Any arithmetic (~2M boxed Ints on a
-# 200 MiB mixed file). Same bug class as the task-body war story; same rule.
-@inline function _stageescaped!(staging::NTuple{4, Vector}, buf::Vector{UInt8},
-                                cpos::Int, clen::Int, out::Int, e::UInt8, cq::UInt8)
-    sbytes = staging[1]::Vector{UInt8}
-    spos = length(sbytes) + 1
-    n = _unescape_append!(sbytes, buf, cpos, clen, e, cq)
-    push!(staging[2]::Vector{Int}, out)
-    push!(staging[3]::Vector{Int}, spos)
-    push!(staging[4]::Vector{Int}, n)
-    return
-end
-
-function _flushstaging!(col::StringColumn, payloads::Vector{DataStringPayload},
-                        staging::NTuple{4, Vector})
-    sbytes = staging[1]::Vector{UInt8}
-    srows = staging[2]::Vector{Int}
-    soffs = staging[3]::Vector{Int}
-    slens = staging[4]::Vector{Int}
-    lock(col.extralock)
-    try
-        bufidx, base = _appendowned_unlocked!(col, sbytes)
-        @inbounds for k in eachindex(srows)
-            payloads[srows[k]] = view_payload(sbytes, soffs[k], slens[k],
-                                              bufidx, base + soffs[k] - 1)
-        end
-    finally
-        unlock(col.extralock)
-    end
-    return
 end
 
 
@@ -2206,15 +2346,17 @@ end
     throw(ParseError(p, nproblems, source))
 
 # `on_error=:warn`: one summary warning per read, never one line per problem.
-function _warnproblems(problems::Vector{Problem}, dropped::Int, source::String)
+function _warnproblems(problems::Vector{Problem}, dropped::Int, source::String,
+                       note::String="")
     n = length(problems) + dropped
-    n == 0 && return
+    n == 0 && return false
     detail = isempty(problems) ? "" :
         (p = first(problems);
          "; first: $(p.kind) at data row $(p.row), column $(p.col): $(p.message)")
     @warn "CSV: $n parse problem$(n == 1 ? "" : "s") in $source$detail. " *
-          "Inspect CSV.problems(file), or pass on_error=:error to throw."
-    return
+          "Inspect CSV.problems(file); pass on_error=:collect to silence this " *
+          "warning or on_error=:error to throw.$note"
+    return true
 end
 
 const ON_ERROR_MODES = (:collect, :warn, :error)
@@ -2442,11 +2584,6 @@ function parseheader!(buf::Vector{UInt8}, ci::ChunkIndex, opts::ValueOpts,
                          "malformed quoting in header " * excerpt(buf, pos, len))
         elseif st == CELL_MISSING || clen == 0
             names[j] = Symbol("Column", j)
-        elseif !_wasquoted(buf, pos, len, opts) && _delimclash(buf, cpos, clen, opts.delim)
-            names[j] = Symbol(String(buf[pos:pos + len - 1]))
-            pushproblem!(log, 0, j, pos, :invalid_value,
-                         "bare quote engaged structural protection in header " *
-                         excerpt(buf, pos, len))
         else
             names[j] = Symbol(esc ?
                               _unescape(buf, Int64(cpos), Int32(clen), opts.e, d.cq) :
@@ -2600,7 +2737,7 @@ function locate(chunks::Vector{ChunkIndex}, grow::Int)
 end
 
 allocatecolumn(::Type{Missing}, n::Int, buf, e, cq) = nothing
-allocatecolumn(::Type{String}, n::Int, buf, e, cq) = StringColumn(n, buf, e, cq)
+allocatecolumn(::Type{String}, n::Int, buf, e, cq) = StringColumn(n, e, cq)
 allocatecolumn(::Type{T}, n::Int, buf, e, cq) where {T} = TypedColumn{T}(n)
 
 # Number of leading chunks needed to cover `limit` data rows (all of them when
@@ -2708,7 +2845,7 @@ function _columndecision(T)
     end
     parsetype = _nativetype(requested)
     parseable = parsetype === Missing ||
-                parsetype in (Int64, Int128, Float64, Bool, Date, DateTime, Time,
+                parsetype in (Int64, Int128, Float64, Bool, Char, Date, DateTime, Time,
                               String, BigInt, BigFloat, Base.UUID) ||
                 _customparseable(parsetype)
     parseable || throw(ArgumentError("unsupported column type $parsetype"))
@@ -2991,6 +3128,16 @@ Base.@nospecializeinfer function _parse(buf::Vector{UInt8}, d::Dialect, baseopts
             indexone!(allchunks[k], buf, d, sc)
             indexed[k] = true
         end
+    end
+    # A quote that did not start its field makes the toggle scan (and the
+    # parity planner behind it) unsound: rows may have merged into one cell.
+    # Rebuild everything under the lenient quote rule; well-formed input never
+    # takes this path.
+    if !d.lenient && any(ci -> ci.barequote, allchunks)
+        return _parse(buf, withlenient(d), baseopts, :lenient, tm, chunkbytes, parallel,
+                      tasklimit, maxproblems, on_error, validate, inferdecimal,
+                      reportstructural, nsample, limit, header, types, select, colopts,
+                      columnplan, rowmask, nothing)
     end
     # The header is in the first chunk that remains after empty and comment rows
     # are removed.
@@ -3324,8 +3471,7 @@ end
 function _allocdirect(::Type{T}, ndata::Int, buf::Vector{UInt8}, opts::ValueOpts,
                       d::Dialect, j::Int, wantunion::Bool=false) where {T}
     T === Missing && return nothing
-    T === String && return StringColumn(Vector{DataStringPayload}(undef, ndata), buf,
-                                        UInt8[], ReentrantLock(), opts.e, d.cq)
+    T === String && return StringColumn(Vector{DataStringPayload}(undef, ndata), opts.e, d.cq)
     wantunion && return UnionColumn{T}(ndata)
     return TypedColumn{T}(Vector{T}(undef, ndata), Vector{Bool}(undef, ndata))
 end
@@ -3396,30 +3542,18 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
         end
     end
 
-    # fold the chunks' private escaped-string extras into each final column, in
-    # chunk order (before the rewave, so stale re-parses append consistently)
+    # adopt the chunks' private string bytes into each final column, in chunk
+    # order (a serial fold keeps buffer indices deterministic); no copy
     final = Type[promo[j] for j in 1:ncols]
     for j in allocjs
         final[j] === String || continue
         scol = finals[j]
         scol isa StringColumn || continue
-        payloads = scol.payloads
-        ks = [k for k in 1:nch if segments[k][j] isa StringColumn &&
-                                  _hasowned(segments[k][j]::StringColumn)]
-        isempty(ks) && continue
-        # Copy whole chunk-owned buffers in source order and update their view
-        # words. Owned buffers are rare; this serial fold also makes rollover
-        # into a new bounded buffer deterministic.
-        for k in ks
-            seg = segments[k][j]::StringColumn
-            maps = _copyownedbuffers!(scol, seg)
+        for k in 1:nch
+            seg = segments[k][j]
+            seg isa StringColumn || continue
             rhi = k < nch ? rowbases[k + 1] : ndata
-            @inbounds for r in (rowbases[k] + 1):rhi
-                pl = payloads[r]
-                if cslen(pl) > COMPACTSTRING_INLINE && csbufidx(pl) > 0
-                    payloads[r] = _repointowned(pl, maps)
-                end
-            end
+            _adopt!(scol, seg, (rowbases[k] + 1):rhi)
             segments[k][j] = nothing
         end
     end
@@ -3519,17 +3653,16 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
                                                  userprovided[j], log, nothing, 0,
                                                  reportlimit)
             elseif T === String
-                # shared payloads, PRIVATE extra: escaped-cell flushes stay
-                # uncontended, and the driver concatenates + rebases the (rare)
-                # chunk extras in chunk order after the wave
+                # shared payloads, PRIVATE bytes: each chunk copies its long
+                # cells into its own buffer, and the driver adopts those buffers
+                # in chunk order after the wave
                 scol = dest::StringColumn
                 hi >= lo && _fillslice!(scol, lo, hi)
-                chunkcol = StringColumn(scol.payloads, buf, UInt8[], ReentrantLock(),
-                                        scol.e, scol.cq)
+                chunkcol = StringColumn(scol.payloads, scol.e, scol.cq)
                 conflict = parsecolchunk!(chunkcol, buf, ci, j, rowbase,
                                           _copts(colopts, opts, j),
                                           userprovided[j], log, 0, nothing, 0, reportlimit)
-                segs[j] = _hasowned(chunkcol) ? chunkcol : nothing
+                segs[j] = isempty(chunkcol.extra) ? nothing : chunkcol
             else
                 segs[j] = nothing
                 hi >= lo && _fillslice!(dest, lo, hi)
@@ -3570,10 +3703,19 @@ function redirect!(chunks, final, finals, segtypes,
     ci = chunks[k]
     log = ProblemLog(pendingproblems.limit)
     hi = rowbase + min(nrows(ci), reportlimit)
-    hi > rowbase && _fillslice!(finals[j], rowbase + 1, hi)
-    conflict = parsecolchunk!(finals[j], buf, ci, j, rowbase, _copts(colopts, opts, j),
-                              userprovided[j], log,
-                              0, nothing, 0, reportlimit)
+    dest = finals[j]
+    hi > rowbase && _fillslice!(dest, rowbase + 1, hi)
+    if dest isa StringColumn
+        # several stale chunks re-parse at once: own bytes privately, then
+        # adopt them into the final under its lock
+        chunkcol = StringColumn(dest.payloads, dest.e, dest.cq)
+        conflict = parsecolchunk!(chunkcol, buf, ci, j, rowbase, _copts(colopts, opts, j),
+                                  userprovided[j], log, 0, nothing, 0, reportlimit)
+        _adopt!(dest, chunkcol, (rowbase + 1):hi)
+    else
+        conflict = parsecolchunk!(dest, buf, ci, j, rowbase, _copts(colopts, opts, j),
+                                  userprovided[j], log, 0, nothing, 0, reportlimit)
+    end
     conflict == 0 || error("internal error: re-parse under the joined type conflicted")
     segtypes[k][j] = final[j]
     mergeproblems!(pendingproblems, log, k)
@@ -3655,24 +3797,14 @@ function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases
     end
     if T === String
         payloads = fill(PAYLOAD_MISSING, ndata)
-        outcol = StringColumn(payloads, buf, UInt8[], ReentrantLock(), e, cq)
+        outcol = StringColumn(payloads, e, cq)
         for k in eachindex(chunkrows)
             seg = segments[k][j]
             seg === nothing && continue          # all-missing segment
             scol = seg::StringColumn
             rb = rowbases[k]
-            if !_hasowned(scol)
-                copyto!(payloads, rb + 1, scol.payloads, 1, chunkrows[k])
-            else
-                maps = _copyownedbuffers!(outcol, scol)
-                @inbounds for i in 1:chunkrows[k]
-                    p = scol.payloads[i]
-                    if cslen(p) > COMPACTSTRING_INLINE && csbufidx(p) > 0
-                        p = _repointowned(p, maps)
-                    end
-                    payloads[rb + i] = p
-                end
-            end
+            copyto!(payloads, rb + 1, scol.payloads, 1, chunkrows[k])
+            _adopt!(outcol, scol, (rb + 1):(rb + chunkrows[k]))
         end
         return finalizecolumn(String, outcol, ndata)
     end
@@ -3697,7 +3829,7 @@ function _stitchmasked(::Type{T}, segments, j::Int, chunkrows, ndata::Int,
                        mask::Vector{Bool}, inbases) where {T}
     if T === String
         payloads = fill(PAYLOAD_MISSING, ndata)
-        outcol = StringColumn(payloads, buf, UInt8[], ReentrantLock(), e, cq)
+        outcol = StringColumn(payloads, e, cq)
         dest = 0
         for k in eachindex(chunkrows)
             seg = segments[k][j]
@@ -3708,14 +3840,13 @@ function _stitchmasked(::Type{T}, segments, j::Int, chunkrows, ndata::Int,
                 continue
             end
             scol = seg::StringColumn
-            maps = _hasowned(scol) ? _copyownedbuffers!(outcol, scol) :
-                                     Tuple{Int32, Int}[]
+            newidx = isempty(scol.extra) ? 0 : _adoptbuffer!(outcol, scol.extra)
             @inbounds for i in 1:chunkrows[k]
                 mask[inbases[k] + i] || continue
                 dest += 1
                 p = scol.payloads[i]
-                if cslen(p) > COMPACTSTRING_INLINE && csbufidx(p) > 0
-                    p = _repointowned(p, maps)
+                if newidx != 0 && cslen(p) > COMPACTSTRING_INLINE && csbufidx(p) == 1
+                    p = repoint_payload(p, newidx, csoffset(p))
                 end
                 payloads[dest] = p
             end
@@ -3748,15 +3879,10 @@ function finalizecolumn(::Type{Missing}, ::Nothing, n::Int)
     return fill(missing, n)
 end
 finalizecolumn(::Type{Missing}, ::Nothing, n::Int, ::Bool) = fill(missing, n)
-function finalizecolumn(::Type{String}, col::StringColumn, n::Int)
-    anymissing = any(p -> cslen(p) < 0, col.payloads)
-    return anymissing ? _stringvector(Union{DataString, Missing}, col.payloads, col.buf, col.extra, col.overflow) :
-                        _stringvector(DataString, col.payloads, col.buf, col.extra, col.overflow)
-end
-function finalizecolumn(::Type{String}, col::StringColumn, n::Int, force_missing::Bool)
+function finalizecolumn(::Type{String}, col::StringColumn, n::Int, force_missing::Bool=false)
     anymissing = force_missing || any(p -> cslen(p) < 0, col.payloads)
-    return anymissing ? _stringvector(Union{DataString, Missing}, col.payloads, col.buf, col.extra, col.overflow) :
-                        _stringvector(DataString, col.payloads, col.buf, col.extra, col.overflow)
+    return anymissing ? _stringvector(Union{DataString, Missing}, col.payloads, _buffers(col)) :
+                        _stringvector(DataString, col.payloads, _buffers(col))
 end
 # `all(::Vector{Bool})` short-circuits, so it compiles to a branchy scalar
 # loop — 1.2 ms per 4M-row column. `count` vectorizes; missing-free columns

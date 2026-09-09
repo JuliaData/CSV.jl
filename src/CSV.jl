@@ -39,8 +39,9 @@ Read delimited data into an eager Tables.jl table. `source` can be a path or
 HTTP(S) URL, an `IO`, a `Cmd`, bytes, or a vector of sources. CSV.jl detects
 the delimiter and column types by default. Text uses `DataStrings.DataString`,
 pooling is off, and recoverable parse problems are available through
-[`CSV.problems`](@ref CSV.problems). `on_error=:warn` prints one summary
-warning per read; `on_error=:error` (or `strict=true`) throws a
+[`CSV.problems`](@ref CSV.problems). The default `on_error=:warn` prints one
+summary warning per read; `on_error=:collect` records problems silently;
+`on_error=:error` (or `strict=true`) throws a
 [`CSV.ParseError`](@ref CSV.ParseError) at the first problem.
 Reader keywords control the header and row window, dialect, missing
 values, types, selected columns, strings, pooling, validation, and task count.
@@ -86,10 +87,13 @@ name, or a `Regex`) project columns in stable file order.
     CSV.Chunks(source; ntasks=Threads.nthreads(), keywords...)
 
 Iterate a source as stable-schema [`CSV.File`](@ref CSV.File) batches and
-provide the Tables.jl partitions interface. Pooling is evaluated per batch.
-`ntasks` influences the target batch size; use `chunkbytes` for direct size
-control. List `select` and `drop` forms project every batch in stable file
-order.
+provide the Tables.jl partitions interface. Every batch has the same column
+types, including one settled width for an auto-width string request such as
+`stringtype=InlineString`. Pooling is evaluated per batch. `ntasks` influences
+the target batch size; use `chunkbytes` for direct size control. List `select`
+and `drop` forms project every batch in stable file order. With the default
+`on_error=:warn`, the first batch with parse problems prints one summary
+warning; every batch keeps its own [`CSV.problems`](@ref CSV.problems).
 """ Chunks
 @doc """
     CSV.read(source, sink; keywords...)
@@ -103,7 +107,8 @@ sink that honors that marker can take ownership without another copy.
 
 Return the retained parse problems for a `CSV.File`, in source order. The
 parser can retain at most `maxproblems` entries; the file display reports any
-additional dropped count. Use `on_error=:warn` for one summary warning, or
+additional dropped count. The default `on_error=:warn` also prints one summary
+warning per read; use `on_error=:collect` to record problems silently, or
 `strict=true` / `on_error=:error` to stop at the first parse problem with a
 [`CSV.ParseError`](@ref CSV.ParseError).
 """ problems

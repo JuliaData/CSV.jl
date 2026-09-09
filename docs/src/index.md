@@ -57,13 +57,14 @@ column with a type-specialized loop. Parallel execution does not change row
 order, `limit` results, or output bytes.
 
 Text columns use `DataStrings.DataString` by default. Short values are stored in the
-value. Long values can refer to the retained input buffer. Convert with
-`String(value)` when a standalone `String` is required, or pass
-`stringtype=String` to a reader.
+value; longer values live in buffers the column owns, so an eager table never
+refers to its source. Convert with `String(value)` when a standalone `String` is
+required, or pass `stringtype=String` to a reader.
 
-Parse warnings are structured data in 1.0. Call `CSV.problems(file)` to inspect
-them, set `on_error=:warn` for one summary warning, or `on_error=:error` when a
-parse problem must stop the read with a `CSV.ParseError`.
+Parse problems are structured data in 1.0. A read prints one summary warning
+and keeps the problems; call `CSV.problems(file)` to inspect them, set
+`on_error=:collect` to skip the warning, or `on_error=:error` when a parse
+problem must stop the read with a `CSV.ParseError`.
 
 ```@contents
 Pages = ["reading.md", "writing.md", "examples.md", "reference.md", "release-notes.md", "migration.md"]

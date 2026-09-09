@@ -66,6 +66,11 @@ function _widthfor(col::CSV.DataStringVector)
     return m <= _AUTO_MAX_WIDTH ? _fitwidth(m) : nothing
 end
 
+# Chunks settles the auto width once for its whole row window from the
+# longest value the schema pass saw, so every batch has one element type.
+CSV._settledstringtype(::Type{InlineString}, maxlen::Int) =
+    maxlen <= _AUTO_MAX_WIDTH ? _fitwidth(maxlen) : String
+
 function CSV._materializecolumn(::Type{InlineString}, col::CSV.DataStringVector)
     W = _widthfor(col)
     return W === nothing ? CSV._materializecolumn(String, col) :
