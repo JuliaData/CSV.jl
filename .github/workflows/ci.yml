@@ -46,7 +46,9 @@ jobs:
           - version: 'nightly'
             os: ubuntu-latest
             arch: x64
+            allow_failure: true
 
+    continue-on-error: ${{ matrix.allow_failure || false }}
     steps:
       - name: Disable Git line-ending conversion
         run: git config --global core.autocrlf false

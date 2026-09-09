@@ -251,7 +251,7 @@ end
         end
     end
     @testset "late promotion, masked adoption, and retained scalars" begin
-        values = [string(rand(rng, 10^14:10^15)) for _ in 1:300]
+        values = [string(rand(rng, Int64(10)^14:Int64(10)^15)) for _ in 1:300]   # 32-bit safe
         values[151] = "long text " * "λ"^40
         values[end] = "escaped \""^20
         io = IOBuffer()

@@ -1840,7 +1840,7 @@ end
     p = first(A.problems(f))
     @test sprint(show, p) == "CSV.Problem(invalid_value at data row 2, column 1, byte 5: \"cannot parse Int64 from \\\"x\\\"\")"
     # Rows/Chunks display never dumps the buffer or index
-    rows = A.Rows(IOBuffer("a,b\n1,x\n2,y\n"); types=Dict(:a => Int))
+    rows = A.Rows(IOBuffer("a,b\n1,x\n2,y\n"); types=Dict(:a => Int64))
     shown = sprint(show, rows)
     @test startswith(shown, "CSV.Rows(\"<GenericIOBuffer>\"): 2 rows × 2 columns")
     @test occursin("a::Union{Missing, Int64}", shown) && !occursin("UInt8[", shown)
@@ -1905,7 +1905,7 @@ end
     @test eltype(f.u) == A.DataString
     f = A.File(IOBuffer(src); types=String)
     @test eltype(f.s) == Union{Missing, String} && eltype(f.t) == String && eltype(f.u) == String
-    f = A.File(IOBuffer(src); types=[Union{Missing, String}, Int, A.DataString])
+    f = A.File(IOBuffer(src); types=[Union{Missing, String}, Int64, A.DataString])
     @test eltype(f.s) == Union{Missing, String} && eltype(f.t) == Int64 && eltype(f.u) == A.DataString
     f = A.File(IOBuffer(src); types=Dict(:u => String15))
     @test eltype(f.u) == String15 && collect(f.u) == [String15("x"), String15("y")]
@@ -2052,9 +2052,19 @@ end
         @test filesize(p) >= A.MMAP_THRESHOLD
         f = A.File(p)
         v = f.s[end]
-        # rewrite the file smaller while values are live: nothing views the map
-        CSV.write(p, (s=["tiny"], n=[1]))
-        GC.gc()
+        # rewrite the file smaller while values are live: nothing views the
+        # map. The table holds no reference to the mapping; Windows still
+        # keeps the file locked until the mapping's finalizer has run.
+        for attempt in 1:10
+            GC.gc(true)
+            try
+                CSV.write(p, (s=["tiny"], n=[1]))
+                break
+            catch e
+                (Sys.iswindows() && e isa SystemError && attempt < 10) || rethrow()
+                sleep(0.1)
+            end
+        end
         @test String(v) == "value number 60000 is here"
         @test String(f.s[100]) == "value number 100 is here"
         @test f.s.buffers[1] === A.EMPTY_BYTES
