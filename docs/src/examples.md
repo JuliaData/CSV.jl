@@ -356,9 +356,11 @@ a,b,c
 4,5,6
 """
 
-# `ignoreemptyrows=false` keeps the empty row and fills its columns with missing.
-# With multiple columns, this also records a short_row problem. Collect it silently.
-file = CSV.File(IOBuffer(data); ignoreemptyrows=false, on_error=:collect)
+# `ignoreemptyrows=false` keeps the empty row and fills its columns with missing;
+# a kept empty row is not a parse problem
+file = CSV.File(IOBuffer(data); ignoreemptyrows=false)
+@assert isempty(CSV.problems(file)) # hide
+file
 ```
 
 ## [Including/excluding columns](@id select_example)

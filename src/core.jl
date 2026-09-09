@@ -2554,6 +2554,20 @@ end
 @inline _keyless(row::Int, col::Int, pos::Int, p::Problem) =
     pos != p.pos ? pos < p.pos : row != p.row ? row < p.row : col != p.col ? col < p.col : true
 
+# A zero-byte row: one empty field that starts at the row start and stops at a
+# row ending or the end of the input. Under ignorerepeated the stored row start
+# sits past the leading delimiter padding, so a row of only delimiters also has
+# one empty field at a row ending; the byte before the field tells the two
+# apart (a row terminator, or the chunk start, means no padding).
+@inline function _emptyrow(buf::Vector{UInt8}, ci::ChunkIndex, nf::Int, sp::Tuple{Int, Int})
+    nf == 1 && sp[2] == 0 || return false
+    pos = sp[1]
+    (pos > length(buf) || @inbounds(buf[pos]) == LF || @inbounds(buf[pos]) == CR) || return false
+    pos == ci.start && return true
+    prev = @inbounds buf[pos - 1]
+    return prev == LF || prev == CR
+end
+
 # A ragged-row report: the message is formatted only when it can be retained.
 function pushrowproblem!(log::ProblemLog, row::Int, pos::Int, expected::Int, found::Int)
     if wantsproblem(log, row, 0, pos)
@@ -3478,7 +3492,9 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ncols::Int,
             nf = nfields(ci, lr)
             if nf != ncols
                 sp = fieldspan(ci, lr, nf < ncols ? 1 : ncols + 1)::Tuple{Int, Int}
-                pushrowproblem!(log, localrow, sp[1], ncols, nf)
+                # a kept empty row (ignoreemptyrows=false) is all-missing by
+                # request, not a short row to report
+                _emptyrow(buf, ci, nf, sp) || pushrowproblem!(log, localrow, sp[1], ncols, nf)
             end
         end
     end
@@ -3767,7 +3783,9 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
             nf = nfields(ci, lr)
             if nf != ncols
                 sp = fieldspan(ci, lr, nf < ncols ? 1 : ncols + 1)::Tuple{Int, Int}
-                pushrowproblem!(log, localrow, sp[1], ncols, nf)
+                # a kept empty row (ignoreemptyrows=false) is all-missing by
+                # request, not a short row to report
+                _emptyrow(buf, ci, nf, sp) || pushrowproblem!(log, localrow, sp[1], ncols, nf)
             end
         end
     end

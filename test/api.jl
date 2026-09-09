@@ -2411,3 +2411,36 @@ end
     f = A.File(IOBuffer("t\n-0001-01-01T00:00:00\n0000-02-29T00:00:00\n"); delim=',')
     @test f.t == [Timestamp{Microsecond}(-1), Timestamp{Microsecond}(0, 2, 29)]
 end
+
+@testset "a kept empty row is all-missing, not a short-row problem" begin
+    src = "a,b,c\n1,2,3\n\n4,5,6\n\n"
+    for chunkbytes in (4, 1 << 20), parallel in (false, true)
+        f = A.File(IOBuffer(src); ignoreemptyrows=false, chunkbytes, parallel, on_error=:collect)
+        @test length(f) == 4 && isequal(collect(f.b), [2, missing, 5, missing])
+        @test isempty(A.problems(f))
+        @test isempty(A.problems(A.File(IOBuffer(src); ignoreemptyrows=false, chunkbytes, parallel,
+                                          on_error=:collect, types=Int)))
+        batches = collect(A.Chunks(IOBuffer(src); ignoreemptyrows=false, chunkbytes, on_error=:collect))
+        @test all(b -> isempty(A.problems(b)), batches)
+        @test sum(length, batches) == 4
+    end
+    @test_logs A.File(IOBuffer(src); ignoreemptyrows=false)
+    # a genuinely short row is still reported
+    f = A.File(IOBuffer("a,b,c\n1,2,3\n4\n"); ignoreemptyrows=false, on_error=:collect)
+    @test [p.kind for p in A.problems(f)] == [:short_row]
+    # an empty row in a one-column file is a missing value with no problem
+    f = A.File(IOBuffer("a\n1\n\n2\n"); ignoreemptyrows=false, on_error=:collect)
+    @test isequal(collect(f.a), [1, missing, 2]) && isempty(A.problems(f))
+    # every row-ending style marks a zero-byte row
+    for src in ("a,b,c\r\n1,2,3\r\n\r\n4,5,6\r\n", "a,b,c\r1,2,3\r\r4,5,6\r")
+        f = A.File(IOBuffer(src); ignoreemptyrows=false, on_error=:collect)
+        @test length(f) == 3 && isequal(collect(f.a), [1, missing, 4]) && isempty(A.problems(f))
+    end
+    # a row of only delimiters under ignorerepeated is one empty field: a short
+    # row, not an empty row (its stored start sits past the padding)
+    f = A.File(IOBuffer("a b\n   \n1 2\n"); delim=' ', ignorerepeated=true, on_error=:collect)
+    @test length(f) == 2 && [(p.row, p.kind) for p in A.problems(f)] == [(1, :short_row)]
+    f = A.File(IOBuffer("a b\n\n1 2\n"); delim=' ', ignorerepeated=true, ignoreemptyrows=false,
+               on_error=:collect)
+    @test length(f) == 2 && isempty(A.problems(f))
+end

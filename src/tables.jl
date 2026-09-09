@@ -186,7 +186,7 @@ function parsebatch(b::Batches, ci::ChunkIndex)
         if nf != nsourcecols
             grow = rowbase + (lr - ci.firstdatarow) + 1
             sp = fieldspan(ci, lr, nf < nsourcecols ? 1 : nsourcecols + 1)::Tuple{Int, Int}
-            pushrowproblem!(log, grow, sp[1], nsourcecols, nf)
+            _emptyrow(b.buf, ci, nf, sp) || pushrowproblem!(log, grow, sp[1], nsourcecols, nf)
         end
     end
     b.unclosedquote && ci === last(b.chunks) &&
