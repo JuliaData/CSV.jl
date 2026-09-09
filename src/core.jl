@@ -627,29 +627,41 @@ end
     Time(Dates.Nanosecond(((Int64(c.hour) * 60 + c.minute) * 60 + c.second) *
                           1_000_000_000 + c.nanosecond))
 
-# A `Timestamp{P}` holds the civil fields exactly when the fraction is a whole
-# number of `P` and the instant fits Int64 ticks; `validargs` reports both.
-@inline function _timestampargs(c::Parsers.CivilParts)
-    ms, rest = divrem(Int64(c.nanosecond), 1_000_000)
-    us, ns = divrem(rest, 1_000)
-    return (Int64(c.year), Int64(c.month), Int64(c.day), Int64(c.hour), Int64(c.minute),
-            Int64(c.second), ms, us, ns)
-end
+# A `Timestamp{P}` is an Int64 count of `P` since the Unix epoch. Parsers has
+# already validated the calendar fields, so the instant is built from rata
+# days and nanoseconds of the day with overflow-checked Int64 arithmetic: a
+# fraction that is not a whole number of `P`, or an instant outside the Int64
+# tick range, is not a `Timestamp{P}`. This avoids `Dates.validargs` (which
+# recomputes `year(typemin(...))` on every call) and Int128 arithmetic.
+@inline _tickscale(::Type{Dates.Nanosecond}) = Int64(1)
+@inline _tickscale(::Type{Dates.Microsecond}) = Int64(1_000)
+@inline _tickscale(::Type{Dates.Millisecond}) = Int64(1_000_000)
+@inline _tickscale(::Type{Dates.Second}) = Int64(1_000_000_000)
+const _UNIXEPOCHDAYS = Int64(Dates.UNIXEPOCH ÷ 86_400_000)   # rata days of 1970-01-01
 @inline function totimestamp(::Type{Timestamp{P}}, c::Parsers.CivilParts) where {P}
-    args = _timestampargs(c)
-    Dates.validargs(Timestamp{P}, args..., Dates.TWENTYFOURHOUR) === nothing ||
-        return (_timestamp0(Timestamp{P}), false)
-    return (Timestamp{P}(args...), true)
+    scale = _tickscale(P)
+    nsofday = ((Int64(c.hour) * 60 + Int64(c.minute)) * 60 + Int64(c.second)) * 1_000_000_000 +
+              Int64(c.nanosecond)
+    tickofday, rem = divrem(nsofday, scale)
+    rem == 0 || return (_timestamp0(Timestamp{P}), false)
+    days = Dates.totaldays(Int64(c.year), Int64(c.month), Int64(c.day)) - _UNIXEPOCHDAYS
+    ticksperday = 86_400_000_000_000 ÷ scale
+    ticks, overflow = Base.mul_with_overflow(days, ticksperday)
+    overflow || ((ticks, overflow) = Base.add_with_overflow(ticks, tickofday))
+    if overflow
+        # the first or last day of the range: the day product alone overflows
+        wide = Int128(days) * ticksperday + tickofday
+        typemin(Int64) <= wide <= typemax(Int64) || return (_timestamp0(Timestamp{P}), false)
+        ticks = Int64(wide)
+    end
+    return (Timestamp{P}(Dates.UTInstant(P(ticks))), true)
 end
 # Inference prefers nanoseconds; an instant outside the nanosecond range
 # (years 1677 to 2262: `9999-12-31` sentinels) widens to microseconds, the way
 # an Int64 overflow widens to Int128.
 function _timestamptype(c::Parsers.CivilParts)
-    args = _timestampargs(c)
-    Dates.validargs(Timestamp{Dates.Nanosecond}, args..., Dates.TWENTYFOURHOUR) === nothing &&
-        return Timestamp{Dates.Nanosecond}
-    Dates.validargs(Timestamp{Dates.Microsecond}, args..., Dates.TWENTYFOURHOUR) === nothing &&
-        return Timestamp{Dates.Microsecond}
+    totimestamp(Timestamp{Dates.Nanosecond}, c)[2] && return Timestamp{Dates.Nanosecond}
+    totimestamp(Timestamp{Dates.Microsecond}, c)[2] && return Timestamp{Dates.Microsecond}
     return String
 end
 
