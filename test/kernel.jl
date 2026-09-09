@@ -871,6 +871,18 @@ end
     @test !K.makevalueopts(K.Dialect(delim=';'); groupmark=',',
                            truestrings=["1,000"]).inferbool
     @test K.makevalueopts(K.Dialect(); truestrings=["YES"], falsestrings=["NO"]).inferbool
+    # Bool collision checks use the same DateTime precision rule as inference.
+    for sep in ('T', ' '), custom in (false, true), ns in (1, 8)
+        fine = "2020-01-02$(sep)03:04:05.123456"
+        exact = "2020-01-02$(sep)03:04:05.123000"
+        fmt = custom ? "yyyy-mm-dd$(sep)HH:MM:SS.s" : nothing
+        opts = K.makevalueopts(K.Dialect(); dateformat=fmt, truestrings=[fine])
+        @test opts.inferbool
+        @test !K.makevalueopts(K.Dialect(); dateformat=fmt, truestrings=[exact]).inferbool
+        t = K.parse("a\n$fine\nno\n"; dateformat=fmt, truestrings=[fine],
+                    falsestrings=["no"], nsample=ns)
+        @test t[:a] == [true, false]
+    end
     @test_throws ArgumentError K.makevalueopts(K.Dialect();
                                                truestrings=["yes"], falsestrings=["yes"])
     @test_throws ArgumentError K.makevalueopts(K.Dialect(); truestrings="yes")

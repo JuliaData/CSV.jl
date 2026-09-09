@@ -253,14 +253,16 @@ function _earlierbooltype(s::Vector{UInt8}, decimal::UInt8,
     Parsers.parseint(Int64, s, i, j)[2] == Parsers.RC_OK && return Int64
     _fixedfloatusable(Parsers.parsefloat(Float64, s, i, j, decimal)[2]) && return Float64
     if customfmt
-        if Parsers.parsecivil(s, i, j, dp)[2] == Parsers.RC_OK
+        c, rc = Parsers.parsecivil(s, i, j, dp)
+        if rc == Parsers.RC_OK && (kind != 0x03 || _wholemilliseconds(c))
             return kind == 0x03 ? DateTime : kind == 0x01 ? Date : Time
         end
     else
         Parsers.parsecivil(s, i, j, dp)[2] == Parsers.RC_OK && return Date
-        Parsers.parsecivil(s, i, j, dtp)[2] == Parsers.RC_OK && return DateTime
-        Parsers.parsecivil(s, i, j, _ISO_DATETIME_SPACE_PATTERN)[2] == Parsers.RC_OK &&
-            return DateTime
+        pat = j - i >= 10 && @inbounds(s[i + 10]) == UInt8(' ') ?
+              _ISO_DATETIME_SPACE_PATTERN : dtp
+        c, rc = Parsers.parsecivil(s, i, j, pat)
+        rc == Parsers.RC_OK && _wholemilliseconds(c) && return DateTime
         Parsers.parsecivil(s, i, j, tp)[2] == Parsers.RC_OK && return Time
     end
     return nothing
@@ -1892,8 +1894,11 @@ function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::ValueOpts)
         # one probe: the user format's own components say which type it detects
         c, rc = Parsers.parsecivil(buf, cpos, cj, opts.datepat)
         if rc == Parsers.RC_OK
-            opts.customkind == 0x03 && return _wholemilliseconds(c) ? DateTime : String
-            return opts.customkind == 0x01 ? Date : Time
+            if opts.customkind == 0x03
+                _wholemilliseconds(c) && return DateTime
+            else
+                return opts.customkind == 0x01 ? Date : Time
+            end
         end
     else
         Parsers.parsecivil(buf, cpos, cj, opts.datepat)[2] == Parsers.RC_OK && return Date
