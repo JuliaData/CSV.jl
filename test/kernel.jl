@@ -55,6 +55,16 @@ const K = CSV
     @test fetch.(tasks) == collect(1:8)
 end
 
+@testset "unrepresentable date-times do not collide with Bool" begin
+    text = "9999-12-31T23:59:59.000000001"
+    for dateformat in (nothing, "yyyy-mm-ddTHH:MM:SS.s")
+        f = K.File(IOBuffer("t\n$text\nfalse\n"); dateformat,
+                   truestrings=[text], falsestrings=["false"])
+        @test eltype(f.t) === Bool
+        @test f.t == [true, false]
+    end
+end
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------

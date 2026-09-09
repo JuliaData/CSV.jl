@@ -277,14 +277,20 @@ function _earlierbooltype(s::Vector{UInt8}, decimal::UInt8,
     if customfmt
         c, rc = Parsers.parsecivil(s, i, j, dp)
         if rc == Parsers.RC_OK
-            kind == 0x03 && return _timestamptype(c)
+            if kind == 0x03
+                T = _timestamptype(c)
+                return T === String ? nothing : T
+            end
             return kind == 0x01 ? Date : Time
         end
     else
         Parsers.parsecivil(s, i, j, dp)[2] == Parsers.RC_OK && return Date
         pat = _spacedatetime(s, i, j) ? _ISO_DATETIME_SPACE_PATTERN : dtp
         c, rc = Parsers.parsecivil(s, i, j, pat)
-        rc == Parsers.RC_OK && return _timestamptype(c)
+        if rc == Parsers.RC_OK
+            T = _timestamptype(c)
+            T === String || return T
+        end
         Parsers.parsecivil(s, i, j, tp)[2] == Parsers.RC_OK && return Time
     end
     return nothing
