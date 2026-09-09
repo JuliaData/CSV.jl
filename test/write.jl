@@ -1,6 +1,7 @@
 # Writer battery: round-trips through CSV.File, explicit byte contracts,
 # and byte determinism across thread counts.
 using Test, Dates, Tables, CodecZlib, FilePathsBase, Random, InlineStrings, PooledArrays
+using Durations: Timestamp
 using CSV
 const W = CSV
 
@@ -695,6 +696,17 @@ end
         okall &= render(x) == string(x)
     end
     @test okall
+    # timestamps: every resolution, trailing zeros of the fraction removed
+    okall = true
+    for P in (Nanosecond, Microsecond, Millisecond, Second), _ in 1:5_000
+        x = Timestamp{P}(Dates.UTInstant(P(rand(rng, Int64))))
+        okall &= render(x) == string(x)
+    end
+    for frac in (0, 1, 10, 100, 1_000, 120_000_000, 999_999_999, 500_000_000)
+        x = Timestamp{Nanosecond}(2020, 1, 2, 3, 4, 5, 0, 0, frac)
+        okall &= render(x) == string(x)
+    end
+    @test okall
     # floats: shortest round-trip, incl. specials, and decimal=','
     okall = true
     for _ in 1:20_000
@@ -719,6 +731,7 @@ end
     tbl = (id = collect(1:n), s = [rand(rng, ("a", "b,c", "d\"e", " lead", "")) for _ in 1:n],
            f = rand(rng, n), d = [Date(2020) + Day(i) for i in 1:n],
            t = [DateTime(2020) + Millisecond(i * 7) for i in 1:n],
+           ts = [Timestamp{Nanosecond}(2020, 1, 1) + Nanosecond(i * 7_919_001) for i in 1:n],
            m = [rand(rng) < 0.2 ? missing : rand(rng, Int64) for _ in 1:n], b = rand(rng, Bool, n))
     function refcell(io, x::AbstractString)
         needsquote = isempty(x) || startswith(x, ' ') || endswith(x, ' ') ||
@@ -762,6 +775,8 @@ end
         [true, false, true, false],
         [Date(-1), Date(0), Date(2024), Date(10000)],
         [DateTime(2024) + Millisecond(i) for i in (0, 1, 10, 999)],
+        [Timestamp{Nanosecond}(2024) + Nanosecond(i) for i in (0, 1, 1_000, 123_456_789)],
+        [Timestamp{Microsecond}(9999, 12, 31) + Microsecond(i) for i in (0, 1, 999, 123_456)],
         [Time(0), Time(1), Time(2), Time(3)],
         ["", "a,b", "q\"r", "two\nlines"],
         [" lead", "tail ", "é", "a\rb"],

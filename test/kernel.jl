@@ -11,6 +11,7 @@
 # exhaustively rather than incidentally.
 
 using Test, Random, Dates, Tables, Mmap
+using Durations: Timestamp
 
 using CSV
 import Parsers
@@ -693,7 +694,8 @@ end
     for s in ("2024-01-02T03:04:05", "2024-01-02 03:04:05", "2024-01-02T03:04:05.",
               "2024-01-02T03:04:05.1", "2024-01-02 03:04:05.250", "2024-01-02T03:04",
               "2024-01-02  03:04:05", "2024-01-02 T03:04:05")
-        checktemporal(DateTime, nothing, K.todatetime, s)
+        checktemporal(Timestamp{Nanosecond}, nothing,
+                      c -> K.totimestamp(Timestamp{Nanosecond}, c)[1], s)
     end
     @test K._datetimepattern(opts, Vector{UInt8}("2024-01-02 03:04:05"), 1, 19) ===
           K._ISO_DATETIME_SPACE_PATTERN
@@ -703,28 +705,58 @@ end
     for s in ("00:00:00", "23:59:59", "24:00:00", "03:04:05.123456")
         checktemporal(Time, K._ISO_TIME_PATTERN, K.totime, s)
     end
-    # DateTime holds milliseconds: a finer fraction is not a DateTime cell.
-    # Inference keeps the text; an explicit DateTime column reports it.
+    # Inference keeps every fraction: a date-time cell is a Timestamp{Nanosecond}.
+    # `Dates.DateTime` holds milliseconds, so an explicit DateTime column still
+    # reports a finer fraction; an explicit Timestamp{Millisecond} does too.
     for s in ("2024-01-02T03:04:05.123456", "2024-01-02 03:04:05.0001",
               "2024-01-02T03:04:05.1234567")
         buf = Vector{UInt8}(codeunits(s))
         @test !K.parsevalue(DateTime, buf, 1, length(buf), opts)[2]
-        @test K.detecttype(buf, 1, length(buf), opts) === String
+        @test !K.parsevalue(Timestamp{Millisecond}, buf, 1, length(buf), opts)[2]
+        @test K.parsevalue(Timestamp{Nanosecond}, buf, 1, length(buf), opts) ==
+              (Timestamp{Nanosecond}(replace(s, ' ' => 'T')), true)
+        @test K.detecttype(buf, 1, length(buf), opts) === Timestamp{Nanosecond}
     end
     for s in ("2024-01-02T03:04:05.123000", "2024-01-02T03:04:05.1", "2024-01-02 03:04:05.999")
         buf = Vector{UInt8}(codeunits(s))
         @test K.parsevalue(DateTime, buf, 1, length(buf), opts)[2]
-        @test K.detecttype(buf, 1, length(buf), opts) === DateTime
+        @test K.parsevalue(Timestamp{Millisecond}, buf, 1, length(buf), opts)[2]
+        @test K.detecttype(buf, 1, length(buf), opts) === Timestamp{Nanosecond}
     end
     subms = K.parse("t\n2024-01-02T03:04:05.123456\n2024-01-02T03:04:05\n")
-    @test eltype(subms[:t]) <: AbstractString
+    @test eltype(subms[:t]) === Timestamp{Nanosecond}
+    @test collect(subms[:t]) == [Timestamp("2024-01-02T03:04:05.123456"), Timestamp("2024-01-02T03:04:05")]
     subms = K.parse("t\n2024-01-02T03:04:05.123456\n2024-01-02T03:04:05.5\n"; types=DateTime)
     @test isequal(collect(subms[:t]), [missing, DateTime(2024, 1, 2, 3, 4, 5, 500)])
     @test [p.row for p in K.problems(subms)] == [1]
+    # an instant outside the nanosecond range widens the column to microseconds,
+    # as an Int64 overflow widens to Int128
+    for s in ("9999-12-31T23:59:59", "1500-01-01T00:00:00", "2262-04-12T00:00:00")
+        buf = Vector{UInt8}(codeunits(s))
+        @test !K.parsevalue(Timestamp{Nanosecond}, buf, 1, length(buf), opts)[2]
+        @test K.parsevalue(Timestamp{Microsecond}, buf, 1, length(buf), opts) ==
+              (Timestamp{Microsecond}(s), true)
+        @test K.detecttype(buf, 1, length(buf), opts) === Timestamp{Microsecond}
+    end
+    @test K.promote_kernel(Timestamp{Nanosecond}, Timestamp{Microsecond}) === Timestamp{Microsecond}
+    @test K.promote_kernel(Timestamp{Microsecond}, Timestamp{Nanosecond}) === Timestamp{Microsecond}
+    @test K.promote_kernel(Timestamp{Nanosecond}, Date) === String
+    for (cb, par) in ((1 << 20, false), (16, true), (1, false))
+        wide = K.parse("t\n2024-01-02T03:04:05.123456\n9999-12-31T23:59:59\n2024-01-02T03:04:05\n";
+                       chunkbytes=cb, parallel=par)
+        @test eltype(wide[:t]) === Timestamp{Microsecond}
+        @test collect(wide[:t]) == Timestamp{Microsecond}.(["2024-01-02T03:04:05.123456",
+                                                            "9999-12-31T23:59:59", "2024-01-02T03:04:05"])
+        @test isempty(K.problems(wide))
+    end
+    # a nanosecond fraction beside a wide instant cannot widen: the column is text
+    mixed = K.parse("t\n2024-01-02T03:04:05.123456789\n9999-12-31T23:59:59\n")
+    @test eltype(mixed[:t]) === K.DataString
     custommicro = K.makevalueopts(K.Dialect(); dateformat="yyyy-mm-ddTHH:MM:SS.s")
     bmicro = Vector{UInt8}("2024-01-02T03:04:05.123456")
     @test !K.parsevalue(DateTime, bmicro, 1, length(bmicro), custommicro)[2]
-    @test K.detecttype(bmicro, 1, length(bmicro), custommicro) === String
+    @test K.parsevalue(Timestamp{Nanosecond}, bmicro, 1, length(bmicro), custommicro)[2]
+    @test K.detecttype(bmicro, 1, length(bmicro), custommicro) === Timestamp{Nanosecond}
 
     # A user format identical to a default is still custom. It must use the
     # compiled interpreter and retain the custom-format early type gates.
@@ -741,7 +773,7 @@ end
     @test K.parsevalue(DateTime, bdt, 1, length(bdt), customdt) ==
           (DateTime(2024, 2, 29, 3, 4, 5), true)
     @test !K.parsevalue(Date, bdt, 1, length(bdt), customdt)[2]
-    @test K.detecttype(bdt, 1, length(bdt), customdt) === DateTime
+    @test K.detecttype(bdt, 1, length(bdt), customdt) === Timestamp{Nanosecond}
     @test K.parsevalue(Time, bt, 1, length(bt), customtime) == (Time(3, 4, 5), true)
     @test !K.parsevalue(Date, bt, 1, length(bt), customtime)[2]
     @test K.detecttype(bt, 1, length(bt), customtime) === Time
@@ -854,7 +886,7 @@ end
     @test K.parsevalue(Date, Vector{UInt8}(codeunits("20240102")), 1, 8,
                        numericdateopts) == (Date(2024, 1, 2), true)
     dtfmtopts = K.makevalueopts(K.Dialect(); dateformat="yyyy-mm-dd HH:MM")
-    @test dt("2024-01-02 03:04", dtfmtopts) === DateTime
+    @test dt("2024-01-02 03:04", dtfmtopts) === Timestamp{Nanosecond}
     timefmtopts = K.makevalueopts(K.Dialect(); dateformat="HHhMM")
     @test dt("03h04", timefmtopts) === Time
     # A custom Bool spelling that collides with an earlier cascade type takes
@@ -871,16 +903,20 @@ end
     @test !K.makevalueopts(K.Dialect(delim=';'); groupmark=',',
                            truestrings=["1,000"]).inferbool
     @test K.makevalueopts(K.Dialect(); truestrings=["YES"], falsestrings=["NO"]).inferbool
-    # Bool collision checks use the same DateTime precision rule as inference.
+    # A date-time spelling of any precision is a Timestamp first, so a Bool
+    # spelling like it leaves the inference cascade; a typed Bool column still
+    # parses the user's lists.
     for sep in ('T', ' '), custom in (false, true), ns in (1, 8)
         fine = "2020-01-02$(sep)03:04:05.123456"
         exact = "2020-01-02$(sep)03:04:05.123000"
         fmt = custom ? "yyyy-mm-dd$(sep)HH:MM:SS.s" : nothing
-        opts = K.makevalueopts(K.Dialect(); dateformat=fmt, truestrings=[fine])
-        @test opts.inferbool
+        @test !K.makevalueopts(K.Dialect(); dateformat=fmt, truestrings=[fine]).inferbool
         @test !K.makevalueopts(K.Dialect(); dateformat=fmt, truestrings=[exact]).inferbool
         t = K.parse("a\n$fine\nno\n"; dateformat=fmt, truestrings=[fine],
                     falsestrings=["no"], nsample=ns)
+        @test eltype(t[:a]) === Timestamp{Nanosecond} || eltype(t[:a]) === K.DataString
+        t = K.parse("a\n$fine\nno\n"; dateformat=fmt, truestrings=[fine],
+                    falsestrings=["no"], nsample=ns, types=Bool)
         @test t[:a] == [true, false]
     end
     @test_throws ArgumentError K.makevalueopts(K.Dialect();

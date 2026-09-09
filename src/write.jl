@@ -477,6 +477,37 @@ function _appenddatetime!(out::_WriteOutput, x::DateTime)
     return out
 end
 
+# `Timestamp{P}` prints like `string(x)`: ISO date and time, then the
+# fraction of a second with its trailing zeros removed (`.12`, `.000001`,
+# `.123456789`), or no fraction at all.
+function _appendtimestamp!(out::_WriteOutput, x::Timestamp)
+    y, m, d = Dates.yearmonthday(x)
+    _appendyear!(out, y); push!(out, UInt8('-'))
+    _append2!(out, m); push!(out, UInt8('-'))
+    _append2!(out, d); push!(out, UInt8('T'))
+    ns = Dates.value(Time(x))                      # nanoseconds of the day
+    h, rest = divrem(ns, 3_600_000_000_000)
+    mi, rest = divrem(rest, 60_000_000_000)
+    s, frac = divrem(rest, 1_000_000_000)
+    _append2!(out, h); push!(out, UInt8(':'))
+    _append2!(out, mi); push!(out, UInt8(':'))
+    _append2!(out, s)
+    frac == 0 && return out
+    nd = 9
+    while frac % 10 == 0
+        frac ÷= 10
+        nd -= 1
+    end
+    push!(out, UInt8('.'))
+    len = length(out)
+    _room!(out, nd)
+    @inbounds for k in nd:-1:1
+        frac, digit = divrem(frac, 10)
+        out[len + k] = UInt8('0') + digit
+    end
+    return out
+end
+
 const _TRUE = codeunits("true"); const _FALSE = codeunits("false")
 @inline _boolbyte(b::UInt8) = b in (UInt8('t'), UInt8('r'), UInt8('u'), UInt8('e'),
                                     UInt8('f'), UInt8('a'), UInt8('l'), UInt8('s'))
@@ -513,16 +544,18 @@ const _TRUE = codeunits("true"); const _FALSE = codeunits("false")
         o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
         _appendscalar!(out, s, o)
     elseif x isa Dates.TimeType
-        if o.dateformat === nothing && x isa Union{Date, DateTime}
+        if o.dateformat === nothing && x isa Union{Date, DateTime, Timestamp}
             if !any(_numericsyntax, (o.delim, o.oq, o.cq)) &&
                o.delim != UInt8('T') && o.delim != UInt8(':') && o.delim != UInt8('.')
-                x isa Date ? _appenddate!(out, x) : _appenddatetime!(out, x)
+                x isa Date ? _appenddate!(out, x) :
+                x isa DateTime ? _appenddatetime!(out, x) : _appendtimestamp!(out, x)
             else
                 # a dialect whose delimiter or quote is date syntax: render
                 # with the same digits, then quote through the scalar path
                 # (never `string(x)`: Dates' printer is not trim-safe)
                 tmp = UInt8[]
-                x isa Date ? _appenddate!(tmp, x) : _appenddatetime!(tmp, x)
+                x isa Date ? _appenddate!(tmp, x) :
+                x isa DateTime ? _appenddatetime!(tmp, x) : _appendtimestamp!(tmp, x)
                 _appendbytes!(out, tmp, o, false)
             end
         else
@@ -631,6 +664,8 @@ struct _WriteColumn
     missingdatetimes::Vector{Union{Missing, DateTime}}
     datatext::DataStringVector{DataString}
     missingdatatext::DataStringVector{Union{Missing, DataString}}
+    timestamps::Vector{Timestamp{Dates.Nanosecond}}
+    missingtimestamps::Vector{Union{Missing, Timestamp{Dates.Nanosecond}}}
     stage::ColStage
 end
 const _EMPTY_WRITECOLUMNS = (
@@ -648,6 +683,8 @@ const _EMPTY_WRITECOLUMNS = (
     Vector{Union{Missing, DateTime}}(),
     DataStringVector{DataString}(DataStringPayload[], Vector{UInt8}[]),
     DataStringVector{Union{Missing, DataString}}(DataStringPayload[], Vector{UInt8}[]),
+    Vector{Timestamp{Dates.Nanosecond}}(),
+    Vector{Union{Missing, Timestamp{Dates.Nanosecond}}}(),
 )
 const _EMPTY_WRITESTAGE = ColStage()
 # These methods are generated once for a fixed set of column types, never
@@ -761,6 +798,10 @@ end
         @inbounds _appendcell!(out, col.datatext[r], o)
     elseif col.tag == 0x0e
         @inbounds _appendcell!(out, col.missingdatatext[r], o)
+    elseif col.tag == 0x0f
+        @inbounds _appendcell!(out, col.timestamps[r], o)
+    elseif col.tag == 0x10
+        @inbounds _appendcell!(out, col.missingtimestamps[r], o)
     else
         st = col.stage
         @inbounds s = k == 1 ? 1 : st.ends[k - 1] + 1
@@ -881,7 +922,7 @@ function _ordered_parallel_blocks!(emitblock, renderblock,
     try
         for slot in 1:window
             block = nextblock
-            tasks[slot] = Threads.@spawn _capture_render($renderblock, $block)
+            tasks[slot] = @wkspawn _capture_render($renderblock, $block)
             nextblock += 1
         end
         for block in 1:nblocks
@@ -898,7 +939,7 @@ function _ordered_parallel_blocks!(emitblock, renderblock,
             rendered = nothing
             if nextblock <= nblocks
                 queued = nextblock
-                tasks[slot] = Threads.@spawn _capture_render($renderblock, $queued)
+                tasks[slot] = @wkspawn _capture_render($renderblock, $queued)
                 nextblock += 1
             end
         end
@@ -943,7 +984,7 @@ function _bounded_foreach!(f, iter, ntasks::Int)
             state === nothing && break
             item, iterstate = state
             index = nextindex
-            tasks[slot] = Threads.@spawn _capture_item($f, $item, $index)
+            tasks[slot] = @wkspawn _capture_item($f, $item, $index)
             nextindex += 1
             pending += 1
             state = iterate(iter, iterstate)
@@ -962,7 +1003,7 @@ function _bounded_foreach!(f, iter, ntasks::Int)
             if state !== nothing
                 item, iterstate = state
                 index = nextindex
-                tasks[slot] = Threads.@spawn _capture_item($f, $item, $index)
+                tasks[slot] = @wkspawn _capture_item($f, $item, $index)
                 nextindex += 1
                 pending += 1
                 state = iterate(iter, iterstate)

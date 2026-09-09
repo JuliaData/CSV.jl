@@ -42,16 +42,11 @@ they are passed to CSV.jl.
 `CSV.File`, `CSV.read`, and `CSV.Chunks` return columns that own their bytes:
 text longer than a `DataStrings.DataString` inline payload is copied into
 column-owned buffers during parsing, so a finished table never refers to the
-source. The table holds no reference to a mapped file, rewriting the file
+source. A mapped file is released as soon as parsing ends, rewriting the file
 afterwards cannot affect the table, one value retains at most the parse
 chunk's text buffer, and a `Vector{UInt8}` input is never aliased. `CSV.Rows` and `CSV.lazy`
 are the exceptions: their cells are views into the retained source, so keep
 the source unchanged while you use them, or convert values with `String`.
-
-Before Julia 1.14, a finished parse task can keep a mapped file alive until
-its thread runs other work. Windows keeps a mapped file locked, so pass
-`buffer_in_memory=true` when a large file must be rewritten or deleted right
-after it is read.
 
 ## Headers and row windows
 
@@ -136,10 +131,17 @@ replaces the defaults. Other value options include:
 
 Default date and time inference accepts the ISO forms `yyyy-mm-dd`,
 `yyyy-mm-ddTHH:MM:SS`, `yyyy-mm-dd HH:MM:SS`, and `HH:MM:SS`. The time forms
-accept fractional seconds. `Dates.DateTime` holds milliseconds, so a value with
-a finer fraction such as `12:00:00.123456` is not a `DateTime`: inference keeps
-the column as text, and an explicit `DateTime` column reports the value as a
-problem. `Dates.Time` keeps nanoseconds.
+accept fractional seconds. A date-time column infers as
+`Timestamp{Nanosecond}` from [Durations.jl](https://github.com/JuliaData/Durations.jl)
+(the `Dates.Timestamp` of Julia 1.14 and later), an 8-byte instant that keeps
+every fraction digit. An instant outside the nanosecond range (years 1677 to
+2262, so a `9999-12-31` sentinel) widens the column to `Timestamp{Microsecond}`,
+as an integer overflow widens `Int64` to `Int128`. A time column infers as
+`Dates.Time`, which also keeps nanoseconds. Request `Dates.DateTime` with
+`types` or `typemap=Dict(Timestamp{Nanosecond} => DateTime)`; it holds
+milliseconds, so a finer fraction such as `12:00:00.123456` is then reported as
+a problem. `Timestamp{Millisecond}` and `Timestamp{Second}` apply the same
+check at their resolution.
 
 ## Types, columns, strings, and pools
 

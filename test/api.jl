@@ -13,6 +13,7 @@
 #   • wide integers that fit Int128 remain exact
 
 using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings, FilePathsBase, Random, Mmap
+using Durations: Timestamp
 using CSV
 const A = CSV
 const K = CSV
@@ -127,6 +128,7 @@ end
     @test temporal.d == [Date(2024, 1, 2)]
     @test temporal.t == [Time(1, 2, 3)]
     @test temporal.dt == [DateTime(2024, 1, 2, 1, 2, 3)]
+    @test eltype(temporal.dt) === Timestamp{Nanosecond}
     sourceparity("s\nhello\nworld\n")
     sourceparity("m,x\n,1\n,2\n")                       # all-missing column
     sourceparity("p\n1\n2.5\n")                         # int → float promotion
@@ -2053,15 +2055,22 @@ end
         f = A.File(p)
         v = f.s[end]
         @test f.s.buffers[1] === A.EMPTY_BYTES      # nothing views the map
-        # Rewrite the file smaller while values are live. Windows keeps a
-        # mapped file locked, and before Julia 1.14 a finished parse task can
-        # keep the mapping alive until its thread runs other work, so the
-        # rewrite itself is only exercised where the OS allows it.
-        if !Sys.iswindows()
-            CSV.write(p, (s=["tiny"], n=[1]))
-            GC.gc()
-            @test A.File(p).s == ["tiny"]
+        # Rewrite the file smaller while values are live: the table holds no
+        # reference to the mapping and every finished task drops its own, so
+        # one collection releases the map (Windows keeps a mapped file
+        # locked). A detached read-ahead task may still be finishing on a
+        # slow machine: retry briefly.
+        for attempt in 1:20
+            GC.gc(true)
+            try
+                CSV.write(p, (s=["tiny"], n=[1]))
+                break
+            catch e
+                (e isa SystemError && attempt < 20) || rethrow()
+                sleep(0.05)
+            end
         end
+        @test A.File(p).s == ["tiny"]
         @test String(v) == "value number 60000 is here"
         @test String(f.s[100]) == "value number 100 is here"
     end
@@ -2213,4 +2222,60 @@ end
     @test length(chunks) > 1
     @test reduce(vcat, (chunk.id for chunk in chunks)) == 1:4000
     @test all(chunk -> all(==("123\nabc"), chunk.text), chunks)
+end
+
+@testset "date-times infer as Timestamp{Nanosecond}" begin
+    TS = Timestamp{Nanosecond}
+    src = "t,n\n2020-01-02T03:04:05,1\n2020-01-02 03:04:05.123456789,2\n2020-01-02T03:04:05.5,3\n"
+    f = A.File(IOBuffer(src))
+    @test eltype(f.t) === TS
+    @test collect(f.t) == TS.(["2020-01-02T03:04:05", "2020-01-02T03:04:05.123456789", "2020-01-02T03:04:05.5"])
+    @test f.t[1] == DateTime(2020, 1, 2, 3, 4, 5)           # Durations compares across types
+    # every reader agrees
+    @test [r.t for r in A.Rows(IOBuffer(src); types=Dict(:t => TS))] == collect(f.t)
+    @test collect(A.lazy(IOBuffer(src); types=Dict(:t => TS)).t) == collect(f.t)
+    @test eltype(first(A.Chunks(IOBuffer(src))).t) === TS
+    @test A.sniff(IOBuffer(src)).types == [TS, Int64]
+    @test eltype(A.File(IOBuffer(src); scan=Tables.Scan(select=(:t => Timestamp{Millisecond},)),
+                        on_error=:collect).t) === Union{Missing, Timestamp{Millisecond}}
+    # an instant outside the nanosecond range widens the column to microseconds
+    wide = A.File(IOBuffer("t\n2020-01-02T03:04:05\n9999-12-31T23:59:59\n"))
+    @test eltype(wide.t) === Timestamp{Microsecond}
+    @test collect(wide.t) == Timestamp{Microsecond}.(["2020-01-02T03:04:05", "9999-12-31T23:59:59"])
+    # the old default is one option away
+    @test eltype(A.File(IOBuffer(src); types=Dict(:t => DateTime), on_error=:collect).t) ==
+          Union{Missing, DateTime}
+    # a typemap replaces the inferred type; a value the mapped type rejects
+    # promotes the column (to text), as any inferred conflict does
+    @test eltype(A.File(IOBuffer(src); typemap=Dict(TS => DateTime)).t) === A.DataString
+    whole = "t,n\n2020-01-02T03:04:05.120,1\n2020-01-03T03:04:05,2\n"
+    @test collect(A.File(IOBuffer(whole); typemap=Dict(TS => DateTime)).t) ==
+          [DateTime(2020, 1, 2, 3, 4, 5, 120), DateTime(2020, 1, 3, 3, 4, 5)]
+    @test collect(A.File(IOBuffer(whole); types=Dict(:t => DateTime)).t) ==
+          [DateTime(2020, 1, 2, 3, 4, 5, 120), DateTime(2020, 1, 3, 3, 4, 5)]
+    # explicit resolutions check the fraction
+    msfile = A.File(IOBuffer(src); types=Dict(:t => Timestamp{Millisecond}), on_error=:collect)
+    @test isequal(collect(msfile.t), [Timestamp{Millisecond}("2020-01-02T03:04:05"), missing,
+                                      Timestamp{Millisecond}("2020-01-02T03:04:05.5")])
+    @test_throws A.ParseError A.File(IOBuffer(src); types=Dict(:t => Timestamp{Second}), on_error=:error)
+    # custom formats with time tokens infer a Timestamp too
+    custom = A.File(IOBuffer("t\n2020/01/02 03:04\n"); dateformat="yyyy/mm/dd HH:MM")
+    @test collect(custom.t) == [TS(2020, 1, 2, 3, 4)]
+    # writing prints like `string`, and the bytes read back to the same values
+    tbl = (t=[TS(2020, 1, 2, 3, 4, 5, 0, 0, 123456789), TS(2020, 1, 2, 3, 4, 5, 120), TS(2020, 1, 2)],
+           m=Union{Missing, TS}[missing, TS(2021, 6, 7, 8, 9, 10), TS(2021, 6, 7, 8, 9, 10, 0, 0, 1000)],
+           u=[Timestamp{Microsecond}(9999, 12, 31, 23, 59, 59, 0, 123)])
+    io = IOBuffer()
+    CSV.write(io, (t=tbl.t, m=tbl.m))
+    out = String(take!(io))
+    @test out == "t,m\n2020-01-02T03:04:05.123456789,\n2020-01-02T03:04:05.12,2021-06-07T08:09:10\n" *
+                 "2020-01-02T00:00:00,2021-06-07T08:09:10.000001\n"
+    back = A.File(IOBuffer(out))
+    @test collect(back.t) == tbl.t && isequal(collect(back.m), tbl.m)
+    io = IOBuffer()
+    CSV.write(io, (u=tbl.u,))
+    @test String(take!(io)) == "u\n9999-12-31T23:59:59.000123\n"
+    io = IOBuffer()
+    CSV.write(io, (t=[TS(2020, 1, 2, 3, 4, 5, 120)],); delim=':')
+    @test String(take!(io)) == "t\n\"2020-01-02T03:04:05.12\"\n"
 end

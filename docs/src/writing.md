@@ -100,7 +100,7 @@ distinction.
 Julia's shortest round-trip floating-point representation. `decimal` replaces
 the decimal point in floating-point output.
 
-`dateformat` accepts a Dates.jl format for all `Date`, `DateTime`, and `Time`
+`dateformat` accepts a Dates.jl format for all `Date`, `DateTime`, `Timestamp`, and `Time`
 values. Other values use their ordinary text representation.
 
 ```@example writing-values

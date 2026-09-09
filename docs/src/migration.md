@@ -20,7 +20,7 @@ must use an older Julia release.
 | Problems | One warning per problem during recovery | Structured `CSV.problems(file)` plus one summary warning | Inspect problems, set `on_error=:collect` to silence the summary, or `on_error=:error` to throw `CSV.ParseError` |
 | Row limit | Could be approximate with multiple tasks | Exact at every thread count | Remove `ntasks=1` workarounds used only for exact limits |
 | Boolean inference | Accepted the 0.10 parser's broader spellings | `true`, `True`, `TRUE`, `false`, `False`, `FALSE` | Add explicit `truestrings` and `falsestrings` as required |
-| Date-time inference | ISO with `T` or a space; extra fraction digits truncated | ISO with `T` or a space; a sub-millisecond fraction stays text | Pass `types=DateTime` to report such values, or keep them as text |
+| Date-time inference | `Dates.DateTime`; extra fraction digits truncated | `Timestamp{Nanosecond}` (Durations.jl; `Dates.Timestamp` on Julia 1.14), every fraction digit kept; instants outside 1677–2262 widen to `Timestamp{Microsecond}` | Pass `types=DateTime` or `typemap=Dict(Timestamp{Nanosecond} => DateTime)` for the old type; a finer fraction is then a problem |
 
 `DataStrings.DataString` is an `AbstractString`. Convert one value with `String(x)`
 when a consumer requires `String`. Eager text columns own their bytes, so
@@ -142,8 +142,10 @@ deterministic across `ntasks` values.
 
 ## Shared data types and released dependencies
 
-CSV now uses Parsers 3, InlineStrings 2, Tables 1.14, DataStrings 1, and
-DataDecimals 1, all registered in General.
+CSV now uses Parsers 3, InlineStrings 2, Tables 1.14, DataStrings 1,
+DataDecimals 1, and Durations 1.1, all registered in General. Durations
+provides `Timestamp{P}`, the inferred date-time type; on Julia 1.14 and later
+it is the `Dates.Timestamp` of the standard library.
 The draft rewrite's `CSV.CompactString` has moved to `DataStrings.DataString`.
 Import DataStrings when referring to that type. Text columns are mutable
 `DataStrings.StringVector` values. Shared string methods belong in DataStrings.

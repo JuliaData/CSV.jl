@@ -46,7 +46,27 @@ again. Tests preserve this behavior.
 =#
 
 using Dates
+using Durations: Timestamp
 import Parsers
+
+# A finished `Threads.@spawn` task keeps its closure (and everything the
+# closure captured, such as a mapped input) alive until its thread runs
+# another task (Julia 1.10 to 1.13; JuliaLang/julia master collects it). Every
+# task CSV spawns clears its own closure on exit, so a mapped file is released
+# as soon as parsing ends. Same trick as ConcurrentUtilities.@wkspawn.
+function _cleartask()
+    t = current_task()
+    t.storage = nothing
+    t.code = nothing
+    return
+end
+macro wkspawn(expr)
+    return esc(:(Threads.@spawn begin
+        ret = $expr
+        $_cleartask()
+        ret
+    end))
+end
 
 # Parsers owns scalar value conversion. CSV owns rows, fields, quotes, missing
 # values, and column assembly.
@@ -254,14 +274,15 @@ function _earlierbooltype(s::Vector{UInt8}, decimal::UInt8,
     _fixedfloatusable(Parsers.parsefloat(Float64, s, i, j, decimal)[2]) && return Float64
     if customfmt
         c, rc = Parsers.parsecivil(s, i, j, dp)
-        if rc == Parsers.RC_OK && (kind != 0x03 || _wholemilliseconds(c))
-            return kind == 0x03 ? DateTime : kind == 0x01 ? Date : Time
+        if rc == Parsers.RC_OK
+            kind == 0x03 && return _timestamptype(c)
+            return kind == 0x01 ? Date : Time
         end
     else
         Parsers.parsecivil(s, i, j, dp)[2] == Parsers.RC_OK && return Date
         pat = _spacedatetime(s, i, j) ? _ISO_DATETIME_SPACE_PATTERN : dtp
         c, rc = Parsers.parsecivil(s, i, j, pat)
-        rc == Parsers.RC_OK && _wholemilliseconds(c) && return DateTime
+        rc == Parsers.RC_OK && return _timestamptype(c)
         Parsers.parsecivil(s, i, j, tp)[2] == Parsers.RC_OK && return Time
     end
     return nothing
@@ -382,8 +403,8 @@ end
 end
 
 # `Dates.DateTime` holds milliseconds. A finer fraction has no exact DateTime,
-# so such a cell is not a DateTime: inference keeps the text, and an explicit
-# DateTime column reports it. `Time` keeps nanoseconds.
+# so an explicit `types=DateTime` column reports such a cell. Inference never
+# meets this rule: it infers `Timestamp{Nanosecond}`, which keeps the fraction.
 @inline _wholemilliseconds(c::Parsers.CivilParts) = c.nanosecond % 1_000_000 == 0
 
 # --- the cell layer -----------------------------------------------------------
@@ -583,6 +604,8 @@ end
 const _DATE0 = Date(1)
 const _DATETIME0 = DateTime(1)
 const _TIME0 = Time(0)
+const _TIMESTAMP0 = Timestamp{Dates.Nanosecond}(1970)
+@inline _timestamp0(::Type{Timestamp{P}}) where {P} = Timestamp{P}(Dates.UTInstant(P(0)))
 
 # Parsers returns calendar fields without choosing a Dates representation. CSV
 # owns this conversion because it chooses the final column type.
@@ -596,6 +619,32 @@ end
 @inline totime(c::Parsers.CivilParts) =
     Time(Dates.Nanosecond(((Int64(c.hour) * 60 + c.minute) * 60 + c.second) *
                           1_000_000_000 + c.nanosecond))
+
+# A `Timestamp{P}` holds the civil fields exactly when the fraction is a whole
+# number of `P` and the instant fits Int64 ticks; `validargs` reports both.
+@inline function _timestampargs(c::Parsers.CivilParts)
+    ms, rest = divrem(Int64(c.nanosecond), 1_000_000)
+    us, ns = divrem(rest, 1_000)
+    return (Int64(c.year), Int64(c.month), Int64(c.day), Int64(c.hour), Int64(c.minute),
+            Int64(c.second), ms, us, ns)
+end
+@inline function totimestamp(::Type{Timestamp{P}}, c::Parsers.CivilParts) where {P}
+    args = _timestampargs(c)
+    Dates.validargs(Timestamp{P}, args..., Dates.TWENTYFOURHOUR) === nothing ||
+        return (_timestamp0(Timestamp{P}), false)
+    return (Timestamp{P}(args...), true)
+end
+# Inference prefers nanoseconds; an instant outside the nanosecond range
+# (years 1677 to 2262: `9999-12-31` sentinels) widens to microseconds, the way
+# an Int64 overflow widens to Int128.
+function _timestamptype(c::Parsers.CivilParts)
+    args = _timestampargs(c)
+    Dates.validargs(Timestamp{Dates.Nanosecond}, args..., Dates.TWENTYFOURHOUR) === nothing &&
+        return Timestamp{Dates.Nanosecond}
+    Dates.validargs(Timestamp{Dates.Microsecond}, args..., Dates.TWENTYFOURHOUR) === nothing &&
+        return Timestamp{Dates.Microsecond}
+    return String
+end
 
 # Numeric kernels take a scratch buffer so grouped digits (groupmark) degroup
 # without per-cell allocation; the hot loops pass a per-(column × chunk)
@@ -771,6 +820,13 @@ end
     c, rc = Parsers.parsecivil(buf, i, j, _datetimepattern(vo, buf, i, j))
     rc == Parsers.RC_OK && _wholemilliseconds(c) || return (_DATETIME0, false)
     return (todatetime(c), true)
+end
+@inline function parsevalue(::Type{Timestamp{P}}, buf::Vector{UInt8}, i::Int, j::Int,
+                            vo::ValueOpts) where {P}
+    vo.customfmt && vo.customkind != 0x03 && return (_timestamp0(Timestamp{P}), false)
+    c, rc = Parsers.parsecivil(buf, i, j, _datetimepattern(vo, buf, i, j))
+    rc == Parsers.RC_OK || return (_timestamp0(Timestamp{P}), false)
+    return totimestamp(Timestamp{P}, c)
 end
 @inline function parsevalue(::Type{Time}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     vo.customfmt && vo.customkind != 0x02 && return (_TIME0, false)
@@ -1817,7 +1873,7 @@ index(buf::Vector{UInt8}; kw...) = index(buf, Dialect(); kw...)
 
 # CSV changes a column type in this order:
 #   Missing → Int64 → Int128 → Float64 → String
-#   Missing → (Date | DateTime | Time | Bool) → String
+#   Missing → (Date | Timestamp{Nanosecond} → Timestamp{Microsecond} | Time | Bool) → String
 # Other type combinations change to String. The API layer handles smaller
 # integer and string types. `typemap` changes an inferred type. It does not
 # change a type that the user set. Missing does not use `typemap`.
@@ -1855,6 +1911,8 @@ end
 end
 @inline _copts(colopts, opts, j::Int) = colopts === nothing ? opts : @inbounds colopts[j]
 
+const _TS_NS = Timestamp{Dates.Nanosecond}
+const _TS_US = Timestamp{Dates.Microsecond}
 promote_kernel(a::Type, b::Type) =
     a === b          ? a :
     a === Missing    ? b :
@@ -1863,6 +1921,8 @@ promote_kernel(a::Type, b::Type) =
     a === Int128 && b === Int64 ? Int128 :
     a in (Int64, Int128) && b === Float64 ? Float64 :
     a === Float64 && b in (Int64, Int128) ? Float64 :
+    a === _TS_NS && b === _TS_US ? _TS_US :
+    a === _TS_US && b === _TS_NS ? _TS_US :
     String
 
 # Detect the type of one field. Detection and value parsing use the same Parsers
@@ -1894,16 +1954,17 @@ function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::ValueOpts)
         # one probe: the user format's own components say which type it detects
         c, rc = Parsers.parsecivil(buf, cpos, cj, opts.datepat)
         if rc == Parsers.RC_OK
-            if opts.customkind == 0x03
-                _wholemilliseconds(c) && return DateTime
-            else
-                return opts.customkind == 0x01 ? Date : Time
-            end
+            opts.customkind == 0x03 || return opts.customkind == 0x01 ? Date : Time
+            T = _timestamptype(c)
+            T === String || return T
         end
     else
         Parsers.parsecivil(buf, cpos, cj, opts.datepat)[2] == Parsers.RC_OK && return Date
         c, rc = Parsers.parsecivil(buf, cpos, cj, _datetimepattern(opts, buf, cpos, cj))
-        rc == Parsers.RC_OK && _wholemilliseconds(c) && return DateTime
+        if rc == Parsers.RC_OK
+            T = _timestamptype(c)
+            T === String || return T
+        end
         Parsers.parsecivil(buf, cpos, cj, opts.timepat)[2] == Parsers.RC_OK && return Time
     end
     opts.inferbool && parsevalue(Bool, buf, cpos, cj, opts)[2] && return Bool
@@ -2856,6 +2917,7 @@ function _columndecision(T)
     parseable = parsetype === Missing ||
                 parsetype in (Int64, Int128, Float64, Bool, Char, Date, DateTime, Time,
                               String, BigInt, BigFloat, Base.UUID) ||
+                parsetype <: Timestamp ||
                 _customparseable(parsetype)
     parseable || throw(ArgumentError("unsupported column type $parsetype"))
     resulttype = haskey(NARROW_TYPES, requested) ? requested : nothing
@@ -2988,7 +3050,7 @@ function _taskforeach(f, items, tasklimit::Int, taskobserver=nothing)
     end
     next = Threads.Atomic{Int}(1)
     @sync for _ in 1:workers
-        errormonitor(Threads.@spawn begin
+        errormonitor(@wkspawn begin
             started = false
             try
                 if taskobserver !== nothing
@@ -3928,7 +3990,7 @@ function _tounion(col::TypedColumn{T}) where {T}
         @sync for c in 1:parts
             lo = 1 + (c - 1) * n ÷ parts
             hi = c * n ÷ parts
-            errormonitor(Threads.@spawn _tounionrange!(out, values, present, lo, hi))
+            errormonitor(@wkspawn _tounionrange!(out, values, present, lo, hi))
         end
     else
         _tounionrange!(out, values, present, 1, n)

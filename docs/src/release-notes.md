@@ -41,8 +41,9 @@ The most important default changes are:
 - an unquoted empty field is always `missing`;
 - `true`, `True`, `TRUE`, `false`, `False`, and `FALSE` are the default Boolean
   spellings;
-- ISO date-times accept `T` or a space, and a sub-millisecond fraction keeps a
-  column as text instead of truncating; and
+- a date-time column is a `Timestamp{Nanosecond}` (Durations.jl) instead of a
+  `Dates.DateTime`, ISO date-times accept `T` or a space, and no fraction digit
+  is truncated; and
 - parse problems are retained as problem objects, with one summary warning per
   read instead of one warning per problem.
 
@@ -52,8 +53,8 @@ compatibility, source-memory behavior, and upgrade examples.
 ## Dependency and release status
 
 The rewrite uses released Parsers 3, InlineStrings 2, Tables 1.14, DataStrings
-1, and DataDecimals 1, all registered in General. Verify a fresh registry-only
-installation before tagging CSV 1.0.
+1, DataDecimals 1, and Durations 1.1, all registered in General. Verify a fresh
+registry-only installation before tagging CSV 1.0.
 
 Default string columns now use the shared DataStrings package. They support
 column edits while preserving scalar values returned before an edit. CSV no

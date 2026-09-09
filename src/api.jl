@@ -143,7 +143,7 @@ function _prefetch!(m::Vector{UInt8})
     for p in 1:parts
         lo = 1 + (p - 1) * n ÷ parts
         hi = p * n ÷ parts
-        Threads.@spawn _prefetchrange(m, lo, hi)
+        @wkspawn _prefetchrange(m, lo, hi)
     end
     return
 end
@@ -1557,7 +1557,7 @@ function _poolcolumn(c::DataStringVector, ps::Tuple{Float64, Int}; parallel::Boo
     # here would rebind the merge scope's variables — shared across tasks)
     if nt > 1
         @sync for t in 1:nt
-            Threads.@spawn (locals[t] = _internrange!(refs, c, bounds[t], bounds[t + 1] - 1,
+            @wkspawn (locals[t] = _internrange!(refs, c, bounds[t], bounds[t + 1] - 1,
                                                        maxlevels, aborted))
         end
     else
@@ -1588,7 +1588,7 @@ function _poolcolumn(c::DataStringVector, ps::Tuple{Float64, Int}; parallel::Boo
             remaps[t] = remap
         end
         @sync for t in 1:nt
-            Threads.@spawn _remaprange!(refs, remaps[t], bounds[t], bounds[t + 1] - 1)
+            @wkspawn _remaprange!(refs, remaps[t], bounds[t], bounds[t + 1] - 1)
         end
     end
     lv = DataStringVector{DataString}(levels, c.buffers, Val(:trusted))
@@ -1641,7 +1641,7 @@ function _poolcolumns(t::ParsedTable, specs::AbstractVector; parallel::Bool=true
     poolone = i -> (pooled[i] = _poolcolumn(cols[js[i]]::DataStringVector, specs[js[i]]; parallel))
     if parallel && length(js) > 1
         @sync for i in eachindex(js)
-            Threads.@spawn poolone(i)
+            @wkspawn poolone(i)
         end
     else
         foreach(poolone, eachindex(js))
