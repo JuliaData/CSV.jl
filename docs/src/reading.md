@@ -108,19 +108,31 @@ Boolean inference recognizes the exact lowercase spellings `true` and `false`.
 Add other spellings with `truestrings` and `falsestrings`. Other value options
 include:
 
-- `dateformat` as one format or a per-column dictionary;
-- `decimal` for a decimal separator;
+- `dateformat` as one format string or `Dates.DateFormat`, or a per-column
+  dictionary of them;
+- `decimal` for a decimal separator (it cannot be a digit, sign, or exponent
+  letter);
 - `groupmark` for grouped digits;
 - `stripwhitespace`; and
 - `typemap` to replace an inferred type.
 
+Default date and time inference accepts the ISO forms `yyyy-mm-dd`,
+`yyyy-mm-ddTHH:MM:SS`, and `HH:MM:SS`, each with optional fractional seconds.
+`Dates.DateTime` holds milliseconds, so additional fractional digits are
+truncated.
+
 ## Types, columns, strings, and pools
 
 `types` accepts one type, a vector with one entry per source column, or a
-dictionary keyed by column index or name. A type vector must match the header.
-Function-valued `types` is not supported in 1.0.
+dictionary keyed by column index, name, or a `Regex`. A type vector must match
+the header. Function-valued `types` is not supported in 1.0. A requested
+`String` (or `Union{Missing, String}`) names the output type: that column is a
+`Vector{String}`, as in 0.10. Request `DataStrings.DataString` to keep the
+zero-copy column, or an InlineStrings.jl type when that package is loaded.
+`stringtype` governs inferred text only.
 
-`select` and `drop` accept lists of indices, names, or a Boolean mask. They are
+`select` and `drop` accept lists of indices, names, or a Boolean mask, one
+name or index, or a `Regex` matched against the column names. They are
 mutually exclusive. `CSV.File`, `CSV.lazy`, `CSV.Rows`, and `CSV.Chunks` all
 return selected columns once, in file order, even when the list is repeated or
 reordered. Function-valued selection is not supported. Use a `Tables.Scan`
@@ -137,7 +149,10 @@ file = CSV.File(IOBuffer("value\nalpha\nbeta\n"))
 
 Use `stringtype=String` to materialize strings. When InlineStrings.jl is
 loaded, its extension also accepts `InlineString` and fixed inline string
-types. InlineStrings 2 is supported.
+types. `stringtype=InlineString` picks the smallest width per column up to
+`String31`; a column whose text is longer comes back as `String`, as in 0.10.
+A fixed type such as `String15` is an error when a value does not fit.
+InlineStrings 2 is supported.
 
 Pooling is independent of `stringtype`. `pool=false` is the 1.0 default. The
 accepted forms are:
@@ -160,9 +175,9 @@ Transpose mode is sequential. It accepts and validates `ntasks` and
 ## Parse problems
 
 The default `on_error=:collect` keeps rows and records malformed quotes,
-invalid typed values, long rows, and other parse problems. Inspect the retained
-items with `CSV.problems(file)`. Each item contains `row`, `col`, `pos`,
-`kind`, and `message` fields.
+invalid typed values, long rows, and other parse problems as `CSV.Problem`
+values. Inspect the retained items with `CSV.problems(file)`. Each item
+contains `row`, `col`, `pos`, `kind`, and `message` fields.
 
 ```@example reading-problems
 using CSV, DataStrings
@@ -171,10 +186,13 @@ file = CSV.File(IOBuffer("count\n1\ninvalid\n"); types=Int)
 [(p.row, p.col, p.kind) for p in CSV.problems(file)]
 ```
 
-`maxproblems` caps retained diagnostics and defaults to 10,000. Set
-`on_error=:error`, or the compatibility shorthand `strict=true`, to stop at
-the first problem. `validate=false` ignores `types`, `dateformat`, and `pool`
-dictionary keys that do not match an input column; validation is on by default.
+`maxproblems` caps retained diagnostics and defaults to 10,000.
+`on_error=:warn` prints one summary warning per read and still returns the
+collected table. `on_error=:error`, or the compatibility shorthand
+`strict=true`, throws a `CSV.ParseError` at the first problem in source order;
+the exception carries that `problem`, the total `nproblems`, and the `source`
+label. `validate=false` ignores `types`, `dateformat`, and `pool` dictionary
+keys that do not match an input column; validation is on by default.
 
 ## Parallel parsing and sampling
 
@@ -261,12 +279,15 @@ rows = CSV.Rows(IOBuffer("id,value\n1,10\n2,20\n"); types=[Int, Int])
 ```
 
 `reusebuffer` is accepted for 0.10 compatibility but has no effect. The 1.0
-row view does not allocate a reusable per-row buffer.
+row view does not allocate a reusable per-row buffer. Because the structural
+index is complete before iteration, `length(rows)` and `names(rows)` are
+available, and consumers such as `Tables.columntable` can preallocate.
 
 An invalid or malformed cell becomes `missing` when it is accessed. Pass
-`strict=true` or `on_error=:error` to throw at that access instead. `CSV.Rows`
-does not retain a problem log and does not accept `maxproblems` or
-`maxwarnings`. Use `CSV.File` when you need `CSV.problems(file)`.
+`strict=true` or `on_error=:error` to throw a `CSV.ParseError` at that access
+instead. `CSV.Rows` does not retain a problem log and does not accept
+`maxproblems` or `maxwarnings`. Use `CSV.File` when you need
+`CSV.problems(file)`.
 List `select` and `drop` forms are supported and use the same stable file-order
 semantics as `CSV.File`.
 

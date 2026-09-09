@@ -13,6 +13,8 @@ CSV
 CSV.File
 CSV.read
 CSV.problems
+CSV.Problem
+CSV.ParseError
 ```
 
 ## Indexed and incremental access

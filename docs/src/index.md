@@ -62,7 +62,8 @@ value. Long values can refer to the retained input buffer. Convert with
 `stringtype=String` to a reader.
 
 Parse warnings are structured data in 1.0. Call `CSV.problems(file)` to inspect
-them. Set `on_error=:error` when a parse problem must stop the read.
+them, set `on_error=:warn` for one summary warning, or `on_error=:error` when a
+parse problem must stop the read with a `CSV.ParseError`.
 
 ```@contents
 Pages = ["reading.md", "writing.md", "examples.md", "reference.md", "release-notes.md", "migration.md"]

@@ -30,8 +30,13 @@ The replacement header must contain one name for each source column.
 header output.
 
 `append=true` opens a path for append instead of replacement. It omits the
-header unless `writeheader=true` is explicit. For a seekable `IO`,
-`append=false` replaces its existing contents and truncates a stale suffix.
+header unless `writeheader=true` is explicit. An `IO` sink is written at its
+current position, exactly like `Base.write`: content already in the stream,
+such as log lines on `stdout` or a prefix the caller wrote, is never rewound
+over or truncated. For an `IO`, `append` only decides the header default.
+
+`CSV.write(sink, CSV.Chunks(source))` streams every batch of a chunked read
+under one header without collecting the batches.
 
 `bom=true` writes a UTF-8 byte-order mark before new output. It is not written
 again during append.
@@ -50,7 +55,7 @@ The writer dialect options are:
 
 | Keyword | Default | Purpose |
 |:--------|:--------|:--------|
-| `delim` | `','` | One-byte output delimiter |
+| `delim` | `','` | Output delimiter: one character or a string such as `"::"` |
 | `quotechar` | `'"'` | One opening and closing quote byte |
 | `openquotechar`, `closequotechar` | unset | Distinct opening and closing quote bytes |
 | `escapechar` | closing quote | Escape a quote or escape byte in a field |
@@ -64,8 +69,10 @@ byte, and it rejects an empty string because that spelling would be ambiguous
 with `missing`. It never writes data that the configured dialect would parse
 incorrectly.
 
-The delimiter and quote-related characters must be single ASCII bytes. A
-newline can be a character or string such as `"\r\n"`.
+Quote-related characters and `decimal` must be single ASCII characters, given
+as a `Char` or a one-character string. A multi-byte delimiter is written
+as-is, and a value containing its first byte is quoted. A newline can be a
+character or string such as `"\r\n"`. An unknown keyword is an `ArgumentError`.
 
 ```@example writing-quotes
 using CSV, DataStrings
@@ -107,7 +114,8 @@ String(take!(output))
 
 ## Gzip output
 
-`compress=:auto` writes gzip when a path ends in `.gz`. Use `compress=:gzip`
+`compress=:auto` writes gzip when a path ends in `.gz` (in any letter case).
+Use `compress=:gzip`
 to force gzip for any sink, or `compress=:none` to disable it. The compatibility
 forms `compress=true` and `compress=false` mean `:gzip` and `:none`.
 Compression is streamed to the sink.
@@ -147,9 +155,8 @@ transform disables parallel rendering so callback order stays stable.
 4 MiB. Increase it when one output row is larger. It is a safety bound, not a
 whole-file staging buffer.
 
-Writing is streaming. If a later row fails, the sink can contain the valid
-prefix written before the error. A replacement write to a seekable sink still
-removes any stale suffix from its old contents.
+Writing is streaming. If a later row fails, the sink contains the rows written
+before the error and nothing of the failing row.
 
 ## RowWriter
 

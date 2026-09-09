@@ -17,8 +17,9 @@ CSV.jl entry points. It requires Julia 1.10 or later.
 - Inferred text uses `DataStrings.DataString` by default. Short text is stored in
   the value. Long text can refer to the retained input buffer.
 - Typed value parsing uses the reviewed low-level kernels from Parsers 3.
-- Parse recovery produces structured `CSV.problems(file)` data. Applications
-  can select collection or fail-fast behavior.
+- Parse recovery produces structured `CSV.problems(file)` data. `on_error`
+  selects collection (the default), one summary warning (`:warn`), or
+  fail-fast `CSV.ParseError` (`:error`).
 - `CSV.Chunks` uses one stable schema for its complete row window.
 - Compatible Tables.jl releases can send a `Tables.Scan` projection, filter,
   type request, offset, and limit into the parser.
@@ -42,10 +43,9 @@ compatibility, source-memory behavior, and upgrade examples.
 
 ## Dependency and release status
 
-The rewrite uses released Parsers 3, InlineStrings 2, and Tables 1.14.
-DataStrings and DataDecimals 1.0 are pending General registration; their exact
-review revisions are centralized in `test/dependencies.jl`. Remove these pins
-and verify a fresh registry-only installation before tagging CSV 1.0.
+The rewrite uses released Parsers 3, InlineStrings 2, Tables 1.14, DataStrings
+1, and DataDecimals 1, all registered in General. Verify a fresh registry-only
+installation before tagging CSV 1.0.
 
 Default string columns now use the shared DataStrings package. They support
 column edits while preserving scalar values returned before an edit. CSV no
@@ -57,5 +57,3 @@ Default numeric inference remains unchanged. See [Decimal columns](decimals.md).
 
 All mandatory CI, downstream compatibility checks, and maintainer review remain
 release gates. This PR does not tag or register CSV itself.
-
-The documentation environment also pins JSON PR #480 at `bcb8e334682e8135c08913781bf8200832cf752e` until a JSON release supports Parsers 3. This is a docs dependency gate, not a CSV runtime dependency.

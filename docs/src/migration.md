@@ -17,13 +17,15 @@ must use an older Julia release.
 | Text values | InlineStrings.jl values by default | `DataStrings.DataString` by default | Pass `stringtype=String`, or load InlineStrings.jl and select its type |
 | Pooling | `(0.2, 500)` default policy | `pool=false` | Pass `pool=(0.2, 500)` to restore the old policy |
 | Empty unquoted field | Missing sentinel behavior could be disabled | Always `missing` | Use a quoted empty field for present empty text |
-| Problems | Warnings printed during recovery | Structured `CSV.problems(file)` | Inspect problems, or set `on_error=:error` |
+| Problems | Warnings printed during recovery | Structured `CSV.problems(file)` | Inspect problems, set `on_error=:warn` for one summary warning, or `on_error=:error` to throw `CSV.ParseError` |
 | Row limit | Could be approximate with multiple tasks | Exact at every thread count | Remove `ntasks=1` workarounds used only for exact limits |
 | Boolean inference | Accepted the 0.10 parser's broader spellings | Exact lowercase `true` and `false` | Add explicit `truestrings` and `falsestrings` as required |
 
 `DataStrings.DataString` is an `AbstractString`. Convert one value with `String(x)`
 when a consumer requires `String`. Use `stringtype=String` when all text values
-must own their bytes.
+must own their bytes. An explicit `types=String`, alone or per column, still
+returns `String` columns as it did in 0.10; `stringtype` applies to inferred
+text only.
 
 ## Removed, replaced, or preferred reader options
 
@@ -49,10 +51,10 @@ The `PosLenString` output type is retired. Use `DataStrings.DataString`, `String
 or an InlineStrings.jl type.
 
 `types`, `select`, `drop`, and `pool` no longer accept functions. Use type or
-policy values, vectors, or dictionaries. Use list forms for `select` and
-`drop`; they work on `CSV.File`, `CSV.lazy`, `CSV.Rows`, and `CSV.Chunks` and
-return a unique file-ordered column set. Use `Tables.Scan` for a serializable
-projection and filter expression.
+policy values, vectors, or dictionaries. `select` and `drop` take a list, one
+name or index, or a `Regex`; they work on `CSV.File`, `CSV.lazy`, `CSV.Rows`,
+and `CSV.Chunks` and return a unique file-ordered column set. Use
+`Tables.Scan` for a serializable projection and filter expression.
 
 ## Table access
 
@@ -77,8 +79,10 @@ rules are:
 - a `types` vector must match the header width; and
 - `validate=true` rejects dictionary keys that do not name an input column.
 
-Set `on_error=:error` for fail-fast behavior. Use `maxproblems` to cap retained
-problem objects.
+Set `on_error=:warn` for one summary warning per read, or `on_error=:error`
+for fail-fast behavior; the latter throws `CSV.ParseError`, which carries the
+source-earliest `CSV.Problem`. Use `maxproblems` to cap retained problem
+objects.
 
 ## Source and memory behavior
 
@@ -110,14 +114,17 @@ name that conflicts with a data column is an error.
 | explicit compression choice for `.gz` | `compress=:auto` detects the path suffix by default |
 | `quotestrings=true` | Still accepted; `quotestyle=:all` is the explicit form |
 | ordinary conditional quoting | `quotestyle=:minimal`, the default |
-| `table |> CSV.write(path)` | `CSV.write(path, table)` |
+| `table |> CSV.write(path)` | Still accepted; `CSV.write(path, table)` is the direct form |
+| `delim="::"` (multi-character) | Still accepted on both the reader and the writer |
+| `CSV.write(io, table)` seeking a seekable `IO` to its start | An `IO` is written at its current position, like `Base.write` |
 | one base path with `partition=true` | Still accepted and appends `_1`, `_2`, and so on; a sink vector gives explicit names |
 | `transform=(column, value) -> value` | Still accepted; the compatibility path runs sequentially in row-major order |
 | `bufsize` | Still accepted; it is the maximum rendered row size, not a whole-file buffer size |
 | `header=true` or `header=false` | Still accepted; `writeheader` is the clearer control |
 
-The writer accepts only a one-byte delimiter. `quotestyle=:none` rejects values
-that require structural quoting instead of writing ambiguous data.
+`quotestyle=:none` rejects values that require structural quoting instead of
+writing ambiguous data. Unknown writer keywords are an `ArgumentError`.
+`CSV.write(sink, CSV.Chunks(source))` streams every batch under one header.
 
 An empty string is quoted. `missing` uses `missingstring` and is unquoted by
 default. This guarantees a read/write distinction between present empty text
@@ -129,7 +136,7 @@ deterministic across `ntasks` values.
 ## Shared data types and released dependencies
 
 CSV now uses Parsers 3, InlineStrings 2, Tables 1.14, DataStrings 1, and
-DataDecimals 1. DataStrings and DataDecimals initial registrations are pending.
+DataDecimals 1, all registered in General.
 The draft rewrite's `CSV.CompactString` has moved to `DataStrings.DataString`.
 Import DataStrings when referring to that type. Text columns are mutable
 `DataStrings.StringVector` values. Shared string methods belong in DataStrings.
@@ -146,8 +153,7 @@ metadata independently of the opaque Parsers.DatePattern handle.
 
 Before the 1.0.0 tag:
 
-- Wait for DataStrings and DataDecimals registration, remove their temporary
-  pins, and verify a fresh registry-only installation.
+- Verify a fresh registry-only installation resolves every dependency.
 - Change 1.0.0-DEV only on the final reviewed release commit.
 - Run the full platform matrix, lower-bound Julia tests, deterministic fuzz,
   strict documentation, and downstream compatibility tests.
@@ -155,5 +161,3 @@ Before the 1.0.0 tag:
   packages bounded to CSV 0.10 will not select 1.0 automatically.
 - Complete maintainer review and verify release CI, TagBot, documentation, and
   Codecov on the final source commit.
-
-The documentation environment also pins JSON PR #480 at `bcb8e334682e8135c08913781bf8200832cf752e` until a JSON release supports Parsers 3. This is a docs dependency gate, not a CSV runtime dependency.

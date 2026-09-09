@@ -56,7 +56,7 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v3
-      - name: Install release dependencies and pending review sources
+      - name: Install dependencies
         run: julia --color=yes --project=. test/dependencies.jl
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
