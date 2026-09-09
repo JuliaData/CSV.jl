@@ -1,6 +1,6 @@
 # Writer battery: round-trips through CSV.File, explicit byte contracts,
 # and byte determinism across thread counts.
-using Test, Dates, Tables, CodecZlib, FilePathsBase, Random, InlineStrings, PooledArrays
+using Test, Dates, Tables, CodecZlib, FilePathsBase, Random, InlineStrings, PooledArrays, DataDecimals
 using Durations: Timestamp
 using CSV
 const W = CSV
@@ -813,7 +813,7 @@ end
         col = T.(["", "a", "b", "c"])
         push!(corpus, col, Union{Missing,T}[missing, col[2], col[3], col[4]], PooledArray(col))
     end
-    push!(corpus, CSV.File(IOBuffer("x\n1.23\n2.45\n3.00\n4.56\n"); inferdecimal=true).x)
+    push!(corpus, CSV.File(IOBuffer("x\n1.23\n2.45\n3.00\n4.56\n"); types=DataDecimals.Decimal64{2}).x)
     parsed = CSV.File(IOBuffer("s,t\nhi,x\n\"\",x\nthere,y\n,\n"); pool=false)
     push!(corpus, parsed.s, parsed.t, PooledArray(["a", "a,b", "c", ""]),
           PooledArray(Union{Missing,String}[missing, "a", "b", "a"]))

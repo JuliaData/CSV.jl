@@ -150,10 +150,11 @@ The draft rewrite's `CSV.CompactString` has moved to `DataStrings.DataString`.
 Import DataStrings when referring to that type. Text columns are mutable
 `DataStrings.StringVector` values. Shared string methods belong in DataStrings.
 
-Explicit decimal schemas reject values that need rounding. Extra trailing zeros
-are exact and accepted. Recoverable failures use the normal missing/problem
-policy; `strict=true` throws. [Decimal columns](decimals.md) describes opt-in
-inference. Ordinary Float64 inference stays unchanged.
+CSV does not infer decimal types. With DataDecimals loaded, an explicitly
+requested type such as `types=Dict(:amount => DataDecimals.Decimal64{2})`
+parses exactly from the field bytes: a value that needs rounding is a problem
+(`strict=true` throws), and extra trailing zeros are exact. Fractional numbers
+otherwise infer as `Float64`.
 
 Tables.Scan now resolves through Tables 1.14 in every CI job. CSV retains format
 metadata independently of the opaque Parsers.DatePattern handle.

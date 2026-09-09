@@ -1,6 +1,5 @@
 # Compare with the original PR head in a separate environment, using `old` there
-# and `new` here. Run with the same Julia version and thread count. See
-# docs/research/release-review.md for exact baseline dependency revisions.
+# and `new` here. Run with the same Julia version and thread count.
 # julia --project=test -t4 bench/release_review.jl new
 using CSV
 println("Julia=", VERSION, " threads=", Threads.nthreads(), " machine=", Sys.MACHINE)
@@ -42,6 +41,4 @@ if only(ARGS) == "new"
     @eval using DataDecimals
     D = DataDecimals.Decimal64{2}
     measure("decimal_explicit", () -> CSV.File(numeric; delim=',', types=Dict(:amount=>D)))
-    measure("decimal_inference", () -> CSV.File(numeric; delim=',', inferdecimal=true))
-    measure("strings_inference", () -> CSV.File(strings; delim=',', inferdecimal=true))
 end

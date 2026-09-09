@@ -30,7 +30,6 @@ Every dependency resolves from General (Parsers 3, InlineStrings 2, Tables
 1.14, DataStrings 1, DataDecimals 1). Keep the runtime in one module and
 validate registry resolution before a 1.0 tag.
 
-For exact numeric columns, supply `types=Dict(:amount => DataDecimals.Decimal64{2})`.
-Use `inferdecimal=true` to opt into full-column consistent-scale inference for
-File and Chunks. It is a formatting heuristic, not currency detection. See
-`docs/src/decimals.md` for its exactness and fallback rules.
+For exact numeric columns, load DataDecimals and supply
+`types=Dict(:amount => DataDecimals.Decimal64{2})`. CSV does not infer decimal
+types.

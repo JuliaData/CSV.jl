@@ -2886,6 +2886,8 @@ const NARROW_TYPES = Dict{Type, Type}(
     UInt8 => Int64, UInt16 => Int64, UInt32 => Int64, UInt64 => Int128,
     Float16 => Float64, Float32 => Float64)
 _nativetype(T::Type) = get(NARROW_TYPES, T, T)
+# Extensions register exact parsers for their scalar types (DataDecimals).
+_parseable(::Type) = false
 _customparseable(T::Type) = isconcretetype(T) &&
     (hasmethod(Base.tryparse, Tuple{Type{T}, String}) ||
      hasmethod(Base.parse, Tuple{Type{T}, String}))
@@ -2937,6 +2939,7 @@ function _columndecision(T)
                 parsetype in (Int64, Int128, Float64, Bool, Char, Date, DateTime, Time,
                               String, BigInt, BigFloat, Base.UUID) ||
                 parsetype <: Timestamp ||
+                _parseable(parsetype) ||
                 _customparseable(parsetype)
     parseable || throw(ArgumentError("unsupported column type $parsetype"))
     resulttype = haskey(NARROW_TYPES, requested) ? requested : nothing
@@ -3119,7 +3122,6 @@ function parse(buf::Vector{UInt8};
                types=nothing,
                dateformat=nothing,
                decimal::Char='.',
-               inferdecimal::Bool=false,
                truestrings=nothing,
                falsestrings=nothing,
                sentinels=nothing,
@@ -3169,7 +3171,7 @@ function parse(buf::Vector{UInt8};
                              stripwhitespace, groupmark)
     sc = resolvescanner(d, fastindex, scanner)
     return _parse(buf, d, baseopts, sc, tm, chunkbytes, parallel, tasklimit, maxproblems,
-                  on_error, validate, inferdecimal, reportstructural, nsample, limit,
+                  on_error, validate, reportstructural, nsample, limit,
                   header, types, select, colopts, columnplan, rowmask, index)
 end
 
@@ -3180,7 +3182,7 @@ end
 Base.@nospecializeinfer function _parse(buf::Vector{UInt8}, d::Dialect, baseopts::ValueOpts, sc::Symbol,
                 @nospecialize(tm::Union{Nothing, Dict{Type, Type}}), chunkbytes::Int, parallel::Bool,
                 tasklimit::Int, maxproblems::Int, on_error::Symbol, validate::Bool,
-                inferdecimal::Bool, reportstructural::Bool,
+                reportstructural::Bool,
                 @nospecialize(nsample::Union{Nothing, Int}),
                 @nospecialize(limit::Union{Nothing, Int}), @nospecialize(header), @nospecialize(types),
                 @nospecialize(select), colopts::Union{Nothing, Vector{ValueOpts}},
@@ -3225,7 +3227,7 @@ Base.@nospecializeinfer function _parse(buf::Vector{UInt8}, d::Dialect, baseopts
     # takes this path.
     if !d.lenient && any(ci -> ci.barequote, allchunks)
         return _parse(buf, withlenient(d), baseopts, :lenient, tm, chunkbytes, parallel,
-                      tasklimit, maxproblems, on_error, validate, inferdecimal,
+                      tasklimit, maxproblems, on_error, validate,
                       reportstructural, nsample, limit, header, types, select, colopts,
                       columnplan, rowmask, nothing)
     end
@@ -3282,12 +3284,6 @@ Base.@nospecializeinfer function _parse(buf::Vector{UInt8}, d::Dialect, baseopts
     # -- select initial column types ------------------------------------------
     seed = Union{Nothing, Type}[d.parsetype for d in plan.columns]
     userprovided = [d.parsetype !== nothing for d in plan.columns]
-    if inferdecimal
-        _inferdecimaltypes!(seed, buf, chunks, plan; limit, rowmask)
-        for j in plan.sources
-            !userprovided[j] && seed[j] !== nothing && (seed[j] = _maptype(tm, seed[j]))
-        end
-    end
     wantmissing = [d.declaredmissing for d in plan.columns]
     # typed columns whose sample shows a missing cell get union-direct finals
     # (the parse writes Vector{Union{T,Missing}} in place; conversion is never

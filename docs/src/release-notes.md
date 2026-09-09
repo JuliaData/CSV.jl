@@ -60,9 +60,9 @@ Default string columns now use the shared DataStrings package. They support
 column edits while preserving scalar values returned before an edit. CSV no
 longer contains its own scalar string implementation.
 
-Explicit DataDecimals types parse directly from byte spans with exact scale
-checks. `inferdecimal=true` adds optional full-column consistent-scale detection.
-Default numeric inference remains unchanged. See [Decimal columns](decimals.md).
+With DataDecimals loaded, an explicitly requested decimal type parses directly
+from field bytes with exact scale checks. CSV does not infer decimal types;
+fractional numbers infer as `Float64`.
 
 All mandatory CI, downstream compatibility checks, and maintainer review remain
 release gates. This PR does not tag or register CSV itself.

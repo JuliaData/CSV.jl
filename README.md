@@ -68,8 +68,7 @@ changes and own the final approval.
 - [DLMReader.jl](https://github.com/sl-solution/DLMReader.jl) reads delimited
   data and integrates with InMemoryDatasets.jl.
 
-The 1.0 rewrite uses shared string columns from DataStrings.jl and supports
-exact DataDecimals.jl schemas. Decimal inference is optional:
-`CSV.File(source; inferdecimal=true)` selects decimals for columns with a
-consistent written scale. Default numeric inference remains Float64. See the
-[decimal guide](https://csv.juliadata.org/dev/decimals/) for the rules and cost.
+The 1.0 rewrite uses shared string columns from DataStrings.jl. With
+DataDecimals.jl loaded, an explicitly requested decimal type such as
+`types=Dict(:amount => DataDecimals.Decimal64{2})` parses exactly; CSV does not
+infer decimal types, and fractional numbers infer as `Float64`.

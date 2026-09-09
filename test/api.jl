@@ -2287,14 +2287,14 @@ end
     for parallel in (false, true), chunkbytes in (16, 4096), reverseorder in (false, true)
         values = reverseorder ? [wide, fine] : [fine, wide]
         src = "t,n\n" * join(("$v,$i" for (i, v) in enumerate(values)), '\n') * "\n"
-        for nsample in (1, 100), inferdecimal in (false, true)
-            f = A.File(IOBuffer(src); parallel, chunkbytes, nsample, inferdecimal)
+        for nsample in (1, 100)
+            f = A.File(IOBuffer(src); parallel, chunkbytes, nsample)
             @test eltype(f.t) === A.DataString
             @test f.t == values
             @test isempty(A.problems(f))
             # A filter uses the staged driver. Both retained rows must take
             # part in the exactness check, irrespective of chunk order.
-            f = A.File(IOBuffer(src); parallel, chunkbytes, nsample, inferdecimal,
+            f = A.File(IOBuffer(src); parallel, chunkbytes, nsample,
                        scan=Tables.Scan(filter=Tables.col(:n) > 0))
             @test f.t == values
             @test isempty(A.problems(f))

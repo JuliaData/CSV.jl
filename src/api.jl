@@ -43,7 +43,7 @@ const _DIALECTKW = (:quotechar, :openquotechar, :closequotechar, :escapechar,
 const _VALUEKW = (:dateformat, :decimal, :truestrings, :falsestrings,
                   :stripwhitespace, :groupmark)
 const _INDEXKW = (:fastindex, :scanner)
-const _DRIVERKW = (:maxproblems, :nsample, :typemap, :inferdecimal)
+const _DRIVERKW = (:maxproblems, :nsample, :typemap)
 
 function _pickkwargs(kw, allowed)
     return NamedTuple(p for p in pairs(kw) if p.first in allowed)
@@ -51,6 +51,8 @@ end
 
 const _REMOVED_KW = Dict{Symbol, String}(
     :silencewarnings => "use on_error=:collect to silence warnings; problems(f) returns retained problems",
+    :inferdecimal => "CSV does not infer decimal types; request one with types, for example " *
+                     "types=Dict(:amount => DataDecimals.Decimal64{2})",
     :debug => "removed in 1.0; parse problems and the structural index are inspectable directly",
     :lazystrings => "use stringtype=DataStrings.DataString (the default) or stringtype=String",
     :tasks => "use ntasks",
@@ -619,7 +621,6 @@ struct ReadSettings
     maxproblems::Int
     nsample::Union{Nothing, Int}
     typemap::Union{Nothing, Dict{Type, Type}}
-    inferdecimal::Bool
     validate::Bool
     colopts::Union{Nothing, Vector{ValueOpts}}
 end
@@ -860,7 +861,7 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
     settings = ReadSettings(cb, parallel, ntasks, resolvescanner(d, fastindex, scanner),
                             get(kw, :maxproblems, 10_000), nsample,
                             _normalizetypemap(get(kw, :typemap, nothing)::Union{Nothing, AbstractDict}),
-                            get(kw, :inferdecimal, false)::Bool, validate, colopts)
+                            validate, colopts)
     return Prepared(buf, bi, names, length(names), lim, opts, d, headerlog, headerrefs, settings)
 end
 
@@ -870,7 +871,6 @@ function _parseprepared(p::Prepared, plan::ColumnPlan;
                         parallel::Bool=p.settings.parallel,
                         ntasks::Union{Nothing, Int}=p.settings.ntasks,
                         validate::Bool=p.settings.validate,
-                        inferdecimal::Bool=p.settings.inferdecimal,
                         maxproblems::Int=p.settings.maxproblems,
                         limit::Union{Nothing, Int}=p.limit,
                         rowmask::Union{Nothing, Vector{Bool}}=nothing,
@@ -879,7 +879,7 @@ function _parseprepared(p::Prepared, plan::ColumnPlan;
     settings = p.settings
     return _parse(p.buf, p.d, p.opts, settings.scanner, settings.typemap,
                   settings.chunkbytes, parallel, tasklimit, maxproblems, :collect,
-                  validate, inferdecimal, reportstructural, settings.nsample, limit,
+                  validate, reportstructural, settings.nsample, limit,
                   p.names, nothing, nothing, settings.colopts, plan, rowmask, p.bi)
 end
 
@@ -1002,18 +1002,16 @@ function _filefromprepared(p::Prepared, nm::String; types=nothing, select=nothin
                            on_error::Symbol=:warn, maxproblems::Int=10_000,
                            parallel::Bool=Threads.nthreads() > 1, validate::Bool=true,
                            ntasks::Union{Nothing, Int}=nothing,
-                           inferdecimal::Bool=p.settings.inferdecimal,
                            available::Union{Nothing, Vector{Int}}=nothing)
     return _filefromprepared(p, nm, types, select, drop, pool, downcast, stringtype,
-                             on_error, maxproblems, parallel, validate, ntasks,
-                             inferdecimal, available)
+                             on_error, maxproblems, parallel, validate, ntasks, available)
 end
 
 Base.@nospecializeinfer function _filefromprepared(p::Prepared, nm::String, @nospecialize(types),
                            @nospecialize(select), @nospecialize(drop), @nospecialize(pool),
                            downcast::Bool, @nospecialize(stringtype::Type),
                            on_error::Symbol, maxproblems::Int, parallel::Bool, validate::Bool,
-                           @nospecialize(ntasks::Union{Nothing, Int}), inferdecimal::Bool,
+                           @nospecialize(ntasks::Union{Nothing, Int}),
                            @nospecialize(available::Union{Nothing, Vector{Int}}))
     viewnames = available === nothing ? p.names : p.names[available]
     plan = settlecolumns(p; select, drop, types, available, validate)
@@ -1025,7 +1023,7 @@ Base.@nospecializeinfer function _filefromprepared(p::Prepared, nm::String, @nos
     # belongs to this File call. Override every value-driver option that this
     # method exposes; in particular, a LazyFile prepared with defaults must not
     # silently cap a later larger maxproblems request at 10,000.
-    t = _parseprepared(p, plan; parallel, ntasks, validate, inferdecimal,
+    t = _parseprepared(p, plan; parallel, ntasks, validate,
                        maxproblems=max(maxproblems, 1))
     headerlog = _headerproblems(p.buf, p.headerrefs, p.opts, max(maxproblems, 1))
     t, firstproblem = _mergeproblems(t, headerlog, maxproblems)
@@ -1383,7 +1381,7 @@ function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
 end
 
 function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Bool=false,
-                         stringtype::Type=DataString, inferdecimal::Bool=false,
+                         stringtype::Type=DataString,
                          on_error::Symbol=:warn, maxproblems::Int=10_000,
                          header::Union{Bool, Integer, AbstractVector}=true,
                          skipto::Union{Nothing, Integer}=nothing,
@@ -1460,13 +1458,6 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
     # applied after the parse by `_finishstrings`
     seed = Union{Nothing, Type}[_requestedstring(d) === nothing ? accessparsetype(d) : String
                                 for d in plan.columns]
-    if inferdecimal
-        for (j, (ci, lr)) in enumerate(rows)
-            seed[j] === nothing || continue
-            spans = (fieldspan(ci, lr, f) for f in startf:min(nfields(ci, lr), startf + n - 1))
-            seed[j] = _decimalcandidate(buf, spans, colopts[j])
-        end
-    end
     log = ProblemLog(maxproblems)
     cols = AbstractVector[_transposedcolumn(buf, r[1], r[2], startf, n, seed[j], colopts[j],
                                             log, j, plan.columns[j].declaredmissing)
@@ -2096,7 +2087,7 @@ function Base.show(io::IO, lf::LazyFile)
     end
 end
 
-function File(lf::LazyFile; inferdecimal::Bool=false, types=nothing, select=nothing, drop=nothing, pool=DEFAULT_POOL,
+function File(lf::LazyFile; types=nothing, select=nothing, drop=nothing, pool=DEFAULT_POOL,
               downcast::Bool=false, stringtype::Type=DataString, strict::Bool=false,
               on_error::Symbol=strict ? :error : :warn,
               maxwarnings::Union{Nothing, Int}=nothing,
@@ -2111,8 +2102,7 @@ function File(lf::LazyFile; inferdecimal::Bool=false, types=nothing, select=noth
     _checkstringtype(stringtype)
     return _filefromprepared(getfield(lf, :prepared), getfield(lf, :name); types, select, drop,
                              pool, downcast, stringtype, on_error, maxproblems, parallel, ntasks,
-                             validate, inferdecimal,
-                             available=getfield(lf, :sourceindices))
+                             validate, available=getfield(lf, :sourceindices))
 end
 
 # ---------------------------------------------------------------------------
@@ -2349,7 +2339,7 @@ function Base.iterate(c::Chunks, state::Int=1)
     return f, next
 end
 
-function Chunks(source; types=nothing, inferdecimal::Bool=false, ntasks::Union{Nothing, Int}=nothing,
+function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
                 maxproblems::Int=10_000, stringtype::Type=DataString,
                 pool=DEFAULT_POOL, select=nothing, drop=nothing, strict::Bool=false,
                 on_error::Symbol=strict ? :error : :warn, kw...)
@@ -2381,7 +2371,6 @@ function Chunks(source; types=nothing, inferdecimal::Bool=false, ntasks::Union{N
     plan = settlecolumns(p; select, drop, types,
                          validate=get(kw, :validate, true))
     seed = Union{Nothing, Type}[d.parsetype for d in plan.columns]
-    inferdecimal && _inferdecimaltypes!(seed, p.buf, chunks, plan)
     # One stable schema for the whole row window: seed from the usual
     # stratified sample, then validate every cell of every selected column
     # with the monomorphic scalar kernels (promoting on the first conflict).

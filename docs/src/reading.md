@@ -160,7 +160,11 @@ the header. Function-valued `types` is not supported in 1.0. A requested
 `Vector{String}` or `Vector{Union{Missing, String}}` when pooling is off.
 With pooling, its levels use `String`. Request `DataStrings.DataString` to keep the
 zero-copy column, or an InlineStrings.jl type when that package is loaded.
-`stringtype` governs inferred text only.
+`stringtype` governs inferred text only. With DataDecimals.jl loaded, an
+explicitly requested decimal type such as `types=Dict(:amount =>
+DataDecimals.Decimal64{2})` parses exactly from the field bytes: a value that
+needs rounding is a problem. CSV does not infer decimal types; fractional
+numbers infer as `Float64`.
 
 `select` and `drop` accept lists of indices, names, or a Boolean mask, one
 name or index, or a `Regex` matched against the column names. They are

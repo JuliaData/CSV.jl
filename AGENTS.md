@@ -14,10 +14,10 @@ owns reader options and source handling. `scan.jl` integrates Tables.Scan.
 DataStrings owns string scalars and columns; `strings.jl` contains CSV builder
 glue only. Use the trusted column constructor only after CSV proves payload
 ranges and missing-value invariants. Retained scalar values must survive column
-edits. DataDecimals owns decimal arithmetic and conversion; `decimals.jl` owns
-CSV's exactness and inference policy. Infer scale from field bytes before any
-rounding or Float64 conversion. Full-column decimal profiling must respect
-selection, row windows, and filter masks.
+edits. DataDecimals owns decimal arithmetic and conversion; the
+`CSVDataDecimalsExt` extension owns CSV's exactness policy for explicitly
+requested decimal types (it checks the written scale from field bytes before
+any rounding). CSV does not infer decimal types.
 
 Parsers.DatePattern is opaque. Retain date/time inference metadata when compiling
 a format instead of reading parser storage fields. Use Tables.resolve and the

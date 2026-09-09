@@ -572,10 +572,6 @@ const _TRUE = codeunits("true"); const _FALSE = codeunits("false")
             o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
             _appendscalar!(out, s, o)
         end
-    elseif x isa DataDecimals.AbstractDecimal
-        s = string(x)
-        o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
-        _appendscalar!(out, s, o)
     elseif x isa Dates.TimeType
         if o.dateformat === nothing && x isa Union{Date, DateTime, Timestamp}
             if !any(_numericsyntax, (o.delim, o.oq, o.cq)) &&
@@ -606,7 +602,11 @@ const _TRUE = codeunits("true"); const _FALSE = codeunits("false")
         any(_numericsyntax, (o.delim, o.oq, o.cq)) ? _appendscalar!(out, string(x), o) :
                                                     _appendint!(out, x)
     elseif x isa Number
-        _appendscalar!(out, string(x), o)
+        # DataDecimals and other numeric scalars print through Base; the
+        # decimal separator applies to their radix point as it does to floats
+        s = string(x)
+        o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
+        _appendscalar!(out, s, o)
     else
         _appendstring!(out, string(x), o)
     end

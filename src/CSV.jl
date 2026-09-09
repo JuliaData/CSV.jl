@@ -18,7 +18,6 @@ using Tables
 # These files form one `CSV` module. The split keeps each implementation area
 # small enough to read without adding private module boundaries.
 include("core.jl")       # indexing, values, parsing, and columns
-include("decimals.jl")   # exact decimal parsing and optional scale inference
 include("tables.jl")     # Tables.jl support and row access
 include("api.jl")        # File, read, Rows, Chunks, and option handling
 include("write.jl")      # write and RowWriter
