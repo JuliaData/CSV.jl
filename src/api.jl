@@ -88,9 +88,9 @@ function _sentinels(missingstring)
     return isempty(sentinels) ? nothing : sentinels
 end
 
-function _probedelim(dialectkw)
-    quotechar = haskey(dialectkw, :quotechar) ? dialectkw.quotechar : '"'
-    openquotechar = haskey(dialectkw, :openquotechar) ? dialectkw.openquotechar : nothing
+Base.@nospecializeinfer function _probedelim(@nospecialize(dialectkw))
+    quotechar = get(dialectkw, :quotechar, '"')
+    openquotechar = get(dialectkw, :openquotechar, nothing)
     oq = something(openquotechar, quotechar)
     for c in ('\x1f', '\x1e', '\x1d')
         c == oq || return c
@@ -246,10 +246,14 @@ end
 # Quote-aware sample clip. When bounded, discard the final raw row because it
 # may be cut. Row boundaries depend on quote syntax, not on the delimiter.
 function _sample(buf::Vector{UInt8}, samplebytes::Int; start::Int=1, dialectkw...)
+    d = Dialect(; delim=_probedelim(dialectkw), dialectkw...)
+    return _sample(buf, samplebytes, start, d)
+end
+
+function _sample(buf::Vector{UInt8}, samplebytes::Int, start::Int, d::Dialect)
     samplebytes >= 1 || throw(ArgumentError("samplebytes must be ≥ 1 (got $samplebytes)"))
     start = clamp(start, 1, length(buf) + 1)
     length(buf) - start + 1 <= samplebytes && return start == 1 ? buf : buf[start:end]
-    d = Dialect(; delim=_probedelim(dialectkw), dialectkw...)
     limit = samplebytes
     while true
         sample = buf[start:min(start + limit - 1, length(buf))]
@@ -269,13 +273,10 @@ function _sample(buf::Vector{UInt8}, samplebytes::Int; start::Int=1, dialectkw..
 end
 
 function _scoredelim(buf::Vector{UInt8}, delim::Char, datastart::Int,
-                     dialectkw::NamedTuple, indexkw::NamedTuple)
-    quoted = haskey(dialectkw, :quoted) ? dialectkw.quoted : true
-    quotechar = haskey(dialectkw, :quotechar) ? dialectkw.quotechar : '"'
-    openquotechar = haskey(dialectkw, :openquotechar) ? dialectkw.openquotechar : nothing
-    quoted && delim == something(openquotechar, quotechar) && return (0.0, 0, 0, 0)
-    d = Dialect(; delim, dialectkw...)
-    bi = index(buf, d; datastart, parallel=false, indexkw...)
+                     dialect::Dialect, fastindex::Bool, scanner::Symbol)
+    dialect.quoted && UInt8(delim) == dialect.oq && return (0.0, 0, 0, 0)
+    d = withdelim(dialect, UInt8(delim))
+    bi = index(buf, d; datastart, parallel=false, fastindex, scanner)
     counts = Int[]
     for ci in bi.chunks, lr in 1:totalrows(ci)
         push!(counts, nfields(ci, lr))
@@ -290,17 +291,16 @@ function _scoredelim(buf::Vector{UInt8}, delim::Char, datastart::Int,
     return (count(==(modal), voters) / length(voters), modal, first(counts), length(counts))
 end
 
-function _detectdelim(sample::Vector{UInt8}, dialectkw::NamedTuple, indexkw::NamedTuple)
+function _detectdelim(sample::Vector{UInt8}, d::Dialect, fastindex::Bool, scanner::Symbol)
     # Validate user syntax once. Candidate-only quote collisions are skipped in
     # `_scoredelim`; all other invalid options must reach the caller.
-    d0 = Dialect(; delim=_probedelim(dialectkw), dialectkw...)
     datastart = _datastart(sample)
     # scoring reads at most 11 rows per candidate, but indexes whatever it is
     # given — trim to the first 12 rows once (row boundaries are quote-aware
     # and delimiter-independent) so candidates don't each index the full sample
     stop, rows = datastart, 0
     while stop <= length(sample) && rows < 12
-        stop = nextrowstart(sample, stop, length(sample), d0, false, true)
+        stop = nextrowstart(sample, stop, length(sample), d, false, true)
         rows += 1
     end
     scoresample = stop > length(sample) ? sample : sample[1:stop - 1]
@@ -308,7 +308,7 @@ function _detectdelim(sample::Vector{UInt8}, dialectkw::NamedTuple, indexkw::Nam
     headercandidate = false
     for c in DELIM_CANDIDATES
         consistency, fields, firstfields, nrows = _scoredelim(scoresample, c, datastart,
-                                                              dialectkw, indexkw)
+                                                              d, fastindex, scanner)
         # a real delimiter splits the FIRST row and the data rows the same way:
         # a candidate that only appears in the header (a space in "Created
         # Date" over one-word data rows) is not represented in the data
@@ -336,7 +336,7 @@ function _detectdelim(sample::Vector{UInt8}, dialectkw::NamedTuple, indexkw::Nam
     # for field-consistency evidence) follow 0.10's byte-count tiers exactly,
     # so files that detected one way for years keep detecting that way
     delim = (best[1] && best[2]) ? bestdelim :
-            _detectdelim_bytecounts(scoresample, datastart, dialectkw, bestdelim,
+            _detectdelim_bytecounts(scoresample, datastart, d, bestdelim,
                                     best[1] && headercandidate)
     # Space-ALIGNED files (#853): a run of blanks between fields is one
     # separator. Score the (' ', ignorerepeated=true) reading last, and elect it
@@ -344,14 +344,14 @@ function _detectdelim(sample::Vector{UInt8}, dialectkw::NamedTuple, indexkw::Nam
     # won (so the file was going to be space-delimited anyway — with a column
     # per blank), and the repeated reading is at least as consistent with
     # fewer, ≥2 fields; or nothing structured the sample at all.
-    if !get(dialectkw, :ignorerepeated, false)
+    if !d.ignorerepeated
         cons, fields, firstfields, nrows = _scoredelim(scoresample, ' ', datastart,
-                                                       merge(dialectkw, (; ignorerepeated=true)),
-                                                       indexkw)
+                                                       withdelim(d, d.delim::UInt8, true),
+                                                       fastindex, scanner)
         aligned = nrows >= 2 && cons > 0 && fields > 1 && fields == firstfields
         if aligned && (delim == ' ' || !best[1])
             plaincons, plainfields, _, _ = delim == ' ' ?
-                _scoredelim(scoresample, ' ', datastart, dialectkw, indexkw) : (0.0, typemax(Int), 0, 0)
+                _scoredelim(scoresample, ' ', datastart, d, fastindex, scanner) : (0.0, typemax(Int), 0, 0)
             (cons >= plaincons && fields < plainfields) && return (' ', true)
         end
     end
@@ -364,19 +364,16 @@ end
 # the header, SPACE excluded; else ','. A one-row sample goes directly to tier
 # 3 so a header phrase cannot elect space. `fallback` is the consistency
 # scorer's data-only pick, used when it found real data evidence.
-function _detectdelim_bytecounts(sample::Vector{UInt8}, datastart::Int, dialectkw::NamedTuple,
+function _detectdelim_bytecounts(sample::Vector{UInt8}, datastart::Int, d::Dialect,
                                  fallback::Char, havedataevidence::Bool)
-    quotechar = haskey(dialectkw, :quotechar) ? dialectkw.quotechar : '"'
-    oq = UInt8(something(haskey(dialectkw, :openquotechar) ? dialectkw.openquotechar : nothing, quotechar))
-    cq = UInt8(something(haskey(dialectkw, :closequotechar) ? dialectkw.closequotechar : nothing, quotechar))
-    eq = UInt8(something(haskey(dialectkw, :escapechar) ? dialectkw.escapechar : nothing, Char(cq)))
+    oq, cq, eq = d.oq, d.cq, d.e
     len = length(sample)
     hcounts = zeros(Int, 256); counts = zeros(Int, 256)
     pos = datastart; nlines = 0; inheader = true; parsedany = false; lastnl = false
     while pos <= len && nlines < 11
         parsedany = true
         b = sample[pos]; pos += 1
-        if b == oq
+        if d.quoted && b == oq
             while pos <= len
                 b = sample[pos]; pos += 1
                 if b == eq
@@ -451,8 +448,10 @@ function sniff(source; samplebytes::Int=1 << 16, missingstring=nothing,
     indexkw = _pickkwargs(kw, _INDEXKW)
     driverkw = _pickkwargs(kw, _DRIVERKW)
     buf = resolvesource(source; buffer_in_memory, prefetch)
-    sample = _sample(buf, samplebytes; dialectkw...)
-    bestdelim, ir = _detectdelim(sample, dialectkw, indexkw)
+    d = Dialect(; delim=_probedelim(dialectkw), dialectkw...)
+    sample = _sample(buf, samplebytes, 1, d)
+    bestdelim, ir = _detectdelim(sample, d, get(indexkw, :fastindex, true),
+                               get(indexkw, :scanner, :auto))
     ir && (dialectkw = merge(dialectkw, (; ignorerepeated=true)))
     sentinels = _sentinels(missingstring)
     parsekw = merge(dialectkw, valuekw, indexkw, driverkw,
@@ -474,10 +473,10 @@ end
 
 # delimiter-only sniff for File(delim=nothing) — no second parse
 # -> (delim, ignorerepeated)
-function _sniffdelim(buf::Vector{UInt8}, samplebytes::Int,
-                     dialectkw::NamedTuple, indexkw::NamedTuple; start::Int=1)
-    sample = _sample(buf, samplebytes; start, dialectkw...)
-    return _detectdelim(sample, dialectkw, indexkw)
+function _sniffdelim(buf::Vector{UInt8}, samplebytes::Int, start::Int,
+                     d::Dialect, fastindex::Bool, scanner::Symbol)
+    sample = _sample(buf, samplebytes, start, d)
+    return _detectdelim(sample, d, fastindex, scanner)
 end
 
 # ---------------------------------------------------------------------------
@@ -609,6 +608,21 @@ end
 
 _firstlive(chunks) = findfirst(ci -> nrows(ci) > 0, chunks)
 
+# Fixed settings cross the API/kernel seam. Optional values remain fields,
+# rather than changing the type of a keyword NamedTuple at every call site.
+struct ReadSettings
+    chunkbytes::Int
+    parallel::Bool
+    ntasks::Union{Nothing, Int}
+    scanner::Symbol
+    maxproblems::Int
+    nsample::Union{Nothing, Int}
+    typemap::Union{Nothing, Dict{Type, Type}}
+    inferdecimal::Bool
+    validate::Bool
+    colopts::Union{Nothing, Vector{ValueOpts}}
+end
+
 struct Prepared
     buf::Vector{UInt8}
     bi::BufferIndex
@@ -623,7 +637,7 @@ struct Prepared
     # can replay diagnostics at its own cap without retaining every malformed
     # header field in memory.
     headerrefs::Vector{Tuple{ChunkIndex, Int}}
-    parsekw::NamedTuple   # dialect + value + engine kwargs, ready to splat into parse
+    settings::ReadSettings
 end
 
 function _headerproblems(buf::Vector{UInt8}, refs::Vector{Tuple{ChunkIndex, Int}},
@@ -664,6 +678,19 @@ function _prepare(source;
                   prefetch::Bool=true,
                   validate::Bool=true,
                   kw...)
+    return _prepare(source, header, normalizenames, skipto, footerskip, missingstring,
+                    delim, limit, samplebytes, chunkbytes, parallel, ntasks,
+                    buffer_in_memory, prefetch, validate, kw)
+end
+
+# Keep source handling, sniffing and row-window construction independent of the
+# caller's keyword names and container types. Hot column loops specialize later.
+Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(header), normalizenames::Bool,
+                  @nospecialize(skipto), @nospecialize(footerskip), @nospecialize(missingstring),
+                  @nospecialize(delim), @nospecialize(limit), samplebytes::Int,
+                  @nospecialize(chunkbytes::Union{Nothing, Int}), parallel::Bool,
+                  @nospecialize(ntasks::Union{Nothing, Int}),
+                  buffer_in_memory::Bool, prefetch::Bool, validate::Bool, @nospecialize(kw))
     header isa Integer && header < 0 &&
         throw(ArgumentError("header must be ≥ 0 (got $header)"))
     if header isa AbstractVector{<:Integer} && !isempty(header)
@@ -688,8 +715,15 @@ function _prepare(source;
                    header isa Integer ? header :
                    header isa AbstractVector{<:Integer} && !isempty(header) ? last(header) : 0
     buf = resolvesource(source; buffer_in_memory, prefetch)
-    dialectonly = _pickkwargs(kw, _DIALECTKW)
-    indexonly = _pickkwargs(kw, _INDEXKW)
+    d = Dialect(; delim=delim === nothing ? _probedelim(kw) : delim,
+                quotechar=get(kw, :quotechar, '"'),
+                openquotechar=get(kw, :openquotechar, nothing),
+                closequotechar=get(kw, :closequotechar, nothing),
+                escapechar=get(kw, :escapechar, nothing), quoted=get(kw, :quoted, true),
+                comment=get(kw, :comment, nothing), ignoreemptyrows=get(kw, :ignoreemptyrows, true),
+                ignorerepeated=get(kw, :ignorerepeated, false))
+    fastindex = get(kw, :fastindex, true)::Bool
+    scanner = get(kw, :scanner, :auto)::Symbol
     # The first row that MATTERS — the (first) header row, or `skipto` when
     # there is no header row. Everything before it is a skipped prefix: counted
     # as physical lines (quote-blind), never indexed, never sniffed. Row
@@ -709,23 +743,20 @@ function _prepare(source;
         # Sniff from the first row that matters: skipped prefix rows are junk
         # and must not vote on the delimiter (a one-line "skip me" preamble
         # otherwise elects the space).
-        delim, ir = _sniffdelim(buf, samplebytes, dialectonly, indexonly; start=anchoroff)
-        # an elected (' ', ignorerepeated=true) reading becomes the dialect
-        ir && (dialectonly = merge(dialectonly, (; ignorerepeated=true));
-               kw = merge(NamedTuple(kw), (; ignorerepeated=true)))
+        delim, ir = _sniffdelim(buf, samplebytes, anchoroff, d, fastindex, scanner)
+        d = withdelim(d, UInt8(delim), ir || d.ignorerepeated)
     end
     # missingstring → kernel sentinels ("" entries are inert: empty is always missing)
     sentinels = _sentinels(missingstring)
-    valuekw = _pickkwargs(kw, _VALUEKW)
-    # per-column dateformat: a Dict defers to per-column ValueOpts built once
-    # the names are known; the base opts (header parsing, sniffing) go without
-    dfdict = nothing
-    if haskey(valuekw, :dateformat) && valuekw.dateformat isa AbstractDict
-        dfdict = valuekw.dateformat
-        valuekw = NamedTuple(kv for kv in pairs(valuekw) if kv.first != :dateformat)
-    end
-    d = Dialect(; delim, dialectonly...)
-    opts = makevalueopts(d; sentinels, valuekw...)
+    dateformat = get(kw, :dateformat, nothing)
+    dfdict = dateformat isa AbstractDict ? dateformat : nothing
+    decimal = get(kw, :decimal, '.')::Char
+    truestrings = get(kw, :truestrings, nothing)
+    falsestrings = get(kw, :falsestrings, nothing)
+    stripwhitespace = get(kw, :stripwhitespace, false)::Bool
+    groupmark = get(kw, :groupmark, nothing)::Union{Nothing, Char}
+    opts = makevalueopts(d, dfdict === nothing ? dateformat : nothing, decimal,
+                         truestrings, falsestrings, stripwhitespace, groupmark, sentinels)
     cb = chunkbytes === nothing ?
          (ntasks === nothing ? _defaultchunkbytes(length(buf)) :
           min(max(cld(length(buf), ntasks), 1), 1 << 30)) : chunkbytes
@@ -743,7 +774,7 @@ function _prepare(source;
     datastart = anchoroff
     rowoff(n::Int) = n < firstrow ? _physicallineoffset(buf, rawstart, n) :
                                     _rawrowoffset(buf, d, anchoroff, n - firstrow + 1)
-    bi = index(buf, d; datastart, chunkbytes=cb, parallel, ntasks, indexonly...)
+    bi = index(buf, d; datastart, chunkbytes=cb, parallel, ntasks, fastindex, scanner)
     chunks = bi.chunks
     headerlog = ProblemLog(get(kw, :maxproblems, 10_000))
     headerrefs = Tuple{ChunkIndex, Int}[]
@@ -814,16 +845,37 @@ function _prepare(source;
     if dfdict !== nothing
         overrides = _resolvekeys(dfdict, names, length(names), "dateformat"; validate)
         colopts = ValueOpts[haskey(overrides, j) ?
-                              makevalueopts(d; sentinels, valuekw...,
-                                              dateformat=overrides[j]) : opts
+                              makevalueopts(d, overrides[j], decimal, truestrings, falsestrings,
+                                            stripwhitespace, groupmark, sentinels) : opts
                               for j in 1:length(names)]
     end
-    passthrough = _pickkwargs(kw, allowed)
-    dfdict !== nothing &&
-        (passthrough = NamedTuple(kv for kv in pairs(passthrough) if kv.first != :dateformat))
-    parsekw = merge(passthrough,
-                    (; delim, sentinels, chunkbytes=cb, parallel, ntasks, colopts, validate))
-    return Prepared(buf, bi, names, length(names), lim, opts, d, headerlog, headerrefs, parsekw)
+    nsample = get(kw, :nsample, nothing)::Union{Nothing, Int}
+    nsample === nothing || nsample >= 1 ||
+        throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
+    settings = ReadSettings(cb, parallel, ntasks, resolvescanner(d, fastindex, scanner),
+                            get(kw, :maxproblems, 10_000), nsample,
+                            _normalizetypemap(get(kw, :typemap, nothing)::Union{Nothing, AbstractDict}),
+                            get(kw, :inferdecimal, false)::Bool, validate, colopts)
+    return Prepared(buf, bi, names, length(names), lim, opts, d, headerlog, headerrefs, settings)
+end
+
+# Prepared already owns the dialect, value options and structural index.
+# Reuse them rather than rebuilding them through parse's keyword front.
+function _parseprepared(p::Prepared, plan::ColumnPlan;
+                        parallel::Bool=p.settings.parallel,
+                        ntasks::Union{Nothing, Int}=p.settings.ntasks,
+                        validate::Bool=p.settings.validate,
+                        inferdecimal::Bool=p.settings.inferdecimal,
+                        maxproblems::Int=p.settings.maxproblems,
+                        limit::Union{Nothing, Int}=p.limit,
+                        rowmask::Union{Nothing, Vector{Bool}}=nothing,
+                        reportstructural::Bool=true)
+    tasklimit = parallel ? min(something(ntasks, Threads.nthreads()), Threads.nthreads()) : 1
+    settings = p.settings
+    return _parse(p.buf, p.d, p.opts, settings.scanner, settings.typemap,
+                  settings.chunkbytes, parallel, tasklimit, maxproblems, :collect,
+                  validate, inferdecimal, reportstructural, settings.nsample, limit,
+                  p.names, nothing, nothing, settings.colopts, plan, rowmask, p.bi)
 end
 
 # kwargs _prepare consumes itself (not forwarded to the kernel driver)
@@ -831,7 +883,7 @@ const _PREPKW = (:header, :normalizenames, :skipto, :footerskip, :missingstring,
                  :delim, :limit, :samplebytes, :chunkbytes, :parallel,
                  :buffer_in_memory, :prefetch, :validate)
 
-@inline _preparedcolopts(p::Prepared) = get(p.parsekw, :colopts, nothing)
+@inline _preparedcolopts(p::Prepared) = p.settings.colopts
 
 # Create the column plan from the names and value rules found during source
 # preparation. Name selection also accepts the spelling used before
@@ -878,6 +930,16 @@ function File(source;
               parallel::Bool=ntasks === nothing ? Threads.nthreads() > 1 : ntasks > 1,
               validate::Bool=true,
               kw...)
+    return _file(source, types, select, drop, scan, pool, downcast, transpose, stringtype,
+                 on_error, maxproblems, ntasks, parallel, validate, kw)
+end
+
+Base.@nospecializeinfer function _file(@nospecialize(source), @nospecialize(types),
+               @nospecialize(select), @nospecialize(drop), @nospecialize(scan),
+               @nospecialize(pool), downcast::Bool, transpose::Bool,
+               @nospecialize(stringtype::Type), on_error::Symbol, maxproblems::Int,
+               @nospecialize(ntasks::Union{Nothing, Int}), parallel::Bool,
+               validate::Bool, @nospecialize(kw))
     maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
     _checkstringtype(stringtype)
     _checkonerror(on_error)
@@ -905,7 +967,7 @@ function File(source;
             throw(ArgumentError("pass the row limit through the Scan, not limit="))
         p = _prepare(source; parallel, ntasks, maxproblems=capturecap, validate, kw...)
         nm = _sourcename(source)
-        t, requests = _executescan(p, scan; parsekw=p.parsekw, maxproblems, on_error, source=nm)
+        t, requests = _executescan(p, scan; maxproblems, on_error, source=nm)
         # pool keys name the scan's OUTPUT columns (the request already renamed
         # and reordered them)
         t = _poolcolumns(t, _resolvepool(pool, names(t), length(names(t)); validate); parallel)
@@ -935,8 +997,19 @@ function _filefromprepared(p::Prepared, nm::String; types=nothing, select=nothin
                            on_error::Symbol=:collect, maxproblems::Int=10_000,
                            parallel::Bool=Threads.nthreads() > 1, validate::Bool=true,
                            ntasks::Union{Nothing, Int}=nothing,
-                           inferdecimal::Bool=get(p.parsekw, :inferdecimal, false),
+                           inferdecimal::Bool=p.settings.inferdecimal,
                            available::Union{Nothing, Vector{Int}}=nothing)
+    return _filefromprepared(p, nm, types, select, drop, pool, downcast, stringtype,
+                             on_error, maxproblems, parallel, validate, ntasks,
+                             inferdecimal, available)
+end
+
+Base.@nospecializeinfer function _filefromprepared(p::Prepared, nm::String, @nospecialize(types),
+                           @nospecialize(select), @nospecialize(drop), @nospecialize(pool),
+                           downcast::Bool, @nospecialize(stringtype::Type),
+                           on_error::Symbol, maxproblems::Int, parallel::Bool, validate::Bool,
+                           @nospecialize(ntasks::Union{Nothing, Int}), inferdecimal::Bool,
+                           @nospecialize(available::Union{Nothing, Vector{Int}}))
     viewnames = available === nothing ? p.names : p.names[available]
     plan = settlecolumns(p; select, drop, types, available, validate)
     p.limit == 0 && _setemptytypes!(plan)
@@ -947,10 +1020,8 @@ function _filefromprepared(p::Prepared, nm::String; types=nothing, select=nothin
     # belongs to this File call. Override every value-driver option that this
     # method exposes; in particular, a LazyFile prepared with defaults must not
     # silently cap a later larger maxproblems request at 10,000.
-    parsekw = merge(p.parsekw,
-                    (; parallel, ntasks, validate, inferdecimal, maxproblems=max(maxproblems, 1)))
-    t = parse(p.buf; index=p.bi, header=p.names, columnplan=plan, limit=p.limit,
-              on_error=:collect, parsekw...)
+    t = _parseprepared(p, plan; parallel, ntasks, validate, inferdecimal,
+                       maxproblems=max(maxproblems, 1))
     headerlog = _headerproblems(p.buf, p.headerrefs, p.opts, max(maxproblems, 1))
     t, firstproblem = _mergeproblems(t, headerlog, maxproblems)
     t, firstproblem = _narrowtypes(t, plan, p.bi.chunks, maxproblems, firstproblem)
@@ -1003,9 +1074,9 @@ end
 # The optional scan implementation is included after this file. A Tables
 # version without Scan never reaches this call because the type check above
 # fails first with a clear error.
-function _executescan(p::Prepared, scan; parsekw, maxproblems::Int, on_error::Symbol,
+function _executescan(p::Prepared, scan; maxproblems::Int, on_error::Symbol,
                       source::String="")
-    return _executescanplan(p, scan; parsekw, headerlog=p.headerlog,
+    return _executescanplan(p, scan; headerlog=p.headerlog,
                             maxproblems, on_error, source)
 end
 

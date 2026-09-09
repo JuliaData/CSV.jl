@@ -106,6 +106,14 @@ function Dialect(; delim::Union{Char, String}=',',
     return Dialect(d, oq, cq, e, quoted, cmt, ignoreemptyrows, ignorerepeated)
 end
 
+# Delimiter candidates share the already validated quote/comment options.
+function withdelim(d::Dialect, delim::UInt8, ignorerepeated::Bool=d.ignorerepeated)
+    d.quoted && delim == d.oq &&
+        throw(ArgumentError("delimiter may not equal the quote character"))
+    return Dialect(delim, d.oq, d.cq, d.e, d.quoted, d.comment,
+                   d.ignoreemptyrows, ignorerepeated)
+end
+
 # The range planner can use quote counts with standard CSV quote rules. The same
 # byte must open and close a quoted field. An escaped quote must use two quote
 # bytes. Each quote changes the state between inside and outside a quoted field.
@@ -291,6 +299,14 @@ function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
                        stripwhitespace::Bool=false,
                        groupmark::Union{Nothing, Char}=nothing,
                        sentinels=nothing)
+    return makevalueopts(d, dateformat, decimal, truestrings, falsestrings,
+                         stripwhitespace, groupmark, sentinels)
+end
+
+Base.@nospecializeinfer function makevalueopts(d::Dialect, @nospecialize(dateformat), decimal::Char,
+                       @nospecialize(truestrings), @nospecialize(falsestrings),
+                       stripwhitespace::Bool, groupmark::Union{Nothing, Char},
+                       @nospecialize(sentinels))
     isascii(decimal) || throw(ArgumentError("decimal must be ASCII (got $(repr(decimal)))"))
     # A digit, sign, or exponent letter as the decimal separator would make
     # ordinary integers parse as fractions (`decimal='0'` read 105 as 1.5).
@@ -2925,11 +2941,12 @@ end
 # once per index/mask shape rather than once per keyword combination: every
 # distinct keyword set (`delim`, `comment`, `dateformat`, `missingstring`, ...)
 # otherwise re-specialized this whole function, 150–600 ms each on first use.
-function _parse(buf::Vector{UInt8}, d::Dialect, baseopts::ValueOpts, sc::Symbol,
-                tm::Union{Nothing, Dict{Type, Type}}, chunkbytes::Int, parallel::Bool,
+Base.@nospecializeinfer function _parse(buf::Vector{UInt8}, d::Dialect, baseopts::ValueOpts, sc::Symbol,
+                @nospecialize(tm::Union{Nothing, Dict{Type, Type}}), chunkbytes::Int, parallel::Bool,
                 tasklimit::Int, maxproblems::Int, on_error::Symbol, validate::Bool,
-                inferdecimal::Bool, reportstructural::Bool, nsample::Union{Nothing, Int},
-                limit::Union{Nothing, Int}, @nospecialize(header), @nospecialize(types),
+                inferdecimal::Bool, reportstructural::Bool,
+                @nospecialize(nsample::Union{Nothing, Int}),
+                @nospecialize(limit::Union{Nothing, Int}), @nospecialize(header), @nospecialize(types),
                 @nospecialize(select), colopts::Union{Nothing, Vector{ValueOpts}},
                 columnplan::Union{Nothing, ColumnPlan}, rowmask::Union{Nothing, Vector{Bool}},
                 index::Union{Nothing, BufferIndex})
@@ -3079,8 +3096,11 @@ function _parse(buf::Vector{UInt8}, d::Dialect, baseopts::ValueOpts, sc::Symbol,
     cols = Vector{AbstractVector}(undef, ncols)
     stitchjs = plan.sources
     mb = k -> rowmask === nothing ? 0 : rowbases0[k]
-    rl = k -> limit === nothing ? typemax(Int) :
-              clamp(limit - rowbases0[k], 0, nrows(chunks[k]))
+    # A concrete Bool/Int capture keeps worker callbacks the same type for
+    # bounded and unbounded reads, including a new limit + typemap combination.
+    limitenabled = limit !== nothing
+    limitend = something(limit, 0)
+    rl = k -> limitenabled ? clamp(limitend - rowbases0[k], 0, nrows(chunks[k])) : typemax(Int)
 
     if rowmask === nothing
         # -- write directly into the final columns ----------------------------

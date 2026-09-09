@@ -58,13 +58,11 @@ function settlecolumns(names::Vector{Symbol}, opts::ValueOpts,
 end
 
 function _executescanplan(p::Prepared, scan::Tables.Scan;
-                          parsekw, headerlog::ProblemLog, maxproblems::Int,
+                          headerlog::ProblemLog, maxproblems::Int,
                           on_error::Symbol, source::String="")
-    buf = p.buf
     bi = p.bi
     inputnames = p.names
     phasecap = max(maxproblems, on_error === :error ? 1 : 0)
-    phasekw = merge(NamedTuple(parsekw), (; maxproblems=phasecap, on_error=:collect))
     b = Tables.resolve(scan, inputnames)
     plan = settlecolumns(inputnames, p.opts, b; colopts=_preparedcolopts(p))
     requests = _requestedstrings(plan, [c.index for c in b.columns])
@@ -74,8 +72,7 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
         bounded = b.offset > 0 || b.limit !== nothing
         mask = bounded ? fill(true, sum(nrows, bi.chunks; init=0)) : nothing
         mask === nothing || _cliprows!(mask, b.offset, b.limit)
-        t = parse(buf; index=bi, header=inputnames, columnplan=plan,
-                  rowmask=mask, phasekw...)
+        t = _parseprepared(p, plan; limit=nothing, rowmask=mask, maxproblems=phasecap)
         sourcerows = mask === nothing ? nothing : findall(mask)
         t = _narrowphase(t, plan, bi, phasecap; sourcerows)
         t = _project(t, b, inputnames)
@@ -86,15 +83,15 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
     predcolumns = [ColumnDecision() for _ in inputnames]
     predplan = ColumnPlan(predcolumns, plan.predicate, Int[], Int[],
                           plan.opts, plan.colopts)
-    t1 = parse(buf; index=bi, header=inputnames, columnplan=predplan, phasekw...)
+    t1 = _parseprepared(p, predplan; limit=nothing, maxproblems=phasecap)
     mask = Tables.filtermask(b, PredicateColumns(t1, inputnames, plan.predicate))
     _cliprows!(mask, b.offset, b.limit)
 
     # Then, read result columns only for rows that passed the filter. A result
     # column used by the filter is read again because its requested type applies
     # only to the result.
-    t2 = parse(buf; index=bi, header=inputnames, columnplan=plan,
-               rowmask=mask, reportstructural=false, phasekw...)
+    t2 = _parseprepared(p, plan; limit=nothing, rowmask=mask,
+                        reportstructural=false, maxproblems=phasecap)
     kept = findall(mask)
     t2 = _narrowphase(t2, plan, bi, phasecap; sourcerows=kept)
     t = _project(t2, b, inputnames)

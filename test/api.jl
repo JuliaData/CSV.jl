@@ -1944,3 +1944,25 @@ end
         @test typeof(col[1]) <: eltype(col)
     end
 end
+
+@testset "prepared option combinations" begin
+    # The quoted=false fallback must count delimiter bytes after a bare quote.
+    @test names(A.File(IOBuffer("a\";b\n"); quoted=false)) == [Symbol("a\""), :b]
+    input = "skip this\nid;value;day\n1;[1,234.5];2024/01/02\n2;NA;2024/01/03\n9;0;2024/01/04\n"
+    kw = (; header=2, footerskip=1, missingstring="NA", delim=';',
+            openquotechar='[', closequotechar=']', groupmark=',',
+            dateformat=Dict(:day => dateformat"yyyy/mm/dd"),
+            types=Dict(:id => Int, :value => Float64, :day => Date))
+    for f in (A.File(IOBuffer(input); kw...),
+              first(A.Chunks(IOBuffer(input); chunkbytes=1024, kw...)))
+        @test collect(f.id) == [1, 2]
+        @test isequal(collect(f.value), [1234.5, missing])
+        @test collect(f.day) == [Date(2024, 1, 2), Date(2024, 1, 3)]
+    end
+    for f in (A.Rows(IOBuffer(input); kw...), A.lazy(IOBuffer(input); kw...))
+        ct = Tables.columntable(f)
+        @test collect(ct.id) == [1, 2]
+        @test isequal(collect(ct.value), [1234.5, missing])
+        @test collect(ct.day) == [Date(2024, 1, 2), Date(2024, 1, 3)]
+    end
+end
