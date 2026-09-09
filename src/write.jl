@@ -269,6 +269,39 @@ function _appendstring!(out::_WriteOutput, s::Union{String, SubString{String}}, 
     return _appendbytes!(out, codeunits(s), o, true)
 end
 
+# DataString cells: a view payload has its bytes in the column buffer; an
+# inline payload (at most 12 bytes) is copied to a stack scratch first. Both
+# then take the same pointer scan and single memcpy as String.
+function _appendstring!(out::_WriteOutput, s::DataString, o::WriteOpts)
+    n = ncodeunits(s)
+    if o.quotestyle === :minimal && n > 0
+        if n > COMPACTSTRING_INLINE
+            GC.@preserve s begin
+                _appendscanned!(out, pointer(s.data, cspos(s.p)), n, o) && return out
+            end
+        else
+            scratch = Ref{NTuple{16, UInt8}}()
+            p = Ptr{UInt8}(Base.unsafe_convert(Ptr{NTuple{16, UInt8}}, scratch))
+            GC.@preserve scratch begin
+                @inbounds for i in 1:n
+                    unsafe_store!(p, codeunit(s, i), i)
+                end
+                _appendscanned!(out, p, n, o) && return out
+            end
+        end
+    end
+    return _appendbytes!(out, codeunits(s), o, true)
+end
+# the unquoted fast path shared by String and DataString: true when appended
+@inline function _appendscanned!(out::_WriteOutput, p::Ptr{UInt8}, n::Int, o::WriteOpts)
+    (!_needsquotebytes(o, p, n) && unsafe_load(p) != UInt8(' ') &&
+     unsafe_load(p, n) != UInt8(' ')) || return false
+    len = length(out)
+    _room!(out, n)
+    GC.@preserve out unsafe_copyto!(pointer(out, len + 1), p, n)
+    return true
+end
+
 # --- integers: digits straight into the buffer ---------------------------------
 @inline function _appendint!(out::_WriteOutput, x::Union{Int128, Int64, Int32, Int16, Int8})
     neg = x < 0
@@ -666,6 +699,8 @@ struct _WriteColumn
     missingdatatext::DataStringVector{Union{Missing, DataString}}
     timestamps::Vector{Timestamp{Dates.Nanosecond}}
     missingtimestamps::Vector{Union{Missing, Timestamp{Dates.Nanosecond}}}
+    pooled::PooledVector{String, UInt32, Vector{UInt32}}                   # pool=true output
+    missingpooled::PooledVector{Union{Missing, String}, UInt32, Vector{UInt32}}
     stage::ColStage
 end
 const _EMPTY_WRITECOLUMNS = (
@@ -685,6 +720,8 @@ const _EMPTY_WRITECOLUMNS = (
     DataStringVector{Union{Missing, DataString}}(DataStringPayload[], Vector{UInt8}[]),
     Vector{Timestamp{Dates.Nanosecond}}(),
     Vector{Union{Missing, Timestamp{Dates.Nanosecond}}}(),
+    PooledArray(String[]),
+    PooledArray(Union{Missing, String}[]),
 )
 const _EMPTY_WRITESTAGE = ColStage()
 # These methods are generated once for a fixed set of column types, never
@@ -802,6 +839,10 @@ end
         @inbounds _appendcell!(out, col.timestamps[r], o)
     elseif col.tag == 0x10
         @inbounds _appendcell!(out, col.missingtimestamps[r], o)
+    elseif col.tag == 0x11
+        @inbounds _appendcell!(out, col.pooled[r], o)
+    elseif col.tag == 0x12
+        @inbounds _appendcell!(out, col.missingpooled[r], o)
     else
         st = col.stage
         @inbounds s = k == 1 ? 1 : st.ends[k - 1] + 1

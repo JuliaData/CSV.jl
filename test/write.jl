@@ -760,6 +760,26 @@ end
     @test transcode(GzipDecompressor, take!(io)) == refbytes
 end
 
+@testset "DataString cells write the same bytes as String cells" begin
+    # the DataString fast path (view bytes or a stack copy of an inline
+    # payload) must agree with the String path on every quoting decision
+    values = ["category 7", "a longer category value 12", "x", "", "quoted, value", " lead",
+              "trail ", "mid\"quote", "twelve chars", "thirteen char", "line\nbreak", "tab\tin",
+              "λ漢🙂", "a"^12, "b"^13, "\"", "  ", "c,", ",d", "e\r"]
+    quoted = join(("\"" * replace(v, "\"" => "\"\"") * "\"" for v in values), "\n")
+    parsed = CSV.File(IOBuffer("s\n" * quoted * "\n"))
+    @test parsed.s isa CSV.DataStringVector && collect(parsed.s) == values
+    for kwargs in ((;), (; quotestyle=:all), (; delim=';'), (; delim="::", quotechar='\''),
+                   (; escapechar='\\'), (; newline="\r\n"))
+        a = str(io -> W.write(io, (s=values,); kwargs...))
+        b = str(io -> W.write(io, (s=parsed.s,); kwargs...))
+        @test a == b
+        c = str(io -> W.write(io, (s=Union{Missing, String}[missing; values],); kwargs...))
+        d = str(io -> W.write(io, (s=CSV.File(IOBuffer("s\n\n" * quoted * "\n"); ignoreemptyrows=false).s,); kwargs...))
+        @test c == d
+    end
+end
+
 @testset "writer renderer corpus parity" begin
     # Check direct descriptors and staged fallback columns against the public
     # row iterator, including mixed direct/staged blocks and subranges.
