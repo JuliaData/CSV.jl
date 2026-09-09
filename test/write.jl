@@ -137,7 +137,6 @@ Base.iterate(::ThrowingRows, state=1) =
         opts = W._writeopts(; kwargs...)
         expected = Vector{UInt8}(join(CSV.RowWriter(rowtable; kwargs..., writeheader=false, bom=false)))
         @test W._renderblock_direct(cols, 1, 2, opts) == expected
-        @test W._renderblock_staged(cols, 1, 2, opts) == expected
     end
     for writeheader in (false, true)
         bytes = str(io -> W.write(io, rowtable; writeheader, bom=true))
@@ -290,7 +289,8 @@ Base.iterate(::ThrowingRows, state=1) =
     largecolumns = Tables.columns(largetable)
     largecols = AbstractVector[Tables.getcolumn(largecolumns, nm) for nm in largenames]
     largeopts = W._writeopts(bufsize=2 << 20)
-    largerows = W._writerblockrows(largecols, largeopts, W._identity_transform)
+    _, largebound = W._preparewritecolumns(largecols, length(largecols[1]), largeopts)
+    largerows = W._writerblockrows(largebound, largeopts, W._identity_transform)
     @test largerows <= 4
     largeone = str(io -> W.write(io, largetable; bufsize=2 << 20, ntasks=1))
     largeparallel = str(io -> W.write(io, largetable; bufsize=2 << 20, ntasks=4))
@@ -738,7 +738,6 @@ end
     refbytes = take!(ref)
     cols = AbstractVector[values(tbl)...]
     @test W._renderblock_direct(cols, 1, n, o) == refbytes
-    @test W._renderblock_staged(cols, 1, n, o) == refbytes
     for nt in (1, 3, 8)
         io = IOBuffer(); W.write(io, tbl; ntasks=nt, writeheader=false)
         @test take!(io) == refbytes
@@ -749,8 +748,8 @@ end
 end
 
 @testset "writer renderer corpus parity" begin
-    # Check direct descriptors and staged columns against the public row
-    # iterator, including mixed direct/staged blocks and subranges.
+    # Check direct descriptors and staged fallback columns against the public
+    # row iterator, including mixed direct/staged blocks and subranges.
     corpus = AbstractVector[]
     for T in (Int8, Int16, Int32, Int64, Int128, UInt8, UInt16, UInt32, UInt64, UInt128)
         push!(corpus, T[typemin(T), typemax(T), 0, 1])
@@ -790,7 +789,6 @@ end
         opts = W._writeopts(; kwargs...)
         expected = Vector{UInt8}(join(CSV.RowWriter(table; writeheader=false, kwargs...)))
         @test W._renderblock_direct(cols, 1, 4, opts) == expected
-        @test W._renderblock_staged(cols, 1, 4, opts) == expected
         subset = (id=cols[1][2:3], value=col[2:3], text=cols[3][2:3])
         expected = Vector{UInt8}(join(CSV.RowWriter(subset; writeheader=false, kwargs...)))
         @test W._renderblock_direct(cols, 2, 3, opts) == expected

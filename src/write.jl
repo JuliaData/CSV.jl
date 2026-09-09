@@ -71,7 +71,11 @@ const _WriteOutput = Union{Vector{UInt8}, _WriteBuffer}
 
 const WRITE_QUOTESTYLES = (:minimal, :all, :none)
 
-struct WriteOpts
+# The custom float and date formats are type parameters: with the defaults
+# (`Nothing`) their formatting branches vanish at compile time, which keeps
+# the shared row loop free of Printf/Dates dispatch and lets a trimmed binary
+# verify the default writer.
+struct WriteOpts{F <: Union{Nothing, Printf.Format}, D <: Union{Nothing, DateFormat}}
     delim::UInt8                # first delimiter byte: quoting and syntax-clash checks
     delimbytes::Vector{UInt8}   # the complete delimiter (multi-byte delimiters write as-is)
     oq::UInt8
@@ -80,8 +84,8 @@ struct WriteOpts
     newline::Vector{UInt8}
     missingstring::Vector{UInt8}
     quotestyle::Symbol
-    floatfmt::Union{Nothing, Printf.Format}
-    dateformat::Union{Nothing, DateFormat}
+    floatfmt::F
+    dateformat::D
     decimal::UInt8
     bom::Bool
     bufsize::Int
@@ -509,10 +513,18 @@ const _TRUE = codeunits("true"); const _FALSE = codeunits("false")
         o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
         _appendscalar!(out, s, o)
     elseif x isa Dates.TimeType
-        if o.dateformat === nothing && !any(_numericsyntax, (o.delim, o.oq, o.cq)) &&
-           o.delim != UInt8('T') && o.delim != UInt8(':') && o.delim != UInt8('.') &&
-           x isa Union{Date, DateTime}
-            x isa Date ? _appenddate!(out, x) : _appenddatetime!(out, x)
+        if o.dateformat === nothing && x isa Union{Date, DateTime}
+            if !any(_numericsyntax, (o.delim, o.oq, o.cq)) &&
+               o.delim != UInt8('T') && o.delim != UInt8(':') && o.delim != UInt8('.')
+                x isa Date ? _appenddate!(out, x) : _appenddatetime!(out, x)
+            else
+                # a dialect whose delimiter or quote is date syntax: render
+                # with the same digits, then quote through the scalar path
+                # (never `string(x)`: Dates' printer is not trim-safe)
+                tmp = UInt8[]
+                x isa Date ? _appenddate!(tmp, x) : _appenddatetime!(tmp, x)
+                _appendbytes!(out, tmp, o, false)
+            end
         else
             _appendscalar!(out, o.dateformat === nothing ? string(x) : Dates.format(x, o.dateformat), o)
         end
@@ -561,7 +573,9 @@ const WRITE_BLOCK_BYTES = 8 << 20
     return min(2n + 2, cap) # every source byte escaped, plus quote pair
 end
 
-function _columncellbound(col::AbstractVector, o::WriteOpts)
+# `@noinline`: the typed prelude calls this once per column of a new schema;
+# inlining it there would re-generate its body per column.
+@noinline function _columncellbound(col::AbstractVector, o::WriteOpts)
     E = eltype(col)
     bound = Missing <: E ? _encodedbound(length(o.missingstring), o.bufsize) : 0
     T = Base.nonmissingtype(E)
@@ -588,18 +602,14 @@ function _columncellbound(col::AbstractVector, o::WriteOpts)
     return max(bound, valuebound)
 end
 
-function _writerblockrows(cols, o::WriteOpts, transform)
+# `rowbound` is the byte bound of one rendered row, saturated at `bufsize`.
+function _writerblockrows(rowbound::Int, o::WriteOpts, transform)
     transform === _identity_transform ||
         return min(WRITE_BLOCK_ROWS, max(1, WRITE_BLOCK_BYTES ÷ o.bufsize))
-    rowbound = length(o.newline) + max(length(cols) - 1, 0)
-    for col in cols
-        cellbound = _columncellbound(col, o)
-        rowbound > o.bufsize - cellbound && (rowbound = o.bufsize; break)
-        rowbound += cellbound
-    end
-    rowbound = clamp(rowbound, 1, o.bufsize)
-    return min(WRITE_BLOCK_ROWS, max(1, WRITE_BLOCK_BYTES ÷ rowbound))
+    return min(WRITE_BLOCK_ROWS, max(1, WRITE_BLOCK_BYTES ÷ clamp(rowbound, 1, o.bufsize)))
 end
+@inline _accumulatebound(rowbound::Int, cellbound::Int, cap::Int) =
+    rowbound > cap - cellbound ? cap : rowbound + cellbound
 
 # A fixed descriptor separates the column's type from the table's schema.
 # Only the field selected by `tag` is read. The other fields share empty
@@ -642,24 +652,84 @@ const _EMPTY_WRITECOLUMNS = (
 const _EMPTY_WRITESTAGE = ColStage()
 # These methods are generated once for a fixed set of column types, never
 # for a table schema or a column count.
+# `@noinline`: one compiled method per column type, called (not expanded)
+# once per column when a new schema is prepared.
 for (tag, emptycol) in enumerate(_EMPTY_WRITECOLUMNS)
     args = Any[:(_EMPTY_WRITECOLUMNS[$j]) for j in eachindex(_EMPTY_WRITECOLUMNS)]
     args[tag] = :col
-    @eval _preparewritecolumn(col::$(typeof(emptycol))) =
+    @eval @noinline _preparewritecolumn(col::$(typeof(emptycol))) =
         _WriteColumn($(UInt8(tag)), $(args...), _EMPTY_WRITESTAGE)
 end
-_preparewritecolumn(col::AbstractVector) =
+@noinline _preparewritecolumn(col::AbstractVector) =
     _WriteColumn(0x00, _EMPTY_WRITECOLUMNS..., _EMPTY_WRITESTAGE)
+_isdirect(::Type{<:AbstractVector}) = false
+for emptycol in _EMPTY_WRITECOLUMNS
+    @eval _isdirect(::Type{$(typeof(emptycol))}) = true
+end
 
-struct _WriterColumns
-    original::Vector{AbstractVector}
+# A fallback column (pooled, InlineString, narrow integer, custom scalar, ...)
+# stages once per block through a call that is typed on that column only.
+struct _Stager{V <: AbstractVector}
+    col::V
+end
+# `stagers` holds one typed stager per fallback column, in `fallback` order;
+# it is the empty tuple for every table of common column types, so the
+# descriptor type (and everything compiled for it) is shared across schemas.
+struct _WriterColumns{P <: Tuple}
+    original::Vector{AbstractVector}   # the transform path reads cells here
     direct::Vector{_WriteColumn}
     fallback::Vector{Int}
+    stagers::P
 end
-function _preparewritecolumns(cols::Vector{AbstractVector})
-    direct = _WriteColumn[_preparewritecolumn(col) for col in cols]
-    fallback = findall(col -> col.tag == 0x00, direct)
-    return _WriterColumns(cols, direct, fallback)
+_fallbackindices(direct::Vector{_WriteColumn}) = findall(col -> col.tag == 0x00, direct)
+@noinline _lengthmismatch() =
+    throw(ArgumentError("all table columns must have the same length"))
+
+# One step per column, compiled once per column type: check the length,
+# store the descriptor, and return the column's cell byte bound. `@noinline`
+# keeps the descriptor stores (sixteen reference fields) out of the callers.
+@noinline function _setdescriptor!(direct::Vector{_WriteColumn}, original::Vector{AbstractVector},
+                                   i::Int, col::AbstractVector, nrows::Int, o::WriteOpts)
+    length(col) == nrows || _lengthmismatch()
+    @inbounds direct[i] = _preparewritecolumn(col)
+    @inbounds original[i] = col
+    return _columncellbound(col, o)
+end
+
+# Descriptors plus the row byte bound. The NamedTuple form is generated
+# straight-line code with constant tuple indices: one static call per column,
+# no tuple recursion or splatting, so a new schema costs little inference and
+# a trimmed binary can resolve every call. Fallback stagers are selected from
+# the column types when the code is generated.
+@generated function _preparewritecolumns(cols::Tuple, nrows::Int, o::WriteOpts)
+    n = length(cols.parameters)
+    ex = quote
+        direct = Vector{_WriteColumn}(undef, $n)
+        original = Vector{AbstractVector}(undef, $n)
+        rowbound = length(o.newline) + max($n - 1, 0)
+    end
+    for i in 1:n
+        push!(ex.args, :(rowbound = _accumulatebound(
+            rowbound, _setdescriptor!(direct, original, $i, cols[$i], nrows, o), o.bufsize)))
+    end
+    stagers = Expr(:tuple, (:(_Stager(cols[$i])) for i in 1:n
+                            if !_isdirect(cols.parameters[i]))...)
+    push!(ex.args, :(return _WriterColumns(original, direct, _fallbackindices(direct), $stagers),
+                     rowbound))
+    return ex
+end
+function _preparewritecolumns(cols::Vector{AbstractVector}, nrows::Int, o::WriteOpts)
+    n = length(cols)
+    direct = Vector{_WriteColumn}(undef, n)
+    original = Vector{AbstractVector}(undef, n)
+    rowbound = length(o.newline) + max(n - 1, 0)
+    for i in 1:n
+        rowbound = _accumulatebound(rowbound, _setdescriptor!(direct, original, i, cols[i], nrows, o),
+                                    o.bufsize)
+    end
+    fallback = _fallbackindices(direct)
+    stagers = Tuple(_Stager(cols[j]) for j in fallback)
+    return _WriterColumns(original, direct, fallback, stagers), rowbound
 end
 
 @inline function _appendtaggedcell!(out::_WriteOutput, col::_WriteColumn, r::Int, k::Int, o::WriteOpts)
@@ -703,7 +773,7 @@ end
 end
 
 _renderblock_direct(cols::Vector{AbstractVector}, lo::Int, hi::Int, o::WriteOpts) =
-    _renderblock_direct(_preparewritecolumns(cols), lo, hi, o)
+    _renderblock_direct(_preparewritecolumns(cols, length(cols[1]), o)[1], lo, hi, o)
 
 @inline function _writerow_direct!(out::_WriteBuffer, r::Int, k::Int,
                                    cols::Vector{_WriteColumn}, o::WriteOpts)
@@ -722,10 +792,13 @@ _renderblock_direct(cols::Vector{AbstractVector}, lo::Int, hi::Int, o::WriteOpts
 end
 
 function _renderblock_direct(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpts)
-    prepared = isempty(cols.fallback) ? cols.direct : copy(cols.direct)
-    for j in cols.fallback
-        stage = _stagecolumn!(ColStage(), cols.original[j], lo, hi, o)
-        prepared[j] = _WriteColumn(0x00, _EMPTY_WRITECOLUMNS..., stage)
+    prepared = cols.direct
+    if !isempty(cols.fallback)
+        prepared = copy(cols.direct)
+        stages = map(s -> _stagecolumn!(ColStage(), s.col, lo, hi, o), cols.stagers)
+        for (i, j) in enumerate(cols.fallback)
+            @inbounds prepared[j] = _WriteColumn(0x00, _EMPTY_WRITECOLUMNS..., stages[i])
+        end
     end
     out = _WriteBuffer()
     nrows = hi - lo + 1
@@ -743,51 +816,8 @@ function _renderblock_direct(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpt
     return resize!(out.bytes, out.len)
 end
 
-function _renderblock(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpts)
-    length(cols.fallback) == length(cols.original) &&
-        return _renderblock_staged(cols.original, lo, hi, o)
-    return _renderblock_direct(cols, lo, hi, o)
-end
-_renderblock(cols::Vector{AbstractVector}, lo::Int, hi::Int, o::WriteOpts) =
-    _renderblock(_preparewritecolumns(cols), lo, hi, o)
-
-function _renderblock_staged(cols, lo::Int, hi::Int, o::WriteOpts)
-    ncols = length(cols)
-    nrows = hi - lo + 1
-    stages = [ColStage() for _ in 1:ncols]
-    total = 0
-    for j in 1:ncols
-        _stagecolumn!(stages[j], cols[j], lo, hi, o)   # one dynamic dispatch per column
-        total += length(stages[j].bytes)
-    end
-    dl = o.delimbytes
-    out = Vector{UInt8}(undef, total + nrows * (max(ncols - 1, 0) * length(dl) + length(o.newline)))
-    pos = 1
-    nl = o.newline
-    GC.@preserve out begin
-        @inbounds for k in 1:nrows
-            rowstart = pos
-            for j in 1:ncols
-                st = stages[j]
-                s = k == 1 ? 1 : st.ends[k - 1] + 1
-                e = st.ends[k]
-                n = e - s + 1
-                n > 0 && (unsafe_copyto!(pointer(out, pos), pointer(st.bytes, s), n); pos += n)
-                if j < ncols
-                    for b in dl
-                        out[pos] = b; pos += 1
-                    end
-                end
-            end
-            for b in nl
-                out[pos] = b; pos += 1
-            end
-            rowsize = pos - rowstart
-            rowsize <= o.bufsize || _rowtoolarge(rowsize, o.bufsize)
-        end
-    end
-    return out
-end
+_renderblock(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpts) =
+    _renderblock_direct(cols, lo, hi, o)
 
 # Compatibility path for `transform`: callbacks are observable and may keep
 # state, so preserve CSV 0.10's row-major, sequential call order even for wide
@@ -958,10 +988,10 @@ end
     return
 end
 
-Base.@constprop :aggressive function _emitrowblocks!(io, cols, nrows::Int, o::WriteOpts,
-                         transform::F, ntasks::Int, ::Val{SERIAL}) where {F, SERIAL}
+Base.@constprop :aggressive function _emitrowblocks!(io, cols::_WriterColumns, nrows::Int,
+                         blockrows::Int, o::WriteOpts, transform::F, ntasks::Int,
+                         ::Val{SERIAL}) where {F, SERIAL}
     nrows == 0 && return
-    blockrows = _writerblockrows(cols, o, transform)
     nblocks = cld(nrows, blockrows)
     workers = SERIAL ? 1 : min(ntasks, Threads.nthreads())
     bounds(block) = ((block - 1) * blockrows + 1,
@@ -972,26 +1002,24 @@ Base.@constprop :aggressive function _emitrowblocks!(io, cols, nrows::Int, o::Wr
     if transform !== _identity_transform
         for block in 1:nblocks
             lo, hi = bounds(block)
-            _renderwrite_transformed!(io, cols, lo, hi, o, transform)
+            _renderwrite_transformed!(io, cols.original, lo, hi, o, transform)
         end
         return
     end
-
-    rendercols = _preparewritecolumns(cols)
 
     # Avoid task overhead when the caller requested one task or the table fits
     # in one block. Fixed-size blocks still bound the single-task path.
     if SERIAL || workers == 1 || nblocks == 1
         for block in 1:nblocks
             lo, hi = bounds(block)
-            _renderwrite_identity!(io, rendercols, lo, hi, o)
+            _renderwrite_identity!(io, cols, lo, hi, o)
         end
         return
     end
 
     renderblock = function (block)
         lo, hi = bounds(block)
-        return _renderblock(rendercols, lo, hi, o)
+        return _renderblock(cols, lo, hi, o)
     end
     emitblock = rendered -> Base.write(io, rendered)
     _ordered_parallel_blocks!(emitblock, renderblock, nblocks, workers)
@@ -1070,11 +1098,11 @@ end
 
 # --- RowWriter: the row-string iterator ---------------------------------------
 
-struct RowWriter{R, I, F, P}
+struct RowWriter{R, I, O <: WriteOpts, F, P}
     rows::R
     initial::I
     names::Vector{Symbol}
-    o::WriteOpts
+    o::O
     writeheader::Bool
     transform::F
 end
@@ -1093,7 +1121,7 @@ function _rowwriter(table, o::WriteOpts;
                    collect(Symbol, Tables.columnnames(initial[1])) :
                    collect(Symbol, sch.names)
     names, wantheader = _headeroptions(source_names, header, writeheader, defaultheader)
-    return RowWriter{typeof(rows), typeof(initial), typeof(transform), prefetched}(
+    return RowWriter{typeof(rows), typeof(initial), typeof(o), typeof(transform), prefetched}(
         rows, initial, names, o, wantheader, transform)
 end
 
@@ -1110,18 +1138,18 @@ _rowwritersize(::Base.HasLength) = Base.HasLength()
 _rowwritersize(::Base.HasShape) = Base.HasLength()
 _rowwritersize(::Base.IsInfinite) = Base.IsInfinite()
 _rowwritersize(::Base.SizeUnknown) = Base.SizeUnknown()
-Base.IteratorSize(::Type{<:RowWriter{R, I, F, true}}) where {R, I, F} =
+Base.IteratorSize(::Type{<:RowWriter{R, I, O, F, true}}) where {R, I, O, F} =
     Base.SizeUnknown()
-Base.IteratorSize(::Type{<:RowWriter{R, I, F, false}}) where {R, I, F} =
+Base.IteratorSize(::Type{<:RowWriter{R, I, O, F, false}}) where {R, I, O, F} =
     _rowwritersize(Base.IteratorSize(R))
 Base.eltype(::Type{<:RowWriter}) = String
-function Base.length(rw::RowWriter{R, I, F, false}) where {R, I, F}
+function Base.length(rw::RowWriter{R, I, O, F, false}) where {R, I, O, F}
     nrows = length(rw.rows)
     hasheader = rw.writeheader && !isempty(rw.names)
     bomonly = rw.o.bom && nrows == 0 && !hasheader
     return nrows + hasheader + bomonly
 end
-Base.size(rw::RowWriter{R, I, F, false}) where {R, I, F} = (length(rw),)
+Base.size(rw::RowWriter{R, I, O, F, false}) where {R, I, O, F} = (length(rw),)
 
 # Append one Tables.jl row to `out` through the shared cell renderer.
 function _appendrow!(out::Vector{UInt8}, row, ncols::Int, o::WriteOpts, transform)
@@ -1141,7 +1169,7 @@ _renderrow(row, names, o::WriteOpts, transform) =
 
 function Base.iterate(rw::RowWriter, state=nothing)
     if state === nothing
-        it = rw isa RowWriter{<:Any, <:Any, <:Any, true} ? rw.initial : iterate(rw.rows)
+        it = rw isa RowWriter{<:Any, <:Any, <:Any, <:Any, true} ? rw.initial : iterate(rw.rows)
         if rw.writeheader && !isempty(rw.names)
             line = String(_renderheader(rw.names, rw.o))
             rw.o.bom && (line = string('\ufeff', line))
@@ -1170,7 +1198,7 @@ function _emitrows!(io, rw::RowWriter; bom::Bool=false)
     ncols = length(rw.names)
     complete = length(out)
     try
-        it = rw isa RowWriter{<:Any, <:Any, <:Any, true} ? rw.initial : iterate(rw.rows)
+        it = rw isa RowWriter{<:Any, <:Any, <:Any, <:Any, true} ? rw.initial : iterate(rw.rows)
         while it !== nothing
             row, state = it
             _appendrow!(out, row, ncols, rw.o, rw.transform)
@@ -1209,17 +1237,21 @@ function _emitchunks!(io, chunks::Chunks, o::WriteOpts, transform, ntasks::Int;
     for batch in chunks
         cols = _writecolumns(Tables.columns(batch), source_names)
         nrows = isempty(cols) ? 0 : length(cols[1])
-        _emitrowblocks!(io, cols, nrows, o, transform, ntasks, Val(ntasks == 1))
+        rendercols, rowbound = _preparewritecolumns(cols, nrows, o)
+        _emitrowblocks!(io, rendercols, nrows, _writerblockrows(rowbound, o, transform), o,
+                        transform, ntasks, Val(ntasks == 1))
     end
     return
 end
 
-# Sink and scheduler code see one column container for every table schema.
-# Only transform and sink behavior need specialization above the renderer.
-struct _ColumnEmitter{F,S} <: Function
-    cols::Vector{AbstractVector}
+# Sink and scheduler code see the descriptor container, whose type is shared
+# by every table of common column types; only fallback stagers, transform,
+# options, and sink behavior specialize above the renderer.
+struct _ColumnEmitter{C <: _WriterColumns, O <: WriteOpts, F, S} <: Function
+    cols::C
     nrows::Int
-    opts::WriteOpts
+    blockrows::Int
+    opts::O
     transform::F
     ntasks::Int
     header::Vector{UInt8}
@@ -1230,14 +1262,18 @@ function (emit::_ColumnEmitter)(io)
     o = emit.opts
     o.bom && !emit.append && Base.write(io, UInt8[0xef, 0xbb, 0xbf])
     isempty(emit.header) || Base.write(io, emit.header)
-    _emitrowblocks!(io, emit.cols, emit.nrows, o, emit.transform, emit.ntasks, emit.serial)
+    _emitrowblocks!(io, emit.cols, emit.nrows, emit.blockrows, o, emit.transform, emit.ntasks,
+                    emit.serial)
     return nothing
 end
 
 # --- public write methods ---------------------------------------------------
 
-# Erase the schema before the block scheduler; dispatch once per block to the
-# renderer, without recompiling sink and task plumbing.
+# A NamedTuple keeps its column types until the descriptors below exist, so
+# descriptor preparation and fallback staging resolve statically (a trimmed
+# binary needs that). Other tables erase to one container. Either way the
+# scheduler, the task closures, and the row loop see one descriptor type.
+_writecolumns(cols::NamedTuple, names) = values(cols)
 _writecolumns(cols, names) = AbstractVector[Tables.getcolumn(cols, nm) for nm in names]
 
 @inline function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool}=nothing,
@@ -1287,15 +1323,17 @@ _writecolumns(cols, names) = AbstractVector[Tables.getcolumn(cols, nm) for nm in
         names, wantheader = _headeroptions(source_names, header, writeheader, !append)
         cols = _writecolumns(cols0, source_names)
         nrows = isempty(cols) ? 0 : length(cols[1])
-        all(col -> length(col) == nrows, cols) ||
-            throw(ArgumentError("all table columns must have the same length"))
+        rendercols, rowbound = _preparewritecolumns(cols, nrows, o)
         headerblock = wantheader && !isempty(names) ? _renderheader(names, o) : EMPTY_BYTES
+        blockrows = _writerblockrows(rowbound, o, transform)
         # Header and fixed-size row blocks stream directly to the sink. The
         # ordered renderer retains no more than `ntasks` blocks.
         if ntasks == 1
-            _ColumnEmitter(cols, nrows, o, transform, ntasks, headerblock, append, Val(true))
+            _ColumnEmitter(rendercols, nrows, blockrows, o, transform, ntasks, headerblock,
+                           append, Val(true))
         else
-            _ColumnEmitter(cols, nrows, o, transform, ntasks, headerblock, append, Val(false))
+            _ColumnEmitter(rendercols, nrows, blockrows, o, transform, ntasks, headerblock,
+                           append, Val(false))
         end
     else
         # A row source may be one-shot and may not know its schema until its
