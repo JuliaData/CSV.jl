@@ -24,7 +24,8 @@ using Tables, Dates, Printf, CodecZlib
 const WRITE_QUOTESTYLES = (:minimal, :all, :none)
 
 struct WriteOpts
-    delim::UInt8
+    delim::UInt8                # first delimiter byte: quoting and syntax-clash checks
+    delimbytes::Vector{UInt8}   # the complete delimiter (multi-byte delimiters write as-is)
     oq::UInt8
     cq::UInt8
     e::UInt8
@@ -38,53 +39,68 @@ struct WriteOpts
     bufsize::Int
 end
 
-function _writeopts(; delim::Union{Char, String}=',', quotechar::Char='"',
-                    openquotechar::Union{Nothing, Char}=nothing,
-                    closequotechar::Union{Nothing, Char}=nothing,
-                    escapechar::Union{Nothing, Char}=nothing,
-                    newline::Union{Char, String}='\n',
-                    missingstring::AbstractString="",
-                    quotestyle::Symbol=:minimal,
+# One ASCII byte, spelled as a Char or a one-character string.
+function _asciibyte(name::String, c)
+    c isa AbstractString && length(c) == 1 && (c = first(c))
+    c isa Char || throw(ArgumentError("$name must be a character (got $(repr(c)))"))
+    isascii(c) || throw(ArgumentError("$name must be ASCII (got $(repr(c)))"))
+    return c % UInt8
+end
+
+const _WRITEKW = (:delim, :quotechar, :openquotechar, :closequotechar, :escapechar,
+                  :newline, :missingstring, :quotestyle, :quotestrings, :floatformat,
+                  :dateformat, :decimal, :bom, :bufsize)
+
+function _checkwritekwargs(kw)
+    for k in keys(kw)
+        k in _WRITEKW ||
+            throw(ArgumentError("unsupported write keyword $k; see ?CSV.write"))
+    end
+    return
+end
+
+function _writeopts(; delim::Union{Char, AbstractString}=',',
+                    quotechar='"',
+                    openquotechar=nothing,
+                    closequotechar=nothing,
+                    escapechar=nothing,
+                    newline::Union{Char, AbstractString}='\n',
+                    missingstring::Union{Nothing, AbstractString}="",
+                    quotestyle::Union{Symbol, AbstractString}=:minimal,
                     quotestrings::Bool=false,
                     floatformat::Union{Nothing, AbstractString}=nothing,
                     dateformat=nothing,
-                    decimal::Char='.',
+                    decimal='.',
                     bom::Bool=false,
                     bufsize::Integer=1 << 22)
     bufsize >= 1 || throw(ArgumentError("bufsize must be >= 1 (got $bufsize)"))
-    delim isa String && sizeof(delim) != 1 &&
-        throw(ArgumentError("write delim must be a single byte (got $(repr(delim)))"))
-    delim isa Char && !isascii(delim) &&
-        throw(ArgumentError("write delim must be a single byte (got $(repr(delim)))"))
+    quotestyle = Symbol(quotestyle)
     quotestrings && quotestyle === :none &&
         throw(ArgumentError("quotestrings=true conflicts with quotestyle=:none"))
     quotestrings && (quotestyle = :all)
     quotestyle in WRITE_QUOTESTYLES ||
         throw(ArgumentError("quotestyle must be :minimal, :all, or :none"))
-    oqc = something(openquotechar, quotechar)
-    cqc = something(closequotechar, quotechar)
-    ec = something(escapechar, cqc)
-    for (nm, c) in (("quotechar", quotechar), ("openquotechar", oqc),
-                    ("closequotechar", cqc), ("escapechar", ec),
-                    ("decimal", decimal))
-        isascii(c) || throw(ArgumentError("$nm must be ASCII (got $(repr(c)))"))
+    oq = _asciibyte("openquotechar", something(openquotechar, quotechar))
+    cq = _asciibyte("closequotechar", something(closequotechar, quotechar))
+    e = escapechar === nothing ? cq : _asciibyte("escapechar", escapechar)
+    dec = _asciibyte("decimal", decimal)
+    delimbytes = Vector{UInt8}(codeunits(string(delim)))
+    isempty(delimbytes) && throw(ArgumentError("write delimiter must be non-empty"))
+    for b in delimbytes
+        b in (UInt8('\r'), UInt8('\n')) &&
+            throw(ArgumentError("write delimiter may not contain \\r or \\n"))
+        b == oq && throw(ArgumentError("write delimiter may not contain the open quote character"))
     end
-    oq = oqc % UInt8
-    cq = cqc % UInt8
-    e = ec % UInt8
-    d = delim isa Char ? delim % UInt8 : codeunit(delim, 1)
-    d in (UInt8('\r'), UInt8('\n')) &&
-        throw(ArgumentError("write delimiter may not be \\r or \\n"))
-    d == oq && throw(ArgumentError("write delimiter may not equal the open quote character"))
-    any(c -> c in ('\r', '\n'), (oqc, cqc, ec)) &&
+    any(b -> b in (UInt8('\r'), UInt8('\n')), (oq, cq, e)) &&
         throw(ArgumentError("write quote/escape characters may not be \\r or \\n"))
     df = dateformat === nothing ? nothing :
          dateformat isa DateFormat ? dateformat : DateFormat(string(dateformat))
     ff = floatformat === nothing ? nothing : Printf.Format(String(floatformat))
     intbufsize = bufsize > typemax(Int) ? typemax(Int) : Int(bufsize)
-    return WriteOpts(d, oq, cq, e, Vector{UInt8}(codeunits(string(newline))),
-                     Vector{UInt8}(codeunits(String(missingstring))),
-                     quotestyle, ff, df, decimal % UInt8, bom, intbufsize)
+    return WriteOpts(first(delimbytes), delimbytes, oq, cq, e,
+                     Vector{UInt8}(codeunits(string(newline))),
+                     Vector{UInt8}(codeunits(something(missingstring, ""))),
+                     quotestyle, ff, df, dec, bom, intbufsize)
 end
 
 @noinline _rowtoolarge(n::Int, cap::Int) =
@@ -96,86 +112,9 @@ _needsquote(o::WriteOpts, b::UInt8) =
     b == o.delim || b == o.oq || b == o.cq || b == UInt8('\n') || b == UInt8('\r')
 _numericsyntax(b::UInt8) = b - UInt8('0') <= 0x09 || b in (UInt8('+'), UInt8('-'))
 
-function _writebytes(io::IO, bytes::AbstractVector{UInt8}, o::WriteOpts;
-                     stringcell::Bool)
-    if o.quotestyle === :none
-        stringcell && isempty(bytes) &&
-            throw(ArgumentError("quotestyle=:none cannot distinguish an empty string from missing"))
-        for b in bytes
-            _needsquote(o, b) &&
-                throw(ArgumentError("quotestyle=:none cannot write a value containing " *
-                                    "a structural byte: $(repr(String(bytes)))"))
-        end
-        return Base.write(io, bytes)
-    end
-    # Empty quoted content is the parser's present-empty-string spelling.
-    # Empty unquoted content is missing, matching the parser's pinned 1.0
-    # convention (and intentionally differing from CSV.write's ambiguity).
-    quote_it = stringcell && (o.quotestyle === :all || isempty(bytes))
-    if !quote_it
-        for b in bytes
-            if _needsquote(o, b)
-                quote_it = true
-                break
-            end
-        end
-        # leading/trailing whitespace survives a round-trip only when quoted
-        if stringcell && !quote_it && !isempty(bytes)
-            (bytes[1] == UInt8(' ') || bytes[end] == UInt8(' ')) && (quote_it = true)
-        end
-    end
-    quote_it || return Base.write(io, bytes)
-    n = Base.write(io, o.oq)
-    for b in bytes
-        (b == o.cq || (o.e != o.cq && b == o.e)) && (n += Base.write(io, o.e))
-        n += Base.write(io, b)
-    end
-    return n + Base.write(io, o.cq)
-end
-
-_writestring(io::IO, s::AbstractString, o::WriteOpts; stringcell::Bool=true) =
-    _writebytes(io, codeunits(s), o; stringcell)
-
-_writescalar(io::IO, s::AbstractString, o::WriteOpts) =
-    _writestring(io, s, o; stringcell=false)
-_writescalar(io::IO, x, o::WriteOpts) = _writescalar(io, string(x), o)
-
-function _writecell(io::IO, x, o::WriteOpts)
-    if x === missing
-        _writebytes(io, o.missingstring, o; stringcell=false)
-    elseif x === nothing
-        _nothingerror()
-    elseif x isa AbstractString
-        _writestring(io, x, o)
-    elseif x isa AbstractFloat
-        if o.floatfmt !== nothing
-            s = Printf.format(o.floatfmt, x)
-            o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
-            _writescalar(io, s, o)
-        else
-            s = string(x)
-            o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
-            _writescalar(io, s, o)
-        end
-    elseif x isa DataDecimals.AbstractDecimal
-        s = string(x)
-        o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
-        _writescalar(io, s, o)
-    elseif x isa Dates.TimeType
-        _writescalar(io, o.dateformat === nothing ? string(x) : Dates.format(x, o.dateformat), o)
-    elseif x isa Bool
-        _writescalar(io, x, o)
-    elseif x isa Integer
-        # The ordinary CSV dialect cannot conflict with an integer spelling;
-        # keep that hot path allocation-free. Exotic numeric delimiters or
-        # quote bytes take the checked rendering path.
-        any(_numericsyntax, (o.delim, o.oq, o.cq)) ? _writescalar(io, x, o) : print(io, x)
-    elseif x isa Number
-        _writescalar(io, x, o)
-    else
-        _writestring(io, string(x), o)
-    end
-    return
+@inline function _appenddelim!(out::Vector{UInt8}, o::WriteOpts)
+    length(o.delimbytes) == 1 ? push!(out, o.delim) : append!(out, o.delimbytes)
+    return out
 end
 
 @noinline _nothingerror() = throw(ArgumentError(
@@ -214,9 +153,12 @@ end
     return false
 end
 
-# The exact `_writebytes` policy, appending to a Vector{UInt8}. `stringcell`
-# says whether the cell is a string (only strings get :all-quoting, the
-# empty-means-present rule, and whitespace-preserving quoting).
+# The cell quoting policy, appending to a Vector{UInt8}. `stringcell` says
+# whether the cell is a string (only strings get :all-quoting, the
+# empty-means-present rule, and whitespace-preserving quoting). Empty quoted
+# content is the parser's present-empty-string spelling; empty unquoted content
+# is missing, matching the parser's pinned 1.0 convention. A multi-byte
+# delimiter quotes on its first byte: over-quoting is harmless.
 function _appendbytes!(out::Vector{UInt8}, bytes::AbstractVector{UInt8}, o::WriteOpts,
                        stringcell::Bool)
     n = length(bytes)
@@ -493,7 +435,8 @@ const _TRUE = codeunits("true"); const _FALSE = codeunits("false")
 
 @inline _stagecell!(st::ColStage, x, o::WriteOpts) = _appendcell!(st.bytes, x, o)
 
-# the semantic reference is `_writecell`; this mirrors it, appending to a byte vector
+# The one cell renderer: every writer path (blocks, RowWriter, headers) appends
+# through it, so quoting and value formatting cannot drift between paths.
 @inline function _appendcell!(out::Vector{UInt8}, x, o::WriteOpts)
     if x === missing
         _appendbytes!(out, o.missingstring, o, false)
@@ -631,7 +574,7 @@ end
 @inline function _writecells!(out::Vector{UInt8}, r::Int, cols::Tuple, o::WriteOpts)
     @inbounds _appendcell!(out, first(cols)[r], o)
     rest = Base.tail(cols)
-    isempty(rest) || push!(out, o.delim)
+    isempty(rest) || _appenddelim!(out, o)
     return _writecells!(out, r, rest, o)
 end
 
@@ -666,7 +609,8 @@ function _renderblock(cols, lo::Int, hi::Int, o::WriteOpts)
         _stagecolumn!(stages[j], cols[j], lo, hi, o)   # one dynamic dispatch per column
         total += length(stages[j].bytes)
     end
-    out = Vector{UInt8}(undef, total + nrows * (max(ncols - 1, 0) + length(o.newline)))
+    dl = o.delimbytes
+    out = Vector{UInt8}(undef, total + nrows * (max(ncols - 1, 0) * length(dl) + length(o.newline)))
     pos = 1
     nl = o.newline
     GC.@preserve out begin
@@ -678,7 +622,11 @@ function _renderblock(cols, lo::Int, hi::Int, o::WriteOpts)
                 e = st.ends[k]
                 n = e - s + 1
                 n > 0 && (unsafe_copyto!(pointer(out, pos), pointer(st.bytes, s), n); pos += n)
-                j < ncols && (out[pos] = o.delim; pos += 1)
+                if j < ncols
+                    for b in dl
+                        out[pos] = b; pos += 1
+                    end
+                end
             end
             for b in nl
                 out[pos] = b; pos += 1
@@ -700,7 +648,7 @@ function _renderblock_transformed(cols, lo::Int, hi::Int, o::WriteOpts, transfor
         start = length(out)
         for j in 1:ncols
             _appendcell!(out, transform(j, cols[j][r]), o)
-            j < ncols && push!(out, o.delim)
+            j < ncols && _appenddelim!(out, o)
         end
         append!(out, o.newline)
         rowsize = length(out) - start
@@ -937,13 +885,12 @@ function _emitgzip!(emitpayload, io)
 end
 
 function _renderheader(names, o::WriteOpts)
-    io = IOBuffer()
+    out = UInt8[]
     for (j, nm) in enumerate(names)
-        _writestring(io, String(nm), o)
-        j < length(names) && Base.write(io, o.delim)
+        _appendstring!(out, String(nm), o)
+        j < length(names) && _appenddelim!(out, o)
     end
-    Base.write(io, o.newline)
-    out = take!(io)
+    append!(out, o.newline)
     length(out) <= o.bufsize || _rowtoolarge(length(out), o.bufsize)
     return out
 end
@@ -1001,6 +948,7 @@ function RowWriter(table; writeheader::Union{Nothing, Bool}=nothing,
                    header::Union{Nothing, Bool, AbstractVector}=nothing,
                    transform::Function=_identity_transform,
                    bufsize::Integer=1 << 22, kw...)
+    _checkwritekwargs(kw)
     return _rowwriter(table, _writeopts(; bufsize, kw...);
                       writeheader, header, transform)
 end
@@ -1022,22 +970,21 @@ function Base.length(rw::RowWriter{R, I, F, false}) where {R, I, F}
 end
 Base.size(rw::RowWriter{R, I, F, false}) where {R, I, F} = (length(rw),)
 
-function _renderrowbytes(row, names, o::WriteOpts, transform)
-    io = IOBuffer()
-    ncols = length(names)
-    for (j, nm) in enumerate(names)
-        _writecell(io, transform(j, Tables.getcolumn(row, j)), o)
-        j < ncols && Base.write(io, o.delim)
+# Append one Tables.jl row to `out` through the shared cell renderer.
+function _appendrow!(out::Vector{UInt8}, row, ncols::Int, o::WriteOpts, transform)
+    start = length(out)
+    for j in 1:ncols
+        _appendcell!(out, transform(j, Tables.getcolumn(row, j)), o)
+        j < ncols && _appenddelim!(out, o)
     end
-    Base.write(io, o.newline)
-    out = take!(io)
-    length(out) <= o.bufsize || _rowtoolarge(length(out), o.bufsize)
+    append!(out, o.newline)
+    rowsize = length(out) - start
+    rowsize <= o.bufsize || _rowtoolarge(rowsize, o.bufsize)
     return out
 end
 
-
 _renderrow(row, names, o::WriteOpts, transform) =
-    String(_renderrowbytes(row, names, o, transform))
+    String(_appendrow!(UInt8[], row, length(names), o, transform))
 
 function Base.iterate(rw::RowWriter, state=nothing)
     if state === nothing
@@ -1061,14 +1008,57 @@ function Base.iterate(rw::RowWriter, state=nothing)
 end
 
 
+# Row sources render into one reusable block buffer that flushes to the sink at
+# the block byte target: one sink write per block, not per row.
 function _emitrows!(io, rw::RowWriter; bom::Bool=false)
     bom && Base.write(io, UInt8[0xef, 0xbb, 0xbf])
-    rw.writeheader && !isempty(rw.names) && Base.write(io, _renderheader(rw.names, rw.o))
+    out = UInt8[]
+    rw.writeheader && !isempty(rw.names) && append!(out, _renderheader(rw.names, rw.o))
+    ncols = length(rw.names)
     it = rw isa RowWriter{<:Any, <:Any, <:Any, true} ? rw.initial : iterate(rw.rows)
     while it !== nothing
         row, state = it
-        Base.write(io, _renderrowbytes(row, rw.names, rw.o, rw.transform))
+        rowstart = length(out)
+        try
+            _appendrow!(out, row, ncols, rw.o, rw.transform)
+        catch
+            # Streaming contract: the complete rows rendered before a failing
+            # row still reach the sink. The failing row's partial bytes do not.
+            resize!(out, rowstart)
+            try
+                isempty(out) || Base.write(io, out)
+            catch
+            end
+            rethrow()
+        end
+        if length(out) >= WRITE_BLOCK_BYTES
+            Base.write(io, out)
+            empty!(out)
+        end
         it = iterate(rw.rows, state)
+    end
+    isempty(out) || Base.write(io, out)
+    return
+end
+
+# `CSV.Chunks` is a sequence of stable-schema batches (each a `CSV.File`). Stream
+# every batch under one header, rendering each batch's columns with the block
+# renderer, so a chunked read can be re-written without collecting it.
+function _emitchunks!(io, chunks::Chunks, o::WriteOpts, transform, ntasks::Int;
+                      header, writeheader, append::Bool)
+    o.bom && !append && Base.write(io, UInt8[0xef, 0xbb, 0xbf])
+    first = true
+    for batch in chunks
+        cols0 = Tables.columns(batch)
+        source_names = collect(Symbol, Tables.columnnames(cols0))
+        cols = _writecolumns(cols0, source_names)
+        if first
+            names, wantheader = _headeroptions(source_names, header, writeheader, !append)
+            wantheader && !isempty(names) && Base.write(io, _renderheader(names, o))
+            first = false
+        end
+        nrows = isempty(cols) ? 0 : length(cols[1])
+        _emitrowblocks!(io, cols, nrows, o, transform, ntasks, Val(ntasks == 1))
     end
     return
 end
@@ -1113,6 +1103,7 @@ _writecolumns(cols, names) = AbstractVector[Tables.getcolumn(cols, nm) for nm in
     compression in (:auto, :gzip, :none) ||
         throw(ArgumentError("compress must be true, false, :auto, :gzip, or :none " *
                             "(got $compress)"))
+    _checkwritekwargs(kw)
     o = _writeopts(; bufsize, kw...)
     ntasks >= 1 || throw(ArgumentError("ntasks must be >= 1 (got $ntasks)"))
     if partition
@@ -1121,8 +1112,8 @@ _writecolumns(cols, names) = AbstractVector[Tables.getcolumn(cols, nm) for nm in
         sinks = pathbase ? nothing :
                 sink isa AbstractVector ? sink :
                 throw(ArgumentError("partition=true needs a path or a Vector of sinks"))
-        partcompression = compression === :auto && pathbase &&
-                          endswith(String(sink), ".gz") ? :gzip : compression
+        partcompression = compression === :auto && pathbase && _gzpath(sink) ?
+                          :gzip : compression
         writepart = function (part, i)
             if !pathbase && i > length(sinks)
                 throw(ArgumentError("more partitions than sinks (sink count $(length(sinks)))"))
@@ -1139,8 +1130,10 @@ _writecolumns(cols, names) = AbstractVector[Tables.getcolumn(cols, nm) for nm in
         return pathbase ? [string(sink, "_", i) for i in 1:nparts] : sink
     end
     gzip = compression === :gzip ||
-           (compression === :auto && sink isa AbstractString && endswith(String(sink), ".gz"))
-    emitpayload = if Tables.columnaccess(typeof(table))
+           (compression === :auto && sink isa AbstractString && _gzpath(sink))
+    emitpayload = if table isa Chunks
+        io -> _emitchunks!(io, table, o, transform, ntasks; header, writeheader, append)
+    elseif Tables.columnaccess(typeof(table))
         cols0 = Tables.columns(table)
         source_names = collect(Symbol, Tables.columnnames(cols0))
         names, wantheader = _headeroptions(source_names, header, writeheader, !append)
@@ -1167,32 +1160,16 @@ _writecolumns(cols, names) = AbstractVector[Tables.getcolumn(cols, nm) for nm in
     if sink isa AbstractString
         open(emit, String(sink), append ? "a" : "w")
     else
-        seekable = sink isa IO && hasmethod(seek, Tuple{typeof(sink), Integer}) &&
-                   hasmethod(seekend, Tuple{typeof(sink)})
-        seekable && (append ? seekend(sink) : seekstart(sink))
-        emission_complete = false
-        try
-            emit(sink)
-            emission_complete = true
-        finally
-            # `append=false` means replacement for seekable IOs as it does for
-            # a path opened with "w". Truncate even after a render failure, so
-            # a partial new payload never exposes stale bytes from old content.
-            if !append && seekable
-                try
-                    pos = position(sink)
-                    applicable(truncate, sink, pos) && truncate(sink, pos)
-                catch
-                    # Preserve the render/sink exception when cleanup also
-                    # fails. A truncation failure is primary after successful
-                    # emission and must be reported.
-                    emission_complete && rethrow()
-                end
-            end
-        end
+        # An IO sink is written at its current position, exactly like
+        # `Base.write`: the caller owns the stream, so earlier content (a log
+        # already on stdout, a prefix written by the caller) is never rewound
+        # over or truncated. `append` only decides whether a header is written.
+        emit(sink)
     end
     return sink
 end
+
+_gzpath(sink) = endswith(lowercase(String(sink)), ".gz")
 
 
 write(sink; kw...) = table -> write(sink, table; kw...)

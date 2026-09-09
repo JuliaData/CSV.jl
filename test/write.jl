@@ -303,12 +303,13 @@ Base.close(io::FailingWriterSink) = (io.open = false)
     end
     @test caught === WRITER_SENTINEL
 
-    # Replacement cleanup also truncates after a later-block render error.
-    stale = IOBuffer()
-    write(stale, repeat("stale old bytes", 2_000))
-    @test_throws ArgumentError W.write(stale, (a=bad,); ntasks=4,
+    # An IO sink is written at its current position: earlier content is kept,
+    # and a later-block render error leaves the blocks emitted before it.
+    prefixed = IOBuffer()
+    write(prefixed, "prefix\n")
+    @test_throws ArgumentError W.write(prefixed, (a=bad,); ntasks=4,
                                        writeheader=false)
-    @test String(take!(stale)) == repeat("ok\n", W.WRITE_BLOCK_ROWS)
+    @test String(take!(prefixed)) == "prefix\n" * repeat("ok\n", W.WRITE_BLOCK_ROWS)
 
     # quotestyle
     q = (s=["plain", "with,delim", "wi\"th"],)
@@ -346,16 +347,24 @@ Base.close(io::FailingWriterSink) = (io.open = false)
     s = str(io -> W.write(io, (s=["a\"b"],); escapechar='\\'))
     @test s == "s\n\"a\\\"b\"\n"
 
-    # append / writeheader
+    # append / writeheader: an IO sink is never rewound or truncated. `append`
+    # only decides the header default, so a log already on the stream and a
+    # prefix the caller wrote both survive (`julia script.jl > log`).
     io = buf()
     W.write(io, (a=[1],))
-    seekstart(io)
     W.write(io, (a=[2],); append=true)
     @test String(take!(io)) == "a\n1\n2\n"
     io = IOBuffer()
-    write(io, "stale trailing bytes")
+    write(io, "caller prefix\n")
     W.write(io, (a=[1],))
-    @test String(take!(io)) == "a\n1\n"
+    @test String(take!(io)) == "caller prefix\na\n1\n"
+    mktemp() do path, stream
+        println(stream, "log line 1")
+        W.write(stream, (a=[1],))
+        println(stream, "log line 2")
+        close(stream)
+        @test read(path, String) == "log line 1\na\n1\nlog line 2\n"
+    end
     @test str(io -> W.write(io, (a=[1],); header=false)) == "1\n"
     @test str(io -> W.write(io, (a=[1],); header=true)) == "a\n1\n"
     @test_throws ArgumentError str(io -> W.write(io, (a=[1],);
@@ -471,6 +480,51 @@ Base.close(io::FailingWriterSink) = (io.open = false)
     @test_throws ArgumentError str(io -> W.write(io, (a=[1], b=[2, 3])))
     @test_throws ArgumentError str(io -> W.write(io, (a=[1],); ntasks=0))
     @test_throws ArgumentError str(io -> W.write(io, (a=[1],); quotechar='α'))
+
+    # Keyword hygiene: unknown keywords are ArgumentErrors, one-character
+    # strings spell characters, quotestyle accepts a string, and
+    # missingstring=nothing means the empty spelling.
+    @test_throws ArgumentError W.write(IOBuffer(), (a=[1],); foo=1)
+    @test_throws ArgumentError CSV.RowWriter((a=[1],); foo=1)
+    @test str(io -> W.write(io, (a=["x,y"],); quotechar="'")) == "a\n'x,y'\n"
+    @test str(io -> W.write(io, (a=["x"],); quotestyle="all")) == "\"a\"\n\"x\"\n"
+    @test str(io -> W.write(io, (a=[1, missing],); missingstring=nothing)) == "a\n1\n\n"
+    @test_throws ArgumentError W._writeopts(; quotechar="ab")
+    @test_throws ArgumentError W._writeopts(; decimal='é')
+
+    # Multi-byte delimiters write on the tuple, staged, header, and row paths,
+    # quote conservatively on their first byte, and round-trip.
+    multi = (a=[1, 2], b=["x::y", "z"])
+    multiout = str(io -> W.write(io, multi; delim="::"))
+    @test multiout == "a::b\n1::\"x::y\"\n2::z\n"
+    @test join(CSV.RowWriter(multi; delim="::")) == multiout
+    multifile = CSV.File(IOBuffer(multiout); delim="::")
+    @test multifile.a == [1, 2] && String.(multifile.b) == ["x::y", "z"]
+    wide = NamedTuple{Tuple(Symbol("c", j) for j in 1:40)}(Tuple(fill(j, 3) for j in 1:40))
+    wideout = str(io -> W.write(io, wide; delim="||"))
+    @test wideout == str(io -> W.write(io, Tables.rowtable(wide); delim="||"))
+    @test String.(Tables.columnnames(CSV.File(IOBuffer(wideout); delim="||"))) ==
+          ["c$j" for j in 1:40]
+    @test str(io -> W.write(io, (a=[1], b=["x"]); delim='§')) == "a§b\n1§x\n"
+    @test_throws ArgumentError W._writeopts(; delim="")
+    @test_throws ArgumentError W._writeopts(; delim="a\nb")
+    @test_throws ArgumentError W._writeopts(; delim="\"")
+
+    # CSV.Chunks streams every batch under one header.
+    chunks = CSV.Chunks(IOBuffer("a,b\n1,2\n3,4\n5,6\n"); chunkbytes=4)
+    @test length(chunks) == 3
+    @test str(io -> W.write(io, chunks)) == "a,b\n1,2\n3,4\n5,6\n"
+    @test str(io -> W.write(io, chunks; writeheader=false)) == "1,2\n3,4\n5,6\n"
+    @test str(io -> W.write(io, chunks; header=["x", "y"], delim=';')) == "x;y\n1;2\n3;4\n5;6\n"
+    mktempdir() do dir
+        chunkpath = joinpath(dir, "chunks.csv")
+        @test W.write(chunkpath, chunks) == chunkpath
+        @test read(chunkpath, String) == "a,b\n1,2\n3,4\n5,6\n"
+        upper = joinpath(dir, "upper.CSV.GZ")
+        W.write(upper, (a=[1],))
+        @test read(upper)[1:2] == UInt8[0x1f, 0x8b]
+        @test CSV.File(upper).a == [1]
+    end
 
     # Seeded dialect fuzz: the parser is the oracle. Each table includes a
     # nonmissing key, so a missing one-column cell cannot become an ignored
@@ -617,17 +671,25 @@ end
     @test render(true) * render(false) == "truefalse"
     st = W.ColStage(); W._stagecolumn!(st, Union{Int32, Missing}[1, missing, -7], 1, 3, o)
     @test String(copy(st.bytes)) == "1-7" && st.ends == [1, 1, 3]
-    # whole-table byte identity across thread counts and vs the per-cell reference
+    # whole-table byte identity across thread counts and vs an independent
+    # per-cell reference written with Base spellings only
     rng = MersenneTwister(3)
     n = 20_000
     tbl = (id = collect(1:n), s = [rand(rng, ("a", "b,c", "d\"e", " lead", "")) for _ in 1:n],
            f = rand(rng, n), d = [Date(2020) + Day(i) for i in 1:n],
            t = [DateTime(2020) + Millisecond(i * 7) for i in 1:n],
            m = [rand(rng) < 0.2 ? missing : rand(rng, Int64) for _ in 1:n], b = rand(rng, Bool, n))
+    function refcell(io, x::AbstractString)
+        needsquote = isempty(x) || startswith(x, ' ') || endswith(x, ' ') ||
+                     any(c -> c in (',', '"', '\n', '\r'), x)
+        needsquote ? print(io, '"', replace(x, "\"" => "\"\""), '"') : print(io, x)
+    end
+    refcell(io, ::Missing) = nothing
+    refcell(io, x) = print(io, x)
     ref = IOBuffer()
     for r in 1:n
         for (j, nm) in enumerate(keys(tbl))
-            W._writecell(ref, tbl[nm][r], o)
+            refcell(ref, tbl[nm][r])
             j < length(tbl) && write(ref, ',')
         end
         write(ref, '\n')
