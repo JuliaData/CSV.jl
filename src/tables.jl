@@ -187,6 +187,7 @@ end
 # the caller reads it.
 
 struct _IndexedRows
+    name::String
     buf::Vector{UInt8}
     chunks::Vector{ChunkIndex}
     names::Vector{Symbol}
@@ -196,8 +197,8 @@ struct _IndexedRows
     d::Dialect
 end
 
-_IndexedRows(buf, chunks, names, lookup, plan::ColumnPlan, d) =
-    _IndexedRows(buf, chunks, names, lookup, plan.opts, plan.colopts, d)
+_IndexedRows(buf, chunks, names, lookup, plan::ColumnPlan, d, source::String="") =
+    _IndexedRows(source, buf, chunks, names, lookup, plan.opts, plan.colopts, d)
 
 Tables.istable(::Type{_IndexedRows}) = true
 Tables.rowaccess(::Type{_IndexedRows}) = true

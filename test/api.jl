@@ -1800,6 +1800,13 @@ end
     @test_throws CSV.ParseError collect(A.Rows(IOBuffer(bad); types=Int, on_error=:error))[2].a
     @test_throws ArgumentError A.File(IOBuffer(bad); on_error=:ignore)
     @test_throws ArgumentError A.Rows(IOBuffer(bad); types=Int, on_error=:warn)
+    rowerr = try
+        collect(A.Rows(IOBuffer(bad); types=Int, on_error=:error))[2].a
+    catch e
+        e
+    end
+    @test rowerr isa CSV.ParseError && rowerr.source == "<GenericIOBuffer>"
+    @test rowerr.nproblems == 1 && rowerr.problem.row == 2
     # :warn prints exactly one summary and returns the collected table
     f = @test_logs (:warn, r"CSV: 2 parse problems in <GenericIOBuffer>; first: invalid_value at data row 2") begin
         A.File(IOBuffer("a\n1\nx\ny\n"); types=Int, on_error=:warn)

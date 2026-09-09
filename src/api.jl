@@ -2048,10 +2048,11 @@ function Rows(source; types=nothing, reusebuffer::Bool=false, select=nothing, dr
         accessparsetype(plan.columns[j]) for j in plan.sources
     ]
     all(isnothing, rowtypes) && (rowtypes = nothing)
+    name = _sourcename(source)
     inner = _IndexedRows(p.buf, p.bi.chunks, p.names,
                          Dict(nm => j for (j, nm) in enumerate(p.names)),
-                         plan, p.d)
-    return Rows(_sourcename(source), inner, names,
+                         plan, p.d, name)
+    return Rows(name, inner, names,
                 Dict(nm => j for (j, nm) in enumerate(names)),
                 plan.sources, rowtypes, p.limit, stringtype, on_error)
 end
@@ -2115,7 +2116,8 @@ Tables.columnnames(row::Row) = getfield(row, :names)
 
 @noinline function _throwrowproblem(view::_IndexedRow, j::Int, pos::Int,
                                     kind::Symbol, message::String)
-    throw(ParseError(Problem(getfield(view, :rownumber), j, pos, kind, message), 1))
+    throw(ParseError(Problem(getfield(view, :rownumber), j, pos, kind, message),
+                     1, getfield(getfield(view, :r), :name)))
 end
 
 # Rows has no retained diagnostic table. In fail-fast mode, validate and parse

@@ -2164,8 +2164,9 @@ end
     CSV.ParseError <: Exception
 
 Thrown by the readers under `on_error=:error` (or `strict=true`). `problem` is
-the source-earliest [`CSV.Problem`](@ref CSV.Problem), `nproblems` counts every
-problem found, and `source` labels the input.
+the source-earliest [`CSV.Problem`](@ref CSV.Problem) in a File or Chunks batch,
+`nproblems` counts every problem found, and `source` labels the input.
+Rows reports the accessed cell's problem with `nproblems=1`.
 """
 struct ParseError <: Exception
     problem::Problem
