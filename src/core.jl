@@ -638,7 +638,13 @@ end
 @inline _tickscale(::Type{Dates.Millisecond}) = Int64(1_000_000)
 @inline _tickscale(::Type{Dates.Second}) = Int64(1_000_000_000)
 const _UNIXEPOCHDAYS = Int64(Dates.UNIXEPOCH ÷ 86_400_000)   # rata days of 1970-01-01
+# Seconds have the widest supported range. Cache this coarse guard so even
+# Int64 calendar years cannot overflow totaldays before the checked tick math.
+const _TIMESTAMPYEARS = (year(typemin(Timestamp{Dates.Second})),
+                         year(typemax(Timestamp{Dates.Second})))
 @inline function totimestamp(::Type{Timestamp{P}}, c::Parsers.CivilParts) where {P}
+    _TIMESTAMPYEARS[1] <= c.year <= _TIMESTAMPYEARS[2] ||
+        return (_timestamp0(Timestamp{P}), false)
     scale = _tickscale(P)
     nsofday = ((Int64(c.hour) * 60 + Int64(c.minute)) * 60 + Int64(c.second)) * 1_000_000_000 +
               Int64(c.nanosecond)

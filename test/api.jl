@@ -12,7 +12,7 @@
 #   • function-typed select/drop retired
 #   • wide integers that fit Int128 remain exact
 
-using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings, FilePathsBase, Random, Mmap
+using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings, FilePathsBase, Random, Mmap, Parsers
 using Durations: Timestamp
 using CSV
 const A = CSV
@@ -2340,4 +2340,74 @@ end
         @test isequal(A.File(IOBuffer(src); scan=Tables.Scan(select=(:t => T,)),
                              on_error=:collect).t, expected)
     end
+end
+
+@testset "timestamp conversion rejects overflowing civil years" begin
+    # These valid calendar years wrap the unchecked Int64 rata-day formula
+    # back near 1970. They must never become apparently valid timestamps.
+    tokens = ["50505469855535079-01-01T00:00:00",
+              "-50505469855531139-01-01T00:00:00",
+              "$(typemin(Int64))-01-01T00:00:00",
+              "$(typemax(Int64))-01-01T00:00:00"]
+    for format in (nothing, "yyyy-mm-ddTHH:MM:SS")
+        src = "t\n" * join(tokens, '\n') * "\n"
+        inferred = A.File(IOBuffer(src); delim=',', dateformat=format)
+        @test inferred.t == tokens
+        for token in tokens
+            @test only(A.File(IOBuffer("t\n$token\n"); delim=',', dateformat=format).t) == token
+        end
+        for P in (Second, Millisecond, Microsecond, Nanosecond)
+            T = Timestamp{P}
+            opts = (; delim=',', dateformat=format, types=T)
+            f = A.File(IOBuffer(src); opts..., on_error=:collect)
+            @test all(ismissing, f.t)
+            @test length(A.problems(f)) == length(tokens)
+            @test all(ismissing, [r.t for r in A.Rows(IOBuffer(src); opts..., on_error=:collect)])
+            @test all(ismissing, A.lazy(IOBuffer(src); opts...).t)
+            @test all(c -> all(ismissing, c.t), A.Chunks(IOBuffer(src); opts..., on_error=:collect))
+        end
+    end
+end
+
+@testset "timestamp calendar validation and checked tick boundaries" begin
+    # Parsers rejects hour 24, even midnight, before CSV constructs an instant.
+    invalid = ["2023-02-29T00:00:00", "2024-04-31T00:00:00",
+               "2024-00-01T00:00:00", "2024-01-00T00:00:00",
+               "2024-01-01T24:00:00", "2024-01-01T24:00:01",
+               "2024-01-01T23:60:00", "2024-01-01T23:59:60"]
+    for format in (nothing, "yyyy-mm-ddTHH:MM:SS"), P in (Second, Millisecond, Microsecond, Nanosecond)
+        f = A.File(IOBuffer("t\n" * join(invalid, '\n') * "\n"); delim=',',
+                   dateformat=format, types=Timestamp{P}, on_error=:collect)
+        @test all(ismissing, f.t)
+        @test length(A.problems(f)) == length(invalid)
+    end
+    rng = MersenneTwister(0x6c10)
+    for P in (Second, Millisecond, Microsecond, Nanosecond)
+        T = Timestamp{P}
+        scale = Int128(Dates.value(convert(Nanosecond, P(1))))
+        perday = 86_400_000_000_000 ÷ scale
+        ticks = [Int128(typemin(Int64)) + d for d in (-perday, -1, 0, 1, perday)]
+        append!(ticks, [Int128(typemax(Int64)) + d for d in (-perday, -1, 0, 1, perday)])
+        append!(ticks, Int128.(rand(rng, Int64, 256)))
+        for tick in ticks
+            days, subday = fldmod(tick, perday)
+            date = Date(Dates.UTD(Int64(days + Dates.totaldays(1970, 1, 1))))
+            time = Time(Nanosecond(Int64(subday * scale)))
+            ns = millisecond(time) * 1_000_000 + microsecond(time) * 1_000 + nanosecond(time)
+            c = Parsers.CivilParts(year(date), month(date), day(date), hour(time), minute(time), second(time), ns)
+            value, ok = A.totimestamp(T, c)
+            @test ok == (typemin(Int64) <= tick <= typemax(Int64))
+            if ok
+                @test Dates.value(value) == tick
+                @test value == T(year(date), month(date), day(date), hour(time), minute(time), second(time), 0, 0, ns)
+            end
+        end
+        if P !== Nanosecond
+            c = Parsers.CivilParts(2024, 1, 1, 0, 0, 0, 1)
+            @test !A.totimestamp(T, c)[2]
+        end
+    end
+    # A negative year is a valid proleptic Gregorian year at wider resolutions.
+    f = A.File(IOBuffer("t\n-0001-01-01T00:00:00\n0000-02-29T00:00:00\n"); delim=',')
+    @test f.t == [Timestamp{Microsecond}(-1), Timestamp{Microsecond}(0, 2, 29)]
 end
