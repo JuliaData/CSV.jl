@@ -905,14 +905,12 @@ function File(source;
             throw(ArgumentError("pass the row limit through the Scan, not limit="))
         p = _prepare(source; parallel, ntasks, maxproblems=capturecap, validate, kw...)
         nm = _sourcename(source)
-        t = _executescan(p, scan; parsekw=p.parsekw, maxproblems, on_error, source=nm)
+        t, requests = _executescan(p, scan; parsekw=p.parsekw, maxproblems, on_error, source=nm)
         # pool keys name the scan's OUTPUT columns (the request already renamed
         # and reordered them)
         t = _poolcolumns(t, _resolvepool(pool, names(t), length(names(t)); validate); parallel)
-        poolS = stringtype === DataString ? String : stringtype
-        t = _pooledarrays(t, poolS)
+        t = _finishstrings(t, stringtype, requests)
         downcast && (t = _downcast(t))
-        stringtype === DataString || (t = _materializestrings(t, stringtype))
         return File(nm, t, Dict(n => j for (j, n) in enumerate(names(t))))
     end
     p = _prepare(source; parallel, ntasks, maxproblems=capturecap, validate, kw...)
@@ -958,11 +956,8 @@ function _filefromprepared(p::Prepared, nm::String; types=nothing, select=nothin
     t, firstproblem = _narrowtypes(t, plan, p.bi.chunks, maxproblems, firstproblem)
     _reportproblems(t, on_error, firstproblem, nm)
     t = _poolcolumns(t, poolspecs[plan.positions]; parallel)
-    poolS = stringtype === DataString ? String : stringtype   # pool levels are never views
-    t = _pooledarrays(t, poolS)
-    t = _materializerequested(t, plan)
+    t = _finishstrings(t, stringtype, _requestedstrings(plan))
     downcast && (t = _downcast(t))
-    stringtype === DataString || (t = _materializestrings(t, stringtype))
     return File(nm, t, Dict(n => j for (j, n) in enumerate(names(t))))
 end
 
@@ -980,22 +975,30 @@ function _reportproblems(t::ParsedTable, on_error::Symbol,
     return
 end
 
-# `types=String` (or an extension string type such as InlineString) names an
-# OUTPUT type. Convert the parsed DataString column once, after pooling has had
-# its chance (a pooled column keeps `String` levels, as in 0.10).
-function _materializerequested(t::ParsedTable, plan::ColumnPlan)
-    any(j -> _requestedstring(plan.columns[j]) !== nothing, plan.sources) || return t
+# Resolve output types before converting either pooled levels or text columns.
+# An explicit string type wins over the default for inferred text. Pool levels
+# are owned strings even when DataString was requested.
+_requestedstring(d::ColumnDecision) = d.parsetype === String ? d.resulttype : nothing
+function _requestedstrings(plan::ColumnPlan, sources=plan.sources)
+    any(j -> _requestedstring(plan.columns[j]) !== nothing, sources) || return nothing
+    return Union{Nothing, Type}[_requestedstring(plan.columns[j]) for j in sources]
+end
+
+function _finishstrings(t::ParsedTable, stringtype::Type, requests)
+    requests === nothing && stringtype === DataString && return _pooledarrays(t)
+    any(c -> c isa PooledColumn || c isa DataStringVector, t.columns) || return t
     cols = AbstractVector[t.columns...]
-    for (o, j) in enumerate(plan.sources)
-        S = _requestedstring(plan.columns[j])
-        S === nothing && continue
-        c = cols[o]
-        c isa DataStringVector && (cols[o] = _materializecolumn(S, c))
+    for j in eachindex(cols)
+        S = requests === nothing ? stringtype : something(requests[j], stringtype)
+        c = cols[j]
+        if c isa PooledColumn
+            cols[j] = _topooledarray(c, S === DataString ? String : S)
+        elseif c isa DataStringVector && S !== DataString
+            cols[j] = _materializecolumn(S, c)
+        end
     end
     return ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
 end
-_requestedstring(d::ColumnDecision) =
-    d.parsetype === String && d.resulttype !== nothing ? d.resulttype : nothing
 
 # The optional scan implementation is included after this file. A Tables
 # version without Scan never reaches this call because the type check above
@@ -1365,7 +1368,7 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
     end
     plan = settlecolumns(names, opts; types, colopts, validate)
     # narrow numeric requests parse natively here; a requested string type is
-    # applied after the parse by `_materializerequested`
+    # applied after the parse by `_finishstrings`
     seed = Union{Nothing, Type}[_requestedstring(d) === nothing ? accessparsetype(d) : String
                                 for d in plan.columns]
     if inferdecimal
@@ -1384,11 +1387,8 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
     nm = _sourcename(source)
     _reportproblems(t, on_error, log.first, nm)
     t = _poolcolumns(t, _resolvepool(pool, names, ncols; validate); parallel=false)
-    poolS = stringtype === DataString ? String : stringtype
-    t = _pooledarrays(t, poolS)
-    t = _materializerequested(t, plan)
+    t = _finishstrings(t, stringtype, _requestedstrings(plan))
     downcast && (t = _downcast(t))
-    stringtype === DataString || (t = _materializestrings(t, stringtype))
     return File(nm, t, Dict(nm2 => j for (j, nm2) in enumerate(names)))
 end
 
@@ -1839,7 +1839,7 @@ function lazy(source; types=nothing, stringtype::Type=DataString,
         c = T === nothing ?
                 LazyColumn{_lazyeltype(stringtype)}(p.buf, chunks, rowbases, j, opts, nr, stringtype) :
             S !== nothing ?
-                LazyColumn{Union{S, Missing}}(p.buf, chunks, rowbases, j, opts, nr, S) :
+                LazyColumn{_lazyeltype(S)}(p.buf, chunks, rowbases, j, opts, nr, S) :
                 LazyColumn{Union{T, Missing}}(p.buf, chunks, rowbases, j, opts, nr, T)
         push!(cols, c)
     end
@@ -1905,7 +1905,7 @@ end
         else
             _lazycompact(c.buf, cpos, clen)
         end
-        return T === DataString ? s : convert(T, String(s))
+        return T === DataString ? s : _rowstring(T, s)
     end
     # `types=Missing` is an intentional sink: every present value recovers to
     # missing, as it does in the eager parser's default collecting mode.
@@ -2076,6 +2076,7 @@ end
 Tables.istable(::Type{Rows}) = true
 Tables.rowaccess(::Type{Rows}) = true
 Tables.rows(r::Rows) = r
+Tables.columnnames(r::Rows) = names(r)
 Tables.schema(r::Rows) = getfield(r, :types) === nothing ?
     Tables.Schema(getfield(r, :names),
                   fill(Union{_rowstringtype(getfield(r, :stringtype)), Missing},
@@ -2083,7 +2084,7 @@ Tables.schema(r::Rows) = getfield(r, :types) === nothing ?
     Tables.Schema(getfield(r, :names),
                   Type[T === nothing ?
                        Union{_rowstringtype(getfield(r, :stringtype)), Missing} :
-                       Union{T, Missing} for T in getfield(r, :types)])
+                       Union{_rowstringtype(T), Missing} for T in getfield(r, :types)])
 _rowstringtype(T) = T === DataString ? DataString : T
 
 struct Row <: Tables.AbstractRow
@@ -2169,7 +2170,7 @@ function Tables.getcolumn(row::Row, j::Int)
                         _typedvalue(T, v, sourcej)
     end
     st = getfield(row, :stringtype)
-    return st === DataString || !(x isa DataString) ? x : _rowstring(st, x)
+    return T !== nothing || st === DataString || !(x isa DataString) ? x : _rowstring(st, x)
 end
 # per-cell string materialization for Rows(stringtype=...) and requested
 # string types; extensions may add
@@ -2229,12 +2230,9 @@ function Base.iterate(c::Chunks, state::Int=1)
     # Apply the same final steps as File. Build each requested PooledArray, then
     # build the requested string type.
     st = getfield(c, :stringtype)
-    poolS = st === DataString ? String : st
     ps = getfield(c, :poolspec)
     ps === nothing || (t = _poolcolumns(t, fill(ps, length(t.columns))))
-    t = _pooledarrays(t, poolS)
-    t = _materializerequested(t, getfield(c, :plan))
-    st === DataString || (t = _materializestrings(t, st))
+    t = _finishstrings(t, st, _requestedstrings(getfield(c, :plan)))
     f = File(getfield(c, :name), t,
              Dict(nm => j for (j, nm) in enumerate(names(t))))
     return f, next

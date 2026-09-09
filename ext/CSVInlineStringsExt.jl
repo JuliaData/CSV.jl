@@ -94,6 +94,11 @@ function CSV._materializecolumn(::Type{T}, col::CSV.DataStringVector) where {T <
     return out
 end
 
+# Auto width can return either an InlineString or an owned String. Tables
+# consumers must allocate a column that can hold both, including >255 bytes.
+CSV._rowstringtype(::Type{InlineString}) = Union{InlineString, String}
+CSV._lazyeltype(::Type{InlineString}) = Union{Missing, InlineString, String}
+
 # Rows(stringtype=InlineString): per-cell, smallest fitting width (String past
 # the auto ceiling)
 function CSV._rowstring(::Type{InlineString}, x::CSV.DataString)

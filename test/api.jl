@@ -1469,7 +1469,7 @@ end
     @test all(ismissing, allmissing.s)
     inferredmissing = A.File(IOBuffer("id,s\n1,\n2,\n"); types=Dict(:s => A.DataString),
                              stringtype=InlineString, pool=false)
-    @test eltype(inferredmissing.s) == Union{Missing, String1}
+    @test eltype(inferredmissing.s) == Union{Missing, A.DataString}
     # pooled levels take the inline type; missing joins the pool
     f = A.File(IOBuffer(csv); stringtype=InlineString, pool=Dict(:s => false, :t => (1.0, 5000)))
     pooled = Tables.getcolumn(f, :t)
@@ -1797,7 +1797,7 @@ end
     @test_throws CSV.ParseError A.File(IOBuffer(bad); types=Int, strict=true, transpose=false)
     @test_throws CSV.ParseError first(A.Chunks(IOBuffer(bad); types=Int, on_error=:error))
     @test_throws CSV.ParseError A.File([IOBuffer(bad), IOBuffer(bad)]; types=Int, on_error=:error)
-    @test_throws CSV.ParseError first(A.Rows(IOBuffer(bad); types=Int, on_error=:error))[2].a
+    @test_throws CSV.ParseError collect(A.Rows(IOBuffer(bad); types=Int, on_error=:error))[2].a
     @test_throws ArgumentError A.File(IOBuffer(bad); on_error=:ignore)
     # :warn prints exactly one summary and returns the collected table
     f = @test_logs (:warn, r"CSV: 2 parse problems in <GenericIOBuffer>; first: invalid_value at data row 2") begin
@@ -1806,7 +1806,7 @@ end
     @test length(A.problems(f)) == 2
     @test_logs A.File(IOBuffer("a\n1\n2\n"); types=Int, on_error=:warn)
     @test_logs (:warn, r"CSV: 1 parse problem") first(A.Chunks(IOBuffer(bad); types=Int, on_error=:warn))
-    @test_logs (:warn, r"CSV: 1 parse problem") A.File(IOBuffer(bad); types=Int, on_error=:warn, transpose=true, header=false, types=Dict(1 => Int))
+    @test_logs (:warn, r"CSV: 1 parse problem") A.File(IOBuffer(bad); on_error=:warn, transpose=true, header=false, types=Dict(1 => Int))
     p = first(A.problems(f))
     @test sprint(show, p) == "CSV.Problem(invalid_value at data row 2, column 1, byte 5: \"cannot parse Int64 from \\\"x\\\"\")"
     # Rows/Chunks display never dumps the buffer or index
@@ -1817,7 +1817,7 @@ end
     chunks = A.Chunks(IOBuffer("a,b\n1,x\n2,\n"); chunkbytes=8)
     shown = sprint(show, chunks)
     @test startswith(shown, "CSV.Chunks(\"<GenericIOBuffer>\"): ")
-    @test occursin("a::Int64", shown) && occursin("b::Union{Missing, DataString}", shown)
+    @test occursin("a::Int64", shown) && occursin("b::$(Union{Missing, A.DataString})", shown)
     @test !occursin("ChunkIndex", shown)
     @test names(rows) == [:a, :b] && names(chunks) == [:a, :b]
     @test Base.IteratorSize(typeof(rows)) isa Base.HasLength && length(rows) == 2
@@ -1900,4 +1900,37 @@ end
     @test first(A.Rows(IOBuffer(wide); stringtype=InlineString)).s isa String
     @test first(A.Rows(IOBuffer("s\nabc\n"); stringtype=InlineString)).s isa String3
     @test_throws ArgumentError A.File(IOBuffer(wide); stringtype=String15)
+end
+
+@testset "requested text output across readers and pools" begin
+    for S in (String, A.DataString, String15), default in (String, A.DataString, String7), pool in (false, true)
+        kw = (; types=Dict(:s => S), stringtype=default, pool)
+        input = "s,t\nabc,xyz\n,uvw\n"
+        readers = (A.File(IOBuffer(input); kw...),
+                   first(A.Chunks(IOBuffer(input); chunkbytes=1024, kw...)),
+                   A.File(IOBuffer("s,abc,\nt,xyz,uvw\n"); transpose=true, kw...),
+                   A.File(IOBuffer(input); scan=Tables.Scan(select=(:s => S, :t)), stringtype=default, pool))
+        expected = pool && S === A.DataString ? String : S
+        for f in readers
+            @test Base.nonmissingtype(eltype(f.s)) === expected
+            @test isequal(collect(f.s), ["abc", missing])
+            @test (f.s isa PooledVector) == pool
+        end
+        for f in (A.Rows(IOBuffer(input); types=Dict(:s => S), stringtype=default),
+                  A.lazy(IOBuffer(input); types=Dict(:s => S), stringtype=default))
+            col = Tables.columntable(f).s
+            @test Base.nonmissingtype(eltype(col)) === S
+            @test isequal(collect(col), ["abc", missing])
+        end
+    end
+    for reader in (A.Rows, A.lazy), explicit in (false, true), n in (40, 300)
+        input = "s\n" * "x"^n * "\ny\n"
+        f = explicit ? reader(IOBuffer(input); types=InlineString) :
+                       reader(IOBuffer(input); stringtype=InlineString)
+        col = Tables.columntable(f).s
+        @test col[1] isa String
+        @test col[1] == "x"^n
+        @test col[2] isa String1
+        @test typeof(col[1]) <: eltype(col)
+    end
 end

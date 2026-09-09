@@ -2599,7 +2599,7 @@ end
 
 # A column request records the user's type intent for one source column.
 # `parsetype` is the type used by the scalar parser. `resulttype` is set only
-# when the requested type needs a checked conversion after parsing.
+# for an explicit string output type or a checked numeric conversion.
 struct ColumnDecision
     parsetype::Union{Nothing, Type}
     resulttype::Union{Nothing, Type}
@@ -2687,8 +2687,7 @@ function _columndecision(T)
     # zero-copy column, and an extension type (InlineString) converts once
     # after parsing. Text is always parsed as a DataString column first.
     if requested !== Missing && _stringsink(requested)
-        return ColumnDecision(String, requested === DataString ? nothing : requested,
-                              declaredmissing)
+        return ColumnDecision(String, requested, declaredmissing)
     end
     parsetype = _nativetype(requested)
     parseable = parsetype === Missing ||

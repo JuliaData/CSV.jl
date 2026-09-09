@@ -67,6 +67,7 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
     phasekw = merge(NamedTuple(parsekw), (; maxproblems=phasecap, on_error=:collect))
     b = Tables.resolve(scan, inputnames)
     plan = settlecolumns(inputnames, p.opts, b; colopts=_preparedcolopts(p))
+    requests = _requestedstrings(plan, [c.index for c in b.columns])
 
     if b.filter === nothing
         # Apply row bounds before a requested type conversion.
@@ -77,9 +78,8 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
                   rowmask=mask, phasekw...)
         sourcerows = mask === nothing ? nothing : findall(mask)
         t = _narrowphase(t, plan, bi, phasecap; sourcerows)
-        t = _materializerequested(t, plan)
         t = _project(t, b, inputnames)
-        return _finishproblems(t, maxproblems, on_error, headerlog, source, t)
+        return _finishproblems(t, maxproblems, on_error, headerlog, source, t), requests
     end
 
     # First, read only the columns used by the filter.
@@ -97,9 +97,8 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
                rowmask=mask, reportstructural=false, phasekw...)
     kept = findall(mask)
     t2 = _narrowphase(t2, plan, bi, phasecap; sourcerows=kept)
-    t2 = _materializerequested(t2, plan)
     t = _project(t2, b, inputnames)
-    return _finishproblems(t, maxproblems, on_error, headerlog, source, t1, t2)
+    return _finishproblems(t, maxproblems, on_error, headerlog, source, t1, t2), requests
 end
 
 function _narrowphase(t::ParsedTable, plan::ColumnPlan, bi::BufferIndex,

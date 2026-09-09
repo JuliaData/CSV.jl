@@ -117,7 +117,7 @@ include:
 - `typemap` to replace an inferred type.
 
 Default date and time inference accepts the ISO forms `yyyy-mm-dd`,
-`yyyy-mm-ddTHH:MM:SS`, and `HH:MM:SS`, each with optional fractional seconds.
+`yyyy-mm-ddTHH:MM:SS`, and `HH:MM:SS`. The latter two accept fractional seconds.
 `Dates.DateTime` holds milliseconds, so additional fractional digits are
 truncated.
 
@@ -127,7 +127,8 @@ truncated.
 dictionary keyed by column index, name, or a `Regex`. A type vector must match
 the header. Function-valued `types` is not supported in 1.0. A requested
 `String` (or `Union{Missing, String}`) names the output type: that column is a
-`Vector{String}`, as in 0.10. Request `DataStrings.DataString` to keep the
+`Vector{String}` or `Vector{Union{Missing, String}}` when pooling is off.
+With pooling, its levels use `String`. Request `DataStrings.DataString` to keep the
 zero-copy column, or an InlineStrings.jl type when that package is loaded.
 `stringtype` governs inferred text only.
 
