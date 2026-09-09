@@ -2798,6 +2798,15 @@ function settlecolumns(names::Vector{Symbol}, opts::ValueOpts;
                        available::Union{Nothing, Vector{Int}}=nothing,
                        colopts::Union{Nothing, Vector{ValueOpts}}=nothing,
                        validate::Bool=true, matchnormalized::Bool=false)
+    return settlecolumns(names, opts, select, drop, types, available, colopts,
+                         validate, matchnormalized)
+end
+
+Base.@nospecializeinfer function settlecolumns(names::Vector{Symbol}, opts::ValueOpts,
+                       @nospecialize(select), @nospecialize(drop), @nospecialize(types),
+                       @nospecialize(available::Union{Nothing, Vector{Int}}),
+                       @nospecialize(colopts::Union{Nothing, Vector{ValueOpts}}),
+                       validate::Bool, matchnormalized::Bool)
     ncols = length(names)
     allavailable = available === nothing
     visible = allavailable ? collect(1:ncols) : copy(available)
