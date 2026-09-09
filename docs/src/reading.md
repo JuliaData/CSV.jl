@@ -134,16 +134,22 @@ replaces the defaults. Other value options include:
 Default date and time inference accepts the ISO forms `yyyy-mm-dd`,
 `yyyy-mm-ddTHH:MM:SS`, `yyyy-mm-dd HH:MM:SS`, and `HH:MM:SS`. The time forms
 accept fractional seconds. A date-time column infers as
-`Timestamp{Nanosecond}` from [Durations.jl](https://github.com/JuliaData/Durations.jl)
-(the `Dates.Timestamp` of Julia 1.14 and later), an 8-byte instant that keeps
-every fraction digit. An instant outside the nanosecond range (years 1677 to
-2262, so a `9999-12-31` sentinel) widens the column to `Timestamp{Microsecond}`,
-as an integer overflow widens `Int64` to `Int128`. A time column infers as
+`Timestamp{Nanosecond}` from [Durations.jl](https://github.com/JuliaData/Durations.jl),
+which uses `Dates.Timestamp` when the standard library provides it. This 8-byte instant keeps
+up to nine fraction digits. An instant outside the nanosecond range
+(`1677-09-21T00:12:43.145224192` through `2262-04-11T23:47:16.854775807`)
+widens the column to `Timestamp{Microsecond}` if every value fits that type
+exactly. For example, a `9999-12-31T00:00:00` sentinel requires microseconds.
+If another value requires finer precision, or a value exceeds the microsecond
+range, the column stays text. A time column infers as
 `Dates.Time`, which also keeps nanoseconds. Request `Dates.DateTime` with
-`types` or `typemap=Dict(Timestamp{Nanosecond} => DateTime)`; it holds
-milliseconds, so a finer fraction such as `12:00:00.123456` is then reported as
-a problem. `Timestamp{Millisecond}` and `Timestamp{Second}` apply the same
-check at their resolution.
+`types`; it holds milliseconds, so a finer fraction such as
+`2024-01-02T12:00:00.123456` is reported as a problem.
+`typemap=Dict(Timestamp{Nanosecond} => DateTime)` changes an inferred
+nanosecond type to `DateTime`; a rejected fraction promotes that column to
+text. Add `Timestamp{Microsecond} => DateTime` to also map the wider range.
+Explicit `Timestamp{Millisecond}` and `Timestamp{Second}` requests check
+exactness at their resolution.
 
 ## Types, columns, strings, and pools
 

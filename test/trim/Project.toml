@@ -2,12 +2,16 @@
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 DataDecimals = "3e2245cb-6932-498d-a7cf-39d39de8bde3"
 DataStrings = "48204bd6-5611-42ea-b167-fc1d713f9be2"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+Durations = "41ac09f5-0a95-4810-aa18-c88bf48ee130"
 JuliaC = "acedd4c2-ced6-4a15-accc-2607eb759ba2"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [compat]
 DataDecimals = "1"
 DataStrings = "1"
+Dates = "1"
+Durations = "1.1"
 CSV = "1"
 JuliaC = "0.3"
 Test = "1"

@@ -18,6 +18,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 Unicode = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
 
 [compat]
+Durations = "1.1"
 Aqua = "0.8"
 CSV = "1"
 CodecZlib = "0.7"

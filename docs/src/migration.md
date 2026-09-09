@@ -20,7 +20,7 @@ must use an older Julia release.
 | Problems | One warning per problem during recovery | Structured `CSV.problems(file)` plus one summary warning | Inspect problems, set `on_error=:collect` to silence the summary, or `on_error=:error` to throw `CSV.ParseError` |
 | Row limit | Could be approximate with multiple tasks | Exact at every thread count | Remove `ntasks=1` workarounds used only for exact limits |
 | Boolean inference | Accepted the 0.10 parser's broader spellings | `true`, `True`, `TRUE`, `false`, `False`, `FALSE` | Add explicit `truestrings` and `falsestrings` as required |
-| Date-time inference | `Dates.DateTime`; extra fraction digits truncated | `Timestamp{Nanosecond}` (Durations.jl; `Dates.Timestamp` on Julia 1.14), every fraction digit kept; instants outside 1677–2262 widen to `Timestamp{Microsecond}` | Pass `types=DateTime` or `typemap=Dict(Timestamp{Nanosecond} => DateTime)` for the old type; a finer fraction is then a problem |
+| Date-time inference | `Dates.DateTime`; extra fraction digits truncated | `Timestamp{Nanosecond}` (Durations.jl; `Dates.Timestamp` when available); wider dates use `Timestamp{Microsecond}` only if every value fits exactly, otherwise text | Pass `types=DateTime` for the old type; finer fractions are problems. With `typemap=Dict(Timestamp{Nanosecond} => DateTime)`, finer fractions promote to text |
 
 `DataStrings.DataString` is an `AbstractString`. Convert one value with `String(x)`
 when a consumer requires `String`. Eager text columns own their bytes, so
@@ -144,8 +144,8 @@ deterministic across `ntasks` values.
 
 CSV now uses Parsers 3, InlineStrings 2, Tables 1.14, DataStrings 1,
 DataDecimals 1, and Durations 1.1, all registered in General. Durations
-provides `Timestamp{P}`, the inferred date-time type; on Julia 1.14 and later
-it is the `Dates.Timestamp` of the standard library.
+provides `Timestamp{P}`, the inferred date-time type. It uses `Dates.Timestamp`
+when the standard library provides that type, and a compatible implementation otherwise.
 The draft rewrite's `CSV.CompactString` has moved to `DataStrings.DataString`.
 Import DataStrings when referring to that type. Text columns are mutable
 `DataStrings.StringVector` values. Shared string methods belong in DataStrings.

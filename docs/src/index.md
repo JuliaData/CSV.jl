@@ -56,9 +56,10 @@ CSV.jl builds one quote-aware structural index. It then parses each selected
 column with a type-specialized loop. Parallel execution does not change row
 order, `limit` results, or output bytes.
 
-Date-time columns use `Timestamp{Nanosecond}` from Durations.jl (the
-`Dates.Timestamp` of Julia 1.14), so no fraction digit is lost; request
-`Dates.DateTime` with `types` when a consumer needs it.
+Date-time columns prefer `Timestamp{Nanosecond}` from Durations.jl, which
+uses `Dates.Timestamp` when the standard library provides it. Wider dates use microseconds if all values
+fit exactly; otherwise the column stays text. Request `Dates.DateTime` with
+`types` when a consumer needs it.
 
 Text columns use `DataStrings.DataString` by default. Short values are stored in the
 value; longer values live in buffers the column owns, so an eager table never
