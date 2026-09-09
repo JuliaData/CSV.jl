@@ -287,8 +287,9 @@ available, and consumers such as `Tables.columntable` can preallocate.
 An invalid or malformed cell becomes `missing` when it is accessed. Pass
 `strict=true` or `on_error=:error` to throw a `CSV.ParseError` at that access
 instead. `CSV.Rows` does not retain a problem log and does not accept
-`maxproblems` or `maxwarnings`. Use `CSV.File` when you need
-`CSV.problems(file)`.
+`maxproblems` or `maxwarnings`. It rejects `on_error=:warn` because it cannot
+produce a read summary. Use `CSV.File` when you need `CSV.problems(file)`
+or a summary warning.
 List `select` and `drop` forms are supported and use the same stable file-order
 semantics as `CSV.File`.
 

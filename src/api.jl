@@ -2034,6 +2034,9 @@ function Rows(source; types=nothing, reusebuffer::Bool=false, select=nothing, dr
     allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...)
     _checkkwargs("Rows", kw, allowed)
     _checkonerror(on_error)
+    on_error === :warn && throw(ArgumentError(
+        "Rows does not retain diagnostics; use File with on_error=:warn, " *
+        "or Rows with on_error=:error to check cells on access"))
     _checkstringtype(stringtype)
     p = _prepare(source; kw...)
     plan = settlecolumns(p; select, drop, types,
@@ -2208,8 +2211,13 @@ function Base.show(io::IO, c::Chunks)
     st = getfield(c, :stringtype)
     print(io, "CSV.Chunks(", repr(getfield(c, :name)), "): ", n, " batch", n == 1 ? "" : "es",
           " × ", length(inner.names), " column", length(inner.names) == 1 ? "" : "s")
-    for (nm, T, allowmissing) in zip(inner.names, inner.seedtypes, inner.allowmissing)
-        E = T === String ? st : T
+    for (q, (nm, T, allowmissing)) in enumerate(zip(inner.names, inner.seedtypes, inner.allowmissing))
+        decision = inner.plan.columns[inner.plan.sources[q]]
+        E = T === String ? _rowstringtype(something(decision.resulttype, st)) :
+                           something(decision.resulttype, T)
+        # A ratio/cap pool policy can materialize some DataString batches and
+        # leave others as views. Display the set of possible output scalars.
+        getfield(c, :poolspec) !== nothing && E === DataString && (E = Union{DataString, String})
         print(io, "\n  ", nm, "::", allowmissing ? Union{E, Missing} : E)
     end
 end

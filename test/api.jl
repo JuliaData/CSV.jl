@@ -1799,6 +1799,7 @@ end
     @test_throws CSV.ParseError A.File([IOBuffer(bad), IOBuffer(bad)]; types=Int, on_error=:error)
     @test_throws CSV.ParseError collect(A.Rows(IOBuffer(bad); types=Int, on_error=:error))[2].a
     @test_throws ArgumentError A.File(IOBuffer(bad); on_error=:ignore)
+    @test_throws ArgumentError A.Rows(IOBuffer(bad); types=Int, on_error=:warn)
     # :warn prints exactly one summary and returns the collected table
     f = @test_logs (:warn, r"CSV: 2 parse problems in <GenericIOBuffer>; first: invalid_value at data row 2") begin
         A.File(IOBuffer("a\n1\nx\ny\n"); types=Int, on_error=:warn)
@@ -1818,6 +1819,8 @@ end
     shown = sprint(show, chunks)
     @test startswith(shown, "CSV.Chunks(\"<GenericIOBuffer>\"): ")
     @test occursin("a::Int64", shown) && occursin("b::$(Union{Missing, A.DataString})", shown)
+    typedshown = sprint(show, A.Chunks(IOBuffer("a,b\n1,x\n"); types=[Int32, String]))
+    @test occursin("a::Int32", typedshown) && occursin("b::String", typedshown)
     @test !occursin("ChunkIndex", shown)
     @test names(rows) == [:a, :b] && names(chunks) == [:a, :b]
     @test Base.IteratorSize(typeof(rows)) isa Base.HasLength && length(rows) == 2
