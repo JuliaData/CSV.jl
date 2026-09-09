@@ -2196,6 +2196,7 @@ end
         data = Vector{UInt8}("a,b" * newline * join(rows, newline) *
             (trailingnewline ? newline : ""))
         chunks = collect(A.Chunks(data; ntasks=10, chunkbytes))
+        @test chunkbytes < length(data) ? length(chunks) > 1 : length(chunks) == 1
         @test reduce(vcat, (chunk.a for chunk in chunks)) == 1:100
         expected = Union{Missing, Int}[2i for i in 1:100]
         emptyfield && (expected[end] = missing)
