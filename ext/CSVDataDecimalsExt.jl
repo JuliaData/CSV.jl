@@ -6,7 +6,8 @@ using CSV, DataDecimals
 import Parsers
 using CSV: ValueOpts, _trimblanks, _degroup!, _scratchfor
 
-CSV._parseable(::Type{<:DataDecimals.AbstractDecimal}) = true
+# A column schema needs a scalar representation and, for Decimal, a scale.
+CSV._parseable(::Type{T}) where {T <: DataDecimals.AbstractDecimal} = isconcretetype(T)
 
 # Inspect spelling before numeric conversion. Parsing into a decimal may round;
 # an explicit schema must never mistake rounded success for exact fit.

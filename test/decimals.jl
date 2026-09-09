@@ -1,5 +1,13 @@
 using Test, CSV, DataDecimals, DataStrings, Tables
 
+@testset "Decimal schemas require concrete scalar types" begin
+    for T in (DataDecimals.AbstractDecimal, DataDecimals.Decimal,
+              DataDecimals.Decimal64, DataDecimals.DecimalValue),
+        reader in (CSV.File, CSV.Rows, CSV.lazy, CSV.Chunks)
+        @test_throws ArgumentError reader(IOBuffer("x\n1.20\n"); types=T)
+    end
+end
+
 # CSV never infers a decimal type. With DataDecimals loaded, an explicitly
 # requested decimal type parses exactly from the field bytes.
 @testset "Explicit decimal schemas" begin
