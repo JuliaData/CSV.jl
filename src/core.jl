@@ -612,7 +612,6 @@ end
 const _DATE0 = Date(1)
 const _DATETIME0 = DateTime(1)
 const _TIME0 = Time(0)
-const _TIMESTAMP0 = Timestamp{Dates.Nanosecond}(1970)
 @inline _timestamp0(::Type{Timestamp{P}}) where {P} = Timestamp{P}(Dates.UTInstant(P(0)))
 
 # Parsers returns calendar fields without choosing a Dates representation. CSV
@@ -3374,6 +3373,8 @@ Base.@nospecializeinfer function _parse(buf::Vector{UInt8}, d::Dialect, baseopts
             chunks[k].unclosedquote &&
                 error("internal error: chunk $(k) ended inside a quoted field")
         end
+        _settletimestampwidening!(promo, segtypes, chunks, buf, opts, stitchjs, rl,
+                                  columnopts, rowmask, rowbases0)
         # unify: re-parse the (rare) segments parsed under a stale type.
         # `promo` is frozen now; a Missing segment upgrades without work.
         finalstaged = Type[promo[j] for j in 1:ncols]
@@ -3580,6 +3581,45 @@ function _fillslice!(col::UnionColumn, lo::Int, hi::Int)
     return nothing
 end
 
+# Microseconds extend the date range but cannot hold every nanosecond value.
+# Before freezing the joined type, validate only the chunks that succeeded as
+# nanoseconds and now need microseconds. Other promotions accept prior values.
+# This cold pass uses source spans because the direct driver has already
+# replaced the old destination. Excluded rows must not affect the final type.
+function _settletimestampwidening!(types, segtypes, chunks, buf, opts, js, rl,
+                                   colopts, mask=nothing, rowbases=nothing)
+    for j in js
+        types[j] === _TS_US || continue
+        vo = _copts(colopts, opts, j)
+        for k in eachindex(chunks)
+            segtypes[k][j] === _TS_NS || continue
+            ci = chunks[k]
+            exact = true
+            @inbounds for lr in ci.firstdatarow:totalrows(ci)
+                localrow = lr - ci.firstdatarow + 1
+                localrow > rl(k) && break
+                mask !== nothing && !mask[rowbases[k] + localrow] && continue
+                sp = fieldspan(ci, lr, j)
+                sp === nothing && continue
+                pos, len = sp
+                len == 0 && continue
+                cpos, clen, _, st = cellcontent(buf, pos, len, vo)
+                st == CELL_MISSING && continue
+                i, last = _trimblanks(buf, cpos, cpos + clen - 1)
+                if !parsevalue(_TS_US, buf, i, last, vo)[2]
+                    exact = false
+                    break
+                end
+            end
+            if !exact
+                types[j] = String
+                break
+            end
+        end
+    end
+    return nothing
+end
+
 function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOpts,
                      ncols::Int, userprovided, promo, promolock,
                      pendingproblems::PendingProblemLog, segments, segtypes,
@@ -3618,6 +3658,13 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
                          finals, pendingproblems, segments, segtypes, k, selected,
                          rowbases[k], rl(k), ndata, reportstructural, unioncols,
                          tm, colopts)
+        end
+    end
+
+    _settletimestampwidening!(promo, segtypes, chunks, buf, opts, allocjs, rl, colopts)
+    for j in allocjs
+        if promo[j] === String && !(finals[j] isa StringColumn)
+            finals[j] = _allocdirect(String, ndata, buf, opts, d, j, unioncols[j])
         end
     end
 

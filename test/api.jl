@@ -2279,3 +2279,65 @@ end
     CSV.write(io, (t=[TS(2020, 1, 2, 3, 4, 5, 120)],); delim=':')
     @test String(take!(io)) == "t\n\"2020-01-02T03:04:05.12\"\n"
 end
+
+@testset "timestamp range widening preserves earlier precision" begin
+    fine = "2020-01-02T03:04:05.123456789"
+    ordinary = "2020-01-02T03:04:05.123456"
+    wide = "9999-12-31T23:59:59"
+    for parallel in (false, true), chunkbytes in (16, 4096), reverseorder in (false, true)
+        values = reverseorder ? [wide, fine] : [fine, wide]
+        src = "t,n\n" * join(("$v,$i" for (i, v) in enumerate(values)), '\n') * "\n"
+        for nsample in (1, 100), inferdecimal in (false, true)
+            f = A.File(IOBuffer(src); parallel, chunkbytes, nsample, inferdecimal)
+            @test eltype(f.t) === A.DataString
+            @test f.t == values
+            @test isempty(A.problems(f))
+            # A filter uses the staged driver. Both retained rows must take
+            # part in the exactness check, irrespective of chunk order.
+            f = A.File(IOBuffer(src); parallel, chunkbytes, nsample, inferdecimal,
+                       scan=Tables.Scan(filter=Tables.col(:n) > 0))
+            @test f.t == values
+            @test isempty(A.problems(f))
+        end
+        chunks = collect(A.Chunks(IOBuffer(src); parallel, chunkbytes))
+        @test all(c -> eltype(c.t) === A.DataString, chunks)
+        @test reduce(vcat, (c.t for c in chunks)) == values
+    end
+    # The conflicting rows miss Chunks' stratified sample. Its schema pass
+    # must recheck row 2 when row 3 widens the range.
+    values = fill(ordinary, 1000)
+    values[2], values[3] = fine, wide
+    src = "t,n\n" * join(("$v,$i" for (i, v) in enumerate(values)), '\n') * "\n"
+    for parallel in (false, true), chunkbytes in (16, 4096)
+        chunks = collect(A.Chunks(IOBuffer(src); parallel, chunkbytes))
+        @test all(c -> eltype(c.t) === A.DataString, chunks)
+        @test reduce(vcat, (c.t for c in chunks)) == values
+        # Excluded fine fractions permit microseconds; excluded wide dates
+        # permit nanoseconds. A row limit excludes the wide sentinel too.
+        for excluded in (2, 3)
+            f = A.File(IOBuffer(src); parallel, chunkbytes, nsample=1,
+                       scan=Tables.Scan(filter=Tables.colcmp(!=, Tables.col(:n), excluded)))
+            P = excluded == 2 ? Microsecond : Nanosecond
+            @test eltype(f.t) === Timestamp{P}
+            @test f.t == Timestamp{P}.(values[setdiff(eachindex(values), [excluded])])
+        end
+        @test eltype(A.File(IOBuffer(src); parallel, chunkbytes, nsample=1, limit=2).t) === Timestamp{Nanosecond}
+    end
+end
+
+@testset "typed timestamp resolutions across readers" begin
+    for (P, fraction) in ((Second, ""), (Millisecond, ".123"),
+                          (Microsecond, ".123456"), (Nanosecond, ".123456789"))
+        T = Timestamp{P}
+        text = "2020-01-02T03:04:05$fraction"
+        src = "t\n$text\ninvalid\n\n"
+        expected = [T(text), missing]
+        @test isequal(A.File(IOBuffer(src); types=T, on_error=:collect).t, expected)
+        @test isequal([r.t for r in A.Rows(IOBuffer(src); types=T, on_error=:collect)], expected)
+        @test isequal(collect(A.lazy(IOBuffer(src); types=T).t), expected)
+        @test isequal(reduce(vcat, (c.t for c in A.Chunks(IOBuffer(src); types=T,
+                                                       chunkbytes=16, on_error=:collect))), expected)
+        @test isequal(A.File(IOBuffer(src); scan=Tables.Scan(select=(:t => T,)),
+                             on_error=:collect).t, expected)
+    end
+end

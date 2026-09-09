@@ -71,8 +71,9 @@ function settlebatchschema!(types::Vector{Type}, buf, chunks, plan::ColumnPlan,
 end
 
 # Validate one column from its current type, re-entering with the promoted
-# type from the conflicting row (promotion is monotone, so cells already
-# accepted stay accepted). Each entry is monomorphic in `T`. The longest value
+# type from the conflicting row. Range widening from nanoseconds to
+# microseconds can reject earlier fractions, so that transition starts over.
+# Each entry is monomorphic in `T`. The longest value
 # (in output bytes) settles an auto-width string request for the whole window.
 function _settlecolumn(::Type{T0}, buf, chunks, j::Int, opts::ValueOpts,
                        requested::Bool, sawmissing::Bool) where {T0}
@@ -82,6 +83,9 @@ function _settlecolumn(::Type{T0}, buf, chunks, j::Int, opts::ValueOpts,
         T2, sawmissing, k, lr, maxlen = _settlecolumnfrom(T, buf, chunks, j, opts, requested,
                                                           sawmissing, k, lr, maxlen)
         T2 === T && return T, sawmissing, maxlen
+        if T === _TS_NS && T2 === _TS_US
+            k, lr = 1, 0
+        end
         T = T2
     end
 end
