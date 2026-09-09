@@ -91,6 +91,14 @@ Base.unsafe_write(::FailingWriterSink, ::Ptr{UInt8}, ::UInt) =
 Base.flush(::FailingWriterSink) = nothing
 Base.close(io::FailingWriterSink) = (io.open = false)
 
+struct ThrowingRows end
+Tables.istable(::Type{ThrowingRows}) = true
+Tables.rowaccess(::Type{ThrowingRows}) = true
+Tables.rows(r::ThrowingRows) = r
+Tables.schema(::ThrowingRows) = Tables.Schema((:a,), (Int,))
+Base.iterate(::ThrowingRows, state=1) =
+    state == 1 ? ((a=1,), 2) : throw(WRITER_SENTINEL)
+
 @testset "CSV writer" begin
     tbl = (a=[1, 2, 3], b=[1.5, missing, -2.0], c=["x", "y,z", "q\"r"],
            d=[Date(2024, 1, 2), Date(2024, 3, 4), Date(2024, 5, 6)])
@@ -201,6 +209,18 @@ Base.close(io::FailingWriterSink) = (io.open = false)
     @test rowerror === WRITER_SENTINEL
     @test isopen(rowerrorio) && iswritable(rowerrorio)
     @test String(transcode(GzipDecompressor, take!(rowerrorio))) == "a\nok\n"
+    for compress in (:none, :gzip)
+        io = IOBuffer()
+        err = try
+            W.write(io, ThrowingRows(); compress)
+        catch e
+            e
+        end
+        @test err === WRITER_SENTINEL
+        @test isopen(io)
+        bytes = take!(io)
+        @test String(compress === :gzip ? transcode(GzipDecompressor, bytes) : bytes) == "a\n1\n"
+    end
     calls = Tuple{Int, Any}[]
     transformio = IOBuffer()
     W.write(transformio, NoSchemaRows(rowtype[(a=1, b="x"), (a=2, b="y")], 1);
@@ -510,6 +530,15 @@ Base.close(io::FailingWriterSink) = (io.open = false)
     @test_throws ArgumentError W._writeopts(; delim="a\nb")
     @test_throws ArgumentError W._writeopts(; delim="\"")
 
+    for src in ("a,b\n", "a,b\n1,2\n"), compress in (:none, :gzip)
+        emptychunks = CSV.Chunks(IOBuffer(src); limit=0)
+        io = IOBuffer()
+        W.write(io, emptychunks; compress, header=[:x, :y])
+        bytes = take!(io)
+        @test String(compress === :gzip ? transcode(GzipDecompressor, bytes) : bytes) == "x,y\n"
+        @test str(io -> W.write(io, emptychunks; append=true)) == ""
+        @test_throws ArgumentError W.write(IOBuffer(), emptychunks; header=[:x])
+    end
     # CSV.Chunks streams every batch under one header.
     chunks = CSV.Chunks(IOBuffer("a,b\n1,2\n3,4\n5,6\n"); chunkbytes=4)
     @test length(chunks) == 3

@@ -1015,27 +1015,30 @@ function _emitrows!(io, rw::RowWriter; bom::Bool=false)
     out = UInt8[]
     rw.writeheader && !isempty(rw.names) && append!(out, _renderheader(rw.names, rw.o))
     ncols = length(rw.names)
-    it = rw isa RowWriter{<:Any, <:Any, <:Any, true} ? rw.initial : iterate(rw.rows)
-    while it !== nothing
-        row, state = it
-        rowstart = length(out)
-        try
+    complete = length(out)
+    try
+        it = rw isa RowWriter{<:Any, <:Any, <:Any, true} ? rw.initial : iterate(rw.rows)
+        while it !== nothing
+            row, state = it
             _appendrow!(out, row, ncols, rw.o, rw.transform)
-        catch
-            # Streaming contract: the complete rows rendered before a failing
-            # row still reach the sink. The failing row's partial bytes do not.
-            resize!(out, rowstart)
-            try
-                isempty(out) || Base.write(io, out)
-            catch
+            complete = length(out)
+            if complete >= WRITE_BLOCK_BYTES
+                # A sink failure may have written part of the block. Do not retry it.
+                complete = 0
+                Base.write(io, out)
+                empty!(out)
             end
-            rethrow()
+            it = iterate(rw.rows, state)
         end
-        if length(out) >= WRITE_BLOCK_BYTES
-            Base.write(io, out)
-            empty!(out)
+    catch
+        # Preserve complete rows on both render and iterator failures. A partial
+        # failing row is discarded; cleanup cannot replace the original error.
+        resize!(out, complete)
+        try
+            isempty(out) || Base.write(io, out)
+        catch
         end
-        it = iterate(rw.rows, state)
+        rethrow()
     end
     isempty(out) || Base.write(io, out)
     return
@@ -1047,16 +1050,11 @@ end
 function _emitchunks!(io, chunks::Chunks, o::WriteOpts, transform, ntasks::Int;
                       header, writeheader, append::Bool)
     o.bom && !append && Base.write(io, UInt8[0xef, 0xbb, 0xbf])
-    first = true
+    source_names = names(chunks)
+    headernames, wantheader = _headeroptions(source_names, header, writeheader, !append)
+    wantheader && !isempty(headernames) && Base.write(io, _renderheader(headernames, o))
     for batch in chunks
-        cols0 = Tables.columns(batch)
-        source_names = collect(Symbol, Tables.columnnames(cols0))
-        cols = _writecolumns(cols0, source_names)
-        if first
-            names, wantheader = _headeroptions(source_names, header, writeheader, !append)
-            wantheader && !isempty(names) && Base.write(io, _renderheader(names, o))
-            first = false
-        end
+        cols = _writecolumns(Tables.columns(batch), source_names)
         nrows = isempty(cols) ? 0 : length(cols[1])
         _emitrowblocks!(io, cols, nrows, o, transform, ntasks, Val(ntasks == 1))
     end
