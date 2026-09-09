@@ -1911,6 +1911,19 @@ end
     @test eltype(f.u) == String15 && collect(f.u) == [String15("x"), String15("y")]
     f = A.File(IOBuffer(src); types=Dict(:u => InlineString))
     @test eltype(f.u) == String1
+    for (T, W) in ((String15, String15), (InlineString, String1))
+        kw = (; types=Dict(:u => Union{Missing, T}))
+        @test eltype(A.File(IOBuffer(src); kw...).u) == Union{Missing, W}
+        @test all(b -> eltype(b.u) == Union{Missing, W},
+                  A.Chunks(IOBuffer(src); kw..., chunkbytes=4))
+    end
+    for T in (String15, InlineString)
+        W = T === InlineString ? String3 : T
+        batches = collect(A.Chunks(IOBuffer("s\nabc\n\nxyz\n"); stringtype=T,
+                                   ignoreemptyrows=false, chunkbytes=4))
+        @test all(b -> eltype(b.s) == Union{Missing, W}, batches)
+        @test isequal(vcat((b.s for b in batches)...), [W("abc"), missing, W("xyz")])
+    end
     # pooling keeps String levels; stringtype governs inferred text only
     f = A.File(IOBuffer(src); types=Dict(:u => String), pool=true, stringtype=A.DataString)
     @test f.u isa PooledVector && eltype(f.u) == String

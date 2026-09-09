@@ -80,17 +80,17 @@ function CSV._materializecolumn(::Type{T}, col::CSV.DataStringVector) where {T <
     n = length(col)
     if Missing <: eltype(col)
         out = Vector{Union{T, Missing}}(undef, n)
-        anymissing = false
         @inbounds for i in 1:n
             x = col[i]
             if x === missing
                 out[i] = missing
-                anymissing = true
             else
                 out[i] = _inl(T, x)
             end
         end
-        return anymissing ? out : convert(Vector{T}, out)
+        # The kernel already settles missingness. Preserve a declared Union
+        # even when this particular column or batch contains no missing cells.
+        return out
     end
     out = Vector{T}(undef, n)
     @inbounds for i in 1:n
