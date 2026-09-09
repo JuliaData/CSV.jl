@@ -2,10 +2,11 @@
 # delimiter/shape detection.
 #
 # Every entry point uses the same pipeline: resolve source bytes → settle the
-# dialect (sniffing if asked) →
-# index (rebuild under field-start quote rules if needed) → settle names/row-window (header/skipto/footerskip/limit as
-# *index arithmetic*, before any value work) → hand the kernel driver or the
-# streaming primitives the prepared index. There is no per-entrypoint parsing
+# dialect (sniffing if asked) → index once (rebuilt under the field-start
+# quote rule when a bare quote is flagged) → settle names/row-window
+# (header/skipto/footerskip/limit as *index arithmetic*, before any value
+# work) → hand the kernel driver or the streaming primitives the prepared
+# index. There is no per-entrypoint parsing
 # code and no mode flags inside the kernel: File/Rows/Chunks differ only in
 # what they do AFTER `_prepare`.
 #

@@ -186,11 +186,24 @@ import Dates, CodecZlib
                                Vector{UInt8}(codeunits(mixed)))
         File(compressed)
         foreach(identity, Rows(IOBuffer("a,b\n1,x\n2,y\n")))
+        foreach(identity, Rows(IOBuffer("a;b\n1;x\n"); delim=';'))
         first(Chunks(IOBuffer(pooled); chunkbytes=1 << 16))
+        first(Chunks(IOBuffer("a;b\n1;x\n"); delim=';'))
+        lf = lazy(IOBuffer(mixed))
+        lf[1, :int]
+        collect(lf.str)
+        File(lf)
+        lazy(IOBuffer("a;b\n1;x\n"); delim=';')
         sniff(IOBuffer(mixed))
         out = IOBuffer()
         write(out, (a=[1, 2], b=["x", "y,z"], c=[1.5, missing],
                     d=[Dates.Date(2024, 1, 2), Dates.Date(2024, 3, 4)]))
+        # A parsed table has abstractly typed columns: that generic column
+        # path, and the path sink, are the common read-then-write workflow.
+        write(out, f)
+        mktemp() do path, _
+            write(path, f)
+        end
         join(RowWriter((a=[1], b=["x"])))
     end
 end

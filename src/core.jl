@@ -259,8 +259,7 @@ function _earlierbooltype(s::Vector{UInt8}, decimal::UInt8,
         end
     else
         Parsers.parsecivil(s, i, j, dp)[2] == Parsers.RC_OK && return Date
-        pat = j - i >= 10 && @inbounds(s[i + 10]) == UInt8(' ') ?
-              _ISO_DATETIME_SPACE_PATTERN : dtp
+        pat = _spacedatetime(s, i, j) ? _ISO_DATETIME_SPACE_PATTERN : dtp
         c, rc = Parsers.parsecivil(s, i, j, pat)
         rc == Parsers.RC_OK && _wholemilliseconds(c) && return DateTime
         Parsers.parsecivil(s, i, j, tp)[2] == Parsers.RC_OK && return Time
@@ -375,10 +374,11 @@ end
 
 # ISO date-times separate the date and the time with `T` or a space. The byte
 # after the date selects the pattern, so a cell parses once either way.
+@inline _spacedatetime(buf::Vector{UInt8}, i::Int, j::Int) =
+    j - i >= 10 && @inbounds(buf[i + 10]) == UInt8(' ')
 @inline function _datetimepattern(vo::ValueOpts, buf::Vector{UInt8}, i::Int, j::Int)
     vo.customfmt && return vo.datetimepat
-    return j - i >= 10 && @inbounds(buf[i + 10]) == UInt8(' ') ? vo.datetimespacepat :
-                                                                  vo.datetimepat
+    return _spacedatetime(buf, i, j) ? vo.datetimespacepat : vo.datetimepat
 end
 
 # `Dates.DateTime` holds milliseconds. A finer fraction has no exact DateTime,

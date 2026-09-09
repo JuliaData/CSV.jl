@@ -104,6 +104,23 @@ Without `on_error=:collect`, the read also prints one summary warning. Use
 CSV.File(IOBuffer(text); types=Dict(:amount => Int), on_error=:error)
 ```
 
+## Read rows that do not match the header
+
+A row with extra fields keeps the header schema: the extra fields are
+reported, not added as new columns. A row with fewer fields is padded with
+`missing`. An unclosed quote is reported and the affected text is kept.
+
+```@example examples-ragged
+using CSV, DataStrings
+
+text = "id,name\n1,Ada\n2,Grace,extra\n3\n4,\"unclosed\n"
+file = CSV.File(IOBuffer(text); on_error=:collect)
+
+(names(file), length(file), [(p.row, p.kind) for p in CSV.problems(file)])
+```
+
+Pass `on_error=:error` to stop at the first such row instead.
+
 ## Keep empty text distinct from missing
 
 ```@example examples-empty
