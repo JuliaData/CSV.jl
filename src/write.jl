@@ -13,13 +13,62 @@
 #   partition    write a Vector of sinks in parallel, one table partition each
 #
 # The engine renders contiguous row blocks from `Tables.columns` in parallel.
-# Narrow tables use a type-specialized tuple renderer. Wide tables stage each
-# column once per block and then gather rows. Integers emit digits directly,
+# One- and two-column tables use a tuple renderer. Larger tables share one
+# tagged row loop; uncommon column types stage once per block before gathering.
+# Integers emit digits directly,
 # floats use Ryu at the output position, and strings copy after one structural
 # scan. Blocks stream to the sink in order. Output bytes do not depend on the
 # thread count.
 
 using Tables, Dates, Printf, CodecZlib
+
+# The shared row loop keeps a logical byte cursor separate from storage size.
+# Reserving storage once per block avoids resizing a Vector for every cell.
+# Existing cell formatters use the same indexing and append operations here.
+mutable struct _WriteBuffer <: AbstractVector{UInt8}
+    bytes::Vector{UInt8}
+    len::Int
+end
+_WriteBuffer() = _WriteBuffer(Vector{UInt8}(undef, 1024), 0)
+Base.size(b::_WriteBuffer) = (b.len,)
+Base.length(b::_WriteBuffer) = b.len
+Base.IndexStyle(::Type{_WriteBuffer}) = IndexLinear()
+@inline function Base.getindex(b::_WriteBuffer, i::Int)
+    @boundscheck checkbounds(b, i)
+    @inbounds return b.bytes[i]
+end
+@inline function Base.setindex!(b::_WriteBuffer, x, i::Int)
+    @boundscheck checkbounds(b, i)
+    @inbounds b.bytes[i] = x
+    return b
+end
+@inline Base.pointer(b::_WriteBuffer, i::Integer=1) = pointer(b.bytes, i)
+@noinline function _growwritebuffer!(b::_WriteBuffer, need::Int)
+    resize!(b.bytes, max(need, 2length(b.bytes)))
+    return b
+end
+@inline function Base.resize!(b::_WriteBuffer, n::Integer)
+    n > length(b.bytes) && _growwritebuffer!(b, Int(n))
+    b.len = n
+    return b
+end
+@inline function Base.sizehint!(b::_WriteBuffer, n::Integer)
+    n > length(b.bytes) && _growwritebuffer!(b, Int(n))
+    return b
+end
+@inline function Base.push!(b::_WriteBuffer, x::UInt8)
+    n = b.len + 1
+    resize!(b, n)
+    @inbounds b.bytes[n] = x
+    return b
+end
+@inline function Base.append!(b::_WriteBuffer, xs)
+    for x in xs
+        push!(b, x)
+    end
+    return b
+end
+const _WriteOutput = Union{Vector{UInt8}, _WriteBuffer}
 
 const WRITE_QUOTESTYLES = (:minimal, :all, :none)
 
@@ -112,7 +161,7 @@ _needsquote(o::WriteOpts, b::UInt8) =
     b == o.delim || b == o.oq || b == o.cq || b == UInt8('\n') || b == UInt8('\r')
 _numericsyntax(b::UInt8) = b - UInt8('0') <= 0x09 || b in (UInt8('+'), UInt8('-'))
 
-@inline function _appenddelim!(out::Vector{UInt8}, o::WriteOpts)
+@inline function _appenddelim!(out::_WriteOutput, o::WriteOpts)
     length(o.delimbytes) == 1 ? push!(out, o.delim) : append!(out, o.delimbytes)
     return out
 end
@@ -139,7 +188,7 @@ end
 @inline _endcell!(st::ColStage, k::Int) = (@inbounds st.ends[k] = length(st.bytes); nothing)
 
 # ensure `st.bytes` can take `n` more bytes when written through pointers
-@inline function _room!(v::Vector{UInt8}, n::Int)
+@inline function _room!(v::_WriteOutput, n::Int)
     need = length(v) + n
     need > length(v) && resize!(v, need)     # length grows; content is written by the caller
     return
@@ -159,7 +208,7 @@ end
 # content is the parser's present-empty-string spelling; empty unquoted content
 # is missing, matching the parser's pinned 1.0 convention. A multi-byte
 # delimiter quotes on its first byte: over-quoting is harmless.
-function _appendbytes!(out::Vector{UInt8}, bytes::AbstractVector{UInt8}, o::WriteOpts,
+function _appendbytes!(out::_WriteOutput, bytes::AbstractVector{UInt8}, o::WriteOpts,
                        stringcell::Bool)
     n = length(bytes)
     if o.quotestyle === :none
@@ -193,14 +242,14 @@ function _appendbytes!(out::Vector{UInt8}, bytes::AbstractVector{UInt8}, o::Writ
     push!(out, o.cq)
     return out
 end
-_appendstring!(out::Vector{UInt8}, s::AbstractString, o::WriteOpts) =
+_appendstring!(out::_WriteOutput, s::AbstractString, o::WriteOpts) =
     _appendbytes!(out, codeunits(s), o, true)
-_appendscalar!(out::Vector{UInt8}, s::AbstractString, o::WriteOpts) =
+_appendscalar!(out::_WriteOutput, s::AbstractString, o::WriteOpts) =
     _appendbytes!(out, codeunits(s), o, false)
 
 # fast path for String / SubString{String}: pointer scan, one memcpy when no
 # quoting is needed (the overwhelmingly common case)
-function _appendstring!(out::Vector{UInt8}, s::Union{String, SubString{String}}, o::WriteOpts)
+function _appendstring!(out::_WriteOutput, s::Union{String, SubString{String}}, o::WriteOpts)
     n = ncodeunits(s)
     if o.quotestyle === :minimal && n > 0
         GC.@preserve s begin
@@ -218,16 +267,16 @@ function _appendstring!(out::Vector{UInt8}, s::Union{String, SubString{String}},
 end
 
 # --- integers: digits straight into the buffer ---------------------------------
-@inline function _appendint!(out::Vector{UInt8}, x::Union{Int128, Int64, Int32, Int16, Int8})
+@inline function _appendint!(out::_WriteOutput, x::Union{Int128, Int64, Int32, Int16, Int8})
     neg = x < 0
     u = neg ? reinterpret(unsigned(typeof(x)), -x) : unsigned(x)   # wraps typemin correctly
     return _appendudec!(out, u, neg)
 end
-@inline _appendint!(out::Vector{UInt8}, x::Union{UInt128, UInt64, UInt32, UInt16, UInt8}) =
+@inline _appendint!(out::_WriteOutput, x::Union{UInt128, UInt64, UInt32, UInt16, UInt8}) =
     _appendudec!(out, x, false)
 # other Integers (BigInt, ...) print via Base
-_appendint!(out::Vector{UInt8}, x::Integer) = append!(out, codeunits(string(x)))
-function _appendudec!(out::Vector{UInt8}, u::Unsigned, neg::Bool)
+_appendint!(out::_WriteOutput, x::Integer) = append!(out, codeunits(string(x)))
+function _appendudec!(out::_WriteOutput, u::Unsigned, neg::Bool)
     nd = u == 0 ? 1 : ndigits(u; base=10)
     len = length(out)
     _room!(out, nd + neg)
@@ -268,7 +317,7 @@ end
     v < 10_000_000_000_000_000_000 && return 19
     return 20
 end
-function _appendudec!(out::Vector{UInt8}, u::Union{UInt64, UInt32, UInt16, UInt8}, neg::Bool)
+function _appendudec!(out::_WriteOutput, u::Union{UInt64, UInt32, UInt16, UInt8}, neg::Bool)
     v = UInt64(u)
     nd = _declen64(v)
     len = length(out)
@@ -287,7 +336,7 @@ end
 # value would print more digits than its magnitude warrants, else `d.ddde±xx`;
 # hash=true forces the trailing ".0". Byte equality with string(x) is pinned
 # in the tests over random bits, specials, and every exponent form.
-@inline function _appendfloat!(out::Vector{UInt8}, x::Union{Float64, Float32, Float16}, o::WriteOpts)
+@inline function _appendfloat!(out::_WriteOutput, x::Union{Float64, Float32, Float16}, o::WriteOpts)
     len = length(out)
     _room!(out, Base.Ryu.neededdigits(typeof(x)))
     pos = _writeshortest_default(out, len + 1, x, o.decimal)
@@ -295,7 +344,7 @@ end
     return out
 end
 
-function _writeshortest_default(buf::Vector{UInt8}, pos::Int, x::T, decchar::UInt8) where {T <: Union{Float64, Float32, Float16}}
+function _writeshortest_default(buf::_WriteOutput, pos::Int, x::T, decchar::UInt8) where {T <: Union{Float64, Float32, Float16}}
     @inbounds begin
         if x == 0
             signbit(x) && (buf[pos] = UInt8('-'); pos += 1)
@@ -383,7 +432,7 @@ end
 #                                  milliseconds are nonzero (Dates' `.s` token)
 # Byte equality with `string(x)` is pinned by the test suite over adversarial
 # years (negative, 5-digit) and every millisecond value.
-@inline function _append2!(out::Vector{UInt8}, v::Integer)   # two zero-padded digits, 0 ≤ v < 100
+@inline function _append2!(out::_WriteOutput, v::Integer)   # two zero-padded digits, 0 ≤ v < 100
     len = length(out)
     _room!(out, 2)
     @inbounds begin
@@ -392,21 +441,21 @@ end
     end
     return out
 end
-@inline function _appendyear!(out::Vector{UInt8}, y::Integer)
+@inline function _appendyear!(out::_WriteOutput, y::Integer)
     y < 0 && (push!(out, UInt8('-')); y = -y)
     y < 1000 && push!(out, UInt8('0'))
     y < 100 && push!(out, UInt8('0'))
     y < 10 && push!(out, UInt8('0'))
     return _appendudec!(out, unsigned(y), false)
 end
-function _appenddate!(out::Vector{UInt8}, x::Date)
+function _appenddate!(out::_WriteOutput, x::Date)
     y, m, d = Dates.yearmonthday(x)
     _appendyear!(out, y); push!(out, UInt8('-'))
     _append2!(out, m); push!(out, UInt8('-'))
     _append2!(out, d)
     return out
 end
-function _appenddatetime!(out::Vector{UInt8}, x::DateTime)
+function _appenddatetime!(out::_WriteOutput, x::DateTime)
     y, m, d = Dates.yearmonthday(x)
     _appendyear!(out, y); push!(out, UInt8('-'))
     _append2!(out, m); push!(out, UInt8('-'))
@@ -437,7 +486,7 @@ const _TRUE = codeunits("true"); const _FALSE = codeunits("false")
 
 # The one cell renderer: every writer path (blocks, RowWriter, headers) appends
 # through it, so quoting and value formatting cannot drift between paths.
-@inline function _appendcell!(out::Vector{UInt8}, x, o::WriteOpts)
+@inline function _appendcell!(out::_WriteOutput, x, o::WriteOpts)
     if x === missing
         _appendbytes!(out, o.missingstring, o, false)
     elseif x === nothing
@@ -501,12 +550,10 @@ end
 
 # --- row-block rendering (the parallel unit) --------------------------------
 
-# Narrow tables (the common case): the columns travel as a Tuple, so the
-# recursion below is unrolled by the compiler with every column's element type
-# known statically — one specialized row renderer, direct row-major writes,
-# no staging and no gather. Wide tables use the staged path (a Tuple of
-# hundreds of vectors would cost compile time out of proportion).
-const TUPLE_RENDER_MAXCOLS = 32
+# Keep tuple unrolling only where compilation stays small. Larger schemas
+# share the descriptor renderer below, so their compile cost does not grow
+# with the number or order of columns.
+const TUPLE_RENDER_MAXCOLS = 2
 
 # Keep the renderer's temporary storage independent of the total output size.
 # The row cap protects tiny rows from task overhead. The byte target protects
@@ -599,9 +646,159 @@ function _renderblock_tuple(cols::Tuple, lo::Int, hi::Int, o::WriteOpts)
     return out
 end
 
-function _renderblock(cols, lo::Int, hi::Int, o::WriteOpts)
+# A fixed descriptor separates the column's type from the table's schema.
+# Only the field selected by `tag` is read. The other fields share empty
+# vectors. Cell branches remain static; each column dispatches once during
+# preparation. Fallback columns also dispatch once per rendered block.
+struct _WriteColumn
+    tag::UInt8
+    ints::Vector{Int64}
+    floats::Vector{Float64}
+    strings::Vector{String}
+    missingints::Vector{Union{Missing, Int64}}
+    bools::Vector{Bool}
+    dates::Vector{Date}
+    datetimes::Vector{DateTime}
+    missingfloats::Vector{Union{Missing, Float64}}
+    missingstrings::Vector{Union{Missing, String}}
+    missingbools::Vector{Union{Missing, Bool}}
+    missingdates::Vector{Union{Missing, Date}}
+    missingdatetimes::Vector{Union{Missing, DateTime}}
+    datatext::DataStringVector{DataString}
+    missingdatatext::DataStringVector{Union{Missing, DataString}}
+    stage::ColStage
+end
+const _EMPTY_WRITECOLUMNS = (
+    Vector{Int64}(),
+    Vector{Float64}(),
+    Vector{String}(),
+    Vector{Union{Missing, Int64}}(),
+    Vector{Bool}(),
+    Vector{Date}(),
+    Vector{DateTime}(),
+    Vector{Union{Missing, Float64}}(),
+    Vector{Union{Missing, String}}(),
+    Vector{Union{Missing, Bool}}(),
+    Vector{Union{Missing, Date}}(),
+    Vector{Union{Missing, DateTime}}(),
+    DataStringVector{DataString}(DataStringPayload[], Vector{UInt8}[]),
+    DataStringVector{Union{Missing, DataString}}(DataStringPayload[], Vector{UInt8}[]),
+)
+const _EMPTY_WRITESTAGE = ColStage()
+# These methods are generated once for a fixed set of column types, never
+# for a table schema or a column count.
+for (tag, emptycol) in enumerate(_EMPTY_WRITECOLUMNS)
+    args = Any[:(_EMPTY_WRITECOLUMNS[$j]) for j in eachindex(_EMPTY_WRITECOLUMNS)]
+    args[tag] = :col
+    @eval _preparewritecolumn(col::$(typeof(emptycol))) =
+        _WriteColumn($(UInt8(tag)), $(args...), _EMPTY_WRITESTAGE)
+end
+_preparewritecolumn(col::AbstractVector) =
+    _WriteColumn(0x00, _EMPTY_WRITECOLUMNS..., _EMPTY_WRITESTAGE)
+
+struct _WriterColumns
+    original::Vector{AbstractVector}
+    direct::Vector{_WriteColumn}
+    fallback::Vector{Int}
+end
+function _preparewritecolumns(cols::Vector{AbstractVector})
+    direct = _WriteColumn[_preparewritecolumn(col) for col in cols]
+    fallback = findall(col -> col.tag == 0x00, direct)
+    return _WriterColumns(cols, direct, fallback)
+end
+
+@inline function _appendtaggedcell!(out::_WriteOutput, col::_WriteColumn, r::Int, k::Int, o::WriteOpts)
+    if col.tag == 0x01
+        @inbounds _appendcell!(out, col.ints[r], o)
+    elseif col.tag == 0x02
+        @inbounds _appendcell!(out, col.floats[r], o)
+    elseif col.tag == 0x03
+        @inbounds _appendcell!(out, col.strings[r], o)
+    elseif col.tag == 0x04
+        @inbounds _appendcell!(out, col.missingints[r], o)
+    elseif col.tag == 0x05
+        @inbounds _appendcell!(out, col.bools[r], o)
+    elseif col.tag == 0x06
+        @inbounds _appendcell!(out, col.dates[r], o)
+    elseif col.tag == 0x07
+        @inbounds _appendcell!(out, col.datetimes[r], o)
+    elseif col.tag == 0x08
+        @inbounds _appendcell!(out, col.missingfloats[r], o)
+    elseif col.tag == 0x09
+        @inbounds _appendcell!(out, col.missingstrings[r], o)
+    elseif col.tag == 0x0a
+        @inbounds _appendcell!(out, col.missingbools[r], o)
+    elseif col.tag == 0x0b
+        @inbounds _appendcell!(out, col.missingdates[r], o)
+    elseif col.tag == 0x0c
+        @inbounds _appendcell!(out, col.missingdatetimes[r], o)
+    elseif col.tag == 0x0d
+        @inbounds _appendcell!(out, col.datatext[r], o)
+    elseif col.tag == 0x0e
+        @inbounds _appendcell!(out, col.missingdatatext[r], o)
+    else
+        st = col.stage
+        @inbounds s = k == 1 ? 1 : st.ends[k - 1] + 1
+        @inbounds n = st.ends[k] - s + 1
+        len = length(out)
+        _room!(out, n)
+        GC.@preserve out st unsafe_copyto!(pointer(out, len + 1), pointer(st.bytes, s), n)
+    end
+    return
+end
+
+_renderblock_direct(cols::Vector{AbstractVector}, lo::Int, hi::Int, o::WriteOpts) =
+    _renderblock_direct(_preparewritecolumns(cols), lo, hi, o)
+
+@inline function _writerow_direct!(out::_WriteBuffer, r::Int, k::Int,
+                                   cols::Vector{_WriteColumn}, o::WriteOpts)
+    start = length(out)
     ncols = length(cols)
-    ncols <= TUPLE_RENDER_MAXCOLS && return _renderblock_tuple(Tuple(cols), lo, hi, o)
+    @inbounds for j in 1:ncols
+        @inline _appendtaggedcell!(out, cols[j], r, k, o)
+        j < ncols && _appenddelim!(out, o)
+    end
+    for b in o.newline
+        push!(out, b)
+    end
+    rowsize = length(out) - start
+    rowsize <= o.bufsize || _rowtoolarge(rowsize, o.bufsize)
+    return
+end
+
+function _renderblock_direct(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpts)
+    prepared = isempty(cols.fallback) ? cols.direct : copy(cols.direct)
+    for j in cols.fallback
+        stage = _stagecolumn!(ColStage(), cols.original[j], lo, hi, o)
+        prepared[j] = _WriteColumn(0x00, _EMPTY_WRITECOLUMNS..., stage)
+    end
+    out = _WriteBuffer()
+    nrows = hi - lo + 1
+    probe = min(nrows, 32)
+    @inbounds for r in lo:(lo + probe - 1)
+        @inline _writerow_direct!(out, r, r - lo + 1, prepared, o)
+    end
+    if probe < nrows
+        est = (length(out) * nrows) ÷ probe
+        sizehint!(out, est + (est >> 3) + 64 * length(prepared))
+        @inbounds for r in (lo + probe):hi
+            @inline _writerow_direct!(out, r, r - lo + 1, prepared, o)
+        end
+    end
+    return resize!(out.bytes, out.len)
+end
+
+function _renderblock(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpts)
+    ncols = length(cols.original)
+    ncols <= TUPLE_RENDER_MAXCOLS && return _renderblock_tuple(Tuple(cols.original), lo, hi, o)
+    length(cols.fallback) == ncols && return _renderblock_staged(cols.original, lo, hi, o)
+    return _renderblock_direct(cols, lo, hi, o)
+end
+_renderblock(cols::Vector{AbstractVector}, lo::Int, hi::Int, o::WriteOpts) =
+    _renderblock(_preparewritecolumns(cols), lo, hi, o)
+
+function _renderblock_staged(cols, lo::Int, hi::Int, o::WriteOpts)
+    ncols = length(cols)
     nrows = hi - lo + 1
     stages = [ColStage() for _ in 1:ncols]
     total = 0
@@ -826,19 +1023,21 @@ Base.@constprop :aggressive function _emitrowblocks!(io, cols, nrows::Int, o::Wr
         return
     end
 
+    rendercols = _preparewritecolumns(cols)
+
     # Avoid task overhead when the caller requested one task or the table fits
     # in one block. Fixed-size blocks still bound the single-task path.
     if SERIAL || workers == 1 || nblocks == 1
         for block in 1:nblocks
             lo, hi = bounds(block)
-            _renderwrite_identity!(io, cols, lo, hi, o)
+            _renderwrite_identity!(io, rendercols, lo, hi, o)
         end
         return
     end
 
     renderblock = function (block)
         lo, hi = bounds(block)
-        return _renderblock(cols, lo, hi, o)
+        return _renderblock(rendercols, lo, hi, o)
     end
     emitblock = rendered -> Base.write(io, rendered)
     _ordered_parallel_blocks!(emitblock, renderblock, nblocks, workers)

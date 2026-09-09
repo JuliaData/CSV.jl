@@ -1,6 +1,6 @@
 # Writer battery: round-trips through CSV.File, explicit byte contracts,
 # and byte determinism across thread counts.
-using Test, Dates, Tables, CodecZlib, FilePathsBase, Random
+using Test, Dates, Tables, CodecZlib, FilePathsBase, Random, InlineStrings, PooledArrays
 using CSV
 const W = CSV
 
@@ -133,6 +133,12 @@ Base.iterate(::ThrowingRows, state=1) =
     for kwargs in rowkwargs
         bytes = str(io -> W.write(io, rowtable; kwargs...))
         @test join(CSV.RowWriter(rowtable; kwargs...)) == bytes
+        cols = AbstractVector[values(rowtable)...]
+        opts = W._writeopts(; kwargs...)
+        expected = Vector{UInt8}(join(CSV.RowWriter(rowtable; kwargs..., writeheader=false, bom=false)))
+        @test W._renderblock_tuple(Tuple(cols), 1, 2, opts) == expected
+        @test W._renderblock_direct(cols, 1, 2, opts) == expected
+        @test W._renderblock_staged(cols, 1, 2, opts) == expected
     end
     for writeheader in (false, true)
         bytes = str(io -> W.write(io, rowtable; writeheader, bom=true))
@@ -643,7 +649,14 @@ end
 @testset "staged renderer: direct paths are byte-identical to the Base spellings" begin
     o = W._writeopts()
     @test W._writeopts(bufsize=big(typemax(Int)) + 1).bufsize == typemax(Int)
-    render(x) = (st = W.ColStage(); W._stagecolumn!(st, [x], 1, 1, o); String(copy(st.bytes)))
+    function render(x)
+        st = W.ColStage()
+        W._stagecolumn!(st, [x], 1, 1, o)
+        direct = W._WriteBuffer()
+        W._appendcell!(direct, x, o)
+        @test resize!(direct.bytes, direct.len) == st.bytes
+        return String(copy(st.bytes))
+    end
     # integers: every fixed width at its extremes and around zero
     for T in (Int8, Int16, Int32, Int64, Int128, UInt8, UInt16, UInt32, UInt64, UInt128)
         for x in (typemin(T), typemax(T), zero(T), one(T), T(9), T(10), T(99), T(100))
@@ -724,6 +737,10 @@ end
         write(ref, '\n')
     end
     refbytes = take!(ref)
+    cols = AbstractVector[values(tbl)...]
+    @test W._renderblock_tuple(Tuple(cols), 1, n, o) == refbytes
+    @test W._renderblock_direct(cols, 1, n, o) == refbytes
+    @test W._renderblock_staged(cols, 1, n, o) == refbytes
     for nt in (1, 3, 8)
         io = IOBuffer(); W.write(io, tbl; ntasks=nt, writeheader=false)
         @test take!(io) == refbytes
@@ -731,5 +748,55 @@ end
     # gzip streams block by block; the member must be complete and decodable
     io = IOBuffer(); W.write(io, tbl; compress=:gzip, ntasks=4, writeheader=false)
     @test transcode(GzipDecompressor, take!(io)) == refbytes
+end
+
+@testset "writer renderer corpus parity" begin
+    # Check direct descriptors, staged columns, and tuple cells against the
+    # public row iterator, including mixed direct/staged blocks and subranges.
+    corpus = AbstractVector[]
+    for T in (Int8, Int16, Int32, Int64, Int128, UInt8, UInt16, UInt32, UInt64, UInt128)
+        push!(corpus, T[typemin(T), typemax(T), 0, 1])
+    end
+    for T in (Float16, Float32, Float64)
+        push!(corpus, T[-0.0, Inf, -Inf, NaN])
+        push!(corpus, T[1.5, 0.0001, 1e4, 0.0])
+    end
+    append!(corpus, AbstractVector[
+        [true, false, true, false],
+        [Date(-1), Date(0), Date(2024), Date(10000)],
+        [DateTime(2024) + Millisecond(i) for i in (0, 1, 10, 999)],
+        [Time(0), Time(1), Time(2), Time(3)],
+        ["", "a,b", "q\"r", "two\nlines"],
+        [" lead", "tail ", "é", "a\rb"],
+        BigInt[0, -1, big(10)^40, -(big(10)^40)],
+        [:a, :b, :c, :d],
+        Any[1, "two", missing, 4.0],
+    ])
+    for col in copy(corpus)
+        T = eltype(col)
+        T === Any && continue
+        push!(corpus, Union{Missing,T}[missing, col[2], col[3], col[4]])
+    end
+    for T in (String1, String3, String7, String15, String31, String63, String127, String255)
+        col = T.(["", "a", "b", "c"])
+        push!(corpus, col, Union{Missing,T}[missing, col[2], col[3], col[4]], PooledArray(col))
+    end
+    push!(corpus, CSV.File(IOBuffer("x\n1.23\n2.45\n3.00\n4.56\n"); inferdecimal=true).x)
+    parsed = CSV.File(IOBuffer("s,t\nhi,x\n\"\",x\nthere,y\n,\n"); pool=false)
+    push!(corpus, parsed.s, parsed.t, PooledArray(["a", "a,b", "c", ""]),
+          PooledArray(Union{Missing,String}[missing, "a", "b", "a"]))
+    for col in corpus, kwargs in ((;), (; delim=';', newline="\r\n", missingstring="NA"),
+                                  (; quotestyle=:all))
+        cols = AbstractVector[collect(1:4), col, ["x", "y,z", "", "w"]]
+        table = (id=cols[1], value=col, text=cols[3])
+        opts = W._writeopts(; kwargs...)
+        expected = Vector{UInt8}(join(CSV.RowWriter(table; writeheader=false, kwargs...)))
+        @test W._renderblock_tuple(Tuple(cols), 1, 4, opts) == expected
+        @test W._renderblock_direct(cols, 1, 4, opts) == expected
+        @test W._renderblock_staged(cols, 1, 4, opts) == expected
+        subset = (id=cols[1][2:3], value=col[2:3], text=cols[3][2:3])
+        expected = Vector{UInt8}(join(CSV.RowWriter(subset; writeheader=false, kwargs...)))
+        @test W._renderblock_direct(cols, 2, 3, opts) == expected
+    end
 end
 println("WRITE BATTERY OK")
