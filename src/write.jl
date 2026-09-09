@@ -1061,10 +1061,10 @@ function _emitchunks!(io, chunks::Chunks, o::WriteOpts, transform, ntasks::Int;
     return
 end
 
-# A typed callable keeps column and scheduler types across the sink boundary.
-# An untyped closure here loses its captured schema before emitting any rows.
-struct _ColumnEmitter{C,F,S} <: Function
-    cols::C
+# Sink and scheduler code see one column container for every table schema.
+# Only transform and sink behavior need specialization above the renderer.
+struct _ColumnEmitter{F,S} <: Function
+    cols::Vector{AbstractVector}
     nrows::Int
     opts::WriteOpts
     transform::F
@@ -1083,11 +1083,8 @@ end
 
 # --- public write methods ---------------------------------------------------
 
-# Preserve a statically known schema. Erasing a NamedTuple's column types into
-# Vector{AbstractVector} adds dispatch and blocks compilation without a JIT.
-_writecolumns(cols::NamedTuple, names) =
-    length(cols) <= TUPLE_RENDER_MAXCOLS ? values(cols) :
-    AbstractVector[Tables.getcolumn(cols, nm) for nm in names]
+# Erase the schema before the block scheduler; dispatch once per block to the
+# renderer, without recompiling sink and task plumbing.
 _writecolumns(cols, names) = AbstractVector[Tables.getcolumn(cols, nm) for nm in names]
 
 @inline function write(sink, table; append::Bool=false, writeheader::Union{Nothing, Bool}=nothing,
