@@ -16,7 +16,7 @@ CSV.jl entry points. It requires Julia 1.10 or later.
   accessed. `CSV.File(lazyfile)` reuses the existing index.
 - Inferred text uses `DataStrings.DataString` by default. Short text is stored in
   the value; longer text lives in column-owned buffers, so eager tables never
-  refer to the source and a mapped file is released after parsing.
+  refer to the source or to a mapped file.
 - A quote inside a field is content, as in 0.10. The structural scan detects
   such quotes and rebuilds its index with the field-start rule; well-formed
   input never pays for it.
