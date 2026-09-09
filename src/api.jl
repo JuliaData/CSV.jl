@@ -107,11 +107,11 @@ end
 # large regular files use a read-only mapping while other sources use a copy.
 
 # Files at or above the threshold memory-map instead of copying: the kernel
-# never writes to `buf`, columns retain a reference to the mapping (unmapped
-# when the table is collected), and page faults amortize over the parallel
-# chunk sweep. Small files still read() — one small copy beats fault setup.
-# `buffer_in_memory=true` forces the copy (CSV.jl parity; e.g. when the file
-# may be replaced while the table is alive).
+# never writes to `buf`, and page faults amortize over the parallel chunk
+# sweep. Eager columns own their bytes; Rows, lazy, and the Chunks iterator
+# retain the source. Garbage collection unmaps an unreferenced buffer.
+# Small files still read() — one small copy beats fault setup.
+# `buffer_in_memory=true` forces the copy.
 const MMAP_THRESHOLD = 1 << 19
 
 # gzip is detected by magic bytes on every source kind (CSV.jl parity): a

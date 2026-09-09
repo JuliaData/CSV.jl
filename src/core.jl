@@ -52,8 +52,8 @@ import Parsers
 # A finished `Threads.@spawn` task keeps its closure (and everything the
 # closure captured, such as a mapped input) alive until its thread runs
 # another task (Julia 1.10 to 1.13; JuliaLang/julia master collects it). Every
-# task CSV spawns clears its own closure on exit, so a mapped file is released
-# as soon as parsing ends. Same trick as ConcurrentUtilities.@wkspawn.
+# task CSV spawns clears its own closure on exit, so finished workers do not
+# prevent collection of a mapped file. Same trick as ConcurrentUtilities.@wkspawn.
 function _cleartask()
     t = current_task()
     t.storage = nothing
@@ -62,9 +62,11 @@ function _cleartask()
 end
 macro wkspawn(expr)
     return esc(:(Threads.@spawn begin
-        ret = $expr
-        $_cleartask()
-        ret
+        try
+            $expr
+        finally
+            $_cleartask()
+        end
     end))
 end
 

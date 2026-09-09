@@ -42,9 +42,11 @@ they are passed to CSV.jl.
 `CSV.File`, `CSV.read`, and `CSV.Chunks` return columns that own their bytes:
 text longer than a `DataStrings.DataString` inline payload is copied into
 column-owned buffers during parsing, so a finished table never refers to the
-source. A mapped file is released as soon as parsing ends, rewriting the file
-afterwards cannot affect the table, one value retains at most the parse
-chunk's text buffer, and a `Vector{UInt8}` input is never aliased. `CSV.Rows` and `CSV.lazy`
+source. Finished worker tasks release their input references, so garbage
+collection can unmap the file. Rewriting the file afterwards cannot affect
+the table. One value retains at most the parse chunk's text buffer, and a
+`Vector{UInt8}` input is never aliased. A `CSV.Chunks` iterator retains its
+source for later batches; the returned batches own their bytes. `CSV.Rows` and `CSV.lazy`
 are the exceptions: their cells are views into the retained source, so keep
 the source unchanged while you use them, or convert values with `String`.
 

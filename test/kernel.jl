@@ -17,6 +17,44 @@ using CSV
 import Parsers
 const K = CSV
 
+@testset "worker cleanup on every exit" begin
+    for fails in (false, true)
+        task = K.@wkspawn begin
+            task_local_storage(:csv_cleanup_test, Ref(1))
+            fails && error("expected worker failure")
+            42
+        end
+        if fails
+            @test_throws TaskFailedException wait(task)
+        else
+            @test fetch(task) == 42
+        end
+        @test task.code === nothing
+        @test task.storage === nothing
+    end
+    task = K.@wkspawn begin
+        task_local_storage(:csv_cleanup_test, Ref(1))
+        return 43
+    end
+    @test fetch(task) == 43
+    @test task.code === nothing
+    @test task.storage === nothing
+    # Writer workers interpolate loop bindings. Delay every task until the
+    # loop finishes to ensure each captured value remains independent.
+    gate = Base.Event()
+    tasks = Task[]
+    @sync begin
+        for i in 1:8
+            push!(tasks, K.@wkspawn begin
+                wait(gate)
+                $i
+            end)
+        end
+        notify(gate)
+    end
+    @test fetch.(tasks) == collect(1:8)
+end
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
