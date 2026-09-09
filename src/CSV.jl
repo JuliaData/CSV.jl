@@ -163,6 +163,17 @@ import Dates, CodecZlib
         File(IOBuffer(pooled); pool=(0.5, 100))
         File(IOBuffer(mixed); stringtype=String)
         File(IOBuffer(mixed); parallel=true, ntasks=2, chunkbytes=1 << 10)
+        # Exercise common option values and selected-column kernels. The API
+        # boundaries share code across keyword combinations; this covers the
+        # few scalar conversions and execution paths absent from a default read.
+        File(IOBuffer(mixed); comment="#", missingstring="NA",
+             dateformat="yyyy-mm-dd", limit=1)
+        File(IOBuffer(mixed); typemap=Dict(Int64 => Float64))
+        File(IOBuffer(mixed); select=[:int, :str])
+        File(IOBuffer(mixed); drop=[:null])
+        File(IOBuffer(mixed); types=Dict(:int => Int64))
+        File(IOBuffer(mixed); types=String)
+        File(IOBuffer(mixed); dateformat=Dict(:date => Dates.DateFormat("yyyy-mm-dd")))
         # `stop_on_end=true` did not preserve caller-owned IO on every
         # TranscodingStreams version admitted by CodecZlib 0.7. Use the
         # one-shot codec here so the lower-bound precompile workload is stable.
