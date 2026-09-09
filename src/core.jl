@@ -1423,6 +1423,10 @@ end
 # the run of blank bits after it and lands on the first non-blank byte.
 @inline function barequotes(q64::UInt64, s64::UInt64, blank64::UInt64, inmask::UInt64,
                             fscarry::Bool, prevquote::Bool)
+    # A whitespace delimiter ends a blank run. Otherwise overlapping carry
+    # seeds add twice in that run and can erase its field-start bit.
+    s64 &= ~inmask
+    blank64 &= ~s64
     run = blank64 + ((s64 << 1) | (fscarry ? one(UInt64) : zero(UInt64)))
     fieldstart = run & ~blank64
     prevq = (q64 << 1) | (prevquote ? one(UInt64) : zero(UInt64))

@@ -132,4 +132,151 @@ end
     end
 end
 
+
+# Compare the structural output without depending on chunk-local offsets.
+function _rawrows(buf, bi)
+    [[begin
+        pos, len = K.fieldspan(ci, r, j)
+        String(buf[pos:pos + len - 1])
+      end for j in 1:K.nfields(ci, r)]
+     for ci in bi.chunks for r in 1:K.totalrows(ci)]
+end
+
+function _ownedcheck(f, expected)
+    @test isequal(_tablenorm(f), expected)
+    for col in Tables.Columns(f)
+        col isa K.DataStringVector || continue
+        @test col.buffers[1] === K.EMPTY_BYTES
+        @test all(col.payloads) do p
+            K.cslen(p) <= K.COMPACTSTRING_INLINE && return true
+            idx = K.csbufidx(p) + 1
+            2 <= idx <= length(col.buffers) || return false
+            0 <= K.csoffset(p) && K.csoffset(p) + K.cslen(p) <= length(col.buffers[idx])
+        end
+    end
+end
+
+@testset "D1/D2 adversarial kernels" begin
+    rng = MersenneTwister(0x43535633)
+    sizes = (1, 7, 63, 64, 65, 127, 1024, 1 << 20)
+    scanners = (:vec, :swar, :scalar)
+    @testset "whitespace carry and bare quotes at every block position" begin
+        for delim in (',', ' ', '\t'), pad in 0:130
+            for bare in (false, true)
+                field = bare ? "x\"y" : "\"x\""
+                bytes = Vector{UInt8}("a" * delim * " "^pad * field * delim * "z\n" * "b"^80 * "\n")
+                for sc in scanners, cb in (7, 64, 1 << 20)
+                    bi = K.index(bytes, K.Dialect(; delim); scanner=sc, chunkbytes=cb)
+                    @test bi.barequote == bare
+                end
+            end
+        end
+    end
+    @testset "writer dialects, strict/lenient rows, and owned bytes" begin
+        for trial in 1:32
+            delim = rand(rng, (",", ";", "\t", " ", "::"))
+            oq, cq, esc = rand(rng, (('"', '"', '"'), ('\'', '\'', '\''),
+                                      ('<', '>', '\\'), ('"', '"', '\\')))
+            newline = rand(rng, ("\n", "\r\n"))
+            comment = rand(rng, (nothing, "#"))
+            repeated = rand(rng, Bool)
+            dialect = (; delim, openquotechar=oq, closequotechar=cq, escapechar=esc)
+            atoms = ["plain", "", "λ漢🙂", "line\n#inside", "a" * delim * "b",
+                     "q$(oq)u$(cq)ote", " slash\\tail ", "x"^rand(rng, 13:160)]
+            tbl = (id=string.(1:16), s=[rand(rng, atoms) for _ in 1:16],
+                   t=[rand(rng, atoms) for _ in 1:16])
+            if !repeated
+                tbl = merge(tbl, (; s=Union{Missing, String}[missing; tbl.s[2:end]]))
+            end
+            io = IOBuffer()
+            K.write(io, tbl; dialect..., newline, quotestyle=rand(rng, (:all, :minimal)))
+            bytes = take!(io)
+            if comment !== nothing
+                bytes = [Vector{UInt8}("# ignored $(oq) unmatched" * newline); bytes]
+            end
+            d = K.Dialect(; dialect..., comment, ignorerepeated=repeated)
+            reference = K.index(bytes, d; scanner=:scalar, parallel=false, chunkbytes=1 << 20)
+            rows = _rawrows(bytes, reference)
+            expected = _tablenorm(tbl)
+            @testset "trial=$trial" begin
+                for cb in sizes, sc in scanners
+                    bi = K.index(bytes, d; scanner=sc, chunkbytes=cb)
+                    @test !bi.barequote
+                    @test _rawrows(bytes, bi) == rows
+                    li = K.index(bytes, K.withlenient(d); scanner=sc, chunkbytes=cb)
+                    @test _rawrows(bytes, li) == rows
+                end
+                for cb in sizes, parallel in (false, true)
+                    input = copy(bytes)
+                    kw = (; dialect..., comment, ignorerepeated=repeated, chunkbytes=cb, parallel)
+                    baseline = K.File(copy(input); kw..., types=String)
+                    @test isequal(_tablenorm(baseline), expected)
+                    f = K.File(input; kw..., types=K.DataString)
+                    _ownedcheck(f, expected)
+                    fill!(input, 0x00)
+                    _ownedcheck(f, expected)
+                end
+            end
+        end
+    end
+    @testset "injected bare quotes agree across readers" begin
+        for trial in 1:24
+            delim = rand(rng, (",", ";", "::", "\t"))
+            oq, cq, esc = rand(rng, (('"', '"', '"'), ('<', '>', '\\'), ('"', '"', '\\')))
+            dialect = (; delim, openquotechar=oq, closequotechar=cq, escapechar=esc)
+            newline = rand(rng, ("\n", "\r\n"))
+            values = ["value" * "x"^rand(rng, 1:80) for _ in 1:8]
+            row = rand(rng, eachindex(values))
+            pos = rand(rng, 2:length(values[row]))
+            values[row] = values[row][1:pos-1] * oq * values[row][pos:end]
+            input = "id$(delim)s$(newline)" * join(("$i$(delim)$(values[i])" for i in eachindex(values)), newline) * newline
+            bytes = Vector{UInt8}(input)
+            expected = _tablenorm((id=string.(1:8), s=values))
+            for cb in (1, 63, 64, 65, 1 << 20), sc in scanners
+                @test K.index(bytes, K.Dialect(; dialect...); scanner=sc, chunkbytes=cb).barequote
+                kw = (; dialect..., chunkbytes=cb, scanner=sc, types=String)
+                @test isequal(_tablenorm(K.File(copy(bytes); kw...)), expected)
+                @test isequal(_tablenorm(K.lazy(copy(bytes); kw...)), expected)
+                @test isequal(_tablenorm(Tables.columntable(K.Rows(copy(bytes); kw...))), expected)
+                batches = collect(K.Chunks(copy(bytes); kw...))
+                @test vcat((collect(b.s) for b in batches)...) == values
+                @test vcat((collect(b.id) for b in batches)...) == string.(1:8)
+                scan = Tables.Scan(select=(:id => String, :s => String), filter=Tables.col(:id) > 1)
+                f = K.File(copy(bytes); dialect..., chunkbytes=cb, scanner=sc, scan)
+                @test collect(f.s) == values[2:end]
+                @test collect(f.id) == string.(2:8)
+            end
+            # quoted=false must never request a lenient re-index.
+            @test !K.index(bytes, K.Dialect(; dialect..., quoted=false)).barequote
+        end
+    end
+    @testset "late promotion, masked adoption, and retained scalars" begin
+        values = [string(rand(rng, 10^14:10^15)) for _ in 1:300]
+        values[151] = "long text " * "λ"^40
+        values[end] = "escaped \""^20
+        io = IOBuffer()
+        K.write(io, (id=1:300, s=values))
+        bytes = take!(io)
+        for cb in sizes, parallel in (false, true), filtered in (false, true)
+            kw = filtered ? (; scan=Tables.Scan(filter=Tables.col(:id) > 100)) : (;)
+            baseline = K.File(copy(bytes); chunkbytes=cb, parallel, nsample=1, stringtype=String, kw...)
+            input = copy(bytes)
+            f = K.File(input; chunkbytes=cb, parallel, nsample=1, kw...)
+            # id is numeric in this case; check the owned text column separately.
+            col = f.s
+            @test col.buffers[1] === K.EMPTY_BYTES
+            @test String.(col) == baseline.s
+            retained = col[end]
+            before = String(retained)
+            fill!(input, 0x00)
+            @test String.(col) == values[(filtered ? 101 : 1):end]
+            @test all(p -> K.cslen(p) <= K.COMPACTSTRING_INLINE ||
+                      (1 <= K.csbufidx(p) < length(col.buffers) &&
+                       K.csoffset(p) + K.cslen(p) <= length(col.buffers[K.csbufidx(p) + 1])), col.payloads)
+            col[end] = "replacement text longer than inline"
+            @test String(retained) == before
+        end
+    end
+end
+
 end # module CSVFuzzTests
