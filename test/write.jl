@@ -136,7 +136,6 @@ Base.iterate(::ThrowingRows, state=1) =
         cols = AbstractVector[values(rowtable)...]
         opts = W._writeopts(; kwargs...)
         expected = Vector{UInt8}(join(CSV.RowWriter(rowtable; kwargs..., writeheader=false, bom=false)))
-        @test W._renderblock_tuple(Tuple(cols), 1, 2, opts) == expected
         @test W._renderblock_direct(cols, 1, 2, opts) == expected
         @test W._renderblock_staged(cols, 1, 2, opts) == expected
     end
@@ -738,7 +737,6 @@ end
     end
     refbytes = take!(ref)
     cols = AbstractVector[values(tbl)...]
-    @test W._renderblock_tuple(Tuple(cols), 1, n, o) == refbytes
     @test W._renderblock_direct(cols, 1, n, o) == refbytes
     @test W._renderblock_staged(cols, 1, n, o) == refbytes
     for nt in (1, 3, 8)
@@ -751,8 +749,8 @@ end
 end
 
 @testset "writer renderer corpus parity" begin
-    # Check direct descriptors, staged columns, and tuple cells against the
-    # public row iterator, including mixed direct/staged blocks and subranges.
+    # Check direct descriptors and staged columns against the public row
+    # iterator, including mixed direct/staged blocks and subranges.
     corpus = AbstractVector[]
     for T in (Int8, Int16, Int32, Int64, Int128, UInt8, UInt16, UInt32, UInt64, UInt128)
         push!(corpus, T[typemin(T), typemax(T), 0, 1])
@@ -791,7 +789,6 @@ end
         table = (id=cols[1], value=col, text=cols[3])
         opts = W._writeopts(; kwargs...)
         expected = Vector{UInt8}(join(CSV.RowWriter(table; writeheader=false, kwargs...)))
-        @test W._renderblock_tuple(Tuple(cols), 1, 4, opts) == expected
         @test W._renderblock_direct(cols, 1, 4, opts) == expected
         @test W._renderblock_staged(cols, 1, 4, opts) == expected
         subset = (id=cols[1][2:3], value=col[2:3], text=cols[3][2:3])

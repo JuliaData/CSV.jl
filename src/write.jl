@@ -13,11 +13,10 @@
 #   partition    write a Vector of sinks in parallel, one table partition each
 #
 # The engine renders contiguous row blocks from `Tables.columns` in parallel.
-# One- and two-column tables use a tuple renderer. Larger tables share one
-# tagged row loop; uncommon column types stage once per block before gathering.
-# Integers emit digits directly,
-# floats use Ryu at the output position, and strings copy after one structural
-# scan. Blocks stream to the sink in order. Output bytes do not depend on the
+# Every table shares one tagged row loop, so a new schema costs no
+# compilation; uncommon column types stage once per block before gathering.
+# Integers emit digits directly, floats use Ryu at the output position, and
+# strings copy after one structural scan. Blocks stream to the sink in order. Output bytes do not depend on the
 # thread count.
 
 using Tables, Dates, Printf, CodecZlib
@@ -550,11 +549,6 @@ end
 
 # --- row-block rendering (the parallel unit) --------------------------------
 
-# Keep tuple unrolling only where compilation stays small. Larger schemas
-# share the descriptor renderer below, so their compile cost does not grow
-# with the number or order of columns.
-const TUPLE_RENDER_MAXCOLS = 2
-
 # Keep the renderer's temporary storage independent of the total output size.
 # The row cap protects tiny rows from task overhead. The byte target protects
 # large rows from multiplying `bufsize` by 4096 for every live task. Wide-table
@@ -605,45 +599,6 @@ function _writerblockrows(cols, o::WriteOpts, transform)
     end
     rowbound = clamp(rowbound, 1, o.bufsize)
     return min(WRITE_BLOCK_ROWS, max(1, WRITE_BLOCK_BYTES ÷ rowbound))
-end
-
-@inline function _writerow!(out::Vector{UInt8}, r::Int, cols::Tuple, o::WriteOpts)
-    start = length(out)
-    _writecells!(out, r, cols, o)
-    for b in o.newline
-        push!(out, b)
-    end
-    rowsize = length(out) - start
-    rowsize <= o.bufsize || _rowtoolarge(rowsize, o.bufsize)
-    return
-end
-@inline _writecells!(out::Vector{UInt8}, r::Int, ::Tuple{}, o::WriteOpts) = nothing
-@inline function _writecells!(out::Vector{UInt8}, r::Int, cols::Tuple, o::WriteOpts)
-    @inbounds _appendcell!(out, first(cols)[r], o)
-    rest = Base.tail(cols)
-    isempty(rest) || _appenddelim!(out, o)
-    return _writecells!(out, r, rest, o)
-end
-
-function _renderblock_tuple(cols::Tuple, lo::Int, hi::Int, o::WriteOpts)
-    out = UInt8[]
-    nrows = hi - lo + 1
-    # size the block from a sample of its own rows: a fixed 16 B/cell guess
-    # over-reserved ~2x on typical tables, and the fresh pages that reserves
-    # cost first-touch faults across every task at once — measured as the
-    # difference between 3.8x and ~6x speedup on eight threads
-    probe = min(nrows, 32)
-    @inbounds for r in lo:(lo + probe - 1)
-        _writerow!(out, r, cols, o)
-    end
-    if probe < nrows
-        est = (length(out) * nrows) ÷ probe
-        sizehint!(out, est + (est >> 3) + 64 * length(cols))
-        @inbounds for r in (lo + probe):hi
-            _writerow!(out, r, cols, o)
-        end
-    end
-    return out
 end
 
 # A fixed descriptor separates the column's type from the table's schema.
@@ -789,9 +744,8 @@ function _renderblock_direct(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpt
 end
 
 function _renderblock(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpts)
-    ncols = length(cols.original)
-    ncols <= TUPLE_RENDER_MAXCOLS && return _renderblock_tuple(Tuple(cols.original), lo, hi, o)
-    length(cols.fallback) == ncols && return _renderblock_staged(cols.original, lo, hi, o)
+    length(cols.fallback) == length(cols.original) &&
+        return _renderblock_staged(cols.original, lo, hi, o)
     return _renderblock_direct(cols, lo, hi, o)
 end
 _renderblock(cols::Vector{AbstractVector}, lo::Int, hi::Int, o::WriteOpts) =
