@@ -5,6 +5,7 @@ DataStrings = "48204bd6-5611-42ea-b167-fc1d713f9be2"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 Durations = "41ac09f5-0a95-4810-aa18-c88bf48ee130"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
 
 [compat]
 CSV = "1"
@@ -13,3 +14,4 @@ DataStrings = "1"
 Documenter = "1.17"
 Durations = "1.1"
 JSON = "1.8"
+Tables = "1.14"
