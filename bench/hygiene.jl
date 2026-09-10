@@ -61,6 +61,7 @@ sigs = [
     (K.assemblerows!, (K.ChunkIndex, V8, K.Dialect, Int)),
     (K.assemblecollapsed!, (K.ChunkIndex, V8, K.Dialect, Int)),
     (K.quoteparity, (V8, Int, Int, K.Dialect)),
+    (K.quotetransitions, (V8, Int, Int, K.Dialect)),
     (K.nextrowstart, (V8, Int, Int, K.Dialect, Bool, Bool)),
     (K.detecttype, (V8, Int, Int, K.ValueOpts)),
     (K.cellcontent, (V8, Int, Int, K.ValueOpts)),

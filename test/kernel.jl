@@ -101,7 +101,7 @@ function idxvariants(input::AbstractString; chunks=(3, 7, 16, 64), kw...)
                   indexsnapshot(buf, K.index(buf, d; parallel=false, scanner=sc)))
         end
     end
-    if K.parityclean(d)
+    if K.splittable(d)
         for cb in chunks
             push!(variants, "scalar/seq$cb" =>
                   indexsnapshot(buf, K.index(buf, d; parallel=false, chunkbytes=cb, fastindex=false)))
@@ -471,7 +471,6 @@ end
     @test idxall("a:b::c\n"; delim="::")           == [["a:b","c"]]
     longdelim = "xy"^128
     @test idxall("left" * longdelim * "right\n"; delim=longdelim) == [["left", "right"]]
-    # A separate backslash escape needs the scalar scanner.
     @test idxall("\"a\\\"b\",c\n"; escapechar='\\') == [["\"a\\\"b\"","c"]]
     # unicode content passes through untouched (spans are byte-exact)
     @test idxall("α,β\n∀,∃\n") == [["α","β"], ["∀","∃"]]
@@ -534,6 +533,9 @@ end
     @test K.resolvescanner(fast, true, :scalar) === :scalar
     @test K.resolvescanner(fast, false, :vec) === :scalar
     @test K.resolvescanner(scalaronly, true, :vec) === :scalar
+    @test K.resolvescanner(K.Dialect(escapechar='\\'), true, :auto) === :vec
+    @test K.resolvescanner(K.Dialect(openquotechar='<', closequotechar='>'), true, :auto) === :vec
+    @test K.resolvescanner(K.withlenient(fast), true, :auto) === :lenient
     @test_throws ArgumentError K.index(UInt8[], fast; scanner=:bogus)
     @test_throws ArgumentError K.index(UInt8[0x61], fast; fastindex=false, scanner=:bogus)
     @test_throws ArgumentError K.parse(""; scanner=:bogus)
@@ -586,6 +588,103 @@ end
         input = String(rand(rng, alphabet, n))
         idxall(input; chunks=(63, 64, 65), quoted=rand(rng, Bool),
                comment=rand(rng, (nothing, "#", "//")), ignoreemptyrows=rand(rng, Bool))
+    end
+end
+
+@testset "structural: distinct escape and quote bytes use every scanner and plan" begin
+    # A separate escape byte and distinct open and close bytes run through the
+    # vector scanners and the parallel range planner. The scalar scanner on one
+    # chunk is the reference; `idxall` compares every scanner and chunk geometry.
+    backslash = (; escapechar='\\')
+    brackets = (; openquotechar='[', closequotechar=']')
+    both = (; openquotechar='<', closequotechar='>', escapechar='\\')
+    for kw in (backslash, brackets, both)
+        d = K.Dialect(; kw...)
+        @test K.splittable(d) && K.swareligible(d) && !K.symmetricquotes(d)
+        labels = first.(idxvariants("a,b\n1,2\n"; kw...))
+        @test "vec/par3" in labels && "swar/seq64" in labels
+    end
+    # escape byte: an escaped close quote, escaped escape, and escaped row
+    # ending are content; a bare escape byte outside quotes is content too
+    @test idxall("a,b\n\"x\\\"y\",z\n"; backslash...) == [["a","b"], ["\"x\\\"y\"","z"]]
+    @test idxall("a,b\n\"x\\\\\",z\n"; backslash...) == [["a","b"], ["\"x\\\\\"","z"]]
+    @test idxall("a,b\n\"x\\\ny\",z\n"; backslash...) == [["a","b"], ["\"x\\\ny\"","z"]]
+    @test idxall("a,b\nx\\y,z\\\n"; backslash...) == [["a","b"], ["x\\y","z\\"]]
+    # a doubled quote is not an escape under a distinct escape byte: the second
+    # quote reopens the field and is a bare quote
+    @test idxall("a,b\n\"x\"\"y\",z\n"; backslash...) == [["a","b"], ["\"x\"\"y\"","z"]]
+    @test !K.index(Vector{UInt8}("a,b\n\"x\"\"y\",z\n"), K.Dialect(; backslash...)).barequote
+    # an escape byte at the end of the input leaves the field open
+    @test K.index(Vector{UInt8}("a\n\"x\\"), K.Dialect(; backslash...)).unclosedquote
+    # distinct quotes: an open byte inside a field and a close byte outside one
+    # are content; a doubled close byte is an escaped close byte
+    @test idxall("a,b\n[x,y],z\n"; brackets...) == [["a","b"], ["[x,y]","z"]]
+    @test idxall("a,b\n[x[y],z]w\n"; brackets...) == [["a","b"], ["[x[y]","z]w"]]
+    @test idxall("a,b\n[x]]y],z\n"; brackets...) == [["a","b"], ["[x]]y]","z"]]
+    @test idxall("a,b\n[x]],z\n"; brackets...) == [["a","b"], ["[x]],z\n"]]
+    @test idxall("a,b\n<x>y>,z\n"; both...) == [["a","b"], ["<x>y>","z"]]
+    @test idxall("a,b\n<x\\>y>,<\\<>\n"; both...) == [["a","b"], ["<x\\>y>","<\\<>"]]
+    # every quote event at every block position, so escapes and doubled close
+    # bytes split across 64-byte blocks and across range boundaries
+    for pad in 55:70
+        lead = "a" * "b"^pad
+        @test idxall("$lead,\"x\\\"y\",z\n"; backslash...) == [["$lead","\"x\\\"y\"","z"]]
+        @test idxall("$lead,\"x\\\\\",z\n"; backslash...) == [["$lead","\"x\\\\\"","z"]]
+        @test idxall("$lead,[x]]y],z\n"; brackets...) == [["$lead","[x]]y]","z"]]
+        @test idxall("$lead,[x]],z\n"; brackets...) == [["$lead","[x]],z\n"]]
+        @test idxall("$lead,<x\\>>,z\n"; both...) == [["$lead","<x\\>>","z"]]
+        @test idxall("$lead,\"x\\\n\",z\n"; backslash...) == [["$lead","\"x\\\n\"","z"]]
+    end
+    # the block fast path falls back to the exact walk for an open byte inside
+    # a field, a close byte outside one, and an escape run outside a field
+    # before a quote byte; each pattern at every block position
+    openinside = (; openquotechar='[', closequotechar=']', escapechar='[')
+    for pad in 55:70
+        lead = "a" * "b"^pad
+        @test idxall("$lead,[x[y],z\n"; brackets...) == [["$lead","[x[y]","z"]]
+        @test idxall("$lead,x]y,z\n"; brackets...) == [["$lead","x]y","z"]]
+        @test idxall("$lead,x\\\"y,z\n"; backslash...) == [["$lead","x\\\"y,z\n"]]
+        @test idxall("$lead,\\\\\"y,z\"\n"; backslash...) == [["$lead","\\\\\"y,z\""]]
+        for run in 1:5
+            esc = "\\"^run
+            field = isodd(run) ? "\"x$(esc)\"y\"" : "\"x$(esc)\""
+            rest = isodd(run) ? ",z\n" : "y,z\n"
+            expected = isodd(run) ? [["$lead", field, "z"]] : [["$lead", field * "y", "z"]]
+            @test idxall("$lead,$field$rest"; backslash...) == expected
+        end
+        @test idxall("$lead,[x[y]],z\n"; openinside...) == [["$lead","[x[y]]","z"]]
+        @test idxall("$lead,[x[[y],z\n"; openinside...) == [["$lead","[x[[y]","z"]]
+    end
+    # random bytes over each dialect's own alphabet
+    rng = MersenneTwister(0x5c5b5d)
+    for (kw, alphabet) in ((backslash, ['a', '"', '\\', ',', '\n', '\r', ' ']),
+                           (brackets, ['a', '[', ']', ',', '\n', '\r', ' ']),
+                           (both, ['a', '<', '>', '\\', ',', '\n', '\r', ' ']),
+                           (openinside, ['a', '[', ']', ',', '\n', '\r', ' '])),
+        n in [0:12; 62:66; 126:130; rand(rng, 0:320, 60)]
+        input = String(rand(rng, alphabet, n))
+        idxall(input; chunks=(3, 63, 64, 65), ignoreemptyrows=rand(rng, Bool), kw...)
+    end
+    # long escape runs and doubled close bytes across block boundaries
+    for n in (60, 61, 62, 63, 64, 65, 66, 127, 128, 129)
+        @test idxall("a,\"" * "\\"^n * "\",z\n"; backslash...) ==
+              (iseven(n) ? [["a", "\"" * "\\"^n * "\"", "z"]] : [["a", "\"" * "\\"^n * "\",z\n"]])
+        @test idxall("a,[" * "]"^n * ",z\n"; brackets...) ==
+              (iseven(n) ? [["a", "[" * "]"^n * ",z\n"]] : [["a", "[" * "]"^n, "z"]])
+    end
+    # writer output parses back through every geometry, including a value that
+    # holds the open byte, the close byte, and the escape byte
+    values = ["plain", "a,b", "x\"y", "back\\slash", "[open", "close]", "<both>", "\\end\\",
+              "line\nbreak", "]]", "\\\"", "λ漢"]
+    for kw in (backslash, brackets, both)
+        io = IOBuffer()
+        K.write(io, (id=1:length(values), s=values); kw...)
+        bytes = take!(io)
+        for cb in (1, 7, 63, 64, 65, 1 << 20), sc in (:vec, :swar, :scalar), parallel in (false, true)
+            f = K.File(copy(bytes); kw..., chunkbytes=cb, scanner=sc, parallel, types=String)
+            @test collect(f.s) == values
+            @test collect(f.id) == string.(1:length(values))
+        end
     end
 end
 
@@ -2039,11 +2138,14 @@ end
         return rawstart
     end
     rng = MersenneTwister(0x5f00)
-    alphabet = UInt8['a', ',', '"', '\n', '\r', ' ']
-    dialects = (K.Dialect(), K.Dialect(quoted=false))
+    alphabet = UInt8['a', ',', '"', '\n', '\r', ' ', '\\', '[', ']']
+    dialects = (K.Dialect(), K.Dialect(quoted=false), K.Dialect(escapechar='\\'),
+                K.Dialect(openquotechar='[', closequotechar=']'))
     @test all(K._fastrowcount, dialects)
     @test !K._fastrowcount(K.Dialect(comment="#"))
-    @test !K._fastrowcount(K.Dialect(escapechar='\\'))
+    @test K._fastrowcount(K.Dialect(escapechar='\\'))
+    @test K._fastrowcount(K.Dialect(openquotechar='<', closequotechar='>'))
+    @test !K._fastrowcount(K.withlenient(K.Dialect()))
     for trial in 1:500
         n = trial <= 20 ? trial :
             trial % 5 == 0 ? rand(rng, (62, 63, 64, 65, 127, 128, 129, 191, 192, 193)) :

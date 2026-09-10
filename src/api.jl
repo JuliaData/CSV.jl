@@ -533,26 +533,42 @@ function _rawrowoffset(buf::Vector{UInt8}, d::Dialect, datastart::Int, n::Int)
 end
 
 # Row positioning (`skipto`, numbered headers, `footerskip`) walks raw rows
-# from the anchor. Under standard quote rules without comment rows, the walk
-# counts row endings outside quoted fields 64 bytes at a time with the fast
-# scanner's masks; the byte-at-a-time walk stays for the other dialects.
-_fastrowcount(d::Dialect) = parityclean(d) && !commentaware(d)
+# from the anchor. Without comment rows, the walk counts row endings outside
+# quoted fields 64 bytes at a time with the fast scanner's masks; the
+# byte-at-a-time walk stays for the other dialects.
+_fastrowcount(d::Dialect) = splittable(d) && !commentaware(d)
 
-# Row-ending events outside quoted fields in the 64-byte block at `p`, as
-# (ends, quotes, crlast). `inq` is the quote state entering the block;
-# `pairskip` drops a leading LF that pairs with the previous block's final CR,
-# and `crlast` reports a CR row ending at the block's last byte.
-@inline function _rowendblock(p::Ptr{UInt8}, quoted::Bool, oq::UInt8, inq::Bool, pairskip::Bool)
-    q64 = quoted ? byte_mask_vec(p, oq) : zero(UInt64)
+# Row-ending events outside quoted fields in the 64-byte block at `buf[pos]`
+# (`p` points at that byte), as (ends, inq, skip, crlast). `inq` and `skip`
+# are the quote state entering the block, as `quotewalk` defines them, and
+# the returned pair is the state after it. `pairskip` drops a leading LF that
+# pairs with the previous block's final CR, and `crlast` reports a CR row
+# ending at the block's last byte.
+@inline function _rowendblock(buf::Vector{UInt8}, p::Ptr{UInt8}, pos::Int, d::Dialect,
+                              inq::Bool, skip::Bool, pairskip::Bool)
+    if symmetricquotes(d)
+        q64 = d.quoted ? byte_mask_vec(p, d.oq) : zero(UInt64)
+        inmask = prefix_xor64(q64)
+        inq && (inmask = ~inmask)
+        inq ⊻= isodd(count_ones(q64))
+    else
+        oq, cq, e = d.oq, d.cq, d.e
+        doubling = e == cq
+        walkonly = !doubling && e == oq
+        o64 = byte_mask_vec(p, oq)
+        c64 = byte_mask_vec(p, cq)
+        e64 = doubling ? c64 : walkonly ? o64 : byte_mask_vec(p, e)
+        len = length(buf)
+        nextiscq = doubling && pos + 64 <= len && @inbounds(buf[pos + 64]) == cq
+        inmask, _, inq, skip = quoteblock(o64, c64, e64, doubling, walkonly, inq, skip, nextiscq)
+    end
     cr64 = byte_mask_vec(p, CR)
     lf64 = byte_mask_vec(p, LF)
-    inmask = prefix_xor64(q64)
-    inq && (inmask = ~inmask)
     ends = (cr64 | lf64) & ~inmask
     ends &= ~(lf64 & (cr64 << 1))          # the LF of a CR LF pair
     pairskip && (ends &= ~(lf64 & one(UInt64)))   # ... split across two blocks
     crlast = ((ends >> 63) & (cr64 >> 63)) != zero(UInt64)
-    return ends, q64, crlast
+    return ends, inq, skip, crlast
 end
 
 # The byte after the `k`-th row ending at or after `from` (`from` starts
@@ -561,12 +577,13 @@ function _skiprowends(buf::Vector{UInt8}, d::Dialect, from::Int, k::Int)
     len = length(buf)
     pos = from
     inq = false
+    skip = false
     pairskip = false
     remaining = k
     GC.@preserve buf begin
         p = pointer(buf)
         @inbounds while pos + 63 <= len && remaining > 0
-            ends, q64, crlast = _rowendblock(p + pos - 1, d.quoted, d.oq, inq, pairskip)
+            ends, inq, skip, crlast = _rowendblock(buf, p + pos - 1, pos, d, inq, skip, pairskip)
             c = count_ones(ends)
             if c >= remaining
                 for _ in 2:remaining          # keep the remaining-th set bit
@@ -579,11 +596,11 @@ function _skiprowends(buf::Vector{UInt8}, d::Dialect, from::Int, k::Int)
             end
             remaining -= c
             pairskip = crlast
-            inq ⊻= isodd(count_ones(q64))
             pos += 64
         end
     end
     pairskip && pos <= len && @inbounds(buf[pos]) == LF && (pos += 1)
+    skip && (pos += 1)   # consumed content inside the open quoted field
     while remaining > 0 && pos <= len
         pos = nextrowstart(buf, pos, len, d, inq)
         inq = false
@@ -600,13 +617,14 @@ function _countrows(buf::Vector{UInt8}, d::Dialect, from::Int)
     from > len && return 0
     pos = from
     inq = false
+    skip = false
     pairskip = false
     total = 0
     lastnext = 0        # the byte after the last row ending seen
     GC.@preserve buf begin
         p = pointer(buf)
         @inbounds while pos + 63 <= len
-            ends, q64, crlast = _rowendblock(p + pos - 1, d.quoted, d.oq, inq, pairskip)
+            ends, inq, skip, crlast = _rowendblock(buf, p + pos - 1, pos, d, inq, skip, pairskip)
             c = count_ones(ends)
             if c > 0
                 total += c
@@ -615,17 +633,20 @@ function _countrows(buf::Vector{UInt8}, d::Dialect, from::Int)
                 buf[pos + hb] == CR && lastnext <= len && buf[lastnext] == LF && (lastnext += 1)
             end
             pairskip = crlast
-            inq ⊻= isodd(count_ones(q64))
             pos += 64
         end
     end
     pairskip && pos <= len && @inbounds(buf[pos]) == LF && (pos += 1)
-    oq, cq, quoted = d.oq, d.cq, d.quoted
-    @inbounds while pos <= len             # standard rules: oq == cq == escape
+    skip && (pos += 1)   # consumed content inside the open quoted field
+    oq, cq, e, quoted = d.oq, d.cq, d.e, d.quoted
+    doubling = e == cq
+    @inbounds while pos <= len
         b = buf[pos]
         if inq
-            if b == cq
-                if pos < len && buf[pos + 1] == cq
+            if b == e && !doubling
+                pos += 2
+            elseif b == cq
+                if doubling && pos < len && buf[pos + 1] == cq
                     pos += 2
                 else
                     inq = false

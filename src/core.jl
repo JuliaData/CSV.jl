@@ -156,15 +156,16 @@ withlenient(d::Dialect) = Dialect(d.delim, d.oq, d.cq, d.e, d.quoted, d.comment,
 withcommentquotes(d::Dialect) = Dialect(d.delim, d.oq, d.cq, d.e, d.quoted, d.comment,
                                         d.ignoreemptyrows, d.ignorerepeated, d.lenient, true)
 
-# The range planner can use quote counts with standard CSV quote rules. The same
-# byte must open and close a quoted field. An escaped quote must use two quote
-# bytes. Each quote changes the state between inside and outside a quoted field.
-# Two quotes change the state twice, so the final state is the same. If quote
-# handling is off, every range starts outside a quoted field.
-#
-# A different escape byte or different open and close bytes need more context.
-# The parser uses one scalar scan for those options.
-parityclean(d::Dialect) = !d.lenient && (!d.quoted || (d.oq == d.cq && d.e == d.cq))
+# The range planner needs the quote state at the start of each byte range.
+# Under the standard quote rule the same byte opens and closes a field and a
+# doubled quote is an escape, so every quote byte flips the state and the
+# parity of a range's quote count gives its exit state. A separate escape byte
+# or distinct open and close bytes need the state machine itself: the planner
+# runs it over each range from every possible entry state and composes the
+# results in file order. The lenient rule cannot be planned from a range start,
+# because a quote there has meaning only at a field start.
+symmetricquotes(d::Dialect) = !d.quoted || (d.oq == d.cq && d.e == d.cq)
+splittable(d::Dialect) = !d.lenient
 # Quote bytes in a comment row do not change the CSV quote state. A byte range
 # that starts in the middle of a row cannot know whether that row is a comment.
 # The parallel planner and the fast scanners assume comment rows hold no quote
@@ -174,7 +175,7 @@ commentaware(d::Dialect) = d.comment !== nothing
 commentserial(d::Dialect) = commentaware(d) && d.commentquotes
 
 # The fast scanners additionally need a single-byte delimiter.
-swareligible(d::Dialect) = parityclean(d) && d.delim isa UInt8 && !commentserial(d)
+swareligible(d::Dialect) = splittable(d) && d.delim isa UInt8 && !commentserial(d)
 
 # These options control how CSV reads one field. Date and time parsing uses a
 # compiled pattern. The default patterns accept ISO date, date-time, and time
@@ -1552,38 +1553,155 @@ end
     return q64, specials_mask_vec(p, delim)
 end
 
-# space and tab marks: the blanks a field may start with before its quote
-@inline blankmask(::Val{:vec}, p::Ptr{UInt8}) =
-    byte_mask_vec(p, UInt8(' ')) | byte_mask_vec(p, UInt8('\t'))
-@inline function blankmask(::Val{:swar}, p::Ptr{UInt8})
-    b64 = zero(UInt64)
+@inline byte_mask(::Val{:vec}, p::Ptr{UInt8}, b::UInt8) = byte_mask_vec(p, b)
+@inline function byte_mask(::Val{:swar}, p::Ptr{UInt8}, b::UInt8)
+    m = zero(UInt64)
     for k in 0:7
         w = ltoh(unsafe_load(Ptr{UInt64}(p + 8k)))
-        b64 |= movemask(eqmarks(w, UInt8(' ')) | eqmarks(w, UInt8('\t'))) << (8k)
+        m |= movemask(eqmarks(w, b)) << (8k)
     end
-    return b64
+    return m
 end
 
-# Bare-quote detection for one 64-byte block. `inmask` is the inside-quote
-# state after each byte, so a quote whose bit is set in it opened a field. An
-# opening quote must be the first non-blank byte of its field (the byte after
-# a delimiter or row ending, or after the blanks that follow one) or the
-# second byte of a doubled-quote pair. `fscarry`/`prevquote` carry the
-# field-start and previous-byte-is-quote facts across blocks. The blank-run
+# space and tab marks: the blanks a field may start with before its quote
+@inline blankmask(::Val{S}, p::Ptr{UInt8}) where {S} =
+    byte_mask(Val(S), p, UInt8(' ')) | byte_mask(Val(S), p, UInt8('\t'))
+
+# Quote state across one 64-byte block under a rule that is not the standard
+# doubled-quote rule. `o64`, `c64`, and `e64` mark the open, close, and escape
+# bytes; under the doubling rule (`e == cq`) `e64` equals `c64`. `inq` and
+# `skip` give the state at the block start: `skip` means the first byte is
+# content that the previous block consumed (the byte after an escape byte, or
+# the second byte of a doubled close quote). `nextiscq` tells whether the byte
+# after the block is a close quote, for a doubled close quote at the last byte.
+# Returns the inside mask (set for every byte inside a quoted field, including
+# the opening quote and excluding the closing quote), the mask of opening
+# quotes, and the state after the block. Each loop step handles one quote
+# event, so a block without quote bytes costs one test.
+@inline function quotewalk(o64::UInt64, c64::UInt64, e64::UInt64, doubling::Bool,
+                           inq::Bool, skip::Bool, nextiscq::Bool)
+    inmask = zero(UInt64)
+    opens = zero(UInt64)
+    i = 0
+    if skip
+        inmask = one(UInt64)
+        skip = false
+        i = 1
+    end
+    t64 = c64 | e64
+    while i < 64
+        above = ~zero(UInt64) << i
+        if !inq
+            rest = o64 & above
+            rest == zero(UInt64) && break
+            t = trailing_zeros(rest)
+            bit = one(UInt64) << t
+            opens |= bit
+            inmask |= bit
+            inq = true
+            i = t + 1
+        else
+            rest = t64 & above
+            if rest == zero(UInt64)
+                inmask |= above
+                break
+            end
+            t = trailing_zeros(rest)
+            inmask |= above & (~zero(UInt64) >> (63 - t))
+            consumes = doubling ? (t < 63 ? ((c64 >> (t + 1)) & one(UInt64)) != zero(UInt64) : nextiscq) :
+                                  ((e64 >> t) & one(UInt64)) != zero(UInt64)
+            if consumes
+                t == 63 ? (skip = true) : (inmask |= one(UInt64) << (t + 1))
+                i = t + 2
+            else
+                inmask &= ~(one(UInt64) << t)
+                inq = false
+                i = t + 1
+            end
+        end
+    end
+    return inmask, opens, inq, skip
+end
+
+const EVENBITS = 0x5555555555555555
+const ODDBITS = 0xaaaaaaaaaaaaaaaa
+
+# The byte after each odd-length run of escape bytes in `b64` is escaped. A
+# run that starts at an even bit and reaches bit 63 has an even length; a run
+# that starts at an odd bit and reaches bit 63 escapes the next block's first
+# byte, which the returned carry reports.
+@inline function escapedafter(b64::UInt64)
+    starts = b64 & ~(b64 << 1)
+    evenruns, _ = Base.add_with_overflow(b64, starts & EVENBITS)
+    oddruns, carry = Base.add_with_overflow(b64, starts & ODDBITS)
+    escaped = ((evenruns & ~b64) & ODDBITS) | ((oddruns & ~b64) & EVENBITS)
+    return escaped, carry
+end
+
+# Quote state across one 64-byte block under a rule that is not the standard
+# doubled-quote rule, with the same contract as `quotewalk`. The prefix XOR of
+# the toggle bytes gives the inside mask when every quote byte acts as its
+# position allows: an open byte opens only outside a field, a close byte closes
+# only inside one or doubles a close byte before it, and an escaped quote byte
+# sits inside a field. A block that breaks one of these rules takes the exact
+# walk instead. `walkonly` selects the walk for a dialect whose escape byte is
+# also its open byte, where the run rule cannot tell an escape from an open.
+@inline function quoteblock(o64::UInt64, c64::UInt64, e64::UInt64, doubling::Bool,
+                            walkonly::Bool, inq::Bool, skip::Bool, nextiscq::Bool)
+    if skip
+        # The first byte is consumed content inside a quoted field.
+        o64 &= ~one(UInt64)
+        c64 &= ~one(UInt64)
+        e64 &= ~one(UInt64)
+    end
+    walkonly && return quotewalk(o64, c64, e64, doubling, inq, false, nextiscq)
+    if doubling
+        t = o64 | c64
+        inmask = prefix_xor64(t)
+        inq && (inmask = ~inmask)
+        closing = c64 & ~inmask
+        bad = (o64 & ~inmask) | (c64 & inmask & ~(closing << 1))
+        bad == zero(UInt64) || return quotewalk(o64, c64, e64, true, inq, false, nextiscq)
+        nextinq = inq ⊻ isodd(count_ones(t))
+        # A close byte at the last bit doubles a close byte after the block.
+        skipnext = (closing >> 63) != zero(UInt64) && nextiscq
+        skipnext && (nextinq = true)
+        return inmask, o64 & inmask, nextinq, skipnext
+    end
+    escaped, carry = escapedafter(e64)
+    q64 = o64 | c64
+    t = q64 & ~escaped
+    inmask = prefix_xor64(t)
+    inq && (inmask = ~inmask)
+    bad = (escaped & q64 & ~inmask) | (o64 & ~c64 & ~escaped & ~inmask) |
+          (c64 & ~o64 & ~escaped & inmask)
+    bad == zero(UInt64) || return quotewalk(o64, c64, e64, false, inq, false, false)
+    nextinq = inq ⊻ isodd(count_ones(t))
+    # An odd escape run at the end of a quoted field's block consumes the next byte.
+    skipnext = carry && (inmask >> 63) != zero(UInt64)
+    return inmask, o64 & t & inmask, nextinq, skipnext
+end
+
+# Bare-quote detection for one 64-byte block. `o64` marks the open-quote bytes
+# and `opens` the ones that opened a field; `inmask` is the inside-quote state
+# after each byte. An opening quote must be the first non-blank byte of its
+# field (the byte after a delimiter or row ending, or after the blanks that
+# follow one) or follow another open-quote byte. `fscarry`/`prevquote` carry
+# the field-start and previous-byte-is-quote facts across blocks. The blank-run
 # rule is one addition: a carry from each structural byte propagates through
 # the run of blank bits after it and lands on the first non-blank byte.
-@inline function barequotes(q64::UInt64, s64::UInt64, blank64::UInt64, inmask::UInt64,
-                            fscarry::Bool, prevquote::Bool)
+@inline function barequotes(o64::UInt64, opens::UInt64, s64::UInt64, blank64::UInt64,
+                            inmask::UInt64, fscarry::Bool, prevquote::Bool)
     # A whitespace delimiter ends a blank run. Otherwise overlapping carry
     # seeds add twice in that run and can erase its field-start bit.
     s64 &= ~inmask
     blank64 &= ~s64
     run = blank64 + ((s64 << 1) | (fscarry ? one(UInt64) : zero(UInt64)))
     fieldstart = run & ~blank64
-    prevq = (q64 << 1) | (prevquote ? one(UInt64) : zero(UInt64))
-    bare = (q64 & inmask & ~fieldstart & ~prevq) != zero(UInt64)
+    prevq = (o64 << 1) | (prevquote ? one(UInt64) : zero(UInt64))
+    bare = (opens & ~fieldstart & ~prevq) != zero(UInt64)
     carryout = (s64 >> 63) != zero(UInt64) || run < blank64   # overflow: a blank run reached the end
-    return bare, carryout, (q64 >> 63) != zero(UInt64)
+    return bare, carryout, (o64 >> 63) != zero(UInt64)
 end
 
 @inline function blockmasks(::Val{:swar}, p::Ptr{UInt8}, quoted::Bool, oq::UInt8, delim::UInt8)
@@ -1634,13 +1752,17 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
     @assert swareligible(d)
     start, stop = ci.start, ci.stop
     delim = d.delim::UInt8
-    oq = d.oq
+    oq, cq, e = d.oq, d.cq, d.e
     quoted = d.quoted
+    symmetric = symmetricquotes(d)
+    doubling = e == cq
+    walkonly = !doubling && e == oq
     tape = ci.tape
     length(tape) < 256 && resize!(tape, _tapecapacity(buf, start, stop, delim))
     n = 0
     rows = 0           # row-end events emitted (assembly sizes its vectors from it)
     inq = false        # whether this block starts inside a quoted field
+    skip = false       # the previous block consumed this block's first byte
     pairskip = false   # The last CR in a block already consumed the next LF.
     fscarry = true     # the next byte is a field start (chunks begin at a row start)
     prevquote = false  # the previous byte was a quote
@@ -1650,11 +1772,21 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
         p = pointer(buf)
         @inbounds while pos + 63 <= stop
             q64, s64 = blockmasks(Val(S), p + pos - 1, quoted, oq, delim)
-            inmask = prefix_xor64(q64)
-            inq && (inmask = ~inmask)
+            if symmetric
+                inmask = prefix_xor64(q64)
+                inq && (inmask = ~inmask)
+                opens = q64 & inmask
+                nextinq = inq ⊻ isodd(count_ones(q64))
+            else
+                c64 = byte_mask(Val(S), p + pos - 1, cq)
+                e64 = doubling ? c64 : walkonly ? q64 : byte_mask(Val(S), p + pos - 1, e)
+                nextiscq = doubling && pos + 64 <= stop && buf[pos + 64] == cq
+                inmask, opens, nextinq, skip =
+                    quoteblock(q64, c64, e64, doubling, walkonly, inq, skip, nextiscq)
+            end
             if quoted
                 b64 = blankmask(Val(S), p + pos - 1)
-                isbare, fscarry, prevquote = barequotes(q64, s64, b64, inmask, fscarry, prevquote)
+                isbare, fscarry, prevquote = barequotes(q64, opens, s64, b64, inmask, fscarry, prevquote)
                 bare |= isbare
             end
             specials = s64 & ~inmask
@@ -1677,7 +1809,7 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
                     specials &= specials - one(UInt64)
                 end
             end
-            inq ⊻= isodd(count_ones(q64))
+            inq = nextinq
             pos += 64
         end
     end
@@ -1687,8 +1819,13 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
     @inbounds while pos <= stop
         b = buf[pos]
         if inq
-            if b == d.cq
-                if pos < stop && buf[pos + 1] == d.cq
+            if skip
+                skip = false
+                pos += 1
+            elseif b == e && !doubling
+                pos += 2
+            elseif b == cq
+                if doubling && pos < stop && buf[pos + 1] == cq
                     pos += 2
                 else
                     inq = false
@@ -1730,15 +1867,18 @@ end
 # parser must know whether each range starts inside a quoted field before it can
 # use a line ending as a row boundary.
 #
-# For standard CSV quote rules, the parser does these steps:
+# The parser does these steps:
 #
 #   1. Divide the input into fixed byte ranges.
-#   2. Count the quote bytes in each range. Different tasks can count different
-#      ranges at the same time.
-#   3. Read the counts in file order. The input starts outside a quoted field.
-#      An odd count means that the next range starts on the other side of a
-#      quote. An even count means that the next range starts on the same side.
-#      This tells the parser whether each range starts inside a quoted field.
+#   2. Find the quote state change of each range. Different tasks can work on
+#      different ranges at the same time. Under the standard quote rule this is
+#      the parity of the range's quote count. Under a distinct escape byte or
+#      distinct open and close bytes it is the exit state for each of the three
+#      possible entry states.
+#   3. Read the results in file order. The input starts outside a quoted field.
+#      Under the standard rule an odd count means that the next range starts on
+#      the other side of a quote. Otherwise the exit state for the known entry
+#      state is the next range's entry state.
 #   4. Scan forward from each range start. Ignore line endings inside quoted
 #      fields. The first line ending outside a quoted field gives a safe start
 #      for the next chunk.
@@ -1769,6 +1909,83 @@ function quoteparity(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect)::Bool
         i += 1
     end
     return isodd(n)
+end
+
+# Quote states for the range planner under a distinct escape byte or distinct
+# open and close bytes.
+const QUOTE_OUTSIDE = 0x00
+const QUOTE_INSIDE = 0x01
+const QUOTE_CONSUMED = 0x02   # inside, and the next byte is consumed content:
+                              # it follows an escape byte, or it is the byte
+                              # after a close quote that may double it
+
+# One step of the quote state machine for a byte with the given roles.
+@inline function _quotestep(s::UInt8, isoq::Bool, iscq::Bool, ise::Bool, doubling::Bool)
+    if s == QUOTE_OUTSIDE
+        return isoq ? QUOTE_INSIDE : QUOTE_OUTSIDE
+    elseif s == QUOTE_INSIDE
+        doubling && return iscq ? QUOTE_CONSUMED : QUOTE_INSIDE
+        return ise ? QUOTE_CONSUMED : iscq ? QUOTE_OUTSIDE : QUOTE_INSIDE
+    else
+        # After an escape byte the byte is content. After a close quote a
+        # second close quote is content; any other byte is read outside.
+        doubling || return QUOTE_INSIDE
+        return (iscq || isoq) ? QUOTE_INSIDE : QUOTE_OUTSIDE
+    end
+end
+
+# Return the exit state of `buf[from:to]` for each entry state, as a tuple
+# indexed by `state + 1`. The machine runs once for all three entry states, and
+# only quote and escape bytes step it: a run of other bytes steps it once.
+function quotetransitions(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect)::NTuple{3, UInt8}
+    oq, cq, e = d.oq, d.cq, d.e
+    doubling = e == cq
+    s0, s1, s2 = QUOTE_OUTSIDE, QUOTE_INSIDE, QUOTE_CONSUMED
+    pos = from
+    GC.@preserve buf begin
+        p = pointer(buf)
+        @inbounds while pos <= to
+            t = pos
+            while t + 7 <= to
+                w = ltoh(unsafe_load(Ptr{UInt64}(p + t - 1)))
+                m = eqmarks(w, oq) | eqmarks(w, cq) | eqmarks(w, e)
+                if m != zero(UInt64)
+                    t += trailing_zeros(movemask(m))
+                    break
+                end
+                t += 8
+            end
+            while t <= to && !(buf[t] == oq || buf[t] == cq || buf[t] == e)
+                t += 1
+            end
+            if t > pos
+                s0 = _quotestep(s0, false, false, false, doubling)
+                s1 = _quotestep(s1, false, false, false, doubling)
+                s2 = _quotestep(s2, false, false, false, doubling)
+            end
+            t > to && break
+            b = buf[t]
+            isoq, iscq, ise = b == oq, b == cq, !doubling && b == e
+            s0 = _quotestep(s0, isoq, iscq, ise, doubling)
+            s1 = _quotestep(s1, isoq, iscq, ise, doubling)
+            s2 = _quotestep(s2, isoq, iscq, ise, doubling)
+            pos = t + 1
+        end
+    end
+    return (s0, s1, s2)
+end
+
+# The first row start at or after `from` when `state` is the quote state at
+# `from`. A consumed byte is content, so the scan continues after it inside the
+# quoted field. A close quote that the byte does not double has taken effect,
+# so the scan reads the byte outside.
+function _rangerowstart(buf::Vector{UInt8}, from::Int, len::Int, d::Dialect, state::UInt8)
+    state == QUOTE_OUTSIDE && return nextrowstart(buf, from, len, d, false)
+    state == QUOTE_INSIDE && return nextrowstart(buf, from, len, d, true)
+    if d.e == d.cq && !(from <= len && @inbounds(buf[from]) == d.cq)
+        return nextrowstart(buf, from, len, d, false)
+    end
+    return nextrowstart(buf, from + 1, len, d, true)
 end
 
 # Scan from `from` to the first row ending outside a quoted field. `inquote`
@@ -1832,7 +2049,7 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
     # Split compatible input into bounded chunks even when `parallel` is false.
     # Bounded chunks keep each parsing pass on a smaller part of the input.
     # `parallel` only controls whether this work uses tasks or a plain loop.
-    if (d.lenient || (commentserial(d) && parityclean(d))) && len - datastart + 1 > chunkbytes
+    if (d.lenient || (commentserial(d) && splittable(d))) && len - datastart + 1 > chunkbytes
         # Raw quote counts are not valid under the lenient quote rule, or when
         # a comment row is known to hold a quote. Start at a known row boundary
         # and find later row boundaries in file order. The later index work can
@@ -1851,10 +2068,10 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
         foreach(checktaperange, chunks)
         return chunks
     end
-    nranges = parityclean(d) ? max(1, cld(len - datastart + 1, chunkbytes)) : 1
+    nranges = splittable(d) ? max(1, cld(len - datastart + 1, chunkbytes)) : 1
     starts = [datastart + (i - 1) * chunkbytes for i in 1:nranges]
-    entry = falses(nranges)
-    if nranges > 1
+    entry = fill(QUOTE_OUTSIDE, nranges)
+    if nranges > 1 && symmetricquotes(d)
         par = Vector{Bool}(undef, nranges)
         if parallel && tasklimit > 1
             _taskforeach(1:nranges, tasklimit, _taskobserver) do i
@@ -1870,6 +2087,24 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
         acc = false
         for i in 2:nranges
             acc ⊻= par[i - 1]
+            entry[i] = acc ? QUOTE_INSIDE : QUOTE_OUTSIDE
+        end
+    elseif nranges > 1
+        exits = Vector{NTuple{3, UInt8}}(undef, nranges)
+        if parallel && tasklimit > 1
+            _taskforeach(1:nranges, tasklimit, _taskobserver) do i
+                to = i == nranges ? len : starts[i + 1] - 1
+                exits[i] = quotetransitions(buf, starts[i], to, d)
+            end
+        else
+            for i in 1:nranges
+                to = i == nranges ? len : starts[i + 1] - 1
+                exits[i] = quotetransitions(buf, starts[i], to, d)
+            end
+        end
+        acc = QUOTE_OUTSIDE
+        for i in 2:nranges
+            acc = exits[i - 1][acc + 1]
             entry[i] = acc
         end
     end
@@ -1878,11 +2113,11 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
     if nranges > 1
         if parallel && tasklimit > 1
             _taskforeach(2:nranges, tasklimit, _taskobserver) do i
-                bounds[i] = nextrowstart(buf, starts[i], len, d, entry[i])
+                bounds[i] = _rangerowstart(buf, starts[i], len, d, entry[i])
             end
         else
             for i in 2:nranges
-                bounds[i] = nextrowstart(buf, starts[i], len, d, entry[i])
+                bounds[i] = _rangerowstart(buf, starts[i], len, d, entry[i])
             end
         end
     end
@@ -1918,10 +2153,10 @@ function indexone!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Symb
                            indexchunk_fast!(ci, buf, d, Val(:vec))
 end
 
-# Choose the scanner. Complex quote, escape, or delimiter options require the
-# scalar scanner. Use the vector scanner by default for supported input. The
-# `:swar` scanner does not require vector instructions and can be selected
-# explicitly.
+# Choose the scanner. A multi-byte delimiter, the lenient quote rule, and a
+# comment row that holds a quote byte require the scalar scanner. Use the
+# vector scanner by default for other input. The `:swar` scanner does not
+# require vector instructions and can be selected explicitly.
 function resolvescanner(d::Dialect, fastindex::Bool, scanner::Symbol)
     scanner in (:auto, :vec, :swar, :scalar) ||
         throw(ArgumentError("scanner must be :auto, :vec, :swar, or :scalar (got $(repr(scanner)))"))
