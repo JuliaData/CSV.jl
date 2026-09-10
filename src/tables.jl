@@ -36,6 +36,7 @@ struct Batches
     d::Dialect
     maxproblems::Int
     unclosedquote::Bool
+    ntasks::Int        # columns of a batch parse in parallel under this budget
 end
 
 # Settle the batch schema in place: `types[q]` is promoted until every cell of
@@ -117,8 +118,13 @@ function _settlecolumnfrom(::Type{T}, buf::Vector{UInt8}, chunks, j::Int, opts::
     @inbounds while k <= length(chunks)
         ci = chunks[k]
         lr = max(lr, ci.firstdatarow)
-        while lr <= totalrows(ci)
-            sp = fieldspan(ci, lr, j)
+        tape, rowfirst, rowstartrel, ext = ci.tape, ci.rowfirst, ci.rowstartrel, ci.ext
+        start, skip, total = ci.start, ci.delimskip, totalrows(ci)
+        first = lr <= total ? Int(rowfirst[lr]) : 0
+        while lr <= total
+            nextr = Int(rowfirst[lr + 1])
+            sp = _span(start, tape, rowstartrel, ext, skip, first, nextr, lr, j)
+            first = nextr
             if sp === nothing || sp[2] == 0
                 sawmissing = true
                 lr += 1
@@ -194,17 +200,35 @@ function parsebatch(b::Batches, ci::ChunkIndex)
                        "input ended inside a quoted field")
 
     cols = Vector{AbstractVector}(undef, ncols)
-    for q in 1:ncols
+    logs = Vector{ProblemLog}(undef, ncols)
+    # columns are independent: each parses into its own column and problem log
+    parseone = q -> begin
         j = b.plan.sources[q]
         T = b.seedtypes[q]
         opts = columnopts(b.plan, j)
         userprovided = b.plan.columns[j].parsetype !== nothing
+        clog = ProblemLog(b.maxproblems)
         col = allocatecolumn(T, n, b.buf, opts.e, b.d.cq)
         conflict = T === Missing ?
-            parsecolchunk_missing(b.buf, ci, j, rowbase, opts, userprovided, log) :
-            parsecolchunk!(col, b.buf, ci, j, 0, opts, userprovided, log, rowbase)
+            parsecolchunk_missing(b.buf, ci, j, rowbase, opts, userprovided, clog) :
+            parsecolchunk!(col, b.buf, ci, j, 0, opts, userprovided, clog, rowbase)
         conflict == 0 || error("internal error: batch schema prepass disagreed with value parsing")
         cols[q] = finalizecolumn(T, col, n, b.allowmissing[q])
+        logs[q] = clog
+    end
+    if b.ntasks > 1 && ncols > 1 && n >= 1024
+        _taskforeach(parseone, 1:ncols, b.ntasks)
+    else
+        foreach(parseone, 1:ncols)
+    end
+    # fold the column logs in column order (retention is by source order, so
+    # the fold order only affects which of two identical keys is kept)
+    for q in 1:ncols
+        clog = logs[q]
+        for pr in clog.items
+            pushproblem!(log, pr.row, pr.col, pr.pos, pr.kind, pr.message)
+        end
+        log.dropped += clog.dropped
     end
     sortproblems!(log)
     return ParsedTable(b.names, cols, n, log.items, log.dropped)

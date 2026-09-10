@@ -71,21 +71,21 @@ end
 CSV._settledstringtype(::Type{InlineString}, maxlen::Int) =
     maxlen <= _AUTO_MAX_WIDTH ? _fitwidth(maxlen) : String
 
-function CSV._materializecolumn(::Type{InlineString}, col::CSV.DataStringVector)
+function CSV._materializecolumn(::Type{InlineString}, col::CSV.DataStringVector,
+                                parallel::Bool=true)
     W = _widthfor(col)
-    return W === nothing ? CSV._materializecolumn(String, col) :
-                           CSV._materializecolumn(W, col)
+    return W === nothing ? CSV._materializecolumn(String, col, parallel) :
+                           CSV._materializecolumn(W, col, parallel)
 end
-function CSV._materializecolumn(::Type{T}, col::CSV.DataStringVector) where {T <: InlineString}
+function CSV._materializecolumn(::Type{T}, col::CSV.DataStringVector,
+                                parallel::Bool=true) where {T <: InlineString}
     n = length(col)
     if Missing <: eltype(col)
         out = Vector{Union{T, Missing}}(undef, n)
-        @inbounds for i in 1:n
-            x = col[i]
-            if x === missing
-                out[i] = missing
-            else
-                out[i] = _inl(T, x)
+        CSV._rowranges(n, parallel) do lo, hi
+            @inbounds for i in lo:hi
+                x = col[i]
+                out[i] = x === missing ? missing : _inl(T, x)
             end
         end
         # The kernel already settles missingness. Preserve a declared Union
@@ -93,8 +93,10 @@ function CSV._materializecolumn(::Type{T}, col::CSV.DataStringVector) where {T <
         return out
     end
     out = Vector{T}(undef, n)
-    @inbounds for i in 1:n
-        out[i] = _inl(T, col[i])
+    CSV._rowranges(n, parallel) do lo, hi
+        @inbounds for i in lo:hi
+            out[i] = _inl(T, col[i])
+        end
     end
     return out
 end

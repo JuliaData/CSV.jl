@@ -97,6 +97,11 @@ struct Dialect
     # readers take when the structural scan found a quote that did not start
     # its field (`5' 11"`, `x"y`); it is never the first pass.
     lenient::Bool
+    # Comment rows are dropped by their first bytes, so their quotes have no
+    # meaning. The parallel planner and the fast scanners assume comment rows
+    # contain no quote byte; when one does, the index rebuilds serially with
+    # the scalar scanner under this flag. Well-formed input never sets it.
+    commentquotes::Bool
 end
 
 const LF = UInt8('\n')
@@ -111,7 +116,8 @@ function Dialect(; delim::Union{Char, String}=',',
                    comment::Union{String, Nothing}=nothing,
                    ignoreemptyrows::Bool=true,
                    ignorerepeated::Bool=false,
-                   lenient::Bool=false)
+                   lenient::Bool=false,
+                   commentquotes::Bool=false)
     isempty(delim) && throw(ArgumentError("delimiter must be non-empty"))
     d = delim isa Char ? (isascii(delim) ? delim % UInt8 : Vector{UInt8}(string(delim))) :
         sizeof(delim) == 1 ? codeunit(delim, 1) : Vector{UInt8}(delim)
@@ -132,7 +138,8 @@ function Dialect(; delim::Union{Char, String}=',',
           isempty(comment) ? throw(ArgumentError("comment must be non-empty")) : Vector{UInt8}(comment)
     cmt !== nothing && (LF in cmt || CR in cmt) &&
         throw(ArgumentError("comment may not contain \\r or \\n"))
-    return Dialect(d, oq, cq, e, quoted, cmt, ignoreemptyrows, ignorerepeated, lenient)
+    return Dialect(d, oq, cq, e, quoted, cmt, ignoreemptyrows, ignorerepeated, lenient,
+                   commentquotes)
 end
 
 # Delimiter candidates share the already validated quote/comment options.
@@ -140,11 +147,13 @@ function withdelim(d::Dialect, delim::UInt8, ignorerepeated::Bool=d.ignorerepeat
     d.quoted && delim == d.oq &&
         throw(ArgumentError("delimiter may not equal the quote character"))
     return Dialect(delim, d.oq, d.cq, d.e, d.quoted, d.comment,
-                   d.ignoreemptyrows, ignorerepeated, d.lenient)
+                   d.ignoreemptyrows, ignorerepeated, d.lenient, d.commentquotes)
 end
 
 withlenient(d::Dialect) = Dialect(d.delim, d.oq, d.cq, d.e, d.quoted, d.comment,
-                                  d.ignoreemptyrows, d.ignorerepeated, true)
+                                  d.ignoreemptyrows, d.ignorerepeated, true, d.commentquotes)
+withcommentquotes(d::Dialect) = Dialect(d.delim, d.oq, d.cq, d.e, d.quoted, d.comment,
+                                        d.ignoreemptyrows, d.ignorerepeated, d.lenient, true)
 
 # The range planner can use quote counts with standard CSV quote rules. The same
 # byte must open and close a quoted field. An escaped quote must use two quote
@@ -157,12 +166,14 @@ withlenient(d::Dialect) = Dialect(d.delim, d.oq, d.cq, d.e, d.quoted, d.comment,
 parityclean(d::Dialect) = !d.lenient && (!d.quoted || (d.oq == d.cq && d.e == d.cq))
 # Quote bytes in a comment row do not change the CSV quote state. A byte range
 # that starts in the middle of a row cannot know whether that row is a comment.
-# The planner therefore finds row starts in order for files with comment rows.
-# It can still index the completed chunks at the same time.
+# The parallel planner and the fast scanners assume comment rows hold no quote
+# byte; assembly checks every dropped comment row, and a quote found there
+# rebuilds the index serially under `Dialect.commentquotes`.
 commentaware(d::Dialect) = d.comment !== nothing
+commentserial(d::Dialect) = commentaware(d) && d.commentquotes
 
 # The fast scanners additionally need a single-byte delimiter.
-swareligible(d::Dialect) = parityclean(d) && d.delim isa UInt8 && !commentaware(d)
+swareligible(d::Dialect) = parityclean(d) && d.delim isa UInt8 && !commentserial(d)
 
 # These options control how CSV reads one field. Date and time parsing uses a
 # compiled pattern. The default patterns accept ISO date, date-time, and time
@@ -179,6 +190,7 @@ struct ValueOpts
     stripws::Bool
     sentinels::Vector{Vector{UInt8}}
     sentfirst::NTuple{4, UInt64}  # first-byte map: skip comparisons for most cells
+    hassentinels::Bool            # false: no cell can be a sentinel (one branch per cell)
     trues::Vector{Vector{UInt8}}
     falses::Vector{Vector{UInt8}}
     datepat::Parsers.DatePattern
@@ -397,7 +409,7 @@ Base.@nospecializeinfer function makevalueopts(d::Dialect, @nospecialize(datefor
         sf = Base.setindex(sf, sf[(b >> 6) + 1] | (UInt64(1) << (b & 0x3f)), (b >> 6) + 1)
     end
     return ValueOpts(d.oq, d.cq, d.e, d.quoted, delimbytes, decimal % UInt8, stripwhitespace,
-                     sentinelbytes, sf, trues, falses,
+                     sentinelbytes, sf, !isempty(sentinelbytes), trues, falses,
                      dp, dtp, dtsp, tp, custom, kind, inferbool, gm)
 end
 
@@ -460,6 +472,7 @@ end
 end
 
 @inline function _matchsentinel(buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+    vo.hassentinels || return false
     i <= j && _maybesentinel(vo, @inbounds(buf[i])) &&
         _spanmatches(buf, i, j, vo.sentinels) && return true
     ti, tj = _trimblanks(buf, i, j)
@@ -616,11 +629,17 @@ const _TIME0 = Time(0)
 
 # Parsers returns calendar fields without choosing a Dates representation. CSV
 # owns this conversion because it chooses the final column type.
-@inline todate(c::Parsers.CivilParts) = Date(c.year, c.month, c.day)
+# Parsers validated the calendar fields, so the instants build from rata days
+# directly (`Date(y, m, d)` would re-run `validargs` on every cell).
+@inline todate(c::Parsers.CivilParts) =
+    Date(Dates.UTD(Dates.totaldays(Int64(c.year), Int64(c.month), Int64(c.day))))
 
 @inline function todatetime(c::Parsers.CivilParts)
     milliseconds = Int64(c.nanosecond) ÷ 1_000_000
-    return DateTime(c.year, c.month, c.day, c.hour, c.minute, c.second, milliseconds)
+    days = Dates.totaldays(Int64(c.year), Int64(c.month), Int64(c.day))
+    ms = ((days * 24 + Int64(c.hour)) * 60 + Int64(c.minute)) * 60_000 +
+         Int64(c.second) * 1_000 + milliseconds
+    return DateTime(Dates.UTM(ms))
 end
 
 @inline totime(c::Parsers.CivilParts) =
@@ -908,10 +927,15 @@ mutable struct ChunkIndex
     firstdatarow::Int           # local row where data begins (2 when this chunk holds the header row)
     unclosedquote::Bool         # buffer ended while inside a quoted field (malformed input)
     barequote::Bool             # an opening quote was not the first non-blank byte of its field
+    rawrows::Int                # row-end events the scanner emitted (assembly sizes its
+                                # row vectors from it instead of growing them)
+    commentquote::Bool          # a dropped comment row held a quote byte (the fast
+                                # scan and the parallel plan may then be wrong)
 end
 
 ChunkIndex(start::Int, stop::Int) =
-    ChunkIndex(start, stop, UInt32[], UInt32[], Int32[1], UInt32[], 1, 1, false, false)
+    ChunkIndex(start, stop, UInt32[], UInt32[], Int32[1], UInt32[], 1, 1, false, false, 0,
+               false)
 
 nrows(ci::ChunkIndex) = length(ci.rowfirst) - 1 - (ci.firstdatarow - 1)
 totalrows(ci::ChunkIndex) = length(ci.rowfirst) - 1
@@ -925,18 +949,29 @@ nfields(ci::ChunkIndex, localrow::Int) = Int(ci.rowfirst[localrow + 1] - ci.rowf
     @boundscheck col >= 1 || throw(BoundsError(ci, (localrow, col)))
     @inbounds first = Int(ci.rowfirst[localrow])
     @inbounds nextr = Int(ci.rowfirst[localrow + 1])
+    return _span(ci.start, ci.tape, ci.rowstartrel, ci.ext, ci.delimskip, first, nextr,
+                 localrow, col)
+end
+
+# The same span from hoisted index fields and the row's event bounds
+# `tape[first : nextr - 1]`. The column loops carry `nextr` into the next
+# row's `first`, so each cell reads one row-bound word and its two events
+# instead of re-reading the chunk's fields.
+@inline function _span(start::Int, tape::Vector{UInt32}, rowstartrel::Vector{UInt32},
+                       ext::Vector{UInt32}, delimskip::Int,
+                       first::Int, nextr::Int, lr::Int, col::Int)
     col <= nextr - first || return nothing
     fi = first + col - 1
-    @inbounds stop = ci.start + Int(ci.tape[fi] >> 2) - 1
+    @inbounds stop = start + Int(tape[fi] >> 2) - 1
     if col == 1
-        @inbounds s = ci.start + Int(ci.rowstartrel[localrow])
+        @inbounds s = start + Int(rowstartrel[lr])
     else
-        @inbounds e = ci.tape[fi - 1]
+        @inbounds e = tape[fi - 1]
         k = e & 0x03
-        skip = Int(ci.delimskip)
+        skip = delimskip
         # ignorerepeated: the previous event closed a run of 1 + ext delimiters
-        k == 0x00 && !isempty(ci.ext) && (skip += skip * Int(@inbounds ci.ext[fi - 1]))
-        s = ci.start + Int(e >> 2) + (k == 0x00 ? skip : Int(k))
+        k == 0x00 && !isempty(ext) && (skip += skip * Int(@inbounds ext[fi - 1]))
+        s = start + Int(e >> 2) + (k == 0x00 ? skip : Int(k))
     end
     return (s, stop - s + 1)
 end
@@ -982,8 +1017,10 @@ function assemblerows!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int)
     ci.delimskip = d.delim isa UInt8 ? 1 : length(d.delim::Vector{UInt8})
     rowfirst = ci.rowfirst
     rowstartrel = ci.rowstartrel
-    resize!(rowfirst, 1); @inbounds rowfirst[1] = Int32(1)
-    empty!(rowstartrel)
+    # exact capacity from the scanner's row-end count: no growth, no copies
+    resize!(rowfirst, ci.rawrows + 1); @inbounds rowfirst[1] = Int32(1)
+    resize!(rowstartrel, ci.rawrows)
+    r = 0                  # rows kept so far
     cmt = d.comment
     w = 0
     roweventw = 1          # tape index where the current row's events begin
@@ -1018,18 +1055,23 @@ function assemblerows!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int)
                     end
                 end
                 drop = match
+                match && d.quoted && pos > rowstart &&
+                    _containsbyte(buf, rowstart, pos - 1, d.oq) && (ci.commentquote = true)
             end
             if drop
                 w = roweventw - 1
             else
-                push!(rowstartrel, UInt32(rowstart - ci.start))
-                push!(rowfirst, Int32(w + 1))
+                r += 1
+                rowstartrel[r] = UInt32(rowstart - ci.start)
+                rowfirst[r + 1] = Int32(w + 1)
                 roweventw = w + 1
             end
             rowstart = nextrow
         end
     end
     resize!(tape, w)
+    resize!(rowfirst, r + 1)
+    resize!(rowstartrel, r)
     return ci
 end
 
@@ -1052,8 +1094,9 @@ function assemblecollapsed!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::I
     length(ext) < n && resize!(ext, n)
     rowfirst = ci.rowfirst
     rowstartrel = ci.rowstartrel
-    resize!(rowfirst, 1); @inbounds rowfirst[1] = Int32(1)
-    empty!(rowstartrel)
+    resize!(rowfirst, ci.rawrows + 1); @inbounds rowfirst[1] = Int32(1)
+    resize!(rowstartrel, ci.rawrows)
+    r = 0
     cmt = d.comment
     w = 0
     roweventw = 1          # tape index where the current row's events begin
@@ -1102,12 +1145,15 @@ function assemblecollapsed!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::I
                     end
                 end
                 drop = match
+                match && d.quoted && pos > rowstart &&
+                    _containsbyte(buf, rowstart, pos - 1, d.oq) && (ci.commentquote = true)
             end
             if drop
                 w = roweventw - 1
             else
-                push!(rowstartrel, UInt32(fieldstart - ci.start))
-                push!(rowfirst, Int32(w + 1))
+                r += 1
+                rowstartrel[r] = UInt32(fieldstart - ci.start)
+                rowfirst[r + 1] = Int32(w + 1)
                 roweventw = w + 1
             end
             rowstart = fieldstart = nextrow
@@ -1115,13 +1161,26 @@ function assemblecollapsed!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::I
     end
     resize!(tape, w)
     resize!(ext, w)
+    resize!(rowfirst, r + 1)
+    resize!(rowstartrel, r)
     return ci
 end
 
 # End-of-chunk: synthesize a row end when the chunk does not finish on one — a
 # trailing unterminated row ("a,b"), a trailing empty field ("a,b,"), or an
 # unclosed quote running to EOF.
+# Without the scanner's count, derive the row-end events from the tape.
 function finishscan!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int, inquote::Bool)
+    rows = 0
+    tape = ci.tape
+    @inbounds for i in 1:n
+        rows += (tape[i] & 0x03) != 0x00
+    end
+    return finishscan!(ci, buf, d, n, inquote, rows)
+end
+
+function finishscan!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int, inquote::Bool,
+                     rows::Int)
     start, stop = ci.start, ci.stop
     needsend = if n == 0
         stop >= start
@@ -1135,8 +1194,10 @@ function finishscan!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int, inq
         tape_room!(ci.tape, n, 1)
         n += 1
         @inbounds ci.tape[n] = (UInt32(stop + 1 - start) << 2) | UInt32(2)  # LF-kind at EOF
+        rows += 1
     end
     ci.unclosedquote = inquote
+    ci.rawrows = rows
     assemblerows!(ci, buf, d, n)
     return ci
 end
@@ -1160,6 +1221,7 @@ function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
     bare = false
     cmt = d.comment
     atrowstart = true      # comment rows are skipped whole: their bytes are not structural
+    rows = 0
     @inbounds while pos <= stop
         if atrowstart && cmt !== nothing && !inquote &&
            pos + length(cmt) - 1 <= stop && _matchbytes(buf, pos, cmt)
@@ -1173,6 +1235,7 @@ function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
             crlf = b == CR && pos < stop && buf[pos + 1] == LF
             tape_room!(tape, n, 1)
             n += 1
+            rows += 1
             tape[n] = (UInt32(pos - start) << 2) | (crlf ? UInt32(3) : rawkind(b))
             pos += crlf ? 2 : 1
             continue
@@ -1214,6 +1277,7 @@ function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
             crlf = b == CR && pos < stop && buf[pos + 1] == LF
             tape_room!(tape, n, 1)
             n += 1
+            rows += 1
             tape[n] = (UInt32(pos - start) << 2) | (crlf ? UInt32(3) : rawkind(b))
             pos += crlf ? 2 : 1
             fieldstart = true
@@ -1224,7 +1288,7 @@ function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
         end
     end
     ci.barequote = bare
-    return finishscan!(ci, buf, d, n, inquote)
+    return finishscan!(ci, buf, d, n, inquote, rows)
 end
 
 @inline function _matchbytes(buf::Vector{UInt8}, pos::Int, bytes::Vector{UInt8})
@@ -1256,6 +1320,7 @@ function indexchunk_lenient!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
     fieldstart = true      # only blanks seen since the row start or the last delimiter
     cmt = d.comment
     atrowstart = true
+    rows = 0
     @inbounds while pos <= stop
         if atrowstart && cmt !== nothing &&
            pos + length(cmt) - 1 <= stop && _matchbytes(buf, pos, cmt)
@@ -1267,6 +1332,7 @@ function indexchunk_lenient!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
             crlf = b == CR && pos < stop && buf[pos + 1] == LF
             tape_room!(tape, n, 1)
             n += 1
+            rows += 1
             tape[n] = (UInt32(pos - start) << 2) | (crlf ? UInt32(3) : rawkind(b))
             pos += crlf ? 2 : 1
             continue
@@ -1297,6 +1363,7 @@ function indexchunk_lenient!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
             crlf = b == CR && pos < stop && buf[pos + 1] == LF
             tape_room!(tape, n, 1)
             n += 1
+            rows += 1
             tape[n] = (UInt32(pos - start) << 2) | (crlf ? UInt32(3) : rawkind(b))
             pos += crlf ? 2 : 1
             fieldstart = true
@@ -1310,7 +1377,7 @@ function indexchunk_lenient!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
             pos += 1
         end
     end
-    return finishscan!(ci, buf, d, n, inquote)
+    return finishscan!(ci, buf, d, n, inquote, rows)
 end
 
 # `nextrowstart` under the lenient rule; `from` is a row start.
@@ -1539,6 +1606,29 @@ end
     return q64, s64
 end
 
+# Initial tape capacity from the event density of the chunk's first 4 KiB
+# (delimiters and line endings, quote-blind): dense numeric data gets the
+# words it needs without a growth copy, and long-text data does not reserve
+# a word per few bytes for events it never emits. The tape still grows on
+# demand when the probe underestimates.
+function _tapecapacity(buf::Vector{UInt8}, start::Int, stop::Int, delim::UInt8)
+    len = stop - start + 1
+    probe = min(len, 4096)
+    n = 0
+    pos = start
+    GC.@preserve buf begin
+        p = pointer(buf)
+        @inbounds while pos + 63 <= start + probe - 1
+            n += count_ones(specials_mask_vec(p + pos - 1, delim))
+            pos += 64
+        end
+    end
+    probed = pos - start
+    probed == 0 && return min(len + 1, 256)
+    est = (n * len) ÷ probed
+    return clamp(est + (est >> 3) + 256, 256, min(len + 1, MAX_TAPE_HINT))
+end
+
 function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{S}) where {S}
     @assert swareligible(d)
     start, stop = ci.start, ci.stop
@@ -1546,8 +1636,9 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
     oq = d.oq
     quoted = d.quoted
     tape = ci.tape
-    length(tape) < 256 && resize!(tape, min(max((stop - start + 1) >> 3, 256), MAX_TAPE_HINT))
+    length(tape) < 256 && resize!(tape, _tapecapacity(buf, start, stop, delim))
     n = 0
+    rows = 0           # row-end events emitted (assembly sizes its vectors from it)
     inq = false        # whether this block starts inside a quoted field
     pairskip = false   # The last CR in a block already consumed the next LF.
     fscarry = true     # the next byte is a field start (chunks begin at a row start)
@@ -1575,6 +1666,7 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
                     tz = trailing_zeros(specials)
                     b = buf[pos + tz]
                     n += 1
+                    rows += b != delim
                     if b == CR && pos + tz < stop && buf[pos + tz + 1] == LF
                         tape[n] = ((base + UInt32(tz)) << 2) | UInt32(3)
                         tz < 63 ? (specials &= ~(UInt64(1) << (tz + 1))) : (pairskip = true)
@@ -1617,6 +1709,7 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
                 crlf = b == CR && pos < stop && buf[pos + 1] == LF
                 tape_room!(tape, n, 1)
                 n += 1
+                rows += b != delim
                 tape[n] = (UInt32(pos - start) << 2) | (crlf ? UInt32(3) : rawkind(b))
                 pos += crlf ? 2 : 1
             end
@@ -1627,7 +1720,7 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
         end
     end
     ci.barequote = bare
-    return finishscan!(ci, buf, d, n, inq)
+    return finishscan!(ci, buf, d, n, inq, rows)
 end
 
 # --- find safe chunk boundaries ---------------------------------------------
@@ -1738,11 +1831,11 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::I
     # Split compatible input into bounded chunks even when `parallel` is false.
     # Bounded chunks keep each parsing pass on a smaller part of the input.
     # `parallel` only controls whether this work uses tasks or a plain loop.
-    if (d.lenient || (commentaware(d) && parityclean(d))) && len - datastart + 1 > chunkbytes
-        # Raw quote counts are not valid for comment rows or under the lenient
-        # quote rule. Start at a known row boundary and find later row
-        # boundaries in file order. The later index work can still use
-        # multiple tasks.
+    if (d.lenient || (commentserial(d) && parityclean(d))) && len - datastart + 1 > chunkbytes
+        # Raw quote counts are not valid under the lenient quote rule, or when
+        # a comment row is known to hold a quote. Start at a known row boundary
+        # and find later row boundaries in file order. The later index work can
+        # still use multiple tasks.
         chunks = ChunkIndex[]
         b0 = datastart
         while b0 <= len
@@ -1876,6 +1969,14 @@ function index(buf::Vector{UInt8}, d::Dialect;
         end
     end
 
+    # A comment row held a quote byte: the parallel plan (and a fast scan)
+    # assumed none, so rebuild in file order with the scalar scanner. This
+    # comes before the boundary check below, which that assumption can break.
+    if commentaware(d) && !d.commentquotes && !d.lenient &&
+       any(ci -> ci.commentquote, chunks)
+        return index(buf, withcommentquotes(d); datastart, chunkbytes, parallel, ntasks,
+                     fastindex, scanner, _taskobserver)
+    end
     # Every non-final chunk ends after a complete row. It must therefore end
     # outside a quoted field. A failure here means that chunk planning is wrong.
     for (k, ci) in enumerate(chunks)
@@ -2155,9 +2256,11 @@ mutable struct StringColumn
     lock::ReentrantLock              # guards `adopted` under parallel re-parses
     e::UInt8                         # escape char
     cq::UInt8                        # close-quote char (e == cq for RFC ""-doubling)
+    slot::Int                        # payload buffer index of `extra`: 1 for a private
+                                     # column, 1 + k for chunk k's segment of a direct final
 end
-StringColumn(payloads::Vector{DataStringPayload}, e::UInt8, cq::UInt8) =
-    StringColumn(payloads, UInt8[], Vector{Vector{UInt8}}(), ReentrantLock(), e, cq)
+StringColumn(payloads::Vector{DataStringPayload}, e::UInt8, cq::UInt8, slot::Int=1) =
+    StringColumn(payloads, UInt8[], Vector{Vector{UInt8}}(), ReentrantLock(), e, cq, slot)
 StringColumn(n::Int, e::UInt8, cq::UInt8) = StringColumn(fill(PAYLOAD_MISSING, n), e, cq)
 
 # Buffer 0 is the unreferenced source slot (DataStrings appends its own edit
@@ -2174,7 +2277,7 @@ _buffers(col::StringColumn) = Vector{UInt8}[EMPTY_BYTES, col.extra, col.adopted.
     spos - 1 <= typemax(Int32) - clen || _extratoolarge()
     resize!(extra, spos + clen - 1)
     GC.@preserve extra buf unsafe_copyto!(pointer(extra, spos), pointer(buf, cpos), clen)
-    @inbounds col.payloads[out] = view_payload(extra, spos, clen, 1, spos - 1)
+    @inbounds col.payloads[out] = view_payload(extra, spos, clen, col.slot, spos - 1)
     return
 end
 
@@ -2187,7 +2290,7 @@ end
     n = _unescape_append!(extra, buf, cpos, clen, col.e, col.cq)
     @inbounds col.payloads[out] = n <= COMPACTSTRING_INLINE ?
                                   inline_payload(extra, spos, n) :
-                                  view_payload(extra, spos, n, 1, spos - 1)
+                                  view_payload(extra, spos, n, col.slot, spos - 1)
     return
 end
 
@@ -2263,12 +2366,18 @@ function parsecolchunk!(col::Union{TypedColumn{T}, UnionColumn{T}}, buf::Vector{
                         mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
                         reportlimit::Int=typemax(Int)) where {T}
     scratch = _scratchfor(opts)
-    @inbounds for lr in ci.firstdatarow:totalrows(ci)
-        localrow = lr - ci.firstdatarow + 1
+    tape, rowfirst, rowstartrel, ext = ci.tape, ci.rowfirst, ci.rowstartrel, ci.ext
+    start, skip, fdr, total = ci.start, ci.delimskip, ci.firstdatarow, totalrows(ci)
+    @inbounds first = fdr <= total ? Int(rowfirst[fdr]) : 0
+    @inbounds for lr in fdr:total
+        rowlo = first
+        nextr = Int(rowfirst[lr + 1])
+        first = nextr
+        localrow = lr - fdr + 1
         out = rowbase + localrow
         mask !== nothing && !mask[maskbase + out] && continue   # excluded row: cell never parsed
         localrow > reportlimit && continue
-        sp = fieldspan(ci, lr, j)
+        sp = _span(start, tape, rowstartrel, ext, skip, rowlo, nextr, lr, j)
         sp === nothing && continue                      # short row ⇒ missing (reported once per row by the driver)
         pos, len = sp
         len == 0 && continue                            # empty ⇒ missing
@@ -2312,12 +2421,18 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
                         mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
                         reportlimit::Int=typemax(Int))
     payloads = col.payloads
-    @inbounds for lr in ci.firstdatarow:totalrows(ci)
-        localrow = lr - ci.firstdatarow + 1
+    tape, rowfirst, rowstartrel, ext = ci.tape, ci.rowfirst, ci.rowstartrel, ci.ext
+    start, skip, fdr, total = ci.start, ci.delimskip, ci.firstdatarow, totalrows(ci)
+    @inbounds first = fdr <= total ? Int(rowfirst[fdr]) : 0
+    @inbounds for lr in fdr:total
+        rowlo = first
+        nextr = Int(rowfirst[lr + 1])
+        first = nextr
+        localrow = lr - fdr + 1
         out = rowbase + localrow
         mask !== nothing && !mask[maskbase + out] && continue   # excluded row: cell never parsed
         localrow > reportlimit && continue
-        sp = fieldspan(ci, lr, j)
+        sp = _span(start, tape, rowstartrel, ext, skip, rowlo, nextr, lr, j)
         sp === nothing && continue
         pos, len = sp
         len == 0 && continue                            # unquoted empty ⇒ missing; quoted "" survives below
@@ -2359,11 +2474,17 @@ function parsecolchunk_missing(buf::Vector{UInt8}, ci::ChunkIndex, j::Int,
                                userprovided::Bool, problems,
                                mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
                                reportlimit::Int=typemax(Int))
-    @inbounds for lr in ci.firstdatarow:totalrows(ci)
-        localrow = lr - ci.firstdatarow + 1
+    tape, rowfirst, rowstartrel, ext = ci.tape, ci.rowfirst, ci.rowstartrel, ci.ext
+    start, skip, fdr, total = ci.start, ci.delimskip, ci.firstdatarow, totalrows(ci)
+    @inbounds first = fdr <= total ? Int(rowfirst[fdr]) : 0
+    @inbounds for lr in fdr:total
+        rowlo = first
+        nextr = Int(rowfirst[lr + 1])
+        first = nextr
+        localrow = lr - fdr + 1
         mask !== nothing && !mask[maskbase + localrow] && continue
         localrow > reportlimit && continue
-        sp = fieldspan(ci, lr, j)
+        sp = _span(start, tape, rowstartrel, ext, skip, rowlo, nextr, lr, j)
         sp === nothing && continue
         _, len = sp
         len == 0 && continue
@@ -2976,7 +3097,8 @@ function _selectpositions(select, drop, names::Vector{Symbol};
         throw(ArgumentError("function-typed select/drop is retired; pass a list, " *
                             "a Regex, or use Tables.Scan for expressions"))
     if spec isa Regex
-        matched = [nm for nm in names if occursin(spec, String(nm))]
+        re = spec   # the comprehension captures a single-assignment name
+        matched = [nm for nm in names if occursin(re, String(nm))]
         select !== nothing && isempty(matched) &&
             throw(ArgumentError("select regex $spec does not match any column"))
         spec = matched
@@ -3078,6 +3200,44 @@ end
 
 @inline _defaultchunkbytes(nbytes::Int, nthreads::Int=Threads.nthreads()) =
     clamp(cld(nbytes, 4 * nthreads), 1 << 16, 1 << 20)
+
+# Split rows 1:n into contiguous ranges of at least `minrows` and run
+# `f(lo, hi)` on each in its own task (serially when `parallel` is false or
+# the column is short). Post-parse passes that touch every cell of a long
+# column (string materialization, string-type conversion) scale this way.
+const _ROWS_PER_TASK = 1 << 16
+function _rowranges(f, n::Int, parallel::Bool=true, minrows::Int=_ROWS_PER_TASK)
+    nt = parallel ? clamp(n ÷ minrows, 1, Threads.nthreads()) : 1
+    if nt <= 1
+        n > 0 && f(1, n)
+        return
+    end
+    _spawnall(1:nt) do t
+        lo = 1 + (t - 1) * n ÷ nt
+        hi = t * n ÷ nt
+        f(lo, hi)
+    end
+    return
+end
+
+# One task per item, and a failure surfaces as the task's own exception (an
+# over-long InlineString value is an ArgumentError to the caller, not a
+# TaskFailedException). For post-parse conversions, whose failures are user
+# errors, not internal ones.
+function _spawnall(f, items)
+    try
+        @sync for x in items
+            @wkspawn f(x)
+        end
+    catch e
+        rethrow(_unwrapfailure(e))
+    end
+    return
+end
+_unwrapfailure(e) = e
+_unwrapfailure(e::CompositeException) =
+    isempty(e.exceptions) ? e : _unwrapfailure(first(e.exceptions))
+_unwrapfailure(e::TaskFailedException) = _unwrapfailure(e.task.result)
 
 # Run work with no more than `tasklimit` Julia tasks. Do not start one task for
 # each chunk. A stored index can have more chunks than a later `ntasks=N`
@@ -3240,6 +3400,15 @@ Base.@nospecializeinfer function _parse(buf::Vector{UInt8}, d::Dialect, baseopts
             indexone!(allchunks[k], buf, d, sc)
             indexed[k] = true
         end
+    end
+    # A comment row held a quote byte: the parallel plan and the fast scan
+    # assumed none. Rebuild in file order with the scalar scanner.
+    if index === nothing && commentaware(d) && !d.commentquotes && !d.lenient &&
+       any(ci -> ci.commentquote, allchunks)
+        return _parse(buf, withcommentquotes(d), baseopts, :scalar, tm, chunkbytes, parallel,
+                      tasklimit, maxproblems, on_error, validate,
+                      reportstructural, nsample, limit, header, types, select, colopts,
+                      columnplan, rowmask, nothing)
     end
     # A quote that did not start its field makes the toggle scan (and the
     # parity planner behind it) unsound: rows may have merged into one cell.
@@ -3525,10 +3694,12 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ncols::Int,
                 break
             end
             sp = fieldspan(ci, conflict, j)::Tuple{Int, Int}
-            newT = promote_kernel(T, detecttype(buf, sp[1], sp[2], _copts(colopts, opts, j)))
-            newT = newT === T ? String : newT  # a conflicting value must move the type
+            detected = promote_kernel(T, detecttype(buf, sp[1], sp[2], _copts(colopts, opts, j)))
+            # single assignment: the lock closure captures it, and a captured
+            # local that is reassigned is boxed (and shared across tasks)
+            promoT = detected === T ? String : detected   # a conflicting value must move the type
             T = lock(promolock) do
-                promo[j] = _promotemapped(tm, promo[j], newT)
+                promo[j] = _promotemapped(tm, promo[j], promoT)
             end
         end
     end
@@ -3698,18 +3869,22 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
         end
     end
 
-    # adopt the chunks' private string bytes into each final column, in chunk
-    # order (a serial fold keeps buffer indices deterministic); no copy
+    # adopt the chunks' private string bytes into each final column: chunk k's
+    # segment wrote its long cells with payload buffer index 1 + k, so the
+    # fold stores each segment's bytes at that slot (no copy, no repoint pass;
+    # a chunk without long cells leaves an empty placeholder)
     final = Type[promo[j] for j in 1:ncols]
     for j in allocjs
         final[j] === String || continue
         scol = finals[j]
         scol isa StringColumn || continue
+        adopted = scol.adopted
+        resize!(adopted, nch)
+        fill!(adopted, EMPTY_BYTES)
         for k in 1:nch
             seg = segments[k][j]
             seg isa StringColumn || continue
-            rhi = k < nch ? rowbases[k + 1] : ndata
-            _adopt!(scol, seg, (rowbases[k] + 1):rhi)
+            adopted[k] = seg.extra
             segments[k][j] = nothing
         end
     end
@@ -3816,7 +3991,7 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
                 # in chunk order after the wave
                 scol = dest::StringColumn
                 hi >= lo && _fillslice!(scol, lo, hi)
-                chunkcol = StringColumn(scol.payloads, scol.e, scol.cq)
+                chunkcol = StringColumn(scol.payloads, scol.e, scol.cq, 1 + k)
                 conflict = parsecolchunk!(chunkcol, buf, ci, j, rowbase,
                                           _copts(colopts, opts, j),
                                           userprovided[j], log, 0, nothing, 0, reportlimit)
@@ -3864,12 +4039,16 @@ function redirect!(chunks, final, finals, segtypes,
     dest = finals[j]
     hi > rowbase && _fillslice!(dest, rowbase + 1, hi)
     if dest isa StringColumn
-        # several stale chunks re-parse at once: own bytes privately, then
-        # adopt them into the final under its lock
-        chunkcol = StringColumn(dest.payloads, dest.e, dest.cq)
+        # several stale chunks re-parse at once: each owns its bytes privately
+        # under its chunk slot, sized by the direct wave's fold
+        chunkcol = StringColumn(dest.payloads, dest.e, dest.cq, 1 + k)
         conflict = parsecolchunk!(chunkcol, buf, ci, j, rowbase, _copts(colopts, opts, j),
                                   userprovided[j], log, 0, nothing, 0, reportlimit)
-        _adopt!(dest, chunkcol, (rowbase + 1):hi)
+        lock(dest.lock) do
+            length(dest.adopted) >= k ||
+                error("internal error: string final has no buffer slot for chunk $k")
+            dest.adopted[k] = chunkcol.extra
+        end
     else
         conflict = parsecolchunk!(dest, buf, ci, j, rowbase, _copts(colopts, opts, j),
                                   userprovided[j], log, 0, nothing, 0, reportlimit)

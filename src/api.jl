@@ -527,12 +527,131 @@ end
 
 # byte offset of raw structural row `n` (1-based from `datastart`)
 function _rawrowoffset(buf::Vector{UInt8}, d::Dialect, datastart::Int, n::Int)
+    n <= 1 && return datastart
+    datastart > length(buf) && return _saturatedinc(length(buf))
+    _fastrowcount(d) && return _skiprowends(buf, d, datastart, n - 1)
     off = datastart
     for _ in 1:(n - 1)
         off > length(buf) && return _saturatedinc(length(buf))
         off = nextrowstart(buf, off, length(buf), d, false, true)
     end
     return off
+end
+
+# Row positioning (`skipto`, numbered headers, `footerskip`) walks raw rows
+# from the anchor. Under standard quote rules without comment rows, the walk
+# counts row endings outside quoted fields 64 bytes at a time with the fast
+# scanner's masks; the byte-at-a-time walk stays for the other dialects.
+_fastrowcount(d::Dialect) = parityclean(d) && !commentaware(d)
+
+# Row-ending events outside quoted fields in the 64-byte block at `p`, as
+# (ends, quotes, crlast). `inq` is the quote state entering the block;
+# `pairskip` drops a leading LF that pairs with the previous block's final CR,
+# and `crlast` reports a CR row ending at the block's last byte.
+@inline function _rowendblock(p::Ptr{UInt8}, quoted::Bool, oq::UInt8, inq::Bool, pairskip::Bool)
+    q64 = quoted ? byte_mask_vec(p, oq) : zero(UInt64)
+    cr64 = byte_mask_vec(p, CR)
+    lf64 = byte_mask_vec(p, LF)
+    inmask = prefix_xor64(q64)
+    inq && (inmask = ~inmask)
+    ends = (cr64 | lf64) & ~inmask
+    ends &= ~(lf64 & (cr64 << 1))          # the LF of a CR LF pair
+    pairskip && (ends &= ~(lf64 & one(UInt64)))   # ... split across two blocks
+    crlast = ((ends >> 63) & (cr64 >> 63)) != zero(UInt64)
+    return ends, q64, crlast
+end
+
+# The byte after the `k`-th row ending at or after `from` (`from` starts
+# outside quotes), or `length(buf) + 1` when the input has fewer.
+function _skiprowends(buf::Vector{UInt8}, d::Dialect, from::Int, k::Int)
+    len = length(buf)
+    pos = from
+    inq = false
+    pairskip = false
+    remaining = k
+    GC.@preserve buf begin
+        p = pointer(buf)
+        @inbounds while pos + 63 <= len && remaining > 0
+            ends, q64, crlast = _rowendblock(p + pos - 1, d.quoted, d.oq, inq, pairskip)
+            c = count_ones(ends)
+            if c >= remaining
+                for _ in 2:remaining          # keep the remaining-th set bit
+                    ends &= ends - one(UInt64)
+                end
+                tz = trailing_zeros(ends)
+                nxt = pos + tz + 1
+                buf[pos + tz] == CR && nxt <= len && buf[nxt] == LF && (nxt += 1)
+                return nxt
+            end
+            remaining -= c
+            pairskip = crlast
+            inq ⊻= isodd(count_ones(q64))
+            pos += 64
+        end
+    end
+    pairskip && pos <= len && @inbounds(buf[pos]) == LF && (pos += 1)
+    while remaining > 0 && pos <= len
+        pos = nextrowstart(buf, pos, len, d, inq)
+        inq = false
+        remaining -= 1
+    end
+    return min(pos, len + 1)
+end
+
+# Raw rows from `from` to the end, as the byte-at-a-time walk counts them: a
+# final row without a terminator counts, an input ending on one does not add
+# an empty row.
+function _countrows(buf::Vector{UInt8}, d::Dialect, from::Int)
+    len = length(buf)
+    from > len && return 0
+    pos = from
+    inq = false
+    pairskip = false
+    total = 0
+    lastnext = 0        # the byte after the last row ending seen
+    GC.@preserve buf begin
+        p = pointer(buf)
+        @inbounds while pos + 63 <= len
+            ends, q64, crlast = _rowendblock(p + pos - 1, d.quoted, d.oq, inq, pairskip)
+            c = count_ones(ends)
+            if c > 0
+                total += c
+                hb = 63 - leading_zeros(ends)
+                lastnext = pos + hb + 1
+                buf[pos + hb] == CR && lastnext <= len && buf[lastnext] == LF && (lastnext += 1)
+            end
+            pairskip = crlast
+            inq ⊻= isodd(count_ones(q64))
+            pos += 64
+        end
+    end
+    pairskip && pos <= len && @inbounds(buf[pos]) == LF && (pos += 1)
+    oq, cq, quoted = d.oq, d.cq, d.quoted
+    @inbounds while pos <= len             # standard rules: oq == cq == escape
+        b = buf[pos]
+        if inq
+            if b == cq
+                if pos < len && buf[pos + 1] == cq
+                    pos += 2
+                else
+                    inq = false
+                    pos += 1
+                end
+            else
+                pos += 1
+            end
+        elseif quoted && b == oq
+            inq = true
+            pos += 1
+        elseif b == LF || b == CR
+            total += 1
+            pos += 1 + (b == CR && pos < len && buf[pos + 1] == LF)
+            lastnext = pos
+        else
+            pos += 1
+        end
+    end
+    return total + ((total == 0 || lastnext <= len) ? 1 : 0)
 end
 
 # advance chunks past every row starting before `byteoff`
@@ -562,6 +681,11 @@ function _footeroffset(buf::Vector{UInt8}, d::Dialect, rawstart::Int, footerskip
     # Count first, then locate the first footer row. This is two structural
     # scans but constant memory; a ring of `footerskip` Ints lets a valid public
     # option allocate many GiB before discovering that the file has fewer rows.
+    if _fastrowcount(d)
+        nrows = _countrows(buf, d, rawstart)
+        footerskip >= nrows && return rawstart
+        return _skiprowends(buf, d, rawstart, nrows - footerskip)
+    end
     nrows = 0
     rowstart = rawstart
     while rowstart <= length(buf)
@@ -712,13 +836,13 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
                    header isa Integer ? header :
                    header isa AbstractVector{<:Integer} && !isempty(header) ? last(header) : 0
     buf = resolvesource(source; buffer_in_memory, prefetch)
-    d = Dialect(; delim=delim === nothing ? _probedelim(kw) : delim,
-                quotechar=get(kw, :quotechar, '"'),
-                openquotechar=get(kw, :openquotechar, nothing),
-                closequotechar=get(kw, :closequotechar, nothing),
-                escapechar=get(kw, :escapechar, nothing), quoted=get(kw, :quoted, true),
-                comment=get(kw, :comment, nothing), ignoreemptyrows=get(kw, :ignoreemptyrows, true),
-                ignorerepeated=get(kw, :ignorerepeated, false), lenient)
+    d0 = Dialect(; delim=delim === nothing ? _probedelim(kw) : delim,
+                 quotechar=get(kw, :quotechar, '"'),
+                 openquotechar=get(kw, :openquotechar, nothing),
+                 closequotechar=get(kw, :closequotechar, nothing),
+                 escapechar=get(kw, :escapechar, nothing), quoted=get(kw, :quoted, true),
+                 comment=get(kw, :comment, nothing), ignoreemptyrows=get(kw, :ignoreemptyrows, true),
+                 ignorerepeated=get(kw, :ignorerepeated, false), lenient)
     fastindex = get(kw, :fastindex, true)::Bool
     scanner = get(kw, :scanner, :auto)::Symbol
     # The first row that MATTERS — the (first) header row, or `skipto` when
@@ -733,15 +857,20 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
                skipto !== nothing ? _saturatedint(skipto) : 1
     rawstart = _datastart(buf)
     anchoroff = firstrow > 1 ? _physicallineoffset(buf, rawstart, firstrow) : rawstart
-    if delim === nothing
+    # `d` is assigned once: the `rowoff` closure below captures it, and a
+    # captured local that is reassigned is boxed.
+    d = if delim === nothing
         get(kw, :ignorerepeated, false) &&
             throw(ArgumentError("auto-delimiter detection is not supported with " *
                                 "ignorerepeated=true; pass delim explicitly"))
         # Sniff from the first row that matters: skipped prefix rows are junk
         # and must not vote on the delimiter (a one-line "skip me" preamble
         # otherwise elects the space).
-        delim, ir = _sniffdelim(buf, samplebytes, anchoroff, d, fastindex, scanner)
-        d = withdelim(d, UInt8(delim), ir || d.ignorerepeated)
+        sniffed, ir = _sniffdelim(buf, samplebytes, anchoroff, d0, fastindex, scanner)
+        delim = sniffed
+        withdelim(d0, UInt8(sniffed), ir || d0.ignorerepeated)
+    else
+        d0
     end
     # missingstring → kernel sentinels ("" entries are inert: empty is always missing)
     sentinels = _sentinels(missingstring)
@@ -976,7 +1105,7 @@ Base.@nospecializeinfer function _file(@nospecialize(source), @nospecialize(type
         # pool keys name the scan's OUTPUT columns (the request already renamed
         # and reordered them)
         t = _poolcolumns(t, _resolvepool(pool, names(t), length(names(t)); validate); parallel)
-        t = _finishstrings(t, stringtype, requests)
+        t = _finishstrings(t, stringtype, requests; parallel)
         downcast && (t = _downcast(t))
         return File(nm, t, Dict(n => j for (j, n) in enumerate(names(t))))
     end
@@ -1030,7 +1159,7 @@ Base.@nospecializeinfer function _filefromprepared(p::Prepared, nm::String, @nos
     t, firstproblem = _narrowtypes(t, plan, p.bi.chunks, maxproblems, firstproblem)
     _reportproblems(t, on_error, firstproblem, nm)
     t = _poolcolumns(t, poolspecs[plan.positions]; parallel)
-    t = _finishstrings(t, stringtype, _requestedstrings(plan))
+    t = _finishstrings(t, stringtype, _requestedstrings(plan); parallel)
     downcast && (t = _downcast(t))
     return File(nm, t, Dict(n => j for (j, n) in enumerate(names(t))))
 end
@@ -1063,18 +1192,30 @@ function _requestedstrings(plan::ColumnPlan, sources=plan.sources)
     return Union{Nothing, Type}[_requestedstring(plan.columns[j]) for j in sources]
 end
 
-function _finishstrings(t::ParsedTable, stringtype::Type, requests)
+function _finishstrings(t::ParsedTable, stringtype::Type, requests; parallel::Bool=true)
     requests === nothing && stringtype === DataString && return _pooledarrays(t)
     any(c -> c isa PooledColumn || c isa DataStringVector, t.columns) || return t
     cols = AbstractVector[t.columns...]
+    jobs = Int[]
     for j in eachindex(cols)
+        S = requests === nothing ? stringtype : something(requests[j], stringtype)
+        c = cols[j]
+        (c isa PooledColumn || (c isa DataStringVector && S !== DataString)) && push!(jobs, j)
+    end
+    # columns convert independently, and a long column splits its rows
+    convertone = j -> begin
         S = requests === nothing ? stringtype : something(requests[j], stringtype)
         c = cols[j]
         if c isa PooledColumn
             cols[j] = _topooledarray(c, S === DataString ? String : S)
-        elseif c isa DataStringVector && S !== DataString
-            cols[j] = _materializecolumn(S, c)
+        elseif c isa DataStringVector
+            cols[j] = _materializecolumn(S, c, parallel)
         end
+    end
+    if parallel && length(jobs) > 1
+        _spawnall(convertone, jobs)
+    else
+        foreach(convertone, jobs)
     end
     return ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
 end
@@ -1414,19 +1555,19 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
         throw(ArgumentError("skipto=$skipto must be past the header field $rawnamefield"))
     buf = resolvesource(source; buffer_in_memory, prefetch)
     dialectkw = _pickkwargs(kw, _DIALECTKW)
-    valuekw = _pickkwargs(kw, _VALUEKW)
-    dfdict = nothing
-    if haskey(valuekw, :dateformat) && valuekw.dateformat isa AbstractDict
-        dfdict = valuekw.dateformat
-        valuekw = NamedTuple(kv for kv in pairs(valuekw) if kv.first != :dateformat)
-    end
-    d = Dialect(; delim, dialectkw...)
-    opts = makevalueopts(d; sentinels=_sentinels(missingstring), valuekw...)
-    bi = index(buf, d; datastart=_datastart(buf), parallel=false)
-    if bi.barequote   # a quote that did not start its field: use the lenient rule
-        d = withlenient(d)
-        bi = index(buf, d; datastart=_datastart(buf), parallel=false)
-    end
+    valuekw0 = _pickkwargs(kw, _VALUEKW)
+    # single assignments: the per-column option comprehension captures `valuekw`
+    dfdict = haskey(valuekw0, :dateformat) && valuekw0.dateformat isa AbstractDict ?
+             valuekw0.dateformat : nothing
+    valuekw = dfdict === nothing ? valuekw0 :
+              NamedTuple(kv for kv in pairs(valuekw0) if kv.first != :dateformat)
+    d0 = Dialect(; delim, dialectkw...)
+    opts = makevalueopts(d0; sentinels=_sentinels(missingstring), valuekw...)
+    bi0 = index(buf, d0; datastart=_datastart(buf), parallel=false)
+    # a quote that did not start its field: use the lenient rule (single
+    # assignments: the per-column option comprehension captures `d`)
+    d = bi0.barequote ? withlenient(d0) : d0
+    bi = bi0.barequote ? index(buf, d; datastart=_datastart(buf), parallel=false) : bi0
     rows = Tuple{Any, Int}[]
     for ci in bi.chunks, lr in ci.firstdatarow:totalrows(ci)
         push!(rows, (ci, lr))
@@ -1701,31 +1842,62 @@ end
 # version dispatched per element and ran 10-20× slower than the parse).
 function _narrowcolumn(::Type{T}, c::AbstractVector, j::Int, chunks, log::ProblemLog,
                        problemrowbase::Int, sourcerows) where {T}
-    out = Vector{Union{T, Missing}}(undef, length(c))
+    n = length(c)
     # The parser widens a user-declared Union{Missing,T} before this step.
     # Preserve that declaration even when every value is present.
-    anymissing = Missing <: eltype(c)
+    if !(Missing <: eltype(c))
+        # every value present: convert straight into the Vector{T}; the first
+        # out-of-range integer switches to the missing-capable loop below
+        out = Vector{T}(undef, n)
+        bad = _narrowfill!(out, c)
+        bad == 0 && return out
+        uout = Vector{Union{T, Missing}}(undef, n)
+        copyto!(uout, 1, out, 1, bad - 1)
+        return _narrowreport!(T, uout, c, bad, j, chunks, log, problemrowbase, sourcerows)
+    end
+    return _narrowreport!(T, Vector{Union{T, Missing}}(undef, n), c, 1, j, chunks, log,
+                          problemrowbase, sourcerows)
+end
+
+# Convert every value of `c` into `out` until one falls outside `T`'s range;
+# return that index, or 0 when the whole column converted.
+function _narrowfill!(out::Vector{T}, c::AbstractVector) where {T}
+    @inbounds for i in eachindex(c)
+        x = c[i]
+        T <: Integer && !(typemin(T) <= x <= typemax(T)) && return i
+        out[i] = convert(T, x)
+    end
+    return 0
+end
+
+# Fill `out[from:end]` from `c`; an out-of-range integer becomes `missing` and
+# reports a problem. The message is formatted only when the bounded log would
+# retain it, so a column of overflowing values costs no string per cell.
+function _narrowreport!(::Type{T}, out::Vector{Union{T, Missing}}, c::AbstractVector, from::Int,
+                        j::Int, chunks, log::ProblemLog, problemrowbase::Int, sourcerows) where {T}
     chunkidx = 1
     indexedrowbase = 0
-    @inbounds for i in eachindex(c)
+    @inbounds for i in from:length(c)
         x = c[i]
         if x === missing
             out[i] = missing
-            anymissing = true
         elseif T <: Integer && !(typemin(T) <= x <= typemax(T))
             out[i] = missing
-            anymissing = true
             sourcei = sourcerows === nothing ? i : sourcerows[i]
             problemrow, problempos, chunkidx, indexedrowbase =
                 _narrowlocation(chunks, sourcei, j, problemrowbase,
                                 chunkidx, indexedrowbase)
-            pushproblem!(log, problemrow, j, problempos, :invalid_value,
-                           "value $x does not fit $T")
+            if wantsproblem(log, problemrow, j, problempos)
+                pushproblem!(log, problemrow, j, problempos, :invalid_value,
+                             "value $x does not fit $T")
+            else
+                log.dropped += 1
+            end
         else
             out[i] = convert(T, x)
         end
     end
-    return anymissing ? out : convert(Vector{T}, out)
+    return out
 end
 
 # downcast=true: Int64 columns shrink to the smallest of Int8/Int16/Int32 that
@@ -1817,7 +1989,22 @@ _checkstringtype(T) =
 # reconstruction, unsafe_string per cell; a per-cell String() broadcast ran the
 # generic AbstractString path and was a measured 55–110 MiB/s cliff on
 # string-heavy shapes.
+_materializecolumn(::Type{S}, col::DataStringVector, parallel::Bool) where {S} =
+    _materializecolumn(S, col)
 _materializecolumn(::Type{String}, col::DataStringVector) = materialize(col)
+# String allocation scales across tasks: a string-heavy file otherwise spent
+# several times its parse time materializing on one task.
+function _materializecolumn(::Type{String}, col::DataStringVector, parallel::Bool)
+    n = length(col)
+    (parallel && n > _ROWS_PER_TASK) || return materialize(col)
+    ELT = eltype(col)
+    out = Vector{ELT === DataString ? String : Union{String, Missing}}(undef, n)
+    _rowranges(n, parallel) do lo, hi
+        part = materialize(_stringvector(ELT, col.payloads[lo:hi], col.buffers))
+        copyto!(out, lo, part, 1, hi - lo + 1)
+    end
+    return out
+end
 function _materializecolumn(::Type{Symbol}, col::DataStringVector)
     n = length(col)
     Missing <: eltype(col) || return Symbol[Symbol(col[i]) for i in 1:n]
@@ -2388,7 +2575,8 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     stringrequests = _settlestringrequests(plan, seedtypes, maxlens, stringtype)
     unclosedquote = p.bi.unclosedquote && (p.limit === nothing || p.limit >= fullrows)
     inner = Batches(p.buf, chunks, p.names[plan.sources], plan, seedtypes,
-                    allowmissing, p.d, capturecap, unclosedquote)
+                    allowmissing, p.d, capturecap, unclosedquote,
+                    get(kw, :parallel, nt > 1) ? nt : 1)
     return Chunks(name, inner, p.headerlog, maxproblems, plan, on_error,
                   stringtype, stringrequests, poolspec, Ref(false))
 end

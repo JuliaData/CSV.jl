@@ -437,9 +437,14 @@ end
     # including CRLF rows and every tiny sequential/parallel chunk geometry.
     poisoned = "# unmatched \" quote,comma\r\na,b\r\n1,2\r\n"
     @test idxall(poisoned; comment="#") == [["a", "b"], ["1", "2"]]
+    # Comment rows keep the fast scanners and the parallel plan; the quote
+    # inside this comment row is detected during assembly and the index is
+    # rebuilt serially, so every variant still agrees.
     labels = first.(idxvariants(poisoned; comment="#"))
-    @test labels == ["scalar/seq";
-                     [x for cb in (3, 7, 16, 64) for x in ("scalar/seq$cb", "scalar/par$cb")]]
+    @test labels == ["scalar/seq"; "swar/seq"; "vec/seq";
+                     [x for cb in (3, 7, 16, 64)
+                        for x in ("scalar/seq$cb", "scalar/par$cb", "swar/seq$cb",
+                                  "swar/par$cb", "vec/seq$cb", "vec/par$cb")]]
     # A comment marker at a physical line start inside a quoted multiline field
     # is content because the structural row has not ended.
     @test idxall("a,b\n\"top\n# content \"\" quote\nbottom\",1\n"; comment="#") ==
@@ -1997,6 +2002,96 @@ end
         end
     end
     @test seen == 1:64
+end
+
+@testset "fast raw-row positioning matches the byte-at-a-time walk" begin
+    # The reference is the walk `_rawrowoffset` and `_footeroffset` keep for
+    # dialects without the fast path (comment rows, separate escapes).
+    function refoffset(buf, d, from, n)
+        off = from
+        for _ in 1:(n - 1)
+            off > length(buf) && return length(buf) + 1
+            off = K.nextrowstart(buf, off, length(buf), d, false, true)
+        end
+        return off
+    end
+    function refcount(buf, d, from)
+        nrows = 0
+        rowstart = from
+        while rowstart <= length(buf)
+            nrows += 1
+            rowstart = K.nextrowstart(buf, rowstart, length(buf), d, false, true)
+        end
+        return nrows
+    end
+    function reffooter(buf, d, rawstart, footerskip)
+        footerskip == 0 && return length(buf) + 1
+        nrows = refcount(buf, d, rawstart)
+        footerskip >= nrows && return rawstart
+        target = nrows - footerskip + 1
+        seen = 0
+        rowstart = rawstart
+        while rowstart <= length(buf)
+            seen += 1
+            seen == target && return rowstart
+            rowstart = K.nextrowstart(buf, rowstart, length(buf), d, false, true)
+        end
+        return rawstart
+    end
+    rng = MersenneTwister(0x5f00)
+    alphabet = UInt8['a', ',', '"', '\n', '\r', ' ']
+    dialects = (K.Dialect(), K.Dialect(quoted=false))
+    @test all(K._fastrowcount, dialects)
+    @test !K._fastrowcount(K.Dialect(comment="#"))
+    @test !K._fastrowcount(K.Dialect(escapechar='\\'))
+    for trial in 1:500
+        n = trial <= 20 ? trial :
+            trial % 5 == 0 ? rand(rng, (62, 63, 64, 65, 127, 128, 129, 191, 192, 193)) :
+            rand(rng, 0:300)
+        buf = rand(rng, alphabet, n)
+        # dense terminators exercise CR LF pairs at block edges
+        trial % 3 == 0 && (buf = rand(rng, UInt8['a', '\r', '\n', '"'], n))
+        for d in dialects
+            for from in unique((1, min(n, 2), max(1, n ÷ 2), n, n + 1))
+                @test K._countrows(buf, d, from) == refcount(buf, d, from)
+                for k in (1, 2, 3, 5, 17, 64, 65, 200)
+                    @test K._rawrowoffset(buf, d, from, k) == refoffset(buf, d, from, k)
+                end
+            end
+            for fs in (0, 1, 2, 7, 64, 65, 1000)
+                @test K._footeroffset(buf, d, 1, fs) == reffooter(buf, d, 1, fs)
+            end
+        end
+    end
+end
+
+@testset "comment rows keep the fast scanners; a quote inside one rebuilds serially" begin
+    d = K.Dialect(comment="#")
+    @test K.swareligible(d)
+    @test K.resolvescanner(d, true, :auto) === :vec
+    @test !K.swareligible(K.withcommentquotes(d))
+    @test K.resolvescanner(K.withcommentquotes(d), true, :auto) === :scalar
+    clean = "# header, with, delims\na,b\n1,2\n# mid\n\"x\ny\",3\n"
+    @test idxall(clean; comment="#") == [["a", "b"], ["1", "2"], ["\"x\ny\"", "3"]]
+    poison = "# it's \"quoted\" here\na,b\n#\"\n1,2\n\"x\ny\",3\n# \"\"\"\n4,5\n\"6\",\"# not a comment\"\n"
+    expected = [["a", "b"], ["1", "2"], ["x\ny", "3"], ["4", "5"], ["6", "# not a comment"]]
+    # raw rows keep their quotes; parsed values drop them
+    @test idxall(poison; comment="#") ==
+          [["a", "b"], ["1", "2"], ["\"x\ny\"", "3"], ["4", "5"], ["\"6\"", "\"# not a comment\""]]
+    buf = Vector{UInt8}(codeunits(poison))
+    for cb in (1, 3, 7, 16, 64, 65, 200), par in (false, true), sc in (:auto, :vec, :swar, :scalar)
+        t = K.parse(buf; comment="#", header=false, types=String, chunkbytes=cb,
+                    parallel=par, scanner=sc)
+        @test [String.(c) for c in K.columns(t)] == [first.(expected), last.(expected)]
+        @test isempty(K.problems(t))
+    end
+    # a quote-free comment file indexes identically on every scanner and plan
+    many = join(("# note $i\n$i,$(i * 2)\n" for i in 1:3000)) * "# tail\n"
+    ref = K.parse(Vector{UInt8}(many); comment="#", header=false, scanner=:scalar, parallel=false)
+    for cb in (64, 65, 1000, 4096), sc in (:vec, :swar)
+        t = K.parse(Vector{UInt8}(many); comment="#", header=false, chunkbytes=cb, scanner=sc)
+        @test K.columns(t) == K.columns(ref)
+    end
 end
 
 end # top-level testset
