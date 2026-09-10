@@ -69,10 +69,27 @@ end
                               ("1.201e-1", missing), ("1e-10000000", missing),
                               ("1e10000000", missing), ("1e+", missing),
                               ("+", missing), (".", missing), ("1.2.3", missing),
-                              ("1e-2x", missing)]
+                              ("1e-2x", missing),
+                              # more digits than Int64 holds: exact through the wide path
+                              ("1.2000000000000000000000", D("1.20")),
+                              ("0.000000000000000000001e21", D("1.00")),
+                              ("1.2000000000000000000001", missing),
+                              # the last values that fit 18 digits at scale 2
+                              ("9999999999999999.99", D("9999999999999999.99")),
+                              ("-9999999999999999.99", D("-9999999999999999.99")),
+                              ("10000000000000000.00", missing),
+                              ("99999999999999999.9", missing)]
         f = CSV.File(IOBuffer("x\n$token\n"); delim=',', types=D, on_error=:collect)
         @test isequal(only(f.x), expected)
     end
+    # storage types narrower and wider than Int64
+    D9 = DataDecimals.Decimal{9, 2, Int32}
+    f = CSV.File(IOBuffer("x\n1234567.89\n9999999.99\n21474836.48\n1.234\n"); types=D9, on_error=:collect)
+    @test isequal(collect(f.x), [D9("1234567.89"), D9("9999999.99"), missing, missing])
+    D38 = DataDecimals.Decimal{38, 4, Int128}
+    wide = "12345678901234567890123456789012.3456"
+    f = CSV.File(IOBuffer("x\n$wide\n$(wide)7\n"); types=D38, on_error=:collect)
+    @test isequal(collect(f.x), [D38(wide), missing])
     @test eltype(CSV.File(IOBuffer("x\n1.20\nNA\n2.30\n"); types=D, missingstring="NA").x) === Union{Missing,D}
     @test eltype(CSV.File(IOBuffer("x\n\"1.20\"\n\"2.30\"\n"); types=D).x) === D
     decimalvalue = CSV.File(IOBuffer("x\n1.234\n2.5\n"); types=DataDecimals.DecimalValue{Int64})
