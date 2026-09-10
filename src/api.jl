@@ -1636,12 +1636,13 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
         push!(rows, (ci, lr))
     end
     ncols = length(rows)
-    n = ncols == 0 ? 0 :
-        maximum(nfields(r[1], r[2]) - (startf - 1) for r in rows)
-    n = max(n, 0)
-    limit === nothing || (n = limit >= n ? n : Int(limit))
-    _tname(j, r) = (nm = hasnames ? _cellstring(buf, r[1], r[2], namefield, opts) : "";
-                    isempty(nm) ? Symbol("Column", j) : Symbol(nm))
+    # one assignment: the column comprehension below captures `n`
+    longest = ncols == 0 ? 0 :
+              max(0, maximum(nfields(r[1], r[2]) - (startf - 1) for r in rows))
+    n = limit === nothing || limit >= longest ? longest : Int(limit)
+    # `cell` is local to the closure; the source name below is a different variable
+    _tname(j, r) = (cell = hasnames ? _cellstring(buf, r[1], r[2], namefield, opts) : "";
+                    isempty(cell) ? Symbol("Column", j) : Symbol(cell))
     names = explicitnames !== nothing ? copy(explicitnames) :
             Symbol[_tname(j, r) for (j, r) in enumerate(rows)]
     explicitnames !== nothing && length(names) != ncols &&
