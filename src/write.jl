@@ -203,7 +203,9 @@ end
 @inline function _needsquotebytes(o::WriteOpts, p::Ptr{UInt8}, n::Int)
     d, oq, cq = o.delim, o.oq, o.cq
     k = 0
-    while k + 8 <= n
+    # short cells (the common case) stay on the byte loop: one word step
+    # costs about as much as eight byte tests
+    while n >= 16 && k + 8 <= n
         w = unsafe_load(Ptr{UInt64}(p + k))
         m = _eqmask8_c(w, d) | _eqmask8_c(w, oq) | _eqmask8_c(w, cq) |
             _eqmask8_c(w, UInt8('\n')) | _eqmask8_c(w, UInt8('\r'))
@@ -1228,12 +1230,14 @@ Base.@constprop :aggressive function _emitrowblocks!(io, cols::_WriterColumns, n
         return
     end
 
-    # one buffer per ring slot: a block is emitted before its slot renders
-    # the next one, so the renderers never allocate output storage again
-    buffers = [_WriteBuffer() for _ in 1:min(workers, nblocks)]
+    # Each block renders into a fresh buffer. Reusing one buffer per ring slot
+    # measured 5-20% slower on every sink (a buffer written on one core, read
+    # by the emitting task, then written on another core pays for its cache
+    # lines' ownership each time), and the ordered scheduler bounds the live
+    # buffers to the ring size either way.
     renderblock = function (block, slot)
         lo, hi = bounds(block)
-        return _renderblock(cols, lo, hi, o, buffers[slot])
+        return _renderblock(cols, lo, hi, o)
     end
     reserved = Ref(false)
     emitblock = function (rendered)
@@ -1255,14 +1259,13 @@ function _emitmembers!(io, cols::_WriterColumns, nrows::Int, blockrows::Int, o::
                        ntasks::Int, prefix::Vector{UInt8})
     nblocks = max(cld(nrows, blockrows), 1)   # an empty table still emits its prefix
     workers = min(ntasks, Threads.nthreads(), nblocks)
-    buffers = [_WriteBuffer() for _ in 1:workers]
-    codecs = [GzipCompressor() for _ in 1:workers]
+    codecs = [GzipCompressor() for _ in 1:workers]   # one reusable compressor per ring slot
     foreach(CodecZlib.TranscodingStreams.initialize, codecs)
     try
         renderblock = function (block, slot)
             lo = (block - 1) * blockrows + 1
             hi = min(block * blockrows, nrows)
-            out = _renderblock(cols, lo, hi, o, buffers[slot], block == 1 ? prefix : EMPTY_BYTES)
+            out = _renderblock(cols, lo, hi, o, _WriteBuffer(), block == 1 ? prefix : EMPTY_BYTES)
             resize!(out.bytes, out.len)
             return transcode(codecs[slot], out.bytes)
         end

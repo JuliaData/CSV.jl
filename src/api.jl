@@ -883,9 +883,12 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
     groupmark = get(kw, :groupmark, nothing)::Union{Nothing, Char}
     opts = makevalueopts(d, dfdict === nothing ? dateformat : nothing, decimal,
                          truestrings, falsestrings, stripwhitespace, groupmark, sentinels)
+    # `ntasks` bounds the worker count only. Chunks keep their cache-resident
+    # size: the column loops re-read a chunk once per column, and a chunk of
+    # `len / ntasks` bytes made a 200-column file 3x slower at eight tasks
+    # and 7x slower at one.
     cb = chunkbytes === nothing ?
-         (ntasks === nothing ? _defaultchunkbytes(length(buf)) :
-          min(max(cld(length(buf), ntasks), 1), 1 << 30)) : chunkbytes
+         _defaultchunkbytes(length(buf), something(ntasks, Threads.nthreads())) : chunkbytes
 
     # -- the row window, in RAW rows: header rows, skipto, footerskip ---------
     header isa Integer && !(header isa Bool) &&
