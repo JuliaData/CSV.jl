@@ -1539,10 +1539,12 @@ $LLVM_LOAD64
         }
         attributes #0 = { alwaysinline }"""
 
-@inline function specials_mask_vec(p::Ptr{UInt8}, d::UInt8)::UInt64
+# Bits of the 64 bytes at `p` that equal `a`, `b`, or `c`.
+@inline function threebyte_mask_vec(p::Ptr{UInt8}, a::UInt8, b::UInt8, c::UInt8)::UInt64
     Base.llvmcall((SPECIALS_MASK_VEC_IR, "entry"),
-        UInt64, Tuple{Ptr{UInt8}, UInt8, UInt8, UInt8}, p, d, CR, LF)
+        UInt64, Tuple{Ptr{UInt8}, UInt8, UInt8, UInt8}, p, a, b, c)
 end
+@inline specials_mask_vec(p::Ptr{UInt8}, d::UInt8)::UInt64 = threebyte_mask_vec(p, d, CR, LF)
 
 @inline function byte_mask_vec(p::Ptr{UInt8}, b::UInt8)::UInt64
     Base.llvmcall((BYTE_MASK_VEC_IR, "entry"), UInt64, Tuple{Ptr{UInt8}, UInt8}, p, b)
@@ -1934,45 +1936,73 @@ const QUOTE_CONSUMED = 0x02   # inside, and the next byte is consumed content:
     end
 end
 
+# Transition tables for `quotetransitions`. The three entry states are packed
+# as `s0 + 3 s1 + 9 s2`. A byte's class marks it as an open byte (1), a close
+# byte (2), or an escape byte (4). Index 1 is the escape rule, index 2 the
+# doubling rule.
+const QUOTE_TABLES = let
+    tables = (Vector{UInt8}(undef, 27 * 8), Vector{UInt8}(undef, 27 * 8))
+    for (k, doubling) in enumerate((false, true)), packed in 0:26, cls in 0:7
+        isoq, iscq, ise = (cls & 1) != 0, (cls & 2) != 0, (cls & 4) != 0
+        states = (UInt8(packed % 3), UInt8((packed ÷ 3) % 3), UInt8(packed ÷ 9))
+        next = map(state -> _quotestep(state, isoq, iscq, ise, doubling), states)
+        tables[k][8 * packed + cls + 1] = next[1] + 0x03 * next[2] + 0x09 * next[3]
+    end
+    tables
+end
+
 # Return the exit state of `buf[from:to]` for each entry state, as a tuple
-# indexed by `state + 1`. The machine runs once for all three entry states, and
-# only quote and escape bytes step it: a run of other bytes steps it once.
+# indexed by `state + 1`. One table step moves all three machines. Only quote
+# and escape bytes step them: a run of other bytes steps them once.
 function quotetransitions(buf::Vector{UInt8}, from::Int, to::Int, d::Dialect)::NTuple{3, UInt8}
     oq, cq, e = d.oq, d.cq, d.e
     doubling = e == cq
-    s0, s1, s2 = QUOTE_OUTSIDE, QUOTE_INSIDE, QUOTE_CONSUMED
-    pos = from
+    tab = QUOTE_TABLES[doubling ? 2 : 1]
+    packed = 21               # each entry state maps to itself
+    last = from - 1           # the last quote or escape byte handled
+    i = from
     GC.@preserve buf begin
         p = pointer(buf)
-        @inbounds while pos <= to
-            t = pos
-            while t + 7 <= to
-                w = ltoh(unsafe_load(Ptr{UInt64}(p + t - 1)))
-                m = eqmarks(w, oq) | eqmarks(w, cq) | eqmarks(w, e)
-                if m != zero(UInt64)
-                    t += trailing_zeros(movemask(m))
-                    break
-                end
-                t += 8
+        @inbounds while i + 63 <= to
+            m = threebyte_mask_vec(p + i - 1, oq, cq, e)
+            while m != zero(UInt64)
+                t = i + trailing_zeros(m)
+                t > last + 1 && (packed = Int(tab[8 * packed + 1]))
+                b = buf[t]
+                cls = Int(b == oq) | (Int(b == cq) << 1) | (Int(!doubling && b == e) << 2)
+                packed = Int(tab[8 * packed + cls + 1])
+                last = t
+                m &= m - one(UInt64)
             end
-            while t <= to && !(buf[t] == oq || buf[t] == cq || buf[t] == e)
-                t += 1
+            i += 64
+        end
+        @inbounds while i + 7 <= to
+            w = ltoh(unsafe_load(Ptr{UInt64}(p + i - 1)))
+            m = movemask(eqmarks(w, oq) | eqmarks(w, cq) | eqmarks(w, e))
+            while m != zero(UInt64)
+                t = i + trailing_zeros(m)
+                t > last + 1 && (packed = Int(tab[8 * packed + 1]))
+                b = buf[t]
+                cls = Int(b == oq) | (Int(b == cq) << 1) | (Int(!doubling && b == e) << 2)
+                packed = Int(tab[8 * packed + cls + 1])
+                last = t
+                m &= m - one(UInt64)
             end
-            if t > pos
-                s0 = _quotestep(s0, false, false, false, doubling)
-                s1 = _quotestep(s1, false, false, false, doubling)
-                s2 = _quotestep(s2, false, false, false, doubling)
-            end
-            t > to && break
-            b = buf[t]
-            isoq, iscq, ise = b == oq, b == cq, !doubling && b == e
-            s0 = _quotestep(s0, isoq, iscq, ise, doubling)
-            s1 = _quotestep(s1, isoq, iscq, ise, doubling)
-            s2 = _quotestep(s2, isoq, iscq, ise, doubling)
-            pos = t + 1
+            i += 8
         end
     end
-    return (s0, s1, s2)
+    @inbounds while i <= to
+        b = buf[i]
+        if b == oq || b == cq || b == e
+            i > last + 1 && (packed = Int(tab[8 * packed + 1]))
+            cls = Int(b == oq) | (Int(b == cq) << 1) | (Int(!doubling && b == e) << 2)
+            packed = Int(tab[8 * packed + cls + 1])
+            last = i
+        end
+        i += 1
+    end
+    to > last && (packed = Int(tab[8 * packed + 1]))
+    return (UInt8(packed % 3), UInt8((packed ÷ 3) % 3), UInt8(packed ÷ 9))
 end
 
 # The first row start at or after `from` when `state` is the quote state at
