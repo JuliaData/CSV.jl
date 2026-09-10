@@ -611,7 +611,8 @@ end
     live = Ref(0)
     highwater = Ref(0)
     emitted = Int[]
-    renderblock = function (block)
+    renderblock = function (block, slot)
+        1 <= slot <= 3 || error("slot $slot outside the ring")
         lock(guard) do
             live[] += 1
             highwater[] = max(highwater[], live[])
@@ -631,7 +632,7 @@ end
 
     # A failed ordered block waits for every task that was already started.
     finished = Ref(0)
-    failrender = function (block)
+    failrender = function (block, _)
         try
             block == 1 && error("scheduled failure")
             return UInt8[block]
@@ -829,4 +830,47 @@ end
         @test W._renderblock_direct(cols, 2, 3, opts) == expected
     end
 end
+
+@testset "parallel gzip members, widened narrow integers, in-place float formats, row sources" begin
+    tbl = (a=collect(1:20_000), b=rand(MersenneTwister(1), 20_000),
+           s=["s$(i)" for i in 1:20_000], m=[isodd(i) ? missing : i for i in 1:20_000])
+    plain = str(io -> W.write(io, tbl))
+    for nt in (1, 2, 8)
+        gz = let io = IOBuffer(); W.write(io, tbl; compress=true, ntasks=nt); take!(io) end
+        @test String(transcode(GzipDecompressor, gz)) == plain
+        @test String(read(GzipDecompressorStream(IOBuffer(gz)))) == plain
+        f = CSV.File(gz)
+        @test f.a == tbl.a && f.s == tbl.s && isequal(f.m, tbl.m)
+        # append keeps adding members
+        io = IOBuffer(); W.write(io, tbl; compress=true, ntasks=nt)
+        W.write(io, tbl; compress=true, ntasks=nt, append=true)
+        @test String(transcode(GzipDecompressor, take!(io))) == plain * str(io -> W.write(io, tbl; append=true))
+    end
+    emptygz = let io = IOBuffer(); W.write(io, (a=Int[],); compress=true, bom=true); take!(io) end
+    @test String(transcode(GzipDecompressor, emptygz)) == "\ufeffa\n"
+    # narrow integers render through the Int64 descriptors; transforms still see them
+    nar = (a=Int32[1, -2], b=Union{Missing, Int16}[3, missing], c=UInt8[255, 0],
+           d=UInt64[typemax(UInt64), 1])
+    @test str(io -> W.write(io, nar)) == "a,b,c,d\n1,3,255,18446744073709551615\n-2,,0,1\n"
+    seen = Type[]
+    W.write(devnull, nar; transform=(j, v) -> (push!(seen, typeof(v)); v))
+    @test seen == [Int32, Int16, UInt8, UInt64, Int32, Missing, UInt8, UInt64]
+    @test str(io -> W.write(io, nar; transform=(j, v) -> v isa Integer ? v + one(v) : v)) ==
+          "a,b,c,d\n2,4,0,0\n-1,,1,2\n"
+    # formatted floats: decimal separator and structural bytes in the rendering
+    @test str(io -> W.write(io, (x=[1.5, -2.25],); floatformat="%.2f", delim='.')) ==
+          "x\n\"1.50\"\n\"-2.25\"\n"
+    @test str(io -> W.write(io, (x=[1.5],); floatformat="%.3e", decimal=',', delim=';')) ==
+          "x\n1,500e+00\n"
+    @test str(io -> W.write(io, (x=[1.5, missing],); floatformat="%08.3f")) == "x\n0001.500\n\n"
+    @test_throws ArgumentError W.write(devnull, (x=[1.5],); floatformat="%.2f", delim='.',
+                                       quotestyle=:none)
+    # row sources with a known schema render like the column path
+    rows = Tables.rowtable(tbl)
+    @test str(io -> W.write(io, rows)) == plain
+    neg = (j, v) -> v isa Number ? -v : v
+    @test str(io -> W.write(io, rows; transform=neg)) == str(io -> W.write(io, tbl; transform=neg))
+    @test str(io -> W.write(io, (r for r in rows))) == plain    # schema-less generator
+end
+
 println("WRITE BATTERY OK")

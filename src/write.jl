@@ -197,10 +197,22 @@ end
     return
 end
 
-# structural-byte scan for a byte range: any delimiter/quote/CR/LF?
+# structural-byte scan for a byte range: any delimiter/quote/CR/LF? Eight
+# bytes per step (the marks can only be set when some byte matches, so the
+# borrow-propagation false positives of `_eqmask8_c` cannot create a match).
 @inline function _needsquotebytes(o::WriteOpts, p::Ptr{UInt8}, n::Int)
-    @inbounds for k in 0:(n - 1)
+    d, oq, cq = o.delim, o.oq, o.cq
+    k = 0
+    while k + 8 <= n
+        w = unsafe_load(Ptr{UInt64}(p + k))
+        m = _eqmask8_c(w, d) | _eqmask8_c(w, oq) | _eqmask8_c(w, cq) |
+            _eqmask8_c(w, UInt8('\n')) | _eqmask8_c(w, UInt8('\r'))
+        m != zero(UInt64) && return true
+        k += 8
+    end
+    @inbounds while k < n
         _needsquote(o, unsafe_load(p, k + 1)) && return true
+        k += 1
     end
     return false
 end
@@ -562,9 +574,7 @@ const _TRUE = codeunits("true"); const _FALSE = codeunits("false")
         _appendstring!(out, x, o)
     elseif x isa AbstractFloat
         if o.floatfmt !== nothing
-            s = Printf.format(o.floatfmt, x)
-            o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
-            _appendscalar!(out, s, o)
+            _appendformatted!(out, o.floatfmt, x, o)
         elseif x isa Union{Float64, Float32, Float16} && !any(_numericsyntax, (o.delim, o.oq, o.cq))
             _appendfloat!(out, x, o)
         else
@@ -610,6 +620,31 @@ const _TRUE = codeunits("true"); const _FALSE = codeunits("false")
     else
         _appendstring!(out, string(x), o)
     end
+    return
+end
+
+# `floatformat`: Printf renders straight into the output (no String per cell),
+# the decimal separator is patched in place, and the rare structural byte in a
+# rendering (an exotic dialect) re-appends it through the quoting policy.
+function _appendformatted!(out::_WriteOutput, fmt::Printf.Format, x::AbstractFloat, o::WriteOpts)
+    start = length(out)
+    need = Printf.computelen(fmt.substringranges, fmt.formats, (x,))
+    resize!(out, start + need)
+    buf = out isa _WriteBuffer ? out.bytes : out
+    pos = Printf.format(buf, start + 1, fmt, x)
+    n = pos - 1 - start
+    resize!(out, start + n)
+    if o.decimal != UInt8('.')
+        @inbounds for k in (start + 1):(start + n)
+            buf[k] == UInt8('.') && (buf[k] = o.decimal)
+        end
+    end
+    GC.@preserve buf begin
+        _needsquotebytes(o, pointer(buf, start + 1), n) || return
+    end
+    rendered = buf[(start + 1):(start + n)]
+    resize!(out, start)
+    _appendbytes!(out, rendered, o, false)
     return
 end
 
@@ -740,6 +775,19 @@ _isdirect(::Type{<:AbstractVector}) = false
 for emptycol in _EMPTY_WRITECOLUMNS
     @eval _isdirect(::Type{$(typeof(emptycol))}) = true
 end
+# Narrow integer columns widen once (exactly) into the Int64 descriptors:
+# one pass over the column instead of the per-block staging fallback, which
+# renders each cell twice. UInt64 can exceed Int64 and keeps the fallback.
+for S in (Int8, Int16, Int32, UInt8, UInt16, UInt32)
+    @eval @noinline _preparewritecolumn(col::Vector{$S}) =
+        _WriteColumn(0x01, convert(Vector{Int64}, col), _EMPTY_WRITECOLUMNS[2:end]...,
+                     _EMPTY_WRITESTAGE)
+    @eval @noinline _preparewritecolumn(col::Vector{Union{Missing, $S}}) =
+        _WriteColumn(0x04, _EMPTY_WRITECOLUMNS[1:3]..., convert(Vector{Union{Missing, Int64}}, col),
+                     _EMPTY_WRITECOLUMNS[5:end]..., _EMPTY_WRITESTAGE)
+    @eval _isdirect(::Type{Vector{$S}}) = true
+    @eval _isdirect(::Type{Vector{Union{Missing, $S}}}) = true
+end
 
 # A fallback column (pooled, InlineString, narrow integer, custom scalar, ...)
 # stages once per block through a call that is typed on that column only.
@@ -857,6 +905,25 @@ end
 _renderblock_direct(cols::Vector{AbstractVector}, lo::Int, hi::Int, o::WriteOpts) =
     _renderblock_direct(_preparewritecolumns(cols, length(cols[1]), o)[1], lo, hi, o)
 
+# One sink write per rendered block, straight from the block buffer.
+function _writeblock(io, b::_WriteBuffer)
+    GC.@preserve b unsafe_write(io, pointer(b.bytes), UInt(b.len))
+    return
+end
+
+# An IOBuffer sink grows in small steps on every block write (Base's
+# overallocation policy copied about three output sizes on a 69 MiB write).
+# Reserve the estimated total once, from the first rendered block. Other sinks
+# manage their own buffering.
+_reservesink!(io, blockbytes::Int, nblocks::Int) = nothing
+function _reservesink!(io::Base.GenericIOBuffer, blockbytes::Int, nblocks::Int)
+    io.writable || return nothing
+    est, overflow = Base.mul_with_overflow(blockbytes, nblocks)
+    (overflow || est <= 0) && return nothing
+    Base.ensureroom(io, UInt(est))
+    return nothing
+end
+
 @inline function _writerow_direct!(out::_WriteBuffer, r::Int, k::Int,
                                    cols::Vector{_WriteColumn}, o::WriteOpts)
     start = length(out)
@@ -873,7 +940,11 @@ _renderblock_direct(cols::Vector{AbstractVector}, lo::Int, hi::Int, o::WriteOpts
     return
 end
 
-function _renderblock_direct(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpts)
+# Render rows lo..hi into `out` (a buffer the caller reuses from block to
+# block), after an optional prefix (the header, when a block must carry it).
+function _renderblock_direct(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpts,
+                             out::_WriteBuffer=_WriteBuffer(),
+                             prefix::Vector{UInt8}=EMPTY_BYTES)
     prepared = cols.direct
     if !isempty(cols.fallback)
         prepared = copy(cols.direct)
@@ -882,7 +953,8 @@ function _renderblock_direct(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpt
             @inbounds prepared[j] = _WriteColumn(0x00, _EMPTY_WRITECOLUMNS..., stages[i])
         end
     end
-    out = _WriteBuffer()
+    resize!(out, 0)
+    isempty(prefix) || append!(out, prefix)
     nrows = hi - lo + 1
     probe = min(nrows, 32)
     @inbounds for r in lo:(lo + probe - 1)
@@ -895,25 +967,73 @@ function _renderblock_direct(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpt
             @inline _writerow_direct!(out, r, r - lo + 1, prepared, o)
         end
     end
-    return resize!(out.bytes, out.len)
+    return out
 end
 
-_renderblock(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpts) =
-    _renderblock_direct(cols, lo, hi, o)
+_renderblock(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpts,
+             out::_WriteBuffer=_WriteBuffer(), prefix::Vector{UInt8}=EMPTY_BYTES) =
+    _renderblock_direct(cols, lo, hi, o, out, prefix)
 
 # Compatibility path for `transform`: callbacks are observable and may keep
 # state, so preserve CSV 0.10's row-major, sequential call order even for wide
-# tables. This path is intentionally separate from the staged column renderer.
-function _renderblock_transformed(cols, lo::Int, hi::Int, o::WriteOpts, transform)
-    out = UInt8[]
-    ncols = length(cols)
+# tables. Cells still read through the typed descriptors, so a type-stable
+# transform renders without a dynamic dispatch per cell.
+const _WRITECOLUMN_FIELDS = (:ints, :floats, :strings, :missingints, :bools, :dates,
+                             :datetimes, :missingfloats, :missingstrings, :missingbools,
+                             :missingdates, :missingdatetimes, :datatext, :missingdatatext,
+                             :timestamps, :missingtimestamps, :pooled, :missingpooled)
+let ex = :(_appendcell!(out, transform(j, orig[r]), o))
+    # widened narrow-integer columns: the transform sees the original element
+    # type through a typed branch rather than the dynamic fallback
+    for S in (Int8, Int16, Int32, UInt8, UInt16, UInt32),
+        V in (Vector{S}, Vector{Union{Missing, S}})
+        ex = :(if orig isa $V
+                   @inbounds _appendcell!(out, transform(j, orig[r]), o)
+               else
+                   $ex
+               end)
+    end
+    for (tag, f) in Iterators.reverse(collect(enumerate(_WRITECOLUMN_FIELDS)))
+        # a descriptor field aliases the table's own column; a widened
+        # narrow-integer copy does not, and its transform must still see the
+        # original element type
+        ex = :(if col.tag == $(UInt8(tag)) && col.$f === orig
+                   @inbounds _appendcell!(out, transform(j, col.$f[r]), o)
+               else
+                   $ex
+               end)
+    end
+    # `orig` is only compared by identity (and indexed on the fallback path),
+    # so it stays unspecialized: the call from the row loop is then static.
+    # The descriptor is loaded here, by index: this function is too large to
+    # inline, and a `_WriteColumn` (twenty references, stored inline in its
+    # vector) passed by value to a non-inlined call would be boxed per cell.
+    @eval function _appendtransformed!(out::_WriteOutput, direct::Vector{_WriteColumn}, j::Int,
+                                       @nospecialize(orig), r::Int, o::WriteOpts, transform)
+        @inbounds col = direct[j]
+        $ex
+        return
+    end
+end
+
+# `transform::F`: a function argument that is only passed on (never called
+# here) is otherwise compiled as an abstract `Function`, and every cell
+# would dispatch dynamically.
+function _renderblock_transformed(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpts,
+                                  transform::F, out::_WriteBuffer=_WriteBuffer()) where {F}
+    direct = cols.direct
+    original = cols.original
+    ncols = length(direct)
+    resize!(out, 0)
     @inbounds for r in lo:hi
         start = length(out)
         for j in 1:ncols
-            _appendcell!(out, transform(j, cols[j][r]), o)
+            _appendtransformed!(out, direct, j, original[j], r, o, transform)
             j < ncols && _appenddelim!(out, o)
         end
-        append!(out, o.newline)
+        for b in o.newline
+            push!(out, b)
+        end
         rowsize = length(out) - start
         rowsize <= o.bufsize || _rowtoolarge(rowsize, o.bufsize)
     end
@@ -930,9 +1050,9 @@ struct _RenderFailure
     block::Int
 end
 
-@inline function _capture_render(renderblock, block::Int)
+@inline function _capture_render(renderblock, block::Int, slot::Int)
     try
-        return renderblock(block)
+        return renderblock(block, slot)
     catch err
         return _RenderFailure(err, catch_backtrace(), block)
     end
@@ -952,7 +1072,10 @@ end
 
 Render numbered blocks in parallel and pass them to `emitblock` in increasing
 order. The ring contains at most `min(nblocks, ntasks)` tasks, so completed
-blocks waiting for an earlier block cannot grow with `nblocks`.
+blocks waiting for an earlier block cannot grow with `nblocks`. `renderblock`
+receives the block and its ring slot (1 to `min(nblocks, ntasks)`): a slot's
+blocks render one after another, and each is emitted before the slot starts
+another, so a renderer can reuse one buffer per slot.
 """
 function _ordered_parallel_blocks!(emitblock, renderblock,
                                    nblocks::Int, ntasks::Int)
@@ -963,7 +1086,7 @@ function _ordered_parallel_blocks!(emitblock, renderblock,
     try
         for slot in 1:window
             block = nextblock
-            tasks[slot] = @wkspawn _capture_render($renderblock, $block)
+            tasks[slot] = @wkspawn _capture_render($renderblock, $block, $slot)
             nextblock += 1
         end
         for block in 1:nblocks
@@ -980,7 +1103,7 @@ function _ordered_parallel_blocks!(emitblock, renderblock,
             rendered = nothing
             if nextblock <= nblocks
                 queued = nextblock
-                tasks[slot] = @wkspawn _capture_render($renderblock, $queued)
+                tasks[slot] = @wkspawn _capture_render($renderblock, $queued, $slot)
                 nextblock += 1
             end
         end
@@ -1059,14 +1182,16 @@ function _bounded_foreach!(f, iter, ntasks::Int)
     end
 end
 
-@noinline function _renderwrite_identity!(io, cols, lo::Int, hi::Int, o::WriteOpts)
-    Base.write(io, _renderblock(cols, lo, hi, o))
+@noinline function _renderwrite_identity!(io, cols, lo::Int, hi::Int, o::WriteOpts,
+                                          out::_WriteBuffer)
+    _writeblock(io, _renderblock(cols, lo, hi, o, out))
     return
 end
 
 @noinline function _renderwrite_transformed!(io, cols, lo::Int, hi::Int,
-                                             o::WriteOpts, transform)
-    Base.write(io, _renderblock_transformed(cols, lo, hi, o, transform))
+                                             o::WriteOpts, transform::F,
+                                             out::_WriteBuffer) where {F}
+    _writeblock(io, _renderblock_transformed(cols, lo, hi, o, transform, out))
     return
 end
 
@@ -1082,9 +1207,11 @@ Base.@constprop :aggressive function _emitrowblocks!(io, cols::_WriterColumns, n
     # Transform callbacks are observable and can retain state. Run their
     # fixed-size blocks sequentially to preserve global row-major call order.
     if transform !== _identity_transform
+        out = _WriteBuffer()
         for block in 1:nblocks
             lo, hi = bounds(block)
-            _renderwrite_transformed!(io, cols.original, lo, hi, o, transform)
+            _renderwrite_transformed!(io, cols, lo, hi, o, transform, out)
+            block == 1 && _reservesink!(io, out.len, nblocks)
         end
         return
     end
@@ -1092,19 +1219,58 @@ Base.@constprop :aggressive function _emitrowblocks!(io, cols::_WriterColumns, n
     # Avoid task overhead when the caller requested one task or the table fits
     # in one block. Fixed-size blocks still bound the single-task path.
     if SERIAL || workers == 1 || nblocks == 1
+        out = _WriteBuffer()
         for block in 1:nblocks
             lo, hi = bounds(block)
-            _renderwrite_identity!(io, cols, lo, hi, o)
+            _renderwrite_identity!(io, cols, lo, hi, o, out)
+            block == 1 && _reservesink!(io, out.len, nblocks)
         end
         return
     end
 
-    renderblock = function (block)
+    # one buffer per ring slot: a block is emitted before its slot renders
+    # the next one, so the renderers never allocate output storage again
+    buffers = [_WriteBuffer() for _ in 1:min(workers, nblocks)]
+    renderblock = function (block, slot)
         lo, hi = bounds(block)
-        return _renderblock(cols, lo, hi, o)
+        return _renderblock(cols, lo, hi, o, buffers[slot])
     end
-    emitblock = rendered -> Base.write(io, rendered)
+    reserved = Ref(false)
+    emitblock = function (rendered)
+        if !reserved[]
+            reserved[] = true
+            _reservesink!(io, rendered.len, nblocks)
+        end
+        _writeblock(io, rendered)
+    end
     _ordered_parallel_blocks!(emitblock, renderblock, nblocks, workers)
+    return
+end
+
+# Parallel gzip: each row block compresses inside its render task into a
+# complete gzip member, and the members concatenate in block order. A gzip
+# stream is a sequence of members (RFC 1952 §2.2): gunzip, zlib-based
+# libraries, and CSV's own reader all read it back as one byte stream.
+function _emitmembers!(io, cols::_WriterColumns, nrows::Int, blockrows::Int, o::WriteOpts,
+                       ntasks::Int, prefix::Vector{UInt8})
+    nblocks = max(cld(nrows, blockrows), 1)   # an empty table still emits its prefix
+    workers = min(ntasks, Threads.nthreads(), nblocks)
+    buffers = [_WriteBuffer() for _ in 1:workers]
+    codecs = [GzipCompressor() for _ in 1:workers]
+    foreach(CodecZlib.TranscodingStreams.initialize, codecs)
+    try
+        renderblock = function (block, slot)
+            lo = (block - 1) * blockrows + 1
+            hi = min(block * blockrows, nrows)
+            out = _renderblock(cols, lo, hi, o, buffers[slot], block == 1 ? prefix : EMPTY_BYTES)
+            resize!(out.bytes, out.len)
+            return transcode(codecs[slot], out.bytes)
+        end
+        emitblock = member -> Base.write(io, member)
+        _ordered_parallel_blocks!(emitblock, renderblock, nblocks, workers)
+    finally
+        foreach(CodecZlib.TranscodingStreams.finalize, codecs)
+    end
     return
 end
 
@@ -1234,7 +1400,7 @@ end
 Base.size(rw::RowWriter{R, I, O, F, false}) where {R, I, O, F} = (length(rw),)
 
 # Append one Tables.jl row to `out` through the shared cell renderer.
-function _appendrow!(out::Vector{UInt8}, row, ncols::Int, o::WriteOpts, transform)
+function _appendrow!(out::Vector{UInt8}, row, ncols::Int, o::WriteOpts, transform::F) where {F}
     start = length(out)
     for j in 1:ncols
         _appendcell!(out, transform(j, Tables.getcolumn(row, j)), o)
@@ -1245,6 +1411,24 @@ function _appendrow!(out::Vector{UInt8}, row, ncols::Int, o::WriteOpts, transfor
     rowsize <= o.bufsize || _rowtoolarge(rowsize, o.bufsize)
     return out
 end
+
+# With a known schema each cell reads through a static
+# `Tables.getcolumn(row, T, i, name)` call (Tables unrolls the columns), so a
+# NamedTuple row renders without a dynamic dispatch per cell.
+function _appendrow!(out::Vector{UInt8}, row, sch::Tables.Schema, ncols::Int, o::WriteOpts,
+                     transform::F) where {F}
+    start = length(out)
+    Tables.eachcolumn(sch, row) do val, j, nm
+        _appendcell!(out, transform(j, val), o)
+        j < ncols && _appenddelim!(out, o)
+    end
+    append!(out, o.newline)
+    rowsize = length(out) - start
+    rowsize <= o.bufsize || _rowtoolarge(rowsize, o.bufsize)
+    return out
+end
+_appendrow!(out::Vector{UInt8}, row, ::Nothing, ncols::Int, o::WriteOpts, transform::F) where {F} =
+    _appendrow!(out, row, ncols, o, transform)
 
 _renderrow(row, names, o::WriteOpts, transform) =
     String(_appendrow!(UInt8[], row, length(names), o, transform))
@@ -1278,12 +1462,19 @@ function _emitrows!(io, rw::RowWriter; bom::Bool=false)
     out = UInt8[]
     rw.writeheader && !isempty(rw.names) && append!(out, _renderheader(rw.names, rw.o))
     ncols = length(rw.names)
+    it = rw isa RowWriter{<:Any, <:Any, <:Any, <:Any, true} ? rw.initial : iterate(rw.rows)
+    # the loop specializes on the schema (a function barrier): known column
+    # types make every cell read static, an unknown schema stays dynamic
+    _emitrowsloop!(io, out, rw, it, Tables.schema(rw.rows), ncols)
+    return
+end
+
+function _emitrowsloop!(io, out::Vector{UInt8}, rw::RowWriter, it, sch, ncols::Int)
     complete = length(out)
     try
-        it = rw isa RowWriter{<:Any, <:Any, <:Any, <:Any, true} ? rw.initial : iterate(rw.rows)
         while it !== nothing
             row, state = it
-            _appendrow!(out, row, ncols, rw.o, rw.transform)
+            _appendrow!(out, row, sch, ncols, rw.o, rw.transform)
             complete = length(out)
             if complete >= WRITE_BLOCK_BYTES
                 # A sink failure may have written part of the block. Do not retry it.
@@ -1329,7 +1520,7 @@ end
 # Sink and scheduler code see the descriptor container, whose type is shared
 # by every table of common column types; only fallback stagers, transform,
 # options, and sink behavior specialize above the renderer.
-struct _ColumnEmitter{C <: _WriterColumns, O <: WriteOpts, F, S} <: Function
+struct _ColumnEmitter{C <: _WriterColumns, O <: WriteOpts, F, S, G} <: Function
     cols::C
     nrows::Int
     blockrows::Int
@@ -1339,9 +1530,19 @@ struct _ColumnEmitter{C <: _WriterColumns, O <: WriteOpts, F, S} <: Function
     header::Vector{UInt8}
     append::Bool
     serial::S
+    gzip::G         # Val(true): compress each block in parallel as its own gzip
+                    # member. A type parameter, like `serial`, so the one-task
+                    # emitter never compiles the parallel scheduler (trim=safe).
 end
 function (emit::_ColumnEmitter)(io)
     o = emit.opts
+    if emit.gzip isa Val{true}
+        prefix = UInt8[]
+        o.bom && !emit.append && append!(prefix, (0xef, 0xbb, 0xbf))
+        append!(prefix, emit.header)
+        _emitmembers!(io, emit.cols, emit.nrows, emit.blockrows, o, emit.ntasks, prefix)
+        return nothing
+    end
     o.bom && !emit.append && Base.write(io, UInt8[0xef, 0xbb, 0xbf])
     isempty(emit.header) || Base.write(io, emit.header)
     _emitrowblocks!(io, emit.cols, emit.nrows, emit.blockrows, o, emit.transform, emit.ntasks,
@@ -1409,13 +1610,17 @@ _writecolumns(cols, names) = AbstractVector[Tables.getcolumn(cols, nm) for nm in
         headerblock = wantheader && !isempty(names) ? _renderheader(names, o) : EMPTY_BYTES
         blockrows = _writerblockrows(rowbound, o, transform)
         # Header and fixed-size row blocks stream directly to the sink. The
-        # ordered renderer retains no more than `ntasks` blocks.
+        # ordered renderer retains no more than `ntasks` blocks. With several
+        # tasks, gzip compresses block by block in those tasks.
         if ntasks == 1
             _ColumnEmitter(rendercols, nrows, blockrows, o, transform, ntasks, headerblock,
-                           append, Val(true))
+                           append, Val(true), Val(false))
+        elseif gzip && Threads.nthreads() > 1 && transform === _identity_transform
+            _ColumnEmitter(rendercols, nrows, blockrows, o, transform, ntasks, headerblock,
+                           append, Val(false), Val(true))
         else
             _ColumnEmitter(rendercols, nrows, blockrows, o, transform, ntasks, headerblock,
-                           append, Val(false))
+                           append, Val(false), Val(false))
         end
     else
         # A row source may be one-shot and may not know its schema until its
@@ -1424,7 +1629,8 @@ _writecolumns(cols, names) = AbstractVector[Tables.getcolumn(cols, nm) for nm in
                         defaultheader=!append)
         io -> _emitrows!(io, rw; bom=o.bom && !append)
     end
-    emit = gzip ? (io -> _emitgzip!(emitpayload, io)) : emitpayload
+    emit = gzip && !(emitpayload isa _ColumnEmitter && emitpayload.gzip isa Val{true}) ?
+           (io -> _emitgzip!(emitpayload, io)) : emitpayload
     if sink isa AbstractString
         open(emit, String(sink), append ? "a" : "w")
     else
