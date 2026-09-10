@@ -118,7 +118,10 @@ String(take!(output))
 Use `compress=:gzip`
 to force gzip for any sink, or `compress=:none` to disable it. The compatibility
 forms `compress=true` and `compress=false` mean `:gzip` and `:none`.
-Compression is streamed to the sink.
+Compression is streamed to the sink. With more than one task, each row block
+compresses in its own task and is written as one gzip member, so the file is a
+multi-member gzip stream (RFC 1952). Every gzip reader concatenates the members
+transparently, including `gunzip`, zlib-based libraries, and `CSV.File`.
 
 ```julia
 CSV.write("output.csv.gz", table)                  # detected from the suffix

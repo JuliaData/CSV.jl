@@ -29,7 +29,15 @@ CSV.jl entry points. It requires Julia 1.10 or later.
   type request, offset, and limit into the parser.
 - The writer has deterministic parallel output, explicit quote styles,
   Printf-style floating-point formatting, bounded row-block memory, gzip suffix
-  detection, and parallel partition output.
+  detection, parallel gzip compression (one member per row block), and parallel
+  partition output.
+- The final performance pass before 1.0 halved the structural index's
+  allocation, made post-parse string conversion (`stringtype=String`,
+  `types=String`, InlineStrings) parallel, kept the vector scanner for files
+  with `comment` rows, vectorized `skipto`/`footerskip` row positioning,
+  parallelized `CSV.Chunks` batch parsing across columns, and reworked the
+  writer (reused block buffers, one-time sink reservation, allocation-free
+  `floatformat`, typed `transform` rendering, schema-typed row sources).
 
 ## Compatibility changes
 
