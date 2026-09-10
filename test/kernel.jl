@@ -2052,7 +2052,8 @@ end
         # dense terminators exercise CR LF pairs at block edges
         trial % 3 == 0 && (buf = rand(rng, UInt8['a', '\r', '\n', '"'], n))
         for d in dialects
-            for from in unique((1, min(n, 2), max(1, n ÷ 2), n, n + 1))
+            # row positions start at 1 (an empty buffer still starts at byte 1)
+            for from in unique((1, max(1, min(n, 2)), max(1, n ÷ 2), max(1, n), n + 1))
                 @test K._countrows(buf, d, from) == refcount(buf, d, from)
                 for k in (1, 2, 3, 5, 17, 64, 65, 200)
                     @test K._rawrowoffset(buf, d, from, k) == refoffset(buf, d, from, k)
