@@ -96,7 +96,7 @@ The main dialect options are:
 
 Input must be ASCII or UTF-8. Convert other encodings before parsing.
 
-A quote that does not start its field is content, as it was in 0.10:
+A quote that does not start its field is content:
 `10,Pipe 3" long` and `1,x"y` are ordinary two-field rows. The parallel
 structural scan treats every quote as a field boundary; when it meets a quote
 that does not start its field, CSV.jl rebuilds the index with a serial pass
@@ -155,11 +155,11 @@ exactness at their resolution.
 
 `types` accepts one type, a vector with one entry per source column, or a
 dictionary keyed by column index, name, or a `Regex`. A type vector must match
-the header. Function-valued `types` is not supported in 1.0. A requested
+the header. Function-valued `types` is not supported. A requested
 `String` (or `Union{Missing, String}`) names the output type: that column is a
 `Vector{String}` or `Vector{Union{Missing, String}}` when pooling is off.
 With pooling, its levels use `String`. Request `DataStrings.DataString` to keep the
-zero-copy column, or an InlineStrings.jl type when that package is loaded.
+parsed column as it is, or an InlineStrings.jl type when that package is loaded.
 `stringtype` governs inferred text only. With DataDecimals.jl loaded, an
 explicitly requested decimal type such as `types=Dict(:amount =>
 DataDecimals.Decimal64{2})` parses exactly from the field bytes: a value that
@@ -185,7 +185,7 @@ file = CSV.File(IOBuffer("value\nalpha\nbeta\n"))
 Use `stringtype=String` to materialize strings. When InlineStrings.jl is
 loaded, its extension also accepts `InlineString` and fixed inline string
 types. `stringtype=InlineString` picks the smallest width per column up to
-`String31`; a column whose text is longer comes back as `String`, as in 0.10.
+`String31`; a column whose text is longer comes back as `String`.
 A fixed type such as `String15` is an error when a value does not fit.
 InlineStrings 2 is supported.
 
@@ -197,7 +197,7 @@ accepted forms are:
 - `(ratio, maximum_levels)` such as `pool=(0.2, 500)`; or
 - a dictionary or vector of per-column policies for `CSV.File`.
 
-The old 0.10 default policy is available as `pool=(0.2, 500)`. Pooled output
+The ratio-and-cap policy is available as `pool=(0.2, 500)`. Pooled output
 uses PooledArrays.jl. Pool levels own their strings even when
 `stringtype=DataStrings.DataString`.
 
@@ -236,8 +236,9 @@ keys that do not match an input column; validation is on by default.
 
 Parsing is parallel by default when Julia has multiple threads. Use
 `ntasks=1` or `parallel=false` for one task. `ntasks=N` bounds parsing to at
-most `N` worker tasks. A direct `CSV.File` also uses `N` as its target
-structural-chunk count unless `chunkbytes` is explicit. `CSV.File(lazyfile)`
+most `N` worker tasks. A direct `CSV.File` targets about four structural
+chunks per task, each between 64 KiB and 1 MiB, unless `chunkbytes` is
+explicit. `CSV.File(lazyfile)`
 keeps the existing index geometry but applies the same worker bound.
 `chunkbytes` directly controls the target structural-index chunk size.
 
@@ -260,8 +261,8 @@ file = CSV.File(sources; source=:origin => ["first", "second"], stringtype=Strin
 
 The first source defines the output column set. Later sources match columns by
 name. A missing column is filled with `missing`; an extra column is ignored.
-Types promote across sources. Concatenated text columns use `String` because
-one zero-copy string vector cannot refer to several independent buffers.
+Types promote across sources. Text columns concatenate as `DataString` columns
+that own their bytes, as in a single-source read.
 
 `source=:origin` adds a pooled source-label column. Path sources use their
 paths. Other sources use deterministic labels such as `"<source 1>"`. Use
@@ -316,7 +317,7 @@ rows = CSV.Rows(IOBuffer("id,value\n1,10\n2,20\n"); types=[Int, Int])
 [row[:value] for row in rows]
 ```
 
-`reusebuffer` is accepted for 0.10 compatibility but has no effect. The 1.0
+`reusebuffer` is accepted but has no effect. The
 row view does not allocate a reusable per-row buffer. Because the structural
 index is complete before iteration, `length(rows)` and `names(rows)` are
 available, and consumers such as `Tables.columntable` can preallocate.
@@ -337,7 +338,7 @@ semantics as `CSV.File`.
 batch has the same column types. Pooling is evaluated separately in each
 batch.
 
-`ntasks` influences the target batch size. Pass `chunkbytes` for direct size
+`ntasks` sets the target batch count. Pass `chunkbytes` for direct size
 control. A `CSV.Chunks` pool policy must be one `Bool`, ratio, or
 `(ratio, maximum_levels)` value; per-column pool dictionaries and vectors are
 only supported by `CSV.File`.

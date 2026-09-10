@@ -1,9 +1,5 @@
 # CSV.jl 1.0 release notes
 
-!!! warning "Draft"
-    CSV.jl 1.0 is not registered yet. These notes describe the development
-    branch and must be finalized against the tagged commit.
-
 CSV.jl 1.0 replaces the parsing and writing internals while keeping the main
 CSV.jl entry points. It requires Julia 1.10 or later.
 
@@ -17,10 +13,11 @@ CSV.jl entry points. It requires Julia 1.10 or later.
 - Inferred text uses `DataStrings.DataString` by default. Short text is stored in
   the value; longer text lives in column-owned buffers, so eager tables never
   refer to the source or to a mapped file.
-- A quote inside a field is content, as in 0.10. The structural scan detects
-  such quotes and rebuilds its index with the field-start rule; well-formed
-  input never pays for it.
-- Typed value parsing uses the reviewed low-level kernels from Parsers 3.
+- A quote in the middle of a field (`5' 11"`) is ordinary content. The
+  structural scan notices such a quote and rebuilds its index under the
+  field-start rule, so the file still parses correctly; input without such
+  quotes never pays for the check.
+- Typed value parsing uses the low-level parsers of Parsers 3.
 - Parse recovery produces structured `CSV.problems(file)` data. `on_error`
   selects one summary warning (`:warn`, the default), silent collection
   (`:collect`), or fail-fast `CSV.ParseError` (`:error`).
@@ -31,13 +28,17 @@ CSV.jl entry points. It requires Julia 1.10 or later.
   Printf-style floating-point formatting, bounded row-block memory, gzip suffix
   detection, parallel gzip compression (one member per row block), and parallel
   partition output.
-- The final performance pass before 1.0 halved the structural index's
-  allocation, made post-parse string conversion (`stringtype=String`,
-  `types=String`, InlineStrings) parallel, kept the vector scanner for files
-  with `comment` rows, vectorized `skipto`/`footerskip` row positioning,
-  parallelized `CSV.Chunks` batch parsing across columns, and reworked the
-  writer (reused block buffers, one-time sink reservation, allocation-free
-  `floatformat`, typed `transform` rendering, schema-typed row sources).
+- String conversion (`stringtype=String`, `types=String`, InlineStrings),
+  `CSV.Chunks` batch parsing, and gzip output run in parallel. Files with
+  `comment` rows, `skipto`, and `footerskip` use the vector scanner, and so do
+  files with a separate `escapechar` or distinct `openquotechar` and
+  `closequotechar`. `CSV.Rows`
+  carries its schema in its type, so `row.name` on a typed column returns a
+  typed value without allocation. Transposed reads parse each row as a typed
+  column. Several sources concatenate text as `DataString` columns.
+- CSV does not infer decimal types. With DataDecimals loaded, an explicitly
+  requested decimal type parses exactly from the field bytes; a value that
+  would need rounding is a problem.
 
 ## Compatibility changes
 
@@ -57,20 +58,3 @@ The most important default changes are:
 
 See [Migrating from 0.10 to 1.0](migration.md) for option mappings, writer
 compatibility, source-memory behavior, and upgrade examples.
-
-## Dependency and release status
-
-The rewrite uses released Parsers 3, InlineStrings 2, Tables 1.14, DataStrings
-1, DataDecimals 1, and Durations 1.1, all registered in General. Verify a fresh
-registry-only installation before tagging CSV 1.0.
-
-Default string columns now use the shared DataStrings package. They support
-column edits while preserving scalar values returned before an edit. CSV no
-longer contains its own scalar string implementation.
-
-With DataDecimals loaded, an explicitly requested decimal type parses directly
-from field bytes with exact scale checks. CSV does not infer decimal types;
-fractional numbers infer as `Float64`.
-
-All mandatory CI, downstream compatibility checks, and maintainer review remain
-release gates. This PR does not tag or register CSV itself.

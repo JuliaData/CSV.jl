@@ -50,7 +50,7 @@ String(take!(output))
 They retain the source bytes and a structural index. See [Input and memory
 behavior](reading.md#Input-and-memory-behavior) for the exact source rules.
 
-## 1.0 data model
+## Data model
 
 CSV.jl builds one quote-aware structural index. It then parses each selected
 column with a type-specialized loop. Parallel execution does not change row
@@ -66,7 +66,7 @@ value; longer values live in buffers the column owns, so an eager table never
 refers to its source. Convert with `String(value)` when a standalone `String` is
 required, or pass `stringtype=String` to a reader.
 
-Parse problems are structured data in 1.0. A read prints one summary warning
+Parse problems are structured data. A read prints one summary warning
 and keeps the problems; call `CSV.problems(file)` to inspect them, set
 `on_error=:collect` to skip the warning, or `on_error=:error` when a parse
 problem must stop the read with a `CSV.ParseError`.

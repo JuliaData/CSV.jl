@@ -14,7 +14,6 @@ script appends (`*.tsv`) are machine-local and not committed.
 | `profile_write.jl` | Writer GC share, sink comparison, and flat profiles. |
 | `fingerprint.jl` | Deterministic fingerprints (values, types, problems, written bytes) over every shape and option axis; run it under two environments and `diff` the outputs before and after a change. |
 | `hygiene.jl` | Static checks: `Core.Box` captures anywhere in the package, and dynamic-dispatch / `Any` scans over the hot signatures. |
-| `release_review.jl` | The small fixed-input timing set used for release reviews. |
 | `compare.py A.tsv B.tsv` | Per-case min-of-runs comparison of two `bench_surface.jl` result files. |
 
 ## Method
@@ -39,5 +38,5 @@ prefix-xor step uses `pclmulqdq` on x86-64 and `pmull64` on Apple silicon;
 other targets use the six-step shift fallback. The `:swar` scanner uses only
 64-bit integer arithmetic and is the portable reference for any CPU. Measure
 at least one AVX-512 x86-64 host, one AVX2-only host, and one non-Apple
-aarch64 host before a release; `bench_matrix.jl LABEL 20` and
+aarch64 host; `bench_matrix.jl LABEL 20` and
 `bench_surface.jl LABEL` are the two runs to repeat there.

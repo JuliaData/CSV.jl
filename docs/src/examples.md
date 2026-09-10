@@ -5,7 +5,7 @@ Pages = ["examples.md"]
 Depth = 2
 ```
 
-These examples describe CSV 1.0. Most use literal data in an `IOBuffer` so the
+Most examples use literal data in an `IOBuffer` so the
 documentation build executes them. A `String` source is a file path or URL;
 wrap literal text in `IOBuffer`. Load `DataStrings` when you want to name the
 default text type.
@@ -394,7 +394,7 @@ file = CSV.File(IOBuffer(data); drop=[false, true, false])
 file = CSV.File(IOBuffer(data); drop=:b)
 ```
 
-`select` and `drop` no longer accept functions. Use a list, one name or index,
+`select` and `drop` take a list, one name or index,
 or a `Regex`; the selected columns keep their file order.
 
 ## [Limiting number of rows from data](@id limit_example)
@@ -530,8 +530,8 @@ file = CSV.File(IOBuffer(data); quotechar='"', escapechar='"')
 file = CSV.File(IOBuffer(data); openquotechar='"', closequotechar='"', escapechar='"')
 ```
 
-A quote inside an unquoted field (`with "inner quotes"`) is content, as in
-0.10: the structural scan notices it and rebuilds its index under that rule.
+A quote inside an unquoted field (`with "inner quotes"`) is content: the
+structural scan notices it and rebuilds its index under the field-start rule.
 
 ## [DateFormat](@id dateformat_example)
 
@@ -740,9 +740,9 @@ using CSV
 
 # In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations
 # like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt32`. Pooling is
-# off by default in 1.0. Via the `pool` keyword argument, we can turn it on: `pool=true` pools every string column,
+# off by default. Via the `pool` keyword argument, we can turn it on: `pool=true` pools every string column,
 # `pool=0.4` means that if 40% or less of a column's values are unique, then it will be pooled, and `pool=(0.2, 500)`
-# restores the 0.10 default policy.
+# is the ratio-and-cap policy.
 data = """
 id,code
 A18E9,AT

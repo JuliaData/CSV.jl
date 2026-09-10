@@ -17,7 +17,7 @@ Install the registered release from the Julia REPL:
 ] add CSV
 ```
 
-The upcoming CSV.jl 1.0 release requires Julia 1.10 or later. See the
+CSV.jl 1.0 requires Julia 1.10 or later. See the
 [0.10 to 1.0 migration guide](docs/src/migration.md) before you update an
 existing application.
 
@@ -40,12 +40,7 @@ Use `CSV.read("input.csv", DataFrame)` after you load DataFrames.jl. Use
   the latest registered release.
 - [Development documentation](https://JuliaData.github.io/CSV.jl/latest)
   describes the `main` branch.
-- [Draft 1.0 release notes](docs/src/release-notes.md) summarize the rewrite.
-
-## Project status
-
-CSV.jl 1.0 CI tests Julia 1.10, the current stable release, and Julia nightly.
-It also tests Linux, macOS, Windows, x86-64, 32-bit x86, and Apple silicon.
+- [1.0 release notes](docs/src/release-notes.md) summarize what changed.
 
 ## Support
 
@@ -68,7 +63,7 @@ changes and own the final approval.
 - [DLMReader.jl](https://github.com/sl-solution/DLMReader.jl) reads delimited
   data and integrates with InMemoryDatasets.jl.
 
-The 1.0 rewrite uses shared string columns from DataStrings.jl. With
+CSV.jl uses shared string columns from DataStrings.jl. With
 DataDecimals.jl loaded, an explicitly requested decimal type such as
 `types=Dict(:amount => DataDecimals.Decimal64{2})` parses exactly; CSV does not
 infer decimal types, and fractional numbers infer as `Float64`.

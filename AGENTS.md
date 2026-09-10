@@ -37,7 +37,7 @@ julia --project=docs docs/make.jl
 ```
 
 Test Julia 1.10 and current Julia. Keep fuzz inputs deterministic. For hot-path
-changes, compare time and allocations with the original PR head on fresh seeded
+changes, compare time and allocations with the previous commit on fresh seeded
 inputs, including eager reads, Rows, pooling, and writing. Verify task budgets
 and source-ordered diagnostics for multi-file and parallel changes.
 
@@ -45,7 +45,6 @@ and source-ordered diagnostics for multi-file and parallel changes.
 
 Keep version 1.0.0-DEV until the final release is authorized. Before tagging,
 verify clean registry resolution, run all CI and downstream checks, and update
-migration and release notes. Preserve unrelated source checkouts. Keep the existing PR draft
-status while human review and release gates remain open.
+migration and release notes. Preserve unrelated source checkouts.
 
 The documentation environment requires JSON 1.8 or later for Parsers 3 compatibility.

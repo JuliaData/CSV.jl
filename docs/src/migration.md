@@ -28,6 +28,12 @@ when a consumer requires `String`. Eager text columns own their bytes, so
 explicit `types=String`, alone or per column, still returns `String` columns
 as it did in 0.10; `stringtype` applies to inferred text only.
 
+CSV does not infer decimal types; fractional numbers infer as `Float64`. With
+DataDecimals loaded, an explicitly requested type such as
+`types=Dict(:amount => DataDecimals.Decimal64{2})` parses exactly from the
+field bytes: a value that would need rounding is a problem (`strict=true`
+throws), and extra trailing zeros are exact.
+
 ## Removed, replaced, or preferred reader options
 
 | 0.10 form | 1.0 form |
@@ -59,14 +65,11 @@ and `CSV.Chunks` and return a unique file-ordered column set. Use
 
 ## Table access
 
-Use property access such as `file.amount`, `Tables.getcolumn(file, :amount)`,
-or `Tables.columns(file)`. Use `names(file)` or `Tables.columnnames(file)` for
-column names. The 0.10 access forms `file[:amount]`, `file["amount"]`, and
-`file.names` remain supported. A data column takes priority when it has the
-compatibility-property name `names`. `file[i]` returns row `i`.
-
-`CSV.lazy` is new. Its `CSV.LazyFile` supports `lazyfile[:amount]` and indexed
-cell access because it is a column-indexed view, not an iterable row table.
+Column and row access on `CSV.File` is unchanged. `CSV.lazy` is new: it builds
+the structural index and returns a `CSV.LazyFile` whose cells parse when they
+are accessed. It supports `lazyfile[:amount]` and indexed cell access because
+it is a column-indexed view, not an iterable row table; `CSV.File(lazyfile)`
+performs the full typed parse without repeating the structural scan.
 
 ## Error and schema behavior
 
@@ -107,10 +110,41 @@ provide unbounded network-stream processing.
 A vector of sources now promotes compatible column types across inputs and
 uses deterministic labels for non-path sources. The first source defines the
 output columns. Later missing columns are filled with `missing`; later extra
-columns are ignored. Concatenated text columns materialize as `String`.
+columns are ignored. Text columns concatenate as `DataStrings.DataString`
+columns, as in a single-source read; an explicitly requested string type such
+as `types=String` or `stringtype=String15` applies to the concatenated column.
 
 `source=:origin` also works with a one-element source vector. A source-label
 name that conflicts with a data column is an error.
+
+## Tables.Scan
+
+`Tables.Scan` is new. A scan is a single request object that describes which
+columns to return (optionally renamed or converted), a row filter, and an
+offset and limit. `CSV.File(source; scan=request)` and `CSV.read` apply the
+whole request inside the parser: unselected columns are never sampled or
+parsed, rows the filter rejects never parse their other columns, and the
+requested output types convert last, so a filtered-out value cannot raise a
+conversion problem. Filters run on the parsed native values.
+
+```julia
+using CSV, Tables
+
+# three columns out of many, one renamed and one converted
+file = CSV.File("orders.csv"; scan=Tables.Scan(select=(:id, :region => :where, :amount => Float32)))
+
+# rows that pass a filter, then a page of them
+request = Tables.Scan(
+    filter=(Tables.col(:amount) > 100) & Tables.colin(Tables.col(:region), ("east", "west")),
+    offset=1000,
+    limit=50,
+)
+page = CSV.File("orders.csv"; scan=request)
+```
+
+A scan owns selection, types, and row bounds, so it is not combined with
+`select`, `drop`, `types`, or `limit`. In 0.10 the same work needed a full
+read followed by a filter; the scan reads less and returns the same table.
 
 ## Writer changes and compatibility
 
@@ -139,35 +173,3 @@ and a missing value.
 
 `floatformat` is new and accepts a Printf-style format. Writer output is
 deterministic across `ntasks` values.
-
-## Shared data types and released dependencies
-
-CSV now uses Parsers 3, InlineStrings 2, Tables 1.14, DataStrings 1,
-DataDecimals 1, and Durations 1.1, all registered in General. Durations
-provides `Timestamp{P}`, the inferred date-time type. It uses `Dates.Timestamp`
-when the standard library provides that type, and a compatible implementation otherwise.
-The draft rewrite's `CSV.CompactString` has moved to `DataStrings.DataString`.
-Import DataStrings when referring to that type. Text columns are mutable
-`DataStrings.StringVector` values. Shared string methods belong in DataStrings.
-
-CSV does not infer decimal types. With DataDecimals loaded, an explicitly
-requested type such as `types=Dict(:amount => DataDecimals.Decimal64{2})`
-parses exactly from the field bytes: a value that needs rounding is a problem
-(`strict=true` throws), and extra trailing zeros are exact. Fractional numbers
-otherwise infer as `Float64`.
-
-Tables.Scan now resolves through Tables 1.14 in every CI job. CSV retains format
-metadata independently of the opaque Parsers.DatePattern handle.
-
-## Maintainer release-readiness checklist
-
-Before the 1.0.0 tag:
-
-- Verify a fresh registry-only installation resolves every dependency.
-- Change 1.0.0-DEV only on the final reviewed release commit.
-- Run the full platform matrix, lower-bound Julia tests, deterministic fuzz,
-  strict documentation, and downstream compatibility tests.
-- Run package evaluation and prepare updates for important reverse dependencies;
-  packages bounded to CSV 0.10 will not select 1.0 automatically.
-- Complete maintainer review and verify release CI, TagBot, documentation, and
-  Codecov on the final source commit.

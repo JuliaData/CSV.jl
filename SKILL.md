@@ -1,6 +1,6 @@
 ---
 name: csv-jl
-description: Use and maintain CSV.jl 1.0, including its reader, writer, diagnostics, Tables.jl integration, compatibility checks, and release gates.
+description: Use and maintain CSV.jl 1.0, including its reader, writer, diagnostics, Tables.jl integration, compatibility checks, and release checks.
 ---
 
 # Using CSV.jl

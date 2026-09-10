@@ -6,6 +6,3 @@ docs/site/
 *.jl.mem
 precompile
 Manifest.toml
-bench/ffbench
-bench/fast_float.h
-bench/corpus.txt
