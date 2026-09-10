@@ -1080,7 +1080,7 @@ end
     @test Tables.schema(selectedrows).names == (:a, :c)
     selectedrow = first(selectedrows)
     @test selectedrow.a == Int8(1) && selectedrow.c == "3"
-    @test Tables.columnnames(selectedrow) == [:a, :c]
+    @test collect(Tables.columnnames(selectedrow)) == [:a, :c]
     @test Tables.schema(A.Rows(IOBuffer("a,b,c\n1,2,3\n"); drop=[:b])).names == (:a, :c)
     dateinput = "d1,d2\n15/01/2023,2023.01.16\n"
     daterow = first(A.Rows(IOBuffer(dateinput);
@@ -2190,7 +2190,8 @@ end
     # several sources keep a shared explicit string type; mixtures are String
     @test A.File([IOBuffer("a\nx\n"), IOBuffer("a\ny\n")]; types=String15).a isa Vector{String15}
     @test A.File([IOBuffer("a\nx\n"), IOBuffer("a\ny\n")]; types=String).a isa Vector{String}
-    @test A.File([IOBuffer("a\nx\n"), IOBuffer("a\ny\n")]).a isa Vector{String}
+    @test A.File([IOBuffer("a\nx\n"), IOBuffer("a\ny\n")]).a isa A.DataStringVector{A.DataString}
+    @test A.File([IOBuffer("a\nx\n"), IOBuffer("a\ny\n")]).a == ["x", "y"]
     mixedwidth = A.File([IOBuffer("a\nx\n"), IOBuffer("b\ny\n")]; types=String15)
     @test isequal(collect(mixedwidth.a), [String15("x"), missing]) &&
           mixedwidth.a isa Vector{Union{Missing, String15}}

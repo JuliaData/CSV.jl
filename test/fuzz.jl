@@ -148,10 +148,10 @@ function _ownedcheck(f, expected)
         col isa K.DataStringVector || continue
         @test col.buffers[1] === K.EMPTY_BYTES
         @test all(col.payloads) do p
-            K.cslen(p) <= K.COMPACTSTRING_INLINE && return true
-            idx = K.csbufidx(p) + 1
+            K.payloadlen(p) <= K.INLINE_MAX && return true
+            idx = K.payloadbufidx(p) + 1
             2 <= idx <= length(col.buffers) || return false
-            0 <= K.csoffset(p) && K.csoffset(p) + K.cslen(p) <= length(col.buffers[idx])
+            0 <= K.payloadoffset(p) && K.payloadoffset(p) + K.payloadlen(p) <= length(col.buffers[idx])
         end
     end
 end
@@ -270,9 +270,9 @@ end
             before = String(retained)
             fill!(input, 0x00)
             @test String.(col) == values[(filtered ? 101 : 1):end]
-            @test all(p -> K.cslen(p) <= K.COMPACTSTRING_INLINE ||
-                      (1 <= K.csbufidx(p) < length(col.buffers) &&
-                       K.csoffset(p) + K.cslen(p) <= length(col.buffers[K.csbufidx(p) + 1])), col.payloads)
+            @test all(p -> K.payloadlen(p) <= K.INLINE_MAX ||
+                      (1 <= K.payloadbufidx(p) < length(col.buffers) &&
+                       K.payloadoffset(p) + K.payloadlen(p) <= length(col.buffers[K.payloadbufidx(p) + 1])), col.payloads)
             col[end] = "replacement text longer than inline"
             @test String(retained) == before
         end

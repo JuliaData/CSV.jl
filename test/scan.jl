@@ -271,7 +271,7 @@ end
                     limit=directlimit, parallel=par, nsample=1)
         @test String.(t[:s]) == directvalues[1:directlimit]
         @test t[:s].buffers[1] === S.EMPTY_BYTES
-        @test all(i -> S.csbufidx(t[:s].payloads[i]) >= 1, 1:directlimit)
+        @test all(i -> S.payloadbufidx(t[:s].payloads[i]) >= 1, 1:directlimit)
         @test sum(length, t[:s].buffers) == expectedbytes
     end
 end

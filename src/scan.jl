@@ -68,7 +68,7 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
     requests = _requestedstrings(plan, [c.index for c in b.columns])
 
     # The prepared row window (`footerskip`) ends before the scan's own offset
-    # and limit apply. The kernel takes one mask, so the window is baked in.
+    # and limit apply. The driver takes one mask, so the window is baked in.
     total = sum(nrows, bi.chunks; init=0)
     window = p.limit === nothing ? total : min(total, p.limit)
     if b.filter === nothing

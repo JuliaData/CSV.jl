@@ -6,12 +6,12 @@ using DataStrings: DataString, StringVector, StringPayload, inline_payload,
 const DataStringPayload = StringPayload
 const DataStringVector = StringVector
 const PAYLOAD_MISSING = DataStrings.PAYLOAD_MISSING
-const COMPACTSTRING_INLINE = DataStrings.INLINE_MAX
+const INLINE_MAX = DataStrings.INLINE_MAX
 const EMPTY_BYTES = UInt8[]
-const cslen = DataStrings.payloadlength
-const csbufidx = DataStrings.payloadbufidx
-const csoffset = DataStrings.payloadoffset
-const cspos = DataStrings.payloadpos
+const payloadlen = DataStrings.payloadlength
+const payloadbufidx = DataStrings.payloadbufidx
+const payloadoffset = DataStrings.payloadoffset
+const payloadpos = DataStrings.payloadpos
 @inline _viewword(bufidx::Integer, offset0::Integer) =
     UInt64(bufidx % UInt32) | (UInt64(offset0 % UInt32) << 32)
 

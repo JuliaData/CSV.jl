@@ -5,7 +5,7 @@ using Tables
 # ---------------------------------------------------------------------------
 # 1. Eager reading — CSV.read
 # ---------------------------------------------------------------------------
-# Keep the Tables.jl methods here so the structural kernel remains independent
+# Keep the Tables.jl methods here so the structural parser remains independent
 # of Tables.jl.
 
 Tables.istable(::Type{ParsedTable}) = true
@@ -60,7 +60,7 @@ function settlebatchschema!(types::Vector{Type}, buf, chunks, plan::ColumnPlan,
                                               requested, allowmissing[q])
         allowmissing[q] = sawmissing
         maxlens === nothing || (maxlens[q] = maxlen)
-        # the batch parses with the native (wide) kernel; narrowing follows
+        # the batch parses with the native (wide) parser; narrowing follows
         requested || (types[q] = T)
     end
     if parallel && tasklimit > 1 && length(types) > 1
@@ -269,7 +269,7 @@ Tables.schema(r::_IndexedRows) =
 # buffer, so separate rows and concurrent consumers do not share mutable state.
 @inline function _rowcompact(buf::Vector{UInt8}, pos::Int, len::Int,
                              viewoffsetlimit::Int=Int(typemax(Int32)))
-    len <= COMPACTSTRING_INLINE &&
+    len <= INLINE_MAX &&
         return DataString(inline_payload(buf, pos, len), EMPTY_BYTES)
     pos - 1 <= viewoffsetlimit &&
         return DataString(view_payload(buf, pos, len, 0, pos - 1), buf)

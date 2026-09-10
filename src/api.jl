@@ -1,37 +1,32 @@
-# Implementation of CSV.jl's public readers and its internal
-# delimiter/shape detection.
+# The public readers and the internal delimiter/shape detection.
 #
 # Every entry point uses the same pipeline: resolve source bytes → settle the
 # dialect (sniffing if asked) → index once (rebuilt under the field-start
 # quote rule when a bare quote is flagged) → settle names/row-window
 # (header/skipto/footerskip/limit as *index arithmetic*, before any value
-# work) → hand the kernel driver or the streaming primitives the prepared
-# index. There is no per-entrypoint parsing
-# code and no mode flags inside the kernel: File/Rows/Chunks differ only in
-# what they do AFTER `_prepare`.
+# work) → hand the parse driver or the streaming primitives the prepared
+# index. There is no per-entrypoint parsing code and no mode flags inside the
+# driver: File/Rows/Chunks differ only in what they do AFTER `_prepare`.
 #
-# Compatibility decisions are pinned by tests:
+# Reader conventions:
 #   • problems are retained data; eager readers also warn once by default
 #     (`strict=true` maps to `on_error=:error`, `maxwarnings` to `maxproblems`)
 #   • empty unquoted cells are ALWAYS missing; `missingstring` ADDS spellings
-#     (CSV.jl 0.10 could turn empties into present "" values)
-#   • function-typed `select`/`drop`/`types` are retired (Tables.Scan is the
-#     expression channel); list/Dict forms keep working
-#   • `stringtype` defaults to the kernel string (DataString);
-#     `stringtype=String` materializes; InlineStrings become an extension
+#   • `select`/`drop`/`types` take lists, names, regexes, or dictionaries
+#     (Tables.Scan is the expression channel)
+#   • `stringtype` defaults to DataString; `stringtype=String` materializes;
+#     InlineStrings are an extension
 #   • Bool defaults accept lower, title, and upper case; user lists replace them
 #   • integer spellings that fit Int128 stay exact, including initially-wide
-#     and grouped columns where CSV.jl can widen Int64 overflow to Float64
+#     and grouped columns
 #
 using Tables, Unicode, Mmap, PooledArrays, CodecZlib, Downloads
 
 # `sniff`/`Spec` are internal (behind `delim=nothing`); not exported.
 
-# 1.0: no pooling unless asked. Pooling by 0.10's default policy measured
-# +65% parse time on a pool-friendly 39 MiB file (22.4 vs 13.6 ms), and every
-# other reader surveyed (polars, pyarrow.csv, pandas, DuckDB, fread) makes
-# dictionary/categorical encoding opt-in. `pool=(0.2, 500)` restores the old
-# behavior; `pool=true` pools every string column.
+# No pooling unless asked: dictionary encoding costs a pass over every text
+# column, and most consumers do not need it. `pool=(0.2, 500)` enables the
+# ratio-and-cap policy; `pool=true` pools every string column.
 const DEFAULT_POOL = false
 # Pooled references are UInt32, but a 32-bit Julia process cannot represent
 # UInt32's full maximum as Int. Cap at the smaller index space without an
@@ -104,11 +99,11 @@ end
 # ---------------------------------------------------------------------------
 # sources
 # ---------------------------------------------------------------------------
-# CSV.jl semantics: an AbstractString is a FILE PATH (use IOBuffer(str) or
-# codeunits for literal data). Everything becomes one byte buffer at this seam;
+# An AbstractString is a FILE PATH (use IOBuffer(str) or codeunits for literal
+# data). Everything becomes one byte buffer at this seam;
 # large regular files use a read-only mapping while other sources use a copy.
 
-# Files at or above the threshold memory-map instead of copying: the kernel
+# Files at or above the threshold memory-map instead of copying: the parser
 # never writes to `buf`, and page faults amortize over the parallel chunk
 # sweep. Eager columns own their bytes; Rows, lazy, and the Chunks iterator
 # retain the source. Garbage collection unmaps an unreferenced buffer.
@@ -116,14 +111,14 @@ end
 # `buffer_in_memory=true` forces the copy.
 const MMAP_THRESHOLD = 1 << 19
 
-# gzip is detected by magic bytes on every source kind (CSV.jl parity): a
+# gzip is detected by magic bytes on every source kind: a
 # compressed source decompresses to a fresh buffer before any parsing.
 _isgzip(buf::AbstractVector{UInt8}) = length(buf) >= 2 && buf[1] == 0x1f && buf[2] == 0x8b
 _maybegunzip(buf::Vector{UInt8}) = _isgzip(buf) ? transcode(GzipDecompressor, buf) : buf
 
 resolvesource(buf::Vector{UInt8}; buffer_in_memory::Bool=false, prefetch::Bool=true) =
     _maybegunzip(buf)
-# other byte containers (codeunits, views) copy into a Vector — the kernel's buffer contract
+# other byte containers (codeunits, views) copy into a Vector, the parser's buffer type
 resolvesource(buf::AbstractVector{UInt8}; kw...) = resolvesource(Vector{UInt8}(buf); kw...)
 resolvesource(io::IO; buffer_in_memory::Bool=false, prefetch::Bool=true) =
     _maybegunzip(Base.read(io))
@@ -151,7 +146,7 @@ function _prefetch!(m::Vector{UInt8})
 end
 
 function resolvesource(s::AbstractString; buffer_in_memory::Bool=false, prefetch::Bool=true)
-    # a URL (#506): fetch to a temporary file with the Downloads stdlib, then
+    # a URL: fetch to a temporary file with the Downloads stdlib, then
     # resolve that path exactly like any other (magic-byte gzip, mmap, ...)
     if startswith(s, r"^https?://")
         path = Downloads.download(String(s))
@@ -177,8 +172,8 @@ function resolvesource(s::AbstractString; buffer_in_memory::Bool=false, prefetch
         # Use the descriptor that supplied `sz`. This prevents a path replacement
         # between filesize and mmap from mapping a different file at the old size.
         m = Mmap.mmap(io, Vector{UInt8}, sz; grow=false)
-        # async readahead: faulting overlaps the parallel parse (measured 22% on a
-        # warm 200 MiB file; larger when cold). madvise is a Unix API.
+        # async readahead: faulting overlaps the parallel parse. madvise is a
+        # Unix API.
         @static Sys.isunix() && Mmap.madvise!(m, Mmap.MADV_WILLNEED)
         # cold-file IO/parse overlap: WILLNEED alone loses to demand faults on a
         # cold file (the serial quote-parity pre-scan walks the whole buffer
@@ -195,7 +190,7 @@ end
 _datastart(buf) = length(buf) >= 3 && buf[1] == 0xef && buf[2] == 0xbb && buf[3] == 0xbf ? 4 : 1
 
 # ---------------------------------------------------------------------------
-# names — CSV.jl's normalizename, verbatim semantics
+# names — normalizename
 # ---------------------------------------------------------------------------
 
 const RESERVED = Set(["local", "global", "export", "let",
@@ -214,11 +209,11 @@ end
 # ---------------------------------------------------------------------------
 # sniff — dialect + shape detection, returning a replayable Spec
 # ---------------------------------------------------------------------------
-# The kernel index IS the detector: for each candidate delimiter, index a
+# The structural index IS the detector: for each candidate delimiter, index a
 # bounded quote-aware sample and score how consistent the per-row field counts
 # are. Candidates represented in the first surviving row win before data-only
 # punctuation, which prevents Time values from making `:` look like a delimiter.
-# Candidate order is CSV.jl's, and breaks score ties.
+# `DELIM_CANDIDATES` order breaks score ties.
 
 const DELIM_CANDIDATES = (',', '\t', ' ', '|', ';', ':')
 
@@ -319,9 +314,9 @@ function _detectdelim(sample::Vector{UInt8}, d::Dialect, fastindex::Bool, scanne
         # more fields only wins when the DATA rows established it: with a single
         # row (or an all-header sample) the field count is no evidence at all —
         # a one-line "\"a, b\", \"c\"" must not elect the space — so candidates
-        # then tie on consistency and CSV.jl's candidate order decides
+        # then tie on consistency and the candidate order decides
         evidence = nrows >= 2 && consistency > 0 && fields > 1
-        # 0.10 tier order: a candidate PRESENT IN THE HEADER outranks one that
+        # tier order: a candidate PRESENT IN THE HEADER outranks one that
         # only appears in the data ("A;B;C" over "1,1,10" rows keeps ';')
         inheader = firstfields > 1
         headercandidate |= inheader
@@ -336,12 +331,11 @@ function _detectdelim(sample::Vector{UInt8}, d::Dialect, fastindex::Bool, scanne
     end
     # a candidate that structures the header AND the data rows won above; the
     # remaining cases (delimiter only in the header, or the sample too short
-    # for field-consistency evidence) follow 0.10's byte-count tiers exactly,
-    # so files that detected one way for years keep detecting that way
+    # for field-consistency evidence) follow the byte-count tiers below
     delim = (best[1] && best[2]) ? bestdelim :
             _detectdelim_bytecounts(scoresample, datastart, d, bestdelim,
                                     best[1] && headercandidate)
-    # Space-ALIGNED files (#853): a run of blanks between fields is one
+    # Space-ALIGNED files: a run of blanks between fields is one
     # separator. Score the (' ', ignorerepeated=true) reading last, and elect it
     # only when it cannot change a file that detected before: the plain space
     # won (so the file was going to be space-delimited anyway — with a column
@@ -361,7 +355,7 @@ function _detectdelim(sample::Vector{UInt8}, d::Dialect, fastindex::Bool, scanne
     return (delim, false)
 end
 
-# 0.10's detector (detection.jl): count candidate bytes outside quotes over the
+# The byte-count detector: count candidate bytes outside quotes over the
 # header row and up to 10 data rows; tier 1 = present in header AND total count
 # divisible by nlines; tier 2 = divisible by nlines; tier 3 = most frequent in
 # the header, SPACE excluded; else ','. A one-row sample goes directly to tier
@@ -400,7 +394,7 @@ function _detectdelim_bytecounts(sample::Vector{UInt8}, datastart::Int, d::Diale
     nlines == 0 && return ','
     cands = (',', '\t', ' ', '|', ';', ':')
     # A single row can only be a header. Space is not evidence there (for
-    # example `Created Date`); use the old detector's header-only tier, which
+    # example `Created Date`); use the header-only tier, which
     # deliberately excludes space, and otherwise retain the comma default.
     if nlines == 1
         bestc, bestn = ',', 0
@@ -435,7 +429,7 @@ end
     CSV.sniff(source; samplebytes=65536, kw...) -> Spec
 
 Detect the delimiter (quote-aware field-count consistency over a bounded
-sample, candidates $(DELIM_CANDIDATES) in CSV.jl's order), whether a header
+sample, candidates $(DELIM_CANDIDATES) in that order), whether a header
 row is likely (row 1 all text while later rows type differently), and the
 resulting names/types. `samplebytes` is the initial sample size; a sample too
 small to hold even one complete row grows until it does. `kw` may pin dialect, value, and index pieces
@@ -486,13 +480,13 @@ end
 # the shared front end
 # ---------------------------------------------------------------------------
 # Everything row-positional is settled BEFORE any value work, and always in
-# RAW structural rows — quote-aware, counting comment and empty lines exactly
-# as CSV.jl does (pinned by probe: a comment line between header and skipto
-# still counts). Numbered headers shift `datastart` so skipped prefix rows
+# RAW structural rows — quote-aware, counting comment and empty lines (a
+# comment line between header and skipto still counts). Numbered headers
+# shift `datastart` so skipped prefix rows
 # never even enter the index; `skipto` advances `firstdatarow` by byte
 # offset, so hygiene-dropped rows cannot skew the count.
 
-# Public row/field positions accept any Integer for 0.10 compatibility. Keep
+# Public row/field positions accept any Integer. Keep
 # oversized UInt/BigInt values as an unreachable sentinel instead of narrowing
 # them before the source geometry is known. The saturated successor is needed
 # for `header + 1` and EOF positions at the machine-Int boundary.
@@ -675,7 +669,7 @@ function _iscommentrow(buf::Vector{UInt8}, rowstart::Int, d::Dialect)
 end
 
 # Byte start of the first raw footer row. Empty rows count even when hygiene
-# drops them; comment rows do not count, matching CSV.jl's reverse scan.
+# drops them; comment rows do not count.
 function _footeroffset(buf::Vector{UInt8}, d::Dialect, rawstart::Int, footerskip::Int)
     footerskip == 0 && return _saturatedinc(length(buf))
     # Count first, then locate the first footer row. This is two structural
@@ -735,7 +729,7 @@ end
 
 _firstlive(chunks) = findfirst(ci -> nrows(ci) > 0, chunks)
 
-# Fixed settings cross the API/kernel seam. Optional values remain fields,
+# Fixed settings cross from the API layer to the parse driver. Optional values remain fields,
 # rather than changing the type of a keyword NamedTuple at every call site.
 struct ReadSettings
     chunkbytes::Int
@@ -827,8 +821,8 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
     allowed = (_DIALECTKW..., _VALUEKW..., _INDEXKW..., _DRIVERKW...)
     _checkkwargs("File/Rows/Chunks", kw, allowed)
-    # 0.10 rule: the default header row 1 with skipto=1 means "no header, data
-    # starts at row 1" (the header row and the first data row cannot coincide).
+    # The default header row 1 with skipto=1 means "no header, data starts at
+    # row 1" (the header row and the first data row cannot coincide).
     if header isa Integer && header == 1 && skipto !== nothing && skipto == 1
         header = false
     end
@@ -872,7 +866,7 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
     else
         d0
     end
-    # missingstring → kernel sentinels ("" entries are inert: empty is always missing)
+    # missingstring → sentinels ("" entries are inert: empty is always missing)
     sentinels = _sentinels(missingstring)
     dateformat = get(kw, :dateformat, nothing)
     dfdict = dateformat isa AbstractDict ? dateformat : nothing
@@ -883,10 +877,9 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
     groupmark = get(kw, :groupmark, nothing)::Union{Nothing, Char}
     opts = makevalueopts(d, dfdict === nothing ? dateformat : nothing, decimal,
                          truestrings, falsestrings, stripwhitespace, groupmark, sentinels)
-    # `ntasks` bounds the worker count only. Chunks keep their cache-resident
-    # size: the column loops re-read a chunk once per column, and a chunk of
-    # `len / ntasks` bytes made a 200-column file 3x slower at eight tasks
-    # and 7x slower at one.
+    # `ntasks` sets the chunk target (about four chunks per task) inside the
+    # 64 KiB–1 MiB band that keeps a chunk cache-resident: the column loops
+    # re-read a chunk once per column, so a chunk must not grow with the file.
     cb = chunkbytes === nothing ?
          _defaultchunkbytes(length(buf), something(ntasks, Threads.nthreads())) : chunkbytes
 
@@ -897,8 +890,8 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
                  header isa Int ? [header] : Int[]
     headerrow = header === true ? 1 : isempty(headerrows) ? 0 : last(headerrows)
     # Skipped prefix rows never enter the index (a generated column count would
-    # otherwise come from a junk first row; 0.10 took it from the first DATA
-    # row) — the index starts at the anchor. Row `n` at/after the anchor is
+    # otherwise come from a junk first row instead of the first DATA row) —
+    # the index starts at the anchor. Row `n` at/after the anchor is
     # `n - firstrow + 1` quote-aware structural rows from it.
     datastart = anchoroff
     rowoff(n::Int) = n < firstrow ? _physicallineoffset(buf, rawstart, n) :
@@ -936,7 +929,7 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
     else
         # multi-row header: the LISTED raw rows (not necessarily consecutive —
         # blank rows may sit between them) join with "_"; blank cells resolve
-        # to ColumnN first — pinned against CSV.jl. Each listed row is parsed
+        # to ColumnN first. Each listed row is parsed
         # in place by advancing the chunk cursor to that raw row's byte offset.
         parts = Vector{Vector{Symbol}}()
         firstrows = Int[ci.firstdatarow for ci in chunks]
@@ -978,7 +971,7 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
     lim = limit === nothing ? (footerskip > 0 ? keep : nothing) :
           limit >= keep ? keep : Int(limit)
 
-    # engine + diagnostics kwargs the kernel driver consumes directly
+    # engine + diagnostics kwargs the parse driver consumes directly
     colopts = nothing
     if dfdict !== nothing
         overrides = _resolvekeys(dfdict, names, length(names), "dateformat"; validate)
@@ -1015,7 +1008,7 @@ function _parseprepared(p::Prepared, plan::ColumnPlan;
                   p.names, nothing, nothing, settings.colopts, plan, rowmask, p.bi)
 end
 
-# kwargs _prepare consumes itself (not forwarded to the kernel driver)
+# kwargs _prepare consumes itself (not forwarded to the parse driver)
 const _PREPKW = (:header, :normalizenames, :skipto, :footerskip, :missingstring,
                  :delim, :limit, :samplebytes, :chunkbytes, :parallel,
                  :buffer_in_memory, :prefetch, :validate)
@@ -1330,9 +1323,15 @@ function _colpiece(f::File, nm::Symbol)
 end
 
 # Concatenate one column's per-source pieces (EMPTY_COLUMN ⇒ the source lacks
-# the column: all-missing block). Element types promote across sources; any
-# string type concatenates as String — the result owns its memory.
+# the column: all-missing block). Element types promote across sources. Text
+# that every source parsed as DataString stays a DataString column: the pieces'
+# payloads join, re-pointed at their own buffers appended to one buffer list,
+# with no string copied. Other string types concatenate as `String`.
 function _chaincolumn(pieces::Vector{AbstractVector}, counts::Vector{Int}, total::Int)
+    if any(c -> c isa DataStringVector, pieces) &&
+       all(c -> c === EMPTY_COLUMN || c isa DataStringVector, pieces)
+        return _chaindatastrings(pieces, counts, total)
+    end
     T = Union{}
     anymissing = false
     pooled = false
@@ -1362,9 +1361,37 @@ function _chaincolumn(pieces::Vector{AbstractVector}, counts::Vector{Int}, total
     return pooled ? PooledArray(out) : out
 end
 
+function _chaindatastrings(pieces::Vector{AbstractVector}, counts::Vector{Int}, total::Int)
+    payloads = Vector{DataStringPayload}(undef, total)
+    buffers = Vector{UInt8}[]
+    anymissing = false
+    off = 0
+    for (c, n) in zip(pieces, counts)
+        if c === EMPTY_COLUMN
+            n > 0 && (anymissing = true)
+            @inbounds for i in 1:n
+                payloads[off + i] = PAYLOAD_MISSING
+            end
+        else
+            col = c::DataStringVector
+            anymissing |= Missing <: eltype(col)
+            # this piece's buffer k becomes buffer base + k of the result
+            base = length(buffers)
+            append!(buffers, col.buffers)
+            src = col.payloads
+            @inbounds for i in 1:n
+                p = src[i]
+                payloads[off + i] = payloadlen(p) > INLINE_MAX ?
+                    repoint_payload(p, payloadbufidx(p) + base, payloadoffset(p)) : p
+            end
+        end
+        off += n
+    end
+    return _stringvector(anymissing ? Union{DataString, Missing} : DataString, payloads, buffers)
+end
+
 # Text keeps one shared owned string type when every source produced it (an
-# explicit `types=String15` on each), and is `String` otherwise: one
-# DataString column cannot refer to several independent buffers.
+# explicit `types=String15` on each), and is `String` otherwise.
 function _chaintype(T::Type, S::Type)
     if S <: AbstractString
         S === DataString && (S = String)
@@ -1453,33 +1480,47 @@ function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
         end
     end
     T === Missing && return fill(missing, n)
-    if T === String
-        scol = StringColumn(n, opts.e, opts.cq)
-        payloads = scol.payloads
-        sawmiss = nf - (startf - 1) < n
-        for i in 1:min(n, nf - (startf - 1))
-            f = startf + i - 1
-            sp = fieldspan(ci, lr, f)
-            if sp === nothing || sp[2] == 0
-                sawmiss = true
-                continue
-            end
-            cpos, clen, esc, st = cellcontent(buf, sp[1], sp[2], opts)
-            if st != CELL_VALUE
-                sawmiss = true
-                continue
-            end
-            if esc
-                inl = _unescape_inline(buf, cpos, clen, opts.e, opts.cq)
-                inl === nothing ? _ownescaped!(scol, buf, cpos, clen, i) : (payloads[i] = inl)
-            elseif clen <= COMPACTSTRING_INLINE
-                payloads[i] = inline_payload(buf, cpos, clen)
-            else
-                _own!(scol, buf, cpos, clen, i)
-            end
+    T === String && return _transposedstrings(buf, ci, lr, startf, n, opts, declaredmissing)
+    # `T` is a runtime value here; the typed loop specializes on it once per
+    # column so its cells parse and store without a dispatch each
+    return _transposedtyped(T, buf, ci, lr, startf, n, T0 !== nothing, opts, log, col,
+                            declaredmissing)
+end
+
+function _transposedstrings(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int, opts,
+                            declaredmissing::Bool)
+    nf = nfields(ci, lr)
+    scol = StringColumn(n, opts.e, opts.cq)
+    payloads = scol.payloads
+    sawmiss = nf - (startf - 1) < n
+    for i in 1:min(n, nf - (startf - 1))
+        f = startf + i - 1
+        sp = fieldspan(ci, lr, f)
+        if sp === nothing || sp[2] == 0
+            sawmiss = true
+            continue
         end
-        return finalizecolumn(String, scol, n, sawmiss || declaredmissing)
+        cpos, clen, esc, st = cellcontent(buf, sp[1], sp[2], opts)
+        if st != CELL_VALUE
+            sawmiss = true
+            continue
+        end
+        if esc
+            inl = _unescape_inline(buf, cpos, clen, opts.e, opts.cq)
+            inl === nothing ? _ownescaped!(scol, buf, cpos, clen, i) : (payloads[i] = inl)
+        elseif clen <= INLINE_MAX
+            payloads[i] = inline_payload(buf, cpos, clen)
+        else
+            _own!(scol, buf, cpos, clen, i)
+        end
     end
+    return finalizecolumn(String, scol, n, sawmiss || declaredmissing)
+end
+
+function _transposedtyped(::Type{T}, buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
+                          requested::Bool, opts, log::ProblemLog, col::Int,
+                          declaredmissing::Bool) where {T}
+    nf = nfields(ci, lr)
     out = Vector{Union{T, Missing}}(missing, n)
     scratch = _scratchfor(opts)
     sawmiss = nf - (startf - 1) < n
@@ -1492,13 +1533,14 @@ function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
         end
         cpos, clen, esc, st = cellcontent(buf, sp[1], sp[2], opts)
         if st != CELL_VALUE || esc || clen == 0
-            st == CELL_VALUE && (esc || clen == 0) && T0 === nothing &&
-                return _transposedcolumn(buf, ci, lr, startf, n, String, opts,
-                                         log, col, declaredmissing)
-            if T0 !== nothing && st != CELL_MISSING
+            # exact inference cannot conflict: a text-only cell under an
+            # inferred type means the row is text
+            st == CELL_VALUE && (esc || clen == 0) && !requested &&
+                return _transposedstrings(buf, ci, lr, startf, n, opts, declaredmissing)
+            if requested && st != CELL_MISSING
                 kind = st == CELL_BADQUOTE ? :invalid_quoted_field : :invalid_value
                 pushproblem!(log, i, col, sp[1], kind,
-                               "cannot parse transposed value as $T0")
+                               "cannot parse transposed value as $T")
             end
             sawmiss = true
             continue
@@ -1509,13 +1551,10 @@ function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
         end
         v, ok = parsevalue(T, buf, ti, tj, opts, scratch)
         if !ok
-            # exact inference cannot conflict; a user-pinned type leaves the
-            # cell missing (strict=false File semantics)
-            T0 === nothing &&
-                return _transposedcolumn(buf, ci, lr, startf, n, String, opts,
-                                         log, col, declaredmissing)
+            # a requested type leaves the cell missing (strict=false File semantics)
+            requested || return _transposedstrings(buf, ci, lr, startf, n, opts, declaredmissing)
             pushproblem!(log, i, col, sp[1], :invalid_value,
-                           "cannot parse transposed value as $T0")
+                           "cannot parse transposed value as $T")
             sawmiss = true
             continue
         end
@@ -1544,7 +1583,7 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
     skipto === nothing || skipto >= 1 ||
         throw(ArgumentError("skipto must be ≥ 1 (got $skipto)"))
     limit === nothing || limit >= 0 || throw(ArgumentError("limit must be ≥ 0 (got $limit)"))
-    # transposed geometry (0.10 semantics): header=N takes each row's Nth field
+    # transposed geometry: header=N takes each row's Nth field
     # as that column's name; skipto=M starts data at field M (default: the field
     # after the header, or field 1 without one); header=[names] is explicit
     rawnamefield = header === true ? 1 : header === false ? 0 :
@@ -1618,14 +1657,12 @@ end
 
 # --- pooling: a finalize-time pass at the API layer ---------------------------
 #
-# The kernel never pools. When asked, each DataString column is interned
+# The parser never pools. When asked, each DataString column is interned
 # ONCE, allocation-free (DataString hashing/equality are content-based),
 # into first-occurrence levels; the policy bound `min(floor(ratio·n), cap)`
 # abandons a column the moment its distinct count exceeds it (a unique-valued
 # column costs the walk up to that bound, nothing more). Columns pool in
-# parallel. This replaced ~500 lines of parse-time interning (open-addressing
-# tables, per-column atomic abort/degrade, hash-sampled pre-skip) at the cost
-# of a few ms on a pooled 39 MiB file — and only when pooling is requested.
+# parallel.
 
 # `pool` policy spellings → (ratio, cap) or nothing
 function _poolpolicy(pool)
@@ -1790,7 +1827,7 @@ end
 # Locate a parsed-table row in the structural index. `problemrowbase` is zero
 # for a whole File and the number of preceding rows for a Chunks batch. Narrow
 # conversion happens after native-width parsing, but its diagnostics must still
-# carry the same global row and source-byte position as kernel diagnostics.
+# carry the same global row and source-byte position as parse diagnostics.
 function _narrowlocation(chunks, row::Int, col::Int, problemrowbase::Int,
                          chunkidx::Int, indexedrowbase::Int)
     while chunkidx <= length(chunks)
@@ -1841,8 +1878,7 @@ function _narrowtypes(t::ParsedTable, plan::ColumnPlan, chunks, maxproblems::Int
 end
 
 # One column's checked conversion. A function barrier: `T` and the concrete
-# column type are static inside, so the loop is monomorphic (the inline
-# version dispatched per element and ran 10-20× slower than the parse).
+# column type are static inside, so the loop is monomorphic.
 function _narrowcolumn(::Type{T}, c::AbstractVector, j::Int, chunks, log::ProblemLog,
                        problemrowbase::Int, sourcerows) where {T}
     n = length(c)
@@ -1904,7 +1940,7 @@ function _narrowreport!(::Type{T}, out::Vector{Union{T, Missing}}, c::AbstractVe
 end
 
 # downcast=true: Int64 columns shrink to the smallest of Int8/Int16/Int32 that
-# holds every value (CSV.jl parity; one extrema scan + one convert per column)
+# holds every value (one extrema scan + one convert per column)
 function _downcastint(lo::Int64, hi::Int64)
     typemin(Int8) <= lo && hi <= typemax(Int8) && return Int8
     typemin(Int16) <= lo && hi <= typemax(Int16) && return Int16
@@ -1937,8 +1973,8 @@ end
 
 # PooledColumn -> PooledArrays.PooledArray, the ecosystem dictionary type.
 # Levels materialize to String (at most the pool cap of them); refs are shared
-# outright for missing-free columns and remapped once — missing joins the pool,
-# CSV.jl's convention — otherwise. Measured 0.2-0.8 ms on 20 MiB shapes.
+# outright for missing-free columns and remapped once — missing joins the pool
+# — otherwise.
 function _topooledarray(c::PooledColumn{ELT}, ::Type{S0}=String) where {ELT, S0}
     n = length(c.levels)
     lv = _levelvector(S0, c.levels, n)   # an abstract S0 (InlineString) resolves to a width here
@@ -1972,7 +2008,7 @@ end
 
 # --- the string-output hook -------------------------------------------------
 # `stringtype` names the element type string columns come out as. The core
-# knows DataString (the default; zero-copy views) and String (bulk
+# knows DataString (the default; the parsed column as it is) and String (bulk
 # materialization). Extensions register more by adding methods to
 # `_stringsink` (validation) and `_materializecolumn` / `_levelvector`
 # (conversion): CSVInlineStringsExt registers InlineString (auto-width per
@@ -1989,9 +2025,8 @@ _checkstringtype(T) =
 
 # a DataStringVector to Vector{S} / Vector{Union{S,Missing}}. String goes
 # through materialize's bulk path — one shared scratch, word-store inline
-# reconstruction, unsafe_string per cell; a per-cell String() broadcast ran the
-# generic AbstractString path and was a measured 55–110 MiB/s cliff on
-# string-heavy shapes.
+# reconstruction, unsafe_string per cell (a per-cell String() broadcast would
+# take the generic AbstractString path).
 _materializecolumn(::Type{S}, col::DataStringVector, parallel::Bool) where {S} =
     _materializecolumn(S, col)
 _materializecolumn(::Type{String}, col::DataStringVector) = materialize(col)
@@ -2052,8 +2087,7 @@ Base.propertynames(f::File) = names(getfield(f, :table))
 function _fileproperty(f::File, nm::Symbol)
     lk = getfield(f, :lookup)
     haskey(lk, nm) && return columns(getfield(f, :table))[lk[nm]]
-    # CSV.File 0.10 stored `names` directly. Preserve `f.names` and `f[:names]`
-    # without adding a second, drift-prone copy of the schema.
+    # `f.names` and `f[:names]` read the schema without a second copy of it.
     nm === :names && return names(getfield(f, :table))
     return getfield(f, nm)
 end
@@ -2193,7 +2227,7 @@ end
     # `types=Missing` is an intentional sink: every present value recovers to
     # missing, as it does in the eager parser's default collecting mode.
     T === Missing && return missing
-    # a typed cell: the same kernels File uses, on demand
+    # a typed cell: the same parsers File uses, on demand
     (st == CELL_BADQUOTE || clen == 0 || esc) && return missing
     v, ok = parsevalue(T, c.buf, cpos, cpos + clen - 1, c.opts)
     return ok ? v : missing
@@ -2205,7 +2239,7 @@ end
 # that buffer, so this fallback is lifetime- and concurrency-safe.
 @inline function _lazycompact(buf::Vector{UInt8}, pos::Int, len::Int,
                               viewoffsetlimit::Int=Int(typemax(Int32)))
-    len <= COMPACTSTRING_INLINE &&
+    len <= INLINE_MAX &&
         return DataString(inline_payload(buf, pos, len), EMPTY_BYTES)
     pos - 1 <= viewoffsetlimit &&
         return DataString(view_payload(buf, pos, len, 0, pos - 1), buf)
@@ -2298,16 +2332,17 @@ end
 # ---------------------------------------------------------------------------
 # Rows — streaming
 # ---------------------------------------------------------------------------
-struct Rows
+# `NT` is a NamedTuple type: its names are the row's columns and its field
+# types are the cell access types (the requested type, `Missing`, or the
+# string type inferred text converts to). Carrying the schema in the type makes
+# `row.name`, and `row[j]` with a literal `j`, resolve statically like
+# NamedTuple fields: a typed cell parses and returns without a dynamic dispatch
+# or a boxed value. `E` is the `on_error` mode.
+struct Rows{NT <: NamedTuple, E}
     name::String
     inner::_IndexedRows
-    names::Vector{Symbol}
-    lookup::Dict{Symbol, Int}
     sourceindices::Vector{Int}
-    types::Union{Nothing, Vector{Union{Nothing, Type}}}
     limit::Union{Nothing, Int}
-    stringtype::Type
-    on_error::Symbol
 end
 
 function Rows(source; types=nothing, reusebuffer::Bool=false, select=nothing, drop=nothing,
@@ -2324,22 +2359,23 @@ function Rows(source; types=nothing, reusebuffer::Bool=false, select=nothing, dr
     plan = settlecolumns(p; select, drop, types,
                          validate=get(kw, :validate, true))
     names = p.names[plan.sources]
-    # Keep the settled source type beside its output position. Row access uses
-    # these two short lists for each requested cell.
-    rowtypes = Union{Nothing, Type}[
-        accessparsetype(plan.columns[j]) for j in plan.sources
-    ]
-    all(isnothing, rowtypes) && (rowtypes = nothing)
+    # the access type of each output column: a requested type, or the string
+    # type that inferred text converts to
+    access = Type[something(accessparsetype(plan.columns[j]), stringtype) for j in plan.sources]
+    NT = NamedTuple{Tuple(names), Tuple{access...}}
     name = _sourcename(source)
     inner = _IndexedRows(p.buf, p.bi.chunks, p.names,
                          Dict(nm => j for (j, nm) in enumerate(p.names)),
                          plan, p.d, name)
-    return Rows(name, inner, names,
-                Dict(nm => j for (j, nm) in enumerate(names)),
-                plan.sources, rowtypes, p.limit, stringtype, on_error)
+    return Rows{NT, on_error}(name, inner, plan.sources, p.limit)
 end
 
-Base.names(r::Rows) = getfield(r, :names)
+Base.names(::Rows{NT}) where {NT} = collect(Symbol, fieldnames(NT))
+# the element type a column's cells have: `Missing`, or a union with `Missing`
+# of the type the access converts to (an extension can widen a string request,
+# for example an auto-width InlineString to `Union{InlineString, String}`)
+_roweltype(::Type{Missing}) = Missing
+_roweltype(::Type{T}) where {T} = Union{_rowstringtype(T), Missing}
 # The structural index is complete before iteration starts, so the row count
 # is known: consumers can preallocate.
 Base.IteratorSize(::Type{Rows}) = Base.HasLength()
@@ -2359,42 +2395,32 @@ function Base.show(io::IO, r::Rows)
     end
 end
 
-Tables.istable(::Type{Rows}) = true
-Tables.rowaccess(::Type{Rows}) = true
+Tables.istable(::Type{<:Rows}) = true
+Tables.rowaccess(::Type{<:Rows}) = true
 Tables.rows(r::Rows) = r
 Tables.columnnames(r::Rows) = names(r)
-Tables.schema(r::Rows) = getfield(r, :types) === nothing ?
-    Tables.Schema(getfield(r, :names),
-                  fill(Union{_rowstringtype(getfield(r, :stringtype)), Missing},
-                       length(getfield(r, :names)))) :
-    Tables.Schema(getfield(r, :names),
-                  Type[T === nothing ?
-                       Union{_rowstringtype(getfield(r, :stringtype)), Missing} :
-                       Union{_rowstringtype(T), Missing} for T in getfield(r, :types)])
+Tables.schema(::Rows{NT}) where {NT} =
+    Tables.Schema(fieldnames(NT), Tuple{map(_roweltype, fieldtypes(NT))...})
 _rowstringtype(T) = T === DataString ? DataString : T
 
-struct Row <: Tables.AbstractRow
+struct Row{NT <: NamedTuple, E} <: Tables.AbstractRow
     view::_IndexedRow
-    names::Vector{Symbol}
-    lookup::Dict{Symbol, Int}
     sourceindices::Vector{Int}
-    types::Union{Nothing, Vector{Union{Nothing, Type}}}
-    stringtype::Type
-    on_error::Symbol
 end
 
-Base.eltype(::Type{Rows}) = Row
+Base.eltype(::Type{Rows{NT, E}}) where {NT, E} = Row{NT, E}
 
-function Base.iterate(r::Rows, state=((1, nothing, 1)))
-    r.limit !== nothing && state[3] > r.limit && return nothing
-    it = iterate(r.inner, state)
+function Base.iterate(r::Rows{NT, E}, state=((1, nothing, 1))) where {NT, E}
+    lim = getfield(r, :limit)
+    lim !== nothing && state[3] > lim && return nothing
+    it = iterate(getfield(r, :inner), state)
     it === nothing && return nothing
     view, next = it
-    return Row(view, r.names, r.lookup, r.sourceindices, r.types,
-               r.stringtype, r.on_error), next
+    return Row{NT, E}(view, getfield(r, :sourceindices)), next
 end
 
-Tables.columnnames(row::Row) = getfield(row, :names)
+Tables.columnnames(::Row{NT}) where {NT} = fieldnames(NT)
+Base.propertynames(::Row{NT}) where {NT} = fieldnames(NT)
 
 @noinline function _throwrowproblem(view::_IndexedRow, j::Int, pos::Int,
                                     kind::Symbol, message::String)
@@ -2404,9 +2430,9 @@ end
 
 # Rows has no retained diagnostic table. In fail-fast mode, validate and parse
 # the requested cell at the access boundary, where its lazy value is first
-# observed. This keeps the default allocation-free row view while restoring
-# 0.10's strict keyword and the 1.0 on_error contract.
-function _strictrowvalue(view::_IndexedRow, j::Int, T)
+# observed. This keeps the default allocation-free row view while honoring
+# the `strict` keyword and the `on_error` contract.
+function _strictrowvalue(view::_IndexedRow, j::Int, ::Type{T}) where {T}
     r = getfield(view, :r)
     ci = getfield(view, :ci)
     lr = getfield(view, :localrow)
@@ -2423,7 +2449,6 @@ function _strictrowvalue(view::_IndexedRow, j::Int, T)
     st == CELL_BADQUOTE &&
         _throwrowproblem(view, j, pos, :invalid_quoted_field,
                          "malformed quoting in " * excerpt(r.buf, pos, len))
-    T === nothing && return view[j]
     _stringsink(T) && return _typedvalue(T, view, j)
     T === Missing &&
         _throwrowproblem(view, j, pos, :invalid_value,
@@ -2438,27 +2463,33 @@ function _strictrowvalue(view::_IndexedRow, j::Int, T)
     return value
 end
 
-function Tables.getcolumn(row::Row, j::Int)
-    ts = getfield(row, :types)
+# With a literal `j` (as `row.name` and `row[3]` produce) the access type
+# and the cell type are constants, so the parse call and the returned value
+# are typed; a runtime `j` dispatches once per cell.
+@inline function Tables.getcolumn(row::Row{NT, E}, j::Int) where {NT, E}
+    T = fieldtype(NT, j)
     v = getfield(row, :view)
-    sourcej = getfield(row, :sourceindices)[j]
-    T = ts === nothing ? nothing : ts[j]
-    x = if getfield(row, :on_error) === :error
-        _strictrowvalue(v, sourcej, T)
-    else
-        T === nothing ? v[sourcej] : T === Missing ? missing :
-                        _typedvalue(T, v, sourcej)
-    end
-    st = getfield(row, :stringtype)
-    return T !== nothing || st === DataString || !(x isa DataString) ? x : _rowstring(st, x)
+    @inbounds sourcej = getfield(row, :sourceindices)[j]
+    return _rowcell(T, v, sourcej, Val(E))::_roweltype(T)
 end
+@inline _rowcell(::Type{T}, v::_IndexedRow, j::Int, ::Val{:error}) where {T} =
+    _strictrowvalue(v, j, T)
+@inline _rowcell(::Type{Missing}, v::_IndexedRow, j::Int, ::Val{:error}) =
+    _strictrowvalue(v, j, Missing)
+@inline _rowcell(::Type{Missing}, v::_IndexedRow, j::Int, ::Val) = missing
+@inline _rowcell(::Type{T}, v::_IndexedRow, j::Int, ::Val) where {T} = _typedvalue(T, v, j)
 # per-cell string materialization for Rows(stringtype=...) and requested
 # string types; extensions may add
 _rowstring(::Type{String}, x::DataString) = String(x)
 _rowstring(::Type{DataString}, x::DataString) = x
 _rowstring(::Type{Symbol}, x::DataString) = Symbol(x)
-Tables.getcolumn(row::Row, nm::Symbol) =
-    Tables.getcolumn(row, getfield(row, :lookup)[nm])
+@inline function Tables.getcolumn(row::Row{NT}, nm::Symbol) where {NT}
+    j = Base.fieldindex(NT, nm, false)
+    j == 0 && throw(KeyError(nm))
+    return Tables.getcolumn(row, j)
+end
+@inline Tables.getcolumn(row::Row, ::Type{T}, j::Int, nm::Symbol) where {T} =
+    Tables.getcolumn(row, j)
 Base.getindex(row::Row, j::Int) = Tables.getcolumn(row, j)
 Base.getindex(row::Row, nm::Symbol) = Tables.getcolumn(row, nm)
 Base.getindex(row::Row, nm::AbstractString) = Tables.getcolumn(row, Symbol(nm))
@@ -2563,7 +2594,7 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     seed = Union{Nothing, Type}[d.parsetype for d in plan.columns]
     # One stable schema for the whole row window: seed from the usual
     # stratified sample, then validate every cell of every selected column
-    # with the monomorphic scalar kernels (promoting on the first conflict).
+    # with the monomorphic scalar parsers (promoting on the first conflict).
     if any(j -> seed[j] === nothing, plan.sources)
         selected = _selectedmask(plan, p.ncols)
         inferred = sampletypes(p.buf, chunks, p.ncols, p.opts; selected, colopts=plan.colopts)

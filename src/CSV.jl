@@ -26,11 +26,10 @@ if isdefined(Tables, :Scan)
 end
 
 # Delimiter and header detection (`sniff` and `Spec`) is internal machinery
-# behind `delim=nothing`; it is not part of the 1.0 public surface (0.10 had
-# no such API). It can be promoted later if there is demand.
+# behind `delim=nothing`; it is not part of the public surface.
 
 # These are namespace APIs, not exports. Their public docs stay here so the
-# complete supported surface is easy to review.
+# complete supported surface is in one place.
 @doc """
     CSV.File(source; keywords...) -> CSV.File
 
@@ -74,8 +73,8 @@ eager typed parse.
 Iterate lightweight Tables.jl row views without allocating eager columns.
 Cells materialize on access. The source bytes and complete structural index
 remain in memory, so `length(rows)` and `names(rows)` are known before
-iteration. `reusebuffer` is accepted for 0.10 compatibility but is inert
-because the row view has no per-row value buffer. Invalid or malformed cells
+iteration. `reusebuffer` is accepted but is inert because the row view has
+no per-row value buffer. Invalid or malformed cells
 become `missing` by default; `strict=true` or `on_error=:error` throws a
 [`CSV.ParseError`](@ref CSV.ParseError) when the cell is accessed. Rows do not
 retain parse diagnostics, so use [`CSV.File`](@ref CSV.File) when
@@ -88,8 +87,8 @@ name, or a `Regex`) project columns in stable file order.
 Iterate a source as stable-schema [`CSV.File`](@ref CSV.File) batches and
 provide the Tables.jl partitions interface. Every batch has the same column
 types, including one settled width for an auto-width string request such as
-`stringtype=InlineString`. Pooling is evaluated per batch. `ntasks` influences
-the target batch size; use `chunkbytes` for direct size control. List `select`
+`stringtype=InlineString`. Pooling is evaluated per batch. `ntasks` sets the
+target batch count; use `chunkbytes` for direct size control. List `select`
 and `drop` forms project every batch in stable file order. With the default
 `on_error=:warn`, the first batch with parse problems prints one summary
 warning; every batch keeps its own [`CSV.problems`](@ref CSV.problems).
@@ -147,8 +146,8 @@ iterator gives the same uncompressed bytes as `CSV.write`.
 end
 
 # -- precompile workload -------------------------------------------------------
-# The specialized per-column loops are exactly what makes first-File
-# expensive to compile (~4 s cold on an M3). One small in-memory pass through
+# The specialized per-column loops are what makes the first `File` call
+# expensive to compile. One small in-memory pass through
 # each public reader and writer caches those specializations: File (type
 # inference, type changes, pooling, missing values, each built-in value type,
 # gzip, parallel parsing,
@@ -167,7 +166,7 @@ import Dates, CodecZlib
         File(IOBuffer(pooled); pool=(0.5, 100))
         File(IOBuffer(mixed); stringtype=String)
         File(IOBuffer(mixed); parallel=true, ntasks=2, chunkbytes=1 << 10)
-        # Exercise common option values and selected-column kernels. The API
+        # Exercise common option values and selected-column loops. The API
         # boundaries share code across keyword combinations; this covers the
         # few scalar conversions and execution paths absent from a default read.
         File(IOBuffer(mixed); comment="#", missingstring="NA",
@@ -178,9 +177,9 @@ import Dates, CodecZlib
         File(IOBuffer(mixed); types=Dict(:int => Int64))
         File(IOBuffer(mixed); types=String)
         File(IOBuffer(mixed); dateformat=Dict(:date => Dates.DateFormat("yyyy-mm-dd")))
-        # `stop_on_end=true` did not preserve caller-owned IO on every
-        # TranscodingStreams version admitted by CodecZlib 0.7. Use the
-        # one-shot codec here so the lower-bound precompile workload is stable.
+        # Use the one-shot codec here: the streaming form's handling of a
+        # caller-owned IO differs across the TranscodingStreams versions that
+        # CodecZlib 0.7 admits, and the precompile workload must be stable.
         compressed = transcode(CodecZlib.GzipCompressor,
                                Vector{UInt8}(codeunits(mixed)))
         File(compressed)

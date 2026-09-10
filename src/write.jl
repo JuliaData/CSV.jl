@@ -7,7 +7,7 @@
 #                containing structural bytes are an ArgumentError: silent
 #                corruption is not an option)
 #   floatformat  a printf-style format string ("%.3f") applied to every
-#                AbstractFloat cell (issue #492); default is Julia's shortest
+#                AbstractFloat cell; default is Julia's shortest
 #                round-trip (Ryu) printing
 #   compress     :auto (by .gz extension) | :gzip | :none
 #   partition    write a Vector of sinks in parallel, one table partition each
@@ -73,8 +73,8 @@ const WRITE_QUOTESTYLES = (:minimal, :all, :none)
 
 # The custom float and date formats are type parameters: with the defaults
 # (`Nothing`) their formatting branches vanish at compile time, which keeps
-# the shared row loop free of Printf/Dates dispatch and lets a trimmed binary
-# verify the default writer.
+# the shared row loop free of Printf/Dates dispatch and keeps the default
+# writer statically compilable.
 struct WriteOpts{F <: Union{Nothing, Printf.Format}, D <: Union{Nothing, DateFormat}}
     delim::UInt8                # first delimiter byte: quoting and syntax-clash checks
     delimbytes::Vector{UInt8}   # the complete delimiter (multi-byte delimiters write as-is)
@@ -223,7 +223,7 @@ end
 # whether the cell is a string (only strings get :all-quoting, the
 # empty-means-present rule, and whitespace-preserving quoting). Empty quoted
 # content is the parser's present-empty-string spelling; empty unquoted content
-# is missing, matching the parser's pinned 1.0 convention. A multi-byte
+# is missing, matching the parser's convention. A multi-byte
 # delimiter quotes on its first byte: over-quoting is harmless.
 function _appendbytes!(out::_WriteOutput, bytes::AbstractVector{UInt8}, o::WriteOpts,
                        stringcell::Bool)
@@ -289,9 +289,9 @@ end
 function _appendstring!(out::_WriteOutput, s::DataString, o::WriteOpts)
     n = ncodeunits(s)
     if o.quotestyle === :minimal && n > 0
-        if n > COMPACTSTRING_INLINE
+        if n > INLINE_MAX
             GC.@preserve s begin
-                _appendscanned!(out, pointer(s.data, cspos(s.p)), n, o) && return out
+                _appendscanned!(out, pointer(s.data, payloadpos(s.p)), n, o) && return out
             end
         else
             scratch = Ref{NTuple{16, UInt8}}()
@@ -384,8 +384,8 @@ end
 # with the defaults inlined: same digits (Ryu.reduce_shortest), same layout
 # rules — fixed notation for -4 < pt <= 6 (Float16: 3) unless an integer-valued
 # value would print more digits than its magnitude warrants, else `d.ddde±xx`;
-# hash=true forces the trailing ".0". Byte equality with string(x) is pinned
-# in the tests over random bits, specials, and every exponent form.
+# hash=true forces the trailing ".0". The output is byte-identical to
+# `string(x)` for every bit pattern, the specials, and every exponent form.
 @inline function _appendfloat!(out::_WriteOutput, x::Union{Float64, Float32, Float16}, o::WriteOpts)
     len = length(out)
     _room!(out, Base.Ryu.neededdigits(typeof(x)))
@@ -480,8 +480,8 @@ end
 # Date       yyyy-mm-dd            year ≥ 4 digits (more if needed), '-' if negative
 # DateTime   yyyy-mm-ddTHH:MM:SS   plus ".sss" (three digits) only when the
 #                                  milliseconds are nonzero (Dates' `.s` token)
-# Byte equality with `string(x)` is pinned by the test suite over adversarial
-# years (negative, 5-digit) and every millisecond value.
+# The output is byte-identical to `string(x)`, including negative and
+# five-digit years and every millisecond value.
 @inline function _append2!(out::_WriteOutput, v::Integer)   # two zero-padded digits, 0 ≤ v < 100
     len = length(out)
     _room!(out, 2)
@@ -977,7 +977,7 @@ _renderblock(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpts,
     _renderblock_direct(cols, lo, hi, o, out, prefix)
 
 # Compatibility path for `transform`: callbacks are observable and may keep
-# state, so preserve CSV 0.10's row-major, sequential call order even for wide
+# state, so preserve the row-major, sequential call order even for wide
 # tables. Cells still read through the typed descriptors, so a type-stable
 # transform renders without a dynamic dispatch per cell.
 const _WRITECOLUMN_FIELDS = (:ints, :floats, :strings, :missingints, :bools, :dates,
@@ -1230,11 +1230,10 @@ Base.@constprop :aggressive function _emitrowblocks!(io, cols::_WriterColumns, n
         return
     end
 
-    # Each block renders into a fresh buffer. Reusing one buffer per ring slot
-    # measured 5-20% slower on every sink (a buffer written on one core, read
-    # by the emitting task, then written on another core pays for its cache
-    # lines' ownership each time), and the ordered scheduler bounds the live
-    # buffers to the ring size either way.
+    # Each block renders into a fresh buffer: a buffer reused across ring
+    # slots is written on one core, read by the emitting task, then written on
+    # another core, and pays for its cache lines' ownership each time. The
+    # ordered scheduler bounds the live buffers to the ring size.
     renderblock = function (block, slot)
         lo, hi = bounds(block)
         return _renderblock(cols, lo, hi, o)
@@ -1277,10 +1276,10 @@ function _emitmembers!(io, cols::_WriterColumns, nrows::Int, blockrows::Int, o::
     return
 end
 
-# TranscodingStreams 0.9 and 0.10 close a compressor's wrapped stream even
-# when `stop_on_end=true`; 0.11 fixed that behavior. CodecZlib 0.7 permits all
-# three releases, so protect caller-owned sinks rather than depend on a
-# transitive version. Sink failures still pass through unchanged.
+# Some TranscodingStreams releases admitted by CodecZlib 0.7 close a
+# compressor's wrapped stream even when `stop_on_end=true`, so protect
+# caller-owned sinks rather than depend on a transitive version. Sink
+# failures still pass through unchanged.
 struct _NonClosingIO{T <: IO} <: IO
     io::T
 end

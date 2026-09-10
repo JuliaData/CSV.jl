@@ -161,9 +161,9 @@ allocsumgrouped(buf::Vector{UInt8}, opts::K.ValueOpts, scratch::Vector{UInt8}) =
     @allocated sumgrouped(buf, opts, scratch)
 
 function csfrombytes(bytes::Vector{UInt8})
-    p = length(bytes) <= K.COMPACTSTRING_INLINE ? K.inline_payload(bytes, 1, length(bytes)) :
+    p = length(bytes) <= K.INLINE_MAX ? K.inline_payload(bytes, 1, length(bytes)) :
                                          K.view_payload(bytes, 1, length(bytes), 0, 0)
-    return K.DataString(p, length(bytes) <= K.COMPACTSTRING_INLINE ? K.EMPTY_BYTES : bytes)
+    return K.DataString(p, length(bytes) <= K.INLINE_MAX ? K.EMPTY_BYTES : bytes)
 end
 
 function csscratchbytes(s::K.DataString)
@@ -1551,7 +1551,7 @@ end
     for n in 0:255
         bytes = UInt8[xor(pattern[mod1(i, length(pattern))], UInt8(i % 251)) for i in 1:n]
         push!(strings, String(copy(bytes)))
-        if n <= K.COMPACTSTRING_INLINE
+        if n <= K.INLINE_MAX
             push!(payloads, K.DataString(K.inline_payload(bytes, 1, n), K.EMPTY_BYTES))
         else
             data = vcat(UInt8[0x11], bytes, UInt8[0x22])
@@ -1581,7 +1581,7 @@ end
         bytes = csscratchbytes(payloads[i])
         bytes[1:n] == collect(codeunits(strings[i])) &&
             all(iszero, bytes[(n + 1):end])
-    end for i in 1:(K.COMPACTSTRING_INLINE + 1))
+    end for i in 1:(K.INLINE_MAX + 1))
     @test all(cmp(payloads[i], payloads[j]) == cmp(strings[i], strings[j]) &&
               isless(payloads[i], payloads[j]) == isless(strings[i], strings[j]) &&
               cmp(payloads[i], strings[j]) == cmp(strings[i], strings[j]) &&
@@ -1608,8 +1608,8 @@ end
     t2 = K.parse("a\n\"in\"\"line\"\n\"a long escaped \"\"string\"\" beyond inline\"\n")
     @test collect(t2[:a]) == ["in\"line", "a long escaped \"string\" beyond inline"]
     @test t2[:a].buffers[1] === K.EMPTY_BYTES       # nothing views the source
-    @test K.cslen(t2[:a].payloads[2]) > K.COMPACTSTRING_INLINE
-    @test K.csbufidx(t2[:a].payloads[2]) >= 1        # long value lives in owned bytes
+    @test K.payloadlen(t2[:a].payloads[2]) > K.INLINE_MAX
+    @test K.payloadbufidx(t2[:a].payloads[2]) >= 1        # long value lives in owned bytes
     # Buffer indices above one select adopted chunk buffers.
     overflowvalue = "a value in the second owned buffer"
     overflowbytes = Vector{UInt8}(codeunits(overflowvalue))
@@ -1630,7 +1630,7 @@ end
     ownedlog = K.ProblemLog(10)
     K.parsecolchunk!(ownedcol, ownedbuf, ownedci, 1, 0,
                      K.makevalueopts(owneddialect), true, ownedlog)
-    @test K.csbufidx(ownedcol.payloads[1]) == 1
+    @test K.payloadbufidx(ownedcol.payloads[1]) == 1
     @test ownedcol.extra == Vector{UInt8}(codeunits(ownedvalue))
     @test isempty(ownedlog.items)
     fill!(ownedbuf, 0x00)
@@ -1647,7 +1647,7 @@ end
     K._own!(seg2, Vector{UInt8}(codeunits(segvalue2)), 1, ncodeunits(segvalue2), 2)
     K._adopt!(final, seg1, 1:1)
     K._adopt!(final, seg2, 2:2)
-    @test K.csbufidx(final.payloads[1]) == 2 && K.csbufidx(final.payloads[2]) == 3
+    @test K.payloadbufidx(final.payloads[1]) == 2 && K.payloadbufidx(final.payloads[2]) == 3
     @test isempty(final.extra) && length(final.adopted) == 2
     adoptedvec = K.finalizecolumn(String, final, 2)
     @test adoptedvec.buffers[1] === K.EMPTY_BYTES
@@ -1679,7 +1679,7 @@ end
                              K.makevalueopts(dialect), true, log)
             parsed = K.finalizecolumn(String, stringcol, 1)
             @test String(parsed[1]) == largeposvalue
-            @test K.csbufidx(parsed.payloads[1]) == 1
+            @test K.payloadbufidx(parsed.payloads[1]) == 1
             @test parsed.buffers[2] == Vector{UInt8}(codeunits(largeposvalue))
             @test isempty(log.items)
         end
@@ -1829,10 +1829,10 @@ end
         @test isequal(K.materialize(t[:txt]), texts[1:n])
         # every long value lives in column-owned bytes, never in the source
         @test t[:txt].buffers[1] === K.EMPTY_BYTES
-        @test all(K.cslen(p) <= K.COMPACTSTRING_INLINE || K.csbufidx(p) >= 1
+        @test all(K.payloadlen(p) <= K.INLINE_MAX || K.payloadbufidx(p) >= 1
                   for p in t[:txt].payloads)
         ownedbytes = sum(length, t[:txt].buffers)
-        @test ownedbytes == sum((ismissing(texts[i]) || ncodeunits(texts[i]) <= K.COMPACTSTRING_INLINE) ? 0 :
+        @test ownedbytes == sum((ismissing(texts[i]) || ncodeunits(texts[i]) <= K.INLINE_MAX) ? 0 :
                                 ncodeunits(texts[i]) for i in 1:n; init=0)
     end
     one = K.parse(buf; header=[:num, :txt], types=[Int64, String], comment="#",

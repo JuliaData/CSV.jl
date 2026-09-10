@@ -2,9 +2,9 @@
 #
 # InlineStrings are fixed-width isbits strings (1, 3, 7, 15, 31, 63, 127, 255
 # byte payloads). `stringtype=InlineString` picks the smallest width that fits
-# each column's longest value (InlineStrings.inlinestrings semantics — 0.10's
-# default behavior); a specific `String15` etc. pins the width, erroring on
-# an over-long value like `String15("...")` would.
+# each column's longest value (InlineStrings.inlinestrings semantics); a
+# specific `String15` etc. fixes the width, erroring on an over-long value like
+# `String15("...")` would.
 #
 # Conversion runs from the DataString payloads directly: inline values
 # rebuild from the payload words, views copy out of the retained buffer — one
@@ -33,9 +33,9 @@ end
     n = ncodeunits(s)
     n > _capacity(T) &&
         throw(ArgumentError("value of $n bytes does not fit $T"))
-    if n > CSV.COMPACTSTRING_INLINE
+    if n > CSV.INLINE_MAX
         GC.@preserve s begin
-            return T(pointer(s.data, CSV.cspos(s.p)), n)
+            return T(pointer(s.data, CSV.payloadpos(s.p)), n)
         end
     end
     # inline payload: build through a stack scratch (≤12 bytes)
@@ -49,8 +49,8 @@ end
     end
 end
 
-# `stringtype=InlineString` stops at String31, as 0.10 did: wider inline
-# strings copy 64–256 bytes per cell and lose to `String` on every operation.
+# `stringtype=InlineString` stops at String31: wider inline strings copy
+# 64–256 bytes per cell and lose to `String` on every operation.
 # A column whose longest value exceeds it comes back as `String`, so a valid
 # file never fails to read because of its text width.
 const _AUTO_MAX_WIDTH = _capacity(String31)
@@ -88,7 +88,7 @@ function CSV._materializecolumn(::Type{T}, col::CSV.DataStringVector,
                 out[i] = x === missing ? missing : _inl(T, x)
             end
         end
-        # The kernel already settles missingness. Preserve a declared Union
+        # The parser already settles missingness. Preserve a declared Union
         # even when this particular column or batch contains no missing cells.
         return out
     end

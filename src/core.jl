@@ -26,8 +26,9 @@ The pipeline (and the file's layout) is:
                         changes that column type. It reads only the affected
                         parts of that column again.
     L4  columns       : Each non-string column stores its values and a separate
-                        present-or-missing flag. String values refer to the
-                        input bytes and remove escapes when a caller reads them.
+                        present-or-missing flag. String columns store short
+                        values inline and copy longer values into buffers the
+                        column owns, with escapes removed during the parse.
                         Known row counts let the parser allocate each column once.
     L5  result        : `CSV.parse` runs the steps above and returns a
                         typed table. It also returns details about invalid data.
@@ -42,7 +43,7 @@ a quoted region during this scan. The value parser only starts a quoted value at
 the start of a field, after allowed leading blanks. Invalid input with a bare
 quote can therefore produce different row boundaries in these two steps. This
 choice lets the parser find safe range starts without reading all earlier bytes
-again. Tests preserve this behavior.
+again.
 =#
 
 using Dates
@@ -80,7 +81,7 @@ const _ISO_TIME_PATTERN = Parsers.compilepattern("HH:MM:SS.s")
 # ---------------------------------------------------------------------------
 # Dialect: the structural options. Value-level options (sentinels, dateformats,
 # true/false spellings, decimal char) live in `ValueOpts`, built once in
-# `makevalueopts` and applied to exact field spans by the Parsers kernels.
+# `makevalueopts` and applied to exact field spans by the Parsers functions.
 # ---------------------------------------------------------------------------
 
 struct Dialect
@@ -93,9 +94,9 @@ struct Dialect
     ignoreemptyrows::Bool
     ignorerepeated::Bool                # adjacent delimiters collapse into one boundary
     # A quote opens a field only at the field start and closes only before the
-    # delimiter or row end (0.10's rule). This is the serial repair path the
-    # readers take when the structural scan found a quote that did not start
-    # its field (`5' 11"`, `x"y`); it is never the first pass.
+    # delimiter or row end. This is the serial repair path the readers take
+    # when the structural scan found a quote that did not start its field
+    # (`5' 11"`, `x"y`); it is never the first pass.
     lenient::Bool
     # Comment rows are dropped by their first bytes, so their quotes have no
     # meaning. The parallel planner and the fast scanners assume comment rows
@@ -433,8 +434,8 @@ end
 #     CELL_VALUE    content [cpos, cpos+clen) is a present value (maybe escaped)
 #     CELL_MISSING  empty / whitespace-stripped-to-empty / sentinel ⇒ missing
 #     CELL_BADQUOTE malformed quoting (unterminated, or bytes after the close)
-# Rules: outer space/tab around a QUOTED field is structural, never content
-# (matching every CSV reader surveyed); unquoted whitespace is significant
+# Rules: outer space/tab around a QUOTED field is structural, never content;
+# unquoted whitespace is significant
 # unless `stripwhitespace`; a quoted empty field is a present empty string,
 # never missing; sentinels match the (possibly unquoted) content exactly.
 const CELL_VALUE    = 0x00
@@ -553,7 +554,7 @@ index delimited — quotes and any surrounding blanks included) into the
                        empty field `""` (a PRESENT empty string, not missing);
   * `escaped`          `true` when the content still contains escape sequences
                        (`""` doubling or backslash-escapes) that must be unescaped before
-                       the bytes are the value — typed kernels reject such
+                       the bytes are the value — typed parsers reject such
                        cells, string cells unescape once at parse time;
   * `disposition`      `CELL_VALUE`    → parse `[cpos, cpos+clen)` as a value
                        `CELL_MISSING`  → empty / stripped-to-empty / sentinel
@@ -690,10 +691,10 @@ function _timestamptype(c::Parsers.CivilParts)
     return String
 end
 
-# Numeric kernels take a scratch buffer so grouped digits (groupmark) degroup
+# Numeric parsers take a scratch buffer so grouped digits (groupmark) degroup
 # without per-cell allocation; the hot loops pass a per-(column × chunk)
 # scratch, and the 5-arg convenience forms below allocate one lazily. With
-# groupmark off, the extra argument is dead and the kernels run untouched.
+# groupmark off, the extra argument is dead and the parsers run untouched.
 @inline function parsevalue(::Type{Int64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                             scratch::Vector{UInt8})
     if vo.groupmark != 0x00
@@ -736,7 +737,7 @@ end
 @inline parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                    scratch::Vector{UInt8}) where {T} = parsevalue(T, buf, i, j, vo)
 
-# Narrow numeric requests use the native integer/float kernels, then convert at
+# Narrow numeric requests use the native integer/float parsers, then convert at
 # the API boundary. Keep that rule available to lazy and row readers too:
 # calling `tryparse(Int8, String(...))` here would lose decimal/groupmark
 # handling and would allocate one String per cell.
@@ -837,7 +838,7 @@ end
     _spanmatches(buf, i, j, vo.falses) && return (false, true)
     return (false, false)
 end
-# A Char cell is exactly one Unicode scalar (0.10 accepted `types=Char`).
+# A Char cell is exactly one Unicode scalar.
 @inline function parsevalue(::Type{Char}, buf::Vector{UInt8}, i::Int, j::Int, ::ValueOpts)
     n = j - i + 1
     1 <= n <= 4 || return ('\0', false)
@@ -1086,7 +1087,7 @@ end
 # unread past assembly — only its relpos is, as that field's stop).
 # Use the original row start for these checks. A row that contains only
 # delimiters has one empty field. It is not an empty row. A comment prefix must
-# start at the first byte of the row. Tests check both rules.
+# start at the first byte of the row.
 function assemblecollapsed!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, n::Int)
     tape = ci.tape
     skip = ci.delimskip = d.delim isa UInt8 ? 1 : length(d.delim::Vector{UInt8})
@@ -1205,9 +1206,9 @@ end
 # --- scalar scanner ---------------------------------------------------------
 #
 # Read one byte at a time. This scanner supports multi-byte delimiters, a
-# separate escape byte, and different open and close quote bytes. Tests compare
-# the fast scanners with this scanner. Each chunk starts at a complete row, so
-# this scan always starts outside a quoted field.
+# separate escape byte, and different open and close quote bytes, and it is
+# the reference the fast scanners must agree with. Each chunk starts at a
+# complete row, so this scan always starts outside a quoted field.
 
 function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
     start, stop = ci.start, ci.stop
@@ -1300,7 +1301,7 @@ end
 
 # --- lenient scanner --------------------------------------------------------
 #
-# 0.10's quote rule: a quote opens a field only as the field's first byte
+# The field-start quote rule: a quote opens a field only as the field's first byte
 # (after optional blanks) and closes only when it is not doubled; everything
 # after the closing quote up to the delimiter or row end belongs to the field
 # (the value layer reports it as malformed quoting). A quote anywhere else is
@@ -1919,7 +1920,8 @@ end
 
 # Choose the scanner. Complex quote, escape, or delimiter options require the
 # scalar scanner. Use the vector scanner by default for supported input. The
-# `:swar` scanner does not require vector instructions. Tests can select it.
+# `:swar` scanner does not require vector instructions and can be selected
+# explicitly.
 function resolvescanner(d::Dialect, fastindex::Bool, scanner::Symbol)
     scanner in (:auto, :vec, :swar, :scalar) ||
         throw(ArgumentError("scanner must be :auto, :vec, :swar, or :scalar (got $(repr(scanner)))"))
@@ -1946,9 +1948,9 @@ function index(buf::Vector{UInt8}, d::Dialect;
                scanner::Symbol=:auto,
                _taskobserver=nothing)
     len = length(buf)
-    # No lower bound beyond 1: tests deliberately use tiny chunkbytes to force row
-    # boundaries everywhere. The standalone index default is 8 MiB; `parse`
-    # passes its size-aware 64 KiB–1 MiB default.
+    # No lower bound beyond 1: a tiny chunkbytes forces row boundaries
+    # everywhere, which exercises every chunk geometry. The standalone index
+    # default is 8 MiB; `parse` passes its size-aware 64 KiB–1 MiB default.
     chunkbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $chunkbytes)"))
     datastart >= 1 || throw(ArgumentError("datastart must be ≥ 1 (got $datastart)"))
     ntasks === nothing || ntasks >= 1 ||
@@ -2103,13 +2105,12 @@ end
 # that the FINAL column is a plain Base vector with zero copies either way:
 #   TypedColumn{T}  values + presence  → `Vector{T}` when nothing is missing
 #   UnionColumn{T}  Vector{Union{T,Missing}} written in place → that vector
-# (converting one layout to the other after the parse is a full extra pass —
-# see UnionColumn below for the measured cost — which is the whole reason two
-# layouts exist rather than one plus a conversion.)
+# (converting one layout to the other after the parse is a full extra pass,
+# which is why two layouts exist rather than one plus a conversion.)
 #
 # Fixed-size isbits values + presence bytes. `Vector{Bool}` (not BitVector): chunk
 # tasks write disjoint row ranges concurrently and BitVector packs 64 rows per word
-# (a data race); the production version uses a word-aligned bitmap per chunk slice.
+# (a data race).
 struct TypedColumn{T}
     values::Vector{T}
     present::Vector{Bool}
@@ -2122,8 +2123,8 @@ TypedColumn{T}(n::Int) where {T} = TypedColumn{T}(Vector{T}(undef, n), fill(fals
 # values+present — so finalize hands the Base vector back with zero copies.
 # Missing-free columns keep TypedColumn and return the raw `Vector{T}`; a
 # column whose (sparse) missings the sample missed converts once at finalize.
-# Post-parse conversion measures 120-150% of a whole 20 MiB parse (bitsunion
-# stores have no memcpy path), which is why the write-direct mode exists.
+# That conversion costs about as much as the parse itself (bitsunion stores
+# have no memcpy path), which is why the write-direct mode exists.
 struct UnionColumn{T}
     uvalues::Vector{Union{T, Missing}}
     UnionColumn{T}(uvalues::Vector{Union{T, Missing}}) where {T} = new{T}(uvalues)
@@ -2142,7 +2143,7 @@ end
 
 # --- strings ------------------------------------------------------------------
 # The DataString type family (payload, accessors, AbstractString interface,
-# DataStringVector, materialize) lives in its own kernel-independent file;
+# DataStringVector, materialize) lives in DataStrings;
 # the quote/escape-aware helpers and the StringColumn staging below are the
 # CSV-specific layer over it.
 include("strings.jl")
@@ -2195,7 +2196,7 @@ end
             i += 1
         end
         n += 1
-        n > COMPACTSTRING_INLINE && return nothing
+        n > INLINE_MAX && return nothing
         if n <= 4
             a |= UInt64(c) << (32 + 8 * (n - 1))
         else
@@ -2288,7 +2289,7 @@ end
     spos = length(extra) + 1
     spos - 1 <= typemax(Int32) - clen || _extratoolarge()
     n = _unescape_append!(extra, buf, cpos, clen, col.e, col.cq)
-    @inbounds col.payloads[out] = n <= COMPACTSTRING_INLINE ?
+    @inbounds col.payloads[out] = n <= INLINE_MAX ?
                                   inline_payload(extra, spos, n) :
                                   view_payload(extra, spos, n, col.slot, spos - 1)
     return
@@ -2315,17 +2316,16 @@ function _adopt!(col::StringColumn, seg::StringColumn, rows::AbstractUnitRange{I
     payloads = col.payloads
     @inbounds for r in rows
         pl = payloads[r]
-        if cslen(pl) > COMPACTSTRING_INLINE && csbufidx(pl) == 1
-            payloads[r] = repoint_payload(pl, newidx, csoffset(pl))
+        if payloadlen(pl) > INLINE_MAX && payloadbufidx(pl) == 1
+            payloads[r] = repoint_payload(pl, newidx, payloadoffset(pl))
         end
     end
     return
 end
 
-# The kernel's own unescape: `""` collapses to `"` when e == cq; `\X` drops the
-# backslash when e != cq. Spans are Int64/Int32 end to end, so a single field
-# may be arbitrarily wide (the root cause of CSV.jl issue #935 was a 20-bit
-# length cap in an intermediate representation — there is no intermediate here).
+# Unescape: `""` collapses to `"` when e == cq; `\X` drops the backslash when
+# e != cq. Spans are Int64/Int32 end to end, so a single field may be
+# arbitrarily wide.
 function _unescape_bytes(buf::Vector{UInt8}, pos::Int64, len::Int32, e::UInt8, cq::UInt8)
     out = Vector{UInt8}(undef, len)
     n = 0
@@ -2444,7 +2444,7 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
             problemrow = problemrowbase + localrow
             pushcellproblem!(problems, problemrow, j, pos, len, :invalid_quoted_field,
                              "malformed quoting in ", buf)
-            len <= COMPACTSTRING_INLINE ? (payloads[out] = inline_payload(buf, pos, len)) :
+            len <= INLINE_MAX ? (payloads[out] = inline_payload(buf, pos, len)) :
                                           _own!(col, buf, pos, len, out)
             continue
         end
@@ -2457,7 +2457,7 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
             # allocation-free; long ones unescape into the column's bytes
             inl = _unescape_inline(buf, cpos, clen, col.e, col.cq)
             inl === nothing ? _ownescaped!(col, buf, cpos, clen, out) : (payloads[out] = inl)
-        elseif clen <= COMPACTSTRING_INLINE
+        elseif clen <= INLINE_MAX
             payloads[out] = inline_payload(buf, cpos, clen)
         else
             _own!(col, buf, cpos, clen, out)
@@ -2606,9 +2606,8 @@ end
 
 # Bounded retention keeps the `limit` SOURCE-EARLIEST problems. A full log
 # maintains its items as a max-heap so displacing the worst retained entry is
-# O(log limit) — the previous per-overflow findmax scan was O(limit) each,
-# quadratic-by-cap on problem-dense files (measured: a 5%-ragged 20 MiB file
-# spent seconds scanning a 10k reservoir per dropped report).
+# O(log limit); a linear scan per overflow would be quadratic in the cap on
+# problem-dense files.
 function _siftdown!(items::Vector, lt::F, i::Int) where {F}
     n = length(items)
     @inbounds while true
@@ -3021,7 +3020,7 @@ function _selectedmask(p::ColumnPlan, ncols::Int)
 end
 
 # Narrow numeric requests use a wider scalar parser, followed by a checked
-# conversion. This keeps the scalar kernels small and preserves range errors.
+# conversion. This keeps the scalar parsers small and preserves range errors.
 const NARROW_TYPES = Dict{Type, Type}(
     Int8 => Int64, Int16 => Int64, Int32 => Int64,
     UInt8 => Int64, UInt16 => Int64, UInt32 => Int64, UInt64 => Int128,
@@ -3069,9 +3068,9 @@ function _columndecision(T)
     declaredmissing = T !== Missing && Missing <: T
     requested = T === Missing ? Missing : Base.nonmissingtype(T)
     # A requested string type names the OUTPUT type: `types=String` returns
-    # `Vector{String}` (0.10's read-as-text idiom), `DataString` keeps the
-    # zero-copy column, and an extension type (InlineString) converts once
-    # after parsing. Text is always parsed as a DataString column first.
+    # `Vector{String}`, `DataString` keeps the parsed column as it is, and an
+    # extension type (InlineString) converts once after parsing. Text is
+    # always parsed as a DataString column first.
     if requested !== Missing && _stringsink(requested)
         return ColumnDecision(String, requested, declaredmissing)
     end
@@ -3358,7 +3357,7 @@ end
 # The driver body takes positional, concretely typed arguments so it compiles
 # once per index/mask shape rather than once per keyword combination: every
 # distinct keyword set (`delim`, `comment`, `dateformat`, `missingstring`, ...)
-# otherwise re-specialized this whole function, 150–600 ms each on first use.
+# would otherwise specialize this whole function again on first use.
 Base.@nospecializeinfer function _parse(buf::Vector{UInt8}, d::Dialect, baseopts::ValueOpts, sc::Symbol,
                 @nospecialize(tm::Union{Nothing, Dict{Type, Type}}), chunkbytes::Int, parallel::Bool,
                 tasklimit::Int, maxproblems::Int, on_error::Symbol, validate::Bool,
@@ -3375,8 +3374,7 @@ Base.@nospecializeinfer function _parse(buf::Vector{UInt8}, d::Dialect, baseopts
     #
     # Assign each captured local value only once. Julia can put a captured value
     # in a `Core.Box` when the code assigns it more than once. Tasks would then
-    # share a mutable value, and the compiler could not know its exact type. A
-    # test checks that this method does not contain a `Core.Box`.
+    # share a mutable value, and the compiler could not know its exact type.
     allchunks::Vector{ChunkIndex} = index === nothing ?
         chunkplan(buf, d, datastart, chunkbytes, parallel, tasklimit) : index.chunks
     indexed = fill(index !== nothing, length(allchunks))
@@ -3538,7 +3536,7 @@ Base.@nospecializeinfer function _parse(buf::Vector{UInt8}, d::Dialect, baseopts
         # All chunk indexes are complete, so each chunk knows its output rows.
         # It writes values into the final columns. It does not need temporary
         # columns or a later copy step. The API layer can encode repeated strings
-        # after this step. The kernel does not encode them.
+        # after this step; the parser does not encode them.
         directwave!(cols, chunks, buf, d, opts, ncols, userprovided, promo,
                     promolock, pendingproblems, segments, segtypes, selected,
                     rowbases, ndata, rl, reportstructural, parallel,
@@ -3710,10 +3708,9 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ncols::Int,
 end
 
 # Re-parse one (chunk, column) segment under the final joined type. A top-level
-# function on purpose: an earlier version was a closure inside `parse` whose
-# `ci = chunks[k]` assignment REBOUND the enclosing function's boxed `ci`
-# variable, silently shared across every concurrent task — the textbook Julia
-# closure-capture race. Kernel rule: task bodies are named functions.
+# function on purpose: a closure that assigns a local of the enclosing function
+# rebinds a boxed variable shared across every concurrent task. Task bodies are
+# named functions.
 function restale!(chunks, final, segments, segtypes,
                   pendingproblems::PendingProblemLog, buf::Vector{UInt8},
                   opts::ValueOpts, d::Dialect, userprovided, k::Int, j::Int,
@@ -3735,14 +3732,12 @@ end
 # --- the direct wave ---------------------------------------------------------
 #
 # The unmasked driver: every chunk writes its parsed values straight into
-# exact-size final columns at its global row base (the parse loops always
-# supported an offset `rowbase`; the staged driver simply passed 0). What this
-# removes: per-(column × chunk) staging allocation (~2× the file size of
-# transient churn per parse), the stitch's copy pass, and the GC pressure both
-# fed. What it costs: on the rare promotion, completed chunks re-parse the
-# column instead of stitch-time converting — promotions are what stratified
-# sampling exists to make rare. (Dictionary encoding is not a kernel concern:
-# the API layer pools a finished DataString column in one pass when asked.)
+# exact-size final columns at its global row base (the parse loops take an
+# offset `rowbase`). There is no per-(column × chunk) staging and no copy pass;
+# on the rare promotion, completed chunks re-parse the column into the new
+# final. Promotions are what stratified sampling exists to make rare.
+# (Dictionary encoding is the API layer's job: it pools a finished DataString
+# column in one pass when asked.)
 
 # Direct finals allocate UNDEF: each chunk task fills its own slice right
 # before parsing it (one page touch, in the task that writes it, parallel at
@@ -3758,8 +3753,8 @@ function _allocdirect(::Type{T}, ndata::Int, buf::Vector{UInt8}, opts::ValueOpts
 end
 
 # indexed @simd loops, not fill!(view(...)): the SubArray fill does not lower
-# to a memset-class loop, and the missing-dense shapes (most rows per byte,
-# most fill work per input byte) measurably paid for it
+# to a memset-class loop, and the missing-dense shapes (most rows per byte)
+# do the most fill work per input byte
 function _fillslice!(col::StringColumn, lo::Int, hi::Int)
     payloads = col.payloads
     @inbounds @simd for r in lo:hi
@@ -3785,8 +3780,8 @@ end
 # Microseconds extend the date range but cannot hold every nanosecond value.
 # Before freezing the joined type, validate only the chunks that succeeded as
 # nanoseconds and now need microseconds. Other promotions accept prior values.
-# This cold pass uses source spans because the direct driver has already
-# replaced the old destination. Excluded rows must not affect the final type.
+# This cold pass reads the source spans again because the chunk's earlier
+# destination has been replaced. Excluded rows must not affect the final type.
 function _settletimestampwidening!(types, segtypes, chunks, buf, opts, js, rl,
                                    colopts, mask=nothing, rowbases=nothing)
     for j in js
@@ -3834,8 +3829,7 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
     allocjs = [j for j in 1:ncols if selected === nothing || selected[j]]
     # allocate per column in parallel: a Vector{Union{T,Missing}} final zero-
     # initializes its selector bytes at allocation, which is a serial memset
-    # per union column if done on one task — measured +17-21% at 8T on
-    # missing-heavy shapes before this went parallel
+    # per union column if done on one task
     if tasklimit > 1 && length(allocjs) > 1 && ndata > (1 << 16)
         _taskforeach(allocjs, tasklimit) do j
             finals[j] = _allocdirect(promo[j], ndata, buf, opts, d, j,
@@ -4009,7 +4003,7 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
             sp = fieldspan(ci, conflict, j)::Tuple{Int, Int}
             detected = promote_kernel(T, detecttype(buf, sp[1], sp[2], _copts(colopts, opts, j)))
             # single assignment: promoT is captured by the lock closure below,
-            # and a captured-and-reassigned local boxes (the staging war story)
+            # and a captured-and-reassigned local boxes
             promoT = detected === T ? String : detected
             T, dest = lock(promolock) do
                 joined = _promotemapped(tm, promo[j], promoT)
@@ -4120,8 +4114,8 @@ function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases
     mask === nothing || return _stitchmasked(T, segments, j, chunkrows, ndata, buf, e, cq,
                                              mask, inbases)
     # Single-chunk files (every input below chunkbytes): the lone segment IS the
-    # final column — finalize it directly, zero copies. This keeps the fused
-    # driver's small-file cost identical to writing final columns in place.
+    # final column — finalize it directly, zero copies, the same cost as
+    # writing final columns in place.
     if length(chunkrows) == 1
         seg = segments[1][j]
         seg === nothing && return fill(missing, ndata)
@@ -4182,8 +4176,8 @@ function _stitchmasked(::Type{T}, segments, j::Int, chunkrows, ndata::Int,
                 mask[inbases[k] + i] || continue
                 dest += 1
                 p = scol.payloads[i]
-                if newidx != 0 && cslen(p) > COMPACTSTRING_INLINE && csbufidx(p) == 1
-                    p = repoint_payload(p, newidx, csoffset(p))
+                if newidx != 0 && payloadlen(p) > INLINE_MAX && payloadbufidx(p) == 1
+                    p = repoint_payload(p, newidx, payloadoffset(p))
                 end
                 payloads[dest] = p
             end
@@ -4217,13 +4211,13 @@ function finalizecolumn(::Type{Missing}, ::Nothing, n::Int)
 end
 finalizecolumn(::Type{Missing}, ::Nothing, n::Int, ::Bool) = fill(missing, n)
 function finalizecolumn(::Type{String}, col::StringColumn, n::Int, force_missing::Bool=false)
-    anymissing = force_missing || any(p -> cslen(p) < 0, col.payloads)
+    anymissing = force_missing || any(p -> payloadlen(p) < 0, col.payloads)
     return anymissing ? _stringvector(Union{DataString, Missing}, col.payloads, _buffers(col)) :
                         _stringvector(DataString, col.payloads, _buffers(col))
 end
 # `all(::Vector{Bool})` short-circuits, so it compiles to a branchy scalar
-# loop — 1.2 ms per 4M-row column. `count` vectorizes; missing-free columns
-# (the common case) full-scan either way, 8× faster here.
+# loop; `count` vectorizes, and missing-free columns (the common case)
+# full-scan either way.
 _allpresent(present::Vector{Bool}) = count(present) == length(present)
 function finalizecolumn(::Type{T}, col::TypedColumn{T}, n::Int) where {T}
     # no missings ⇒ hand back the raw Vector{T}, zero copies
@@ -4236,10 +4230,10 @@ end
 finalizecolumn(::Type{T}, col::UnionColumn{T}, n::Int) where {T} = col.uvalues
 finalizecolumn(::Type{T}, col::UnionColumn{T}, n::Int, ::Bool) where {T} = col.uvalues
 
-# The sample-missed fallback: sparse missings the 128-row probe didn't see.
-# Bitsunion stores have no memcpy path (measured 120-150% of a whole 20 MiB
-# parse serially), so slice it across tasks. Named helper, not a closure: the
-# captured-and-reassigned boxing war story.
+# The sample-missed fallback: sparse missings the type sample did not see.
+# Bitsunion stores have no memcpy path and cost about as much as the parse, so
+# slice the conversion across tasks. A named helper, not a closure, so no
+# captured local is reassigned.
 function _tounionrange!(out, values, present, lo::Int, hi::Int)
     @inbounds for i in lo:hi
         out[i] = present[i] ? values[i] : missing
@@ -4267,16 +4261,14 @@ end
 """
     materialize(col) -> Vector
 
-Convert a kernel column into an ordinary `Vector` (`Vector{T}` or
-`Vector{Union{T,Missing}}`), detaching it from the input buffer. String views
-allocate real `String`s here — the choice between views and copies is the caller's,
-made after parsing instead of before it (this replaces CSV.jl's up-front
-`stringtype=` commitment). A column that is already a `Vector` is returned as-is.
+Convert a parsed column into an ordinary `Vector` (`Vector{T}` or
+`Vector{Union{T,Missing}}`). Text columns allocate one `String` per value. A
+column that is already a `Vector` is returned as is.
 """
 materialize(v::AbstractVector) = collect(v)
 materialize(v::Vector) = v
 
-# CSV.jl-compatible: a duplicate takes the smallest `name_k` not used by ANY
+# A duplicate takes the smallest `name_k` not used by ANY
 # name — original or already assigned — so `a,a,a_1` becomes `a,a_2,a_1`
 # (renames never collide with an original that appears later).
 function makeunique!(names::Vector{Symbol})
