@@ -1322,6 +1322,31 @@ end # @testset CSV readers
                                             :d2 => "yyyy.mm.dd"))
     @test (transposeddate.d1[1], transposeddate.d2[1]) ==
           (Date(2023, 1, 15), Date(2023, 1, 16))
+    # Transposed reads index and parse in parallel; columns, types, and
+    # problems match the sequential read.
+    let io = IOBuffer()
+        for r in 1:64
+            print(io, "col", r)
+            for c in 1:300
+                print(io, ",", r == 7 && c == 150 ? "x" : string(r * c % 97))
+            end
+            println(io)
+        end
+        wide = take!(io)
+        problemsof(f) = [(p.row, p.col, p.kind) for p in A.problems(f)]
+        seq = A.File(copy(wide); transpose=true, parallel=false, on_error=:collect)
+        par = A.File(copy(wide); transpose=true, parallel=true, ntasks=4, on_error=:collect)
+        @test Tables.columnnames(seq) == Tables.columnnames(par)
+        @test all(j -> eltype(Tables.getcolumn(seq, j)) == eltype(Tables.getcolumn(par, j)), 1:64)
+        @test all(j -> isequal(collect(Tables.getcolumn(seq, j)), collect(Tables.getcolumn(par, j))), 1:64)
+        @test eltype(seq.col7) == A.DataString && eltype(seq.col8) == Int
+        seqt = A.File(copy(wide); transpose=true, parallel=false, types=Int, on_error=:collect)
+        part = A.File(copy(wide); transpose=true, parallel=true, ntasks=3, types=Int, on_error=:collect)
+        @test problemsof(seqt) == problemsof(part) == [(150, 7, :invalid_value)]
+        @test isequal(collect(part.col7), collect(seqt.col7))
+        @test ismissing(part.col7[150]) && part.col7[149] == 7 * 149 % 97
+        @test_throws ArgumentError A.File(copy(wide); transpose=true, ntasks=0)
+    end
     # Quoted newlines, escapes, empty rows, unicode, ragged tails, and pinned
     # types retain exact names and values across in-memory source modes.
     transposedcases = [

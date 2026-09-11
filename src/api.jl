@@ -1101,7 +1101,7 @@ Base.@nospecializeinfer function _file(@nospecialize(source), @nospecialize(type
             throw(ArgumentError("select/drop are not supported with transpose=true"))
         scan === nothing || throw(ArgumentError("scan is not supported with transpose=true"))
         return _transposedfile(source; types, pool, downcast, stringtype, on_error,
-                               maxproblems, validate, kw...)
+                               maxproblems, validate, parallel, ntasks, kw...)
     end
     capturecap = max(maxproblems, 1)
     if scan !== nothing
@@ -1591,9 +1591,13 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
                          skipto::Union{Nothing, Integer}=nothing,
                          missingstring=nothing, delim=',',
                          normalizenames::Bool=false, limit::Union{Nothing, Integer}=nothing,
-                         validate::Bool=true,
+                         validate::Bool=true, parallel::Bool=Threads.nthreads() > 1,
+                         ntasks::Union{Nothing, Integer}=nothing,
                          buffer_in_memory::Bool=false, prefetch::Bool=true, kw...)
     maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
+    ntasks === nothing || ntasks >= 1 ||
+        throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
+    tasklimit = parallel ? min(Int(something(ntasks, Threads.nthreads())), Threads.nthreads()) : 1
     _checkonerror(on_error)
     allowed = (_DIALECTKW..., _VALUEKW...)
     _checkkwargs("File(transpose=true)", kw, allowed)
@@ -1626,12 +1630,13 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
               NamedTuple(kv for kv in pairs(valuekw0) if kv.first != :dateformat)
     d0 = Dialect(; delim, dialectkw...)
     opts = makevalueopts(d0; sentinels=_sentinels(missingstring), valuekw...)
-    bi0 = index(buf, d0; datastart=_datastart(buf), parallel=false)
+    bi0 = index(buf, d0; datastart=_datastart(buf), parallel=tasklimit > 1, ntasks=tasklimit)
     # a quote that did not start its field: use the lenient rule (single
     # assignments: the per-column option comprehension captures `d`)
     d = bi0.barequote ? withlenient(d0) : d0
-    bi = bi0.barequote ? index(buf, d; datastart=_datastart(buf), parallel=false) : bi0
-    rows = Tuple{Any, Int}[]
+    bi = bi0.barequote ?
+         index(buf, d; datastart=_datastart(buf), parallel=tasklimit > 1, ntasks=tasklimit) : bi0
+    rows = Tuple{ChunkIndex, Int}[]
     for ci in bi.chunks, lr in ci.firstdatarow:totalrows(ci)
         push!(rows, (ci, lr))
     end
@@ -1663,16 +1668,24 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
     # applied after the parse by `_finishstrings`
     seed = Union{Nothing, Type}[_requestedstring(d) === nothing ? accessparsetype(d) : String
                                 for d in plan.columns]
-    log = ProblemLog(maxproblems)
-    cols = AbstractVector[_transposedcolumn(buf, r[1], r[2], startf, n, seed[j], colopts[j],
-                                            log, j, plan.columns[j].declaredmissing)
-                          for (j, r) in enumerate(rows)]
+    # Each input row becomes one output column, parsed independently. Problems
+    # carry the cell index as their row, so no rebasing applies across columns.
+    pending = PendingProblemLog(maxproblems)
+    cols = Vector{AbstractVector}(undef, ncols)
+    _taskforeach(1:ncols, tasklimit) do j
+        r = rows[j]
+        collog = ProblemLog(maxproblems)
+        cols[j] = _transposedcolumn(buf, r[1], r[2], startf, n, seed[j], colopts[j],
+                                    collog, j, plan.columns[j].declaredmissing)
+        mergeproblems!(pending, collog, j)
+    end
+    log = finishproblems(pending, zeros(Int, ncols))
     sortproblems!(log)
     t = ParsedTable(names, cols, n, log.items, log.dropped)
     nm = _sourcename(source)
     _reportproblems(t, on_error, log.first, nm)
-    t = _poolcolumns(t, _resolvepool(pool, names, ncols; validate); parallel=false)
-    t = _finishstrings(t, stringtype, _requestedstrings(plan))
+    t = _poolcolumns(t, _resolvepool(pool, names, ncols; validate); parallel=tasklimit > 1)
+    t = _finishstrings(t, stringtype, _requestedstrings(plan); parallel=tasklimit > 1)
     downcast && (t = _downcast(t))
     return File(nm, t, Dict(nm2 => j for (j, nm2) in enumerate(names)))
 end

@@ -204,8 +204,8 @@ uses PooledArrays.jl. Pool levels own their strings even when
 With `transpose=true`, input rows become output columns. `types`, per-output
 `dateformat` dictionaries, `stringtype`, and `pool` use those output column
 names. `select` and `drop` are not supported in transpose mode.
-Transpose mode is sequential. It accepts and validates `ntasks` and
-`parallel` for compatibility, but these keywords do not add parallel work.
+Transpose mode indexes the input and parses its output columns in parallel,
+like the row-wise readers; `ntasks` and `parallel` apply to it as well.
 
 ## Parse problems
 
