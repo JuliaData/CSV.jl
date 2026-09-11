@@ -683,11 +683,17 @@ const _TIMESTAMPYEARS = (year(typemin(Timestamp{Dates.Second})),
     end
     return (Timestamp{P}(Dates.UTInstant(P(ticks))), true)
 end
-# Inference prefers nanoseconds; an instant outside the nanosecond range
-# (years 1677 to 2262: `9999-12-31` sentinels) widens to microseconds, the way
-# an Int64 overflow widens to Int128.
+# Inference prefers nanoseconds. Every instant of a year strictly inside the
+# nanosecond range fits, so the type follows from the year alone; only the two
+# boundary years (1677 and 2262) need the exact instant. An instant outside
+# the range (`9999-12-31` sentinels) widens to microseconds, the way an Int64
+# overflow widens to Int128.
+const _NANOSECONDYEARS = (year(typemin(Timestamp{Dates.Nanosecond})),
+                          year(typemax(Timestamp{Dates.Nanosecond})))
 function _timestamptype(c::Parsers.CivilParts)
-    totimestamp(Timestamp{Dates.Nanosecond}, c)[2] && return Timestamp{Dates.Nanosecond}
+    _NANOSECONDYEARS[1] < c.year < _NANOSECONDYEARS[2] && return Timestamp{Dates.Nanosecond}
+    (c.year == _NANOSECONDYEARS[1] || c.year == _NANOSECONDYEARS[2]) &&
+        totimestamp(Timestamp{Dates.Nanosecond}, c)[2] && return Timestamp{Dates.Nanosecond}
     totimestamp(Timestamp{Dates.Microsecond}, c)[2] && return Timestamp{Dates.Microsecond}
     return String
 end
