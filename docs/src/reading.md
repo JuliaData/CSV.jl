@@ -361,8 +361,8 @@ batch.
 
 ## Tables.Scan pushdown
 
-CSV.jl 1.0 can accept `scan=Tables.Scan(...)` when the installed Tables.jl
-release provides the scan API. Projection, renaming, type overrides, filters,
+CSV.jl 1.0 accepts `scan=Tables.Scan(...)` (Tables.jl 1.14 or later).
+Projection, renaming, type overrides, filters,
 offsets, and limits are applied inside the parser. Unselected columns are not
 sampled or parsed. Rows rejected by the filter do not parse unrelated values.
 Filters see native source values first. Offset and limit follow the filter.

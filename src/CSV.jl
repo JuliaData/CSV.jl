@@ -21,9 +21,7 @@ include("core.jl")       # indexing, values, parsing, and columns
 include("tables.jl")     # Tables.jl support and row access
 include("api.jl")        # File, read, Rows, Chunks, and option handling
 include("write.jl")      # write and RowWriter
-if isdefined(Tables, :Scan)
-    include("scan.jl")   # optional Tables.Scan support
-end
+include("scan.jl")       # Tables.Scan support
 
 # Delimiter and header detection (`sniff` and `Spec`) is internal machinery
 # behind `delim=nothing`; it is not part of the public surface.
@@ -43,9 +41,8 @@ summary warning per read; `on_error=:collect` records problems silently;
 [`CSV.ParseError`](@ref CSV.ParseError) at the first problem.
 Reader keywords control the header and row window, dialect, missing
 values, types, selected columns, strings, pooling, validation, and task count.
-`ntasks=N` bounds parsing to at most `N` worker tasks.
-Transpose mode is sequential. It accepts and validates `ntasks` and `parallel`
-for compatibility.
+`ntasks=N` bounds parsing to at most `N` worker tasks, in transpose mode as
+well.
 """ File
 @doc """
     CSV.lazy(source; keywords...) -> CSV.LazyFile
@@ -63,9 +60,15 @@ only that cell into a bounded backing buffer.
 @doc """
     CSV.LazyFile
 
-The indexed table returned by [`CSV.lazy`](@ref CSV.lazy). Values materialize
-on access. Convert it with [`CSV.File`](@ref CSV.File) to reuse its index for an
-eager typed parse.
+The indexed table that [`CSV.lazy`](@ref CSV.lazy) returns. It holds the
+source bytes and the structural index, and no parsed values. `names(lf)`,
+`size(lf)`, and `Tables.columnnames` come from the index. `lf.name` and
+`lf[:name]` return a column view whose cells parse when read; `lf.name[i]`
+parses one cell. Every cell is `DataString` or `missing` unless `types`
+requested a type for its column. A view keeps the source alive, so a
+`LazyFile` is a way to look before parsing, not a way to hold a large file
+cheaply. [`CSV.File`](@ref CSV.File)`(lf)` runs the eager typed parse on the
+existing index and keeps the columns `lf` selected.
 """ LazyFile
 @doc """
     CSV.Rows(source; types=nothing, stringtype=DataStrings.DataString, keywords...)

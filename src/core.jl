@@ -12,13 +12,13 @@ The pipeline (and the file's layout) is:
         fields          stores their byte positions in one `ChunkIndex` for each
                         chunk. A scalar scanner supports all CSV options. Two
                         fast scanners process 64 bytes at a time.
-    L1' chunks        : For standard CSV quote rules, the parser first divides
-                        the input into fixed byte ranges. It counts the quote
-                        bytes in each range. These counts show whether each
-                        range starts inside or outside a quoted field. The
-                        parser then moves each range start to the next complete
-                        row boundary. It can index the resulting chunks at the
-                        same time.
+    L1' chunks        : Under every quote rule but the lenient one, the parser
+                        first divides the input into fixed byte ranges and
+                        settles the quote state at each range start: a quote
+                        count under the standard rule, a three-state table
+                        under a distinct escape or quote byte. It then moves
+                        each range start to the next complete row boundary
+                        and indexes the resulting chunks at the same time.
     L2  types         : The parser reads rows from across the input. It uses
                         these rows to choose an initial type for each column.
     L3  values        : The parser reads each column from the stored field
@@ -1255,10 +1255,11 @@ end
 
 # --- scalar scanner ---------------------------------------------------------
 #
-# Read one byte at a time. This scanner supports multi-byte delimiters, a
-# separate escape byte, and different open and close quote bytes, and it is
-# the reference the fast scanners must agree with. Each chunk starts at a
-# complete row, so this scan always starts outside a quoted field.
+# Read one byte at a time. This scanner supports every option, including a
+# multi-byte delimiter and a comment row that holds a quote byte, which the
+# fast scanners do not take, and it is the reference the fast scanners must
+# agree with. Each chunk starts at a complete row, so this scan always starts
+# outside a quoted field.
 
 function indexchunk_scalar!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
     start, stop = ci.start, ci.stop

@@ -19,8 +19,8 @@ CSV.jl entry points. It requires Julia 1.10 or later.
   selects one summary warning (`:warn`, the default), silent collection
   (`:collect`), or fail-fast `CSV.ParseError` (`:error`).
 - `CSV.Chunks` uses one stable schema for its complete row window.
-- Compatible Tables.jl releases can send a `Tables.Scan` projection, filter,
-  type request, offset, and limit into the parser.
+- A `Tables.Scan` projection, filter, type request, offset, and limit go into
+  the parser.
 - The writer has deterministic parallel output, explicit quote styles,
   Printf-style floating-point formatting, bounded row-block memory, gzip suffix
   detection, parallel gzip compression (one member per row block), and parallel

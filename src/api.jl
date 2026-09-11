@@ -176,8 +176,8 @@ function resolvesource(s::AbstractString; buffer_in_memory::Bool=false, prefetch
         # Unix API.
         @static Sys.isunix() && Mmap.madvise!(m, Mmap.MADV_WILLNEED)
         # cold-file IO/parse overlap: WILLNEED alone loses to demand faults on a
-        # cold file (the serial quote-parity pre-scan walks the whole buffer
-        # before the parallel chunk wave). Detached toucher tasks stride one
+        # cold file (the range planner reads the whole buffer once before
+        # the index wave). Detached toucher tasks stride one
         # byte per page across disjoint regions, converting demand faults into
         # queued readahead that runs AHEAD of the parity scan. Warm files are
         # unaffected (touching resident pages is nanoseconds); the closures
@@ -535,7 +535,7 @@ end
 # Row positioning (`skipto`, numbered headers, `footerskip`) walks raw rows
 # from the anchor. Without comment rows, the walk counts row endings outside
 # quoted fields 64 bytes at a time with the fast scanner's masks; the
-# byte-at-a-time walk stays for the other dialects.
+# byte-at-a-time walk stays for comment rows and the lenient quote rule.
 _fastrowcount(d::Dialect) = splittable(d) && !commentaware(d)
 
 # Row-ending events outside quoted fields in the 64-byte block at `buf[pos]`
@@ -1108,7 +1108,7 @@ Base.@nospecializeinfer function _file(@nospecialize(source), @nospecialize(type
         # -- Tables.Scan pushdown: the scan owns selection, types, and row
         # bounds; the classic keywords for those axes are refused rather than
         # merged, so a request means one thing --------------------------------
-        (isdefined(Tables, :Scan) && scan isa Tables.Scan) ||
+        scan isa Tables.Scan ||
             throw(ArgumentError("scan must be a Tables.Scan (got $(typeof(scan)))"))
         select === nothing && drop === nothing ||
             throw(ArgumentError("pass the column selection through the Scan, not select=/drop="))

@@ -89,10 +89,8 @@ function finalizemapping!(mapped::Vector{UInt8})
     return nothing
 end
 
-@testset "Scan reader uses the released Tables API" begin
-    # `scan=` is accepted exactly when the loaded Tables carries Scan; otherwise
-    # it is a clear ArgumentError, never an UndefVarError
-    if isdefined(Tables, :Scan)
+@testset "Scan reader uses the Tables API" begin
+    let
         @test Base.names(A.File(IOBuffer("a,b\n1,2\n"); scan=Tables.Scan(select=(:b,)))) == [:b]
         narrowsrc = "a,b\n1,x\n128,y\n2,z\n"
         excluded = Tables.Scan(select=(:a => Int8,), filter=Tables.col(:a) < 100)
@@ -111,8 +109,6 @@ end
         floatscan = Tables.Scan(select=(:a => Float32,))
         floatfile = A.File(IOBuffer("a\n1.5\n"); scan=floatscan, pool=false)
         @test floatfile.a == Float32[1.5] && eltype(floatfile.a) == Float32
-    else
-        @test_throws ArgumentError A.File(IOBuffer("a,b\n1,2\n"); scan=:anything)
     end
 end
 
