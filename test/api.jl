@@ -1339,9 +1339,9 @@ end # @testset CSV readers
         @test Tables.columnnames(seq) == Tables.columnnames(par)
         @test all(j -> eltype(Tables.getcolumn(seq, j)) == eltype(Tables.getcolumn(par, j)), 1:64)
         @test all(j -> isequal(collect(Tables.getcolumn(seq, j)), collect(Tables.getcolumn(par, j))), 1:64)
-        @test eltype(seq.col7) == A.DataString && eltype(seq.col8) == Int
-        seqt = A.File(copy(wide); transpose=true, parallel=false, types=Int, on_error=:collect)
-        part = A.File(copy(wide); transpose=true, parallel=true, ntasks=3, types=Int, on_error=:collect)
+        @test eltype(seq.col7) == A.DataString && eltype(seq.col8) == Int64
+        seqt = A.File(copy(wide); transpose=true, parallel=false, types=Int64, on_error=:collect)
+        part = A.File(copy(wide); transpose=true, parallel=true, ntasks=3, types=Int64, on_error=:collect)
         @test problemsof(seqt) == problemsof(part) == [(150, 7, :invalid_value)]
         @test isequal(collect(part.col7), collect(seqt.col7))
         @test ismissing(part.col7[150]) && part.col7[149] == 7 * 149 % 97
