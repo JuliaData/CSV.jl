@@ -29,7 +29,7 @@ CSVInlineStringsExt = "InlineStrings"
 
 [compat]
 CodecZlib = "0.7"
-DataDecimals = "1"
+DataDecimals = "1.1"
 DataStrings = "1"
 Dates = "1"
 Downloads = "1"

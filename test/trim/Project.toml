@@ -8,7 +8,7 @@ JuliaC = "acedd4c2-ced6-4a15-accc-2607eb759ba2"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [compat]
-DataDecimals = "1"
+DataDecimals = "1.1"
 DataStrings = "1"
 Dates = "1"
 Durations = "1.1"
