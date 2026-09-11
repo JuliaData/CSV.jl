@@ -15,7 +15,7 @@ using CSV, InlineStrings
 
 const _WIDTHS = (String1, String3, String7, String15, String31, String63, String127, String255)
 
-@inline _capacity(::Type{T}) where {T <: InlineString} = sizeof(T) - 1
+_capacity(::Type{T}) where {T <: InlineString} = sizeof(T) - 1
 
 # validation hook
 CSV._stringsink(::Type{InlineString}) = true
@@ -77,6 +77,7 @@ function CSV._materializecolumn(::Type{InlineString}, col::CSV.DataStringVector,
     return W === nothing ? CSV._materializecolumn(String, col, parallel) :
                            CSV._materializecolumn(W, col, parallel)
 end
+
 function CSV._materializecolumn(::Type{T}, col::CSV.DataStringVector,
                                 parallel::Bool=true) where {T <: InlineString}
     n = length(col)
@@ -112,12 +113,14 @@ function CSV._rowstring(::Type{InlineString}, x::CSV.DataString)
     n = ncodeunits(x)
     return n <= _AUTO_MAX_WIDTH ? _inl(_fitwidth(n), x) : String(x)
 end
+
 CSV._rowstring(::Type{T}, x::CSV.DataString) where {T <: InlineString} = _inl(T, x)
 
 function CSV._levelvector(::Type{InlineString}, levels::CSV.DataStringVector, n::Int)
     W = _widthfor(levels)
     return W === nothing ? CSV._levelvector(String, levels, n) : CSV._levelvector(W, levels, n)
 end
+
 CSV._levelvector(::Type{T}, levels::CSV.DataStringVector, n::Int) where {T <: InlineString} =
     T[_inl(T, levels[i]) for i in 1:n]
 

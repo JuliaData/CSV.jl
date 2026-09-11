@@ -273,7 +273,7 @@ Tables.rows(r::_IndexedRows) = r
 Tables.schema(r::_IndexedRows) =
     Tables.Schema(r.names, fill(Union{DataString, Missing}, length(r.names)))
 
-@inline _rowopts(r::_IndexedRows, j::Int) =
+_rowopts(r::_IndexedRows, j::Int) =
     r.colopts === nothing ? r.opts : @inbounds(r.colopts[j])
 
 # DataString's view word has an Int32 offset. Row access normally retains
@@ -346,6 +346,7 @@ function Base.getindex(row::_IndexedRow, j::Int)
     end
     return _rowcompact(buf, cpos, clen)
 end
+
 Base.getindex(row::_IndexedRow, nm::Symbol) = row[getfield(row, :r).lookup[nm]]
 function Base.getproperty(row::_IndexedRow, nm::Symbol)
     r = getfield(row, :r)
@@ -357,6 +358,7 @@ function _typedvalue(::Type{String}, row::_IndexedRow, j::Int)
     x = row[j]
     return x === missing ? missing : String(x)
 end
+
 function _typedvalue(::Type{T}, row::_IndexedRow, j::Int) where {T}
     if _stringsink(T)   # a requested string type: the view, converted per cell
         x = row[j]
@@ -374,5 +376,6 @@ function _typedvalue(::Type{T}, row::_IndexedRow, j::Int) where {T}
     v, ok = parsevalue(T, r.buf, cpos, cpos + clen - 1, opts)
     return ok ? v : missing
 end
+
 _typedvalue(::Type{T}, row::_IndexedRow, nm::Symbol) where {T} =
     _typedvalue(T, row, getfield(row, :r).lookup[nm])

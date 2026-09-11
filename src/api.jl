@@ -490,9 +490,9 @@ end
 # oversized UInt/BigInt values as an unreachable sentinel instead of narrowing
 # them before the source geometry is known. The saturated successor is needed
 # for `header + 1` and EOF positions at the machine-Int boundary.
-@inline _saturatedint(x::Integer) = x > typemax(Int) ? typemax(Int) :
+_saturatedint(x::Integer) = x > typemax(Int) ? typemax(Int) :
                                     x < typemin(Int) ? typemin(Int) : Int(x)
-@inline _saturatedinc(x::Int) = x == typemax(Int) ? x : x + 1
+_saturatedinc(x::Int) = x == typemax(Int) ? x : x + 1
 
 # byte offset of PHYSICAL line `n` (1-based from `start`): CR, LF, or CRLF end a
 # line and quotes mean nothing. This is how skipped PREFIX rows are counted —
@@ -1034,7 +1034,7 @@ const _PREPKW = (:header, :normalizenames, :skipto, :footerskip, :missingstring,
                  :delim, :limit, :samplebytes, :chunkbytes, :parallel,
                  :buffer_in_memory, :prefetch, :validate)
 
-@inline _preparedcolopts(p::Prepared) = p.settings.colopts
+_preparedcolopts(p::Prepared) = p.settings.colopts
 
 # Create the column plan from the names and value rules found during source
 # preparation. Name selection also accepts the spelling used before
@@ -1982,12 +1982,14 @@ function _downcastint(lo::Int64, hi::Int64)
     typemin(Int32) <= lo && hi <= typemax(Int32) && return Int32
     return Int64
 end
+
 function _downcastcol(v::Vector{Int64})
     isempty(v) && return v
     lo, hi = extrema(v)
     T = _downcastint(lo, hi)
     return T === Int64 ? v : convert(Vector{T}, v)
 end
+
 function _downcastcol(v::Vector{Union{Int64, Missing}})
     lo, hi, n = typemax(Int64), typemin(Int64), 0
     for x in v
@@ -2000,6 +2002,7 @@ function _downcastcol(v::Vector{Union{Int64, Missing}})
     T = _downcastint(lo, hi)
     return T === Int64 ? v : convert(Vector{Union{T, Missing}}, v)
 end
+
 _downcastcol(v::AbstractVector) = v
 function _downcast(t::ParsedTable)
     cols = AbstractVector[_downcastcol(c) for c in t.columns]
@@ -2078,6 +2081,7 @@ function _materializecolumn(::Type{String}, col::DataStringVector, parallel::Boo
     end
     return out
 end
+
 function _materializecolumn(::Type{Symbol}, col::DataStringVector)
     n = length(col)
     Missing <: eltype(col) || return Symbol[Symbol(col[i]) for i in 1:n]
@@ -2126,6 +2130,7 @@ function _fileproperty(f::File, nm::Symbol)
     nm === :names && return names(getfield(f, :table))
     return getfield(f, nm)
 end
+
 Base.getproperty(f::File, nm::Symbol) = _fileproperty(f, nm)
 
 Base.length(f::File) = getfield(f, :table).nrows
@@ -2199,6 +2204,7 @@ function lazy(source; types=nothing, stringtype::Type=DataString,
     return LazyFile(_sourcename(source), p, js, names, cols, nr,
                     Dict(nm => i for (i, nm) in enumerate(names)))
 end
+
 _lazyeltype(::Type{DataString}) = Union{DataString, Missing}
 _lazyeltype(::Type{S}) where {S} = Union{S, Missing}
 
@@ -2213,6 +2219,7 @@ struct LazyColumn{ELT, T} <: AbstractVector{ELT}   # T: DataString | String | ex
     nrows::Int
     hint::Threads.Atomic{Int}  # last chunk touched; atomic because columns can be shared by tasks
 end
+
 LazyColumn{ELT}(buf, chunks, rowbases, j, opts, nrows, ::Type{T}) where {ELT, T} =
     LazyColumn{ELT, T}(buf, chunks, rowbases, j, opts, nrows, Threads.Atomic{Int}(1))
 _lazytarget(::LazyColumn{ELT, T}) where {ELT, T} = T
@@ -2242,6 +2249,7 @@ function Base.getindex(c::LazyColumn, i::Int)
     len == 0 && return missing
     return _lazyvalue(c, pos, len)
 end
+
 @inline function _lazyvalue(c::LazyColumn{ELT, T}, pos::Int, len::Int) where {ELT, T}
     cpos, clen, esc, st = cellcontent(c.buf, pos, len, c.opts)
     st == CELL_MISSING && return missing
@@ -2292,6 +2300,7 @@ end
     len == 0 && return missing
     return _lazyvalue(c, pos, len)
 end
+
 function Base.iterate(c::LazyColumn, state=(1, 0, 0))
     k, lr, done = state
     done >= c.nrows && return nothing
@@ -2317,6 +2326,7 @@ struct LazyFile
     nrows::Int
     lookup::Dict{Symbol, Int}
 end
+
 Base.names(lf::LazyFile) = getfield(lf, :names)
 Base.size(lf::LazyFile) = (getfield(lf, :nrows), length(getfield(lf, :columns)))
 Base.size(lf::LazyFile, d::Int) = size(lf)[d]
@@ -2419,6 +2429,7 @@ function Base.length(r::Rows)
     lim = getfield(r, :limit)
     return lim === nothing ? n : min(n, lim)
 end
+
 function Base.show(io::IO, r::Rows)
     n = length(r)
     sch = Tables.schema(r)
@@ -2507,23 +2518,25 @@ end
     @inbounds sourcej = getfield(row, :sourceindices)[j]
     return _rowcell(T, v, sourcej, Val(E))::_roweltype(T)
 end
-@inline _rowcell(::Type{T}, v::_IndexedRow, j::Int, ::Val{:error}) where {T} =
+
+_rowcell(::Type{T}, v::_IndexedRow, j::Int, ::Val{:error}) where {T} =
     _strictrowvalue(v, j, T)
-@inline _rowcell(::Type{Missing}, v::_IndexedRow, j::Int, ::Val{:error}) =
+_rowcell(::Type{Missing}, v::_IndexedRow, j::Int, ::Val{:error}) =
     _strictrowvalue(v, j, Missing)
-@inline _rowcell(::Type{Missing}, v::_IndexedRow, j::Int, ::Val) = missing
-@inline _rowcell(::Type{T}, v::_IndexedRow, j::Int, ::Val) where {T} = _typedvalue(T, v, j)
+_rowcell(::Type{Missing}, v::_IndexedRow, j::Int, ::Val) = missing
+_rowcell(::Type{T}, v::_IndexedRow, j::Int, ::Val) where {T} = _typedvalue(T, v, j)
 # per-cell string materialization for Rows(stringtype=...) and requested
 # string types; extensions may add
 _rowstring(::Type{String}, x::DataString) = String(x)
 _rowstring(::Type{DataString}, x::DataString) = x
 _rowstring(::Type{Symbol}, x::DataString) = Symbol(x)
-@inline function Tables.getcolumn(row::Row{NT}, nm::Symbol) where {NT}
+function Tables.getcolumn(row::Row{NT}, nm::Symbol) where {NT}
     j = Base.fieldindex(NT, nm, false)
     j == 0 && throw(KeyError(nm))
     return Tables.getcolumn(row, j)
 end
-@inline Tables.getcolumn(row::Row, ::Type{T}, j::Int, nm::Symbol) where {T} =
+
+Tables.getcolumn(row::Row, ::Type{T}, j::Int, nm::Symbol) where {T} =
     Tables.getcolumn(row, j)
 Base.getindex(row::Row, j::Int) = Tables.getcolumn(row, j)
 Base.getindex(row::Row, nm::Symbol) = Tables.getcolumn(row, nm)

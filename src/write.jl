@@ -28,45 +28,52 @@ mutable struct _WriteBuffer <: AbstractVector{UInt8}
     bytes::Vector{UInt8}
     len::Int
 end
+
 _WriteBuffer() = _WriteBuffer(Vector{UInt8}(undef, 1024), 0)
 Base.size(b::_WriteBuffer) = (b.len,)
 Base.length(b::_WriteBuffer) = b.len
 Base.IndexStyle(::Type{_WriteBuffer}) = IndexLinear()
-@inline function Base.getindex(b::_WriteBuffer, i::Int)
+function Base.getindex(b::_WriteBuffer, i::Int)
     @boundscheck checkbounds(b, i)
     @inbounds return b.bytes[i]
 end
-@inline function Base.setindex!(b::_WriteBuffer, x, i::Int)
+
+function Base.setindex!(b::_WriteBuffer, x, i::Int)
     @boundscheck checkbounds(b, i)
     @inbounds b.bytes[i] = x
     return b
 end
-@inline Base.pointer(b::_WriteBuffer, i::Integer=1) = pointer(b.bytes, i)
+Base.pointer(b::_WriteBuffer, i::Integer=1) = pointer(b.bytes, i)
 @noinline function _growwritebuffer!(b::_WriteBuffer, need::Int)
     resize!(b.bytes, max(need, 2length(b.bytes)))
     return b
 end
-@inline function Base.resize!(b::_WriteBuffer, n::Integer)
+
+function Base.resize!(b::_WriteBuffer, n::Integer)
     n > length(b.bytes) && _growwritebuffer!(b, Int(n))
     b.len = n
     return b
 end
-@inline function Base.sizehint!(b::_WriteBuffer, n::Integer)
+
+function Base.sizehint!(b::_WriteBuffer, n::Integer)
     n > length(b.bytes) && _growwritebuffer!(b, Int(n))
     return b
 end
+
 @inline function Base.push!(b::_WriteBuffer, x::UInt8)
     n = b.len + 1
     resize!(b, n)
     @inbounds b.bytes[n] = x
     return b
 end
+
 @inline function Base.append!(b::_WriteBuffer, xs)
     for x in xs
         push!(b, x)
     end
     return b
 end
+
 const _WriteOutput = Union{Vector{UInt8}, _WriteBuffer}
 
 const WRITE_QUOTESTYLES = (:minimal, :all, :none)
@@ -164,7 +171,7 @@ _needsquote(o::WriteOpts, b::UInt8) =
     b == o.delim || b == o.oq || b == o.cq || b == UInt8('\n') || b == UInt8('\r')
 _numericsyntax(b::UInt8) = b - UInt8('0') <= 0x09 || b in (UInt8('+'), UInt8('-'))
 
-@inline function _appenddelim!(out::_WriteOutput, o::WriteOpts)
+function _appenddelim!(out::_WriteOutput, o::WriteOpts)
     length(o.delimbytes) == 1 ? push!(out, o.delim) : append!(out, o.delimbytes)
     return out
 end
@@ -182,16 +189,18 @@ struct ColStage
     bytes::Vector{UInt8}
     ends::Vector{Int}
 end
+
 ColStage() = ColStage(UInt8[], Int[])
-@inline function _reset!(st::ColStage, ncells::Int)
+function _reset!(st::ColStage, ncells::Int)
     empty!(st.bytes)
     resize!(st.ends, ncells)
     return st
 end
-@inline _endcell!(st::ColStage, k::Int) = (@inbounds st.ends[k] = length(st.bytes); nothing)
+
+_endcell!(st::ColStage, k::Int) = (@inbounds st.ends[k] = length(st.bytes); nothing)
 
 # ensure `st.bytes` can take `n` more bytes when written through pointers
-@inline function _room!(v::_WriteOutput, n::Int)
+function _room!(v::_WriteOutput, n::Int)
     need = length(v) + n
     need > length(v) && resize!(v, need)     # length grows; content is written by the caller
     return
@@ -259,6 +268,7 @@ function _appendbytes!(out::_WriteOutput, bytes::AbstractVector{UInt8}, o::Write
     push!(out, o.cq)
     return out
 end
+
 _appendstring!(out::_WriteOutput, s::AbstractString, o::WriteOpts) =
     _appendbytes!(out, codeunits(s), o, true)
 _appendscalar!(out::_WriteOutput, s::AbstractString, o::WriteOpts) =
@@ -317,12 +327,13 @@ end
 end
 
 # --- integers: digits straight into the buffer ---------------------------------
-@inline function _appendint!(out::_WriteOutput, x::Union{Int128, Int64, Int32, Int16, Int8})
+function _appendint!(out::_WriteOutput, x::Union{Int128, Int64, Int32, Int16, Int8})
     neg = x < 0
     u = neg ? reinterpret(unsigned(typeof(x)), -x) : unsigned(x)   # wraps typemin correctly
     return _appendudec!(out, u, neg)
 end
-@inline _appendint!(out::_WriteOutput, x::Union{UInt128, UInt64, UInt32, UInt16, UInt8}) =
+
+_appendint!(out::_WriteOutput, x::Union{UInt128, UInt64, UInt32, UInt16, UInt8}) =
     _appendudec!(out, x, false)
 # other Integers (BigInt, ...) print via Base
 _appendint!(out::_WriteOutput, x::Integer) = append!(out, codeunits(string(x)))
@@ -367,6 +378,7 @@ end
     v < 10_000_000_000_000_000_000 && return 19
     return 20
 end
+
 function _appendudec!(out::_WriteOutput, u::Union{UInt64, UInt32, UInt16, UInt8}, neg::Bool)
     v = UInt64(u)
     nd = _declen64(v)
@@ -491,6 +503,7 @@ end
     end
     return out
 end
+
 @inline function _appendyear!(out::_WriteOutput, y::Integer)
     y < 0 && (push!(out, UInt8('-')); y = -y)
     y < 1000 && push!(out, UInt8('0'))
@@ -498,6 +511,7 @@ end
     y < 10 && push!(out, UInt8('0'))
     return _appendudec!(out, unsigned(y), false)
 end
+
 function _appenddate!(out::_WriteOutput, x::Date)
     y, m, d = Dates.yearmonthday(x)
     _appendyear!(out, y); push!(out, UInt8('-'))
@@ -505,6 +519,7 @@ function _appenddate!(out::_WriteOutput, x::Date)
     _append2!(out, d)
     return out
 end
+
 function _appenddatetime!(out::_WriteOutput, x::DateTime)
     y, m, d = Dates.yearmonthday(x)
     _appendyear!(out, y); push!(out, UInt8('-'))
@@ -556,14 +571,14 @@ function _appendtimestamp!(out::_WriteOutput, x::Timestamp)
 end
 
 const _TRUE = codeunits("true"); const _FALSE = codeunits("false")
-@inline _boolbyte(b::UInt8) = b in (UInt8('t'), UInt8('r'), UInt8('u'), UInt8('e'),
+_boolbyte(b::UInt8) = b in (UInt8('t'), UInt8('r'), UInt8('u'), UInt8('e'),
                                     UInt8('f'), UInt8('a'), UInt8('l'), UInt8('s'))
 
 # --- per-column staged loops (specialized on the column type) ------------------
 # Each renders cells lo..hi of `col`; the loop body is monomorphic, so the
 # `x === missing` split is static for Union columns.
 
-@inline _stagecell!(st::ColStage, x, o::WriteOpts) = _appendcell!(st.bytes, x, o)
+_stagecell!(st::ColStage, x, o::WriteOpts) = _appendcell!(st.bytes, x, o)
 
 # The one cell renderer: every writer path (blocks, RowWriter, headers) appends
 # through it, so quoting and value formatting cannot drift between paths.
@@ -671,7 +686,7 @@ end
 const WRITE_BLOCK_ROWS = 4096
 const WRITE_BLOCK_BYTES = 8 << 20
 
-@inline function _encodedbound(n::Int, cap::Int)
+function _encodedbound(n::Int, cap::Int)
     n > (cap - 2) >> 1 && return cap
     return min(2n + 2, cap) # every source byte escaped, plus quote pair
 end
@@ -711,7 +726,8 @@ function _writerblockrows(rowbound::Int, o::WriteOpts, transform)
         return min(WRITE_BLOCK_ROWS, max(1, WRITE_BLOCK_BYTES ÷ o.bufsize))
     return min(WRITE_BLOCK_ROWS, max(1, WRITE_BLOCK_BYTES ÷ clamp(rowbound, 1, o.bufsize)))
 end
-@inline _accumulatebound(rowbound::Int, cellbound::Int, cap::Int) =
+
+_accumulatebound(rowbound::Int, cellbound::Int, cap::Int) =
     rowbound > cap - cellbound ? cap : rowbound + cellbound
 
 # A fixed descriptor separates the column's type from the table's schema.
@@ -740,6 +756,7 @@ struct _WriteColumn
     missingpooled::PooledVector{Union{Missing, String}, UInt32, Vector{UInt32}}
     stage::ColStage
 end
+
 const _EMPTY_WRITECOLUMNS = (
     Vector{Int64}(),
     Vector{Float64}(),
@@ -771,6 +788,7 @@ for (tag, emptycol) in enumerate(_EMPTY_WRITECOLUMNS)
     @eval @noinline _preparewritecolumn(col::$(typeof(emptycol))) =
         _WriteColumn($(UInt8(tag)), $(args...), _EMPTY_WRITESTAGE)
 end
+
 @noinline _preparewritecolumn(col::AbstractVector) =
     _WriteColumn(0x00, _EMPTY_WRITECOLUMNS..., _EMPTY_WRITESTAGE)
 _isdirect(::Type{<:AbstractVector}) = false
@@ -805,6 +823,7 @@ struct _WriterColumns{P <: Tuple}
     fallback::Vector{Int}
     stagers::P
 end
+
 _fallbackindices(direct::Vector{_WriteColumn}) = findall(col -> col.tag == 0x00, direct)
 @noinline _lengthmismatch() =
     throw(ArgumentError("all table columns must have the same length"))
@@ -842,6 +861,7 @@ end
                      rowbound))
     return ex
 end
+
 function _preparewritecolumns(cols::Vector{AbstractVector}, nrows::Int, o::WriteOpts)
     n = length(cols)
     direct = Vector{_WriteColumn}(undef, n)
@@ -1120,7 +1140,6 @@ function _ordered_parallel_blocks!(emitblock, renderblock,
     return
 end
 
-
 @inline function _capture_item(f, item, index::Int)
     try
         f(item, index)
@@ -1283,6 +1302,7 @@ end
 struct _NonClosingIO{T <: IO} <: IO
     io::T
 end
+
 Base.isopen(io::_NonClosingIO) = isopen(io.io)
 Base.isreadable(io::_NonClosingIO) = isreadable(io.io)
 Base.iswritable(io::_NonClosingIO) = iswritable(io.io)
@@ -1344,7 +1364,7 @@ function _headeroptions(source_names, header, writeheader, defaultheader::Bool)
     throw(ArgumentError("header must be true, false, or a vector of column names"))
 end
 
-@inline _identity_transform(::Int, value) = value
+_identity_transform(::Int, value) = value
 
 # --- RowWriter: the row-string iterator ---------------------------------------
 
@@ -1399,6 +1419,7 @@ function Base.length(rw::RowWriter{R, I, O, F, false}) where {R, I, O, F}
     bomonly = rw.o.bom && nrows == 0 && !hasheader
     return nrows + hasheader + bomonly
 end
+
 Base.size(rw::RowWriter{R, I, O, F, false}) where {R, I, O, F} = (length(rw),)
 
 # Append one Tables.jl row to `out` through the shared cell renderer.
@@ -1429,6 +1450,7 @@ function _appendrow!(out::Vector{UInt8}, row, sch::Tables.Schema, ncols::Int, o:
     rowsize <= o.bufsize || _rowtoolarge(rowsize, o.bufsize)
     return out
 end
+
 _appendrow!(out::Vector{UInt8}, row, ::Nothing, ncols::Int, o::WriteOpts, transform::F) where {F} =
     _appendrow!(out, row, ncols, o, transform)
 
@@ -1455,7 +1477,6 @@ function Base.iterate(rw::RowWriter, state=nothing)
     row, rstate = it
     return _renderrow(row, rw.names, rw.o, rw.transform), (iterate(rw.rows, rstate),)
 end
-
 
 # Row sources render into one reusable block buffer that flushes to the sink at
 # the block byte target: one sink write per block, not per row.
@@ -1536,6 +1557,7 @@ struct _ColumnEmitter{C <: _WriterColumns, O <: WriteOpts, F, S, G} <: Function
                     # member. A type parameter, like `serial`, so the one-task
                     # emitter never compiles the parallel scheduler (trim=safe).
 end
+
 function (emit::_ColumnEmitter)(io)
     o = emit.opts
     if emit.gzip isa Val{true}
@@ -1646,6 +1668,5 @@ _writecolumns(cols, names) = AbstractVector[Tables.getcolumn(cols, nm) for nm in
 end
 
 _gzpath(sink) = endswith(lowercase(String(sink)), ".gz")
-
 
 write(sink; kw...) = table -> write(sink, table; kw...)

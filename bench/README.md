@@ -34,7 +34,8 @@ engine inferred; `shootout.py` sets those for polars, duckdb, and pyarrow.
 
 The vector scanner is width-generic LLVM IR: LLVM lowers the 64-byte masks to
 AVX-512 mask registers, AVX2 pairs, or NEON reductions for the host. The
-prefix-xor step uses `pclmulqdq` on x86-64 and `pmull64` on Apple silicon;
+prefix-xor step uses `pclmulqdq` on x86-64 and `pmull64` on aarch64 CPUs
+with the AES extension (always on Apple silicon; probed at load elsewhere);
 other targets use the six-step shift fallback. The `:swar` scanner uses only
 64-bit integer arithmetic and is the portable reference for any CPU. Measure
 at least one AVX-512 x86-64 host, one AVX2-only host, and one non-Apple

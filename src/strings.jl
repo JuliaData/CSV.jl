@@ -12,7 +12,7 @@ const payloadlen = DataStrings.payloadlength
 const payloadbufidx = DataStrings.payloadbufidx
 const payloadoffset = DataStrings.payloadoffset
 const payloadpos = DataStrings.payloadpos
-@inline _viewword(bufidx::Integer, offset0::Integer) =
+_viewword(bufidx::Integer, offset0::Integer) =
     UInt64(bufidx % UInt32) | (UInt64(offset0 % UInt32) << 32)
 
 _stringvector(::Type{T}, payloads, buffers::Vector{Vector{UInt8}}) where {T} =
@@ -28,6 +28,5 @@ _stringvector(::Type{T}, payloads, buffers::Vector{Vector{UInt8}}) where {T} =
                             "does not fit Arrow's Int32 view words"))
     return DataStringPayload(p.a, _viewword(bufidx, offset0))
 end
-
 
 materialize(v::StringVector) = DataStrings.materialize(v)

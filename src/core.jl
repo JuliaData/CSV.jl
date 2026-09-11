@@ -61,6 +61,7 @@ function _cleartask()
     t.code = nothing
     return
 end
+
 macro wkspawn(expr)
     return esc(:(Threads.@spawn begin
         try
@@ -207,7 +208,7 @@ end
 
 # Parsers returns signed zero or signed infinity with a range code. CSV accepts
 # these rounded values.
-@inline _fixedfloatusable(rc) =
+_fixedfloatusable(rc) =
     rc == Parsers.RC_OK || rc == Parsers.RC_OVERFLOW || rc == Parsers.RC_UNDERFLOW
 
 # Return true when `buf[i:j]` contains `byte`. Check eight bytes at a time when
@@ -417,9 +418,9 @@ end
 
 # ISO date-times separate the date and the time with `T` or a space. The byte
 # after the date selects the pattern, so a cell parses once either way.
-@inline _spacedatetime(buf::Vector{UInt8}, i::Int, j::Int) =
+_spacedatetime(buf::Vector{UInt8}, i::Int, j::Int) =
     j - i >= 10 && @inbounds(buf[i + 10]) == UInt8(' ')
-@inline function _datetimepattern(vo::ValueOpts, buf::Vector{UInt8}, i::Int, j::Int)
+function _datetimepattern(vo::ValueOpts, buf::Vector{UInt8}, i::Int, j::Int)
     vo.customfmt && return vo.datetimepat
     return _spacedatetime(buf, i, j) ? vo.datetimespacepat : vo.datetimepat
 end
@@ -427,7 +428,7 @@ end
 # `Dates.DateTime` holds milliseconds. A finer fraction has no exact DateTime,
 # so an explicit `types=DateTime` column reports such a cell. Inference never
 # meets this rule: it infers `Timestamp{Nanosecond}`, which keeps the fraction.
-@inline _wholemilliseconds(c::Parsers.CivilParts) = c.nanosecond % 1_000_000 == 0
+_wholemilliseconds(c::Parsers.CivilParts) = c.nanosecond % 1_000_000 == 0
 
 # --- the cell layer -----------------------------------------------------------
 #
@@ -443,11 +444,11 @@ const CELL_VALUE    = 0x00
 const CELL_MISSING  = 0x01
 const CELL_BADQUOTE = 0x02
 
-@inline _isot(b::UInt8) = (b == UInt8(' ')) | (b == UInt8('\t'))
+_isot(b::UInt8) = (b == UInt8(' ')) | (b == UInt8('\t'))
 
 # a cell can only be a sentinel if its first byte starts one — one bit test
 # replaces the per-cell spelling comparisons (empty sentinel list ⇒ zero map)
-@inline _maybesentinel(vo::ValueOpts, b::UInt8) =
+_maybesentinel(vo::ValueOpts, b::UInt8) =
     (vo.sentfirst[(b >> 6) + 1] >> (b & 0x3f)) & UInt64(1) != 0
 
 # Typed values and sentinel matching accept surrounding blanks. String columns
@@ -627,13 +628,13 @@ end
 const _DATE0 = Date(1)
 const _DATETIME0 = DateTime(1)
 const _TIME0 = Time(0)
-@inline _timestamp0(::Type{Timestamp{P}}) where {P} = Timestamp{P}(Dates.UTInstant(P(0)))
+_timestamp0(::Type{Timestamp{P}}) where {P} = Timestamp{P}(Dates.UTInstant(P(0)))
 
 # Parsers returns calendar fields without choosing a Dates representation. CSV
 # owns this conversion because it chooses the final column type.
 # Parsers validated the calendar fields, so the instants build from rata days
 # directly (`Date(y, m, d)` would re-run `validargs` on every cell).
-@inline todate(c::Parsers.CivilParts) =
+todate(c::Parsers.CivilParts) =
     Date(Dates.UTD(Dates.totaldays(Int64(c.year), Int64(c.month), Int64(c.day))))
 
 @inline function todatetime(c::Parsers.CivilParts)
@@ -654,10 +655,10 @@ end
 # fraction that is not a whole number of `P`, or an instant outside the Int64
 # tick range, is not a `Timestamp{P}`. This avoids `Dates.validargs` (which
 # recomputes `year(typemin(...))` on every call) and Int128 arithmetic.
-@inline _tickscale(::Type{Dates.Nanosecond}) = Int64(1)
-@inline _tickscale(::Type{Dates.Microsecond}) = Int64(1_000)
-@inline _tickscale(::Type{Dates.Millisecond}) = Int64(1_000_000)
-@inline _tickscale(::Type{Dates.Second}) = Int64(1_000_000_000)
+_tickscale(::Type{Dates.Nanosecond}) = Int64(1)
+_tickscale(::Type{Dates.Microsecond}) = Int64(1_000)
+_tickscale(::Type{Dates.Millisecond}) = Int64(1_000_000)
+_tickscale(::Type{Dates.Second}) = Int64(1_000_000_000)
 const _UNIXEPOCHDAYS = Int64(Dates.UNIXEPOCH ÷ 86_400_000)   # rata days of 1970-01-01
 # Seconds have the widest supported range. Cache this coarse guard so even
 # Int64 calendar years cannot overflow totaldays before the checked tick math.
@@ -715,6 +716,7 @@ end
     v, rc = Parsers.parseint(Int64, buf, i, j)
     return (v, rc == Parsers.RC_OK)
 end
+
 @inline function parsevalue(::Type{Int128}, buf::Vector{UInt8}, i::Int, j::Int,
                             vo::ValueOpts, scratch::Vector{UInt8})
     if vo.groupmark != 0x00
@@ -728,6 +730,7 @@ end
     v, rc = Parsers.parseint(Int128, buf, i, j)
     return (v, rc == Parsers.RC_OK)
 end
+
 @inline function parsevalue(::Type{Float64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                             scratch::Vector{UInt8})
     if vo.groupmark != 0x00
@@ -741,7 +744,7 @@ end
     v, rc = Parsers.parsefloat(Float64, buf, i, j, vo.decimal)
     return (v, _fixedfloatusable(rc))
 end
-@inline parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
+parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                    scratch::Vector{UInt8}) where {T} = parsevalue(T, buf, i, j, vo)
 
 # Narrow numeric requests use the native integer/float parsers, then convert at
@@ -751,26 +754,28 @@ end
 const NarrowParseType = Union{Int8, Int16, Int32,
                               UInt8, UInt16, UInt32, UInt64,
                               Float16, Float32}
-@inline _narrowbase(::Type{<:Union{Int8, Int16, Int32,
+_narrowbase(::Type{<:Union{Int8, Int16, Int32,
                                    UInt8, UInt16, UInt32}}) = Int64
-@inline _narrowbase(::Type{UInt64}) = Int128
-@inline _narrowbase(::Type{<:Union{Float16, Float32}}) = Float64
-@inline function _narrowvalue(::Type{T}, value, ok::Bool) where {T <: NarrowParseType}
+_narrowbase(::Type{UInt64}) = Int128
+_narrowbase(::Type{<:Union{Float16, Float32}}) = Float64
+function _narrowvalue(::Type{T}, value, ok::Bool) where {T <: NarrowParseType}
     ok || return (zero(T), false)
     T <: Integer && !(typemin(T) <= value <= typemax(T)) && return (zero(T), false)
     return (convert(T, value), true)
 end
-@inline function parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int,
+
+function parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int,
                             vo::ValueOpts, scratch::Vector{UInt8}) where {T <: NarrowParseType}
     value, ok = parsevalue(_narrowbase(T), buf, i, j, vo, scratch)
     return _narrowvalue(T, value, ok)
 end
 # CSV uses these types only when the user requests them. Type inference does not
 # select them.
-@inline function _parsebigint_direct(buf::Vector{UInt8}, i::Int, j::Int)
+function _parsebigint_direct(buf::Vector{UInt8}, i::Int, j::Int)
     v, rc = Parsers.parsebigint(buf, i, j)
     return (v, rc == Parsers.RC_OK)
 end
+
 @inline function parsevalue(::Type{BigInt}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                             scratch::Vector{UInt8})
     if vo.groupmark != 0x00
@@ -780,10 +785,12 @@ end
     end
     return _parsebigint_direct(buf, i, j)
 end
-@inline function _parsebigfloat_direct(buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+
+function _parsebigfloat_direct(buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     value = Parsers.tryparse(BigFloat, buf, i, j; decimal=Char(vo.decimal))
     return value === nothing ? (BigFloat(0), false) : (value, true)
 end
+
 @inline function parsevalue(::Type{BigFloat}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                             scratch::Vector{UInt8})
     if vo.groupmark != 0x00
@@ -793,22 +800,25 @@ end
     end
     return _parsebigfloat_direct(buf, i, j, vo)
 end
-@inline function parsevalue(::Type{Base.UUID}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+
+function parsevalue(::Type{Base.UUID}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     u, rc = Parsers.parseuuid(buf, i, j)
     return (Base.UUID(u), rc == Parsers.RC_OK)
 end
+
 _scratchfor(vo::ValueOpts) = vo.groupmark == 0x00 ? EMPTY_BYTES : Vector{UInt8}(undef, 64)
-@inline parsevalue(::Type{Int64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
+parsevalue(::Type{Int64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
     parsevalue(Int64, buf, i, j, vo, _scratchfor(vo))
-@inline parsevalue(::Type{Int128}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
+parsevalue(::Type{Int128}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
     parsevalue(Int128, buf, i, j, vo, _scratchfor(vo))
 @inline parsevalue(::Type{BigInt}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
     vo.groupmark == 0x00 ? _parsebigint_direct(buf, i, j) :
                            parsevalue(BigInt, buf, i, j, vo, Vector{UInt8}(undef, 64))
-@inline function _parsefloat_direct(buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
+function _parsefloat_direct(buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     v, rc = Parsers.parsefloat(Float64, buf, i, j, vo.decimal)
     return (v, _fixedfloatusable(rc))
 end
+
 @inline parsevalue(::Type{Float64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
     vo.groupmark == 0x00 ? _parsefloat_direct(buf, i, j, vo) :
                            parsevalue(Float64, buf, i, j, vo, Vector{UInt8}(undef, 64))
@@ -820,7 +830,7 @@ end
     parsevalue(T, buf, i, j, vo, _scratchfor(vo))
 # Default Boolean spellings: `true`, `True`, `TRUE` and `false`, `False`,
 # `FALSE`. One unaligned word compare per spelling: no table, no case fold.
-@inline _load32(buf::Vector{UInt8}, i::Int) =
+_load32(buf::Vector{UInt8}, i::Int) =
     GC.@preserve buf unsafe_load(Ptr{UInt32}(pointer(buf, i)))
 _word32(s::String) = _load32(Vector{UInt8}(codeunits(s)), 1)
 const _TRUE_WORDS = (_word32("true"), _word32("True"), _word32("TRUE"))
@@ -839,6 +849,7 @@ const _FALSE_WORDS = (_word32("fals"), _word32("Fals"), _word32("FALS"))
     end
     return (false, false)
 end
+
 @inline function parsevalue(::Type{Bool}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     isempty(vo.trues) && isempty(vo.falses) && return _parsebool(buf, i, j)
     _spanmatches(buf, i, j, vo.trues) && return (true, true)
@@ -861,18 +872,21 @@ end
     c = reinterpret(Char, u)
     return (c, isvalid(c))
 end
+
 @inline function parsevalue(::Type{Date}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     vo.customfmt && vo.customkind != 0x01 && return (_DATE0, false)
     c, rc = Parsers.parsecivil(buf, i, j, vo.datepat)
     rc == Parsers.RC_OK || return (_DATE0, false)
     return (todate(c), true)
 end
+
 @inline function parsevalue(::Type{DateTime}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     vo.customfmt && vo.customkind != 0x03 && return (_DATETIME0, false)
     c, rc = Parsers.parsecivil(buf, i, j, _datetimepattern(vo, buf, i, j))
     rc == Parsers.RC_OK && _wholemilliseconds(c) || return (_DATETIME0, false)
     return (todatetime(c), true)
 end
+
 @inline function parsevalue(::Type{Timestamp{P}}, buf::Vector{UInt8}, i::Int, j::Int,
                             vo::ValueOpts) where {P}
     vo.customfmt && vo.customkind != 0x03 && return (_timestamp0(Timestamp{P}), false)
@@ -880,6 +894,7 @@ end
     rc == Parsers.RC_OK || return (_timestamp0(Timestamp{P}), false)
     return totimestamp(Timestamp{P}, c)
 end
+
 @inline function parsevalue(::Type{Time}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     vo.customfmt && vo.customkind != 0x02 && return (_TIME0, false)
     c, rc = Parsers.parsecivil(buf, i, j, vo.timepat)
@@ -901,13 +916,20 @@ const _SPANPARSERS_LOCK = ReentrantLock()
 function _usesspanparser(::Type{T}) where {T}
     r = get(_SPANPARSERS[], T, nothing)
     r === nothing || return r
-    lock(_SPANPARSERS_LOCK) do
+    return _registerspanparser(T)
+end
+
+@noinline function _registerspanparser(::Type{T}) where {T}
+    lock(_SPANPARSERS_LOCK)
+    try
         d = _SPANPARSERS[]
-        r = get(d, T, nothing)
-        r === nothing || return r
+        cached = get(d, T, nothing)
+        cached === nothing || return cached
         r = _hasspanparser(T)
         _SPANPARSERS[] = Base.ImmutableDict(d, T => r)
         return r
+    finally
+        unlock(_SPANPARSERS_LOCK)
     end
 end
 
@@ -1021,19 +1043,19 @@ const MAX_TAPE_HINT = 1 << 20   # initial-capacity cap: a giant single row spans
                                 # many bytes but holds few events
 const MAX_TAPE_RELPOS = Int(typemax(UInt32) >> 2)
 
-@inline function tape_room!(tape::Vector{UInt32}, n::Int, extra::Int)
+function tape_room!(tape::Vector{UInt32}, n::Int, extra::Int)
     length(tape) < n + extra && resize!(tape, max(2 * length(tape), n + extra + 256))
     return tape
 end
 
-@inline function checktaperange(ci::ChunkIndex)
+function checktaperange(ci::ChunkIndex)
     ci.stop - ci.start < MAX_TAPE_RELPOS ||
         throw(ArgumentError("a single row is 1 GiB or larger and is not supported"))
     return ci
 end
 
 # raw event kinds during scanning
-@inline rawkind(b::UInt8) = UInt32((b == CR) + 2 * (b == LF))   # 0 delim, 1 CR, 2 LF, 3 CRLF (pre-paired)
+rawkind(b::UInt8) = UInt32((b == CR) + 2 * (b == LF))   # 0 delim, 1 CR, 2 LF, 3 CRLF (pre-paired)
 
 # --- build rows from stored events ------------------------------------------
 #
@@ -1336,7 +1358,7 @@ end
 # content. Range starts cannot be derived from quote counts under this rule,
 # so the planner walks rows serially and each chunk is scanned here.
 
-@inline _isblank(b::UInt8) = b == UInt8(' ') || b == UInt8('\t')
+_isblank(b::UInt8) = b == UInt8(' ') || b == UInt8('\t')
 
 function indexchunk_lenient!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
     start, stop = ci.start, ci.stop
@@ -1473,12 +1495,12 @@ const MOVEMASK_MAGIC = 0x0102040810204080
 
 # Set the high bit of each byte in `w` that equals `b`. This form does not mark
 # a byte that differs from `b`, so callers can safely combine several results.
-@inline function eqmarks(w::UInt64, b::UInt8)::UInt64
+function eqmarks(w::UInt64, b::UInt8)::UInt64
     x = w ⊻ (ONES8 * b)
     return ~(((x & LOWS7) + LOWS7) | x | LOWS7)
 end
 
-@inline movemask(marks::UInt64)::UInt64 = ((marks >> 7) * MOVEMASK_MAGIC) >> 56
+movemask(marks::UInt64)::UInt64 = ((marks >> 7) * MOVEMASK_MAGIC) >> 56
 
 @inline function prefix_xor64_shift(m::UInt64)::UInt64
     m ⊻= m << 1
@@ -1609,18 +1631,19 @@ $LLVM_LOAD64
     Base.llvmcall((SPECIALS_MASK_VEC_IR, "entry"),
         UInt64, Tuple{Ptr{UInt8}, UInt8, UInt8, UInt8}, p, a, b, c)
 end
-@inline specials_mask_vec(p::Ptr{UInt8}, d::UInt8)::UInt64 = threebyte_mask_vec(p, d, CR, LF)
+
+specials_mask_vec(p::Ptr{UInt8}, d::UInt8)::UInt64 = threebyte_mask_vec(p, d, CR, LF)
 
 @inline function byte_mask_vec(p::Ptr{UInt8}, b::UInt8)::UInt64
     Base.llvmcall((BYTE_MASK_VEC_IR, "entry"), UInt64, Tuple{Ptr{UInt8}, UInt8}, p, b)
 end
 
-@inline function blockmasks(::Val{:vec}, p::Ptr{UInt8}, quoted::Bool, oq::UInt8, delim::UInt8)
+function blockmasks(::Val{:vec}, p::Ptr{UInt8}, quoted::Bool, oq::UInt8, delim::UInt8)
     q64 = quoted ? byte_mask_vec(p, oq) : zero(UInt64)
     return q64, specials_mask_vec(p, delim)
 end
 
-@inline byte_mask(::Val{:vec}, p::Ptr{UInt8}, b::UInt8) = byte_mask_vec(p, b)
+byte_mask(::Val{:vec}, p::Ptr{UInt8}, b::UInt8) = byte_mask_vec(p, b)
 @inline function byte_mask(::Val{:swar}, p::Ptr{UInt8}, b::UInt8)
     m = zero(UInt64)
     for k in 0:7
@@ -1631,7 +1654,7 @@ end
 end
 
 # space and tab marks: the blanks a field may start with before its quote
-@inline blankmask(::Val{S}, p::Ptr{UInt8}) where {S} =
+blankmask(::Val{S}, p::Ptr{UInt8}) where {S} =
     byte_mask(Val(S), p, UInt8(' ')) | byte_mask(Val(S), p, UInt8('\t'))
 
 # Quote state across one 64-byte block under a rule that is not the standard
@@ -2356,7 +2379,8 @@ function _normalizetypemap(typemap)
     inttarget === nothing || haskey(tm, Int64) || (tm[Int64] = inttarget)
     return isempty(tm) ? nothing : tm
 end
-@inline _maptype(tm, T) = tm === nothing || T === Missing ? T : get(tm, T, T)
+
+_maptype(tm, T) = tm === nothing || T === Missing ? T : get(tm, T, T)
 @inline function _promotemapped(tm, current::Type, detected::Type)
     joined = promote_kernel(current, detected)
     # A mapped result is already the selected parse type. Do not map it again
@@ -2367,7 +2391,8 @@ end
     # case because String accepts both field forms.
     return mapped === current ? String : mapped
 end
-@inline _copts(colopts, opts, j::Int) = colopts === nothing ? opts : @inbounds colopts[j]
+
+_copts(colopts, opts, j::Int) = colopts === nothing ? opts : @inbounds colopts[j]
 
 const _TS_NS = Timestamp{Dates.Nanosecond}
 const _TS_US = Timestamp{Dates.Microsecond}
@@ -2445,6 +2470,7 @@ struct TypedColumn{T}
     values::Vector{T}
     present::Vector{Bool}
 end
+
 TypedColumn{T}(n::Int) where {T} = TypedColumn{T}(Vector{T}(undef, n), fill(false, n))
 
 # Direct-to-final storage for typed columns the SAMPLE showed missings in: the
@@ -2459,14 +2485,16 @@ struct UnionColumn{T}
     uvalues::Vector{Union{T, Missing}}
     UnionColumn{T}(uvalues::Vector{Union{T, Missing}}) where {T} = new{T}(uvalues)
 end
+
 UnionColumn{T}(n::Int) where {T} = UnionColumn{T}(Vector{Union{T, Missing}}(undef, n))
 
-@inline function _storevalue!(col::TypedColumn{T}, i::Int, v::T) where {T}
+function _storevalue!(col::TypedColumn{T}, i::Int, v::T) where {T}
     @inbounds col.values[i] = v
     @inbounds col.present[i] = true
     return
 end
-@inline function _storevalue!(col::UnionColumn{T}, i::Int, v::T) where {T}
+
+function _storevalue!(col::UnionColumn{T}, i::Int, v::T) where {T}
     @inbounds col.uvalues[i] = v
     return
 end
@@ -2504,7 +2532,7 @@ include("strings.jl")
     return 0
 end
 
-@inline function _eqmask8_c(w::UInt64, b::UInt8)
+function _eqmask8_c(w::UInt64, b::UInt8)
     x = w ⊻ (0x0101010101010101 * b)
     return (x - 0x0101010101010101) & ~x & 0x8080808080808080
 end
@@ -2571,7 +2599,6 @@ end
     end
     return length(dst) - n0
 end
-
 
 # The column builder: payloads plus the bytes this column OWNS. Every cell
 # longer than the inline payload is copied out of the input at parse time, so
@@ -2675,6 +2702,7 @@ function _unescape_bytes(buf::Vector{UInt8}, pos::Int64, len::Int32, e::UInt8, c
     end
     return resize!(out, n)
 end
+
 _unescape(buf::Vector{UInt8}, pos::Int64, len::Int32, e::UInt8, cq::UInt8) =
     String(_unescape_bytes(buf, pos, len, e, cq))
 
@@ -2796,7 +2824,6 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
     return 0
 end
 
-
 # A column believed all-missing: inferred columns report the first conflict so
 # the driver can promote; explicit Missing columns report every present value.
 function parsecolchunk_missing(buf::Vector{UInt8}, ci::ChunkIndex, j::Int,
@@ -2917,6 +2944,7 @@ mutable struct ProblemLog
     first::Union{Nothing, Problem}
     heaped::Bool                  # items are a max-heap by source order (full logs)
 end
+
 function ProblemLog(limit::Int)
     limit >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $limit)"))
     return ProblemLog(Problem[], limit, 0, nothing, false)
@@ -3001,7 +3029,8 @@ function wantsproblem(log::ProblemLog, row::Int, col::Int, pos::Int)
     end
     return _keyless(row, col, pos, @inbounds(log.items[1]))
 end
-@inline _keyless(row::Int, col::Int, pos::Int, p::Problem) =
+
+_keyless(row::Int, col::Int, pos::Int, p::Problem) =
     pos != p.pos ? pos < p.pos : row != p.row ? row < p.row : col != p.col ? col < p.col : true
 
 # A zero-byte row: one empty field that starts at the row start and stops at a
@@ -3056,12 +3085,13 @@ mutable struct PendingProblemLog
     lock::ReentrantLock
     heaped::Bool
 end
+
 function PendingProblemLog(limit::Int)
     limit >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $limit)"))
     return PendingProblemLog(LocatedProblem[], limit, 0, nothing, ReentrantLock(), false)
 end
 
-@inline locatedless(a::LocatedProblem, b::LocatedProblem) = problemless(a.problem, b.problem)
+locatedless(a::LocatedProblem, b::LocatedProblem) = problemless(a.problem, b.problem)
 
 # Fold one task-local log into the globally bounded reservoir, then release the
 # local retained entries. Row ids stay chunk-local until every chunk is indexed.
@@ -3262,7 +3292,6 @@ end
     return x ⊻ (x >> 31)
 end
 
-
 # Read sample rows only from the rows that pass the filter. Type detection must
 # not use rows that the result excludes.
 function sampletypesrows(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, rowbases0,
@@ -3334,10 +3363,10 @@ struct ColumnPlan
     colopts::Union{Nothing, Vector{ValueOpts}}
 end
 
-@inline columnopts(p::ColumnPlan, j::Int) =
+columnopts(p::ColumnPlan, j::Int) =
     p.colopts === nothing ? p.opts : @inbounds(p.colopts[j])
 
-@inline function accessparsetype(d::ColumnDecision)
+function accessparsetype(d::ColumnDecision)
     return d.resulttype === nothing ? d.parsetype : d.resulttype
 end
 
@@ -3537,7 +3566,7 @@ Base.@nospecializeinfer function settlecolumns(names::Vector{Symbol}, opts::Valu
     return ColumnPlan(columns, sources, positions, Int[], opts, colopts)
 end
 
-@inline _defaultchunkbytes(nbytes::Int, nthreads::Int=Threads.nthreads()) =
+_defaultchunkbytes(nbytes::Int, nthreads::Int=Threads.nthreads()) =
     clamp(cld(nbytes, 4 * nthreads), 1 << 16, 1 << 20)
 
 # Split rows 1:n into contiguous ranges of at least `minrows` and run
@@ -3573,6 +3602,7 @@ function _spawnall(f, items)
     end
     return
 end
+
 _unwrapfailure(e) = e
 _unwrapfailure(e::CompositeException) =
     isempty(e.exceptions) ? e : _unwrapfailure(first(e.exceptions))
@@ -4102,6 +4132,7 @@ function _fillslice!(col::StringColumn, lo::Int, hi::Int)
     end
     return nothing
 end
+
 function _fillslice!(col::TypedColumn, lo::Int, hi::Int)
     present = col.present
     @inbounds @simd for r in lo:hi
@@ -4109,6 +4140,7 @@ function _fillslice!(col::TypedColumn, lo::Int, hi::Int)
     end
     return nothing
 end
+
 function _fillslice!(col::UnionColumn, lo::Int, hi::Int)
     uvalues = col.uvalues
     @inbounds for r in lo:hi
@@ -4403,6 +4435,7 @@ struct PooledColumn{ELT} <: AbstractVector{ELT}
     refs::Vector{UInt32}          # 0 = missing (ELT includes Missing then)
     levels::DataStringVector{DataString}
 end
+
 Base.size(c::PooledColumn) = size(c.refs)
 
 # widen a missing-free column to its Union{Missing,T} counterpart, zero-copy
@@ -4421,15 +4454,16 @@ Base.@propagate_inbounds function Base.getindex(c::PooledColumn{ELT}, i::Int) wh
     r == 0 && return missing
     return c.levels[Int(r)]
 end
+
 Base.@propagate_inbounds function Base.getindex(c::PooledColumn{DataString}, i::Int)
     @boundscheck checkbounds(c.refs, i)
     @inbounds return c.levels[Int(c.refs[i])]
 end
+
 poolrefs(c::PooledColumn) = c.refs
 poollevels(c::PooledColumn) = c.levels
 
 # the effective (ratio, cap) for column j: per-column override, else global
-
 
 function materialize(c::PooledColumn{ELT}) where {ELT}
     lv = materialize(c.levels)
@@ -4440,7 +4474,6 @@ function materialize(c::PooledColumn{ELT}) where {ELT}
     end
     return out
 end
-
 
 # Assemble one final exact-size column from its per-chunk segments. Segment
 # copies are plain value memmoves (cheap relative to re-reading text from RAM);
@@ -4549,6 +4582,7 @@ end
 function finalizecolumn(::Type{Missing}, ::Nothing, n::Int)
     return fill(missing, n)
 end
+
 finalizecolumn(::Type{Missing}, ::Nothing, n::Int, ::Bool) = fill(missing, n)
 function finalizecolumn(::Type{String}, col::StringColumn, n::Int, force_missing::Bool=false)
     anymissing = force_missing || any(p -> payloadlen(p) < 0, col.payloads)
@@ -4563,6 +4597,7 @@ function finalizecolumn(::Type{T}, col::TypedColumn{T}, n::Int) where {T}
     # no missings ⇒ hand back the raw Vector{T}, zero copies
     return _allpresent(col.present) ? col.values : _tounion(col)
 end
+
 function finalizecolumn(::Type{T}, col::TypedColumn{T}, n::Int, force_missing::Bool) where {T}
     return !force_missing && _allpresent(col.present) ? col.values : _tounion(col)
 end
@@ -4580,6 +4615,7 @@ function _tounionrange!(out, values, present, lo::Int, hi::Int)
     end
     return
 end
+
 function _tounion(col::TypedColumn{T}) where {T}
     values, present = col.values, col.present
     n = length(values)

@@ -13,14 +13,14 @@ CSV._parseable(::Type{T}) where {T <: DataDecimals.AbstractDecimal} = isconcrete
 # A requested `Decimal{P, S}` must hold the field's value exactly. Under
 # `RoundExact` the parser reports a value that the target scale cannot hold
 # exactly, so one parse decides.
-@inline function _parsedecimal(::Type{T}, buf, i, j, vo) where {T <: Decimal}
+function _parsedecimal(::Type{T}, buf, i, j, vo) where {T <: Decimal}
     value = Parsers.tryparse(T, buf, i, j; decimal=Char(vo.decimal), rounding=RoundExact)
     value === nothing && return (zero(T), false)
     return (value, true)
 end
 
 # A `DecimalValue` keeps the scale the field spelled, so it needs no exactness check.
-@inline function _parsedecimal(::Type{T}, buf, i, j, vo) where {T <: DataDecimals.AbstractDecimal}
+function _parsedecimal(::Type{T}, buf, i, j, vo) where {T <: DataDecimals.AbstractDecimal}
     value = Parsers.tryparse(T, buf, i, j; decimal=Char(vo.decimal))
     value === nothing && return (zero(T), false)
     return (value, true)
