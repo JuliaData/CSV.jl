@@ -13,11 +13,8 @@ CSV.jl entry points. It requires Julia 1.10 or later.
 - Inferred text uses `DataStrings.DataString` by default. Short text is stored in
   the value; longer text lives in column-owned buffers, so eager tables never
   refer to the source or to a mapped file.
-- A quote in the middle of a field (`5' 11"`) is ordinary content. The
-  structural scan notices such a quote and rebuilds its index under the
-  field-start rule, so the file still parses correctly; input without such
-  quotes never pays for the check.
-- Typed value parsing uses the low-level parsers of Parsers 3.
+- Typed value parsing uses the low-level parsers of Parsers, now even faster in
+  version 3.
 - Parse recovery produces structured `CSV.problems(file)` data. `on_error`
   selects one summary warning (`:warn`, the default), silent collection
   (`:collect`), or fail-fast `CSV.ParseError` (`:error`).
@@ -36,9 +33,6 @@ CSV.jl entry points. It requires Julia 1.10 or later.
   carries its schema in its type, so `row.name` on a typed column returns a
   typed value without allocation. Transposed reads parse each row as a typed
   column. Several sources concatenate text as `DataString` columns.
-- CSV does not infer decimal types. With DataDecimals loaded, an explicitly
-  requested decimal type parses exactly from the field bytes; a value that
-  would need rounding is a problem.
 
 ## Compatibility changes
 
