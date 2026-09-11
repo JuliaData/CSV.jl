@@ -1,8 +1,9 @@
 # Tables.Scan can select columns, change names and types, filter rows, and set
 # row bounds. CSV applies the complete request. A filter read has two value
-# passes. The first pass reads only the filter columns. The second pass reads
-# result columns only for rows that passed the filter. Both passes use the same
-# structural index.
+# passes. The first pass reads only the filter columns, one chunk at a time,
+# and keeps only the row mask. The second pass reads result columns only for
+# rows that passed the filter, and skips a column whose values the first pass
+# already produced. Both passes use the same structural index.
 
 using Tables
 
@@ -86,26 +87,188 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
         return _finishproblems(t, maxproblems, on_error, headerlog, source, t), requests
     end
 
-    # First, read only the columns used by the filter, inside the window.
-    predcolumns = [ColumnDecision() for _ in inputnames]
-    predplan = ColumnPlan(predcolumns, plan.predicate, Int[], Int[],
-                          plan.opts, plan.colopts)
-    t1 = _parseprepared(p, predplan; limit=p.limit, maxproblems=phasecap)
-    mask = Tables.filtermask(b, PredicateColumns(t1, inputnames, plan.predicate))
-    length(mask) == window ||
-        throw(ArgumentError("filter mask has $(length(mask)) entries for $window rows"))
-    window < total && append!(mask, Iterators.repeated(false, total - window))
+    # The predicate pass streams one chunk at a time; see `_streampredicate`.
+    # A chunk whose cell contradicts the sampled type of its column falls
+    # back to one parse of the whole window, which promotes the column the
+    # usual way.
+    streamed = _streampredicate(p, plan, b, window, total, phasecap)
+    if streamed === nothing
+        predcolumns = [ColumnDecision() for _ in inputnames]
+        predplan = ColumnPlan(predcolumns, plan.predicate, Int[], Int[],
+                              plan.opts, plan.colopts)
+        t1 = _parseprepared(p, predplan; limit=p.limit, maxproblems=phasecap)
+        mask = Vector{Bool}(Tables.filtermask(b, PredicateColumns(t1, inputnames, plan.predicate)))
+        length(mask) == window ||
+            throw(ArgumentError("filter mask has $(length(mask)) entries for $window rows"))
+        window < total && append!(mask, Iterators.repeated(false, total - window))
+        predphase = t1
+        slices = Dict{Int, Vector{AbstractVector}}()
+        seeds = Dict{Int, Type}()
+    else
+        mask, predphase, slices, seeds = streamed
+    end
     _cliprows!(mask, b.offset, b.limit)
-
-    # Then, read result columns only for rows that passed the filter. A result
-    # column used by the filter is read again because its requested type applies
-    # only to the result.
-    t2 = _parseprepared(p, plan; limit=nothing, rowmask=mask,
-                        reportstructural=false, maxproblems=phasecap)
     kept = findall(mask)
-    t2 = _narrowphase(t2, plan, bi, phasecap; sourcerows=kept)
-    t = _project(t2, b, inputnames)
-    return _finishproblems(t, maxproblems, on_error, headerlog, source, t1, t2), requests
+    nkept = length(kept)
+
+    # A result column that the predicate pass parsed with the type the result
+    # needs keeps those values; the others parse only the rows that passed.
+    reused = _reusepredicate(p, plan, kept, slices, seeds, b.offset)
+    sources = Int[j for j in plan.sources if !haskey(reused, j)]
+    if isempty(sources)
+        t2 = ParsedTable(Symbol[], AbstractVector[], nkept, Problem[], 0)
+    else
+        plan2 = ColumnPlan(plan.columns, sources, plan.positions, plan.predicate,
+                           plan.opts, plan.colopts)
+        t2 = _parseprepared(p, plan2; limit=nothing, rowmask=mask,
+                            reportstructural=false, maxproblems=phasecap)
+        t2 = _narrowphase(t2, plan2, bi, phasecap; sourcerows=kept)
+    end
+    lookup = Dict(nm => i for (i, nm) in enumerate(names(t2)))
+    cols = AbstractVector[haskey(reused, j) ? reused[j] : columns(t2)[lookup[inputnames[j]]]
+                          for j in plan.sources]
+    tall = ParsedTable(inputnames[plan.sources], cols, nkept, problems(t2), t2.droppedproblems)
+    t = _project(tall, b, inputnames)
+    return _finishproblems(t, maxproblems, on_error, headerlog, source, predphase, t2), requests
+end
+
+# Stream the predicate pass. The predicate columns parse one chunk at a time
+# with the types the window sample settled, the filter runs on each chunk, and
+# only the Bool mask stays in memory, plus the kept values of any result column
+# that can reuse this parse. Chunks parse in groups of `tasklimit`, in file
+# order. Returns `nothing` when a cell contradicts its sampled type or when the
+# filter uses no column; the caller then parses the window at once.
+function _streampredicate(p::Prepared, plan::ColumnPlan, b::Tables.BoundScan,
+                          window::Int, total::Int, cap::Int)
+    bi = p.bi
+    chunks = bi.chunks
+    settings = p.settings
+    inputnames = p.names
+    ncols = p.ncols
+    predicate = plan.predicate
+    (isempty(predicate) || window == 0) && return nothing
+    tasklimit = settings.parallel ?
+                min(something(settings.ntasks, Threads.nthreads()), Threads.nthreads()) : 1
+    tm = settings.typemap
+    selected = fill(false, ncols)
+    for j in predicate
+        selected[j] = true
+    end
+    sawmissing = fill(false, ncols)
+    ns = settings.nsample === nothing ? clamp(window >> 6, 8, 128) : settings.nsample
+    probechunks = ChunkIndex[ci for ci in chunks if nrows(ci) > 0]
+    inferred = sampletypes(p.buf, probechunks, ncols, plan.opts; nsample=max(ns, 1), selected,
+                           sawmissing, colopts=plan.colopts, maxrows=window)
+    seedtypes = Type[_maptype(tm, inferred[j]) for j in predicate]
+    predcolumns = [ColumnDecision() for _ in inputnames]
+    predplan = ColumnPlan(predcolumns, predicate, Int[], Int[], plan.opts, plan.colopts)
+    batches = Batches(p.buf, chunks, inputnames[predicate], predplan, seedtypes,
+                      fill(true, length(predicate)), p.d, cap,
+                      bi.unclosedquote && window == total, 1)
+    seeds = Dict{Int, Type}(j => seedtypes[q] for (q, j) in enumerate(predicate))
+    # result columns that may reuse this parse: same source, same parse type
+    slices = Dict{Int, Vector{AbstractVector}}()
+    for c in b.columns
+        j = c.index
+        haskey(seeds, j) || continue
+        d = plan.columns[j]
+        (d.resulttype === nothing || _requestedstring(d) !== nothing) || continue
+        (d.parsetype === nothing || d.parsetype === seeds[j]) || continue
+        slices[j] = AbstractVector[]
+    end
+    mask = Vector{Bool}(undef, total)
+    items = Problem[]
+    dropped = 0
+    pos = 0
+    k = 1
+    while pos < window && k <= length(chunks)
+        group = k:min(k + tasklimit - 1, length(chunks))
+        tables = Vector{Union{Nothing, ParsedTable}}(nothing, length(group))
+        _taskforeach(eachindex(group), tasklimit) do g
+            tables[g] = tryparsebatch(batches, chunks[group[g]])
+        end
+        for g in eachindex(group)
+            pos >= window && break
+            t = tables[g]
+            t === nothing && return nothing
+            n = nrows(chunks[group[g]])
+            keepn = min(n, window - pos)
+            m = Vector{Bool}(Tables.filtermask(b, PredicateColumns(t, inputnames, predicate)))
+            length(m) == n ||
+                throw(ArgumentError("filter mask has $(length(m)) entries for $n rows"))
+            keepn < n && resize!(m, keepn)
+            copyto!(mask, pos + 1, m, 1, keepn)
+            for (j, pieces) in slices
+                push!(pieces, _keptslice(columns(t)[searchsortedfirst(predicate, j)], m))
+            end
+            for pr in problems(t)
+                (pr.row == 0 || pr.row <= window) && push!(items, pr)
+            end
+            dropped += t.droppedproblems
+            pos += keepn
+        end
+        k = last(group) + 1
+    end
+    fill!(view(mask, (window + 1):total), false)
+    return mask, ParsedTable(Symbol[], AbstractVector[], 0, items, dropped), slices, seeds
+end
+
+# The rows of one chunk's column that passed the filter.
+_keptslice(col::AbstractVector, m::Vector{Bool}) = col[m]
+_keptslice(col::DataStringVector, m::Vector{Bool}) =
+    _stringvector(eltype(col), col.payloads[m], col.buffers)
+
+# Decide which result columns keep the predicate pass's values. A requested
+# type that equals the parse type always can. An inferred result type can
+# only when the kept rows infer the same type the window sample gave; the
+# kept rows alone decide an inferred result type.
+function _reusepredicate(p::Prepared, plan::ColumnPlan, kept::Vector{Int},
+                         slices::Dict{Int, Vector{AbstractVector}}, seeds::Dict{Int, Type},
+                         offset::Int)
+    reused = Dict{Int, AbstractVector}()
+    (isempty(slices) || isempty(kept)) && return reused
+    settings = p.settings
+    inferredcands = Int[j for j in keys(slices) if plan.columns[j].parsetype === nothing]
+    if !isempty(inferredcands)
+        ncols = p.ncols
+        selected = fill(false, ncols)
+        for j in inferredcands
+            selected[j] = true
+        end
+        chunks = p.bi.chunks
+        rowbases0 = cumsum([0; Int[nrows(ci) for ci in chunks[1:max(length(chunks) - 1, 0)]]])
+        ns = settings.nsample === nothing ? clamp(length(kept) >> 6, 8, 128) : settings.nsample
+        sawmissing = Bool[plan.columns[j].declaredmissing for j in 1:ncols]
+        inferred = sampletypesrows(p.buf, chunks, rowbases0, kept, ncols, plan.opts, selected;
+                                   nsample=max(ns, 1), sawmissing, colopts=plan.colopts)
+        filter!(j -> _maptype(settings.typemap, inferred[j]) === seeds[j], inferredcands)
+    end
+    nkept = length(kept)
+    for (j, pieces) in slices
+        (plan.columns[j].parsetype !== nothing || j in inferredcands) || continue
+        reused[j] = _assemblereused(pieces, seeds[j], offset, nkept,
+                                    plan.columns[j].declaredmissing)
+    end
+    return reused
+end
+
+# Join the kept slices, drop the rows that `offset` and `limit` removed, and
+# narrow the element type when no kept value is missing.
+function _assemblereused(pieces::Vector{AbstractVector}, ::Type{T}, offset::Int, nkept::Int,
+                         declaredmissing::Bool) where {T}
+    range = (offset + 1):(offset + nkept)
+    T === Missing && return fill(missing, nkept)
+    if T === String
+        counts = Int[length(c) for c in pieces]
+        chained = _chaindatastrings(pieces, counts, sum(counts))
+        payloads = chained.payloads[range]
+        allpresent = !declaredmissing && !any(pl -> payloadlen(pl) < 0, payloads)
+        return _stringvector(allpresent ? DataString : Union{DataString, Missing},
+                             payloads, chained.buffers)
+    end
+    v = reduce(vcat, pieces; init=Union{Missing, T}[])
+    r = v[range]
+    return declaredmissing || any(ismissing, r) ? r : Vector{T}(r)
 end
 
 function _narrowphase(t::ParsedTable, plan::ColumnPlan, bi::BufferIndex,

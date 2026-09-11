@@ -66,6 +66,61 @@ scans = [
     end
 end
 
+@testset "streamed predicate pass and predicate reuse" begin
+    # The predicate columns parse one chunk at a time. A result column that the
+    # predicate pass parsed with the type the result needs keeps those values.
+    csv2 = "id,amount,tag\n" * join(("$i,$(i % 7 == 0 ? "$(i).5" : "$i"),$(iseven(i) ? "a" : "b")" for i in 1:3000), "\n") * "\n"
+    reuse = T.Scan(filter = T.col(:amount) > 100.0, select = (:amount, :id))
+    ref = T.scan(S.parse(csv2), reuse)
+    for cb in (128, 1000, 1 << 20), par in (false, true)
+        t = scanfile(csv2, reuse; chunkbytes=cb, parallel=par, ntasks=par ? 3 : 1)
+        @test sametable(t, ref)
+        @test eltype(t.amount) == Float64 && eltype(t.id) == Int64
+        @test isempty(S.problems(t))
+    end
+    # the requested type equals the predicate parse type: reused; a narrower
+    # request or a conversion is parsed again for the kept rows only
+    for select in ((:amount => Float64, :id), (:amount => Float32,))
+        scan = T.Scan(; filter = T.col(:amount) > 100.0, select)
+        @test sametable(scanfile(csv2, scan; chunkbytes=500), T.scan(S.parse(csv2), scan))
+    end
+    # a requested String keeps the field text of the kept rows
+    astext = scanfile(csv2, T.Scan(; filter = T.col(:amount) > 100.0, select = (:amount => String,)); chunkbytes=500)
+    @test astext.amount isa Vector{String}
+    @test astext.amount == [i % 7 == 0 ? "$(i).5" : "$i" for i in 101:3000]
+    # offset and limit apply to the kept rows after the filter, on reused columns too
+    paged = T.Scan(filter = T.colcmp(==, T.col(:tag), "a"), select = (:tag, :id), offset = 100, limit = 17)
+    @test sametable(scanfile(csv2, paged; chunkbytes=300), T.scan(S.parse(csv2), paged))
+    @test scanfile(csv2, paged; chunkbytes=300).tag isa S.DataStringVector{S.DataString}
+    # a value the sample missed contradicts the sampled type: the predicate
+    # pass falls back to one parse of the window and promotes the column
+    dirty = replace(csv2, "1500,1500,a" => "1500,oops,a")
+    fallback = T.Scan(filter = T.colcmp(==, T.col(:amount), "oops"), select = (:id, :amount))
+    for cb in (128, 1 << 20)
+        t = scanfile(dirty, fallback; chunkbytes=cb)
+        @test collect(t.id) == [1500] && collect(t.amount) == ["oops"]
+    end
+    # the kept rows alone type an inferred result column: the excluded text
+    # cell does not make the column text (the documented divergence)
+    numeric = T.Scan(filter = T.col(:id) > 2990, select = (:id, :amount))
+    t = scanfile(dirty, numeric; chunkbytes=128)
+    @test eltype(t.amount) == Float64
+    @test collect(t.amount) == [i % 7 == 0 ? i + 0.5 : Float64(i) for i in 2991:3000]
+    # a requested type equal to the predicate parse type reuses the values,
+    # including a missing cell the predicate pass saw
+    sparse = "a,b\n1,x\n,y\n3,z\n4,w\n"
+    both = T.Scan(select = (:a => Int64, :b), filter = T.isnull(T.col(:a)) | (T.col(:a) >= 3))
+    t = scanfile(sparse, both; chunkbytes=8)
+    @test eltype(t.a) == Union{Missing, Int64}
+    @test isequal(collect(t.a), [missing, 3, 4]) && collect(t.b) == ["y", "z", "w"]
+    @test isempty(S.problems(t))
+    # an all-missing predicate column stays reusable as a Missing column
+    blank = "a,b\n,1\n,2\n,3\n"
+    allmissing = T.Scan(filter = T.isnull(T.col(:a)), select = (:a, :b))
+    t = scanfile(blank, allmissing; chunkbytes=6)
+    @test eltype(t.a) == Missing && collect(t.b) == [1, 2, 3]
+end
+
 @testset "CSV.File(source; scan=) composes with File keywords" begin
     scan = T.Scan(select = (:region, :price => Float64 => :cost, :qty), filter = T.col(:qty) > 25, limit = 50)
     f = CSV.File(IOBuffer(csv); scan)

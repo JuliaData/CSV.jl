@@ -180,7 +180,14 @@ function Base.iterate(b::Batches, i::Int=1)
 end
 
 # Parse one indexed chunk with the types and options settled for this request.
-function parsebatch(b::Batches, ci::ChunkIndex)
+parsebatch(b::Batches, ci::ChunkIndex) = something(_parsebatch(b, ci, true))
+
+# The same parse for types settled from a sample only: a cell that
+# contradicts its column's type returns `nothing` instead of an error, and
+# the caller decides how to promote.
+tryparsebatch(b::Batches, ci::ChunkIndex) = _parsebatch(b, ci, false)
+
+function _parsebatch(b::Batches, ci::ChunkIndex, strict::Bool)::Union{Nothing, ParsedTable}
     n = nrows(ci)
     ncols = length(b.names)
     log = ProblemLog(b.maxproblems)
@@ -201,6 +208,7 @@ function parsebatch(b::Batches, ci::ChunkIndex)
 
     cols = Vector{AbstractVector}(undef, ncols)
     logs = Vector{ProblemLog}(undef, ncols)
+    conflicts = fill(false, ncols)
     # columns are independent: each parses into its own column and problem log
     parseone = q -> begin
         j = b.plan.sources[q]
@@ -212,7 +220,11 @@ function parsebatch(b::Batches, ci::ChunkIndex)
         conflict = T === Missing ?
             parsecolchunk_missing(b.buf, ci, j, rowbase, opts, userprovided, clog) :
             parsecolchunk!(col, b.buf, ci, j, 0, opts, userprovided, clog, rowbase)
-        conflict == 0 || error("internal error: batch schema prepass disagreed with value parsing")
+        if conflict != 0
+            strict && error("internal error: batch schema prepass disagreed with value parsing")
+            conflicts[q] = true
+            return
+        end
         cols[q] = finalizecolumn(T, col, n, b.allowmissing[q])
         logs[q] = clog
     end
@@ -221,6 +233,7 @@ function parsebatch(b::Batches, ci::ChunkIndex)
     else
         foreach(parseone, 1:ncols)
     end
+    any(conflicts) && return nothing
     # fold the column logs in column order (retention is by source order, so
     # the fold order only affects which of two identical keys is kept)
     for q in 1:ncols
