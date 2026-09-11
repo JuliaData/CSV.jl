@@ -206,4 +206,6 @@ import Dates, CodecZlib
     end
 end
 
+__init__() = _probecpu!()
+
 end # module CSV

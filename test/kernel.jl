@@ -555,6 +555,15 @@ end
     for _ in 1:1000
         m = rand(rng, UInt64)
         @test K.prefix_xor64(m) == K.prefix_xor64_shift(m)
+        if Sys.ARCH === :aarch64 && !Sys.isapple()
+            # the probed instruction and the shift fallback agree wherever the
+            # CPU has the instruction
+            K.HAS_PMULL[] && @test K.prefix_xor64_pmull(m) == K.prefix_xor64_shift(m)
+        end
+    end
+    if Sys.ARCH === :aarch64 && !Sys.isapple()
+        C = Base.BinaryPlatforms.CPUID
+        @test K.HAS_PMULL[] == C.test_cpu_feature(C.JL_AArch64_aes)
     end
     bytes = fill(UInt8('x'), 66)
     GC.@preserve bytes begin

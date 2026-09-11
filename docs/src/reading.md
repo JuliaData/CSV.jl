@@ -240,7 +240,11 @@ most `N` worker tasks. A direct `CSV.File` targets about four structural
 chunks per task, each between 64 KiB and 1 MiB, unless `chunkbytes` is
 explicit. `CSV.File(lazyfile)`
 keeps the existing index geometry but applies the same worker bound.
-`chunkbytes` directly controls the target structural-index chunk size.
+`chunkbytes` directly controls the target structural-index chunk size. Keep
+it at the default unless a measurement says otherwise: each parsing pass
+walks one chunk at a time, so a chunk that fits in cache keeps the value
+loops fast, and a `chunkbytes` of several MiB or more slows wide files with
+many columns.
 
 Type inference samples indexed rows. `nsample` controls its row sample and
 `samplebytes` controls the delimiter-detection sample. Parallel and

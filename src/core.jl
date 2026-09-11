@@ -1480,7 +1480,8 @@ end
     end
 elseif Sys.ARCH === :aarch64 && Sys.isapple()
     @inline function prefix_xor64(m::UInt64)::UInt64
-        # This Apple ARM instruction calculates the running quote mask in one step.
+        # This ARM instruction calculates the running quote mask in one step.
+        # Every Apple silicon CPU has it.
         v = Base.llvmcall(("""
             declare <16 x i8> @llvm.aarch64.neon.pmull64(i64, i64)
             define i64 @entry(i64 %m) #0 {
@@ -1492,8 +1493,45 @@ elseif Sys.ARCH === :aarch64 && Sys.isapple()
             attributes #0 = { alwaysinline }""", "entry"), UInt64, Tuple{UInt64}, m)
         return v
     end
+elseif Sys.ARCH === :aarch64
+    # Other aarch64 hosts get the same instruction when the CPU has the AES
+    # extension, which `__init__` probes through Base. The instruction lives
+    # in a helper that carries its own target features, so a package image
+    # built for a generic aarch64 target still compiles it; the probe keeps
+    # it from running on a CPU that would trap. The helper is a real call,
+    # which costs about as much as the shift fallback saves.
+    @inline function prefix_xor64_pmull(m::UInt64)::UInt64
+        v = Base.llvmcall(("""
+            declare <16 x i8> @llvm.aarch64.neon.pmull64(i64, i64)
+            define internal i64 @pmull_impl(i64 %m) #1 {
+                %r = call <16 x i8> @llvm.aarch64.neon.pmull64(i64 %m, i64 -1)
+                %v = bitcast <16 x i8> %r to <2 x i64>
+                %lo = extractelement <2 x i64> %v, i32 0
+                ret i64 %lo
+            }
+            define i64 @entry(i64 %m) #0 {
+                %r = call i64 @pmull_impl(i64 %m)
+                ret i64 %r
+            }
+            attributes #0 = { alwaysinline }
+            attributes #1 = { noinline "target-features"="+neon,+aes" }""", "entry"),
+            UInt64, Tuple{UInt64}, m)
+        return v
+    end
+    const HAS_PMULL = Ref(false)
+    @inline prefix_xor64(m::UInt64) = HAS_PMULL[] ? prefix_xor64_pmull(m) : prefix_xor64_shift(m)
 else
     @inline prefix_xor64(m::UInt64) = prefix_xor64_shift(m)
+end
+
+# Runtime CPU probe for the paths above. Base has probed the host since
+# Julia 1.7; on Julia 1.14 the probe comes from the cpufeatures library.
+function _probecpu!()
+    @static if Sys.ARCH === :aarch64 && !Sys.isapple()
+        C = Base.BinaryPlatforms.CPUID
+        HAS_PMULL[] = C.test_cpu_feature(C.JL_AArch64_aes)
+    end
+    return nothing
 end
 
 # LLVM code that creates the 64-byte masks. A load can start at any address. The
