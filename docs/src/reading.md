@@ -160,7 +160,17 @@ the header. Function-valued `types` is not supported. A requested
 `Vector{String}` or `Vector{Union{Missing, String}}` when pooling is off.
 With pooling, its levels use `String`. Request `DataStrings.DataString` to keep the
 parsed column as it is, or an InlineStrings.jl type when that package is loaded.
-`stringtype` governs inferred text only. With DataDecimals.jl loaded, an
+`stringtype` governs inferred text only.
+
+A requested type that CSV does not know parses through the type's own
+parser. Define `Parsers.tryparse(::Type{T}, buf::AbstractVector{UInt8},
+i::Integer, j::Integer)` to parse the field bytes in place, or
+`Base.tryparse(::Type{T}, ::String)` to parse a `String` made from them. The
+method must return `nothing` for text it cannot parse; that cell is then a
+problem. A type with neither method is an `ArgumentError` before parsing
+starts, and a parser that throws aborts the read.
+
+With DataDecimals.jl loaded, an
 explicitly requested decimal type such as `types=Dict(:amount =>
 DataDecimals.Decimal64{2})` parses exactly from the field bytes: a value that
 needs rounding is a problem. CSV does not infer decimal types; fractional

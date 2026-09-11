@@ -887,23 +887,44 @@ end
     return (totime(c), true)
 end
 
-# User-defined scalar types are not a common path. A concrete type is accepted
-# when it defines `tryparse(T, ::String)` or
-# `parse(T, ::String)`. Keep failures as ordinary invalid cells; a custom
-# parser must not escape the parse loop and abort the whole file.
-@noinline function parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int,
-                              ::ValueOpts) where {T}
-    s = String(buf[i:j])
-    try
-        if hasmethod(Base.tryparse, Tuple{Type{T}, String})
-            v = tryparse(T, s)
-            return (v, v isa T)
-        end
-        v = parse(T, s)
-        return (v, v isa T)
-    catch
-        return (nothing, false)
+# User-defined scalar types. A type parses through `Parsers.tryparse` on the
+# field bytes when it defines that method (no copy), and otherwise through
+# `Base.tryparse` on a `String` made from the field bytes. A type with neither
+# method is rejected when the column plan is settled, so a column can never
+# come back all missing because no parser existed. A parser that throws
+# aborts the read: a `tryparse` method must return `nothing` for text it
+# cannot parse. The method lookup runs once per type: readers take the
+# published dictionary without a lock, and a miss publishes a new one.
+const _SPANPARSERS = Ref(Base.ImmutableDict{Type, Bool}())
+const _SPANPARSERS_LOCK = ReentrantLock()
+
+function _usesspanparser(::Type{T}) where {T}
+    r = get(_SPANPARSERS[], T, nothing)
+    r === nothing || return r
+    lock(_SPANPARSERS_LOCK) do
+        d = _SPANPARSERS[]
+        r = get(d, T, nothing)
+        r === nothing || return r
+        r = _hasspanparser(T)
+        _SPANPARSERS[] = Base.ImmutableDict(d, T => r)
+        return r
     end
+end
+
+function parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int, ::ValueOpts) where {T}
+    return _usesspanparser(T) ? _parsecustom(T, buf, i, j, Val(:parsers)) :
+                                _parsecustom(T, buf, i, j, Val(:base))
+end
+
+function _parsecustom(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int, ::Val{:parsers}) where {T}
+    v = Parsers.tryparse(T, buf, i, j)
+    return (v, v isa T)
+end
+
+function _parsecustom(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int, ::Val{:base}) where {T}
+    s = GC.@preserve buf unsafe_string(pointer(buf, i), j - i + 1)
+    v = Base.tryparse(T, s)
+    return (v, v isa T)
 end
 
 # ---------------------------------------------------------------------------
@@ -3337,9 +3358,16 @@ const NARROW_TYPES = Dict{Type, Type}(
 _nativetype(T::Type) = get(NARROW_TYPES, T, T)
 # Extensions register exact parsers for their scalar types (DataDecimals).
 _parseable(::Type) = false
+
+# A user-defined scalar type parses through `Parsers.tryparse` on the field
+# bytes when the type defines that method, and through `Base.tryparse` on a
+# `String` otherwise. Parsers has a fallback span method for every type, so
+# the check asks which method applies rather than whether one exists.
+const _PARSERS_SPAN_FALLBACK = which(Parsers.tryparse, Tuple{Type{Any}, Vector{UInt8}, Int, Int})
+_hasspanparser(T::Type) = hasmethod(Parsers.tryparse, Tuple{Type{T}, Vector{UInt8}, Int, Int}) &&
+    which(Parsers.tryparse, Tuple{Type{T}, Vector{UInt8}, Int, Int}) !== _PARSERS_SPAN_FALLBACK
 _customparseable(T::Type) = isconcretetype(T) &&
-    (hasmethod(Base.tryparse, Tuple{Type{T}, String}) ||
-     hasmethod(Base.parse, Tuple{Type{T}, String}))
+    (_hasspanparser(T) || hasmethod(Base.tryparse, Tuple{Type{T}, String}))
 
 # Dict keys can be an integer position, a name, or a regular expression. An
 # exact key takes precedence over a regular expression.
@@ -3390,7 +3418,10 @@ function _columndecision(T)
                 parsetype <: Timestamp ||
                 _parseable(parsetype) ||
                 _customparseable(parsetype)
-    parseable || throw(ArgumentError("unsupported column type $parsetype"))
+    parseable || throw(ArgumentError(
+        "unsupported column type $parsetype: define " *
+        "Parsers.tryparse(::Type{$parsetype}, buf::AbstractVector{UInt8}, i::Int, j::Int) " *
+        "or Base.tryparse(::Type{$parsetype}, ::String)"))
     resulttype = haskey(NARROW_TYPES, requested) ? requested : nothing
     return ColumnDecision(parsetype, resulttype, declaredmissing)
 end

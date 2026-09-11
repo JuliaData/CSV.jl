@@ -46,6 +46,25 @@ function Base.tryparse(::Type{APITaskScalar}, s::String)
     return x === nothing ? nothing : APITaskScalar(x)
 end
 
+# A type that parses its field bytes in place through Parsers.
+struct APISpanScalar
+    value::Int
+end
+Parsers.tryparse(::Type{APISpanScalar}, buf::AbstractVector{UInt8}, i::Integer, j::Integer) =
+    (x = Parsers.tryparse(Int, buf, i, j); x === nothing ? nothing : APISpanScalar(x))
+
+# A type with only `Base.parse`: rejected before parsing starts.
+struct APIParseOnly
+    value::Int
+end
+Base.parse(::Type{APIParseOnly}, s::String) = APIParseOnly(parse(Int, s))
+
+# A `tryparse` that throws aborts the read instead of hiding the cell.
+struct APIThrowingScalar
+    value::Int
+end
+Base.tryparse(::Type{APIThrowingScalar}, s::String) = error("custom parser failure")
+
 # Keep the allocation probe in compiled function scope. Julia 1.10 can box the
 # UInt result when `@allocated` appears directly in a testset.
 function hashall(c)
@@ -482,6 +501,15 @@ end
     customlazy = A.lazy(IOBuffer("x\n1\nbad\n"); types=APICustomScalar)
     @test isequal(collect(customlazy.x),
                   Union{APICustomScalar, Missing}[APICustomScalar(1), missing])
+    # a Parsers span method parses the field bytes in place; a Base.tryparse
+    # method sees a String; neither method is an error before parsing
+    spanfile = A.File(IOBuffer("x\n1\nbad\n2\n"); types=APISpanScalar, on_error=:collect)
+    @test isequal(collect(spanfile.x),
+                  Union{APISpanScalar, Missing}[APISpanScalar(1), missing, APISpanScalar(2)])
+    @test length(A.problems(spanfile)) == 1
+    @test A._usesspanparser(APISpanScalar) && !A._usesspanparser(APICustomScalar)
+    @test_throws ArgumentError A.File(IOBuffer("x\n1\n"); types=APIParseOnly)
+    @test_throws ErrorException A.File(IOBuffer("x\n1\n"); types=APIThrowingScalar)
     missinglazy = A.lazy(IOBuffer("x\nvalue\n\n"); types=Missing,
                          ignoreemptyrows=false)
     @test all(ismissing, missinglazy.x)
