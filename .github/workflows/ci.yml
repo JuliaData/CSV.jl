@@ -207,9 +207,11 @@ jobs:
           for tree in baseline candidate; do
             julia --project="$tree/test" -e 'using CSV, InteractiveUtils; code_native(stdout, CSV.prefix_xor64, (UInt64,); debuginfo=:none)' > "results/$tree-prefix-native.txt"
           done
-      - name: Pair revisions and isolate Intel Mac costs
+      - name: Compare package loading with direct source loading
         run: |
-          julia --project=candidate/test candidate/bench/mac_diagnose.jl "$PWD/baseline" "$PWD/candidate" "$PWD/results" > results/paired.log
+          for revision in baseline candidate; do
+            CSV_MAC_PROBE_MODE=package_images julia --project="$revision/test" candidate/bench/mac_diagnose.jl "$PWD/baseline" "$PWD/candidate" "$PWD/results/$revision-package-images" > "results/$revision-package-images.log"
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:

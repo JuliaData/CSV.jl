@@ -1,13 +1,16 @@
 # Temporary paired diagnosis for PR 1196; not part of the release branch.
 using CSV, Tables, Dates, Random, Statistics, Printf, Profile, InteractiveUtils
+using CodecZlib, PooledArrays, InlineStrings, DataStrings
 include(joinpath(@__DIR__, "bench_matrix.jl"))
 include(joinpath(@__DIR__, "writeshapes.jl"))
 const BASE_TREE, CANDIDATE_TREE, RESULTS_DIR = abspath.(ARGS[1:3])
 mkpath(RESULTS_DIR)
 const QUICK_PROBE = get(ENV, "CSV_MAC_PROBE_QUICK", "0") == "1"
+const PACKAGE_IMAGE_PROBE = get(ENV, "CSV_MAC_PROBE_MODE", "full") == "package_images"
 const SAMPLES = QUICK_PROBE ? 4 : 20
 const TEMP_TREES = String[]
 function loadrevision(name::Symbol, tree::String; replacements=[])
+    original_tree = tree
     if !isempty(replacements)
         tmp = mktempdir()
         push!(TEMP_TREES, tmp)
@@ -22,14 +25,22 @@ function loadrevision(name::Symbol, tree::String; replacements=[])
     end
     parent = Core.eval(Main, :(module $name end))
     mod = Base.include(parent, joinpath(tree, "src", "CSV.jl"))
+    if PACKAGE_IMAGE_PROBE
+        extpath = joinpath(original_tree, "ext", "CSVInlineStringsExt.jl")
+        extension = read(extpath, String)
+        @assert occursin("using CSV, InlineStrings", extension)
+        extension = replace(extension, "using CSV, InlineStrings" => "using ..CSV, InlineStrings"; count=1)
+        Base.include_string(parent, extension, extpath)
+    end
     Base.invokelatest(() -> mod.__init__())
     return mod
 end
 const OLD = loadrevision(:StartingRevision, BASE_TREE)
 const NEW = loadrevision(:CurrentRevision, CANDIDATE_TREE)
-const STR16 = loadrevision(:ShortScan16, CANDIDATE_TREE; replacements=[
-    ("write.jl", "while k + 8 <= n", "while n >= 16 && k + 8 <= n")])
-const UNGUARDED = if Sys.ARCH === :x86_64 && NEW.HAS_PCLMUL[]
+const STR16 = PACKAGE_IMAGE_PROBE ? nothing :
+    loadrevision(:ShortScan16, CANDIDATE_TREE; replacements=[
+        ("write.jl", "while k + 8 <= n", "while n >= 16 && k + 8 <= n")])
+const UNGUARDED = if !PACKAGE_IMAGE_PROBE && Sys.ARCH === :x86_64 && NEW.HAS_PCLMUL[]
     loadrevision(:GuardBypass, CANDIDATE_TREE; replacements=[
         ("core.jl", "@inline prefix_xor64(m::UInt64) = HAS_PCLMUL[] ? prefix_xor64_pclmul(m) : prefix_xor64_shift(m)",
          "@inline prefix_xor64(m::UInt64) = prefix_xor64_pclmul(m)")])
@@ -86,6 +97,28 @@ function pair(name, a, b)
         name, minimum(ta)*1000, minimum(tb)*1000, minimum(tb)/minimum(ta),
         median(ta)*1000, median(tb)*1000, median(tb)/median(ta))
     flush(stdout)
+end
+if PACKAGE_IMAGE_PROBE
+    public_source = realpath(pathof(CSV))
+    isbase = public_source == realpath(joinpath(BASE_TREE, "src", "CSV.jl"))
+    @assert isbase || public_source == realpath(joinpath(CANDIDATE_TREE, "src", "CSV.jl"))
+    const SNAPSHOT = isbase ? OLD : NEW
+    println("Public package source: ", public_source)
+    println("Comparing the same source with and without normal package loading: ", isbase ? "baseline" : "candidate")
+    @assert isequal(Tables.columntable(CSV.File(MIXED_INPUT; ntasks=1, on_error=:collect)),
+                   Tables.columntable(SNAPSHOT.File(MIXED_INPUT; ntasks=1, on_error=:collect)))
+    @assert take!(CSV.write(IOBuffer(), STRING_TABLE)) == take!(SNAPSHOT.write(IOBuffer(), STRING_TABLE))
+    pair("with-extension/file", () -> OLD.File(MIXED_INPUT; ntasks=1, on_error=:collect),
+         () -> NEW.File(MIXED_INPUT; ntasks=1, on_error=:collect))
+    pair("with-extension/write", () -> OLD.write(IOBuffer(), STRING_TABLE),
+         () -> NEW.write(IOBuffer(), STRING_TABLE))
+    pair("package-images/file", () -> SNAPSHOT.File(MIXED_INPUT; ntasks=1, on_error=:collect),
+         () -> CSV.File(MIXED_INPUT; ntasks=1, on_error=:collect))
+    pair("package-images/write", () -> SNAPSHOT.write(IOBuffer(), STRING_TABLE),
+         () -> CSV.write(IOBuffer(), STRING_TABLE))
+    close(OUTPUT)
+    println("Package loading comparison complete")
+    exit()
 end
 pair("index/mixed/ntasks1", () -> OLD.index(MIXED_INPUT, DIALECT_OLD; ntasks=1),
      () -> NEW.index(MIXED_INPUT, DIALECT_NEW; ntasks=1))
