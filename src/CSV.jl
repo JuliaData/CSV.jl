@@ -23,9 +23,6 @@ include("api.jl")        # File, read, Rows, Chunks, and option handling
 include("write.jl")      # write and RowWriter
 include("scan.jl")       # Tables.Scan support
 
-# Delimiter and header detection (`sniff` and `Spec`) is internal machinery
-# behind `delim=nothing`; it is not part of the public surface.
-
 # These are namespace APIs, not exports. Their public docs stay here so the
 # complete supported surface is in one place.
 @doc """
@@ -154,7 +151,7 @@ end
 # each public reader and writer caches those specializations: File (type
 # inference, type changes, pooling, missing values, each built-in value type,
 # gzip, parallel parsing,
-# stringtype=String materializer), Rows, Chunks, the sniffer, write, RowWriter.
+# stringtype=String materializer), Rows, Chunks, write, and RowWriter.
 using PrecompileTools: @setup_workload, @compile_workload
 import Dates, CodecZlib
 @setup_workload begin
@@ -195,7 +192,6 @@ import Dates, CodecZlib
         collect(lf.str)
         File(lf)
         lazy(IOBuffer("a;b\n1;x\n"); delim=';')
-        sniff(IOBuffer(mixed))
         out = IOBuffer()
         write(out, (a=[1, 2], b=["x", "y,z"], c=[1.5, missing],
                     d=[Dates.Date(2024, 1, 2), Dates.Date(2024, 3, 4)]))

@@ -2,7 +2,7 @@
 #
 #   kernel.jl  — structural index, scanners, driver, columns, pooling (exhaustive
 #                chunk-geometry determinism)
-#   api.jl     — File/read/Rows/Chunks/sniff behavior and mode consistency
+#   api.jl     — File/read/Rows/Chunks behavior and mode consistency
 #   write.jl   — the writer, including round trips and exact output checks
 #   fuzz.jl    — deterministic malformed and generated-input checks
 #   scan.jl    — Tables.Scan pushdown (required by Tables 1.14)

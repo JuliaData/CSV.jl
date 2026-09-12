@@ -269,11 +269,11 @@ Tables.schema(r::_IndexedRows) =
 _rowopts(r::_IndexedRows, j::Int) =
     r.colopts === nothing ? r.opts : @inbounds(r.colopts[j])
 
-# DataString's view word has an Int32 offset. Row access normally retains
+# DataString's view word has an Int32 offset. Rows and lazy columns retain
 # the source buffer with no copy. For a long cell beyond that absolute offset,
 # copy only the cell into a private backing buffer. The returned value owns the
 # buffer, so separate rows and concurrent consumers do not share mutable state.
-@inline function _rowcompact(buf::Vector{UInt8}, pos::Int, len::Int,
+@inline function _compactview(buf::Vector{UInt8}, pos::Int, len::Int,
                              viewoffsetlimit::Int=Int(typemax(Int32)))
     len <= INLINE_MAX &&
         return DataString(inline_payload(buf, pos, len), EMPTY_BYTES)
@@ -335,9 +335,9 @@ function Base.getindex(row::_IndexedRow, j::Int)
         inl === nothing || return DataString(inl, EMPTY_BYTES)
         own = UInt8[]
         n = _unescape_append!(own, buf, cpos, clen, opts.e, r.d.cq)
-        return _rowcompact(own, 1, n)
+        return _compactview(own, 1, n)
     end
-    return _rowcompact(buf, cpos, clen)
+    return _compactview(buf, cpos, clen)
 end
 
 Base.getindex(row::_IndexedRow, nm::Symbol) = row[getfield(row, :r).lookup[nm]]

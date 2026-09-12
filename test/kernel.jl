@@ -1622,8 +1622,8 @@ end
     @test sort([col[2], col[1]]) == [col[1], col[2]]
     @test cmp(col[1], col[2]) == cmp("x"^12, "y"^13)
     # Exhaust the payload-length byte and use data that includes NUL, invalid
-    # UTF-8, all-one bytes, and sentinel-like runs. Odd out-of-line lengths use
-    # negative offsets, as escaped values do in a materialized column.
+    # UTF-8, all-one bytes, and sentinel-like runs. Out-of-line values exercise
+    # both source and owned-buffer indices.
     pattern = UInt8[0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
                     0xff, 0xff, 0xff, 0xff, 0x80, 0xc0, 0x7f, 0x41, 0xfe]
     strings = String[]

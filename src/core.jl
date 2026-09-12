@@ -4385,10 +4385,9 @@ end
 
 # --- pooled (dictionary-encoded) string columns --------------------------------
 #
-# Each chunk interns strings during parsing. The stitch merges those local level
-# tables in chunk order, which preserves first-occurrence order. If the merged
-# level count exceeds the policy, the caller degrades the staging and performs a
-# flat string stitch without reparsing.
+# Pooling follows parsing. The API layer interns string ranges and merges levels
+# in source order. This container stores the merged references and levels until
+# the API layer converts them to PooledArrays.
 struct PooledColumn{ELT} <: AbstractVector{ELT}
     refs::Vector{UInt32}          # 0 = missing (ELT includes Missing then)
     levels::DataStringVector{DataString}
@@ -4433,8 +4432,8 @@ end
 # Assemble one final exact-size column from its per-chunk segments. Segment
 # copies are plain value memmoves (cheap relative to re-reading text from RAM);
 # a Missing segment under a wider final type contributes all-absent rows with no
-# re-parse. String segments concatenate their extra buffers, rebasing the
-# negative (extra-relative) offsets as they copy.
+# re-parse. String segments adopt their owned buffers and update payload buffer
+# indices without copying the string bytes.
 function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases,
                       ndata::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8,
                       mask::Union{Nothing, Vector{Bool}}=nothing, inbases=nothing;

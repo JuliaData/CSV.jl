@@ -1,4 +1,4 @@
-# The public readers and the internal delimiter/shape detection.
+# The public readers and internal delimiter detection.
 #
 # Every entry point uses the same pipeline: resolve source bytes → settle the
 # dialect (sniffing if asked) → index once (rebuilt under the field-start
@@ -21,8 +21,6 @@
 #     and grouped columns
 #
 using Tables, Unicode, Mmap, PooledArrays, CodecZlib, Downloads
-
-# `sniff`/`Spec` are internal (behind `delim=nothing`); not exported.
 
 # No pooling unless asked: dictionary encoding costs a pass over every text
 # column, and most consumers do not need it. `pool=(0.2, 500)` enables the
@@ -222,7 +220,7 @@ function normalizename(name::String)
 end
 
 # ---------------------------------------------------------------------------
-# sniff — dialect + shape detection, returning a replayable Spec
+# Automatic delimiter detection
 # ---------------------------------------------------------------------------
 # The structural index IS the detector: for each candidate delimiter, index a
 # bounded quote-aware sample and score how consistent the per-row field counts
@@ -232,37 +230,8 @@ end
 
 const DELIM_CANDIDATES = (',', '\t', ' ', '|', ';', ':')
 
-"""
-    CSV.Spec
-
-A replayable parse plan from [`CSV.sniff`](@ref CSV.sniff): splat it back —
-`CSV.File(src; spec.delim, spec.header)` — or pass fields individually. Fields:
-`delim`, `quoted`, `header` (likely-present), `ncols`, `names`, `types`.
-"""
-struct Spec
-    delim::Char
-    quoted::Bool
-    header::Bool
-    ncols::Int
-    names::Vector{Symbol}
-    types::Vector{Type}
-end
-
-function Base.show(io::IO, s::Spec)
-    print(io, "CSV.Spec(delim=", repr(s.delim), ", header=", s.header,
-          ", ", s.ncols, " column(s))")
-    for (nm, T) in zip(s.names, s.types)
-        print(io, "\n  ", nm, "::", T)
-    end
-end
-
 # Quote-aware sample clip. When bounded, discard the final raw row because it
 # may be cut. Row boundaries depend on quote syntax, not on the delimiter.
-function _sample(buf::Vector{UInt8}, samplebytes::Int; start::Int=1, dialectkw...)
-    d = Dialect(; delim=_probedelim(dialectkw), dialectkw...)
-    return _sample(buf, samplebytes, start, d)
-end
-
 function _sample(buf::Vector{UInt8}, samplebytes::Int, start::Int, d::Dialect)
     samplebytes >= 1 || throw(ArgumentError("samplebytes must be ≥ 1 (got $samplebytes)"))
     start = clamp(start, 1, length(buf) + 1)
@@ -438,48 +407,6 @@ function _detectdelim_bytecounts(sample::Vector{UInt8}, datastart::Int, d::Diale
     end
     bestn > 0 && return bestc
     return havedataevidence ? fallback : ','
-end
-
-"""
-    CSV.sniff(source; samplebytes=65536, kw...) -> Spec
-
-Detect the delimiter (quote-aware field-count consistency over a bounded
-sample, candidates $(DELIM_CANDIDATES) in that order), whether a header
-row is likely (row 1 all text while later rows type differently), and the
-resulting names/types. `samplebytes` is the initial sample size; a sample too
-small to hold even one complete row grows until it does. `kw` may pin dialect, value, and index pieces
-(`quotechar`, `comment`, `decimal`, `fastindex`, ...) that sniffing should use.
-`buffer_in_memory=true` copies a file source instead of mapping it.
-"""
-function sniff(source; samplebytes::Int=1 << 16, missingstring=nothing,
-               buffer_in_memory::Bool=false, prefetch::Bool=true, kw...)
-    allowed = (_DIALECTKW..., _VALUEKW..., _INDEXKW..., _DRIVERKW...)
-    _checkkwargs("sniff", kw, allowed)
-    dialectkw = _pickkwargs(kw, _DIALECTKW)
-    valuekw = _pickkwargs(kw, _VALUEKW)
-    indexkw = _pickkwargs(kw, _INDEXKW)
-    driverkw = _pickkwargs(kw, _DRIVERKW)
-    buf = resolvesource(source; buffer_in_memory, prefetch)
-    d = Dialect(; delim=_probedelim(dialectkw), dialectkw...)
-    sample = _sample(buf, samplebytes, 1, d)
-    bestdelim, ir = _detectdelim(sample, d, get(indexkw, :fastindex, true))
-    ir && (dialectkw = merge(dialectkw, (; ignorerepeated=true)))
-    sentinels = _sentinels(missingstring)
-    parsekw = merge(dialectkw, valuekw, indexkw, driverkw,
-                    (; delim=bestdelim, sentinels, limit=100, parallel=false))
-    # header detection: parse the sample twice — types with row 1 as data vs
-    # header. A likely header = row 1 headerless-types degrade to String while
-    # the with-header types do not (numbers under a text row 1).
-    theader = parse(sample; header=true, parsekw...)
-    tnoheader = parse(sample; header=false, parsekw...)
-    headerlikely = tnoheader.nrows > theader.nrows &&
-        any(zip(columns(theader), columns(tnoheader))) do (ch, cnh)
-            Base.nonmissingtype(eltype(ch)) !== String && eltype(ch) !== Missing &&
-                Base.nonmissingtype(eltype(cnh)) in (String, DataString)
-        end
-    t = headerlikely ? theader : tnoheader
-    return Spec(bestdelim, get(dialectkw, :quoted, true), headerlikely,
-                length(names(t)), copy(names(t)), Type[eltype(c) for c in columns(t)])
 end
 
 # delimiter-only sniff for File(delim=nothing) — no second parse
@@ -1259,9 +1186,7 @@ function _finishstrings(t::ParsedTable, stringtype::Type, requests; tasklimit::I
     return ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
 end
 
-# The optional scan implementation is included after this file. A Tables
-# version without Scan never reaches this call because the type check above
-# fails first with a clear error.
+# Tables.Scan execution is included after this file.
 function _executescan(p::Prepared, scan; maxproblems::Int, on_error::Symbol,
                       source::String="")
     return _executescanplan(p, scan; headerlog=p.headerlog,
@@ -2305,9 +2230,9 @@ end
         end
         s = if esc
             bytes = _unescape_bytes(c.buf, Int64(cpos), Int32(clen), c.opts.e, c.opts.cq)
-            _lazycompact(bytes, 1, length(bytes))
+            _compactview(bytes, 1, length(bytes))
         else
-            _lazycompact(c.buf, cpos, clen)
+            _compactview(c.buf, cpos, clen)
         end
         return T === DataString ? s : _rowstring(T, s)
     end
@@ -2318,21 +2243,6 @@ end
     (st == CELL_BADQUOTE || clen == 0) && return missing
     v, ok = _parsecontent(T, c.buf, cpos, clen, esc, c.opts)
     return ok ? v : missing
-end
-
-# DataString's view word has an Int32 offset. Lazy access normally retains
-# the source buffer with no copy. For a long cell beyond that absolute offset,
-# copy only the cell into its own small backing buffer. The returned value owns
-# that buffer, so this fallback is lifetime- and concurrency-safe.
-@inline function _lazycompact(buf::Vector{UInt8}, pos::Int, len::Int,
-                              viewoffsetlimit::Int=Int(typemax(Int32)))
-    len <= INLINE_MAX &&
-        return DataString(inline_payload(buf, pos, len), EMPTY_BYTES)
-    pos - 1 <= viewoffsetlimit &&
-        return DataString(view_payload(buf, pos, len, 0, pos - 1), buf)
-    bytes = Vector{UInt8}(undef, len)
-    copyto!(bytes, 1, buf, pos, len)
-    return DataString(view_payload(bytes, 1, len, 0, 0), bytes)
 end
 
 # Sequential access (collect, sum, DataFrame(lf), display) walks chunk by

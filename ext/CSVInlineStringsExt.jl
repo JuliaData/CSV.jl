@@ -2,7 +2,7 @@
 #
 # InlineStrings are fixed-width isbits strings (1, 3, 7, 15, 31, 63, 127, 255
 # byte payloads). `stringtype=InlineString` picks the smallest width that fits
-# each column's longest value (InlineStrings.inlinestrings semantics); a
+# each column's longest value, up to String31, then falls back to String; a
 # specific `String15` etc. fixes the width, erroring on an over-long value like
 # `String15("...")` would.
 #
@@ -50,7 +50,7 @@ end
 end
 
 # `stringtype=InlineString` stops at String31: wider inline strings copy
-# 64–256 bytes per cell and lose to `String` on every operation.
+# 64–256 bytes per cell. This policy limits the cost of copying wide cells.
 # A column whose longest value exceeds it comes back as `String`, so a valid
 # file never fails to read because of its text width.
 const _AUTO_MAX_WIDTH = _capacity(String31)

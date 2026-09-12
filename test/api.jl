@@ -8,7 +8,7 @@
 # contract. Intentional 1.0 behavior is asserted directly:
 #   • empty unquoted cells are ALWAYS missing (custom missingstring ADDS)
 #   • long rows do not widen the schema (extra fields ⇒ problem, not Column4)
-#   • warnings are data (problems(f)), not log lines
+#   • diagnostics are retained data, with one summary warning by default
 #   • function-typed select/drop retired
 #   • wide integers that fit Int128 remain exact
 
@@ -178,51 +178,41 @@ end
     sourceparity("a::b::::c\n1::2::3\n"; kw=(; delim="::", ignorerepeated=true))
 end
 
-@testset "delimiter sniffing agrees" begin
+@testset "automatic delimiter detection" begin
+    detected(source; kw...) = A._prepare(source; kw...).d.delim
     for (d, s) in ((',', "a,b\n1,2\n3,4\n"), (';', "a;b\n1;2\n3;4\n"),
                    ('\t', "a\tb\n1\t2\n3\t4\n"), ('|', "a|b\n1|2\n3|4\n"))
-        sourceparity(s)                                 # neither side told the delim
-        spec = A.sniff(IOBuffer(s))
-        @test spec.delim == d
-        @test spec.header === true
-        @test spec.names == [:a, :b]
+        sourceparity(s)
+        @test detected(IOBuffer(s)) == UInt8(d)
+        @test Base.names(A.File(IOBuffer(s))) == [:a, :b]
     end
-    # quoted delimiters cannot fool the quote-aware scorer
-    spec = A.sniff(IOBuffer("a;b\n\"1;2;3;4;5\";6\n\"7;8\";9\n"))
-    @test spec.delim == ';'
-    # A colon repeated in Time values is not a delimiter when the header does
-    # not contain it. Both readers retain one Time column.
+    # Delimiters in quoted cells cannot influence the detector.
+    @test detected(IOBuffer("a;b\n\"1;2;3;4;5\";6\n\"7;8\";9\n")) == UInt8(';')
     sourceparity("t\n12:34:56\n13:45:00\n")
-    @test A.sniff(IOBuffer("t\n12:34:56\n13:45:00\n")).delim == ','
-    # Value and index options reach the post-detection parse without being sent
-    # to Dialect, and a quote-cut bounded sample remains safe.
-    spec = A.sniff(IOBuffer("a;b\n1,5;2\n3,5;4\n"); decimal=',', fastindex=false)
-    @test spec.delim == ';' && spec.types == [Float64, Int64]
-    spec = A.sniff(IOBuffer("a;b\n\"x\ny\";1\nz;2\n"); samplebytes=12)
-    @test spec.delim == ';'
-    # The initial bound grows only when it has no complete row. A normal
-    # bounded sample is unchanged; a single unterminated row returns whole.
+    @test detected(IOBuffer("t\n12:34:56\n13:45:00\n")) == UInt8(',')
+    f = A.File(IOBuffer("a;b\n1,5;2\n3,5;4\n"); decimal=',', fastindex=false)
+    @test f.a == [1.5, 3.5] && f.b == [2, 4]
+    f = A.File(IOBuffer("a;b\n\"x\ny\";1\nz;2\n"); samplebytes=12)
+    @test f.a == ["x\ny", "z"] && f.b == [1, 2]
+    # A bounded sample retains complete rows. It grows when its first row does
+    # not fit, including when that row ends at EOF.
     normal = Vector{UInt8}("a,b\n1,2\n")
-    @test A._sample(normal, 6) == normal[1:4]
-    @test A._sample(normal, 1) == normal[1:4]
+    @test A._sample(normal, 6, 1, A.Dialect()) == normal[1:4]
+    @test A._sample(normal, 1, 1, A.Dialect()) == normal[1:4]
     single = Vector{UInt8}("a;b;c")
-    @test A._sample(single, 1) == single
+    @test A._sample(single, 1, 1, A.Dialect()) == single
     bom = vcat(UInt8[0xef, 0xbb, 0xbf], Vector{UInt8}("a;b\n1;2\n"))
-    @test A.sniff(bom; samplebytes=1).delim == ';'
-    @test A.sniff(IOBuffer("n\n1\n2\n")).header === true   # single col, text over ints
-    @test A.sniff(IOBuffer("1,2\n3,4\n")).header === false # numbers all the way down
-    @test A.sniff(IOBuffer("Created Date\n")).delim == ','  # one header row: space is not evidence
-    @test A.sniff(IOBuffer("a;b;c\n")).delim == ';'
-    @test A.sniff(IOBuffer("")).delim == ','
-    @test A.sniff(IOBuffer(String(UInt8[0xef, 0xbb, 0xbf]) * "a;b\n1;2\n")).delim == ';'
-    # Two rows are enough field-consistency evidence, including CRLF input.
-    @test A.sniff(IOBuffer("x y:a:p,q:p,q:p,q\r\n\"p:q\":b:c:d:x y")).delim == ':'
-    # Equal scorers retain candidate order. The old header-max tier still
-    # outranks data-only evidence; data evidence is the final fallback only
-    # when that tier has no non-space candidate.
-    @test A.sniff(IOBuffer("a,b;c\n1,2;3\n")).delim == ','
-    @test A.sniff(IOBuffer("header, text\n1:2\n3:4\n")).delim == ','
-    @test A.sniff(IOBuffer("header text\n1:2\n3:4\n")).delim == ':'
+    @test detected(bom; samplebytes=1) == UInt8(';')
+    @test detected(IOBuffer("Created Date\n")) == UInt8(',')
+    @test detected(IOBuffer("a;b;c\n")) == UInt8(';')
+    @test detected(IOBuffer("")) == UInt8(',')
+    @test detected(bom) == UInt8(';')
+    # Two rows establish consistency. Equal scores retain candidate order.
+    @test detected(IOBuffer("x y:a:p,q:p,q:p,q\r\n\"p:q\":b:c:d:x y")) == UInt8(':')
+    @test detected(IOBuffer("a,b;c\n1,2;3\n")) == UInt8(',')
+    # Header punctuation takes precedence over delimiters found only in data.
+    @test detected(IOBuffer("header, text\n1:2\n3:4\n")) == UInt8(',')
+    @test detected(IOBuffer("header text\n1:2\n3:4\n")) == UInt8(':')
     @test_throws ArgumentError A.File(IOBuffer("a b\n1  2\n"); ignorerepeated=true)
 end
 
@@ -585,16 +575,11 @@ end
     # everywhere with an injected small limit, then its real sparse >2 GiB
     # source position on platforms that can map it.
     lazybytes = Vector{UInt8}(codeunits("pad" * "lazy value beyond inline storage"))
-    lazyview = A._lazycompact(lazybytes, 4, length(lazybytes) - 3)
-    lazyowned = A._lazycompact(lazybytes, 4, length(lazybytes) - 3, -1)
+    lazyview = A._compactview(lazybytes, 4, length(lazybytes) - 3)
+    lazyowned = A._compactview(lazybytes, 4, length(lazybytes) - 3, -1)
     @test String(lazyowned) == String(lazyview) == "lazy value beyond inline storage"
     @test getfield(lazyview, :data) === lazybytes
     @test getfield(lazyowned, :data) !== lazybytes
-    rowview = A._rowcompact(lazybytes, 4, length(lazybytes) - 3)
-    rowowned = A._rowcompact(lazybytes, 4, length(lazybytes) - 3, -1)
-    @test String(rowowned) == String(rowview) == "lazy value beyond inline storage"
-    @test getfield(rowview, :data) === lazybytes
-    @test getfield(rowowned, :data) !== lazybytes
     if Sys.WORD_SIZE == 64 && Sys.isunix()
         mktemp() do _, io
             offset0 = Int(typemax(Int32)) + 4096
@@ -1023,13 +1008,6 @@ end
         noprefetchbatch = first(A.Chunks(mapped; ntasks=2, prefetch=false))
         @test colvalues(bufferedbatch) == colvalues(mappedbatch)
         @test colvalues(noprefetchbatch) == colvalues(mappedbatch)
-        sm = A.sniff(mapped)
-        sb = A.sniff(bigpath; buffer_in_memory=true)
-        sn = A.sniff(mapped; prefetch=false)
-        @test (sm.delim, sm.header, sm.names, sm.types) ==
-              (sb.delim, sb.header, sb.names, sb.types)
-        @test (sm.delim, sm.header, sm.names, sm.types) ==
-              (sn.delim, sn.header, sn.names, sn.types)
         @test collect(String, mappedcol) == collect(String, Tables.getcolumn(fb, :s))
         @test collect(String, mappedcol) == collect(String, Tables.getcolumn(fnoprefetch, :s))
         @test pooledcol isa PooledArrays.PooledArray
@@ -1254,15 +1232,6 @@ end
                                chunkbytes=64))
     @test (datechunk.d1[1], datechunk.d2[1]) ==
           (Date(2023, 1, 15), Date(2023, 1, 16))
-end
-
-@testset "spec replays" begin
-    input = "x;y\nalpha;1\nbeta;2\n"
-    spec = A.sniff(IOBuffer(input))
-    @test spec.delim == ';' && spec.header === true
-    f = A.File(IOBuffer(input); delim=spec.delim, header=spec.header)
-    @test Base.names(f) == [:x, :y] && collect(f.y) == [1, 2]
-    @test occursin("delim=';'", sprint(show, spec))
 end
 
 end # @testset CSV readers
@@ -1923,7 +1892,6 @@ end
                                                            string(p), string(p)]
         @test first(A.Rows(p)).x isa AbstractString
         @test first(A.Chunks(p; chunkbytes=1 << 20))[:x] == [1, 3]
-        @test A.sniff(p).names == [:x, :y]
         @test CSV.read(p, Tables.columntable).x == [1, 3]
         # writer sink + compress=:auto by extension
         out = joinpath(FilePathsBase.Path(tmp), "out.csv")
@@ -1936,7 +1904,6 @@ end
         @test A.File(gz).a == [1, 2]
         @test first(A.Rows(gz)).a == "1"
         @test first(A.Chunks(gz; chunkbytes=1 << 20))[:a] == [1, 2]
-        @test A.sniff(gz).names == [:a]
         # A large AbstractPath takes the mmap branch and accepts both source
         # controls through the extension method.
         big = joinpath(FilePathsBase.Path(tmp), "big.csv")
@@ -2253,8 +2220,7 @@ end
         # Rewrite the file smaller while values are live: the table holds no
         # reference to the mapping and every finished task drops its own, so
         # one collection releases the map (Windows keeps a mapped file
-        # locked). A detached read-ahead task may still be finishing on a
-        # slow machine: retry briefly.
+        # locked). Retry briefly if an unused mapping has not been finalized.
         for attempt in 1:20
             GC.gc(true)
             try
@@ -2434,7 +2400,6 @@ end
     @test [r.t for r in A.Rows(IOBuffer(src); types=Dict(:t => TS))] == collect(f.t)
     @test collect(A.lazy(IOBuffer(src); types=Dict(:t => TS)).t) == collect(f.t)
     @test eltype(first(A.Chunks(IOBuffer(src))).t) === TS
-    @test A.sniff(IOBuffer(src)).types == [TS, Int64]
     @test eltype(A.File(IOBuffer(src); scan=Tables.Scan(select=(:t => Timestamp{Millisecond},)),
                         on_error=:collect).t) === Union{Missing, Timestamp{Millisecond}}
     # an instant outside the nanosecond range widens the column to microseconds

@@ -2,8 +2,7 @@
 #
 # `CSV.File(p"data.csv")` and `CSV.write(tmp / "out.csv", t)` work when
 # FilePathsBase is loaded. A path resolves through its string form, so every
-# reader front door
-# (File/read/Rows/Chunks/sniff — gzip by extension, mmap, prefetch) and the
+# reader (File/read/Rows/Chunks/lazy — gzip by magic bytes, mmap, prefetch) and the
 # writer (compress=:auto by extension, append) behave exactly as with a
 # String path.
 module CSVFilePathsBaseExt
