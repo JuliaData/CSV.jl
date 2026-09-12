@@ -24,9 +24,9 @@ function _snapshot(t)
     )
 end
 
-function _parsesnapshot(bytes, kw, chunkbytes, parallel, scanner)
+function _parsesnapshot(bytes, kw, chunkbytes, parallel, fastindex)
     t = K.parse(copy(bytes); header=false, types=String, chunkbytes,
-                parallel, scanner, kw...)
+                parallel, fastindex, kw...)
     return _snapshot(t)
 end
 
@@ -67,18 +67,18 @@ end
                 ignorerepeated = rand(rng, Bool),
                 maxproblems = 19,
             )
-            baseline = _parsesnapshot(bytes, kw, max(1, n + 1), false, :scalar)
+            baseline = _parsesnapshot(bytes, kw, max(1, n + 1), false, false)
             variants = (
-                (1, false, :scalar),
-                (3, false, :scalar),
-                (63, false, :swar),
-                (64, false, :vec),
-                (65, true, :auto),
-                (max(1, n + 1), true, :auto),
+                (1, false, false),
+                (3, false, false),
+                (63, false, true),
+                (64, false, true),
+                (65, true, true),
+                (max(1, n + 1), true, true),
             )
             @testset "seed=$(string(seed, base=16)) trial=$trial" begin
-                for (chunkbytes, parallel, scanner) in variants
-                    got = _parsesnapshot(bytes, kw, chunkbytes, parallel, scanner)
+                for (chunkbytes, parallel, fastindex) in variants
+                    got = _parsesnapshot(bytes, kw, chunkbytes, parallel, fastindex)
                     @test isequal(got, baseline)
                 end
             end
@@ -159,14 +159,14 @@ end
 @testset "D1/D2 adversarial kernels" begin
     rng = MersenneTwister(0x43535633)
     sizes = (1, 7, 63, 64, 65, 127, 1024, 1 << 20)
-    scanners = (:vec, :swar, :scalar)
+    fastindexes = (true, false)
     @testset "whitespace carry and bare quotes at every block position" begin
         for delim in (',', ' ', '\t'), pad in 0:130
             for bare in (false, true)
                 field = bare ? "x\"y" : "\"x\""
                 bytes = Vector{UInt8}("a" * delim * " "^pad * field * delim * "z\n" * "b"^80 * "\n")
-                for sc in scanners, cb in (7, 64, 1 << 20)
-                    bi = K.index(bytes, K.Dialect(; delim); scanner=sc, chunkbytes=cb)
+                for fi in fastindexes, cb in (7, 64, 1 << 20)
+                    bi = K.index(bytes, K.Dialect(; delim); fastindex=fi, chunkbytes=cb)
                     @test bi.barequote == bare
                 end
             end
@@ -195,15 +195,15 @@ end
                 bytes = [Vector{UInt8}("# ignored $(oq) unmatched" * newline); bytes]
             end
             d = K.Dialect(; dialect..., comment, ignorerepeated=repeated)
-            reference = K.index(bytes, d; scanner=:scalar, parallel=false, chunkbytes=1 << 20)
+            reference = K.index(bytes, d; fastindex=false, parallel=false, chunkbytes=1 << 20)
             rows = _rawrows(bytes, reference)
             expected = _tablenorm(tbl)
             @testset "trial=$trial" begin
-                for cb in sizes, sc in scanners
-                    bi = K.index(bytes, d; scanner=sc, chunkbytes=cb)
+                for cb in sizes, fi in fastindexes
+                    bi = K.index(bytes, d; fastindex=fi, chunkbytes=cb)
                     @test !bi.barequote
                     @test _rawrows(bytes, bi) == rows
-                    li = K.index(bytes, K.withlenient(d); scanner=sc, chunkbytes=cb)
+                    li = K.index(bytes, K.withlenient(d); fastindex=fi, chunkbytes=cb)
                     @test _rawrows(bytes, li) == rows
                 end
                 for cb in sizes, parallel in (false, true)
@@ -232,9 +232,9 @@ end
             input = "id$(delim)s$(newline)" * join(("$i$(delim)$(values[i])" for i in eachindex(values)), newline) * newline
             bytes = Vector{UInt8}(input)
             expected = _tablenorm((id=string.(1:8), s=values))
-            for cb in (1, 63, 64, 65, 1 << 20), sc in scanners
-                @test K.index(bytes, K.Dialect(; dialect...); scanner=sc, chunkbytes=cb).barequote
-                kw = (; dialect..., chunkbytes=cb, scanner=sc, types=String)
+            for cb in (1, 63, 64, 65, 1 << 20), fi in fastindexes
+                @test K.index(bytes, K.Dialect(; dialect...); fastindex=fi, chunkbytes=cb).barequote
+                kw = (; dialect..., chunkbytes=cb, fastindex=fi, types=String)
                 @test isequal(_tablenorm(K.File(copy(bytes); kw...)), expected)
                 @test isequal(_tablenorm(K.lazy(copy(bytes); kw...)), expected)
                 @test isequal(_tablenorm(Tables.columntable(K.Rows(copy(bytes); kw...))), expected)
@@ -242,7 +242,7 @@ end
                 @test vcat((collect(b.s) for b in batches)...) == values
                 @test vcat((collect(b.id) for b in batches)...) == string.(1:8)
                 scan = Tables.Scan(select=(:id => String, :s => String), filter=Tables.col(:id) > 1)
-                f = K.File(copy(bytes); dialect..., chunkbytes=cb, scanner=sc, scan)
+                f = K.File(copy(bytes); dialect..., chunkbytes=cb, fastindex=fi, scan)
                 @test collect(f.s) == values[2:end]
                 @test collect(f.id) == string.(2:8)
             end

@@ -259,6 +259,9 @@ many columns.
 Type inference samples indexed rows. `nsample` controls its row sample and
 `samplebytes` controls the delimiter-detection sample. Parallel and
 single-task parses have the same row order and exact row limit.
+`fastindex=false` builds the structural index with the byte-at-a-time
+reference scanner instead of the 64-byte vector scanner; it exists to verify
+the fast scanner and is never faster.
 
 ## Multiple sources
 

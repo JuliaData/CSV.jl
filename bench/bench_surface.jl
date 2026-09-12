@@ -137,8 +137,6 @@ runcase("file/mixed/ntasks4",              () -> F(bufmix; ntasks=4), B(bufmix))
 runcase("file/mixed/parallel_false",       () -> F(bufmix; parallel=false), B(bufmix))
 runcase("file/mixed/chunkbytes_64k",       () -> F(bufmix; chunkbytes=1 << 16), B(bufmix))
 runcase("file/mixed/chunkbytes_8m",        () -> F(bufmix; chunkbytes=1 << 23), B(bufmix))
-runcase("file/mixed/scanner_swar",         () -> F(bufmix; scanner=:swar), B(bufmix))
-runcase("file/mixed/scanner_scalar",       () -> F(bufmix; scanner=:scalar), B(bufmix))
 runcase("file/mixed/fastindex_false",      () -> F(bufmix; fastindex=false), B(bufmix))
 runcase("file/mixed/nsample_1024",         () -> F(bufmix; nsample=1024), B(bufmix))
 # source kinds

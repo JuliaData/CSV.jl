@@ -37,7 +37,7 @@ const _DIALECTKW = (:quotechar, :openquotechar, :closequotechar, :escapechar,
                     :quoted, :comment, :ignoreemptyrows, :ignorerepeated)
 const _VALUEKW = (:dateformat, :decimal, :truestrings, :falsestrings,
                   :stripwhitespace, :groupmark)
-const _INDEXKW = (:fastindex, :scanner)
+const _INDEXKW = (:fastindex,)
 const _DRIVERKW = (:maxproblems, :nsample, :typemap)
 
 function _pickkwargs(kw, allowed)
@@ -271,10 +271,10 @@ function _sample(buf::Vector{UInt8}, samplebytes::Int, start::Int, d::Dialect)
 end
 
 function _scoredelim(buf::Vector{UInt8}, delim::Char, datastart::Int,
-                     dialect::Dialect, fastindex::Bool, scanner::Symbol)
+                     dialect::Dialect, fastindex::Bool)
     dialect.quoted && UInt8(delim) == dialect.oq && return (0.0, 0, 0, 0)
     d = withdelim(dialect, UInt8(delim))
-    bi = index(buf, d; datastart, parallel=false, fastindex, scanner)
+    bi = index(buf, d; datastart, parallel=false, fastindex)
     counts = Int[]
     for ci in bi.chunks, lr in 1:totalrows(ci)
         push!(counts, nfields(ci, lr))
@@ -289,7 +289,7 @@ function _scoredelim(buf::Vector{UInt8}, delim::Char, datastart::Int,
     return (count(==(modal), voters) / length(voters), modal, first(counts), length(counts))
 end
 
-function _detectdelim(sample::Vector{UInt8}, d::Dialect, fastindex::Bool, scanner::Symbol)
+function _detectdelim(sample::Vector{UInt8}, d::Dialect, fastindex::Bool)
     # Validate user syntax once. Candidate-only quote collisions are skipped in
     # `_scoredelim`; all other invalid options must reach the caller.
     datastart = _datastart(sample)
@@ -306,7 +306,7 @@ function _detectdelim(sample::Vector{UInt8}, d::Dialect, fastindex::Bool, scanne
     headercandidate = false
     for c in DELIM_CANDIDATES
         consistency, fields, firstfields, nrows = _scoredelim(scoresample, c, datastart,
-                                                              d, fastindex, scanner)
+                                                              d, fastindex)
         # a real delimiter splits the FIRST row and the data rows the same way:
         # a candidate that only appears in the header (a space in "Created
         # Date" over one-word data rows) is not represented in the data
@@ -344,11 +344,11 @@ function _detectdelim(sample::Vector{UInt8}, d::Dialect, fastindex::Bool, scanne
     if !d.ignorerepeated
         cons, fields, firstfields, nrows = _scoredelim(scoresample, ' ', datastart,
                                                        withdelim(d, d.delim::UInt8, true),
-                                                       fastindex, scanner)
+                                                       fastindex)
         aligned = nrows >= 2 && cons > 0 && fields > 1 && fields == firstfields
         if aligned && (delim == ' ' || !best[1])
             plaincons, plainfields, _, _ = delim == ' ' ?
-                _scoredelim(scoresample, ' ', datastart, d, fastindex, scanner) : (0.0, typemax(Int), 0, 0)
+                _scoredelim(scoresample, ' ', datastart, d, fastindex) : (0.0, typemax(Int), 0, 0)
             (cons >= plaincons && fields < plainfields) && return (' ', true)
         end
     end
@@ -433,7 +433,7 @@ sample, candidates $(DELIM_CANDIDATES) in that order), whether a header
 row is likely (row 1 all text while later rows type differently), and the
 resulting names/types. `samplebytes` is the initial sample size; a sample too
 small to hold even one complete row grows until it does. `kw` may pin dialect, value, and index pieces
-(`quotechar`, `comment`, `decimal`, `scanner`, ...) that sniffing should use.
+(`quotechar`, `comment`, `decimal`, `fastindex`, ...) that sniffing should use.
 `buffer_in_memory=true` copies a file source instead of mapping it.
 """
 function sniff(source; samplebytes::Int=1 << 16, missingstring=nothing,
@@ -447,8 +447,7 @@ function sniff(source; samplebytes::Int=1 << 16, missingstring=nothing,
     buf = resolvesource(source; buffer_in_memory, prefetch)
     d = Dialect(; delim=_probedelim(dialectkw), dialectkw...)
     sample = _sample(buf, samplebytes, 1, d)
-    bestdelim, ir = _detectdelim(sample, d, get(indexkw, :fastindex, true),
-                               get(indexkw, :scanner, :auto))
+    bestdelim, ir = _detectdelim(sample, d, get(indexkw, :fastindex, true))
     ir && (dialectkw = merge(dialectkw, (; ignorerepeated=true)))
     sentinels = _sentinels(missingstring)
     parsekw = merge(dialectkw, valuekw, indexkw, driverkw,
@@ -471,9 +470,9 @@ end
 # delimiter-only sniff for File(delim=nothing) — no second parse
 # -> (delim, ignorerepeated)
 function _sniffdelim(buf::Vector{UInt8}, samplebytes::Int, start::Int,
-                     d::Dialect, fastindex::Bool, scanner::Symbol)
+                     d::Dialect, fastindex::Bool)
     sample = _sample(buf, samplebytes, start, d)
-    return _detectdelim(sample, d, fastindex, scanner)
+    return _detectdelim(sample, d, fastindex)
 end
 
 # ---------------------------------------------------------------------------
@@ -859,7 +858,6 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
                  comment=get(kw, :comment, nothing), ignoreemptyrows=get(kw, :ignoreemptyrows, true),
                  ignorerepeated=get(kw, :ignorerepeated, false), lenient)
     fastindex = get(kw, :fastindex, true)::Bool
-    scanner = get(kw, :scanner, :auto)::Symbol
     # The first row that MATTERS — the (first) header row, or `skipto` when
     # there is no header row. Everything before it is a skipped prefix: counted
     # as physical lines (quote-blind), never indexed, never sniffed. Row
@@ -881,7 +879,7 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
         # Sniff from the first row that matters: skipped prefix rows are junk
         # and must not vote on the delimiter (a one-line "skip me" preamble
         # otherwise elects the space).
-        sniffed, ir = _sniffdelim(buf, samplebytes, anchoroff, d0, fastindex, scanner)
+        sniffed, ir = _sniffdelim(buf, samplebytes, anchoroff, d0, fastindex)
         delim = sniffed
         withdelim(d0, UInt8(sniffed), ir || d0.ignorerepeated)
     else
@@ -917,7 +915,7 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
     datastart = anchoroff
     rowoff(n::Int) = n < firstrow ? _physicallineoffset(buf, rawstart, n) :
                                     _rawrowoffset(buf, d, anchoroff, n - firstrow + 1)
-    bi = index(buf, d; datastart, chunkbytes=cb, parallel, ntasks, fastindex, scanner)
+    bi = index(buf, d; datastart, chunkbytes=cb, parallel, ntasks, fastindex)
     if bi.barequote && !lenient
         # A quote that did not start its field (`5' 11"`, `x"y`) made the
         # parallel toggle scan unsound: rows may have merged into one cell.
@@ -1004,7 +1002,7 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
     nsample = get(kw, :nsample, nothing)::Union{Nothing, Int}
     nsample === nothing || nsample >= 1 ||
         throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
-    settings = ReadSettings(cb, parallel, ntasks, resolvescanner(d, fastindex, scanner),
+    settings = ReadSettings(cb, parallel, ntasks, resolvescanner(d, fastindex),
                             get(kw, :maxproblems, 10_000), nsample,
                             _normalizetypemap(get(kw, :typemap, nothing)::Union{Nothing, AbstractDict}),
                             validate, colopts)

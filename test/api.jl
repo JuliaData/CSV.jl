@@ -196,7 +196,7 @@ end
     @test A.sniff(IOBuffer("t\n12:34:56\n13:45:00\n")).delim == ','
     # Value and index options reach the post-detection parse without being sent
     # to Dialect, and a quote-cut bounded sample remains safe.
-    spec = A.sniff(IOBuffer("a;b\n1,5;2\n3,5;4\n"); decimal=',', scanner=:scalar)
+    spec = A.sniff(IOBuffer("a;b\n1,5;2\n3,5;4\n"); decimal=',', fastindex=false)
     @test spec.delim == ';' && spec.types == [Float64, Int64]
     spec = A.sniff(IOBuffer("a;b\n\"x\ny\";1\nz;2\n"); samplebytes=12)
     @test spec.delim == ';'
@@ -1142,9 +1142,9 @@ end
     end
     routed = "a;b\n1,5;NA\n2,5;3\n"
     file = colvalues(A.File(IOBuffer(routed); delim=';', decimal=',',
-                            missingstring="NA", pool=false, scanner=:scalar))
+                            missingstring="NA", pool=false, fastindex=false))
     parts = collect(A.Chunks(IOBuffer(routed); delim=';', decimal=',',
-                             missingstring="NA", chunkbytes=8, scanner=:scalar))
+                             missingstring="NA", chunkbytes=8, fastindex=false))
     got = [reduce(vcat, (Any[_norm(x) for x in b[j]] for b in parts); init=Any[])
            for j in (:a, :b)]
     @test isequal(got, file[2])

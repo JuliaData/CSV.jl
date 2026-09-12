@@ -10,8 +10,8 @@ The pipeline (and the file's layout) is:
                         maps, or decompresses the source before this step.
     L1  rows and      : A quote-aware scan finds delimiters and row endings. It
         fields          stores their byte positions in one `ChunkIndex` for each
-                        chunk. A scalar scanner supports all CSV options. Two
-                        fast scanners process 64 bytes at a time.
+                        chunk. A scalar scanner supports all CSV options. A
+                        vector scanner processes 64 bytes at a time.
     L1' chunks        : Under every quote rule but the lenient one, the parser
                         first divides the input into fixed byte ranges and
                         settles the quote state at each range start: a quote
@@ -100,7 +100,7 @@ struct Dialect
     # (`5' 11"`, `x"y`); it is never the first pass.
     lenient::Bool
     # Comment rows are dropped by their first bytes, so their quotes have no
-    # meaning. The parallel planner and the fast scanners assume comment rows
+    # meaning. The parallel planner and the fast scanner assume comment rows
     # contain no quote byte; when one does, the index rebuilds serially with
     # the scalar scanner under this flag. Well-formed input never sets it.
     commentquotes::Bool
@@ -169,14 +169,14 @@ symmetricquotes(d::Dialect) = !d.quoted || (d.oq == d.cq && d.e == d.cq)
 splittable(d::Dialect) = !d.lenient
 # Quote bytes in a comment row do not change the CSV quote state. A byte range
 # that starts in the middle of a row cannot know whether that row is a comment.
-# The parallel planner and the fast scanners assume comment rows hold no quote
+# The parallel planner and the fast scanner assume comment rows hold no quote
 # byte; assembly checks every dropped comment row, and a quote found there
 # rebuilds the index serially under `Dialect.commentquotes`.
 commentaware(d::Dialect) = d.comment !== nothing
 commentserial(d::Dialect) = commentaware(d) && d.commentquotes
 
-# The fast scanners additionally need a single-byte delimiter.
-swareligible(d::Dialect) = splittable(d) && d.delim isa UInt8 && !commentserial(d)
+# The fast scanner additionally needs a single-byte delimiter.
+fasteligible(d::Dialect) = splittable(d) && d.delim isa UInt8 && !commentserial(d)
 
 # These options control how CSV reads one field. Date and time parsing uses a
 # compiled pattern. The default patterns accept ISO date, date-time, and time
@@ -1257,7 +1257,7 @@ end
 #
 # Read one byte at a time. This scanner supports every option, including a
 # multi-byte delimiter and a comment row that holds a quote byte, which the
-# fast scanners do not take, and it is the reference the fast scanners must
+# fast scanner does not take, and it is the reference the fast scanner must
 # agree with. Each chunk starts at a complete row, so this scan always starts
 # outside a quoted field.
 
@@ -1474,16 +1474,14 @@ function _nextrowstart_lenient(buf::Vector{UInt8}, from::Int, to::Int, d::Dialec
     return to + 1
 end
 
-# --- fast scanners -----------------------------------------------------------
+# --- fast scanner ------------------------------------------------------------
 #
-# Both fast scanners read 64 bytes at a time. Each 64-bit mask uses one bit for
+# The fast scanner reads 64 bytes at a time. Each 64-bit mask uses one bit for
 # each input byte. One mask marks quotes. A second mask marks delimiters,
 # carriage returns, and line feeds. The quote marks show which bytes are inside
 # quoted fields. Only delimiters and line endings outside quoted fields become
-# index events.
-#
-# `:swar` processes the block as eight 64-bit words. It does not require vector
-# instructions. `:vec` lets LLVM select vector instructions for the current CPU.
+# index events. The masks come from LLVM vector code, which selects vector
+# instructions for the current CPU.
 #
 # `prefix_xor64` converts the quote marks into a running inside-or-outside mask.
 # Each quote changes the value for all later bytes in the block. Supported x86-64
@@ -1639,24 +1637,13 @@ specials_mask_vec(p::Ptr{UInt8}, d::UInt8)::UInt64 = threebyte_mask_vec(p, d, CR
     Base.llvmcall((BYTE_MASK_VEC_IR, "entry"), UInt64, Tuple{Ptr{UInt8}, UInt8}, p, b)
 end
 
-function blockmasks(::Val{:vec}, p::Ptr{UInt8}, quoted::Bool, oq::UInt8, delim::UInt8)
+function blockmasks(p::Ptr{UInt8}, quoted::Bool, oq::UInt8, delim::UInt8)
     q64 = quoted ? byte_mask_vec(p, oq) : zero(UInt64)
     return q64, specials_mask_vec(p, delim)
 end
 
-byte_mask(::Val{:vec}, p::Ptr{UInt8}, b::UInt8) = byte_mask_vec(p, b)
-@inline function byte_mask(::Val{:swar}, p::Ptr{UInt8}, b::UInt8)
-    m = zero(UInt64)
-    for k in 0:7
-        w = ltoh(unsafe_load(Ptr{UInt64}(p + 8k)))
-        m |= movemask(eqmarks(w, b)) << (8k)
-    end
-    return m
-end
-
 # space and tab marks: the blanks a field may start with before its quote
-blankmask(::Val{S}, p::Ptr{UInt8}) where {S} =
-    byte_mask(Val(S), p, UInt8(' ')) | byte_mask(Val(S), p, UInt8('\t'))
+blankmask(p::Ptr{UInt8}) = byte_mask_vec(p, UInt8(' ')) | byte_mask_vec(p, UInt8('\t'))
 
 # Quote state across one 64-byte block under a rule that is not the standard
 # doubled-quote rule. `o64`, `c64`, and `e64` mark the open, close, and escape
@@ -1795,27 +1782,6 @@ end
     return bare, carryout, (o64 >> 63) != zero(UInt64)
 end
 
-@inline function blockmasks(::Val{:swar}, p::Ptr{UInt8}, quoted::Bool, oq::UInt8, delim::UInt8)
-    q64 = zero(UInt64)
-    s64 = zero(UInt64)
-    if quoted
-        for k in 0:7   # This loop always runs eight times. The compiler can unroll it.
-            # Use little-endian byte order so the mask bits follow input order.
-            w = ltoh(unsafe_load(Ptr{UInt64}(p + 8k)))
-            q64 |= movemask(eqmarks(w, oq)) << (8k)
-            sm = eqmarks(w, delim) | eqmarks(w, LF) | eqmarks(w, CR)
-            s64 |= movemask(sm) << (8k)
-        end
-    else
-        for k in 0:7
-            w = ltoh(unsafe_load(Ptr{UInt64}(p + 8k)))
-            sm = eqmarks(w, delim) | eqmarks(w, LF) | eqmarks(w, CR)
-            s64 |= movemask(sm) << (8k)
-        end
-    end
-    return q64, s64
-end
-
 # Initial tape capacity from the event density of the chunk's first 4 KiB
 # (delimiters and line endings, quote-blind): dense numeric data gets the
 # words it needs without a growth copy, and long-text data does not reserve
@@ -1839,8 +1805,8 @@ function _tapecapacity(buf::Vector{UInt8}, start::Int, stop::Int, delim::UInt8)
     return clamp(est + (est >> 3) + 256, 256, min(len + 1, MAX_TAPE_HINT))
 end
 
-function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{S}) where {S}
-    @assert swareligible(d)
+function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect)
+    @assert fasteligible(d)
     start, stop = ci.start, ci.stop
     delim = d.delim::UInt8
     oq, cq, e = d.oq, d.cq, d.e
@@ -1862,21 +1828,21 @@ function indexchunk_fast!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ::Val{
     GC.@preserve buf begin
         p = pointer(buf)
         @inbounds while pos + 63 <= stop
-            q64, s64 = blockmasks(Val(S), p + pos - 1, quoted, oq, delim)
+            q64, s64 = blockmasks(p + pos - 1, quoted, oq, delim)
             if symmetric
                 inmask = prefix_xor64(q64)
                 inq && (inmask = ~inmask)
                 opens = q64 & inmask
                 nextinq = inq ⊻ isodd(count_ones(q64))
             else
-                c64 = byte_mask(Val(S), p + pos - 1, cq)
-                e64 = doubling ? c64 : walkonly ? q64 : byte_mask(Val(S), p + pos - 1, e)
+                c64 = byte_mask_vec(p + pos - 1, cq)
+                e64 = doubling ? c64 : walkonly ? q64 : byte_mask_vec(p + pos - 1, e)
                 nextiscq = doubling && pos + 64 <= stop && buf[pos + 64] == cq
                 inmask, opens, nextinq, skip =
                     quoteblock(q64, c64, e64, doubling, walkonly, inq, skip, nextiscq)
             end
             if quoted
-                b64 = blankmask(Val(S), p + pos - 1)
+                b64 = blankmask(p + pos - 1)
                 isbare, fscarry, prevquote = barequotes(q64, opens, s64, b64, inmask, fscarry, prevquote)
                 bare |= isbare
             end
@@ -2268,25 +2234,20 @@ end
 function indexone!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, scanner::Symbol)
     scanner === :lenient ? indexchunk_lenient!(ci, buf, d) :
     scanner === :scalar  ? indexchunk_scalar!(ci, buf, d) :
-    scanner === :swar    ? indexchunk_fast!(ci, buf, d, Val(:swar)) :
-                           indexchunk_fast!(ci, buf, d, Val(:vec))
+                           indexchunk_fast!(ci, buf, d)
 end
 
 # Choose the scanner. A multi-byte delimiter, the lenient quote rule, and a
-# comment row that holds a quote byte require the scalar scanner. Use the
-# vector scanner by default for other input. The `:swar` scanner does not
-# require vector instructions and can be selected explicitly.
-function resolvescanner(d::Dialect, fastindex::Bool, scanner::Symbol)
-    scanner in (:auto, :vec, :swar, :scalar) ||
-        throw(ArgumentError("scanner must be :auto, :vec, :swar, or :scalar (got $(repr(scanner)))"))
+# comment row that holds a quote byte require the scalar scanner.
+# `fastindex=false` selects it for every input, as the reference.
+function resolvescanner(d::Dialect, fastindex::Bool)
     d.lenient && return :lenient
-    return !(fastindex && swareligible(d)) ? :scalar :
-           scanner === :auto ? :vec : scanner
+    return fastindex && fasteligible(d) ? :vec : :scalar
 end
 
 """
     index(buf, d::Dialect; datastart=1, chunkbytes=2^23, parallel=true,
-          ntasks=nothing, fastindex=true, scanner=:auto)
+          ntasks=nothing, fastindex=true)
 
 Build an index of the rows and fields in `buf[datastart:end]`. Each chunk starts
 and ends at a complete row boundary. Each stored field has its exact byte
@@ -2299,7 +2260,6 @@ function index(buf::Vector{UInt8}, d::Dialect;
                parallel::Bool=Threads.nthreads() > 1,
                ntasks::Union{Nothing, Int}=nothing,
                fastindex::Bool=true,
-               scanner::Symbol=:auto,
                _taskobserver=nothing)
     len = length(buf)
     # No lower bound beyond 1: a tiny chunkbytes forces row boundaries
@@ -2310,7 +2270,7 @@ function index(buf::Vector{UInt8}, d::Dialect;
     ntasks === nothing || ntasks >= 1 ||
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
     tasklimit = parallel ? min(something(ntasks, Threads.nthreads()), Threads.nthreads()) : 1
-    sc = resolvescanner(d, fastindex, scanner)
+    sc = resolvescanner(d, fastindex)
     datastart > len && return BufferIndex(ChunkIndex[], 0, false, false)
 
     chunks = chunkplan(buf, d, datastart, chunkbytes, parallel, tasklimit;
@@ -2331,7 +2291,7 @@ function index(buf::Vector{UInt8}, d::Dialect;
     if commentaware(d) && !d.commentquotes && !d.lenient &&
        any(ci -> ci.commentquote, chunks)
         return index(buf, withcommentquotes(d); datastart, chunkbytes, parallel, ntasks,
-                     fastindex, scanner, _taskobserver)
+                     fastindex, _taskobserver)
     end
     # Every non-final chunk ends after a complete row. It must therefore end
     # outside a quoted field. A failure here means that chunk planning is wrong.
@@ -3620,8 +3580,7 @@ Keywords: `delim`, `quotechar`, `openquotechar`/`closequotechar`, `escapechar`,
 `quoted`, `comment`, `ignoreemptyrows`, `ignorerepeated`, `header` (true | false | Vector), `types`
 (Type | Vector | Dict), `dateformat`, `decimal`, `truestrings`/`falsestrings`,
 `sentinels` (spellings that parse as missing), `stripwhitespace`, `groupmark`,
-`chunkbytes`, `parallel`, `ntasks`, `fastindex`, `scanner`
-(:auto | :vec | :swar | :scalar), `maxproblems`,
+`chunkbytes`, `parallel`, `ntasks`, `fastindex`, `maxproblems`,
 `on_error` (:collect | :error), `validate`, `nsample`.
 """
 function parse(buf::Vector{UInt8};
@@ -3640,7 +3599,6 @@ function parse(buf::Vector{UInt8};
                parallel::Bool=Threads.nthreads() > 1,
                ntasks::Union{Nothing, Int}=nothing,
                fastindex::Bool=true,
-               scanner::Symbol=:auto,
                maxproblems::Int=10_000,
                on_error::Symbol=:collect,
                validate::Bool=true,
@@ -3676,7 +3634,7 @@ function parse(buf::Vector{UInt8};
     d = Dialect(; dialectkw...)
     baseopts = makevalueopts(d; dateformat, decimal, truestrings, falsestrings, sentinels,
                              stripwhitespace, groupmark)
-    sc = resolvescanner(d, fastindex, scanner)
+    sc = resolvescanner(d, fastindex)
     return _parse(buf, d, baseopts, sc, tm, chunkbytes, parallel, tasklimit, maxproblems,
                   on_error, validate, reportstructural, nsample, limit,
                   header, types, select, colopts, columnplan, rowmask, index)

@@ -3,7 +3,7 @@
 # Run:  julia --startup-file=no --project=test -t4 test/kernel.jl
 #
 # Strategy: use the scalar scanner as the expected result. Run every structural
-# case through each supported scanner (scalar, SWAR, and vector) both sequentially
+# case through the scalar and vector scanners both sequentially
 # and in parallel with deliberately tiny chunk sizes (3, 7, 16, 64 bytes), so
 # range boundaries land inside fields, inside quoted sections, and between bytes of
 # CRLF pairs. Results must be identical everywhere — that IS the parallelism
@@ -95,25 +95,19 @@ function idxvariants(input::AbstractString; chunks=(3, 7, 16, 64), kw...)
     variants = Pair{String, Any}[]
     push!(variants, "scalar/seq" =>
           indexsnapshot(buf, K.index(buf, d; parallel=false, fastindex=false)))
-    if K.swareligible(d)
-        for sc in (:swar, :vec)
-            push!(variants, "$sc/seq" =>
-                  indexsnapshot(buf, K.index(buf, d; parallel=false, scanner=sc)))
-        end
-    end
+    K.fasteligible(d) && push!(variants, "vec/seq" =>
+          indexsnapshot(buf, K.index(buf, d; parallel=false)))
     if K.splittable(d)
         for cb in chunks
             push!(variants, "scalar/seq$cb" =>
                   indexsnapshot(buf, K.index(buf, d; parallel=false, chunkbytes=cb, fastindex=false)))
             push!(variants, "scalar/par$cb" =>
                   indexsnapshot(buf, K.index(buf, d; parallel=true, chunkbytes=cb, fastindex=false)))
-            if K.swareligible(d)
-                for sc in (:swar, :vec)
-                    push!(variants, "$sc/seq$cb" =>
-                          indexsnapshot(buf, K.index(buf, d; parallel=false, chunkbytes=cb, scanner=sc)))
-                    push!(variants, "$sc/par$cb" =>
-                          indexsnapshot(buf, K.index(buf, d; parallel=true, chunkbytes=cb, scanner=sc)))
-                end
+            if K.fasteligible(d)
+                push!(variants, "vec/seq$cb" =>
+                      indexsnapshot(buf, K.index(buf, d; parallel=false, chunkbytes=cb)))
+                push!(variants, "vec/par$cb" =>
+                      indexsnapshot(buf, K.index(buf, d; parallel=true, chunkbytes=cb)))
             end
         end
     end
@@ -252,16 +246,16 @@ end
     # An opening quote that is not the first non-blank byte of its field (and
     # not the second of a doubled pair) makes the toggle scan unsound. Every
     # scanner and chunk geometry must flag exactly those inputs.
-    function bareflag(s; chunkbytes=nothing, scanner=:auto, kw...)
+    function bareflag(s; chunkbytes=nothing, fastindex=true, kw...)
         d = K.Dialect(; kw...)
         buf = Vector{UInt8}(s)
         return chunkbytes === nothing ?
-               K.index(buf, d; parallel=false, scanner).barequote :
-               K.index(buf, d; chunkbytes, parallel=true, scanner).barequote
+               K.index(buf, d; parallel=false, fastindex).barequote :
+               K.index(buf, d; chunkbytes, parallel=true, fastindex).barequote
     end
     function check(s, expected; kw...)
-        for scanner in (:vec, :swar, :scalar), chunkbytes in (nothing, 7)
-            @test bareflag(s; chunkbytes, scanner, kw...) == expected
+        for fastindex in (true, false), chunkbytes in (nothing, 7)
+            @test bareflag(s; chunkbytes, fastindex, kw...) == expected
         end
     end
     # well-formed input never flags
@@ -367,8 +361,8 @@ end
     @test ci.rowstartrel == UInt32[hpos - ci.start, vpos - ci.start]
     @test K.fieldspan(ci, 1, 1) == (hpos, 2)
     @test K.fieldspan(ci, 2, 1) == (vpos, 2)
-    for sc in (:scalar, :swar, :vec)
-        t = K.parse(buf; comment="#", chunkbytes=3, parallel=true, scanner=sc)
+    for fastindex in (false, true)
+        t = K.parse(buf; comment="#", chunkbytes=3, parallel=true, fastindex)
         @test K.names(t) == [:H1, :H2]
         @test t.nrows == 1
         @test collect(t[:H1]) == ["v1"]
@@ -441,10 +435,9 @@ end
     # inside this comment row is detected during assembly and the index is
     # rebuilt serially, so every variant still agrees.
     labels = first.(idxvariants(poisoned; comment="#"))
-    @test labels == ["scalar/seq"; "swar/seq"; "vec/seq";
+    @test labels == ["scalar/seq"; "vec/seq";
                      [x for cb in (3, 7, 16, 64)
-                        for x in ("scalar/seq$cb", "scalar/par$cb", "swar/seq$cb",
-                                  "swar/par$cb", "vec/seq$cb", "vec/par$cb")]]
+                        for x in ("scalar/seq$cb", "scalar/par$cb", "vec/seq$cb", "vec/par$cb")]]
     # A comment marker at a physical line start inside a quoted multiline field
     # is content because the structural row has not ended.
     @test idxall("a,b\n\"top\n# content \"\" quote\nbottom\",1\n"; comment="#") ==
@@ -527,27 +520,19 @@ end
 @testset "structural: scanner dispatch" begin
     fast = K.Dialect()
     scalaronly = K.Dialect(delim="::")
-    @test K.resolvescanner(fast, true, :auto) === :vec
-    @test K.resolvescanner(fast, true, :vec) === :vec
-    @test K.resolvescanner(fast, true, :swar) === :swar
-    @test K.resolvescanner(fast, true, :scalar) === :scalar
-    @test K.resolvescanner(fast, false, :vec) === :scalar
-    @test K.resolvescanner(scalaronly, true, :vec) === :scalar
-    @test K.resolvescanner(K.Dialect(escapechar='\\'), true, :auto) === :vec
-    @test K.resolvescanner(K.Dialect(openquotechar='<', closequotechar='>'), true, :auto) === :vec
-    @test K.resolvescanner(K.withlenient(fast), true, :auto) === :lenient
-    @test_throws ArgumentError K.index(UInt8[], fast; scanner=:bogus)
-    @test_throws ArgumentError K.index(UInt8[0x61], fast; fastindex=false, scanner=:bogus)
-    @test_throws ArgumentError K.parse(""; scanner=:bogus)
+    @test K.resolvescanner(fast, true) === :vec
+    @test K.resolvescanner(fast, false) === :scalar
+    @test K.resolvescanner(scalaronly, true) === :scalar
+    @test K.resolvescanner(K.Dialect(escapechar='\\'), true) === :vec
+    @test K.resolvescanner(K.Dialect(openquotechar='<', closequotechar='>'), true) === :vec
+    @test K.resolvescanner(K.withlenient(fast), true) === :lenient
 
     input = "a,b\n" * join(("$i,\"value,$i\"" for i in 1:40), '\n') * "\n"
-    ref = tablesnapshot(K.parse(input; chunkbytes=5, parallel=false, scanner=:scalar))
-    for sc in (:auto, :vec, :swar, :scalar), par in (false, true)
-        got = K.parse(input; chunkbytes=5, parallel=par, scanner=sc)
+    ref = tablesnapshot(K.parse(input; chunkbytes=5, parallel=false, fastindex=false))
+    for fastindex in (true, false), par in (false, true)
+        got = K.parse(input; chunkbytes=5, parallel=par, fastindex)
         @test isequal(tablesnapshot(got), ref)
     end
-    got = K.parse(input; chunkbytes=5, parallel=true, fastindex=false, scanner=:vec)
-    @test isequal(tablesnapshot(got), ref)
 end
 
 @testset "structural: vector masks and prefix XOR" begin
@@ -576,17 +561,6 @@ end
             bytes[bit + 2] = UInt8('x')
         end
     end
-    for _ in 1:256
-        rand!(rng, bytes)
-        quoted = rand(rng, Bool)
-        oq = rand(rng, UInt8)
-        delim = rand(rng, UInt8)
-        GC.@preserve bytes begin
-            p = pointer(bytes, 2)
-            @test K.blockmasks(Val(:vec), p, quoted, oq, delim) ==
-                  K.blockmasks(Val(:swar), p, quoted, oq, delim)
-        end
-    end
 end
 
 @testset "structural: raw-byte scanner differential" begin
@@ -609,9 +583,9 @@ end
     both = (; openquotechar='<', closequotechar='>', escapechar='\\')
     for kw in (backslash, brackets, both)
         d = K.Dialect(; kw...)
-        @test K.splittable(d) && K.swareligible(d) && !K.symmetricquotes(d)
+        @test K.splittable(d) && K.fasteligible(d) && !K.symmetricquotes(d)
         labels = first.(idxvariants("a,b\n1,2\n"; kw...))
-        @test "vec/par3" in labels && "swar/seq64" in labels
+        @test "vec/par3" in labels && "vec/seq64" in labels
     end
     # escape byte: an escaped close quote, escaped escape, and escaped row
     # ending are content; a bare escape byte outside quotes is content too
@@ -689,8 +663,8 @@ end
         io = IOBuffer()
         K.write(io, (id=1:length(values), s=values); kw...)
         bytes = take!(io)
-        for cb in (1, 7, 63, 64, 65, 1 << 20), sc in (:vec, :swar, :scalar), parallel in (false, true)
-            f = K.File(copy(bytes); kw..., chunkbytes=cb, scanner=sc, parallel, types=String)
+        for cb in (1, 7, 63, 64, 65, 1 << 20), fastindex in (true, false), parallel in (false, true)
+            f = K.File(copy(bytes); kw..., chunkbytes=cb, fastindex, parallel, types=String)
             @test collect(f.s) == values
             @test collect(f.id) == string.(1:length(values))
         end
@@ -2177,10 +2151,10 @@ end
 
 @testset "comment rows keep the fast scanners; a quote inside one rebuilds serially" begin
     d = K.Dialect(comment="#")
-    @test K.swareligible(d)
-    @test K.resolvescanner(d, true, :auto) === :vec
-    @test !K.swareligible(K.withcommentquotes(d))
-    @test K.resolvescanner(K.withcommentquotes(d), true, :auto) === :scalar
+    @test K.fasteligible(d)
+    @test K.resolvescanner(d, true) === :vec
+    @test !K.fasteligible(K.withcommentquotes(d))
+    @test K.resolvescanner(K.withcommentquotes(d), true) === :scalar
     clean = "# header, with, delims\na,b\n1,2\n# mid\n\"x\ny\",3\n"
     @test idxall(clean; comment="#") == [["a", "b"], ["1", "2"], ["\"x\ny\"", "3"]]
     poison = "# it's \"quoted\" here\na,b\n#\"\n1,2\n\"x\ny\",3\n# \"\"\"\n4,5\n\"6\",\"# not a comment\"\n"
@@ -2189,17 +2163,17 @@ end
     @test idxall(poison; comment="#") ==
           [["a", "b"], ["1", "2"], ["\"x\ny\"", "3"], ["4", "5"], ["\"6\"", "\"# not a comment\""]]
     buf = Vector{UInt8}(codeunits(poison))
-    for cb in (1, 3, 7, 16, 64, 65, 200), par in (false, true), sc in (:auto, :vec, :swar, :scalar)
+    for cb in (1, 3, 7, 16, 64, 65, 200), par in (false, true), fastindex in (true, false)
         t = K.parse(buf; comment="#", header=false, types=String, chunkbytes=cb,
-                    parallel=par, scanner=sc)
+                    parallel=par, fastindex)
         @test [String.(c) for c in K.columns(t)] == [first.(expected), last.(expected)]
         @test isempty(K.problems(t))
     end
     # a quote-free comment file indexes identically on every scanner and plan
     many = join(("# note $i\n$i,$(i * 2)\n" for i in 1:3000)) * "# tail\n"
-    ref = K.parse(Vector{UInt8}(many); comment="#", header=false, scanner=:scalar, parallel=false)
-    for cb in (64, 65, 1000, 4096), sc in (:vec, :swar)
-        t = K.parse(Vector{UInt8}(many); comment="#", header=false, chunkbytes=cb, scanner=sc)
+    ref = K.parse(Vector{UInt8}(many); comment="#", header=false, fastindex=false, parallel=false)
+    for cb in (64, 65, 1000, 4096)
+        t = K.parse(Vector{UInt8}(many); comment="#", header=false, chunkbytes=cb)
         @test K.columns(t) == K.columns(ref)
     end
 end
