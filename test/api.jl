@@ -1202,6 +1202,33 @@ end
 
 end # @testset CSV readers
 
+@testset "transposed diagnostics" begin
+    for parallel in (false, true), cap in (0, 1, 10), T in (nothing, String, Int64, Missing)
+        input = "a,1,\"bad\"tail,3\n"
+        f = A.File(IOBuffer(input); transpose=true, parallel, types=T,
+                   maxproblems=cap, on_error=:collect)
+        expected = T === Int64 || T === Missing ? missing : "\"bad\"tail"
+        @test isequal(f.a[2], expected)
+        nproblems = T === Missing ? 3 : 1
+        @test length(A.problems(f)) == min(cap, nproblems)
+        @test getfield(f, :table).droppedproblems == max(0, nproblems - cap)
+        @test_throws A.ParseError A.File(IOBuffer(input); transpose=true, parallel,
+                         types=T, maxproblems=cap, on_error=:error)
+    end
+    for input in ("a,\"unterminated", "a,1,\"unterminated")
+        f = A.File(IOBuffer(input); transpose=true, on_error=:collect)
+        @test any(p -> p.kind === :invalid_quoted_field, A.problems(f))
+        @test any(p -> p.kind === :unclosed_quote, A.problems(f))
+    end
+    f = A.File(IOBuffer("a,1,\"unterminated"); transpose=true, limit=1)
+    @test f.a == [1] && isempty(A.problems(f))
+    f = A.File(IOBuffer("\"bad\"tail,1,2\n"); transpose=true, on_error=:collect)
+    @test Tables.columnnames(f) == [Symbol("\"bad\"tail")]
+    @test only(A.problems(f)).row == 0 && only(A.problems(f)).col == 1
+    @test_throws A.ParseError A.File(IOBuffer("\"bad\"tail,1\n"); transpose=true,
+                                    maxproblems=0, on_error=:error)
+end
+
 @testset "gzip, typemap, dateformat/pool Dicts, downcast, transpose, deprecations" begin
     # auto-gzip: every source kind decompresses by magic bytes
     plain = "a,b\n1,x\n2,y\n"

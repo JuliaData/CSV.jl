@@ -1469,14 +1469,20 @@ end
 # transpose=true — the compatibility path. Rows are columns: input row j is
 # output column j; with header=true the first field of each row is that
 # column's name. Types are inferred EXACTLY (every retained cell participates —
-# these files are small by construction), or taken from `types`. Parsing is
-# single-threaded; stringtype/pool finalize through File's common output path.
+# each output column), or taken from `types`. Columns parse in parallel;
+# stringtype/pool finalize through File's common output path.
 # select/drop are not supported here.
 # ---------------------------------------------------------------------------
-function _cellstring(buf::Vector{UInt8}, ci, lr::Int, f::Int, opts)
+function _cellstring(buf::Vector{UInt8}, ci, lr::Int, f::Int, opts,
+                      log::ProblemLog, col::Int)
     sp = fieldspan(ci, lr, f)
     sp === nothing && return ""
     cpos, clen, esc, st = cellcontent(buf, sp[1], sp[2], opts)
+    if st == CELL_BADQUOTE
+        pushcellproblem!(log, 0, col, sp[1], sp[2], :invalid_quoted_field,
+                         "malformed quoting in header ", buf)
+        return String(buf[sp[1]:(sp[1] + sp[2] - 1)])
+    end
     st == CELL_VALUE || return ""
     if esc
         tmp = UInt8[]
@@ -1499,8 +1505,8 @@ function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
             T = promote_kernel(T, detecttype(buf, sp[1], sp[2], opts))
         end
     end
-    T === Missing && return fill(missing, n)
-    T === String && return _transposedstrings(buf, ci, lr, startf, n, opts, declaredmissing)
+    T === Missing && T0 === nothing && return fill(missing, n)
+    T === String && return _transposedstrings(buf, ci, lr, startf, n, opts, log, col, declaredmissing)
     # `T` is a runtime value here; the typed loop specializes on it once per
     # column so its cells parse and store without a dispatch each
     return _transposedtyped(T, buf, ci, lr, startf, n, T0 !== nothing, opts, log, col,
@@ -1508,7 +1514,7 @@ function _transposedcolumn(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int,
 end
 
 function _transposedstrings(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int, opts,
-                            declaredmissing::Bool)
+                            log::ProblemLog, col::Int, declaredmissing::Bool)
     nf = nfields(ci, lr)
     scol = StringColumn(n, opts.e, opts.cq)
     payloads = scol.payloads
@@ -1521,7 +1527,11 @@ function _transposedstrings(buf::Vector{UInt8}, ci, lr::Int, startf::Int, n::Int
             continue
         end
         cpos, clen, esc, st = cellcontent(buf, sp[1], sp[2], opts)
-        if st != CELL_VALUE
+        if st == CELL_BADQUOTE
+            pushcellproblem!(log, i, col, sp[1], sp[2], :invalid_quoted_field,
+                             "malformed quoting in ", buf)
+            cpos, clen, esc = sp[1], sp[2], false
+        elseif st == CELL_MISSING
             sawmiss = true
             continue
         end
@@ -1556,12 +1566,18 @@ function _transposedtyped(::Type{T}, buf::Vector{UInt8}, ci, lr::Int, startf::In
             # exact inference cannot conflict: a text-only cell under an
             # inferred type means the row is text
             st == CELL_VALUE && (esc || clen == 0) && !requested &&
-                return _transposedstrings(buf, ci, lr, startf, n, opts, declaredmissing)
+                return _transposedstrings(buf, ci, lr, startf, n, opts, log, col, declaredmissing)
             if requested && st != CELL_MISSING
                 kind = st == CELL_BADQUOTE ? :invalid_quoted_field : :invalid_value
                 pushproblem!(log, i, col, sp[1], kind,
                                "cannot parse transposed value as $T")
             end
+            sawmiss = true
+            continue
+        end
+        if T === Missing
+            pushcellproblem!(log, i, col, sp[1], sp[2], :invalid_value,
+                             "column typed Missing contains ", buf)
             sawmiss = true
             continue
         end
@@ -1572,7 +1588,7 @@ function _transposedtyped(::Type{T}, buf::Vector{UInt8}, ci, lr::Int, startf::In
         v, ok = parsevalue(T, buf, ti, tj, opts, scratch)
         if !ok
             # a requested type leaves the cell missing (strict=false File semantics)
-            requested || return _transposedstrings(buf, ci, lr, startf, n, opts, declaredmissing)
+            requested || return _transposedstrings(buf, ci, lr, startf, n, opts, log, col, declaredmissing)
             pushproblem!(log, i, col, sp[1], :invalid_value,
                            "cannot parse transposed value as $T")
             sawmiss = true
@@ -1645,7 +1661,8 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
               max(0, maximum(nfields(r[1], r[2]) - (startf - 1) for r in rows))
     n = limit === nothing || limit >= longest ? longest : Int(limit)
     # `cell` is local to the closure; the source name below is a different variable
-    _tname(j, r) = (cell = hasnames ? _cellstring(buf, r[1], r[2], namefield, opts) : "";
+    headerlog = ProblemLog(maxproblems)
+    _tname(j, r) = (cell = hasnames ? _cellstring(buf, r[1], r[2], namefield, opts, headerlog, j) : "";
                     isempty(cell) ? Symbol("Column", j) : Symbol(cell))
     names = explicitnames !== nothing ? copy(explicitnames) :
             Symbol[_tname(j, r) for (j, r) in enumerate(rows)]
@@ -1670,6 +1687,7 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
     # Each input row becomes one output column, parsed independently. Problems
     # carry the cell index as their row, so no rebasing applies across columns.
     pending = PendingProblemLog(maxproblems)
+    mergeproblems!(pending, headerlog, 0)
     cols = Vector{AbstractVector}(undef, ncols)
     _taskforeach(1:ncols, tasklimit) do j
         r = rows[j]
@@ -1679,6 +1697,14 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
         mergeproblems!(pending, collog, j)
     end
     log = finishproblems(pending, zeros(Int, ncols))
+    if bi.unclosedquote && !isempty(rows)
+        ci, lr = last(rows)
+        lastfield = nfields(ci, lr)
+        if (hasnames && namefield == lastfield) || 0 <= lastfield - startf < n
+            pushproblem!(log, 0, 0, length(buf), :unclosed_quote,
+                         "input ended inside a quoted field")
+        end
+    end
     sortproblems!(log)
     t = ParsedTable(names, cols, n, log.items, log.dropped)
     nm = _sourcename(source)
