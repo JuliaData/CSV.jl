@@ -2452,6 +2452,31 @@ end
     end
 end
 
+@testset "Date and DateTime reject out-of-range years" begin
+    for T in (Date, DateTime)
+        years = (year(typemin(T)), year(typemax(T)))
+        for y in (typemin(Int64), years[1] - 1, years[2] + 1, typemax(Int64))
+            token = string(y, "-01-01", T === DateTime ? "T00:00:00" : "")
+            input = "a\n$token\n"
+            kw = (; delim=',', types=T)
+            f = A.File(IOBuffer(input); kw..., on_error=:collect)
+            @test ismissing(only(f.a))
+            @test only(A.problems(f)).kind === :invalid_value
+            @test ismissing(only(A.lazy(IOBuffer(input); kw...).a))
+            @test ismissing(only(A.Rows(IOBuffer(input); kw...)).a)
+            @test_throws A.ParseError A.File(IOBuffer(input); kw..., on_error=:error)
+            if T === Date
+                @test only(A.File(IOBuffer(input); delim=',').a) == token
+                @test only(A.File(IOBuffer(input); delim=',', dateformat="yyyy-mm-dd").a) == token
+            end
+        end
+        for x in (typemin(T), typemax(T), T(-1, 1, 1), T(0, 1, 1), T(2024, 2, 29))
+            f = A.File(IOBuffer("a\n$x\n"); delim=',', types=T, on_error=:error)
+            @test only(f.a) == x
+        end
+    end
+end
+
 @testset "timestamp conversion rejects overflowing civil years" begin
     # These valid calendar years wrap the unchecked Int64 rata-day formula
     # back near 1970. They must never become apparently valid timestamps.

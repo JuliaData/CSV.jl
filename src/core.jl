@@ -635,6 +635,10 @@ end
 const _DATE0 = Date(1)
 const _DATETIME0 = DateTime(1)
 const _TIME0 = Time(0)
+# Stay within Dates' advertised calendar range. Its constructors accept wider
+# years, but their unchecked instant arithmetic can wrap into a different date.
+const _DATEYEARS = (year(typemin(Date)), year(typemax(Date)))
+const _DATETIMEYEARS = (year(typemin(DateTime)), year(typemax(DateTime)))
 _timestamp0(::Type{Timestamp{P}}) where {P} = Timestamp{P}(Dates.UTInstant(P(0)))
 
 # Parsers returns calendar fields without choosing a Dates representation. CSV
@@ -883,14 +887,16 @@ end
 @inline function parsevalue(::Type{Date}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     vo.customfmt && vo.customkind != 0x01 && return (_DATE0, false)
     c, rc = Parsers.parsecivil(buf, i, j, vo.datepat)
-    rc == Parsers.RC_OK || return (_DATE0, false)
+    rc == Parsers.RC_OK && _DATEYEARS[1] <= c.year <= _DATEYEARS[2] ||
+        return (_DATE0, false)
     return (todate(c), true)
 end
 
 @inline function parsevalue(::Type{DateTime}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
     vo.customfmt && vo.customkind != 0x03 && return (_DATETIME0, false)
     c, rc = Parsers.parsecivil(buf, i, j, _datetimepattern(vo, buf, i, j))
-    rc == Parsers.RC_OK && _wholemilliseconds(c) || return (_DATETIME0, false)
+    rc == Parsers.RC_OK && _wholemilliseconds(c) &&
+        _DATETIMEYEARS[1] <= c.year <= _DATETIMEYEARS[2] || return (_DATETIME0, false)
     return (todatetime(c), true)
 end
 
@@ -2405,12 +2411,15 @@ function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::ValueOpts)
         # one probe: the user format's own components say which type it detects
         c, rc = Parsers.parsecivil(buf, cpos, cj, opts.datepat)
         if rc == Parsers.RC_OK
-            opts.customkind == 0x03 || return opts.customkind == 0x01 ? Date : Time
+            if opts.customkind != 0x03
+                opts.customkind == 0x01 || return Time
+                return _DATEYEARS[1] <= c.year <= _DATEYEARS[2] ? Date : String
+            end
             T = _timestamptype(c)
             T === String || return T
         end
     else
-        Parsers.parsecivil(buf, cpos, cj, opts.datepat)[2] == Parsers.RC_OK && return Date
+        parsevalue(Date, buf, cpos, cj, opts)[2] && return Date
         c, rc = Parsers.parsecivil(buf, cpos, cj, _datetimepattern(opts, buf, cpos, cj))
         if rc == Parsers.RC_OK
             T = _timestamptype(c)
