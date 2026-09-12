@@ -1137,6 +1137,41 @@ end
     end
 end
 
+@testset "escaped content reaches typed parsers" begin
+    cases = ((Int64, "121", 121, '1'), (Float64, "1.25", 1.25, '1'),
+             (Bool, "true", true, 't'), (Char, "\"", '"', '"'),
+             (Date, "2021-01-02", Date(2021, 1, 2), '2'),
+             (DateTime, "2021-01-02T03:04:05", DateTime(2021, 1, 2, 3, 4, 5), 'T'),
+             (Time, "03:04:05", Time(3, 4, 5), ':'),
+             (APICustomScalar, "121", APICustomScalar(121), '1'),
+             (APISpanScalar, "121", APISpanScalar(121), '1'))
+    for (T, token, expected, q) in cases
+        io = IOBuffer()
+        A.write(io, (a=[token],); quotechar=q)
+        input = String(take!(io))
+        kw = (; delim=',', quotechar=q, types=T)
+        for cb in (1, 64)
+            @test only(A.File(IOBuffer(input); kw..., chunkbytes=cb, on_error=:error).a) == expected
+            @test only(A.lazy(IOBuffer(input); kw..., chunkbytes=cb).a) == expected
+            @test only(A.Rows(IOBuffer(input); kw..., chunkbytes=cb)).a == expected
+            @test only(A.Rows(IOBuffer(input); kw..., chunkbytes=cb, on_error=:error)).a == expected
+            @test only(only(A.Chunks(IOBuffer(input); kw..., chunkbytes=cb)).a) == expected
+        end
+        field = split(input, '\n')[2]
+        @test only(A.File(IOBuffer("a,$field\n"); kw..., transpose=true, on_error=:error).a) == expected
+    end
+    # Escape bytes may quote a digit even with the usual double-quote dialect.
+    input = "a\n\"\\1\\2\"\n"
+    @test only(A.File(IOBuffer(input); delim=',', escapechar='\\').a) == 12
+    @test only(A.File(IOBuffer(input); delim=',', escapechar='\\', types=Int).a) == 12
+    # Sentinel matching uses the same decoded content as value parsing.
+    input = "a\n\"\\N\\A\"\n"
+    for reader in (A.File, A.lazy, A.Rows)
+        f = reader(IOBuffer(input); delim=',', escapechar='\\', missingstring="NA")
+        @test ismissing(only(Tables.getcolumn(Tables.columntable(f), :a)))
+    end
+end
+
 @testset "source worker lifetime" begin
     env = dirname(Base.active_project())
     script = joinpath(@__DIR__, "prefetch.jl")

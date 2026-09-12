@@ -171,6 +171,7 @@ end
 _needsquote(o::WriteOpts, b::UInt8) =
     b == o.delim || b == o.oq || b == o.cq || b == UInt8('\n') || b == UInt8('\r')
 _numericsyntax(b::UInt8) = b - UInt8('0') <= 0x09 || b in (UInt8('+'), UInt8('-'))
+_datesyntax(b::UInt8) = _numericsyntax(b) || b in (UInt8('T'), UInt8(':'), UInt8('.'))
 
 function _appenddelim!(out::_WriteOutput, o::WriteOpts)
     length(o.delimbytes) == 1 ? push!(out, o.delim) : append!(out, o.delimbytes)
@@ -608,8 +609,7 @@ _stagecell!(st::ColStage, x, o::WriteOpts) = _appendcell!(st.bytes, x, o)
         end
     elseif x isa Dates.TimeType
         if o.dateformat === nothing && x isa Union{Date, DateTime, Timestamp}
-            if !any(_numericsyntax, (o.delim, o.oq, o.cq)) &&
-               o.delim != UInt8('T') && o.delim != UInt8(':') && o.delim != UInt8('.')
+            if !any(_datesyntax, (o.delim, o.oq, o.cq))
                 x isa Date ? _appenddate!(out, x) :
                 x isa DateTime ? _appenddatetime!(out, x) : _appendtimestamp!(out, x)
             else

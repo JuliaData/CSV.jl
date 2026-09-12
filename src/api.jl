@@ -1557,10 +1557,10 @@ function _transposedtyped(::Type{T}, buf::Vector{UInt8}, ci, lr::Int, startf::In
             continue
         end
         cpos, clen, esc, st = cellcontent(buf, sp[1], sp[2], opts)
-        if st != CELL_VALUE || esc || clen == 0
+        if st != CELL_VALUE || clen == 0
             # exact inference cannot conflict: a text-only cell under an
             # inferred type means the row is text
-            st == CELL_VALUE && (esc || clen == 0) && !requested &&
+            st == CELL_VALUE && clen == 0 && !requested &&
                 return _transposedstrings(buf, ci, lr, startf, n, opts, log, col, declaredmissing)
             if requested && st != CELL_MISSING
                 kind = st == CELL_BADQUOTE ? :invalid_quoted_field : :invalid_value
@@ -1576,8 +1576,7 @@ function _transposedtyped(::Type{T}, buf::Vector{UInt8}, ci, lr::Int, startf::In
             sawmiss = true
             continue
         end
-        ti, tj = _typedspan(buf, cpos, cpos + clen - 1)
-        v, ok = parsevalue(T, buf, ti, tj, opts, scratch)
+        v, ok = _parsecontent(T, buf, cpos, clen, esc, opts, scratch)
         if !ok
             # a requested type leaves the cell missing (strict=false File semantics)
             requested || return _transposedstrings(buf, ci, lr, startf, n, opts, log, col, declaredmissing)
@@ -2281,9 +2280,8 @@ end
     # missing, as it does in the eager parser's default collecting mode.
     T === Missing && return missing
     # a typed cell: the same parsers File uses, on demand
-    (st == CELL_BADQUOTE || clen == 0 || esc) && return missing
-    ti, tj = _typedspan(c.buf, cpos, cpos + clen - 1)
-    v, ok = parsevalue(T, c.buf, ti, tj, c.opts)
+    (st == CELL_BADQUOTE || clen == 0) && return missing
+    v, ok = _parsecontent(T, c.buf, cpos, clen, esc, c.opts)
     return ok ? v : missing
 end
 
@@ -2517,11 +2515,10 @@ function _strictrowvalue(view::_IndexedRow, j::Int, ::Type{T}) where {T}
         _throwrowproblem(view, j, pos, :invalid_value,
                          "non-missing value cannot be parsed as Missing in " *
                          excerpt(r.buf, pos, len))
-    (clen > 0 && !esc) ||
+    clen > 0 ||
         _throwrowproblem(view, j, pos, :invalid_value,
                          "cannot parse $T from " * excerpt(r.buf, pos, len))
-    ti, tj = _typedspan(r.buf, cpos, cpos + clen - 1)
-    value, ok = parsevalue(T, r.buf, ti, tj, opts)
+    value, ok = _parsecontent(T, r.buf, cpos, clen, esc, opts)
     ok || _throwrowproblem(view, j, pos, :invalid_value,
                            "cannot parse $T from " * excerpt(r.buf, pos, len))
     return value

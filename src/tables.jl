@@ -145,9 +145,8 @@ function _settlecolumnfrom(::Type{T}, buf::Vector{UInt8}, chunks, j::Int, opts::
                                      sawmissing, k, lr, maxlen)
             else
                 ok = false
-                if st == CELL_VALUE && clen > 0 && !esc
-                    ti, tj = _typedspan(buf, cpos, cpos + clen - 1)
-                    ok = parsevalue(T, buf, ti, tj, opts, scratch)[2]
+                if st == CELL_VALUE && clen > 0
+                    ok = _parsecontent(T, buf, cpos, clen, esc, opts, scratch)[2]
                 end
                 if !ok
                     # an invalid cell under a requested type parses to missing
@@ -369,9 +368,8 @@ function _typedvalue(::Type{T}, row::_IndexedRow, j::Int) where {T}
     len == 0 && return missing
     opts = _rowopts(r, j)
     cpos, clen, esc, st = cellcontent(r.buf, pos, len, opts)
-    (st == CELL_VALUE && clen > 0 && !esc) || return missing
-    ti, tj = _typedspan(r.buf, cpos, cpos + clen - 1)
-    v, ok = parsevalue(T, r.buf, ti, tj, opts)
+    (st == CELL_VALUE && clen > 0) || return missing
+    v, ok = _parsecontent(T, r.buf, cpos, clen, esc, opts)
     return ok ? v : missing
 end
 

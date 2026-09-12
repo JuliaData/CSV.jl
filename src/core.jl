@@ -467,6 +467,21 @@ end
     return ti <= tj ? (ti, tj) : (i, j)
 end
 
+# A typed value uses decoded content too: a custom quote/escape byte may be
+# part of a number, date, or user-defined scalar. Ordinary cells keep their
+# original span; only escaped content needs a temporary byte buffer.
+@inline function _parsecontent(::Type{T}, buf::Vector{UInt8}, pos::Int, len::Int,
+                               escaped::Bool, opts::ValueOpts,
+                               scratch::Vector{UInt8}=_scratchfor(opts)) where {T}
+    if escaped
+        decoded = _unescape_bytes(buf, Int64(pos), Int32(len), opts.e, opts.cq)
+        i, j = _typedspan(decoded, 1, length(decoded))
+        return parsevalue(T, decoded, i, j, opts, scratch)
+    end
+    i, j = _typedspan(buf, pos, pos + len - 1)
+    return parsevalue(T, buf, i, j, opts, scratch)
+end
+
 @inline function _spanmatches(buf::Vector{UInt8}, i::Int, j::Int,
                               choices::Vector{Vector{UInt8}})
     n = j - i + 1
@@ -612,9 +627,14 @@ and blanks inside quotes are stripped as content (`"  x  "` → `x`).
                     while cj >= cpos && _isot(buf[cj]); cj -= 1; end
                     clen = cj - cpos + 1
                 end
-                if clen > 0 && !esc
-                    _matchsentinel(buf, cpos, cpos + clen - 1, vo) &&
-                        return (cpos, 0, false, CELL_MISSING)
+                if clen > 0
+                    sentinel = if esc && vo.hassentinels
+                        decoded = _unescape_bytes(buf, Int64(cpos), Int32(clen), vo.e, vo.cq)
+                        _matchsentinel(decoded, 1, length(decoded), vo)
+                    else
+                        !esc && _matchsentinel(buf, cpos, cpos + clen - 1, vo)
+                    end
+                    sentinel && return (cpos, 0, false, CELL_MISSING)
                 end
                 return (cpos, clen, esc, CELL_VALUE)
             end
@@ -2390,7 +2410,15 @@ function detecttype(buf::Vector{UInt8}, pos::Int, len::Int, opts::ValueOpts)
     cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
     st == CELL_MISSING && return Missing
     st == CELL_BADQUOTE && return String    # malformed quoting reports at parse time
-    (clen == 0 || esc) && return String     # quoted-empty / escape content is stringy
+    clen == 0 && return String             # quoted-empty is a present string
+    if esc
+        decoded = _unescape_bytes(buf, Int64(cpos), Int32(clen), opts.e, opts.cq)
+        return _detectcontent(decoded, 1, length(decoded), opts)
+    end
+    return _detectcontent(buf, cpos, clen, opts)
+end
+
+function _detectcontent(buf::Vector{UInt8}, cpos::Int, clen::Int, opts::ValueOpts)
     cpos, cj = _trimblanks(buf, cpos, cpos + clen - 1)
     cpos > cj && return String              # blanks only: a present string
     if opts.groupmark != 0x00
@@ -2716,15 +2744,14 @@ function parsecolchunk!(col::Union{TypedColumn{T}, UnionColumn{T}}, buf::Vector{
         len == 0 && continue                            # empty ⇒ missing
         cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
         st == CELL_MISSING && continue                  # sentinel / stripped-to-empty
-        if st == CELL_VALUE && clen > 0 && !esc
-            ti, tj = _typedspan(buf, cpos, cpos + clen - 1)
-            v, ok = parsevalue(T, buf, ti, tj, opts, scratch)
+        if st == CELL_VALUE && clen > 0
+            v, ok = _parsecontent(T, buf, cpos, clen, esc, opts, scratch)
             if ok
                 _storevalue!(col, out, v)
                 continue
             end
         end
-        # invalid for T (also: malformed quoting, quoted-empty, escaped content)
+        # invalid for T (also: malformed quoting or quoted-empty)
         if userprovided
             problemrow = problemrowbase + localrow
             if st == CELL_BADQUOTE
@@ -4100,10 +4127,9 @@ function _settletimestampwidening!(types, segtypes, chunks, buf, opts, js, rl,
                 sp === nothing && continue
                 pos, len = sp
                 len == 0 && continue
-                cpos, clen, _, st = cellcontent(buf, pos, len, vo)
+                cpos, clen, esc, st = cellcontent(buf, pos, len, vo)
                 st == CELL_MISSING && continue
-                i, last = _trimblanks(buf, cpos, cpos + clen - 1)
-                if !parsevalue(_TS_US, buf, i, last, vo)[2]
+                if !_parsecontent(_TS_US, buf, cpos, clen, esc, vo)[2]
                     exact = false
                     break
                 end

@@ -604,6 +604,18 @@ Base.iterate(::ThrowingRows, state=1) =
     end
 end
 
+@testset "date syntax obeys the quote policy" begin
+    dt = DateTime(2024, 1, 2, 3, 4, 5, 123)
+    for x in (dt, Timestamp(dt)), q in ('T', ':', '.')
+        bytes = str(io -> W.write(io, (a=[x],); quotechar=q, decimal=','))
+        field = split(bytes, '\n')[2]
+        @test startswith(field, string(q)) && endswith(field, string(q))
+        f = W.File(IOBuffer(bytes); delim=',', quotechar=q, decimal=',', types=typeof(x), on_error=:error)
+        @test only(f.a) == x
+        @test_throws ArgumentError W.write(IOBuffer(), (a=[x],); quotechar=q, decimal=',', quotestyle=:none)
+    end
+end
+
 @testset "bounded ordered writer scheduler" begin
     # Count completed, not-yet-emitted blocks. This tests the actual retained
     # block bound without depending on allocator or RSS measurements.
