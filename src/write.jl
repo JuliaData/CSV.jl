@@ -144,6 +144,9 @@ function _writeopts(; delim::Union{Char, AbstractString}=',',
     cq = _asciibyte("closequotechar", something(closequotechar, quotechar))
     e = escapechar === nothing ? cq : _asciibyte("escapechar", escapechar)
     dec = _asciibyte("decimal", decimal)
+    (UInt8('0') <= dec <= UInt8('9') ||
+     dec in (UInt8('+'), UInt8('-'), UInt8('e'), UInt8('E'), oq, cq, e)) &&
+        throw(ArgumentError("decimal $(repr(Char(dec))) conflicts with numeric or quote syntax"))
     delimbytes = Vector{UInt8}(codeunits(string(delim)))
     isempty(delimbytes) && throw(ArgumentError("write delimiter must be non-empty"))
     for b in delimbytes

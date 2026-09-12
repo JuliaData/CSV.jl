@@ -1,8 +1,7 @@
 # Broad performance matrix for the current CSV.File front door and parsing
 # kernel, across shapes × sizes × type combinations.
 #
-# Extends bench.jl's breadth probe up to the API layer and across many more
-# type combinations: pooling tiers (low/high/over-cap), temporal/bool columns,
+# Covers type combinations: pooling tiers (low/high/over-cap), temporal/bool columns,
 # missing-density and quote/escape-density sweeps, long text (DataString view path),
 # very wide, grouped digits, ignorerepeated, CRLF, dirty/ragged, sentinels.
 # CSV.File includes public option handling. The `kparse` configuration starts

@@ -6,3 +6,4 @@ docs/site/
 *.jl.mem
 precompile
 Manifest.toml
+bench/*.tsv

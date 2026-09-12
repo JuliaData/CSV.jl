@@ -517,6 +517,11 @@ Base.iterate(::ThrowingRows, state=1) =
     @test str(io -> W.write(io, (a=[1, missing],); missingstring=nothing)) == "a\n1\n\n"
     @test_throws ArgumentError W._writeopts(; quotechar="ab")
     @test_throws ArgumentError W._writeopts(; decimal='é')
+    for decimal in (('0':'9')..., '+', '-', 'e', 'E', '"')
+        @test_throws ArgumentError W.write(IOBuffer(), (x=[1.25],); decimal)
+    end
+    @test_throws ArgumentError W.write(IOBuffer(), (x=[1.25],); decimal='!', escapechar='!')
+    @test_throws ArgumentError W.write(IOBuffer(), (x=[1.25],); decimal=']', openquotechar='[', closequotechar=']')
 
     # Multi-byte delimiters write on the tuple, staged, header, and row paths,
     # quote conservatively on their first byte, and round-trip.

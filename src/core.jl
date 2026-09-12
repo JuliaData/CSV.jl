@@ -578,8 +578,8 @@ index delimited — quotes and any surrounding blanks included) into the
                        empty field `""` (a PRESENT empty string, not missing);
   * `escaped`          `true` when the content still contains escape sequences
                        (`""` doubling or backslash-escapes) that must be unescaped before
-                       the bytes are the value — typed parsers reject such
-                       cells, string cells unescape once at parse time;
+                       the bytes are the value; scalar and string parsers
+                       decode these sequences before parsing the content;
   * `disposition`      `CELL_VALUE`    → parse `[cpos, cpos+clen)` as a value
                        `CELL_MISSING`  → empty / stripped-to-empty / sentinel
                                           (`clen` is 0; the caller stores missing)
