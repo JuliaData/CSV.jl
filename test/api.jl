@@ -1113,6 +1113,12 @@ end
     @test (daterow.d1, daterow.d2) == (Date(2023, 1, 15), Date(2023, 1, 16))
 end
 
+@testset "source worker lifetime" begin
+    env = dirname(Base.active_project())
+    script = joinpath(@__DIR__, "prefetch.jl")
+    @test success(`$(Base.julia_cmd()) --startup-file=no --threads=2 --project=$env $script`)
+end
+
 @testset "Chunks: stable schema, values concat to File" begin
     input = "a,b\n" * join(("$(i)," * (i == 40 ? "" : "v$(i)") for i in 1:60), "\n") * "\n"
     ref = colvalues(A.File(IOBuffer(input); pool=false))

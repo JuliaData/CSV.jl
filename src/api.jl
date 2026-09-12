@@ -137,7 +137,7 @@ end
 function _prefetch!(m::Vector{UInt8})
     n = length(m)
     parts = min(4, Threads.nthreads())
-    for p in 1:parts
+    @sync for p in 1:parts
         lo = 1 + (p - 1) * n ÷ parts
         hi = p * n ÷ parts
         @wkspawn _prefetchrange(m, lo, hi)
@@ -172,16 +172,11 @@ function resolvesource(s::AbstractString; buffer_in_memory::Bool=false, prefetch
         # Use the descriptor that supplied `sz`. This prevents a path replacement
         # between filesize and mmap from mapping a different file at the old size.
         m = Mmap.mmap(io, Vector{UInt8}, sz; grow=false)
-        # async readahead: faulting overlaps the parallel parse. madvise is a
-        # Unix API.
+        # Ask the OS for readahead, then fault pages across bounded workers.
         @static Sys.isunix() && Mmap.madvise!(m, Mmap.MADV_WILLNEED)
-        # cold-file IO/parse overlap: WILLNEED alone loses to demand faults on a
-        # cold file (the range planner reads the whole buffer once before
-        # the index wave). Detached toucher tasks stride one
-        # byte per page across disjoint regions, converting demand faults into
-        # queued readahead that runs AHEAD of the parity scan. Warm files are
-        # unaffected (touching resident pages is nanoseconds); the closures
-        # keep the mapping alive for the toucher lifetime.
+        # Join these workers before returning the source. A caller can replace
+        # or truncate the file after an eager read; a detached worker could
+        # otherwise access the truncated mapping after parsing completed.
         prefetch && Threads.nthreads() > 1 && _prefetch!(m)
         return m
     end
