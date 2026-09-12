@@ -15,9 +15,9 @@ DataStrings owns string scalars and columns; `strings.jl` contains CSV builder
 glue only. Use the trusted column constructor only after CSV proves payload
 ranges and missing-value invariants. Retained scalar values must survive column
 edits. DataDecimals owns decimal arithmetic and conversion; the
-`CSVDataDecimalsExt` extension owns CSV's exactness policy for explicitly
-requested decimal types (it checks the written scale from field bytes before
-any rounding). CSV does not infer decimal types.
+`CSVDataDecimalsExt` extension requests `Parsers.RoundExact` for explicitly
+requested decimal types. Extra trailing zeros are exact; discarded nonzero
+digits are a parse error. CSV does not infer decimal types.
 
 Parsers.DatePattern is opaque. Retain date/time inference metadata when compiling
 a format instead of reading parser storage fields. Use Tables.resolve and the
@@ -26,7 +26,8 @@ resolved filter when evaluating projected predicate columns.
 ## Validation
 
 Dependency setup lives in `test/dependencies.jl`. DataStrings 1, DataDecimals 1,
-Parsers 3, InlineStrings 2, and Tables 1.14 resolve from General. Run from the repository root:
+Parsers 3, InlineStrings 1.4.6 or 2, and Tables 1.14 resolve from General.
+Run from the repository root:
 
 ```sh
 julia --project=test test/dependencies.jl

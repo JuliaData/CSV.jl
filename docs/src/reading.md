@@ -151,6 +151,10 @@ text. Add `Timestamp{Microsecond} => DateTime` to also map the wider range.
 Explicit `Timestamp{Millisecond}` and `Timestamp{Second}` requests check
 exactness at their resolution.
 
+`Date` and `DateTime` parsing rejects calendar years outside the ranges
+reported by `typemin` and `typemax` for those Dates types. An explicit type
+request records a problem; an inferred date column becomes text.
+
 ## Types, columns, strings, and pools
 
 `types` accepts one type, a vector with one entry per source column, or a
@@ -197,7 +201,7 @@ loaded, its extension also accepts `InlineString` and fixed inline string
 types. `stringtype=InlineString` picks the smallest width per column up to
 `String31`; a column whose text is longer comes back as `String`.
 A fixed type such as `String15` is an error when a value does not fit.
-InlineStrings 2 is supported.
+InlineStrings 1.4.6 and 2 are supported.
 
 Pooling is independent of `stringtype`. `pool=false` is the 1.0 default. The
 accepted forms are:
@@ -260,8 +264,8 @@ Type inference samples indexed rows. `nsample` controls its row sample and
 `samplebytes` controls the delimiter-detection sample. Parallel and
 single-task parses have the same row order and exact row limit.
 `fastindex=false` builds the structural index with the byte-at-a-time
-reference scanner instead of the 64-byte vector scanner; it exists to verify
-the fast scanner and is never faster.
+reference scanner instead of the 64-byte vector scanner. Use it to check
+that the two scanners produce the same result.
 
 ## Multiple sources
 

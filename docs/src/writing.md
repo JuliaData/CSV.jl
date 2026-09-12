@@ -120,8 +120,9 @@ to force gzip for any sink, or `compress=:none` to disable it. The compatibility
 forms `compress=true` and `compress=false` mean `:gzip` and `:none`.
 Compression is streamed to the sink. With more than one task, each row block
 compresses in its own task and is written as one gzip member, so the file is a
-multi-member gzip stream (RFC 1952). Every gzip reader concatenates the members
-transparently, including `gunzip`, zlib-based libraries, and `CSV.File`.
+multi-member gzip stream (RFC 1952). Readers such as `gunzip` and `CSV.File`
+concatenate the members. A consumer that reads only one gzip member needs
+output written with `ntasks=1`.
 
 ```julia
 CSV.write("output.csv.gz", table)                  # detected from the suffix

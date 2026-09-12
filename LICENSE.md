@@ -2,6 +2,10 @@ MIT License
 
 Copyright (c) 2015: Jacob Quinn, JuliaData contributors, Julia Computing.
 
+The `_writeshortest_default` implementation in `src/write.jl` is adapted from Julia:
+Copyright (c) 2009-2025: Jeff Bezanson, Stefan Karpinski, Viral B. Shah,
+and other contributors: https://github.com/JuliaLang/julia/contributors
+
 Permission is hereby granted, free of charge, to any person obtaining
 a copy of this software and associated documentation files (the
 "Software"), to deal in the Software without restriction, including

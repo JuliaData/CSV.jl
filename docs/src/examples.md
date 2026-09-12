@@ -44,7 +44,9 @@ using CSV, StringEncodings
 # I open my `iso8859_encoded_file.csv` with the `enc"ISO-8859-1"` encoding
 # and pass the opened IO object to `CSV.File`; the whole input is read into
 # memory through the converting stream, then parsed
-file = CSV.File(open("iso8859_encoded_file.csv", enc"ISO-8859-1"))
+file = open("iso8859_encoded_file.csv", enc"ISO-8859-1") do io
+    CSV.File(io)
+end
 ```
 
 ## [Concatenate multiple inputs at once](@id vectorinputs)
@@ -64,8 +66,8 @@ data = [
 # I can just pass a `Vector` of inputs, in this case `IOBuffer(::String)`, but it
 # could also be a `Vector` of any valid input source, like `AbstractVector{UInt8}`,
 # filenames, `IO`, etc. Inputs are parsed on separate tasks and concatenated
-# in order. Column types promote across inputs, and later inputs may miss or
-# add columns: a missing column is filled with `missing`. As always, if we want to
+# in order. The first input defines the output columns. Later missing columns
+# are filled with `missing`, and later extra columns are ignored. To
 # send the parsed columns directly to a sink function, we can use `CSV.read`, like
 # `df = CSV.read(map(IOBuffer, data), DataFrame)`.
 f = CSV.File(map(IOBuffer, data))
@@ -140,10 +142,10 @@ ZipWriter("a.zip") do z
 end
 
 # read file from zip archive
-z = ZipReader(mmap(open("a.zip")))
+z = ZipReader(open(mmap, "a.zip"))
 
 # identify the right file in zip
-a_copy = CSV.File(zip_openentry(z, "a.csv")) |> DataFrame
+a_copy = CSV.read(zip_readentry(z, "a.csv"), DataFrame)
 
 a == a_copy
 ```
@@ -760,12 +762,10 @@ file = CSV.File(IOBuffer(data); pool=0.6)
 ## [Non-string pooled values](@id nonstring_pool_example)
 
 ```@example ex-nonstringpool
-using CSV
+using CSV, PooledArrays
 
-# in this data, our `category` column is an integer type, but represents a limited set of values that could benefit from
-# pooling. Indeed, we may want to do various DataFrame grouping/joining operations on the column, which can be more
-# efficient if the column type is a PooledVector. Passing `pool=true` will only pool string column types;
-# if we pass a vector or dict however, we can specify how specific, non-string type, columns should be pooled.
+# CSV pools text columns only. To pool a numeric category, convert that column
+# after reading with PooledArrays.
 data = """
 category,amount
 1,100.01
@@ -774,8 +774,10 @@ category,amount
 2,202.40
 """
 
-file = CSV.File(IOBuffer(data); pool=Dict(1 => true))
-file = CSV.File(IOBuffer(data); pool=[true, false])
+file = CSV.File(IOBuffer(data))
+category = PooledArray(file.category)
+@assert category == [1, 1, 2, 2] # hide
+category
 ```
 
 ## [Pool with absolute threshold](@id pool_absolute_threshold)
