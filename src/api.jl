@@ -1249,6 +1249,23 @@ function _executescan(p::Prepared, scan; maxproblems::Int, on_error::Symbol,
                             maxproblems, on_error, source)
 end
 
+# Positions restart in each source. Merge by source order first, then by the
+# source-local problem key. The worker releases each completed source's log
+# into one bounded reservoir before it starts another source.
+_sourceproblemless(a::LocatedProblem, b::LocatedProblem) =
+    a.chunk < b.chunk || (a.chunk == b.chunk && problemless(a.problem, b.problem))
+
+function _takefileproblems(f::File, pending::PendingProblemLog, source::Int)
+    t = getfield(f, :table)
+    log = ProblemLog(pending.limit)
+    log.items = t.problems
+    log.dropped = t.droppedproblems
+    log.first = isempty(t.problems) ? nothing : first(t.problems)
+    mergeproblems!(pending, log, source, _sourceproblemless)
+    clean = ParsedTable(t.names, t.columns, t.nrows, log.items, log.dropped)
+    return File(getfield(f, :name), clean, getfield(f, :lookup))
+end
+
 function File(sources::AbstractVector; source=nothing, kw...)
     if eltype(sources) === UInt8
         # A byte buffer is a vector. Read it as one source.
@@ -1287,17 +1304,18 @@ function File(sources::AbstractVector; source=nothing, kw...)
     parallel = get(kw, :parallel, nt === nothing ? Threads.nthreads() > 1 : nt > 1)
     budget = parallel ? min(something(nt, Threads.nthreads()), Threads.nthreads()) : 1
     files = Vector{File}(undef, length(sources))
+    pending = PendingProblemLog(maxproblems)
     if budget > 1 && length(sources) >= budget
         # Bound the outer workers and avoid nested parser task groups. Each
         # worker owns a source; collection and diagnostics stay in source order.
         singlekw = merge(childkw, (; ntasks=1, parallel=false))
         _taskforeach(eachindex(sources), budget) do i
-            files[i] = File(sources[i]; singlekw...)
+            files[i] = _takefileproblems(File(sources[i]; singlekw...), pending, i)
         end
     else
         # A few large sources can each use the full parser budget.
         for i in eachindex(sources)
-            files[i] = File(sources[i]; childkw...)
+            files[i] = _takefileproblems(File(sources[i]; childkw...), pending, i)
         end
     end
     counts = [getfield(f, :table).nrows for f in files]
@@ -1315,23 +1333,9 @@ function File(sources::AbstractVector; source=nothing, kw...)
         push!(outnames, srcname)
         push!(cols, PooledArray(expanded))
     end
-    log = ProblemLog(maxproblems)
-    off = 0
-    for f in files
-        t = getfield(f, :table)
-        for pr in t.problems
-            adjusted = Problem(pr.row == 0 ? 0 : pr.row + off,
-                                 pr.col, pr.pos, pr.kind, pr.message)
-            log.first === nothing && (log.first = adjusted)
-            if length(log.items) < log.limit
-                push!(log.items, adjusted)
-            else
-                log.dropped += 1
-            end
-        end
-        log.dropped += t.droppedproblems
-        off += t.nrows
-    end
+    sort!(pending.items; lt=_sourceproblemless)
+    rowbases = cumsum([0; counts[1:end-1]])
+    log = finishproblems(pending, rowbases)
     t = ParsedTable(outnames, cols, total, log.items, log.dropped)
     nm = "<$(length(sources)) sources>"
     _reportproblems(t, on_error, log.first, nm)

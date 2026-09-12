@@ -1933,6 +1933,38 @@ end
     end
 end
 
+@testset "Multiple sources release completed diagnostic logs" begin
+    inputs = ["a\n1\nbad-first\n", "a\nbad-second\n", "a\n3\nbad-third\n"]
+    for cap in (0, 1, 3), parallel in (false, true)
+        f = A.File(map(IOBuffer, inputs); types=Int, maxproblems=cap, parallel, on_error=:collect)
+        @test getfield.(A.problems(f), :row) == [2, 3, 5][1:cap]
+        @test getfield(f, :table).droppedproblems == 3 - cap
+        err = try
+            A.File(map(IOBuffer, inputs); types=Int, maxproblems=cap, parallel, on_error=:error)
+            nothing
+        catch e
+            e
+        end
+        @test err isa A.ParseError
+        @test err.problem.row == 2 && occursin("bad-first", err.problem.message)
+        @test err.nproblems == 3
+    end
+    # Complete sources in reverse order. At each completion, the source no
+    # longer retains its log and the shared reservoir stays within its cap.
+    pending = A.PendingProblemLog(1)
+    for i in reverse(eachindex(inputs))
+        f = A.File(IOBuffer(inputs[i]); types=Int, on_error=:collect)
+        clean = A._takefileproblems(f, pending, i)
+        @test isempty(A.problems(clean))
+        @test getfield(clean, :table).droppedproblems == 0
+        @test isequal(clean.a, f.a)
+        @test length(pending.items) <= 1
+    end
+    @test pending.dropped == 2
+    @test only(pending.items).chunk == 1
+    @test occursin("bad-first", only(pending.items).problem.message)
+end
+
 @testset "Multiple sources share a bounded task budget" begin
     inputs = [Vector{UInt8}("a\n" * join(1:50, '\n') * "\n") for _ in 1:8]
     for ntasks in (1,2), parallel in (false,true)

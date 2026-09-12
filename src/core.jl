@@ -3087,13 +3087,14 @@ locatedless(a::LocatedProblem, b::LocatedProblem) = problemless(a.problem, b.pro
 # The reservoir keeps the same max-heap-when-full discipline as ProblemLog —
 # this loop runs under the lock, so a linear scan per overflow would serialize
 # every chunk behind quadratic-by-cap work.
-function mergeproblems!(out::PendingProblemLog, log::ProblemLog, chunk::Int)
+function mergeproblems!(out::PendingProblemLog, log::ProblemLog, chunk::Int,
+                        less::F=locatedless) where {F}
     log.first === nothing && return
     lock(out.lock) do
         out.dropped += log.dropped
         if log.first !== nothing
             first = LocatedProblem(log.first, chunk)
-            (out.first === nothing || locatedless(first, out.first)) &&
+            (out.first === nothing || less(first, out.first)) &&
                 (out.first = first)
         end
         for p in log.items
@@ -3104,12 +3105,12 @@ function mergeproblems!(out::PendingProblemLog, log::ProblemLog, chunk::Int)
                 out.dropped += 1
                 if out.limit > 0
                     if !out.heaped
-                        _heapify!(out.items, locatedless)
+                        _heapify!(out.items, less)
                         out.heaped = true
                     end
-                    @inbounds if locatedless(lp, out.items[1])
+                    @inbounds if less(lp, out.items[1])
                         out.items[1] = lp
-                        _siftdown!(out.items, locatedless, 1)
+                        _siftdown!(out.items, less, 1)
                     end
                 end
             end
