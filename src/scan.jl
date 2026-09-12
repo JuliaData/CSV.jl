@@ -172,7 +172,7 @@ function _streampredicate(p::Prepared, plan::ColumnPlan, b::Tables.BoundScan,
         j = c.index
         haskey(seeds, j) || continue
         d = plan.columns[j]
-        (d.resulttype === nothing || _requestedstring(d) !== nothing) || continue
+        (d.resulttype === nothing || _hasstringrequest(d)) || continue
         (d.parsetype === nothing || d.parsetype === seeds[j]) || continue
         slices[j] = AbstractVector[]
     end

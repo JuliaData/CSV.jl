@@ -1201,9 +1201,10 @@ end
 # Resolve output types before converting either pooled levels or text columns.
 # An explicit string type wins over the default for inferred text. Pool levels
 # are owned strings even when DataString was requested.
+_hasstringrequest(d::ColumnDecision) = d.parsetype === String && d.resulttype !== nothing
 _requestedstring(d::ColumnDecision) = d.parsetype === String ? d.resulttype : nothing
 function _requestedstrings(plan::ColumnPlan, sources=plan.sources)
-    any(j -> _requestedstring(plan.columns[j]) !== nothing, sources) || return nothing
+    any(j -> _hasstringrequest(plan.columns[j]), sources) || return nothing
     return Union{Nothing, Type}[_requestedstring(plan.columns[j]) for j in sources]
 end
 
@@ -1664,7 +1665,7 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
     plan = settlecolumns(names, opts; types, colopts, validate)
     # narrow numeric requests parse natively here; a requested string type is
     # applied after the parse by `_finishstrings`
-    seed = Union{Nothing, Type}[_requestedstring(d) === nothing ? accessparsetype(d) : String
+    seed = Union{Nothing, Type}[_hasstringrequest(d) ? String : accessparsetype(d)
                                 for d in plan.columns]
     # Each input row becomes one output column, parsed independently. Problems
     # carry the cell index as their row, so no rebasing applies across columns.

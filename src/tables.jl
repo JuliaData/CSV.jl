@@ -54,7 +54,7 @@ function settlebatchschema!(types::Vector{Type}, buf, chunks, plan::ColumnPlan,
         requested = d.parsetype !== nothing
         # a requested narrow type is checked at its own range; a requested
         # string type is checked as text
-        checktype = requested && _requestedstring(d) === nothing ?
+        checktype = requested && !_hasstringrequest(d) ?
                     something(accessparsetype(d), types[q]) : types[q]
         T, sawmissing, maxlen = _settlecolumn(checktype, buf, chunks, j, columnopts(plan, j),
                                               requested, allowmissing[q])
