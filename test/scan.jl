@@ -121,6 +121,42 @@ end
     @test eltype(t.a) == Missing && collect(t.b) == [1, 2, 3]
 end
 
+@testset "streamed predicates stop at the footer window" begin
+    for parallel in (false, true), chunkbytes in (8, 13, 1024)
+        data = "a,b\n1,x\n2,y\n3,z\n4,w\n"
+        for scan in (T.Scan(filter=T.col(:a) > 0),
+                     T.Scan(filter=T.colcmp(!=, T.col(:b), "none")),
+                     T.Scan(filter=T.col(:a) > 0, offset=1, limit=1))
+            t = scanfile(data, scan; footerskip=1, parallel, chunkbytes)
+            ref = T.scan((a=[1, 2, 3], b=["x", "y", "z"]), scan)
+            @test sametable(t, ref)
+            @test isempty(S.problems(t))
+        end
+        # A footer cannot promote an all-missing or numeric predicate column.
+        for (data, scan, expected) in (
+            ("a,b\n,1\n,2\npresent,3\n", T.Scan(filter=T.isnull(T.col(:a))), [1, 2]),
+            ("a,b\n1,1\n2,2\ntext,3\n", T.Scan(filter=T.col(:a) > 0), [1, 2]),
+        )
+            t = scanfile(data, scan; footerskip=1, parallel, chunkbytes)
+            @test collect(t.b) == expected
+            @test isempty(S.problems(t))
+        end
+        # Excluded ragged rows must not count as dropped problems, including
+        # when their chunk also contains retained data and the cap is zero.
+        for cap in (0, 1, 10)
+            t = scanfile("a,b\n1,x\n2,y\n3,z,extra\n4\n",
+                         T.Scan(select=:b, filter=T.col(:a) > 0);
+                         footerskip=2, maxproblems=cap, parallel, chunkbytes)
+            @test collect(t.b) == ["x", "y"]
+            @test isempty(S.problems(t))
+            @test getfield(t, :table).droppedproblems == 0
+        end
+    end
+    t = scanfile("a,b\n1,x\n2,y\n3,z\n", T.Scan(filter=T.col(:a) > 0); footerskip=1)
+    @test collect(t.a) == [1, 2]
+    @test isempty(scanfile("a\n1\n", T.Scan(filter=T.col(:a) > 0); footerskip=1).a)
+end
+
 @testset "CSV.File(source; scan=) composes with File keywords" begin
     scan = T.Scan(select = (:region, :price => Float64 => :cost, :qty), filter = T.col(:qty) > 25, limit = 50)
     f = CSV.File(IOBuffer(csv); scan)

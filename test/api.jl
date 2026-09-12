@@ -2179,6 +2179,9 @@ end
                                                        types=Dict(:a => Int))
     @test_logs A.File(IOBuffer("a,1,2\nb,x,z\n"); transpose=true, types=Dict(:a => Int))
     @test_logs A.File(IOBuffer(bad); types=Dict(:a => Int), on_error=:collect)
+    # Retention and warning policy are independent: a zero cap still warns.
+    @test_logs (:warn, r"CSV: 1 parse problem") A.File(IOBuffer(bad); types=Dict(:a => Int), maxproblems=0)
+    @test_logs A.File(IOBuffer(bad); types=Dict(:a => Int), maxproblems=0, on_error=:collect)
     @test_throws A.ParseError A.File(IOBuffer(bad); types=Dict(:a => Int), on_error=:error)
     @test_throws A.ParseError A.File(IOBuffer(bad); types=Dict(:a => Int), strict=true)
     # Chunks warns for the first batch with problems only; every batch keeps its problems

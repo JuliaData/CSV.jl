@@ -181,31 +181,30 @@ function _streampredicate(p::Prepared, plan::ColumnPlan, b::Tables.BoundScan,
     dropped = 0
     pos = 0
     k = 1
-    while pos < window && k <= length(chunks)
-        group = k:min(k + tasklimit - 1, length(chunks))
+    rowbases = cumsum([0; Int[nrows(ci) for ci in chunks]])
+    nchunks = _limitchunks(chunks, rowbases, window)
+    while k <= nchunks
+        group = k:min(k + tasklimit - 1, nchunks)
         tables = Vector{Union{Nothing, ParsedTable}}(nothing, length(group))
         _taskforeach(eachindex(group), tasklimit) do g
-            tables[g] = tryparsebatch(batches, chunks[group[g]])
+            ck = group[g]
+            n = min(nrows(chunks[ck]), window - rowbases[ck])
+            tables[g] = tryparsebatch(batches, chunks[ck], n, rowbases[ck])
         end
         for g in eachindex(group)
-            pos >= window && break
             t = tables[g]
             t === nothing && return nothing
-            n = nrows(chunks[group[g]])
-            keepn = min(n, window - pos)
+            n = t.nrows
             m = Vector{Bool}(Tables.filtermask(b, PredicateColumns(t, inputnames, predicate)))
             length(m) == n ||
                 throw(ArgumentError("filter mask has $(length(m)) entries for $n rows"))
-            keepn < n && resize!(m, keepn)
-            copyto!(mask, pos + 1, m, 1, keepn)
+            copyto!(mask, pos + 1, m, 1, n)
             for (j, pieces) in slices
                 push!(pieces, _keptslice(columns(t)[searchsortedfirst(predicate, j)], m))
             end
-            for pr in problems(t)
-                (pr.row == 0 || pr.row <= window) && push!(items, pr)
-            end
+            append!(items, problems(t))
             dropped += t.droppedproblems
-            pos += keepn
+            pos += n
         end
         k = last(group) + 1
     end

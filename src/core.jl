@@ -2912,8 +2912,8 @@ function Base.showerror(io::IO, e::ParseError)
     isempty(e.source) || print(io, " in ", e.source)
     print(io, ": ", p.message)
     e.nproblems > 1 && print(io, " (+", e.nproblems - 1, " more)")
-    print(io, "\nUse on_error=:collect (the default) to keep parsing and inspect ",
-          "CSV.problems(file), or on_error=:warn for one summary warning.")
+    print(io, "\nUse on_error=:collect to keep parsing and inspect ",
+          "CSV.problems(file), or on_error=:warn for one summary warning (the eager default).")
 end
 
 @noinline _throwparseerror(p::Problem, nproblems::Int, source::String="") =

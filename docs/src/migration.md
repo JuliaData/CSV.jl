@@ -42,7 +42,7 @@ throws), and extra trailing zeros are exact.
 | `threaded=false` | `ntasks=1` or `parallel=false` |
 | `tasks=n` | `ntasks=n` |
 | `lazystrings=true` | `stringtype=DataStrings.DataString`, which is the default |
-| `silencewarnings=true` | Do not inspect `CSV.problems(file)`, or set `maxproblems=0` |
+| `silencewarnings=true` | `on_error=:collect` records problems without a summary warning |
 | `maxwarnings=n` | Still accepted by problem-retaining readers; `maxproblems=n` is the explicit form |
 | `strict=true` | Still accepted; `on_error=:error` is the explicit form. For `CSV.Rows`, either form throws when an invalid typed cell is accessed |
 | `type=T` | `types=T` |

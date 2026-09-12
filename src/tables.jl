@@ -185,16 +185,16 @@ parsebatch(b::Batches, ci::ChunkIndex) = something(_parsebatch(b, ci, true))
 # The same parse for types settled from a sample only: a cell that
 # contradicts its column's type returns `nothing` instead of an error, and
 # the caller decides how to promote.
-tryparsebatch(b::Batches, ci::ChunkIndex) = _parsebatch(b, ci, false)
+tryparsebatch(b::Batches, ci::ChunkIndex, n::Int=nrows(ci),
+              rowbase::Int=chunkrowbase(b.chunks, ci)) = _parsebatch(b, ci, false, n, rowbase)
 
-function _parsebatch(b::Batches, ci::ChunkIndex, strict::Bool)::Union{Nothing, ParsedTable}
-    n = nrows(ci)
+function _parsebatch(b::Batches, ci::ChunkIndex, strict::Bool, n::Int=nrows(ci),
+                     rowbase::Int=chunkrowbase(b.chunks, ci))::Union{Nothing, ParsedTable}
     ncols = length(b.names)
     log = ProblemLog(b.maxproblems)
-    rowbase = chunkrowbase(b.chunks, ci)
     nsourcecols = length(b.plan.columns)
 
-    for lr in ci.firstdatarow:totalrows(ci)
+    for lr in ci.firstdatarow:(ci.firstdatarow + n - 1)
         nf = nfields(ci, lr)
         if nf != nsourcecols
             grow = rowbase + (lr - ci.firstdatarow) + 1
@@ -202,7 +202,7 @@ function _parsebatch(b::Batches, ci::ChunkIndex, strict::Bool)::Union{Nothing, P
             _emptyrow(b.buf, ci, nf, sp) || pushrowproblem!(log, grow, sp[1], nsourcecols, nf)
         end
     end
-    b.unclosedquote && ci === last(b.chunks) &&
+    b.unclosedquote && ci === last(b.chunks) && n == nrows(ci) &&
         pushproblem!(log, 0, 0, length(b.buf), :unclosed_quote,
                        "input ended inside a quoted field")
 
@@ -218,8 +218,8 @@ function _parsebatch(b::Batches, ci::ChunkIndex, strict::Bool)::Union{Nothing, P
         clog = ProblemLog(b.maxproblems)
         col = allocatecolumn(T, n, b.buf, opts.e, b.d.cq)
         conflict = T === Missing ?
-            parsecolchunk_missing(b.buf, ci, j, rowbase, opts, userprovided, clog) :
-            parsecolchunk!(col, b.buf, ci, j, 0, opts, userprovided, clog, rowbase)
+            parsecolchunk_missing(b.buf, ci, j, rowbase, opts, userprovided, clog, nothing, 0, n) :
+            parsecolchunk!(col, b.buf, ci, j, 0, opts, userprovided, clog, rowbase, nothing, 0, n)
         if conflict != 0
             strict && error("internal error: batch schema prepass disagreed with value parsing")
             conflicts[q] = true
