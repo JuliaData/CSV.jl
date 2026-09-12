@@ -116,14 +116,14 @@ const MMAP_THRESHOLD = 1 << 19
 _isgzip(buf::AbstractVector{UInt8}) = length(buf) >= 2 && buf[1] == 0x1f && buf[2] == 0x8b
 _maybegunzip(buf::Vector{UInt8}) = _isgzip(buf) ? transcode(GzipDecompressor, buf) : buf
 
-resolvesource(buf::Vector{UInt8}; buffer_in_memory::Bool=false, prefetch::Bool=true) =
-    _maybegunzip(buf)
+resolvesource(buf::Vector{UInt8}; buffer_in_memory::Bool=false, prefetch::Bool=true,
+              workers=nothing) = _maybegunzip(buf)
 # other byte containers (codeunits, views) copy into a Vector, the parser's buffer type
 resolvesource(buf::AbstractVector{UInt8}; kw...) = resolvesource(Vector{UInt8}(buf); kw...)
-resolvesource(io::IO; buffer_in_memory::Bool=false, prefetch::Bool=true) =
+resolvesource(io::IO; buffer_in_memory::Bool=false, prefetch::Bool=true, workers=nothing) =
     _maybegunzip(Base.read(io))
-resolvesource(cmd::Base.AbstractCmd; buffer_in_memory::Bool=false, prefetch::Bool=true) =
-    _maybegunzip(Base.read(cmd))
+resolvesource(cmd::Base.AbstractCmd; buffer_in_memory::Bool=false, prefetch::Bool=true,
+              workers=nothing) = _maybegunzip(Base.read(cmd))
 const PREFETCH_PAGE = 16384
 
 function _prefetchrange(m::Vector{UInt8}, lo::Int, hi::Int)
@@ -134,18 +134,24 @@ function _prefetchrange(m::Vector{UInt8}, lo::Int, hi::Int)
     return acc
 end
 
-function _prefetch!(m::Vector{UInt8})
+# Touch one byte per page across `parts` workers so a cold file's readahead
+# runs ahead of the first full pass. With `workers`, the tasks stay detached
+# and the caller joins them later; otherwise they finish before this returns.
+function _prefetch!(m::Vector{UInt8}, workers::Union{Nothing, Vector{Task}})
     n = length(m)
     parts = min(4, Threads.nthreads())
-    @sync for p in 1:parts
+    tasks = Task[]
+    for p in 1:parts
         lo = 1 + (p - 1) * n ÷ parts
         hi = p * n ÷ parts
-        @wkspawn _prefetchrange(m, lo, hi)
+        push!(tasks, @wkspawn _prefetchrange(m, lo, hi))
     end
+    workers === nothing ? foreach(wait, tasks) : append!(workers, tasks)
     return
 end
 
-function resolvesource(s::AbstractString; buffer_in_memory::Bool=false, prefetch::Bool=true)
+function resolvesource(s::AbstractString; buffer_in_memory::Bool=false, prefetch::Bool=true,
+                       workers::Union{Nothing, Vector{Task}}=nothing)
     # a URL: fetch to a temporary file with the Downloads stdlib, then
     # resolve that path exactly like any other (magic-byte gzip, mmap, ...)
     if startswith(s, r"^https?://")
@@ -173,11 +179,11 @@ function resolvesource(s::AbstractString; buffer_in_memory::Bool=false, prefetch
         # between filesize and mmap from mapping a different file at the old size.
         m = Mmap.mmap(io, Vector{UInt8}, sz; grow=false)
         # Ask the OS for readahead, then fault pages across bounded workers.
+        # A reader joins those workers before it returns: a caller can replace
+        # or truncate the file after an eager read, and a worker that still
+        # touched the mapping then would fault.
         @static Sys.isunix() && Mmap.madvise!(m, Mmap.MADV_WILLNEED)
-        # Join these workers before returning the source. A caller can replace
-        # or truncate the file after an eager read; a detached worker could
-        # otherwise access the truncated mapping after parsing completed.
-        prefetch && Threads.nthreads() > 1 && _prefetch!(m)
+        prefetch && Threads.nthreads() > 1 && _prefetch!(m, workers)
         return m
     end
 end
@@ -844,7 +850,9 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
     rawheaderrow = header === true ? 1 : header === false ? 0 :
                    header isa Integer ? header :
                    header isa AbstractVector{<:Integer} && !isempty(header) ? last(header) : 0
-    buf = resolvesource(source; buffer_in_memory, prefetch)
+    # page-touch workers of a mapped file run while the index pass reads it
+    workers = Task[]
+    buf = resolvesource(source; buffer_in_memory, prefetch, workers)
     d0 = Dialect(; delim=delim === nothing ? _probedelim(kw) : delim,
                  quotechar=get(kw, :quotechar, '"'),
                  openquotechar=get(kw, :openquotechar, nothing),
@@ -911,6 +919,7 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
     rowoff(n::Int) = n < firstrow ? _physicallineoffset(buf, rawstart, n) :
                                     _rawrowoffset(buf, d, anchoroff, n - firstrow + 1)
     bi = index(buf, d; datastart, chunkbytes=cb, parallel, ntasks, fastindex)
+    foreach(wait, workers)
     if bi.barequote && !lenient
         # A quote that did not start its field (`5' 11"`, `x"y`) made the
         # parallel toggle scan unsound: rows may have merged into one cell.
@@ -1626,7 +1635,8 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
     startf = skipto === nothing ? _saturatedinc(namefield) : _saturatedint(skipto)
     skipto !== nothing && hasnames && skipto <= rawnamefield &&
         throw(ArgumentError("skipto=$skipto must be past the header field $rawnamefield"))
-    buf = resolvesource(source; buffer_in_memory, prefetch)
+    workers = Task[]
+    buf = resolvesource(source; buffer_in_memory, prefetch, workers)
     dialectkw = _pickkwargs(kw, _DIALECTKW)
     valuekw0 = _pickkwargs(kw, _VALUEKW)
     # single assignments: the per-column option comprehension captures `valuekw`
@@ -1637,6 +1647,7 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
     d0 = Dialect(; delim, dialectkw...)
     opts = makevalueopts(d0; sentinels=_sentinels(missingstring), valuekw...)
     bi0 = index(buf, d0; datastart=_datastart(buf), parallel=tasklimit > 1, ntasks=tasklimit)
+    foreach(wait, workers)
     # a quote that did not start its field: use the lenient rule (single
     # assignments: the per-column option comprehension captures `d`)
     d = bi0.barequote ? withlenient(d0) : d0
