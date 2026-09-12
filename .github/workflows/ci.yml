@@ -61,6 +61,9 @@ jobs:
       - name: Install dependencies
         run: julia --color=yes --project=. test/dependencies.jl
       - uses: julia-actions/julia-buildpkg@v1
+      - name: Check generic CPU compilation
+        if: runner.os == 'Linux' && matrix.arch == 'x64' && matrix.version != 'nightly'
+        run: julia --color=yes --compiled-modules=no --cpu-target=generic --project=test test/cpu.jl
       - uses: julia-actions/julia-runtest@v1
         continue-on-error: ${{ matrix.allow_failure || false }}
       - uses: julia-actions/julia-processcoverage@v1

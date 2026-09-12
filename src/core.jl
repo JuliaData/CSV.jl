@@ -1545,20 +1545,22 @@ movemask(marks::UInt64)::UInt64 = ((marks >> 7) * MOVEMASK_MAGIC) >> 56
 end
 
 @static if Sys.ARCH === :x86_64
-    @inline function prefix_xor64(m::UInt64)::UInt64
-        # This CPU instruction calculates the running quote mask in one step.
-        v = Base.llvmcall(("""
-            declare <2 x i64> @llvm.x86.pclmulqdq(<2 x i64>, <2 x i64>, i8)
+    @inline function prefix_xor64_pclmul(m::UInt64)::UInt64
+        # Inline assembly permits generic CPU compilation, which cannot lower
+        # the pclmul intrinsic. The runtime feature check below guards execution.
+        v = Base.llvmcall((raw"""
             define i64 @entry(i64 %m) #0 {
                 %a0 = insertelement <2 x i64> zeroinitializer, i64 %m, i32 0
                 %b0 = insertelement <2 x i64> zeroinitializer, i64 -1, i32 0
-                %r = call <2 x i64> @llvm.x86.pclmulqdq(<2 x i64> %a0, <2 x i64> %b0, i8 0)
+                %r = call <2 x i64> asm "pclmulqdq $$0, $2, $0", "=x,0,x"(<2 x i64> %a0, <2 x i64> %b0)
                 %lo = extractelement <2 x i64> %r, i32 0
                 ret i64 %lo
             }
             attributes #0 = { alwaysinline }""", "entry"), UInt64, Tuple{UInt64}, m)
         return v
     end
+    const HAS_PCLMUL = Ref(false)
+    @inline prefix_xor64(m::UInt64) = HAS_PCLMUL[] ? prefix_xor64_pclmul(m) : prefix_xor64_shift(m)
 elseif Sys.ARCH === :aarch64 && Sys.isapple()
     @inline function prefix_xor64(m::UInt64)::UInt64
         # This ARM instruction calculates the running quote mask in one step.
@@ -1608,7 +1610,10 @@ end
 # Runtime CPU probe for the paths above. Base has probed the host since
 # Julia 1.7; on Julia 1.14 the probe comes from the cpufeatures library.
 function _probecpu!()
-    @static if Sys.ARCH === :aarch64 && !Sys.isapple()
+    @static if Sys.ARCH === :x86_64
+        C = Base.BinaryPlatforms.CPUID
+        HAS_PCLMUL[] = C.test_cpu_feature(C.JL_X86_pclmul)
+    elseif Sys.ARCH === :aarch64 && !Sys.isapple()
         C = Base.BinaryPlatforms.CPUID
         HAS_PMULL[] = C.test_cpu_feature(C.JL_AArch64_aes)
     end
