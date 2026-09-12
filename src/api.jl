@@ -2423,7 +2423,13 @@ function Rows(source; types=nothing, reusebuffer::Bool=false, select=nothing, dr
     inner = _IndexedRows(p.buf, p.bi.chunks, p.names,
                          Dict(nm => j for (j, nm) in enumerate(p.names)),
                          plan, p.d, name)
-    return Rows{NT, on_error}(name, inner, plan.sources, p.limit)
+    # The schema is in the type, so a caller that constructs and iterates the
+    # rows in one function would otherwise see a partially known `Rows{<:NamedTuple}`
+    # and invoke `iterate` through a generic instance that recomputes the type
+    # parameters on every call (a type intersection per row). Hiding the type
+    # makes that call an ordinary dispatch, which is cached; a function that
+    # receives the rows as an argument specializes on them either way.
+    return Base.inferencebarrier(Rows{NT, on_error}(name, inner, plan.sources, p.limit))
 end
 
 Base.names(::Rows{NT}) where {NT} = collect(Symbol, fieldnames(NT))

@@ -339,6 +339,18 @@ row view does not allocate a reusable per-row buffer. Because the structural
 index is complete before iteration, `length(rows)` and `names(rows)` are
 available, and consumers such as `Tables.columntable` can preallocate.
 
+The row type carries the column names and types, so a loop over rows that a
+function receives as an argument reads `row.value` as a typed value with no
+dynamic dispatch. Construct the rows outside the function that iterates them:
+
+```julia
+total(rows) = sum(row.value for row in rows)
+total(CSV.Rows("input.csv"; types=Dict(:value => Int)))
+```
+
+A loop in the same function that calls `CSV.Rows` still works, but each row
+then costs a dynamic dispatch.
+
 An invalid or malformed cell becomes `missing` when it is accessed. Pass
 `strict=true` or `on_error=:error` to throw a `CSV.ParseError` at that access
 instead. `CSV.Rows` does not retain a problem log and does not accept

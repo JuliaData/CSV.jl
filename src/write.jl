@@ -67,10 +67,11 @@ end
     return b
 end
 
-@inline function Base.append!(b::_WriteBuffer, xs)
-    for x in xs
-        push!(b, x)
-    end
+function Base.append!(b::_WriteBuffer, xs::AbstractVector{UInt8})
+    n = length(xs)
+    len = b.len
+    resize!(b, len + n)
+    copyto!(b.bytes, len + 1, xs, 1, n)
     return b
 end
 
@@ -212,17 +213,16 @@ end
 @inline function _needsquotebytes(o::WriteOpts, p::Ptr{UInt8}, n::Int)
     d, oq, cq = o.delim, o.oq, o.cq
     k = 0
-    # short cells (the common case) stay on the byte loop: one word step
-    # costs about as much as eight byte tests
-    while n >= 16 && k + 8 <= n
+    while k + 8 <= n
         w = unsafe_load(Ptr{UInt64}(p + k))
         m = _eqmask8_c(w, d) | _eqmask8_c(w, oq) | _eqmask8_c(w, cq) |
             _eqmask8_c(w, UInt8('\n')) | _eqmask8_c(w, UInt8('\r'))
         m != zero(UInt64) && return true
         k += 8
     end
-    @inbounds while k < n
-        _needsquote(o, unsafe_load(p, k + 1)) && return true
+    while k < n
+        b = unsafe_load(p, k + 1)
+        (b == d || b == oq || b == cq || b == UInt8('\n') || b == UInt8('\r')) && return true
         k += 1
     end
     return false
@@ -247,10 +247,11 @@ function _appendbytes!(out::_WriteOutput, bytes::AbstractVector{UInt8}, o::Write
         end
         return append!(out, bytes)
     end
+    d, oq, cq, e = o.delim, o.oq, o.cq, o.e
     quote_it = stringcell && (o.quotestyle === :all || n == 0)
     if !quote_it
         for b in bytes
-            if _needsquote(o, b)
+            if b == d || b == oq || b == cq || b == UInt8('\n') || b == UInt8('\r')
                 quote_it = true
                 break
             end
@@ -260,12 +261,18 @@ function _appendbytes!(out::_WriteOutput, bytes::AbstractVector{UInt8}, o::Write
         end
     end
     quote_it || return append!(out, bytes)
-    push!(out, o.oq)
-    for b in bytes
-        (b == o.cq || (o.e != o.cq && b == o.e)) && push!(out, o.e)
-        push!(out, b)
+    # reserve the escaped upper bound once, then store bytes by index
+    k = length(out)
+    _room!(out, 2n + 2)
+    @inbounds begin
+        out[k += 1] = oq
+        for b in bytes
+            (b == cq || (e != cq && b == e)) && (out[k += 1] = e)
+            out[k += 1] = b
+        end
+        out[k += 1] = cq
     end
-    push!(out, o.cq)
+    resize!(out, k)
     return out
 end
 
