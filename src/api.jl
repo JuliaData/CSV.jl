@@ -146,8 +146,22 @@ function _prefetch!(m::Vector{UInt8}, workers::Union{Nothing, Vector{Task}})
         hi = p * n ÷ parts
         push!(tasks, @wkspawn _prefetchrange(m, lo, hi))
     end
-    workers === nothing ? foreach(wait, tasks) : append!(workers, tasks)
+    workers === nothing ? _joinprefetch!(tasks) : append!(workers, tasks)
     return
+end
+
+function _joinprefetch!(tasks::Vector{Task})
+    failure = nothing
+    for task in tasks
+        try
+            wait(task)
+        catch err
+            failure === nothing && (failure = err)
+        end
+    end
+    empty!(tasks)
+    failure === nothing || throw(failure)
+    return nothing
 end
 
 function resolvesource(s::AbstractString; buffer_in_memory::Bool=false, prefetch::Bool=true,
@@ -852,165 +866,169 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
                    header isa AbstractVector{<:Integer} && !isempty(header) ? last(header) : 0
     # page-touch workers of a mapped file run while the index pass reads it
     workers = Task[]
-    buf = resolvesource(source; buffer_in_memory, prefetch, workers)
-    d0 = Dialect(; delim=delim === nothing ? _probedelim(kw) : delim,
-                 quotechar=get(kw, :quotechar, '"'),
-                 openquotechar=get(kw, :openquotechar, nothing),
-                 closequotechar=get(kw, :closequotechar, nothing),
-                 escapechar=get(kw, :escapechar, nothing), quoted=get(kw, :quoted, true),
-                 comment=get(kw, :comment, nothing), ignoreemptyrows=get(kw, :ignoreemptyrows, true),
-                 ignorerepeated=get(kw, :ignorerepeated, false), lenient)
-    fastindex = get(kw, :fastindex, true)::Bool
-    # The first row that MATTERS — the (first) header row, or `skipto` when
-    # there is no header row. Everything before it is a skipped prefix: counted
-    # as physical lines (quote-blind), never indexed, never sniffed. Row
-    # offsets at or after it are quote-aware from that anchor.
-    firstrow = header isa Integer && header > 1 ? _saturatedint(header) :
-               header isa AbstractVector{<:Integer} && !isempty(header) ?
-               _saturatedint(first(header)) :
-               (header === false || (header isa Integer && header == 0) ||
-                (header isa AbstractVector && !(header isa AbstractVector{<:Integer}))) &&
-               skipto !== nothing ? _saturatedint(skipto) : 1
-    rawstart = _datastart(buf)
-    anchoroff = firstrow > 1 ? _physicallineoffset(buf, rawstart, firstrow) : rawstart
-    # `d` is assigned once: the `rowoff` closure below captures it, and a
-    # captured local that is reassigned is boxed.
-    d = if delim === nothing
-        get(kw, :ignorerepeated, false) &&
-            throw(ArgumentError("auto-delimiter detection is not supported with " *
-                                "ignorerepeated=true; pass delim explicitly"))
-        # Sniff from the first row that matters: skipped prefix rows are junk
-        # and must not vote on the delimiter (a one-line "skip me" preamble
-        # otherwise elects the space).
-        sniffed, ir = _sniffdelim(buf, samplebytes, anchoroff, d0, fastindex)
-        delim = sniffed
-        withdelim(d0, UInt8(sniffed), ir || d0.ignorerepeated)
-    else
-        d0
-    end
-    # missingstring → sentinels ("" entries are inert: empty is always missing)
-    sentinels = _sentinels(missingstring)
-    dateformat = get(kw, :dateformat, nothing)
-    dfdict = dateformat isa AbstractDict ? dateformat : nothing
-    decimal = get(kw, :decimal, '.')::Char
-    truestrings = get(kw, :truestrings, nothing)
-    falsestrings = get(kw, :falsestrings, nothing)
-    stripwhitespace = get(kw, :stripwhitespace, false)::Bool
-    groupmark = get(kw, :groupmark, nothing)::Union{Nothing, Char}
-    opts = makevalueopts(d, dfdict === nothing ? dateformat : nothing, decimal,
-                         truestrings, falsestrings, stripwhitespace, groupmark, sentinels)
-    # `ntasks` sets the chunk target (about four chunks per task) inside the
-    # 64 KiB–1 MiB band that keeps a chunk cache-resident: the column loops
-    # re-read a chunk once per column, so a chunk must not grow with the file.
-    cb = chunkbytes === nothing ?
-         _defaultchunkbytes(length(buf), something(ntasks, Threads.nthreads())) : chunkbytes
-
-    # -- the row window, in RAW rows: header rows, skipto, footerskip ---------
-    header isa Integer && !(header isa Bool) &&
-        (header = header == 0 ? false : _saturatedint(header))
-    headerrows = header isa AbstractVector{<:Integer} ? _saturatedint.(header) :
-                 header isa Int ? [header] : Int[]
-    headerrow = header === true ? 1 : isempty(headerrows) ? 0 : last(headerrows)
-    # Skipped prefix rows never enter the index (a generated column count would
-    # otherwise come from a junk first row instead of the first DATA row) —
-    # the index starts at the anchor. Row `n` at/after the anchor is
-    # `n - firstrow + 1` quote-aware structural rows from it.
-    datastart = anchoroff
-    rowoff(n::Int) = n < firstrow ? _physicallineoffset(buf, rawstart, n) :
-                                    _rawrowoffset(buf, d, anchoroff, n - firstrow + 1)
-    bi = index(buf, d; datastart, chunkbytes=cb, parallel, ntasks, fastindex)
-    foreach(wait, workers)
-    if bi.barequote && !lenient
-        # A quote that did not start its field (`5' 11"`, `x"y`) made the
-        # parallel toggle scan unsound: rows may have merged into one cell.
-        # Prepare again under the lenient quote rule, from the same bytes.
-        # Well-formed input never takes this path.
-        return _prepare(buf, header, normalizenames, skipto, footerskip, missingstring,
-                        delim, limit, samplebytes, chunkbytes, parallel, ntasks,
-                        buffer_in_memory, prefetch, validate, true, kw)
-    end
-    chunks = bi.chunks
-    headerlog = ProblemLog(get(kw, :maxproblems, 10_000))
-    headerrefs = Tuple{ChunkIndex, Int}[]
-
-    names = if header isa AbstractVector && !(header isa AbstractVector{<:Integer}) &&
-               !isempty(header)
-        Symbol.(header)
-    elseif header === false || isempty(chunks) ||
-           (header isa AbstractVector && isempty(header))   # header=[] ⇒ generate ColumnN
-        k = _firstlive(chunks)
-        n = k === nothing ? 0 : nfields(chunks[k], chunks[k].firstdatarow)
-        [Symbol("Column", j) for j in 1:n]
-    elseif header === true || length(headerrows) == 1
-        k = _firstlive(chunks)
-        if k === nothing
-            Symbol[]
+    try
+        buf = resolvesource(source; buffer_in_memory, prefetch, workers)
+        d0 = Dialect(; delim=delim === nothing ? _probedelim(kw) : delim,
+                     quotechar=get(kw, :quotechar, '"'),
+                     openquotechar=get(kw, :openquotechar, nothing),
+                     closequotechar=get(kw, :closequotechar, nothing),
+                     escapechar=get(kw, :escapechar, nothing), quoted=get(kw, :quoted, true),
+                     comment=get(kw, :comment, nothing), ignoreemptyrows=get(kw, :ignoreemptyrows, true),
+                     ignorerepeated=get(kw, :ignorerepeated, false), lenient)
+        fastindex = get(kw, :fastindex, true)::Bool
+        # The first row that MATTERS — the (first) header row, or `skipto` when
+        # there is no header row. Everything before it is a skipped prefix: counted
+        # as physical lines (quote-blind), never indexed, never sniffed. Row
+        # offsets at or after it are quote-aware from that anchor.
+        firstrow = header isa Integer && header > 1 ? _saturatedint(header) :
+                   header isa AbstractVector{<:Integer} && !isempty(header) ?
+                   _saturatedint(first(header)) :
+                   (header === false || (header isa Integer && header == 0) ||
+                    (header isa AbstractVector && !(header isa AbstractVector{<:Integer}))) &&
+                   skipto !== nothing ? _saturatedint(skipto) : 1
+        rawstart = _datastart(buf)
+        anchoroff = firstrow > 1 ? _physicallineoffset(buf, rawstart, firstrow) : rawstart
+        # `d` is assigned once: the `rowoff` closure below captures it, and a
+        # captured local that is reassigned is boxed.
+        d = if delim === nothing
+            get(kw, :ignorerepeated, false) &&
+                throw(ArgumentError("auto-delimiter detection is not supported with " *
+                                    "ignorerepeated=true; pass delim explicitly"))
+            # Sniff from the first row that matters: skipped prefix rows are junk
+            # and must not vote on the delimiter (a one-line "skip me" preamble
+            # otherwise elects the space).
+            sniffed, ir = _sniffdelim(buf, samplebytes, anchoroff, d0, fastindex)
+            delim = sniffed
+            withdelim(d0, UInt8(sniffed), ir || d0.ignorerepeated)
         else
-            push!(headerrefs, (chunks[k], chunks[k].firstdatarow))
-            parseheader!(buf, chunks[k], opts, d, headerlog)
+            d0
         end
-    else
-        # multi-row header: the LISTED raw rows (not necessarily consecutive —
-        # blank rows may sit between them) join with "_"; blank cells resolve
-        # to ColumnN first. Each listed row is parsed
-        # in place by advancing the chunk cursor to that raw row's byte offset.
-        parts = Vector{Vector{Symbol}}()
-        firstrows = Int[ci.firstdatarow for ci in chunks]
-        for hr in headerrows
-            _skiptobyte!(chunks, rowoff(hr))
+        # missingstring → sentinels ("" entries are inert: empty is always missing)
+        sentinels = _sentinels(missingstring)
+        dateformat = get(kw, :dateformat, nothing)
+        dfdict = dateformat isa AbstractDict ? dateformat : nothing
+        decimal = get(kw, :decimal, '.')::Char
+        truestrings = get(kw, :truestrings, nothing)
+        falsestrings = get(kw, :falsestrings, nothing)
+        stripwhitespace = get(kw, :stripwhitespace, false)::Bool
+        groupmark = get(kw, :groupmark, nothing)::Union{Nothing, Char}
+        opts = makevalueopts(d, dfdict === nothing ? dateformat : nothing, decimal,
+                             truestrings, falsestrings, stripwhitespace, groupmark, sentinels)
+        # `ntasks` sets the chunk target (about four chunks per task) inside the
+        # 64 KiB–1 MiB band that keeps a chunk cache-resident: the column loops
+        # re-read a chunk once per column, so a chunk must not grow with the file.
+        cb = chunkbytes === nothing ?
+             _defaultchunkbytes(length(buf), something(ntasks, Threads.nthreads())) : chunkbytes
+
+        # -- the row window, in RAW rows: header rows, skipto, footerskip ---------
+        header isa Integer && !(header isa Bool) &&
+            (header = header == 0 ? false : _saturatedint(header))
+        headerrows = header isa AbstractVector{<:Integer} ? _saturatedint.(header) :
+                     header isa Int ? [header] : Int[]
+        headerrow = header === true ? 1 : isempty(headerrows) ? 0 : last(headerrows)
+        # Skipped prefix rows never enter the index (a generated column count would
+        # otherwise come from a junk first row instead of the first DATA row) —
+        # the index starts at the anchor. Row `n` at/after the anchor is
+        # `n - firstrow + 1` quote-aware structural rows from it.
+        datastart = anchoroff
+        rowoff(n::Int) = n < firstrow ? _physicallineoffset(buf, rawstart, n) :
+                                        _rawrowoffset(buf, d, anchoroff, n - firstrow + 1)
+        bi = index(buf, d; datastart, chunkbytes=cb, parallel, ntasks, fastindex)
+        _joinprefetch!(workers)
+        if bi.barequote && !lenient
+            # A quote that did not start its field (`5' 11"`, `x"y`) made the
+            # parallel toggle scan unsound: rows may have merged into one cell.
+            # Prepare again under the lenient quote rule, from the same bytes.
+            # Well-formed input never takes this path.
+            return _prepare(buf, header, normalizenames, skipto, footerskip, missingstring,
+                            delim, limit, samplebytes, chunkbytes, parallel, ntasks,
+                            buffer_in_memory, prefetch, validate, true, kw)
+        end
+        chunks = bi.chunks
+        headerlog = ProblemLog(get(kw, :maxproblems, 10_000))
+        headerrefs = Tuple{ChunkIndex, Int}[]
+
+        names = if header isa AbstractVector && !(header isa AbstractVector{<:Integer}) &&
+                   !isempty(header)
+            Symbol.(header)
+        elseif header === false || isempty(chunks) ||
+               (header isa AbstractVector && isempty(header))   # header=[] ⇒ generate ColumnN
             k = _firstlive(chunks)
-            k === nothing && break
-            push!(headerrefs, (chunks[k], chunks[k].firstdatarow))
-            push!(parts, parseheader!(buf, chunks[k], opts, d, headerlog))
-        end
-        for (ci, firstrow) in zip(chunks, firstrows)
-            ci.firstdatarow = firstrow
-        end
-        _skiptobyte!(chunks, rowoff(_saturatedinc(headerrow)))
-        if isempty(parts)
-            Symbol[]
+            n = k === nothing ? 0 : nfields(chunks[k], chunks[k].firstdatarow)
+            [Symbol("Column", j) for j in 1:n]
+        elseif header === true || length(headerrows) == 1
+            k = _firstlive(chunks)
+            if k === nothing
+                Symbol[]
+            else
+                push!(headerrefs, (chunks[k], chunks[k].firstdatarow))
+                parseheader!(buf, chunks[k], opts, d, headerlog)
+            end
         else
-            n = maximum(length, parts)
-            [Symbol(join((j <= length(p) ? String(p[j]) : "Column$j" for p in parts), "_"))
-             for j in 1:n]
+            # multi-row header: the LISTED raw rows (not necessarily consecutive —
+            # blank rows may sit between them) join with "_"; blank cells resolve
+            # to ColumnN first. Each listed row is parsed
+            # in place by advancing the chunk cursor to that raw row's byte offset.
+            parts = Vector{Vector{Symbol}}()
+            firstrows = Int[ci.firstdatarow for ci in chunks]
+            for hr in headerrows
+                _skiptobyte!(chunks, rowoff(hr))
+                k = _firstlive(chunks)
+                k === nothing && break
+                push!(headerrefs, (chunks[k], chunks[k].firstdatarow))
+                push!(parts, parseheader!(buf, chunks[k], opts, d, headerlog))
+            end
+            for (ci, firstrow) in zip(chunks, firstrows)
+                ci.firstdatarow = firstrow
+            end
+            _skiptobyte!(chunks, rowoff(_saturatedinc(headerrow)))
+            if isempty(parts)
+                Symbol[]
+            else
+                n = maximum(length, parts)
+                [Symbol(join((j <= length(p) ? String(p[j]) : "Column$j" for p in parts), "_"))
+                 for j in 1:n]
+            end
         end
-    end
-    normalizenames && (names = [normalizename(String(nm)) for nm in names])
-    names = makeunique!(names)
+        normalizenames && (names = [normalizename(String(nm)) for nm in names])
+        names = makeunique!(names)
 
-    if skipto !== nothing
-        skipto > rawheaderrow ||
-            throw(ArgumentError("skipto=$skipto must be past the header (row $rawheaderrow)"))
-        _skiptobyte!(chunks, rowoff(_saturatedint(skipto)))
-    end
-    # A non-comment physical row consumes at least one source byte. A footer
-    # count larger than the buffer therefore removes every possible row; avoid
-    # narrowing the count or scanning the source in that known-empty case.
-    # Footer rows are counted from the anchor: a stray quote in a skipped
-    # prefix row must not swallow the file (the prefix is quote-blind).
-    footer = footerskip > 0 && footerskip >= length(buf) ? anchoroff :
-             _footeroffset(buf, d, anchoroff, Int(footerskip))
-    keep = footerskip == 0 ? sum(nrows, chunks; init=0) : _rowsbefore(chunks, footer)
-    lim = limit === nothing ? (footerskip > 0 ? keep : nothing) :
-          limit >= keep ? keep : Int(limit)
+        if skipto !== nothing
+            skipto > rawheaderrow ||
+                throw(ArgumentError("skipto=$skipto must be past the header (row $rawheaderrow)"))
+            _skiptobyte!(chunks, rowoff(_saturatedint(skipto)))
+        end
+        # A non-comment physical row consumes at least one source byte. A footer
+        # count larger than the buffer therefore removes every possible row; avoid
+        # narrowing the count or scanning the source in that known-empty case.
+        # Footer rows are counted from the anchor: a stray quote in a skipped
+        # prefix row must not swallow the file (the prefix is quote-blind).
+        footer = footerskip > 0 && footerskip >= length(buf) ? anchoroff :
+                 _footeroffset(buf, d, anchoroff, Int(footerskip))
+        keep = footerskip == 0 ? sum(nrows, chunks; init=0) : _rowsbefore(chunks, footer)
+        lim = limit === nothing ? (footerskip > 0 ? keep : nothing) :
+              limit >= keep ? keep : Int(limit)
 
-    # engine + diagnostics kwargs the parse driver consumes directly
-    colopts = nothing
-    if dfdict !== nothing
-        overrides = _resolvekeys(dfdict, names, length(names), "dateformat"; validate)
-        colopts = ValueOpts[haskey(overrides, j) ?
-                              makevalueopts(d, overrides[j], decimal, truestrings, falsestrings,
-                                            stripwhitespace, groupmark, sentinels) : opts
-                              for j in 1:length(names)]
+        # engine + diagnostics kwargs the parse driver consumes directly
+        colopts = nothing
+        if dfdict !== nothing
+            overrides = _resolvekeys(dfdict, names, length(names), "dateformat"; validate)
+            colopts = ValueOpts[haskey(overrides, j) ?
+                                  makevalueopts(d, overrides[j], decimal, truestrings, falsestrings,
+                                                stripwhitespace, groupmark, sentinels) : opts
+                                  for j in 1:length(names)]
+        end
+        nsample = get(kw, :nsample, nothing)::Union{Nothing, Int}
+        nsample === nothing || nsample >= 1 ||
+            throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
+        settings = ReadSettings(cb, parallel, ntasks, resolvescanner(d, fastindex),
+                                get(kw, :maxproblems, 10_000), nsample,
+                                _normalizetypemap(get(kw, :typemap, nothing)::Union{Nothing, AbstractDict}),
+                                validate, colopts)
+        return Prepared(buf, bi, names, length(names), lim, opts, d, headerlog, headerrefs, settings)
+    finally
+        _joinprefetch!(workers)
     end
-    nsample = get(kw, :nsample, nothing)::Union{Nothing, Int}
-    nsample === nothing || nsample >= 1 ||
-        throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
-    settings = ReadSettings(cb, parallel, ntasks, resolvescanner(d, fastindex),
-                            get(kw, :maxproblems, 10_000), nsample,
-                            _normalizetypemap(get(kw, :typemap, nothing)::Union{Nothing, AbstractDict}),
-                            validate, colopts)
-    return Prepared(buf, bi, names, length(names), lim, opts, d, headerlog, headerrefs, settings)
 end
 
 # Prepared already owns the dialect, value options and structural index.
@@ -1640,85 +1658,89 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
     skipto !== nothing && hasnames && skipto <= rawnamefield &&
         throw(ArgumentError("skipto=$skipto must be past the header field $rawnamefield"))
     workers = Task[]
-    buf = resolvesource(source; buffer_in_memory, prefetch, workers)
-    dialectkw = _pickkwargs(kw, _DIALECTKW)
-    valuekw0 = _pickkwargs(kw, _VALUEKW)
-    # single assignments: the per-column option comprehension captures `valuekw`
-    dfdict = haskey(valuekw0, :dateformat) && valuekw0.dateformat isa AbstractDict ?
-             valuekw0.dateformat : nothing
-    valuekw = dfdict === nothing ? valuekw0 :
-              NamedTuple(kv for kv in pairs(valuekw0) if kv.first != :dateformat)
-    d0 = Dialect(; delim, dialectkw...)
-    opts = makevalueopts(d0; sentinels=_sentinels(missingstring), valuekw...)
-    bi0 = index(buf, d0; datastart=_datastart(buf), parallel=tasklimit > 1, ntasks=tasklimit)
-    foreach(wait, workers)
-    # a quote that did not start its field: use the lenient rule (single
-    # assignments: the per-column option comprehension captures `d`)
-    d = bi0.barequote ? withlenient(d0) : d0
-    bi = bi0.barequote ?
-         index(buf, d; datastart=_datastart(buf), parallel=tasklimit > 1, ntasks=tasklimit) : bi0
-    rows = Tuple{ChunkIndex, Int}[]
-    for ci in bi.chunks, lr in ci.firstdatarow:totalrows(ci)
-        push!(rows, (ci, lr))
-    end
-    ncols = length(rows)
-    # one assignment: the column comprehension below captures `n`
-    longest = ncols == 0 ? 0 :
-              max(0, maximum(nfields(r[1], r[2]) - (startf - 1) for r in rows))
-    n = limit === nothing || limit >= longest ? longest : Int(limit)
-    # `cell` is local to the closure; the source name below is a different variable
-    headerlog = ProblemLog(maxproblems)
-    _tname(j, r) = (cell = hasnames ? _cellstring(buf, r[1], r[2], namefield, opts, headerlog, j) : "";
-                    isempty(cell) ? Symbol("Column", j) : Symbol(cell))
-    names = explicitnames !== nothing ? copy(explicitnames) :
-            Symbol[_tname(j, r) for (j, r) in enumerate(rows)]
-    explicitnames !== nothing && length(names) != ncols &&
-        throw(ArgumentError("header has $(length(names)) names for $ncols transposed rows"))
-    normalizenames && (names = [normalizename(String(nm)) for nm in names])
-    names = makeunique!(names)
-    colopts = if dfdict === nothing
-        fill(opts, ncols)
-    else
-        overrides = _resolvekeys(dfdict, names, ncols, "dateformat"; validate)
-        ValueOpts[haskey(overrides, j) ?
-                    makevalueopts(d; sentinels=_sentinels(missingstring), valuekw...,
-                                    dateformat=overrides[j]) : opts
-                    for j in 1:ncols]
-    end
-    plan = settlecolumns(names, opts; types, colopts, validate)
-    # narrow numeric requests parse natively here; a requested string type is
-    # applied after the parse by `_finishstrings`
-    seed = Union{Nothing, Type}[_hasstringrequest(d) ? String : accessparsetype(d)
-                                for d in plan.columns]
-    # Each input row becomes one output column, parsed independently. Problems
-    # carry the cell index as their row, so no rebasing applies across columns.
-    pending = PendingProblemLog(maxproblems)
-    mergeproblems!(pending, headerlog, 0)
-    cols = Vector{AbstractVector}(undef, ncols)
-    _taskforeach(1:ncols, tasklimit) do j
-        r = rows[j]
-        collog = ProblemLog(maxproblems)
-        cols[j] = _transposedcolumn(buf, r[1], r[2], startf, n, seed[j], colopts[j],
-                                    collog, j, plan.columns[j].declaredmissing)
-        mergeproblems!(pending, collog, j)
-    end
-    log = finishproblems(pending, zeros(Int, ncols))
-    if bi.unclosedquote && !isempty(rows)
-        ci, lr = last(rows)
-        lastfield = nfields(ci, lr)
-        if (hasnames && namefield == lastfield) || 0 <= lastfield - startf < n
-            pushproblem!(log, 0, 0, length(buf), :unclosed_quote,
-                         "input ended inside a quoted field")
+    try
+        buf = resolvesource(source; buffer_in_memory, prefetch, workers)
+        dialectkw = _pickkwargs(kw, _DIALECTKW)
+        valuekw0 = _pickkwargs(kw, _VALUEKW)
+        # single assignments: the per-column option comprehension captures `valuekw`
+        dfdict = haskey(valuekw0, :dateformat) && valuekw0.dateformat isa AbstractDict ?
+                 valuekw0.dateformat : nothing
+        valuekw = dfdict === nothing ? valuekw0 :
+                  NamedTuple(kv for kv in pairs(valuekw0) if kv.first != :dateformat)
+        d0 = Dialect(; delim, dialectkw...)
+        opts = makevalueopts(d0; sentinels=_sentinels(missingstring), valuekw...)
+        bi0 = index(buf, d0; datastart=_datastart(buf), parallel=tasklimit > 1, ntasks=tasklimit)
+        _joinprefetch!(workers)
+        # a quote that did not start its field: use the lenient rule (single
+        # assignments: the per-column option comprehension captures `d`)
+        d = bi0.barequote ? withlenient(d0) : d0
+        bi = bi0.barequote ?
+             index(buf, d; datastart=_datastart(buf), parallel=tasklimit > 1, ntasks=tasklimit) : bi0
+        rows = Tuple{ChunkIndex, Int}[]
+        for ci in bi.chunks, lr in ci.firstdatarow:totalrows(ci)
+            push!(rows, (ci, lr))
         end
+        ncols = length(rows)
+        # one assignment: the column comprehension below captures `n`
+        longest = ncols == 0 ? 0 :
+                  max(0, maximum(nfields(r[1], r[2]) - (startf - 1) for r in rows))
+        n = limit === nothing || limit >= longest ? longest : Int(limit)
+        # `cell` is local to the closure; the source name below is a different variable
+        headerlog = ProblemLog(maxproblems)
+        _tname(j, r) = (cell = hasnames ? _cellstring(buf, r[1], r[2], namefield, opts, headerlog, j) : "";
+                        isempty(cell) ? Symbol("Column", j) : Symbol(cell))
+        names = explicitnames !== nothing ? copy(explicitnames) :
+                Symbol[_tname(j, r) for (j, r) in enumerate(rows)]
+        explicitnames !== nothing && length(names) != ncols &&
+            throw(ArgumentError("header has $(length(names)) names for $ncols transposed rows"))
+        normalizenames && (names = [normalizename(String(nm)) for nm in names])
+        names = makeunique!(names)
+        colopts = if dfdict === nothing
+            fill(opts, ncols)
+        else
+            overrides = _resolvekeys(dfdict, names, ncols, "dateformat"; validate)
+            ValueOpts[haskey(overrides, j) ?
+                        makevalueopts(d; sentinels=_sentinels(missingstring), valuekw...,
+                                        dateformat=overrides[j]) : opts
+                        for j in 1:ncols]
+        end
+        plan = settlecolumns(names, opts; types, colopts, validate)
+        # narrow numeric requests parse natively here; a requested string type is
+        # applied after the parse by `_finishstrings`
+        seed = Union{Nothing, Type}[_hasstringrequest(d) ? String : accessparsetype(d)
+                                    for d in plan.columns]
+        # Each input row becomes one output column, parsed independently. Problems
+        # carry the cell index as their row, so no rebasing applies across columns.
+        pending = PendingProblemLog(maxproblems)
+        mergeproblems!(pending, headerlog, 0)
+        cols = Vector{AbstractVector}(undef, ncols)
+        _taskforeach(1:ncols, tasklimit) do j
+            r = rows[j]
+            collog = ProblemLog(maxproblems)
+            cols[j] = _transposedcolumn(buf, r[1], r[2], startf, n, seed[j], colopts[j],
+                                        collog, j, plan.columns[j].declaredmissing)
+            mergeproblems!(pending, collog, j)
+        end
+        log = finishproblems(pending, zeros(Int, ncols))
+        if bi.unclosedquote && !isempty(rows)
+            ci, lr = last(rows)
+            lastfield = nfields(ci, lr)
+            if (hasnames && namefield == lastfield) || 0 <= lastfield - startf < n
+                pushproblem!(log, 0, 0, length(buf), :unclosed_quote,
+                             "input ended inside a quoted field")
+            end
+        end
+        sortproblems!(log)
+        t = ParsedTable(names, cols, n, log.items, log.dropped)
+        nm = _sourcename(source)
+        _reportproblems(t, on_error, log.first, nm)
+        t = _poolcolumns(t, _resolvepool(pool, names, ncols; validate); parallel=tasklimit > 1)
+        t = _finishstrings(t, stringtype, _requestedstrings(plan); parallel=tasklimit > 1)
+        downcast && (t = _downcast(t))
+        return File(nm, t, Dict(nm2 => j for (j, nm2) in enumerate(names)))
+    finally
+        _joinprefetch!(workers)
     end
-    sortproblems!(log)
-    t = ParsedTable(names, cols, n, log.items, log.dropped)
-    nm = _sourcename(source)
-    _reportproblems(t, on_error, log.first, nm)
-    t = _poolcolumns(t, _resolvepool(pool, names, ncols; validate); parallel=tasklimit > 1)
-    t = _finishstrings(t, stringtype, _requestedstrings(plan); parallel=tasklimit > 1)
-    downcast && (t = _downcast(t))
-    return File(nm, t, Dict(nm2 => j for (j, nm2) in enumerate(names)))
 end
 
 # --- pooling: a finalize-time pass at the API layer ---------------------------

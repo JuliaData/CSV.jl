@@ -22,6 +22,12 @@ end
         f = CSV.File(path; parallel=false)
         @test CSV._PREFETCH_TEST_DONE[] == min(4, Threads.nthreads())
         @test f.b[end] == "long retained text value"
+        for transpose in (false, true)
+            CSV._PREFETCH_TEST_DONE[] = 0
+            @test_throws ArgumentError CSV.File(path; transpose, quotechar='λ')
+            @test CSV._PREFETCH_TEST_DONE[] == min(4, Threads.nthreads())
+            sleep(0.3) # failed assertions must not let workers outlive this file
+        end
         # Release the mapping before Windows removes the temporary file.
         GC.gc()
     end
