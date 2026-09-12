@@ -1561,28 +1561,13 @@ end
     end
     const HAS_PCLMUL = Ref(false)
     @inline prefix_xor64(m::UInt64) = HAS_PCLMUL[] ? prefix_xor64_pclmul(m) : prefix_xor64_shift(m)
-elseif Sys.ARCH === :aarch64 && Sys.isapple()
-    @inline function prefix_xor64(m::UInt64)::UInt64
-        # This ARM instruction calculates the running quote mask in one step.
-        # Every Apple silicon CPU has it.
-        v = Base.llvmcall(("""
-            declare <16 x i8> @llvm.aarch64.neon.pmull64(i64, i64)
-            define i64 @entry(i64 %m) #0 {
-                %r = call <16 x i8> @llvm.aarch64.neon.pmull64(i64 %m, i64 -1)
-                %v = bitcast <16 x i8> %r to <2 x i64>
-                %lo = extractelement <2 x i64> %v, i32 0
-                ret i64 %lo
-            }
-            attributes #0 = { alwaysinline }""", "entry"), UInt64, Tuple{UInt64}, m)
-        return v
-    end
 elseif Sys.ARCH === :aarch64
-    # Other aarch64 hosts get the same instruction when the CPU has the AES
+    # `pmull` computes the running quote mask in one instruction. Every Apple
+    # silicon CPU has it; another aarch64 host has it when the CPU has the AES
     # extension, which `__init__` probes through Base. The instruction lives
     # in a helper that carries its own target features, so a package image
-    # built for a generic aarch64 target still compiles it; the probe keeps
-    # it from running on a CPU that would trap. The helper is a real call,
-    # which costs about as much as the shift fallback saves.
+    # built for a generic aarch64 target still compiles it, and the probe keeps
+    # it from running on a CPU that would trap. The helper is a real call.
     @inline function prefix_xor64_pmull(m::UInt64)::UInt64
         v = Base.llvmcall(("""
             declare <16 x i8> @llvm.aarch64.neon.pmull64(i64, i64)
@@ -1601,7 +1586,7 @@ elseif Sys.ARCH === :aarch64
             UInt64, Tuple{UInt64}, m)
         return v
     end
-    const HAS_PMULL = Ref(false)
+    const HAS_PMULL = Ref(Sys.isapple())
     @inline prefix_xor64(m::UInt64) = HAS_PMULL[] ? prefix_xor64_pmull(m) : prefix_xor64_shift(m)
 else
     @inline prefix_xor64(m::UInt64) = prefix_xor64_shift(m)
