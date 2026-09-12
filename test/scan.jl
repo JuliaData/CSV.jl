@@ -440,6 +440,29 @@ end
 
 end # testset
 
+@testset "Scan bounds and reference-valued columns" begin
+    input = "a\n1\n2\n3\n"
+    for filter in (nothing, Tables.col(:a) > 0)
+        scan = Tables.Scan(; offset=1, limit=typemax(Int), filter)
+        @test collect(CSV.File(IOBuffer(input); scan).a) == [2, 3]
+    end
+    for T in (BigInt, BigFloat), cb in (1, 1024), parallel in (false, true)
+        scan = Tables.Scan(select=(:value => T,), filter=Tables.col(:keep) > 0)
+        f = CSV.File(IOBuffer("keep,value\n1,42\n1,\n"); scan, chunkbytes=cb, parallel)
+        @test isequal(collect(f.value), Union{Missing,T}[T(42), missing])
+    end
+    # The predicate pass must retain one capped log across all chunks.
+    input = "a,b\n" * "1\n"^100
+    p = CSV._prepare(IOBuffer(input); chunkbytes=2, maxproblems=2)
+    b = Tables.resolve(Tables.Scan(select=(:a,), filter=Tables.col(:a) > 0), p.names)
+    plan = CSV.settlecolumns(p.names, p.opts, b)
+    total = sum(CSV.nrows, p.bi.chunks; init=0)
+    _, phase, _, _ = CSV._streampredicate(p, plan, b, total, total, 2)
+    @test length(phase.problems) == 2
+    @test phase.droppedproblems == 98
+    @test getfield.(phase.problems, :row) == [1, 2]
+end
+
 @testset "Scan source forms (File(src; scan=))" begin
     using CodecZlib
     csv = "a,b,c\n" * join(("$(i),$(i / 2),v$(i % 7)_abcdefghijklmnop" for i in 1:30_000), '\n') * "\n"

@@ -177,8 +177,7 @@ function _streampredicate(p::Prepared, plan::ColumnPlan, b::Tables.BoundScan,
         slices[j] = AbstractVector[]
     end
     mask = Vector{Bool}(undef, total)
-    items = Problem[]
-    dropped = 0
+    log = ProblemLog(cap)
     pos = 0
     k = 1
     rowbases = cumsum([0; Int[nrows(ci) for ci in chunks]])
@@ -202,14 +201,16 @@ function _streampredicate(p::Prepared, plan::ColumnPlan, b::Tables.BoundScan,
             for (j, pieces) in slices
                 push!(pieces, _keptslice(columns(t)[searchsortedfirst(predicate, j)], m))
             end
-            append!(items, problems(t))
-            dropped += t.droppedproblems
+            for pr in problems(t)
+                pushproblem!(log, pr.row, pr.col, pr.pos, pr.kind, pr.message)
+            end
+            log.dropped += t.droppedproblems
             pos += n
         end
         k = last(group) + 1
     end
     fill!(view(mask, (window + 1):total), false)
-    return mask, ParsedTable(Symbol[], AbstractVector[], 0, items, dropped), slices, seeds
+    return mask, ParsedTable(Symbol[], AbstractVector[], 0, sortproblems!(log), log.dropped), slices, seeds
 end
 
 # The rows of one chunk's column that passed the filter.
@@ -283,7 +284,7 @@ function _cliprows!(mask::Vector{Bool}, offset::Int, limit::Union{Nothing, Int})
     @inbounds for i in eachindex(mask)
         mask[i] || continue
         seen += 1
-        if seen <= offset || (limit !== nothing && seen > offset + limit)
+        if seen <= offset || (limit !== nothing && seen - offset > limit)
             mask[i] = false
         end
     end

@@ -4529,8 +4529,9 @@ function _stitchmasked(::Type{T}, segments, j::Int, chunkrows, ndata::Int,
         @inbounds for i in 1:chunkrows[k]
             mask[inbases[k] + i] || continue
             dest += 1
-            values[dest] = tcol.values[i]
-            present[dest] = tcol.present[i]
+            hasvalue = tcol.present[i]
+            hasvalue && (values[dest] = tcol.values[i])
+            present[dest] = hasvalue
         end
     end
     return finalizecolumn(T, TypedColumn{T}(values, present), ndata)
