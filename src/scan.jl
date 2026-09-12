@@ -307,7 +307,7 @@ function _finishproblems(t::ParsedTable, maxproblems::Int, on_error::Symbol,
         append!(items, problems(phase))
         dropped += phase.droppedproblems
     end
-    sort!(items; by=problemkey)
+    sort!(items; lt=problemless)
     firstproblem = isempty(items) ? nothing : first(items)
     nkeep = min(length(items), maxproblems)
     dropped += length(items) - nkeep

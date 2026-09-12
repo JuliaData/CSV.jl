@@ -6,7 +6,7 @@ the generated string path vector. A FilePathsBase path returns the original
 path object.
 
 ```@example writing
-using CSV, DataStrings
+using CSV
 
 table = (name=["Ada", "Grace"], score=[9.5, missing])
 output = IOBuffer()
@@ -42,7 +42,7 @@ under one header without collecting the batches.
 again during append.
 
 ```@example writing-header
-using CSV, DataStrings
+using CSV
 
 output = IOBuffer()
 CSV.write(output, (a=[1, 2], b=[3, 4]); header=["left", "right"])
@@ -75,7 +75,7 @@ as-is, and a value containing its first byte is quoted. A newline can be a
 character or string such as `"\r\n"`. An unknown keyword is an `ArgumentError`.
 
 ```@example writing-quotes
-using CSV, DataStrings
+using CSV
 
 output = IOBuffer()
 CSV.write(output, (value=["plain", "with,comma", ""]); quotestyle=:minimal)
@@ -168,7 +168,7 @@ row strings. It yields the header first unless `writeheader=false`. It accepts
 the same dialect, value-format, and BOM options as `CSV.write`.
 
 ```@example row-writer
-using CSV, DataStrings
+using CSV
 
 rows = collect(CSV.RowWriter((id=[1, 2], label=["a", "b"])))
 join(rows)

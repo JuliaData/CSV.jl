@@ -924,8 +924,8 @@ end
     return
 end
 
-_renderblock_direct(cols::Vector{AbstractVector}, lo::Int, hi::Int, o::WriteOpts) =
-    _renderblock_direct(_preparewritecolumns(cols, length(cols[1]), o)[1], lo, hi, o)
+_renderblock(cols::Vector{AbstractVector}, lo::Int, hi::Int, o::WriteOpts) =
+    _renderblock(_preparewritecolumns(cols, length(cols[1]), o)[1], lo, hi, o)
 
 # One sink write per rendered block, straight from the block buffer.
 function _writeblock(io, b::_WriteBuffer)
@@ -964,7 +964,7 @@ end
 
 # Render rows lo..hi into `out` (a buffer the caller reuses from block to
 # block), after an optional prefix (the header, when a block must carry it).
-function _renderblock_direct(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpts,
+function _renderblock(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpts,
                              out::_WriteBuffer=_WriteBuffer(),
                              prefix::Vector{UInt8}=EMPTY_BYTES)
     prepared = cols.direct
@@ -991,10 +991,6 @@ function _renderblock_direct(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpt
     end
     return out
 end
-
-_renderblock(cols::_WriterColumns, lo::Int, hi::Int, o::WriteOpts,
-             out::_WriteBuffer=_WriteBuffer(), prefix::Vector{UInt8}=EMPTY_BYTES) =
-    _renderblock_direct(cols, lo, hi, o, out, prefix)
 
 # Compatibility path for `transform`: callbacks are observable and may keep
 # state, so preserve the row-major, sequential call order even for wide

@@ -4,7 +4,7 @@
 column-oriented Tables.jl table.
 
 ```@example reading
-using CSV, DataStrings
+using CSV
 
 data = IOBuffer("id,name,active\n1,Ada,true\n2,Grace,false\n")
 file = CSV.File(data)
@@ -68,7 +68,7 @@ Comment rows do not count toward `footerskip`. Empty rows and comment rows keep
 their physical positions for header and `skipto` handling.
 
 ```@example reading-window
-using CSV, DataStrings
+using CSV
 
 data = IOBuffer("metadata\nfirst value,second value\n1,2\n3,4\n5,6\n")
 file = CSV.File(data; header=2, normalizenames=true, limit=2)
@@ -111,7 +111,7 @@ adds one sentinel or a vector of sentinels. It does not turn off the empty-field
 rule. The writer uses a quoted empty field for a present empty string.
 
 ```@example reading-missing
-using CSV, DataStrings
+using CSV
 
 data = IOBuffer("value,label\n,empty field\nNA,sentinel\n\"\",present empty string\n")
 file = CSV.File(data; missingstring="NA", stringtype=String)
@@ -186,7 +186,7 @@ request for expression-based projection and filtering.
 CSV.jl uses `DataStrings.DataString` for inferred text columns by default:
 
 ```@example reading-strings
-using CSV, DataStrings
+using CSV
 
 file = CSV.File(IOBuffer("value\nalpha\nbeta\n"))
 (eltype(file.value), String(file.value[1]))
@@ -227,7 +227,7 @@ one summary warning per read, so a problem is never silent; `on_error=:collect`
 records problems without the warning.
 
 ```@example reading-problems
-using CSV, DataStrings
+using CSV
 
 file = CSV.File(IOBuffer("count\n1\ninvalid\n"); types=Int, on_error=:collect)
 [(p.row, p.col, p.kind) for p in CSV.problems(file)]
@@ -265,7 +265,7 @@ single-task parses have the same row order and exact row limit.
 Pass a vector of sources to concatenate them vertically:
 
 ```@example reading-multiple
-using CSV, DataStrings
+using CSV
 
 sources = [IOBuffer("id,value\n1,10\n"), IOBuffer("value,id\n20,2\n")]
 file = CSV.File(sources; source=:origin => ["first", "second"], stringtype=String)
@@ -305,7 +305,7 @@ long cell starts beyond the compact view format's Int32 source-offset limit,
 CSV copies only that cell into a bounded backing buffer when it is accessed.
 
 ```@example reading-lazy
-using CSV, DataStrings
+using CSV
 
 lazyfile = CSV.lazy(IOBuffer("id,price\n1,3.5\n2,4.0\n");
                     types=Dict(:price => Float64))
@@ -325,7 +325,7 @@ views by default. Provide `types` for typed cell access, or
 `stringtype=String` for standalone strings.
 
 ```@example reading-rows
-using CSV, DataStrings
+using CSV
 
 rows = CSV.Rows(IOBuffer("id,value\n1,10\n2,20\n"); types=[Int, Int])
 [row[:value] for row in rows]

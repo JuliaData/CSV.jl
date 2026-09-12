@@ -793,7 +793,7 @@ end
     @test presentpool.refs === K.poolrefs(kernelpresent)
     refsnapshot = copy(presentpool.refs)
     table = K.ParsedTable([:k], AbstractVector[presentpool], length(presentpool), K.Problem[], 0)
-    @test A._downcast(A._materializestrings(table)).columns[1] === presentpool
+    @test A._downcast(A._finishstrings(table, String, nothing)).columns[1] === presentpool
     @test presentpool.refs == refsnapshot
 
     stringpool = A.File(IOBuffer(input); pool=true, stringtype=String).k

@@ -19,7 +19,7 @@ before you update an application from CSV.jl 0.10.
 ## First read and write
 
 ```@example home
-using CSV, DataStrings
+using CSV
 
 input = IOBuffer("name,score\nAda,9.5\nGrace,10.0\n")
 file = CSV.File(input)

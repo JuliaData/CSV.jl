@@ -9,7 +9,7 @@ Load CSV.jl and call its APIs through the package namespace. The package does
 not export its entry points.
 
 ```julia
-using CSV, DataStrings
+using CSV
 
 file = CSV.File("input.csv")
 CSV.write("output.csv", file)
@@ -24,11 +24,7 @@ behavior (`CSV.ParseError`).
 Text columns use `DataStrings.DataString` by default. Pass `stringtype=String` when
 the result must own each string. Pooling is independent and is off by default.
 
-For repository work, read `AGENTS.md` before editing. Run focused tests while
-editing, then the full minimum-version suite and strict documentation build.
-Every dependency resolves from General (Parsers 3, InlineStrings 2, Tables
-1.14, DataStrings 1, DataDecimals 1). Keep the runtime in one module and
-validate registry resolution before a 1.0 tag.
+For repository work, read `AGENTS.md` before editing.
 
 For exact numeric columns, load DataDecimals and supply
 `types=Dict(:amount => DataDecimals.Decimal64{2})`. CSV does not infer decimal

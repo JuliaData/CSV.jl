@@ -2098,12 +2098,6 @@ _levelvector(::Type{String}, levels::DataStringVector, n::Int) =
 _levelvector(::Type{Symbol}, levels::DataStringVector, n::Int) =
     Symbol[Symbol(levels[i]) for i in 1:n]
 
-function _materializestrings(t::ParsedTable, ::Type{S}=String) where {S}
-    cols = AbstractVector[col isa DataStringVector ? _materializecolumn(S, col) : col
-                          for col in t.columns]
-    return ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
-end
-
 # --- Tables.jl + row access -------------------------------------------------
 
 # NB: getproperty resolves COLUMNS first (f.score), so interface methods must
@@ -2222,7 +2216,6 @@ end
 
 LazyColumn{ELT}(buf, chunks, rowbases, j, opts, nrows, ::Type{T}) where {ELT, T} =
     LazyColumn{ELT, T}(buf, chunks, rowbases, j, opts, nrows, Threads.Atomic{Int}(1))
-_lazytarget(::LazyColumn{ELT, T}) where {ELT, T} = T
 Base.size(c::LazyColumn) = (c.nrows,)
 Base.IndexStyle(::Type{<:LazyColumn}) = IndexLinear()
 

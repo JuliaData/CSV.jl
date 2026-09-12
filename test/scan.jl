@@ -254,7 +254,7 @@ end
         t = scanfile(dirty, scan; maxproblems=cap, chunkbytes=5, parallel=true)
         @test length(S.problems(t)) == min(cap, 2)
         @test getfield(t, :table).droppedproblems == 2 - min(cap, 2)
-        @test issorted(S.problems(t); by=S.problemkey)
+        @test issorted(S.problems(t); lt=S.problemless)
     end
 
     ragged = "a,b\n1\n2,x\n"
@@ -265,12 +265,12 @@ end
     ref = S.parse(malformed; chunkbytes=2, parallel=false)
     t = scanfile(malformed, T.Scan(); chunkbytes=2, parallel=false)
     @test S.names(t) == S.names(ref)
-    @test S.problemkey.(S.problems(t)) == S.problemkey.(S.problems(ref))
+    @test S.problems(t) == S.problems(ref)
 
     commentonly = "#\"unterminated"
     ref = S.parse(commentonly; comment="#", chunkbytes=2)
     t = scanfile(commentonly, T.Scan(); comment="#", chunkbytes=2)
-    @test S.problemkey.(S.problems(t)) == S.problemkey.(S.problems(ref))
+    @test S.problems(t) == S.problems(ref)
     @test_throws CSV.ParseError scanfile(malformed, T.Scan(); maxproblems=0,
                                          on_error=:error, chunkbytes=2)
 end

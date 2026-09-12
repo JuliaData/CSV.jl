@@ -768,8 +768,6 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "Parsers 3 integration" begin
-    @test !isdefined(K, :V)
-
     quotechar = UInt8('"')
     quoted = Vector{UInt8}(codeunits("\"a\"\"b\""))
     @test K.findcontent(quoted, 1, length(quoted), quotechar, quotechar, quotechar) ==
@@ -1272,7 +1270,7 @@ end
     append!(adversarial, [K.Problem(2, 1, 20, kind, msg)
                           for kind in (:zeta, :alpha), msg in ("z", "a")])
     append!(adversarial, fill(K.Problem(2, 1, 20, :same, "same"), 10))
-    expected = sort(copy(adversarial); by=K.problemkey)
+    expected = sort(copy(adversarial); lt=K.problemless)
     for cap in (0, 1, 7, length(adversarial))
         log = K.ProblemLog(cap)
         for p in adversarial
@@ -1280,9 +1278,9 @@ end
         end
         K.sortproblems!(log)
         nkeep = min(cap, length(expected))
-        @test K.problemkey.(log.items) == K.problemkey.(expected[1:nkeep])
+        @test log.items == expected[1:nkeep]
         @test log.dropped == length(expected) - nkeep
-        @test K.problemkey(log.first) == K.problemkey(first(expected))
+        @test log.first == first(expected)
         @test !log.heaped
     end
     # on_error=:error escalates the first problem

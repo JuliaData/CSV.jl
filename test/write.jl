@@ -137,7 +137,7 @@ Base.iterate(::ThrowingRows, state=1) =
         cols = AbstractVector[values(rowtable)...]
         opts = W._writeopts(; kwargs...)
         expected = Vector{UInt8}(join(CSV.RowWriter(rowtable; kwargs..., writeheader=false, bom=false)))
-        @test W._renderblock_direct(cols, 1, 2, opts) == expected
+        @test W._renderblock(cols, 1, 2, opts) == expected
     end
     for writeheader in (false, true)
         bytes = str(io -> W.write(io, rowtable; writeheader, bom=true))
@@ -751,7 +751,7 @@ end
     end
     refbytes = take!(ref)
     cols = AbstractVector[values(tbl)...]
-    @test W._renderblock_direct(cols, 1, n, o) == refbytes
+    @test W._renderblock(cols, 1, n, o) == refbytes
     for nt in (1, 3, 8)
         io = IOBuffer(); W.write(io, tbl; ntasks=nt, writeheader=false)
         @test take!(io) == refbytes
@@ -824,10 +824,10 @@ end
         table = (id=cols[1], value=col, text=cols[3])
         opts = W._writeopts(; kwargs...)
         expected = Vector{UInt8}(join(CSV.RowWriter(table; writeheader=false, kwargs...)))
-        @test W._renderblock_direct(cols, 1, 4, opts) == expected
+        @test W._renderblock(cols, 1, 4, opts) == expected
         subset = (id=cols[1][2:3], value=col[2:3], text=cols[3][2:3])
         expected = Vector{UInt8}(join(CSV.RowWriter(subset; writeheader=false, kwargs...)))
-        @test W._renderblock_direct(cols, 2, 3, opts) == expected
+        @test W._renderblock(cols, 2, 3, opts) == expected
     end
 end
 
@@ -872,5 +872,3 @@ end
     @test str(io -> W.write(io, rows; transform=neg)) == str(io -> W.write(io, tbl; transform=neg))
     @test str(io -> W.write(io, (r for r in rows))) == plain    # schema-less generator
 end
-
-println("WRITE BATTERY OK")

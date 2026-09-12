@@ -2707,8 +2707,6 @@ end
 _unescape(buf::Vector{UInt8}, pos::Int64, len::Int32, e::UInt8, cq::UInt8) =
     String(_unescape_bytes(buf, pos, len, e, cq))
 
-# All-missing column.
-
 # --- per-(column × chunk) parse loops ---------------------------------------
 #
 # Each call below parses one column type in one chunk. Julia selects the method
@@ -2951,10 +2949,8 @@ function ProblemLog(limit::Int)
     return ProblemLog(Problem[], limit, 0, nothing, false)
 end
 
-problemkey(p::Problem) = (p.pos, p.row, p.col, String(p.kind), p.message)
-
-# problemkey's order without its allocations: Symbol comparison uses the same
-# lexical strcmp order as String(Symbol) without materializing either string.
+# Source order: position, then row, column, kind, and message. Symbol comparison
+# uses the lexical order of String(Symbol) without materializing either string.
 @inline function problemless(a::Problem, b::Problem)
     a.pos != b.pos && return a.pos < b.pos
     a.row != b.row && return a.row < b.row
@@ -3252,45 +3248,6 @@ end
         types[j] = promote_kernel(types[j], dt)
     end
     return
-end
-
-# Content fingerprint of a sampled parsed string (FNV-1a over at most 64
-# canonical bytes, then mixed with the canonical length). Quoting, outer
-# whitespace, sentinels, and escapes must agree with `StringColumn`: equal
-# parsed strings MUST have equal fingerprints or the distinct-count proof below
-# would be unsound. A collision in the other direction merely manufactures a
-# repeat, which lets pooling be attempted; the parse-time bound still decides.
-@inline function _cellhash(buf::Vector{UInt8}, pos::Int, len::Int,
-                           e::UInt8, cq::UInt8, escaped::Bool)
-    h = 0xcbf29ce484222325
-    if !escaped
-        @inbounds for i in pos:(pos + min(len, 64) - 1)
-            h = (h ⊻ buf[i]) * 0x00000100000001b3
-        end
-        return _splitmix64(h ⊻ UInt64(len))
-    end
-    n = 0
-    i = pos
-    last = pos + len - 1
-    @inbounds while i <= last
-        b = buf[i]
-        if b == e && i < last && (e != cq || buf[i + 1] == cq)
-            b = e == cq ? cq : buf[i + 1]
-            i += 2
-        else
-            i += 1
-        end
-        n += 1
-        n <= 64 && (h = (h ⊻ b) * 0x00000100000001b3)
-    end
-    return _splitmix64(h ⊻ UInt64(n))
-end
-
-@inline function _splitmix64(x::UInt64)
-    x += 0x9e3779b97f4a7c15
-    x = (x ⊻ (x >> 30)) * 0xbf58476d1ce4e5b9
-    x = (x ⊻ (x >> 27)) * 0x94d049bb133111eb
-    return x ⊻ (x >> 31)
 end
 
 # Read sample rows only from the rows that pass the filter. Type detection must
@@ -4462,9 +4419,6 @@ Base.@propagate_inbounds function Base.getindex(c::PooledColumn{DataString}, i::
 end
 
 poolrefs(c::PooledColumn) = c.refs
-poollevels(c::PooledColumn) = c.levels
-
-# the effective (ratio, cap) for column j: per-column override, else global
 
 function materialize(c::PooledColumn{ELT}) where {ELT}
     lv = materialize(c.levels)

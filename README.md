@@ -24,7 +24,7 @@ existing application.
 ## Quick start
 
 ```julia
-using CSV, DataStrings
+using CSV
 
 file = CSV.File("input.csv")
 CSV.write("output.csv", file)

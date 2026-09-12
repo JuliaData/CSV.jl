@@ -72,7 +72,7 @@ sigs = [
     (K._settlecolumnfrom, (Type{Int64}, V8, Vector{K.ChunkIndex}, Int, K.ValueOpts, Bool, Bool, Int, Int, Int)),
     (K._settlecolumnfrom, (Type{String}, V8, Vector{K.ChunkIndex}, Int, K.ValueOpts, Bool, Bool, Int, Int, Int)),
     (K._writerow_direct!, (K._WriteBuffer, Int, Int, Vector{K._WriteColumn}, K.WriteOpts{Nothing,Nothing})),
-    (K._renderblock_direct, (K._WriterColumns{Tuple{}}, Int, Int, K.WriteOpts{Nothing,Nothing})),
+    (K._renderblock, (K._WriterColumns{Tuple{}}, Int, Int, K.WriteOpts{Nothing,Nothing})),
     (K._appendcell!, (K._WriteBuffer, Float64, K.WriteOpts{Nothing,Nothing})),
     (K._appendcell!, (K._WriteBuffer, Int64, K.WriteOpts{Nothing,Nothing})),
     (K._appendcell!, (K._WriteBuffer, String, K.WriteOpts{Nothing,Nothing})),
