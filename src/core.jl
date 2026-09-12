@@ -1546,13 +1546,14 @@ end
 
 @static if Sys.ARCH === :x86_64
     @inline function prefix_xor64_pclmul(m::UInt64)::UInt64
-        # Inline assembly permits generic CPU compilation, which cannot lower
-        # the pclmul intrinsic. The runtime feature check below guards execution.
+        # Inline assembly permits generic CPU compilation. Use the VEX form so
+        # the vector scanner does not mix AVX with a legacy SSE instruction.
+        # Execution requires both PCLMUL and AVX, checked at package load.
         v = Base.llvmcall((raw"""
             define i64 @entry(i64 %m) #0 {
                 %a0 = insertelement <2 x i64> zeroinitializer, i64 %m, i32 0
                 %b0 = insertelement <2 x i64> zeroinitializer, i64 -1, i32 0
-                %r = call <2 x i64> asm "pclmulqdq $$0, $2, $0", "=x,0,x"(<2 x i64> %a0, <2 x i64> %b0)
+                %r = call <2 x i64> asm "vpclmulqdq $$0, $2, $1, $0", "=x,x,x"(<2 x i64> %a0, <2 x i64> %b0)
                 %lo = extractelement <2 x i64> %r, i32 0
                 ret i64 %lo
             }
@@ -1597,7 +1598,8 @@ end
 function _probecpu!()
     @static if Sys.ARCH === :x86_64
         C = Base.BinaryPlatforms.CPUID
-        HAS_PCLMUL[] = C.test_cpu_feature(C.JL_X86_pclmul)
+        HAS_PCLMUL[] = C.test_cpu_feature(C.JL_X86_pclmul) &&
+                       C.test_cpu_feature(C.JL_X86_avx)
     elseif Sys.ARCH === :aarch64 && !Sys.isapple()
         C = Base.BinaryPlatforms.CPUID
         HAS_PMULL[] = C.test_cpu_feature(C.JL_AArch64_aes)
