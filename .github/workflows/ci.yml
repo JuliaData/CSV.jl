@@ -146,7 +146,7 @@ jobs:
 
   performance:
     if: github.event_name == 'workflow_dispatch' && inputs.performance_base != ''
-    name: Performance - ${{ matrix.os }}
+    name: Performance
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:

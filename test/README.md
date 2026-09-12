@@ -13,6 +13,7 @@ Tables 1.14) resolves from General; the dependency helper only develops this
 checkout into the environment and instantiates it. Tables.Scan runs in every
 main test job.
 
-Tests cover structural geometry, reader modes, exact decimals and inference,
-string ownership, ordered writers, and deterministic malformed-input fuzzing.
+Tests cover structural geometry, reader modes, explicit decimal types, string
+ownership, CPU-feature dispatch, ordered writers, and deterministic
+malformed-input fuzzing.
 Run Julia 1.10 and current Julia. Benchmark scripts use the same test environment.
