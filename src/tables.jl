@@ -205,6 +205,8 @@ function _parsebatch(b::Batches, ci::ChunkIndex, strict::Bool, n::Int=nrows(ci),
     cols = Vector{AbstractVector}(undef, ncols)
     logs = Vector{ProblemLog}(undef, ncols)
     conflicts = fill(false, ncols)
+    parallelcolumns = b.ntasks > 1 && ncols > 1 && n >= 1024
+    columnbudget = parallelcolumns ? 1 : b.ntasks
     # columns are independent: each parses into its own column and problem log
     parseone = q -> begin
         j = b.plan.sources[q]
@@ -221,10 +223,10 @@ function _parsebatch(b::Batches, ci::ChunkIndex, strict::Bool, n::Int=nrows(ci),
             conflicts[q] = true
             return
         end
-        cols[q] = finalizecolumn(T, col, n, b.allowmissing[q])
+        cols[q] = finalizecolumn(T, col, n, b.allowmissing[q]; tasklimit=columnbudget)
         logs[q] = clog
     end
-    if b.ntasks > 1 && ncols > 1 && n >= 1024
+    if parallelcolumns
         _taskforeach(parseone, 1:ncols, b.ntasks)
     else
         foreach(parseone, 1:ncols)

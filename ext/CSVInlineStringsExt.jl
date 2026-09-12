@@ -72,18 +72,18 @@ CSV._settledstringtype(::Type{InlineString}, maxlen::Int) =
     maxlen <= _AUTO_MAX_WIDTH ? _fitwidth(maxlen) : String
 
 function CSV._materializecolumn(::Type{InlineString}, col::CSV.DataStringVector,
-                                parallel::Bool=true)
+                                tasklimit::Int=Threads.nthreads())
     W = _widthfor(col)
-    return W === nothing ? CSV._materializecolumn(String, col, parallel) :
-                           CSV._materializecolumn(W, col, parallel)
+    return W === nothing ? CSV._materializecolumn(String, col, tasklimit) :
+                           CSV._materializecolumn(W, col, tasklimit)
 end
 
 function CSV._materializecolumn(::Type{T}, col::CSV.DataStringVector,
-                                parallel::Bool=true) where {T <: InlineString}
+                                tasklimit::Int=Threads.nthreads()) where {T <: InlineString}
     n = length(col)
     if Missing <: eltype(col)
         out = Vector{Union{T, Missing}}(undef, n)
-        CSV._rowranges(n, parallel) do lo, hi
+        CSV._rowranges(n, tasklimit) do lo, hi
             @inbounds for i in lo:hi
                 x = col[i]
                 out[i] = x === missing ? missing : _inl(T, x)
@@ -94,7 +94,7 @@ function CSV._materializecolumn(::Type{T}, col::CSV.DataStringVector,
         return out
     end
     out = Vector{T}(undef, n)
-    CSV._rowranges(n, parallel) do lo, hi
+    CSV._rowranges(n, tasklimit) do lo, hi
         @inbounds for i in lo:hi
             out[i] = _inl(T, col[i])
         end

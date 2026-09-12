@@ -147,8 +147,7 @@ function _streampredicate(p::Prepared, plan::ColumnPlan, b::Tables.BoundScan,
     ncols = p.ncols
     predicate = plan.predicate
     (isempty(predicate) || window == 0) && return nothing
-    tasklimit = settings.parallel ?
-                min(something(settings.ntasks, Threads.nthreads()), Threads.nthreads()) : 1
+    tasklimit = _readtasklimit(settings.parallel, settings.ntasks)
     tm = settings.typemap
     selected = fill(false, ncols)
     for j in predicate

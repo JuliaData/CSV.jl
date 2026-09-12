@@ -1041,7 +1041,7 @@ function _parseprepared(p::Prepared, plan::ColumnPlan;
                         limit::Union{Nothing, Int}=p.limit,
                         rowmask::Union{Nothing, Vector{Bool}}=nothing,
                         reportstructural::Bool=true)
-    tasklimit = parallel ? min(something(ntasks, Threads.nthreads()), Threads.nthreads()) : 1
+    tasklimit = _readtasklimit(parallel, ntasks)
     settings = p.settings
     return _parse(p.buf, p.d, p.opts, settings.scanner, settings.typemap,
                   settings.chunkbytes, parallel, tasklimit, maxproblems, :collect,
@@ -1141,8 +1141,9 @@ Base.@nospecializeinfer function _file(@nospecialize(source), @nospecialize(type
         t, requests = _executescan(p, scan; maxproblems, on_error, source=nm)
         # pool keys name the scan's OUTPUT columns (the request already renamed
         # and reordered them)
-        t = _poolcolumns(t, _resolvepool(pool, names(t), length(names(t)); validate); parallel)
-        t = _finishstrings(t, stringtype, requests; parallel)
+        tasklimit = _readtasklimit(parallel, ntasks)
+        t = _poolcolumns(t, _resolvepool(pool, names(t), length(names(t)); validate); tasklimit)
+        t = _finishstrings(t, stringtype, requests; tasklimit)
         downcast && (t = _downcast(t))
         return File(nm, t, Dict(n => j for (j, n) in enumerate(names(t))))
     end
@@ -1195,8 +1196,9 @@ Base.@nospecializeinfer function _filefromprepared(p::Prepared, nm::String, @nos
     t, firstproblem = _mergeproblems(t, headerlog, maxproblems)
     t, firstproblem = _narrowtypes(t, plan, p.bi.chunks, maxproblems, firstproblem)
     _reportproblems(t, on_error, firstproblem, nm)
-    t = _poolcolumns(t, poolspecs[plan.positions]; parallel)
-    t = _finishstrings(t, stringtype, _requestedstrings(plan); parallel)
+    tasklimit = _readtasklimit(parallel, ntasks)
+    t = _poolcolumns(t, poolspecs[plan.positions]; tasklimit)
+    t = _finishstrings(t, stringtype, _requestedstrings(plan); tasklimit)
     downcast && (t = _downcast(t))
     return File(nm, t, Dict(n => j for (j, n) in enumerate(names(t))))
 end
@@ -1230,7 +1232,7 @@ function _requestedstrings(plan::ColumnPlan, sources=plan.sources)
     return Union{Nothing, Type}[_requestedstring(plan.columns[j]) for j in sources]
 end
 
-function _finishstrings(t::ParsedTable, stringtype::Type, requests; parallel::Bool=true)
+function _finishstrings(t::ParsedTable, stringtype::Type, requests; tasklimit::Int=Threads.nthreads())
     requests === nothing && stringtype === DataString && return _pooledarrays(t)
     any(c -> c isa PooledColumn || c isa DataStringVector, t.columns) || return t
     cols = AbstractVector[t.columns...]
@@ -1240,21 +1242,20 @@ function _finishstrings(t::ParsedTable, stringtype::Type, requests; parallel::Bo
         c = cols[j]
         (c isa PooledColumn || (c isa DataStringVector && S !== DataString)) && push!(jobs, j)
     end
-    # columns convert independently, and a long column splits its rows
+    # Parallelize either columns or rows, without nested worker pools. A few
+    # long columns use all workers on one column at a time.
+    parallelcolumns = length(jobs) >= tasklimit || t.nrows < 2 * _ROWS_PER_TASK
+    columnbudget = parallelcolumns ? 1 : tasklimit
     convertone = j -> begin
         S = requests === nothing ? stringtype : something(requests[j], stringtype)
         c = cols[j]
         if c isa PooledColumn
             cols[j] = _topooledarray(c, S === DataString ? String : S)
         elseif c isa DataStringVector
-            cols[j] = _materializecolumn(S, c, parallel)
+            cols[j] = _materializecolumn(S, c, columnbudget)
         end
     end
-    if parallel && length(jobs) > 1
-        _spawnall(convertone, jobs)
-    else
-        foreach(convertone, jobs)
-    end
+    _conversionforeach(convertone, jobs, parallelcolumns ? tasklimit : 1)
     return ParsedTable(t.names, cols, t.nrows, t.problems, t.droppedproblems)
 end
 
@@ -1320,7 +1321,7 @@ function File(sources::AbstractVector; source=nothing, kw...)
     nt = get(kw, :ntasks, nothing)
     nt === nothing || nt >= 1 || throw(ArgumentError("ntasks must be ≥ 1 (got $nt)"))
     parallel = get(kw, :parallel, nt === nothing ? Threads.nthreads() > 1 : nt > 1)
-    budget = parallel ? min(something(nt, Threads.nthreads()), Threads.nthreads()) : 1
+    budget = _readtasklimit(parallel, nt)
     files = Vector{File}(undef, length(sources))
     pending = PendingProblemLog(maxproblems)
     if budget > 1 && length(sources) >= budget
@@ -1634,7 +1635,7 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
     maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
     ntasks === nothing || ntasks >= 1 ||
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
-    tasklimit = parallel ? min(Int(something(ntasks, Threads.nthreads())), Threads.nthreads()) : 1
+    tasklimit = _readtasklimit(parallel, ntasks)
     _checkonerror(on_error)
     allowed = (_DIALECTKW..., _VALUEKW...)
     _checkkwargs("File(transpose=true)", kw, allowed)
@@ -1734,8 +1735,8 @@ function _transposedfile(source; types=nothing, pool=DEFAULT_POOL, downcast::Boo
         t = ParsedTable(names, cols, n, log.items, log.dropped)
         nm = _sourcename(source)
         _reportproblems(t, on_error, log.first, nm)
-        t = _poolcolumns(t, _resolvepool(pool, names, ncols; validate); parallel=tasklimit > 1)
-        t = _finishstrings(t, stringtype, _requestedstrings(plan); parallel=tasklimit > 1)
+        t = _poolcolumns(t, _resolvepool(pool, names, ncols; validate); tasklimit)
+        t = _finishstrings(t, stringtype, _requestedstrings(plan); tasklimit)
         downcast && (t = _downcast(t))
         return File(nm, t, Dict(nm2 => j for (j, nm2) in enumerate(names)))
     finally
@@ -1801,13 +1802,13 @@ end
 # level ids are first-occurrence-in-file order exactly as a serial pass would
 # assign them — and each range's refs remap through a small local→global
 # vector. A range exceeding the bound locally proves the column exceeds it.
-function _poolcolumn(c::DataStringVector, ps::Tuple{Float64, Int}; parallel::Bool=true)
+function _poolcolumn(c::DataStringVector, ps::Tuple{Float64, Int}; tasklimit::Int=Threads.nthreads())
     n = length(c)
     n == 0 && return nothing
     ratiolevels = ps[1] == 1.0 ? n : floor(Int, ps[1] * n)
     maxlevels = min(ratiolevels, ps[2], _MAX_POOL_LEVELS)
     maxlevels <= 0 && return nothing
-    nt = parallel ? clamp(n ÷ 65_536, 1, 4 * Threads.nthreads()) : 1
+    nt = tasklimit > 1 ? clamp(n ÷ 65_536, 1, 4 * tasklimit) : 1
     bounds = [1 + (t - 1) * n ÷ nt for t in 1:nt]
     push!(bounds, n + 1)
     refs = zeros(UInt32, n)
@@ -1816,9 +1817,9 @@ function _poolcolumn(c::DataStringVector, ps::Tuple{Float64, Int}; parallel::Boo
     # task bodies are named functions (a closure that assigned `levels`/`keys`
     # here would rebind the merge scope's variables — shared across tasks)
     if nt > 1
-        @sync for t in 1:nt
-            @wkspawn (locals[t] = _internrange!(refs, c, bounds[t], bounds[t + 1] - 1,
-                                                       maxlevels, aborted))
+        _taskforeach(1:nt, tasklimit) do t
+            locals[t] = _internrange!(refs, c, bounds[t], bounds[t + 1] - 1,
+                                      maxlevels, aborted)
         end
     else
         locals[1] = _internrange!(refs, c, 1, n, maxlevels, aborted)
@@ -1847,8 +1848,8 @@ function _poolcolumn(c::DataStringVector, ps::Tuple{Float64, Int}; parallel::Boo
             end
             remaps[t] = remap
         end
-        @sync for t in 1:nt
-            @wkspawn _remaprange!(refs, remaps[t], bounds[t], bounds[t + 1] - 1)
+        _taskforeach(1:nt, tasklimit) do t
+            _remaprange!(refs, remaps[t], bounds[t], bounds[t + 1] - 1)
         end
     end
     lv = DataStringVector{DataString}(levels, c.buffers, Val(:trusted))
@@ -1892,20 +1893,17 @@ end
 
 # pool the table's DataString columns per `specs` (one per output column),
 # in parallel across columns
-function _poolcolumns(t::ParsedTable, specs::AbstractVector; parallel::Bool=true)
+function _poolcolumns(t::ParsedTable, specs::AbstractVector; tasklimit::Int=Threads.nthreads())
     js = [j for (j, c) in enumerate(t.columns)
           if c isa DataStringVector && j <= length(specs) && specs[j] !== nothing]
     isempty(js) && return t
     cols = AbstractVector[t.columns...]
     pooled = Vector{Any}(nothing, length(js))
-    poolone = i -> (pooled[i] = _poolcolumn(cols[js[i]]::DataStringVector, specs[js[i]]; parallel))
-    if parallel && length(js) > 1
-        @sync for i in eachindex(js)
-            @wkspawn poolone(i)
-        end
-    else
-        foreach(poolone, eachindex(js))
-    end
+    parallelcolumns = length(js) >= tasklimit || t.nrows < 2 * _ROWS_PER_TASK
+    columnbudget = parallelcolumns ? 1 : tasklimit
+    poolone = i -> (pooled[i] = _poolcolumn(cols[js[i]]::DataStringVector, specs[js[i]];
+                                          tasklimit=columnbudget))
+    _conversionforeach(poolone, eachindex(js), parallelcolumns ? tasklimit : 1)
     for (i, j) in enumerate(js)
         pooled[i] === nothing || (cols[j] = pooled[i])
     end
@@ -2118,17 +2116,17 @@ _checkstringtype(T) =
 # through materialize's bulk path — one shared scratch, word-store inline
 # reconstruction, unsafe_string per cell (a per-cell String() broadcast would
 # take the generic AbstractString path).
-_materializecolumn(::Type{S}, col::DataStringVector, parallel::Bool) where {S} =
+_materializecolumn(::Type{S}, col::DataStringVector, tasklimit::Int) where {S} =
     _materializecolumn(S, col)
 _materializecolumn(::Type{String}, col::DataStringVector) = materialize(col)
 # String allocation scales across tasks: a string-heavy file otherwise spent
 # several times its parse time materializing on one task.
-function _materializecolumn(::Type{String}, col::DataStringVector, parallel::Bool)
+function _materializecolumn(::Type{String}, col::DataStringVector, tasklimit::Int)
     n = length(col)
-    (parallel && n > _ROWS_PER_TASK) || return materialize(col)
+    (tasklimit > 1 && n > _ROWS_PER_TASK) || return materialize(col)
     ELT = eltype(col)
     out = Vector{ELT === DataString ? String : Union{String, Missing}}(undef, n)
-    _rowranges(n, parallel) do lo, hi
+    _rowranges(n, tasklimit) do lo, hi
         part = materialize(_stringvector(ELT, col.payloads[lo:hi], col.buffers))
         copyto!(out, lo, part, 1, hi - lo + 1)
     end
@@ -2653,8 +2651,9 @@ function Base.iterate(c::Chunks, state::Int=1)
     # build the requested string type.
     st = getfield(c, :stringtype)
     ps = getfield(c, :poolspec)
-    ps === nothing || (t = _poolcolumns(t, fill(ps, length(t.columns))))
-    t = _finishstrings(t, st, getfield(c, :stringrequests))
+    tasklimit = getfield(inner, :ntasks)
+    ps === nothing || (t = _poolcolumns(t, fill(ps, length(t.columns)); tasklimit))
+    t = _finishstrings(t, st, getfield(c, :stringrequests); tasklimit)
     f = File(getfield(c, :name), t,
              Dict(nm => j for (j, nm) in enumerate(names(t))))
     return f, next

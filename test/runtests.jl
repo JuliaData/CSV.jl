@@ -10,6 +10,7 @@ using Test, CSV
 
 @testset "CSV" begin
     include("cpu.jl")
+    include("tasks.jl")
     include("kernel.jl")
     include("api.jl")
     include("decimals.jl")

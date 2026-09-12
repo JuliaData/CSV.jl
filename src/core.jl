@@ -2292,7 +2292,7 @@ function index(buf::Vector{UInt8}, d::Dialect;
     datastart >= 1 || throw(ArgumentError("datastart must be ≥ 1 (got $datastart)"))
     ntasks === nothing || ntasks >= 1 ||
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
-    tasklimit = parallel ? min(something(ntasks, Threads.nthreads()), Threads.nthreads()) : 1
+    tasklimit = _readtasklimit(parallel, ntasks)
     sc = resolvescanner(d, fastindex)
     datastart > len && return BufferIndex(ChunkIndex[], 0, false, false)
 
@@ -3519,17 +3519,17 @@ _defaultchunkbytes(nbytes::Int, nthreads::Int=Threads.nthreads()) =
     clamp(cld(nbytes, 4 * nthreads), 1 << 16, 1 << 20)
 
 # Split rows 1:n into contiguous ranges of at least `minrows` and run
-# `f(lo, hi)` on each in its own task (serially when `parallel` is false or
+# `f(lo, hi)` on each in its own task (serially when the budget is one or
 # the column is short). Post-parse passes that touch every cell of a long
 # column (string materialization, string-type conversion) scale this way.
 const _ROWS_PER_TASK = 1 << 16
-function _rowranges(f, n::Int, parallel::Bool=true, minrows::Int=_ROWS_PER_TASK)
-    nt = parallel ? clamp(n ÷ minrows, 1, Threads.nthreads()) : 1
+function _rowranges(f, n::Int, tasklimit::Int=Threads.nthreads(), minrows::Int=_ROWS_PER_TASK)
+    nt = clamp(n ÷ minrows, 1, tasklimit)
     if nt <= 1
         n > 0 && f(1, n)
         return
     end
-    _spawnall(1:nt) do t
+    _conversionforeach(1:nt, nt) do t
         lo = 1 + (t - 1) * n ÷ nt
         hi = t * n ÷ nt
         f(lo, hi)
@@ -3537,20 +3537,21 @@ function _rowranges(f, n::Int, parallel::Bool=true, minrows::Int=_ROWS_PER_TASK)
     return
 end
 
-# One task per item, and a failure surfaces as the task's own exception (an
+# Bounded conversion jobs, where a failure surfaces as the task's own exception (an
 # over-long InlineString value is an ArgumentError to the caller, not a
 # TaskFailedException). For post-parse conversions, whose failures are user
 # errors, not internal ones.
-function _spawnall(f, items)
+function _conversionforeach(f, items, tasklimit::Int)
     try
-        @sync for x in items
-            @wkspawn f(x)
-        end
+        _taskforeach(f, items, tasklimit)
     catch e
         rethrow(_unwrapfailure(e))
     end
     return
 end
+
+_readtasklimit(parallel::Bool, ntasks::Union{Nothing, Int}) =
+    parallel ? min(something(ntasks, Threads.nthreads()), Threads.nthreads()) : 1
 
 _unwrapfailure(e) = e
 _unwrapfailure(e::CompositeException) =
@@ -3570,7 +3571,7 @@ function _taskforeach(f, items, tasklimit::Int, taskobserver=nothing)
     end
     next = Threads.Atomic{Int}(1)
     @sync for _ in 1:workers
-        errormonitor(@wkspawn begin
+        @wkspawn begin
             started = false
             try
                 if taskobserver !== nothing
@@ -3585,7 +3586,7 @@ function _taskforeach(f, items, tasklimit::Int, taskobserver=nothing)
             finally
                 started && taskobserver(false)
             end
-        end)
+        end
     end
     return nothing
 end
@@ -3649,7 +3650,7 @@ function parse(buf::Vector{UInt8};
     nsample === nothing || nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
     ntasks === nothing || ntasks >= 1 ||
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
-    tasklimit = parallel ? min(something(ntasks, Threads.nthreads()), Threads.nthreads()) : 1
+    tasklimit = _readtasklimit(parallel, ntasks)
     # The default chunk size aims for four chunks per thread. It stays between
     # 64 KiB and 1 MiB. The lower limit avoids too much setup work for small
     # chunks. The upper limit keeps each column pass on a small part of the input.
@@ -3911,11 +3912,13 @@ Base.@nospecializeinfer function _parse(buf::Vector{UInt8}, d::Dialect, baseopts
                 end
             end
         end
+        parallelstitch = tasklimit > 1 && length(stitchjs) > 1 && ndata > 0 && length(chunks) > 1
+        columnbudget = parallelstitch ? 1 : tasklimit
         stitchcol = j -> (cols[j] = stitchcolumn(finalstaged[j], segments, segtypes, j, chunkrows,
                                                  rowbases, ndata, buf, opts.e, d.cq,
-                                                 rowmask, rowbases0))
+                                                 rowmask, rowbases0; tasklimit=columnbudget))
         # single-chunk stitches are zero-copy finalizes — never worth a task spawn
-        if tasklimit > 1 && length(stitchjs) > 1 && ndata > 0 && length(chunks) > 1
+        if parallelstitch
             _taskforeach(stitchcol, stitchjs, tasklimit)
         else
             foreach(stitchcol, stitchjs)
@@ -4240,14 +4243,17 @@ function directwave!(cols, chunks, buf::Vector{UInt8}, d::Dialect, opts::ValueOp
 
     # finalize the direct columns in place; the presence scans are per-column
     # independent — spread them
+    finjs = allocjs
+    parallelfinalize = tasklimit > 1 && length(finjs) > 1 && ndata > (1 << 18)
+    columnbudget = parallelfinalize ? 1 : tasklimit
     finalizeone = j -> begin
         T = final[j]
         cols[j] = T === Missing ? fill(missing, ndata) :
                   T === String ? finalizecolumn(String, finals[j]::StringColumn, ndata) :
-                  finalizecolumn(T, finals[j]::Union{TypedColumn{T}, UnionColumn{T}}, ndata)
+                  finalizecolumn(T, finals[j]::Union{TypedColumn{T}, UnionColumn{T}}, ndata;
+                                 tasklimit=columnbudget)
     end
-    finjs = allocjs
-    if tasklimit > 1 && length(finjs) > 1 && ndata > (1 << 18)
+    if parallelfinalize
         _taskforeach(finalizeone, finjs, tasklimit)
     else
         foreach(finalizeone, finjs)
@@ -4425,10 +4431,11 @@ end
 # negative (extra-relative) offsets as they copy.
 function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases,
                       ndata::Int, buf::Vector{UInt8}, e::UInt8, cq::UInt8,
-                      mask::Union{Nothing, Vector{Bool}}=nothing, inbases=nothing) where {T}
+                      mask::Union{Nothing, Vector{Bool}}=nothing, inbases=nothing;
+                      tasklimit::Int=1) where {T}
     T === Missing && return fill(missing, ndata)
     mask === nothing || return _stitchmasked(T, segments, j, chunkrows, ndata, buf, e, cq,
-                                             mask, inbases)
+                                             mask, inbases; tasklimit)
     # Single-chunk files (every input below chunkbytes): the lone segment IS the
     # final column — finalize it directly, zero copies, the same cost as
     # writing final columns in place.
@@ -4439,7 +4446,7 @@ function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases
         # untouched case may alias the staging directly
         if (seg isa StringColumn ? length(seg.payloads) : length((seg::TypedColumn{T}).values)) == ndata
             return T === String ? finalizecolumn(String, seg::StringColumn, ndata) :
-                                  finalizecolumn(T, seg::TypedColumn{T}, ndata)
+                                  finalizecolumn(T, seg::TypedColumn{T}, ndata; tasklimit)
         end
     end
     if T === String
@@ -4465,7 +4472,7 @@ function stitchcolumn(::Type{T}, segments, segtypes, j::Int, chunkrows, rowbases
         copyto!(values, rb + 1, tcol.values, 1, chunkrows[k])
         copyto!(present, rb + 1, tcol.present, 1, chunkrows[k])
     end
-    return finalizecolumn(T, TypedColumn{T}(values, present), ndata)
+    return finalizecolumn(T, TypedColumn{T}(values, present), ndata; tasklimit)
 end
 
 # Row-filtered stitch: gather only mask-qualifying rows into compact output
@@ -4473,7 +4480,7 @@ end
 # rows were never parsed; their staging slots are simply skipped here.
 function _stitchmasked(::Type{T}, segments, j::Int, chunkrows, ndata::Int,
                        buf::Vector{UInt8}, e::UInt8, cq::UInt8,
-                       mask::Vector{Bool}, inbases) where {T}
+                       mask::Vector{Bool}, inbases; tasklimit::Int=1) where {T}
     if T === String
         payloads = fill(PAYLOAD_MISSING, ndata)
         outcol = StringColumn(payloads, e, cq)
@@ -4520,15 +4527,16 @@ function _stitchmasked(::Type{T}, segments, j::Int, chunkrows, ndata::Int,
             present[dest] = hasvalue
         end
     end
-    return finalizecolumn(T, TypedColumn{T}(values, present), ndata)
+    return finalizecolumn(T, TypedColumn{T}(values, present), ndata; tasklimit)
 end
 
-function finalizecolumn(::Type{Missing}, ::Nothing, n::Int)
+function finalizecolumn(::Type{Missing}, ::Nothing, n::Int, force_missing::Bool=false;
+                         tasklimit::Int=1)
     return fill(missing, n)
 end
 
-finalizecolumn(::Type{Missing}, ::Nothing, n::Int, ::Bool) = fill(missing, n)
-function finalizecolumn(::Type{String}, col::StringColumn, n::Int, force_missing::Bool=false)
+function finalizecolumn(::Type{String}, col::StringColumn, n::Int, force_missing::Bool=false;
+                         tasklimit::Int=1)
     anymissing = force_missing || any(p -> payloadlen(p) < 0, col.payloads)
     return anymissing ? _stringvector(Union{DataString, Missing}, col.payloads, _buffers(col)) :
                         _stringvector(DataString, col.payloads, _buffers(col))
@@ -4537,17 +4545,14 @@ end
 # loop; `count` vectorizes, and missing-free columns (the common case)
 # full-scan either way.
 _allpresent(present::Vector{Bool}) = count(present) == length(present)
-function finalizecolumn(::Type{T}, col::TypedColumn{T}, n::Int) where {T}
+function finalizecolumn(::Type{T}, col::TypedColumn{T}, n::Int, force_missing::Bool=false;
+                         tasklimit::Int=1) where {T}
     # no missings ⇒ hand back the raw Vector{T}, zero copies
-    return _allpresent(col.present) ? col.values : _tounion(col)
-end
-
-function finalizecolumn(::Type{T}, col::TypedColumn{T}, n::Int, force_missing::Bool) where {T}
-    return !force_missing && _allpresent(col.present) ? col.values : _tounion(col)
+    return !force_missing && _allpresent(col.present) ? col.values : _tounion(col, tasklimit)
 end
 # union-direct finals ARE the output — zero copies either way
-finalizecolumn(::Type{T}, col::UnionColumn{T}, n::Int) where {T} = col.uvalues
-finalizecolumn(::Type{T}, col::UnionColumn{T}, n::Int, ::Bool) where {T} = col.uvalues
+finalizecolumn(::Type{T}, col::UnionColumn{T}, n::Int, force_missing::Bool=false;
+               tasklimit::Int=1) where {T} = col.uvalues
 
 # The sample-missed fallback: sparse missings the type sample did not see.
 # Bitsunion stores have no memcpy path and cost about as much as the parse, so
@@ -4560,17 +4565,17 @@ function _tounionrange!(out, values, present, lo::Int, hi::Int)
     return
 end
 
-function _tounion(col::TypedColumn{T}) where {T}
+function _tounion(col::TypedColumn{T}, tasklimit::Int=1) where {T}
     values, present = col.values, col.present
     n = length(values)
     out = Vector{Union{T, Missing}}(undef, n)
-    nt = Threads.nthreads()
+    nt = tasklimit
     if n > (1 << 17) && nt > 1
         parts = min(nt, 8)
         @sync for c in 1:parts
             lo = 1 + (c - 1) * n ÷ parts
             hi = c * n ÷ parts
-            errormonitor(@wkspawn _tounionrange!(out, values, present, lo, hi))
+            @wkspawn _tounionrange!(out, values, present, lo, hi)
         end
     else
         _tounionrange!(out, values, present, 1, n)
