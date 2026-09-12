@@ -2678,8 +2678,7 @@ function _adopt!(col::StringColumn, seg::StringColumn, rows::AbstractUnitRange{I
 end
 
 # Unescape: `""` collapses to `"` when e == cq; `\X` drops the backslash when
-# e != cq. Spans are Int64/Int32 end to end, so a single field may be
-# arbitrarily wide.
+# e != cq. Positions use Int64 and field lengths use Int32.
 function _unescape_bytes(buf::Vector{UInt8}, pos::Int64, len::Int32, e::UInt8, cq::UInt8)
     out = Vector{UInt8}(undef, len)
     n = 0

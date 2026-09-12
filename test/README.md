@@ -8,7 +8,7 @@ julia --project=test --check-bounds=yes -t4 test/runtests.jl
 julia --project=test test/quality.jl
 ```
 
-Every dependency (DataStrings 1, DataDecimals 1, Parsers 3, InlineStrings 2,
+Every dependency (DataStrings 1, DataDecimals 1, Parsers 3, InlineStrings 1.4.6 or 2,
 Tables 1.14) resolves from General; the dependency helper only develops this
 checkout into the environment and instantiates it. Tables.Scan runs in every
 main test job.

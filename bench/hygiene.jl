@@ -23,6 +23,23 @@ println("Core.Box sites: ", length(boxes))
 foreach(println, unique(boxes))
 
 # --- dynamic dispatch / Any scan over hot signatures --------------------------
+function ssauses!(used::BitSet, node)
+    if node isa Core.SSAValue
+        push!(used, node.id)
+    elseif node isa Expr
+        foreach(arg -> ssauses!(used, arg), node.args)
+    elseif node isa Core.PhiNode || node isa Core.PhiCNode
+        for i in eachindex(node.values)
+            isassigned(node.values, i) && ssauses!(used, node.values[i])
+        end
+    elseif node isa Core.PiNode || node isa Core.ReturnNode || node isa Core.UpsilonNode
+        isdefined(node, :val) && ssauses!(used, node.val)
+    elseif node isa Core.GotoIfNot
+        ssauses!(used, node.cond)
+    end
+    return used
+end
+
 function dynamic_calls(f, argtypes)
     cts = code_typed(f, argtypes; optimize=true)
     isempty(cts) && return ["<no method>"]
@@ -39,8 +56,14 @@ function dynamic_calls(f, argtypes)
             end
         end
     end
+    # Control flow, GC tokens, and unused returns can have an Any placeholder.
+    # Only a value used by another instruction can propagate an unknown type.
+    used = BitSet()
+    foreach(st -> ssauses!(used, st), ci.code)
     for (i, T) in enumerate(ci.ssavaluetypes)
-        T === Any && push!(out, "Any ssa $i: $(sprint(show, ci.code[i]))")
+        st = ci.code[i]
+        st isa Expr && st.head === :gc_preserve_begin && continue
+        T === Any && i in used && push!(out, "Any ssa $i: $(sprint(show, ci.code[i]))")
     end
     return out
 end

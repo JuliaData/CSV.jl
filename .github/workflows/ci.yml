@@ -9,6 +9,20 @@ on:
         required: false
         default: ''
         type: string
+      performance_runner:
+        description: 'Benchmark host'
+        type: choice
+        default: all
+        options: [all, ubuntu-latest, windows-latest, ubuntu-24.04-arm, macos-15-intel]
+      performance_filter:
+        description: 'Optional public-surface case regex; nonempty skips the shape matrix'
+        type: string
+        default: ''
+      performance_rounds:
+        description: 'Alternating benchmark rounds'
+        type: choice
+        default: '2'
+        options: ['2', '4']
   push:
     branches: [main]
     tags: ["*"]
@@ -152,7 +166,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, ubuntu-24.04-arm, macos-15-intel]
+        os: ${{ inputs.performance_runner == 'all' && fromJSON('["ubuntu-latest", "windows-latest", "ubuntu-24.04-arm", "macos-15-intel"]') || fromJSON(format('["{0}"]', inputs.performance_runner)) }}
     env:
       JULIA_NUM_THREADS: 4
     defaults:
@@ -199,11 +213,16 @@ jobs:
           julia --project=candidate/test candidate/bench/fingerprint.jl > results/fingerprint-candidate.txt
           diff -u results/fingerprint-baseline.txt results/fingerprint-candidate.txt > results/fingerprint.diff || test "$?" = 1
       - name: Alternate full matrix and public surface benchmarks
+        env:
+          PERFORMANCE_FILTER: ${{ inputs.performance_filter }}
+          PERFORMANCE_ROUNDS: ${{ inputs.performance_rounds }}
         run: |
-          for round in 1 2; do
+          for (( round=1; round<=PERFORMANCE_ROUNDS; round++ )); do
             for revision in baseline candidate; do
-              julia --project="$revision/test" candidate/bench/bench_matrix.jl "$revision" 20 > "results/matrix-$revision-$round.log"
-              julia --project="$revision/test" candidate/bench/bench_surface.jl "$revision" > "results/surface-$revision-$round.log"
+              if [[ -z "$PERFORMANCE_FILTER" ]]; then
+                julia --project="$revision/test" candidate/bench/bench_matrix.jl "$revision" 20 > "results/matrix-$revision-$round.log"
+              fi
+              julia --project="$revision/test" candidate/bench/bench_surface.jl "$revision" "--only=$PERFORMANCE_FILTER" > "results/surface-$revision-$round.log"
             done
           done
           cp candidate/bench/*.tsv results/

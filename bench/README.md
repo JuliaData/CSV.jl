@@ -7,7 +7,7 @@ script appends (`*.tsv`) are machine-local and not committed.
 | Script | What it measures |
 | --- | --- |
 | `bench_matrix.jl LABEL [sizes...] [--core]` | `CSV.File` throughput over 22 data shapes (numeric, mixed, strings, quoted, escaped, long text, wide, sparse, pooled, temporal, dirty, CRLF, sentinels, ...) at the given sizes in MiB; `--core` limits to seven shapes. Appends `kernel-bench-LABEL.tsv`. |
-| `bench_surface.jl LABEL [--quick] [--only=substr]` | The public option surface: every `File` keyword axis, source kinds (path, IO, gzip, command, several files), `Rows`, `Chunks`, `lazy`, `Tables.Scan`, and the writer's option axes. Appends `surface-LABEL.tsv`. |
+| `bench_surface.jl LABEL [--quick] [--only=regex]` | The public option surface: every `File` keyword axis, source kinds (path, IO, gzip, command, several files), `Rows`, `Chunks`, `lazy`, `Tables.Scan`, and the writer's option axes. Appends `surface-LABEL.tsv`. |
 | `writebench.jl [rows...]` | `CSV.write` throughput per shape, with Polars `write_csv` when available. |
 | `shootout.jl <dir> [MiB] [reps]` | Reader shootout against polars, duckdb, and pyarrow (`shootout.py`) on identical files. |
 | `profile_shapes.jl [shapes...]` | Flat self-time profiles of `CSV.File` per shape (run with `-t1` for clean attribution). |
@@ -34,6 +34,10 @@ dependency manifests, value fingerprints, timings, and allocation counts.
 Inspect the CPU details before counting a runner toward architecture coverage;
 hosted runner CPU models can change. Inspect fingerprint differences separately:
 a bug fix can intentionally change values or diagnostics.
+
+For a follow-up measurement, choose one `performance_runner`, set
+`performance_filter` to a case-name regex, and use four `performance_rounds`.
+A filter runs only matching public-surface cases and skips the shape matrix.
 
 A fair cross-engine comparison reads the same bytes into memory in every
 engine, pins the thread count in every engine, and reports the schema each
