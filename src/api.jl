@@ -1576,10 +1576,7 @@ function _transposedtyped(::Type{T}, buf::Vector{UInt8}, ci, lr::Int, startf::In
             sawmiss = true
             continue
         end
-        ti, tj = _trimblanks(buf, cpos, cpos + clen - 1)   # typed values tolerate blanks
-        if ti > tj
-            ti, tj = cpos, cpos + clen - 1
-        end
+        ti, tj = _typedspan(buf, cpos, cpos + clen - 1)
         v, ok = parsevalue(T, buf, ti, tj, opts, scratch)
         if !ok
             # a requested type leaves the cell missing (strict=false File semantics)
@@ -2285,7 +2282,8 @@ end
     T === Missing && return missing
     # a typed cell: the same parsers File uses, on demand
     (st == CELL_BADQUOTE || clen == 0 || esc) && return missing
-    v, ok = parsevalue(T, c.buf, cpos, cpos + clen - 1, c.opts)
+    ti, tj = _typedspan(c.buf, cpos, cpos + clen - 1)
+    v, ok = parsevalue(T, c.buf, ti, tj, c.opts)
     return ok ? v : missing
 end
 
@@ -2516,7 +2514,8 @@ function _strictrowvalue(view::_IndexedRow, j::Int, ::Type{T}) where {T}
     (clen > 0 && !esc) ||
         _throwrowproblem(view, j, pos, :invalid_value,
                          "cannot parse $T from " * excerpt(r.buf, pos, len))
-    value, ok = parsevalue(T, r.buf, cpos, cpos + clen - 1, opts)
+    ti, tj = _typedspan(r.buf, cpos, cpos + clen - 1)
+    value, ok = parsevalue(T, r.buf, ti, tj, opts)
     ok || _throwrowproblem(view, j, pos, :invalid_value,
                            "cannot parse $T from " * excerpt(r.buf, pos, len))
     return value

@@ -460,6 +460,13 @@ _maybesentinel(vo::ValueOpts, b::UInt8) =
     return i, j
 end
 
+# Typed cells ignore surrounding blanks. A cell made only of blanks remains
+# present and reaches the scalar parser (for example, `types=Char` accepts " ").
+@inline function _typedspan(buf::Vector{UInt8}, i::Int, j::Int)
+    ti, tj = _trimblanks(buf, i, j)
+    return ti <= tj ? (ti, tj) : (i, j)
+end
+
 @inline function _spanmatches(buf::Vector{UInt8}, i::Int, j::Int,
                               choices::Vector{Vector{UInt8}})
     n = j - i + 1
@@ -2701,10 +2708,7 @@ function parsecolchunk!(col::Union{TypedColumn{T}, UnionColumn{T}}, buf::Vector{
         cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
         st == CELL_MISSING && continue                  # sentinel / stripped-to-empty
         if st == CELL_VALUE && clen > 0 && !esc
-            ti, tj = _trimblanks(buf, cpos, cpos + clen - 1)
-            if ti > tj                              # blanks only: parse the original (invalid) span
-                ti, tj = cpos, cpos + clen - 1
-            end
+            ti, tj = _typedspan(buf, cpos, cpos + clen - 1)
             v, ok = parsevalue(T, buf, ti, tj, opts, scratch)
             if ok
                 _storevalue!(col, out, v)

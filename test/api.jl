@@ -1113,6 +1113,30 @@ end
     @test (daterow.d1, daterow.d2) == (Date(2023, 1, 15), Date(2023, 1, 16))
 end
 
+@testset "typed cells accept blanks in every reader" begin
+    for (T, token, value) in ((Int64, "1", 1), (Float64, "1.5", 1.5),
+                              (Date, "2024-01-02", Date(2024, 1, 2)),
+                              (DateTime, "2024-01-02T03:04:05", DateTime(2024, 1, 2, 3, 4, 5)),
+                              (Time, "03:04:05", Time(3, 4, 5)),
+                              (Bool, "true", true), (Char, "x", 'x'))
+        for field in (" \t$token \t", "\" \t$token \t\"")
+            input = "a\n$field\n"
+            kw = (; delim=',', types=T)
+            @test only(A.File(IOBuffer(input); kw...).a) == value
+            @test only(A.lazy(IOBuffer(input); kw...).a) == value
+            @test only(A.Rows(IOBuffer(input); kw...)).a == value
+            @test only(A.Rows(IOBuffer(input); kw..., on_error=:error)).a == value
+            @test only(only(A.Chunks(IOBuffer(input); kw...)).a) == value
+        end
+    end
+    for reader in (A.File, A.lazy, A.Rows)
+        f = reader(IOBuffer("a\n\" \"\n"); delim=',', types=Char)
+        @test only(Tables.getcolumn(Tables.columntable(f), :a)) == ' '
+        f = reader(IOBuffer("a\n 1 \n"); delim=',', types=String)
+        @test only(Tables.getcolumn(Tables.columntable(f), :a)) == " 1 "
+    end
+end
+
 @testset "source worker lifetime" begin
     env = dirname(Base.active_project())
     script = joinpath(@__DIR__, "prefetch.jl")

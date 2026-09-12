@@ -146,10 +146,7 @@ function _settlecolumnfrom(::Type{T}, buf::Vector{UInt8}, chunks, j::Int, opts::
             else
                 ok = false
                 if st == CELL_VALUE && clen > 0 && !esc
-                    ti, tj = _trimblanks(buf, cpos, cpos + clen - 1)
-                    if ti > tj   # blanks only: parse the original (invalid) span
-                        ti, tj = cpos, cpos + clen - 1
-                    end
+                    ti, tj = _typedspan(buf, cpos, cpos + clen - 1)
                     ok = parsevalue(T, buf, ti, tj, opts, scratch)[2]
                 end
                 if !ok
@@ -373,7 +370,8 @@ function _typedvalue(::Type{T}, row::_IndexedRow, j::Int) where {T}
     opts = _rowopts(r, j)
     cpos, clen, esc, st = cellcontent(r.buf, pos, len, opts)
     (st == CELL_VALUE && clen > 0 && !esc) || return missing
-    v, ok = parsevalue(T, r.buf, cpos, cpos + clen - 1, opts)
+    ti, tj = _typedspan(r.buf, cpos, cpos + clen - 1)
+    v, ok = parsevalue(T, r.buf, ti, tj, opts)
     return ok ? v : missing
 end
 
