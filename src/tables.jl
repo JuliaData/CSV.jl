@@ -201,9 +201,10 @@ function _parsebatch(b::Batches, ci::ChunkIndex, strict::Bool, n::Int=nrows(ci),
     b.unclosedquote && ci === last(b.chunks) && n == nrows(ci) &&
         pushproblem!(log, 0, 0, length(b.buf), :unclosed_quote,
                        "input ended inside a quoted field")
+    pending = PendingProblemLog(b.maxproblems)
+    mergeproblems!(pending, log, 1)
 
     cols = Vector{AbstractVector}(undef, ncols)
-    logs = Vector{ProblemLog}(undef, ncols)
     conflicts = fill(false, ncols)
     parallelcolumns = b.ntasks > 1 && ncols > 1 && n >= 1024
     columnbudget = parallelcolumns ? 1 : b.ntasks
@@ -224,7 +225,7 @@ function _parsebatch(b::Batches, ci::ChunkIndex, strict::Bool, n::Int=nrows(ci),
             return
         end
         cols[q] = finalizecolumn(T, col, n, b.allowmissing[q]; tasklimit=columnbudget)
-        logs[q] = clog
+        mergeproblems!(pending, clog, 1)
     end
     if parallelcolumns
         _taskforeach(parseone, 1:ncols, b.ntasks)
@@ -232,15 +233,9 @@ function _parsebatch(b::Batches, ci::ChunkIndex, strict::Bool, n::Int=nrows(ci),
         foreach(parseone, 1:ncols)
     end
     any(conflicts) && return nothing
-    # fold the column logs in column order (retention is by source order, so
-    # the fold order only affects which of two identical keys is kept)
-    for q in 1:ncols
-        clog = logs[q]
-        for pr in clog.items
-            pushproblem!(log, pr.row, pr.col, pr.pos, pr.kind, pr.message)
-        end
-        log.dropped += clog.dropped
-    end
+    # Workers release each column log as it completes. Rows already use source
+    # coordinates, so the one reservoir needs no row offset.
+    log = finishproblems(pending, (0,))
     sortproblems!(log)
     return ParsedTable(b.names, cols, n, log.items, log.dropped)
 end

@@ -1772,6 +1772,20 @@ end
     @test values == ["v$(i % 17)" for i in 1:generatedrows]
 end
 
+@testset "wide batches merge diagnostics in source order" begin
+    ncols = 64
+    header = join(("c$j" for j in 1:ncols), ',') * "\n"
+    for nrows in (20, 1025), parallel in (false, true), cap in (0, 1, 7, 100)
+        input = header * (join(fill("bad", ncols), ',') * "\n")^nrows
+        f = first(A.Chunks(IOBuffer(input); types=Int64, chunkbytes=1 << 20,
+                            ntasks=4, parallel, maxproblems=cap, on_error=:collect))
+        expected = [(1 + (i - 1) ÷ ncols, 1 + (i - 1) % ncols) for i in 1:cap]
+        @test [(p.row, p.col) for p in A.problems(f)] == expected
+        @test getfield(f, :table).droppedproblems == nrows * ncols - cap
+        @test all(column -> all(ismissing, column), Tables.Columns(f))
+    end
+end
+
 @testset "vector of sources + source= column" begin
     data = ["a,b,c\n1,2,3\n4,5,6\n", "a,b,c\n7,8,9\n10,11,12\n", "a,b,c\n13,14,15\n16,17,18"]
     f = A.File(map(IOBuffer, data))
