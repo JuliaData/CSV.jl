@@ -3356,6 +3356,10 @@ function _resolvekeys(dict::AbstractDict, names::Vector{Symbol}, ncols::Int, wha
     out = Dict{Int, Any}()
     for (k, v) in dict
         k isa Regex && continue
+        if k isa Integer && !(1 <= k <= ncols)
+            validate || continue
+            throw(ArgumentError("$what key $k out of range"))
+        end
         j = k isa Integer ? Int(k) : findfirst(==(Symbol(k)), names)
         if j === nothing || !(1 <= j <= ncols)
             validate || continue

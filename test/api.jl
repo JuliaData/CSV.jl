@@ -1555,6 +1555,14 @@ end
                   types=Dict(:z => Int, 2 => Int, r"q" => Int), validate=false).nrows == 1
     @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); select=[:z], validate=false)
     @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); drop=[:z], validate=false)
+    # An absent integer key can exceed machine Int. validate=false still
+    # ignores it; normal validation reports the same range error as a small key.
+    for option in (:types, :dateformat, :pool)
+        spec = Dict(big(typemax(Int)) + 1 => (option === :types ? Int :
+                                             option === :dateformat ? "yyyy" : true))
+        @test A.File(IOBuffer("a\n1\n"); option => spec, validate=false).a == [1]
+        @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); option => spec)
+    end
 end
 
 @testset "DataString hash + stringtype extension hook" begin
