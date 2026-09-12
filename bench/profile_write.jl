@@ -23,11 +23,14 @@ for kind in (:numeric, :mixed, :strings, :datetime, :wide)
                 kind, nt, b.t * 1e3, 100 * b.gc / b.t, b.bytes / 2^20, mb / b.t)
     end
     # sink kinds at full threads
-    for (nm, mk) in (("IOBuffer", () -> IOBuffer()), ("devnull", () -> devnull),
-                     ("path", () -> tempname()))
-        f = () -> CSV.write(mk(), tbl)
-        b = timed(f; reps=3)
-        @printf("%-9s sink=%-8s %7.1f ms  gc=%5.1f%%  %6.0f MiB/s\n", kind, nm, b.t * 1e3, 100 * b.gc / b.t, mb / b.t)
+    mktempdir() do dir
+        path = joinpath(dir, "output.csv")
+        for (nm, mk) in (("IOBuffer", () -> IOBuffer()), ("devnull", () -> devnull),
+                         ("path", () -> path))
+            f = () -> CSV.write(mk(), tbl)
+            b = timed(f; reps=3)
+            @printf("%-9s sink=%-8s %7.1f ms  gc=%5.1f%%  %6.0f MiB/s\n", kind, nm, b.t * 1e3, 100 * b.gc / b.t, mb / b.t)
+        end
     end
     if kind in (:numeric, :strings)
         f1 = () -> CSV.write(devnull, tbl; ntasks=1)

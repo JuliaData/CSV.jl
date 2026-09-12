@@ -28,7 +28,7 @@ collection landing inside one measurement is not read as a regression.
 
 The CI workflow also accepts a `performance_base` commit through manual
 dispatch. It compares that commit with the selected branch on Linux x86-64,
-Windows x86-64, and Linux aarch64. Each host runs two alternating rounds of
+Windows x86-64, macOS Intel, and Linux aarch64. Each host runs two alternating rounds of
 the full matrix and public surface. Artifacts contain revisions, CPU details,
 dependency manifests, value fingerprints, timings, and allocation counts.
 Inspect the CPU details before counting a runner toward architecture coverage;
@@ -43,7 +43,7 @@ engine inferred; `shootout.py` sets those for polars, duckdb, and pyarrow.
 
 The vector scanner is width-generic LLVM IR: LLVM lowers the 64-byte masks to
 AVX-512 mask registers, AVX2 pairs, or NEON reductions for the host. The
-prefix-xor step uses `pclmulqdq` on x86-64 CPUs with PCLMUL and `pmull64` on
+prefix-xor step uses `vpclmulqdq` on x86-64 CPUs with PCLMUL and AVX and `pmull64` on
 aarch64 CPUs with the AES extension (always on Apple silicon; probed at load elsewhere);
 other targets use the six-step shift fallback. `fastindex=false` selects the
 byte-at-a-time scalar scanner, the reference the vector scanner must match.

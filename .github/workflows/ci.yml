@@ -152,7 +152,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, ubuntu-24.04-arm]
+        os: [ubuntu-latest, windows-latest, ubuntu-24.04-arm, macos-15-intel]
     env:
       JULIA_NUM_THREADS: 4
     defaults:
@@ -177,6 +177,9 @@ jobs:
           git -C candidate rev-parse HEAD > results/candidate-commit.txt
           julia -e 'using InteractiveUtils; versioninfo(verbose=true); show(stdout, Sys.cpu_info()); println()' > results/host.txt
           if command -v lscpu >/dev/null; then lscpu >> results/host.txt; fi
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            sysctl machdep.cpu.brand_string machdep.cpu.features machdep.cpu.leaf7_features >> results/host.txt
+          fi
       - name: Resolve the same released dependencies for both commits
         run: |
           julia --project=candidate/test candidate/test/dependencies.jl
@@ -185,6 +188,11 @@ jobs:
           julia --project=baseline/test baseline/test/dependencies.jl
           cp candidate/test/Manifest.toml results/candidate-Manifest.toml
           cp baseline/test/Manifest.toml results/baseline-Manifest.toml
+      - name: Record quote-mask machine code
+        run: |
+          for tree in baseline candidate; do
+            julia --project="$tree/test" -e 'using CSV, InteractiveUtils; code_native(stdout, CSV.prefix_xor64, (UInt64,); debuginfo=:none)' > "results/$tree-prefix-native.txt"
+          done
       - name: Compare values and written bytes
         run: |
           julia --project=baseline/test candidate/bench/fingerprint.jl > results/fingerprint-baseline.txt

@@ -11,7 +11,7 @@ def load(p):
     return d
 A, B = load(sys.argv[1]), load(sys.argv[2])
 la, lb = (sys.argv[3], sys.argv[4]) if len(sys.argv) > 4 else ('A', 'B')
-print(f"{'case':42s} {'runs':>4s} {la+' ms':>11s} {lb+' ms':>11s} {'B/A':>7s} {'MiB/s '+lb:>11s}  {'allocΔ':>8s}")
+print(f"{'case':42s} {'runs':>4s} {la+' ms':>11s} {lb+' ms':>11s} {'B/A':>7s} {'MiB/s '+lb:>11s}  {'alloc%':>8s}")
 worse, better = [], []
 for c in sorted(set(A) | set(B)):
     if c not in A or c not in B:

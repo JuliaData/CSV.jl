@@ -21,11 +21,13 @@ for path in sorted(glob.glob(os.path.join(datadir, "*.csv"))):
     nbytes = os.path.getsize(path)
     engines = {
         "polars":  lambda: pl.read_csv(path, try_parse_dates=True, infer_schema_length=10000),
-        "duckdb":  lambda: con.execute(f"SELECT * FROM read_csv_auto('{path}')").fetch_arrow_table(),
+        "duckdb":  lambda: con.execute("SELECT * FROM read_csv_auto(?)", [path]).fetch_arrow_table(),
         "pyarrow": lambda: pacsv.read_csv(path),
     }
     for name, f in engines.items():
         try:
+            table = f()
+            print(f"{name:8s} {shape:12s} schema={table.schema}", flush=True)
             t = best(f)
             print(f"{name:8s} {shape:12s} {threads}T {t*1e3:9.1f} ms {nbytes/2**20/t:8.0f} MiB/s", flush=True)
             out.write(f"{name}\t{shape}\t{threads}\t{t*1e3:.2f}\t{nbytes/2**20/t:.1f}\n"); out.flush()

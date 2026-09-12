@@ -10,7 +10,11 @@ include(joinpath(@__DIR__, "writeshapes.jl"))
 
 function best(f; reps=5)
     f(); b = Inf
-    for _ in 1:reps; t = @elapsed f(); b = min(b, t); end
+    for _ in 1:reps
+        GC.gc()
+        t = @elapsed f()
+        b = min(b, t)
+    end
     return b
 end
 haspolars = try; success(`python3 -c "import polars"`); catch; false; end
