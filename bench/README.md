@@ -26,6 +26,15 @@ minima. Never run a benchmark while the test suite or another benchmark is
 running. Force a collection between repetitions (the scripts do) so a garbage
 collection landing inside one measurement is not read as a regression.
 
+The CI workflow also accepts a `performance_base` commit through manual
+dispatch. It compares that commit with the selected branch on Linux x86-64,
+Windows x86-64, and Linux aarch64. Each host runs two alternating rounds of
+the full matrix and public surface. Artifacts contain revisions, CPU details,
+dependency manifests, value fingerprints, timings, and allocation counts.
+Inspect the CPU details before counting a runner toward architecture coverage;
+hosted runner CPU models can change. Inspect fingerprint differences separately:
+a bug fix can intentionally change values or diagnostics.
+
 A fair cross-engine comparison reads the same bytes into memory in every
 engine, pins the thread count in every engine, and reports the schema each
 engine inferred; `shootout.py` sets those for polars, duckdb, and pyarrow.

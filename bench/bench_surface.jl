@@ -16,6 +16,7 @@ const ONLY = let o = filter(a -> startswith(a, "--only="), ARGS); isempty(o) ? "
 const MB = QUICK ? 4 : 20
 const NROWS_W = QUICK ? 200_000 : 1_000_000
 const OUT = open(joinpath(@__DIR__, "surface-$LABEL.tsv"), "a")
+const FAILURES = String[]
 println(OUT, "# threads=$(Threads.nthreads()) julia=$(VERSION) at=$(now()) MB=$MB")
 
 function runcase(name::String, f, bytes::Int; reps=5)
@@ -23,7 +24,8 @@ function runcase(name::String, f, bytes::Int; reps=5)
     t, al = try
         besttime(f; reps, mintime=0.05)
     catch err
-        println(rpad(name, 44), "ERROR ", sprint(showerror, err)[1:min(end, 120)])
+        println(rpad(name, 44), "ERROR ", first(sprint(showerror, err), 120))
+        push!(FAILURES, name)
         return
     end
     println(OUT, join((LABEL, name, bytes, round(t * 1e3, digits=3), al,
@@ -32,8 +34,6 @@ function runcase(name::String, f, bytes::Int; reps=5)
     @printf("%-44s %9.2f ms %9.1f MiB/s %8.1f MiB alloc\n", name, t * 1e3, bytes / 2^20 / t, al / 2^20)
     flush(stdout)
 end
-
-quiet(f) = () -> f()   # File defaults warn on problems; cases pass on_error=:collect explicitly
 
 # ---------------------------------------------------------------------------
 # inputs (generated once, outside timing)
@@ -255,3 +255,4 @@ parts = [shape(:numeric, NROWS_W ÷ 4, MersenneTwister(i)) for i in 1:4]
 runcase("write/partition4",                () -> CSV.write([IOBuffer() for _ in 1:4], Tables.partitioner(parts); partition=true), bnum)
 close(OUT)
 rm(TMP; recursive=true, force=true)
+isempty(FAILURES) || error("Benchmark cases failed: ", join(FAILURES, ", "))

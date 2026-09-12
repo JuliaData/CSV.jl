@@ -3,6 +3,12 @@ name: CI
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      performance_base:
+        description: 'Base commit for an interleaved benchmark comparison; empty runs normal CI'
+        required: false
+        default: ''
+        type: string
   push:
     branches: [main]
     tags: ["*"]
@@ -16,6 +22,7 @@ concurrency:
 
 jobs:
   test:
+    if: inputs.performance_base == ''
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -83,6 +90,7 @@ jobs:
           use_oidc: true
 
   trim:
+    if: inputs.performance_base == ''
     name: Trim compile and execute
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -98,6 +106,7 @@ jobs:
         run: julia --color=yes --project=test/trim test/trim/runtests.jl
 
   quality:
+    if: inputs.performance_base == ''
     name: Package quality
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -113,6 +122,7 @@ jobs:
         run: julia --color=yes --project=test test/quality.jl
 
   docs:
+    if: inputs.performance_base == ''
     name: Documentation
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -133,3 +143,67 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
+
+  performance:
+    if: github.event_name == 'workflow_dispatch' && inputs.performance_base != ''
+    name: Performance - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, ubuntu-24.04-arm]
+    env:
+      JULIA_NUM_THREADS: 4
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: candidate
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.performance_base }}
+          path: baseline
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3
+      - name: Record revisions and CPU
+        run: |
+          mkdir results
+          git -C baseline rev-parse HEAD > results/baseline-commit.txt
+          git -C candidate rev-parse HEAD > results/candidate-commit.txt
+          julia -e 'using InteractiveUtils; versioninfo(verbose=true); show(stdout, Sys.cpu_info()); println()' > results/host.txt
+          if command -v lscpu >/dev/null; then lscpu >> results/host.txt; fi
+      - name: Resolve the same released dependencies for both commits
+        run: |
+          julia --project=candidate/test candidate/test/dependencies.jl
+          cp candidate/test/Project.toml baseline/test/Project.toml
+          cp candidate/test/Manifest.toml baseline/test/Manifest.toml
+          julia --project=baseline/test baseline/test/dependencies.jl
+          cp candidate/test/Manifest.toml results/candidate-Manifest.toml
+          cp baseline/test/Manifest.toml results/baseline-Manifest.toml
+      - name: Compare values and written bytes
+        run: |
+          julia --project=baseline/test candidate/bench/fingerprint.jl > results/fingerprint-baseline.txt
+          julia --project=candidate/test candidate/bench/fingerprint.jl > results/fingerprint-candidate.txt
+          diff -u results/fingerprint-baseline.txt results/fingerprint-candidate.txt > results/fingerprint.diff || test "$?" = 1
+      - name: Alternate full matrix and public surface benchmarks
+        run: |
+          for round in 1 2; do
+            for revision in baseline candidate; do
+              julia --project="$revision/test" candidate/bench/bench_matrix.jl "$revision" 20 > "results/matrix-$revision-$round.log"
+              julia --project="$revision/test" candidate/bench/bench_surface.jl "$revision" > "results/surface-$revision-$round.log"
+            done
+          done
+          cp candidate/bench/*.tsv results/
+          python candidate/bench/compare.py results/surface-baseline.tsv results/surface-candidate.tsv > results/surface-comparison.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: performance-${{ matrix.os }}
+          path: |
+            results/
+            candidate/bench/*.tsv
