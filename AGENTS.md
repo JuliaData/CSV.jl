@@ -11,8 +11,8 @@ structural indexing, quote handling, inference, and column assembly. `api.jl`
 owns reader options and source handling. `scan.jl` integrates Tables.Scan.
 `write.jl` owns ordered rendering and writer workers.
 
-DataStrings owns string scalars and columns; `strings.jl` contains CSV builder
-glue only. Use the trusted column constructor only after CSV proves payload
+DataStrings owns string scalars and columns; the CSV aliases and payload helpers
+live in `core.jl` beside the string column assembly. Use the trusted column constructor only after CSV proves payload
 ranges and missing-value invariants. Retained scalar values must survive column
 edits. DataDecimals owns decimal arithmetic and conversion; the
 `CSVDataDecimalsExt` extension requests `Parsers.RoundExact` for explicitly
