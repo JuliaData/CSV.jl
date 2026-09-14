@@ -49,6 +49,9 @@ again.
 using Dates
 using Durations: Timestamp
 import Parsers
+import DataStrings
+using DataStrings: DataString, StringVector, StringPayload, inline_payload,
+                   view_payload, rebase_payload
 
 # A finished `Threads.@spawn` task keeps its closure (and everything the
 # closure captured, such as a mapped input) alive until its thread runs
@@ -2498,10 +2501,35 @@ end
 
 # --- strings ------------------------------------------------------------------
 # The DataString type family (payload, accessors, AbstractString interface,
-# DataStringVector, materialize) lives in DataStrings;
-# the quote/escape-aware helpers and the StringColumn staging below are the
-# CSV-specific layer over it.
-include("strings.jl")
+# DataStringVector, materialize) lives in DataStrings. CSV's aliases and
+# payload helpers stay here with the string column assembly that uses them.
+const DataStringPayload = StringPayload
+const DataStringVector = StringVector
+const PAYLOAD_MISSING = DataStrings.PAYLOAD_MISSING
+const INLINE_MAX = DataStrings.INLINE_MAX
+const EMPTY_BYTES = UInt8[]
+const payloadlen = DataStrings.payloadlength
+const payloadbufidx = DataStrings.payloadbufidx
+const payloadoffset = DataStrings.payloadoffset
+const payloadpos = DataStrings.payloadpos
+_viewword(bufidx::Integer, offset0::Integer) =
+    UInt64(bufidx % UInt32) | (UInt64(offset0 % UInt32) << 32)
+
+_stringvector(::Type{T}, payloads, buffers::Vector{Vector{UInt8}}) where {T} =
+    StringVector{T}(payloads, buffers, Val(:trusted))
+
+# Re-point an owned-buffer view while preserving its length and four-byte
+# prefix. Assembly uses this when a chunk-private buffer is adopted by a final
+# column under a different buffer index.
+@inline function repoint_payload(p::DataStringPayload, bufidx::Integer,
+                                 offset0::Integer)
+    (0 <= offset0 <= typemax(Int32) && 0 <= bufidx <= typemax(Int32)) ||
+        throw(ArgumentError("DataString view (buffer $bufidx, offset $offset0) " *
+                            "does not fit Arrow's Int32 view words"))
+    return DataStringPayload(p.a, _viewword(bufidx, offset0))
+end
+
+materialize(v::StringVector) = DataStrings.materialize(v)
 
 # Next `""` pair at or after i (RFC doubling; the span passed findcontent, so
 # quotes only occur doubled) — word-scan for the quote byte, verify adjacency
