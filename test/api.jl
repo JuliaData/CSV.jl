@@ -1150,6 +1150,36 @@ end
     end
 end
 
+@testset "Rows cell access allocations do not grow with row count" begin
+    mkrows(n) = A.Rows(IOBuffer("a,b,c\n" *
+        join(("$i,s$i,$i.5" for i in 1:n), '\n') * "\n"); types=[Int64, String, Float64])
+    small, big = mkrows(500), mkrows(5000)
+    function sumcells(rows, getcell::F) where {F}
+        total = 0.0
+        for row in rows
+            total += getcell(row)
+        end
+        return total
+    end
+    # Warm each access form before measuring. Fixed call overhead may differ
+    # across Julia versions, but allocations must not grow with the row count.
+    for getcell in (r -> r.c, r -> r[3], r -> r[:c],
+                    r -> Tables.getcolumn(r, 3), r -> Tables.getcolumn(r, :c),
+                    r -> Tables.getcolumn(r, Float64, 3, :c))
+        @test sumcells(small, getcell) == sum(1:500) + 0.5 * 500
+        @test sumcells(big, getcell) == sum(1:5000) + 0.5 * 5000
+        @test @allocated(sumcells(big, getcell)) == @allocated(sumcells(small, getcell))
+    end
+    # Read the index through a mutable reference on each row so it cannot fold
+    # to a constant. Projection must still map it to the correct source column.
+    projected = A.Rows(IOBuffer("a,b,c\n1,text,1.5\n2,more,2.5\n");
+                       types=[Int64, String, Float64], select=[:c])
+    index = Ref(1)
+    @test sumcells(projected, r -> r[index[]]) == 4.0
+    @test first(small)["c"] == 1.5
+    @test_throws KeyError first(small)[:nope]
+end
+
 @testset "source worker lifetime" begin
     env = dirname(Base.active_project())
     script = joinpath(@__DIR__, "prefetch.jl")
