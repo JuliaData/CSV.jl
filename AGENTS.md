@@ -44,8 +44,9 @@ and source-ordered diagnostics for multi-file and parallel changes.
 
 ## Release boundary
 
-Keep version 1.0.0-DEV until the final release is authorized. Before tagging,
-verify clean registry resolution, run all CI and downstream checks, and update
-migration and release notes. Preserve unrelated source checkouts.
+The version is 1.0.0 for the release. Bump it only for a registered release.
+Before tagging, verify clean registry resolution, run all CI and downstream
+checks, and update migration and release notes. Preserve unrelated source
+checkouts.
 
 The documentation environment requires JSON 1.8 or later for Parsers 3 compatibility.
