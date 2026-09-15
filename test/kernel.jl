@@ -2246,4 +2246,21 @@ end
     @test Base.summarysize(lazy.chunks) < length(buf)
 end
 
+@testset "index windows respect actual chunk sizes" begin
+    cap = K.INDEX_WINDOW_BYTES
+    for sizes in ((1024, 40 << 20, 40 << 20, 1024), (40 << 20, 40 << 20),
+                  (cap + 1, 1024), (1024, cap + 1))
+        chunks = [K.ChunkIndex(1, n) for n in sizes]
+        lo = 1
+        while lo <= length(chunks)
+            count = K.indexwindow(4, chunks, lo)
+            bytes = sum(K.chunkspan, @view chunks[lo:lo+count-1])
+            @test 1 <= count <= 4
+            @test bytes <= cap || count == 1
+            @test K.indexwindow(1, chunks, lo) == 1
+            lo += count
+        end
+    end
+end
+
 end # top-level testset

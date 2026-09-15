@@ -2557,6 +2557,7 @@ struct Chunks
     stringrequests::Union{Nothing, Vector{Union{Nothing, Type}}}  # settled per column
     poolspec::Union{Nothing, Tuple{Float64, Int}}
     warned::Base.RefValue{Bool}   # on_error=:warn reports the first batch with problems
+    indexwindow::Base.RefValue{UnitRange{Int}} # sole live window of rebuilt indexes
 end
 
 Base.length(c::Chunks) = length(getfield(c, :inner))
@@ -2584,24 +2585,26 @@ end
 function Base.iterate(c::Chunks, state::Int=1)
     inner = getfield(c, :inner)
     state > length(inner) && return nothing
-    # The batch and everything derived from it (problem spans, narrowing) read
-    # this chunk's index, so it is rebuilt here and released once the batch is
-    # complete. Only one chunk of index is live at a time.
-    chunks = getfield(inner, :chunks)
-    ci0 = chunks[state]
-    src = getfield(inner, :src)
-    if src !== nothing && indexreleased(ci0)
-        # Rebuild a window of chunks, not just this one: a lone chunk would
-        # scan on this task alone. The window is released as it is consumed,
-        # so live index memory stays at one window rather than the whole file.
-        tasklimit = getfield(inner, :ntasks)
-        hi = min(state + indexwindow(tasklimit, chunks, state) - 1, length(chunks))
-        indexgroup!(view(chunks, state:hi), getfield(inner, :buf), src, tasklimit)
-    end
+    chunks, src = inner.chunks, inner.src
+    window = getfield(c, :indexwindow)
+    ci = chunks[state]
     try
+        if src !== nothing && indexreleased(ci)
+            # A restarted or interleaved pass replaces the previous window.
+            foreach(releaseindex!, view(chunks, window[]))
+            hi = state + indexwindow(inner.ntasks, chunks, state) - 1
+            window[] = state:hi
+            indexgroup!(view(chunks, window[]), inner.buf, src,
+                        _readtasklimit(true, inner.ntasks))
+        end
         return _nextbatch(c, inner, state)
+    catch
+        src === nothing || foreach(releaseindex!, view(chunks, window[]))
+        window[] = 1:0
+        rethrow()
     finally
-        src === nothing || releaseindex!(ci0)
+        # Diagnostics and conversions must finish before this payload is freed.
+        src === nothing || releaseindex!(ci)
     end
 end
 
@@ -2655,10 +2658,7 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     end
     haskey(kw, :parallel) || (kw = (; kw..., parallel=nt > 1))
     capturecap = max(maxproblems, 1)
-    # A batched reader only ever reads one chunk at a time, so by default it
-    # does not keep the whole file's structural index: each chunk holds its row
-    # count and flags, and every pass below rebuilds the chunks it is working on
-    # and releases them again. `keepindex=true` trades that back for speed.
+    # Keep only chunk metadata between passes unless the caller retains indexes.
     p = _prepare(source; ntasks=nt, maxproblems=capturecap, keepindex, kw...)
     idxsrc = keepindex ? nothing : p.bi.src
     chunks = p.bi.chunks
@@ -2690,7 +2690,7 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
                     allowmissing, p.d, capturecap, unclosedquote,
                     get(kw, :parallel, nt > 1) ? nt : 1, idxsrc)
     return Chunks(name, inner, p.headerlog, maxproblems, plan, on_error,
-                  stringtype, stringrequests, poolspec, Ref(false))
+                  stringtype, stringrequests, poolspec, Ref(false), Ref(1:0))
 end
 
 # One output string type per text column for the whole row window: an

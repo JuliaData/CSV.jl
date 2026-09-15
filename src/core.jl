@@ -1124,23 +1124,24 @@ function ensureindex!(ci::ChunkIndex, buf::Vector{UInt8}, src::IndexSource)
     return ci
 end
 
-ensureindex!(ci::ChunkIndex, buf::Vector{UInt8}, bi::BufferIndex) =
-    ensureindex!(ci, buf, bi.src)
-
-# How many chunks a streaming reader rebuilds at once. One chunk at a time
-# would scan on a single task, so the window holds several; it is capped by
-# bytes as well as by task count, so live index memory stays a bounded slice of
-# the source whatever the chunk size and thread count are.
-const INDEX_WINDOW_BYTES = 1 << 26     # 64 MiB of source per window
+# Bound a schema-pass window by both worker count and actual source bytes.
+# A single oversized chunk is allowed: row boundaries cannot be split.
+const INDEX_WINDOW_BYTES = 1 << 26
 
 chunkspan(ci::ChunkIndex) = ci.stop - ci.start + 1
 
-function indexwindow(tasklimit::Int, chunkbytes::Int)
-    w = clamp(tasklimit, 1, 8 * max(Threads.nthreads(), 1))
-    return max(1, min(w, cld(INDEX_WINDOW_BYTES, max(chunkbytes, 1))))
+function indexwindow(tasklimit::Int, chunks, first::Int)
+    last = first
+    bytes = chunkspan(chunks[first])
+    maxchunks = max(tasklimit, 1)
+    while last < length(chunks) && last - first + 1 < maxchunks
+        nextbytes = chunkspan(chunks[last + 1])
+        nextbytes > INDEX_WINDOW_BYTES - bytes && break
+        bytes += nextbytes
+        last += 1
+    end
+    return last - first + 1
 end
-indexwindow(tasklimit::Int, chunks, i::Int) =
-    indexwindow(tasklimit, chunkspan(chunks[i]))
 
 function indexgroup!(group, buf::Vector{UInt8}, src::IndexSource, tasklimit::Int)
     n = length(group)

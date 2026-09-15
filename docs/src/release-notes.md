@@ -18,10 +18,9 @@ CSV.jl entry points. It requires Julia 1.10 or later.
 - Parse recovery produces structured `CSV.problems(file)` data. `on_error`
   selects one summary warning (`:warn`, the default), silent collection
   (`:collect`), or fail-fast `CSV.ParseError` (`:error`).
-- `CSV.Chunks` uses one stable schema for its complete row window, and
-  streams its structural index: it holds the index for the batches it is
-  reading rather than for the whole source, so peak memory follows the batch
-  size. `keepindex=true` restores the retained whole-source index.
+- `CSV.Chunks` uses one stable schema for its complete row window and releases
+  field indexes between batches. `keepindex=true` retains the complete index
+  to avoid repeated scanning.
 - A `Tables.Scan` projection, filter, type request, offset, and limit go into
   the parser.
 - The writer has deterministic parallel output, explicit quote styles,

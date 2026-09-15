@@ -371,31 +371,27 @@ semantics as `CSV.File`.
 batch has the same column types. Pooling is evaluated separately in each
 batch.
 
-`ntasks` asks for that many batches and caps how many tasks one batch may use.
-A batch never holds more than 4 MiB of source unless `chunkbytes` says so, so a
-source larger than `ntasks * 4 MiB` yields more than `ntasks` batches; pass
-`chunkbytes` for direct size control. A `CSV.Chunks` pool policy must be one
-`Bool`, ratio, or `(ratio, maximum_levels)` value; per-column pool dictionaries
-and vectors are only supported by `CSV.File`.
+`ntasks` controls the default target batch size and limits parallel work.
+The default `chunkbytes` is the source size divided by `ntasks`, clamped to
+1 KiB–4 MiB. Pass `chunkbytes` to choose another target; complete rows can
+exceed it, so `ntasks` is not an exact batch count. A `CSV.Chunks` pool policy
+must be one `Bool`, ratio, or `(ratio, maximum_levels)` value; per-column pool
+dictionaries and vectors are only supported by `CSV.File`.
 List `select` and `drop` forms project the same file-ordered column set in every
 batch.
 
-### Memory
+By default, `CSV.Chunks` keeps field indexes for a bounded window of batches
+and releases each index after use. Rebuilding indexes trades extra scanning
+for lower memory use.
+`keepindex=true` retains the complete field index to avoid that repeated work.
+The constructor still reads all rows to settle one schema before yielding a batch.
 
-`CSV.File` and `CSV.Rows` keep the structural index of the whole source while
-they are alive. That index costs about `4 * (ncols + 1) + 8` bytes per row:
-roughly half the size of a wide file, and several times the size of a narrow
-numeric one.
-
-`CSV.Chunks` does not. It keeps the index only for the batches it is reading and
-rebuilds each chunk on demand, so peak memory follows the batch size rather than
-the source size and a source larger than memory streams in a bounded footprint.
-The source bytes themselves stay memory-mapped unless `buffer_in_memory=true`.
-
-The cost is that the source is scanned for structure three times — once to plan
-the chunks and read the header, once to settle the batch schema, and once per
-batch — instead of once. `keepindex=true` keeps the whole index instead and is
-about twice as fast when that index comfortably fits in memory.
+This bounds the live field index by the active chunks, not total process memory.
+Stopping early can retain one index window. Chunk metadata and the source
+remain available throughout iteration. Large local
+files are normally memory-mapped; byte buffers, IO inputs, and
+`buffer_in_memory=true` keep source bytes in memory. Retaining batches also
+retains their columns and any source bytes referenced by string values.
 
 ## Tables.Scan pushdown
 

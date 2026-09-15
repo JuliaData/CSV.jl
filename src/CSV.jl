@@ -92,23 +92,20 @@ and `drop` forms project every batch in stable file order. With the default
 `on_error=:warn`, the first batch with parse problems prints one summary
 warning; every batch keeps its own [`CSV.problems`](@ref CSV.problems).
 
-`ntasks` asks for that many batches and caps how many tasks one batch may use,
-but a batch never holds more than 4 MiB of source unless `chunkbytes` says so.
-A source larger than `ntasks * 4 MiB` therefore yields more than `ntasks`
-batches. Pass `chunkbytes` for direct control of the batch size.
+`ntasks` controls the default target batch size and limits parallel work.
+The default `chunkbytes` is the source size divided by `ntasks`, clamped to
+1 KiB–4 MiB. Pass `chunkbytes` for another target; complete rows can exceed it,
+so `ntasks` is not an exact batch count.
 
-Memory is bounded by the batch rather than by the source.
-[`CSV.File`](@ref CSV.File) and [`CSV.Rows`](@ref CSV.Rows) hold the structural
-index of the whole source, which costs roughly `4 * (ncols + 1) + 8` bytes per
-row — about half a wide file, and several times a narrow numeric one.
-`CSV.Chunks` holds that index only for the chunks it is reading and rebuilds
-each one on demand, so a source larger than memory streams in a bounded
-footprint. The source bytes stay memory-mapped unless `buffer_in_memory=true`.
-
-The cost is that the source is scanned for structure three times (once to plan
-the chunks and read the header, once to settle the schema, once per batch)
-instead of once. `keepindex=true` keeps the whole index instead, which is about
-twice as fast when the index comfortably fits in memory.
+By default, field indexes are rebuilt in bounded windows and released after
+each batch. Stopping early can retain one index window.
+`keepindex=true` retains the complete index to avoid repeated scanning. The
+constructor still reads all rows to settle the schema before yielding a batch.
+Chunk metadata and the source remain available throughout iteration; this
+bounds the live field index, not total process memory. Large local files are
+normally memory-mapped, while IO inputs and `buffer_in_memory=true` keep source
+bytes in memory. Retaining batches also retains their columns and any source
+bytes referenced by string values.
 """ Chunks
 @doc """
     CSV.read(source, sink; keywords...)
