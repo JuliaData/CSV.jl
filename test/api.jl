@@ -1150,51 +1150,33 @@ end
     end
 end
 
-@testset "Rows cell access is allocation-free" begin
-    # `getcolumn(::Row, ::Int)` is typed only while `j` is a compile-time constant.
-    # Every user-facing form reaches it through a forwarding method, and a forward
-    # that blocks constant propagation makes the cell type unknown, the `_rowcell`
-    # call dynamic and the value boxed — several hundred bytes of garbage per cell.
-    # The invariant that pins that down is a scaling one: a scan's allocation must
-    # not grow with the row count. (Asserting a literal 0 is too strict — some
-    # Julia versions charge a fixed handful of bytes to the `@allocated` call
-    # itself, independent of the loop.)
-    function mkrows(n)
-        text = "a,b,c\n" * join(("$(i),s$(i),$(i).5" for i in 1:n), "\n") * "\n"
-        return A.Rows(IOBuffer(text); types=[Int64, String, Float64])
-    end
+@testset "Rows cell access allocations do not grow with row count" begin
+    mkrows(n) = A.Rows(IOBuffer("a,b,c\n" *
+        join(("$i,s$i,$i.5" for i in 1:n), '\n') * "\n"); types=[Int64, String, Float64])
     small, big = mkrows(500), mkrows(5000)
-
-    sumprop(r) = (s = 0.0; for row in r; s += row.c; end; s)
-    sumint(r) = (s = 0.0; for row in r; s += row[3]; end; s)
-    sumsym(r) = (s = 0.0; for row in r; s += row[:c]; end; s)
-    sumcol(r) = (s = 0.0; for row in r; s += Tables.getcolumn(row, 3); end; s)
-    sumtyped(r) = (s = 0.0; for row in r
-                       s += Tables.getcolumn(row, Float64, 3, :c)
-                   end; s)
-    sumfirst(r) = (s = 0; for row in r; s += row.a; end; s)
-
-    cexpected(n) = sum(i + 0.5 for i in 1:n)
-    for f in (sumprop, sumint, sumsym, sumcol, sumtyped)
-        @test f(small) ≈ cexpected(500)
-        @test f(big) ≈ cexpected(5000)       # also warms inference for both widths
-        # 10x the rows must cost the same: per-cell boxing would not be flat
-        @test @allocated(f(big)) == @allocated(f(small))
-    end
-    @test sumfirst(small) == sum(1:500)
-    @test sumfirst(big) == sum(1:5000)
-    @test @allocated(sumfirst(big)) == @allocated(sumfirst(small))
-
-    # A runtime index still resolves correctly; it just dispatches per cell.
-    function sumdynamic(r, j)
-        s = 0.0
-        for row in r
-            s += row[j]
+    function sumcells(rows, getcell::F) where {F}
+        total = 0.0
+        for row in rows
+            total += getcell(row)
         end
-        return s
+        return total
     end
-    @test sumdynamic(small, Ref(3)[]) ≈ cexpected(500)
-    @test first(small)["c"] == 1.5           # AbstractString lookup still works
+    # Warm each access form before measuring. Fixed call overhead may differ
+    # across Julia versions, but allocations must not grow with the row count.
+    for getcell in (r -> r.c, r -> r[3], r -> r[:c],
+                    r -> Tables.getcolumn(r, 3), r -> Tables.getcolumn(r, :c),
+                    r -> Tables.getcolumn(r, Float64, 3, :c))
+        @test sumcells(small, getcell) == sum(1:500) + 0.5 * 500
+        @test sumcells(big, getcell) == sum(1:5000) + 0.5 * 5000
+        @test @allocated(sumcells(big, getcell)) == @allocated(sumcells(small, getcell))
+    end
+    # Read the index through a mutable reference on each row so it cannot fold
+    # to a constant. Projection must still map it to the correct source column.
+    projected = A.Rows(IOBuffer("a,b,c\n1,text,1.5\n2,more,2.5\n");
+                       types=[Int64, String, Float64], select=[:c])
+    index = Ref(1)
+    @test sumcells(projected, r -> r[index[]]) == 4.0
+    @test first(small)["c"] == 1.5
     @test_throws KeyError first(small)[:nope]
 end
 

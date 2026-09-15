@@ -2490,28 +2490,22 @@ _rowcell(::Type{T}, v::_IndexedRow, j::Int, ::Val) where {T} = _typedvalue(T, v,
 _rowstring(::Type{String}, x::DataString) = String(x)
 _rowstring(::Type{DataString}, x::DataString) = x
 _rowstring(::Type{Symbol}, x::DataString) = Symbol(x)
-# Every wrapper below forwards to the typed `getcolumn(::Row, ::Int)` above, whose
-# return type is `fieldtype(NT, j)` — a constant only while `j` is one. Inference
-# folds a literal at a direct call site, but a plain forwarding method is an
-# inference barrier: `j` arrives as a runtime `Int`, the cell type is unknown, the
-# `_rowcell` call dispatches dynamically and the value is boxed. That turns
-# `row.col` and `row[3]` — the two forms the docs lead with — into ~400 bytes of
-# garbage per cell. Force constant propagation through the forwards so the whole
-# access chain folds and a cell read allocates nothing.
-Base.@constprop :aggressive @inline function Tables.getcolumn(row::Row{NT}, nm::Symbol) where {NT}
+# Inline the access wrappers so a literal column name or index reaches the
+# typed lookup above. This avoids dynamic dispatch and boxing on cell access.
+@inline function Tables.getcolumn(row::Row{NT}, nm::Symbol) where {NT}
     j = Base.fieldindex(NT, nm, false)
     j == 0 && throw(KeyError(nm))
     return Tables.getcolumn(row, j)
 end
 
-Base.@constprop :aggressive @inline Tables.getcolumn(row::Row, ::Type{T}, j::Int,
-                                                     nm::Symbol) where {T} =
+@inline Tables.getcolumn(row::Row, ::Type{T}, j::Int,
+                         nm::Symbol) where {T} =
     Tables.getcolumn(row, j)
-Base.@constprop :aggressive @inline Base.getindex(row::Row, j::Int) =
+@inline Base.getindex(row::Row, j::Int) =
     Tables.getcolumn(row, j)
-Base.@constprop :aggressive @inline Base.getindex(row::Row, nm::Symbol) =
+@inline Base.getindex(row::Row, nm::Symbol) =
     Tables.getcolumn(row, nm)
-Base.@constprop :aggressive @inline Base.getindex(row::Row, nm::AbstractString) =
+@inline Base.getindex(row::Row, nm::AbstractString) =
     Tables.getcolumn(row, Symbol(nm))
 rownumber(row::Row) = getfield(getfield(row, :view), :rownumber)
 
