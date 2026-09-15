@@ -37,7 +37,16 @@ struct Batches
     maxproblems::Int
     unclosedquote::Bool
     ntasks::Int        # columns of a batch parse in parallel under this budget
+    # Non-`nothing` when the chunks arrive released: the reader rebuilds one
+    # chunk's index for the batch it is producing and releases it again, so a
+    # batched read holds one chunk of index rather than the whole file's.
+    src::Union{Nothing, IndexSource}
 end
+
+Batches(buf, chunks, names, plan, seedtypes, allowmissing, d, maxproblems, unclosedquote,
+        ntasks) =
+    Batches(buf, chunks, names, plan, seedtypes, allowmissing, d, maxproblems,
+            unclosedquote, ntasks, nothing)
 
 # Settle the batch schema in place: `types[q]` is promoted until every cell of
 # the window parses, and the returned vector says whether column q can hold
@@ -46,22 +55,18 @@ end
 # Columns are independent, so they validate in parallel.
 function settlebatchschema!(types::Vector{Type}, buf, chunks, plan::ColumnPlan,
                             maxlens::Union{Nothing, Vector{Int}}=nothing;
-                            parallel::Bool=false, tasklimit::Int=1)
+                            parallel::Bool=false, tasklimit::Int=1,
+                            src::Union{Nothing, IndexSource}=nothing)
     allowmissing = Bool[plan.columns[j].declaredmissing for j in plan.sources]
+    src === nothing ||
+        return _settlestreamed!(types, allowmissing, maxlens, buf, chunks, plan,
+                                parallel, tasklimit, src)
     settle = q -> begin
-        j = plan.sources[q]
-        d = plan.columns[j]
-        requested = d.parsetype !== nothing
-        # a requested narrow type is checked at its own range; a requested
-        # string type is checked as text
-        checktype = requested && !_hasstringrequest(d) ?
-                    something(accessparsetype(d), types[q]) : types[q]
-        T, sawmissing, maxlen = _settlecolumn(checktype, buf, chunks, j, columnopts(plan, j),
-                                              requested, allowmissing[q])
+        T, sawmissing, maxlen = _settleone(types, allowmissing, buf, chunks, plan, q, 0)
         allowmissing[q] = sawmissing
         maxlens === nothing || (maxlens[q] = maxlen)
         # the batch parses with the native (wide) parser; narrowing follows
-        requested || (types[q] = T)
+        plan.columns[plan.sources[q]].parsetype === nothing && (types[q] = T)
     end
     if parallel && tasklimit > 1 && length(types) > 1
         _taskforeach(settle, eachindex(types), tasklimit)
@@ -71,15 +76,83 @@ function settlebatchschema!(types::Vector{Type}, buf, chunks, plan::ColumnPlan,
     return allowmissing
 end
 
+# Settle one column over `chunks`, seeded from the type and missing flag settled
+# so far. A requested narrow type is checked at its own range; a requested string
+# type is checked as text.
+function _settleone(types::Vector{Type}, allowmissing::Vector{Bool}, buf, chunks,
+                    plan::ColumnPlan, q::Int, maxlen::Int)
+    j = plan.sources[q]
+    d = plan.columns[j]
+    requested = d.parsetype !== nothing
+    checktype = requested && !_hasstringrequest(d) ?
+                something(accessparsetype(d), types[q]) : types[q]
+    return _settlecolumn(checktype, buf, chunks, j, columnopts(plan, j), requested,
+                         allowmissing[q], maxlen)
+end
+
+# The same settle, one bounded group of chunks at a time, rebuilding each group's
+# index and releasing it again. Columns still settle in parallel, but they share
+# the group window so only one group of chunks is ever indexed.
+#
+# One promotion is not safe to carry forward: nanoseconds to microseconds can
+# reject fractions that already passed, so it restarts the whole pass from the
+# widened seed. Every other promotion only accepts more, so earlier groups stay
+# valid. `sawmissing` is a running or and `maxlen` a running max, so a restart
+# recomputes the same answer.
+function _settlestreamed!(types::Vector{Type}, allowmissing::Vector{Bool},
+                          maxlens::Union{Nothing, Vector{Int}}, buf, chunks,
+                          plan::ColumnPlan, parallel::Bool, tasklimit::Int,
+                          src::IndexSource)
+    ncols = length(types)
+    seed = copy(types)
+    declared = copy(allowmissing)
+    groupsize = isempty(chunks) ? 1 : indexwindow(tasklimit, chunks, firstindex(chunks))
+    while true
+        cur, sawm = copy(seed), copy(declared)
+        mlen = zeros(Int, ncols)
+        restart = Ref(false)      # written from the per-column tasks
+        for lo in 1:groupsize:length(chunks)
+            group = view(chunks, lo:min(lo + groupsize - 1, length(chunks)))
+            indexgroup!(group, buf, src, tasklimit)
+            try
+                settle = q -> begin
+                    T, sawmissing, maxlen = _settleone(cur, sawm, buf, group, plan, q, mlen[q])
+                    sawm[q] = sawmissing
+                    mlen[q] = maxlen
+                    if plan.columns[plan.sources[q]].parsetype === nothing
+                        cur[q] === _TS_NS && T === _TS_US && (seed[q] = T; restart[] = true)
+                        cur[q] = T
+                    end
+                end
+                if parallel && tasklimit > 1 && ncols > 1
+                    _taskforeach(settle, 1:ncols, tasklimit)
+                else
+                    foreach(settle, 1:ncols)
+                end
+            finally
+                for ci in group
+                    releaseindex!(ci)
+                end
+            end
+            restart[] && break
+        end
+        restart[] && continue
+        copyto!(types, cur)
+        copyto!(allowmissing, sawm)
+        maxlens === nothing || copyto!(maxlens, mlen)
+        return allowmissing
+    end
+end
+
 # Validate one column from its current type, re-entering with the promoted
 # type from the conflicting row. Range widening from nanoseconds to
 # microseconds can reject earlier fractions, so that transition starts over.
 # Each entry is monomorphic in `T`. The longest value
 # (in output bytes) settles an auto-width string request for the whole window.
 function _settlecolumn(::Type{T0}, buf, chunks, j::Int, opts::ValueOpts,
-                       requested::Bool, sawmissing::Bool) where {T0}
+                       requested::Bool, sawmissing::Bool, maxlen0::Int=0) where {T0}
     T = T0
-    k, lr, maxlen = 1, 0, 0
+    k, lr, maxlen = 1, 0, maxlen0
     while true
         T2, sawmissing, k, lr, maxlen = _settlecolumnfrom(T, buf, chunks, j, opts, requested,
                                                           sawmissing, k, lr, maxlen)

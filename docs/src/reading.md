@@ -371,12 +371,31 @@ semantics as `CSV.File`.
 batch has the same column types. Pooling is evaluated separately in each
 batch.
 
-`ntasks` sets the target batch count. Pass `chunkbytes` for direct size
-control. A `CSV.Chunks` pool policy must be one `Bool`, ratio, or
-`(ratio, maximum_levels)` value; per-column pool dictionaries and vectors are
-only supported by `CSV.File`.
+`ntasks` asks for that many batches and caps how many tasks one batch may use.
+A batch never holds more than 4 MiB of source unless `chunkbytes` says so, so a
+source larger than `ntasks * 4 MiB` yields more than `ntasks` batches; pass
+`chunkbytes` for direct size control. A `CSV.Chunks` pool policy must be one
+`Bool`, ratio, or `(ratio, maximum_levels)` value; per-column pool dictionaries
+and vectors are only supported by `CSV.File`.
 List `select` and `drop` forms project the same file-ordered column set in every
 batch.
+
+### Memory
+
+`CSV.File` and `CSV.Rows` keep the structural index of the whole source while
+they are alive. That index costs about `4 * (ncols + 1) + 8` bytes per row:
+roughly half the size of a wide file, and several times the size of a narrow
+numeric one.
+
+`CSV.Chunks` does not. It keeps the index only for the batches it is reading and
+rebuilds each chunk on demand, so peak memory follows the batch size rather than
+the source size and a source larger than memory streams in a bounded footprint.
+The source bytes themselves stay memory-mapped unless `buffer_in_memory=true`.
+
+The cost is that the source is scanned for structure three times — once to plan
+the chunks and read the header, once to settle the batch schema, and once per
+batch — instead of once. `keepindex=true` keeps the whole index instead and is
+about twice as fast when that index comfortably fits in memory.
 
 ## Tables.Scan pushdown
 

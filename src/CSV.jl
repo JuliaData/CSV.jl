@@ -82,16 +82,33 @@ retain parse diagnostics, so use [`CSV.File`](@ref CSV.File) when
 name, or a `Regex`) project columns in stable file order.
 """ Rows
 @doc """
-    CSV.Chunks(source; ntasks=Threads.nthreads(), keywords...)
+    CSV.Chunks(source; ntasks=Threads.nthreads(), keepindex=false, keywords...)
 
 Iterate a source as stable-schema [`CSV.File`](@ref CSV.File) batches and
 provide the Tables.jl partitions interface. Every batch has the same column
 types, including one settled width for an auto-width string request such as
-`stringtype=InlineString`. Pooling is evaluated per batch. `ntasks` sets the
-target batch count; use `chunkbytes` for direct size control. List `select`
+`stringtype=InlineString`. Pooling is evaluated per batch. List `select`
 and `drop` forms project every batch in stable file order. With the default
 `on_error=:warn`, the first batch with parse problems prints one summary
 warning; every batch keeps its own [`CSV.problems`](@ref CSV.problems).
+
+`ntasks` asks for that many batches and caps how many tasks one batch may use,
+but a batch never holds more than 4 MiB of source unless `chunkbytes` says so.
+A source larger than `ntasks * 4 MiB` therefore yields more than `ntasks`
+batches. Pass `chunkbytes` for direct control of the batch size.
+
+Memory is bounded by the batch rather than by the source.
+[`CSV.File`](@ref CSV.File) and [`CSV.Rows`](@ref CSV.Rows) hold the structural
+index of the whole source, which costs roughly `4 * (ncols + 1) + 8` bytes per
+row — about half a wide file, and several times a narrow numeric one.
+`CSV.Chunks` holds that index only for the chunks it is reading and rebuilds
+each one on demand, so a source larger than memory streams in a bounded
+footprint. The source bytes stay memory-mapped unless `buffer_in_memory=true`.
+
+The cost is that the source is scanned for structure three times (once to plan
+the chunks and read the header, once to settle the schema, once per batch)
+instead of once. `keepindex=true` keeps the whole index instead, which is about
+twice as fast when the index comfortably fits in memory.
 """ Chunks
 @doc """
     CSV.read(source, sink; keywords...)

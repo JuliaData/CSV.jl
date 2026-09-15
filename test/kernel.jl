@@ -2178,4 +2178,72 @@ end
     end
 end
 
+@testset "released chunk indexes rebuild byte for byte" begin
+    inputs = ["a,b\n1,2\n3,4\n",
+              "a,b\r\n1,\"x\ny\"\r\n2,z\r\n",
+              "a\n\n1\n# note\n2\n",
+              "a,b\n" * join(("$i,$(i * 3)" for i in 1:2000), '\n') * "\n",
+              "a;b\n" * join(("$i;;;$(i * 3)" for i in 1:500), '\n') * "\n"]
+    for (n, src) in enumerate(inputs)
+        buf = Vector{UInt8}(codeunits(src))
+        d = n == 3 ? K.Dialect(comment="#") :
+            n == 5 ? K.Dialect(delim=';', ignorerepeated=true) : K.Dialect()
+        # tiny chunk geometries on the short inputs; the long ones only need a
+        # realistic chunk count to cover multi-chunk rebuilds
+        cbs = length(src) > 256 ? (64, 1 << 20) : (3, 7, 16, 64, 1 << 20)
+        for cb in cbs, par in (false, true), fastindex in (true, false)
+            kept = K.index(buf, d; chunkbytes=cb, parallel=par, fastindex)
+            lazy = K.index(buf, d; chunkbytes=cb, parallel=par, fastindex, keepindex=false)
+            @test length(lazy.chunks) == length(kept.chunks)
+            @test lazy.nrows == kept.nrows
+            @test lazy.unclosedquote == kept.unclosedquote
+            @test lazy.barequote == kept.barequote
+            for (x, y) in zip(kept.chunks, lazy.chunks)
+                # a released chunk still answers for its geometry and row count
+                @test K.indexreleased(y)
+                @test !K.indexreleased(x)
+                @test (y.start, y.stop) == (x.start, x.stop)
+                @test K.totalrows(y) == K.totalrows(x)
+                @test K.nrows(y) == K.nrows(x)
+                K.ensureindex!(y, buf, lazy.src)
+                @test !K.indexreleased(y)
+                used = Int(x.rowfirst[end]) - 1     # tape past the last row is scratch
+                @test y.tape[1:used] == x.tape[1:used]
+                @test y.rowfirst == x.rowfirst
+                @test y.rowstartrel == x.rowstartrel
+                @test y.ext == x.ext
+                @test (y.delimskip, y.rawrows, y.firstdatarow) ==
+                      (x.delimskip, x.rawrows, x.firstdatarow)
+                @test (y.unclosedquote, y.barequote, y.commentquote) ==
+                      (x.unclosedquote, x.barequote, x.commentquote)
+                # releasing again is idempotent and rebuilds the same thing
+                K.releaseindex!(y)
+                K.releaseindex!(y)
+                K.ensureindex!(y, buf, lazy.src)
+                K.ensureindex!(y, buf, lazy.src)
+                @test y.rowfirst == x.rowfirst
+            end
+        end
+    end
+    # a rebuild restores a row count trimmed after indexing (the `limit` path)
+    buf = Vector{UInt8}(codeunits("a\n" * join(1:50, '\n') * "\n"))
+    bi = K.index(buf, K.Dialect(); chunkbytes=1 << 20, keepindex=false)
+    ci = only(bi.chunks)
+    ci.heldrows = 10
+    K.ensureindex!(ci, buf, bi.src)
+    @test K.totalrows(ci) == 10
+    @test length(ci.rowstartrel) == 10
+    # an empty source still produces a usable index source
+    @test isempty(K.index(UInt8[], K.Dialect(); keepindex=false).chunks)
+end
+
+@testset "a released index is far smaller than the kept one" begin
+    src = "a,b\n" * join(("$i,$(i * 3)" for i in 1:50_000), '\n') * "\n"
+    buf = Vector{UInt8}(codeunits(src))
+    kept = K.index(buf, K.Dialect(); chunkbytes=1 << 16)
+    lazy = K.index(buf, K.Dialect(); chunkbytes=1 << 16, keepindex=false)
+    @test Base.summarysize(lazy.chunks) * 20 < Base.summarysize(kept.chunks)
+    @test Base.summarysize(lazy.chunks) < length(buf)
+end
+
 end # top-level testset

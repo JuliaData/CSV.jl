@@ -1749,6 +1749,80 @@ end
     @test values == ["v$(i % 17)" for i in 1:generatedrows]
 end
 
+@testset "Chunks streams its structural index (#1048)" begin
+    live(c) = count(!K.indexreleased, getfield(getfield(c, :inner), :chunks))
+    allchunks(c) = getfield(getfield(c, :inner), :chunks)
+    src = "a,b\n" * join(("$i,$(i * 3)" for i in 1:20_000), '\n') * "\n"
+
+    # Nothing of the index survives construction, and the batch loop holds a
+    # bounded window rather than the whole file.
+    c = A.Chunks(IOBuffer(src); chunkbytes=1024)
+    @test length(allchunks(c)) > 50
+    @test live(c) == 0
+    @test Base.summarysize(allchunks(c)) < length(src)
+    peak, total = 0, 0
+    for b in c
+        peak = max(peak, live(c))
+        total += length(b.a)
+    end
+    @test total == 20_000
+    @test 1 <= peak <= K.indexwindow(Threads.nthreads(), 1024)
+    @test live(c) == 0                       # the last window is released too
+
+    # keepindex=true is the 1.0.0 behavior: the whole index stays resident.
+    k = A.Chunks(IOBuffer(src); chunkbytes=1024, keepindex=true)
+    @test live(k) == length(allchunks(k))
+    @test Base.summarysize(allchunks(k)) > 4 * Base.summarysize(allchunks(c))
+    @test [collect(b.a) for b in k] == [collect(b.a) for b in A.Chunks(IOBuffer(src); chunkbytes=1024)]
+
+    # Every pass that reads the index agrees with the retained-index reading.
+    header3 = "x,y\n" * join(("r$i,$i" for i in 1:400), '\n') * "\n"
+    cases = [(; chunkbytes=64),
+             (; chunkbytes=64, skipto=25),
+             (; chunkbytes=64, footerskip=17),
+             (; chunkbytes=64, limit=101),
+             (; chunkbytes=64, limit=0),
+             (; chunkbytes=64, skipto=30, footerskip=5, limit=40),
+             (; chunkbytes=64, header=[1, 2]),
+             (; chunkbytes=64, header=false),
+             (; chunkbytes=64, select=[:y]),
+             (; chunkbytes=64, pool=true),
+             (; chunkbytes=1 << 20),
+             (; ntasks=3)]
+    for kw in cases, parallel in (false, true)
+        streamed = collect(A.Chunks(IOBuffer(header3); parallel, kw...))
+        kept = collect(A.Chunks(IOBuffer(header3); parallel, keepindex=true, kw...))
+        @test length(streamed) == length(kept)
+        @test Base.names(A.Chunks(IOBuffer(header3); parallel, kw...)) ==
+              Base.names(A.Chunks(IOBuffer(header3); parallel, keepindex=true, kw...))
+        for (a, b) in zip(streamed, kept)
+            @test Tables.columnnames(a) == Tables.columnnames(b)
+            for nm in Tables.columnnames(a)
+                @test isequal(collect(Tables.getcolumn(a, nm)), collect(Tables.getcolumn(b, nm)))
+            end
+        end
+    end
+
+    # A comment row holding a quote reindexes under another dialect; a released
+    # chunk must rebuild with THAT dialect, not the one first asked for.
+    poison = "# it\'s \"quoted\" here\na,b\n#\"\n1,2\n\"x\ny\",3\n4,5\n"
+    for cb in (8, 64, 1 << 20)
+        got = reduce(vcat, (String.(b.a) for b in A.Chunks(IOBuffer(poison); comment="#", chunkbytes=cb)))
+        @test got == ["1", "x\ny", "4"]
+    end
+    # Same for the lenient rebuild a bare quote forces.
+    bare = "a,b\n5\' 11\",x\n2,y\n"
+    @test reduce(vcat, (String.(b.b) for b in A.Chunks(IOBuffer(bare); chunkbytes=8))) == ["x", "y"]
+
+    # The documented ntasks/chunkbytes relationship: a batch never holds more
+    # than 4 MiB of source unless chunkbytes says so, so a large source yields
+    # more batches than `ntasks`.
+    big = "a\n" * repeat("1\n", 5_000_000)     # 10 MB
+    @test length(big) > 2 * (4 << 20)
+    @test length(A.Chunks(IOBuffer(big); ntasks=2)) > 2
+    @test length(A.Chunks(IOBuffer(big); ntasks=2, chunkbytes=length(big))) == 1
+end
+
 @testset "wide batches merge diagnostics in source order" begin
     ncols = 64
     header = join(("c$j" for j in 1:ncols), ',') * "\n"
