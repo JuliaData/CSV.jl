@@ -29,6 +29,10 @@ function (@main)(args::Vector{String})::Cint
              text=[DataString("a,\"b"), DataString("long text without syntax long text without syntax long text without syntax, comma")])
     CSV.write(out, cells; ntasks=1)
     String(take!(out)) == "clock,value,text\n03:04:05.123456789,1.5,\"a,\"\"b\"\n,-0.125,\"long text without syntax long text without syntax long text without syntax, comma\"\n" || return 5
+    # A dialect where a float rendering can carry a structural byte takes the
+    # quoting fallback; keep that path in the trimmed image too.
+    CSV.write(out, (value=[1.5, -0.125],); ntasks=1, delim='.')
+    String(take!(out)) == "value\n\"1.5\"\n\"-0.125\"\n" || return 6
     Core.println("trim workload passed")
     return 0
 end

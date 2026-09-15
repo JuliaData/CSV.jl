@@ -171,5 +171,12 @@ An empty string is quoted. `missing` uses `missingstring` and is unquoted by
 default. This guarantees a read/write distinction between present empty text
 and a missing value.
 
-`floatformat` is new and accepts a Printf-style format. Writer output is
-deterministic across `ntasks` values.
+`floatformat` is new and accepts a Printf-style format, and must contain
+exactly one format specifier. Writer output is deterministic across `ntasks`
+values.
+
+Writer options that cannot produce readable output are now an `ArgumentError`
+instead of bogus bytes: a `newline` other than `"\n"`, `"\r\n"`, or `"\r"`, and
+a `delim` containing a quote character. A dialect in which a number's own text
+is structural (`decimal=','` with `delim=','`, or `delim='.'`) quotes the cell
+rather than writing digits that would read back as extra fields.

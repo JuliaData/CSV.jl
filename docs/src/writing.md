@@ -71,8 +71,11 @@ incorrectly.
 
 Quote-related characters and `decimal` must be single ASCII characters, given
 as a `Char` or a one-character string. A multi-byte delimiter is written
-as-is, and a value containing its first byte is quoted. A newline can be a
-character or string such as `"\r\n"`. An unknown keyword is an `ArgumentError`.
+as-is, and a value containing its first byte is quoted. A delimiter may not
+contain a carriage return, a line feed, or either quote character. `newline`
+must be `"\n"`, `"\r\n"`, or `"\r"`, given as a character or a string:
+anything else is not a row separator, so it could not be read back. An unknown
+keyword is an `ArgumentError`.
 
 ```@example writing-quotes
 using CSV
@@ -96,9 +99,23 @@ distinction.
 
 ## Numbers and dates
 
-`floatformat` accepts a Printf-style format such as `"%.3f"`. Its default uses
-Julia's shortest round-trip floating-point representation. `decimal` replaces
-the decimal point in floating-point output.
+`floatformat` accepts a Printf-style format such as `"%.3f"`, and must contain
+exactly one format specifier: a format with none would write the same text for
+every value. Its default uses Julia's shortest round-trip floating-point
+representation. `decimal` replaces the decimal point in floating-point output.
+
+A dialect can make a number's own text structural — `decimal=','` together with
+`delim=','`, or `delim='.'` with the default decimal point. The writer then
+quotes the cell, exactly as it does for text, rather than writing digits that
+would read back as extra fields:
+
+```@example writing-decimal
+using CSV, Tables
+
+output = IOBuffer()
+CSV.write(output, Tables.table([1.23 4.56]); decimal=',', delim=',')
+String(take!(output))
+```
 
 `dateformat` accepts a Dates.jl format for all `Date`, `DateTime`, `Timestamp`, and `Time`
 values. Other values use their ordinary text representation.

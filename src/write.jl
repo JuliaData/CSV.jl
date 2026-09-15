@@ -95,6 +95,7 @@ struct WriteOpts{F <: Union{Nothing, Printf.Format}, D <: Union{Nothing, DateFor
     floatfmt::F
     dateformat::D
     decimal::UInt8
+    floatfast::Bool             # no float rendering can contain a structural byte
     bom::Bool
     bufsize::Int
 end
@@ -153,17 +154,35 @@ function _writeopts(; delim::Union{Char, AbstractString}=',',
         b in (UInt8('\r'), UInt8('\n')) &&
             throw(ArgumentError("write delimiter may not contain \\r or \\n"))
         b == oq && throw(ArgumentError("write delimiter may not contain the open quote character"))
+        b == cq && throw(ArgumentError("write delimiter may not contain the close quote character"))
     end
     any(b -> b in (UInt8('\r'), UInt8('\n')), (oq, cq, e)) &&
         throw(ArgumentError("write quote/escape characters may not be \\r or \\n"))
+    # A record terminator that is not CR, LF, or CRLF cannot be read back as
+    # rows by any CSV reader, and an empty one runs the whole table together.
+    newlinebytes = Vector{UInt8}(codeunits(string(newline)))
+    newlinebytes in (UInt8['\n'], UInt8['\r', '\n'], UInt8['\r']) || throw(ArgumentError(
+        "newline must be \"\\n\", \"\\r\\n\", or \"\\r\" (got $(repr(string(newline))))"))
     df = dateformat === nothing ? nothing :
          dateformat isa DateFormat ? dateformat : DateFormat(string(dateformat))
-    ff = floatformat === nothing ? nothing : Printf.Format(String(floatformat))
+    ff = nothing
+    if floatformat !== nothing
+        ff = Printf.Format(String(floatformat))
+        # A format with no conversion writes the same text for every value,
+        # and one with two consumes an argument the writer does not pass.
+        length(ff.formats) == 1 || throw(ArgumentError(
+            "floatformat must contain exactly one format specifier, such as \"%.3f\" " *
+            "(got $(repr(String(floatformat))))"))
+    end
     intbufsize = bufsize > typemax(Int) ? typemax(Int) : Int(bufsize)
-    return WriteOpts(first(delimbytes), delimbytes, oq, cq, e,
-                     Vector{UInt8}(codeunits(string(newline))),
+    # The default float path writes digits straight into the output, so it is
+    # usable only when no byte of a rendering can be structural in this
+    # dialect. Compute that once here instead of per cell.
+    floatfast = !any(_floatsyntax, (first(delimbytes), oq, cq)) &&
+                !_structuralbyte(dec, first(delimbytes), oq, cq)
+    return WriteOpts(first(delimbytes), delimbytes, oq, cq, e, newlinebytes,
                      Vector{UInt8}(codeunits(something(missingstring, ""))),
-                     quotestyle, ff, df, dec, bom, intbufsize)
+                     quotestyle, ff, df, dec, floatfast, bom, intbufsize)
 end
 
 @noinline _rowtoolarge(n::Int, cap::Int) =
@@ -171,10 +190,18 @@ end
 
 # --- cell rendering ---------------------------------------------------------
 
-_needsquote(o::WriteOpts, b::UInt8) =
-    b == o.delim || b == o.oq || b == o.cq || b == UInt8('\n') || b == UInt8('\r')
+# A byte the reader would read as structure rather than as content. A
+# multi-byte delimiter only needs its first byte here: a value can contain the
+# whole delimiter only if it contains that byte.
+_structuralbyte(b::UInt8, delim::UInt8, oq::UInt8, cq::UInt8) =
+    b == delim || b == oq || b == cq || b == UInt8('\n') || b == UInt8('\r')
+_needsquote(o::WriteOpts, b::UInt8) = _structuralbyte(b, o.delim, o.oq, o.cq)
 _numericsyntax(b::UInt8) = b - UInt8('0') <= 0x09 || b in (UInt8('+'), UInt8('-'))
 _datesyntax(b::UInt8) = _numericsyntax(b) || b in (UInt8('T'), UInt8(':'), UInt8('.'))
+# Every byte `_writeshortest_default` can emit except the decimal separator:
+# digits, signs, the exponent marker, and the NaN/Inf letters.
+_floatsyntax(b::UInt8) = _numericsyntax(b) ||
+    b in (UInt8('e'), UInt8('N'), UInt8('a'), UInt8('I'), UInt8('n'), UInt8('f'))
 
 function _appenddelim!(out::_WriteOutput, o::WriteOpts)
     length(o.delimbytes) == 1 ? push!(out, o.delim) : append!(out, o.delimbytes)
@@ -503,6 +530,19 @@ function _writeshortest_default(buf::_WriteOutput, pos::Int, x::T, decchar::UInt
     end
 end
 
+# A dialect where a float rendering can carry a structural byte (`delim='.'`,
+# a `decimal` that is also the delimiter, an `e` or NaN/Inf letter as the
+# delimiter or a quote): render the same digits into scratch, then append them
+# through the quoting policy, as every other numeric type already does.
+# `@noinline` keeps this out of the shared row loop.
+@noinline function _appendfloatquoted!(out::_WriteOutput, x::Union{Float64, Float32, Float16},
+                                       o::WriteOpts)
+    tmp = UInt8[]
+    _appendfloat!(tmp, x, o)
+    _appendbytes!(out, tmp, o, false)
+    return out
+end
+
 # --- dates: the ISO spellings `string(::Date/::DateTime)` produces, direct ----
 # Date       yyyy-mm-dd            year ≥ 4 digits (more if needed), '-' if negative
 # DateTime   yyyy-mm-ddTHH:MM:SS   plus ".sss" (three digits) only when the
@@ -613,8 +653,8 @@ _stagecell!(st::ColStage, x, o::WriteOpts) = _appendcell!(st.bytes, x, o)
     elseif x isa AbstractFloat
         if o.floatfmt !== nothing
             _appendformatted!(out, o.floatfmt, x, o)
-        elseif x isa Union{Float64, Float32, Float16} && !any(_numericsyntax, (o.delim, o.oq, o.cq))
-            _appendfloat!(out, x, o)
+        elseif x isa Union{Float64, Float32, Float16}
+            o.floatfast ? _appendfloat!(out, x, o) : _appendfloatquoted!(out, x, o)
         else
             s = string(x)
             o.decimal == UInt8('.') || (s = replace(s, '.' => Char(o.decimal)))
