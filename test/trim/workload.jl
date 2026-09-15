@@ -22,6 +22,13 @@ function (@main)(args::Vector{String})::Cint
     String(take!(out)) == "ns,us\n2020-01-02T03:04:05.123456789,9999-12-31T00:00:00.000001\n,1970-01-01T00:00:00\n" || return 3
     CSV.write(out, timestamps; ntasks=1, delim=':')
     String(take!(out)) == "ns:us\n\"2020-01-02T03:04:05.123456789\":\"9999-12-31T00:00:00.000001\"\n:\"1970-01-01T00:00:00\"\n" || return 4
+    # Exercise direct nullable Time output, exact binary fractions, and both
+    # inline and buffer-backed strings that require escaping.
+    cells = (clock=Union{Time,Missing}[Time(3, 4, 5, 123, 456, 789), missing],
+             value=[1.5, -0.125],
+             text=[DataString("a,\"b"), DataString("long text without syntax long text without syntax long text without syntax, comma")])
+    CSV.write(out, cells; ntasks=1)
+    String(take!(out)) == "clock,value,text\n03:04:05.123456789,1.5,\"a,\"\"b\"\n,-0.125,\"long text without syntax long text without syntax long text without syntax, comma\"\n" || return 5
     Core.println("trim workload passed")
     return 0
 end

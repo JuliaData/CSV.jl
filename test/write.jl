@@ -609,6 +609,48 @@ Base.iterate(::ThrowingRows, state=1) =
     end
 end
 
+@testset "contiguous string bytes preserve quoting" begin
+    # Compare the optimized representations with a separate CSV encoder.
+    # Include every short-payload size, the inline/view boundary, UTF-8,
+    # embedded structural bytes, missing, and empty strings.
+    values = Union{Missing, String}[missing, "", "λ漢🙂", " leading", "trailing "]
+    for n in vcat(1:20, 63:65, 127:129, 255:257)
+        push!(values, repeat("x", n))
+        for b in (",", "\"", "\n", "\r", "\\", "<", ">"), pos in (0, n ÷ 2, n)
+            push!(values, repeat("x", pos) * b * repeat("y", n - pos))
+        end
+    end
+    function encoded(s, delim, oq, cq, e, style)
+        s === missing && return ""
+        structural = any(c -> c in (first(delim), oq, cq, '\n', '\r'), s)
+        quoted = style === :all || isempty(s) || structural ||
+                 startswith(s, " ") || endswith(s, " ")
+        style === :none && return s
+        quoted || return s
+        escaped = join((c == cq || (e != cq && c == e)) ? string(e, c) : string(c) for c in s)
+        return string(oq, escaped, cq)
+    end
+    for (delim, oq, cq, e) in ((",", '"', '"', '"'), ("::", '<', '>', '\\')),
+        style in (:minimal, :all, :none)
+        selected = style === :none ? filter(values) do s
+            s === missing || (!isempty(s) && !any(c -> c in (first(delim), oq, cq, '\n', '\r'), s))
+        end : values
+        expected = join(string(i, delim, encoded(s, delim, oq, cq, e, style), '\n')
+                        for (i, s) in enumerate(selected))
+        strings = CSV.DataStrings.StringVector{Union{Missing, CSV.DataString}}(selected)
+        for col in (selected, strings), nt in (1, 4)
+            table = (id=collect(eachindex(selected)), text=col)
+            @test str(io -> CSV.write(io, table; writeheader=false, ntasks=nt,
+                delim, openquotechar=oq, closequotechar=cq, escapechar=e,
+                quotestyle=style)) == expected
+        end
+    end
+    for s in ("", "has,comma", "has\nnewline", "\""), value in (s, CSV.DataString(s))
+        @test_throws ArgumentError CSV.write(IOBuffer(), (x=[value],);
+            writeheader=false, quotestyle=:none)
+    end
+end
+
 @testset "date syntax obeys the quote policy" begin
     dt = DateTime(2024, 1, 2, 3, 4, 5, 123)
     for x in (dt, Timestamp(dt)), q in ('T', ':', '.')
@@ -619,6 +661,28 @@ end
         @test only(f.a) == x
         @test_throws ArgumentError W.write(IOBuffer(), (a=[x],); quotechar=q, decimal=',', quotestyle=:none)
     end
+end
+
+@testset "Time columns use the shared clock renderer" begin
+    rng = MersenneTwister(20260915)
+    clocks = Time[Time(0), Time(23, 59, 59, 999, 999, 999),
+                  Time(1, 2, 3, 120), Time(1, 2, 3, 0, 1), Time(1, 2, 3, 0, 0, 1)]
+    append!(clocks, [Time(Nanosecond(rand(rng, Int64))) for _ in 1:10_000])
+    expected = "id,clock\n" * join(string(i, ',', x, '\n') for (i, x) in enumerate(clocks))
+    table = (id=collect(eachindex(clocks)), clock=clocks)
+    @test str(io -> W.write(io, table; ntasks=1)) == expected
+    @test str(io -> W.write(io, table; ntasks=4)) == expected
+    @test join(W.RowWriter(table)) == expected
+    nullable = (id=[1, 2, 3], clock=Union{Missing, Time}[clocks[1], missing, clocks[2]])
+    @test str(io -> W.write(io, nullable)) == "id,clock\n1,00:00:00\n2,\n3,23:59:59.999999999\n"
+    @test str(io -> W.write(io, table; transform=(j, x) -> x, ntasks=4)) == expected
+    for q in (':', '.')
+        bytes = str(io -> W.write(io, (clock=[clocks[2]],); quotechar=q, decimal=','))
+        @test only(W.File(IOBuffer(bytes); quotechar=q, decimal=',', types=Time).clock) == clocks[2]
+        @test_throws ArgumentError W.write(IOBuffer(), (clock=[clocks[2]],);
+            quotechar=q, decimal=',', quotestyle=:none)
+    end
+    @test str(io -> W.write(io, (clock=[Time(1, 2, 3)],); dateformat="HH:MM")) == "clock\n01:02\n"
 end
 
 @testset "bounded ordered writer scheduler" begin
@@ -726,6 +790,23 @@ end
     end
     @test okall
     # floats: shortest round-trip, incl. specials, and decimal=','
+    # Exact binary fractions take the short-decimal path. Check both sides
+    # of its denominator and coefficient limits against Base's formatter,
+    # including neighboring floats that must still use general reduction.
+    rng = MersenneTwister(20260915)
+    fractions_ok = true
+    for k in 1:12
+        limit = UInt64(999_999_999_999_999) ÷ UInt64(5)^k
+        numerators = vcat(UInt64[1, 3, 7, limit - 1, limit, limit + 1],
+                          rand(rng, UInt64(1):max(UInt64(2), limit), 200))
+        for n in numerators
+            x = ldexp(Float64(n), -k)
+            for y in (x, -x, prevfloat(x), nextfloat(x))
+                fractions_ok &= render(y) == string(y)
+            end
+        end
+    end
+    @test fractions_ok
     okall = true
     for _ in 1:20_000
         x = reinterpret(Float64, rand(rng, UInt64))
@@ -734,6 +815,17 @@ end
     @test okall
     for x in (0.0, -0.0, 1.0, 1e10, 1e-10, Inf, -Inf, NaN, 1.7976931348623157e308, 5e-324, 1.0f0, Float16(1.5))
         @test render(x) == string(x)
+    end
+    # The fixed/scientific notation decision is shared by all float widths.
+    # Exhaust Float16 and cover Float32 bit patterns plus notation boundaries.
+    @test all(render(reinterpret(Float16, bits)) == string(reinterpret(Float16, bits))
+              for bits in UInt16(0):typemax(UInt16))
+    @test all(render(x) == string(x) for x in reinterpret(Float32, rand(rng, UInt32, 20_000)))
+    for T in (Float16, Float32, Float64), exponent in -5:6
+        x = T(10.0^exponent)
+        for y in (prevfloat(x), x, nextfloat(x), -prevfloat(x), -x, -nextfloat(x))
+            @test render(y) == string(y)
+        end
     end
     oc = W._writeopts(; decimal=',', delim=';')
     st = W.ColStage(); W._stagecolumn!(st, [1.5, 2.25e10], 1, 2, oc)
