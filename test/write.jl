@@ -663,6 +663,42 @@ end
     end
 end
 
+@testset "float syntax obeys the quote policy" begin
+    # https://github.com/JuliaData/CSV.jl/issues/1062: a dialect whose
+    # delimiter or quote character can appear in a float rendering — including
+    # a `decimal` that is also the delimiter — quotes the cell instead of
+    # writing the digits raw, like every other numeric type already does.
+    issue = str(io -> W.write(io, Tables.table([1.23 4.56]); decimal=',', delim=','))
+    @test issue == "Column1,Column2\n\"1,23\",\"4,56\"\n"
+    # Let the reader infer the types: quoted numbers must still be numbers.
+    back = W.File(IOBuffer(issue); decimal=',', on_error=:error)
+    @test eltype(back.Column1) === Float64 && eltype(back.Column2) === Float64
+    @test back.Column1 == [1.23] && back.Column2 == [4.56]
+
+    @test W._writeopts().floatfast
+    values = Float64[1.5, -2.25e10, 1e-9, 0.0, -0.0, 1.0e100, NaN, Inf, -Inf]
+    for kwargs in ((; delim='.'), (; decimal=',', delim=','), (; delim=';', decimal=';'),
+                   (; delim='e'), (; delim='N'), (; delim='f'), (; quotechar='e'),
+                   (; quotechar='-'), (; openquotechar='1', closequotechar='2'))
+        @test !W._writeopts(; kwargs...).floatfast
+        bytes = str(io -> W.write(io, (a=values, b=values); kwargs...))
+        f = W.File(IOBuffer(bytes); kwargs..., on_error=:error)
+        @test eltype(f.a) === Float64 && eltype(f.b) === Float64
+        @test all(isequal.(f.a, values)) && all(isequal.(f.b, values))
+        # :none cannot spell these cells at all, and says so
+        @test_throws ArgumentError W.write(IOBuffer(), (a=values,); kwargs..., quotestyle=:none)
+    end
+    # Float32/Float16 and the staged path use the same policy.
+    for T in (Float32, Float16)
+        bytes = str(io -> W.write(io, (a=T[1.5, 2.25],); delim='.'))
+        @test bytes == "a\n\"1.5\"\n\"2.25\"\n"
+    end
+    @test join(W.RowWriter(Tables.table([1.23 4.56]); decimal=',', delim=',')) == issue
+    # A rendering that happens not to contain the structural byte stays
+    # unquoted: the bytes are checked, not the dialect.
+    @test str(io -> W.write(io, (a=[NaN], b=[2.0]); delim='n')) == "anb\nNaNn2.0\n"
+end
+
 @testset "Time columns use the shared clock renderer" begin
     rng = MersenneTwister(20260915)
     clocks = Time[Time(0), Time(23, 59, 59, 999, 999, 999),
