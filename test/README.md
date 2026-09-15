@@ -1,22 +1,19 @@
-# Test fixtures via Artifacts
+# Test suite
 
-CSV.jl’s test fixtures live in an artifact (`artifact"testfiles"`) to avoid shipping ~30 MB of data to package users. The artifact is published as a GitHub release asset: `testdata-full-1/testfiles-artifact.tar.gz`. Running `Pkg.test` (or `test/runtests.jl`) will download it once and cache it in `~/.julia/artifacts`.
+From the repository root:
 
-## Updating the testfiles artifact
-1. Download and extract the current asset (preserves layout expected by tests):  
-   `curl -L -o testfiles-artifact.tar.gz https://github.com/JuliaData/CSV.jl/releases/download/testdata-full-1/testfiles-artifact.tar.gz`  
-   `mkdir testfiles && tar -xzf testfiles-artifact.tar.gz -C testfiles`
-2. Edit files in `testfiles/` as needed (add/remove/update).
-3. Repack and compute hashes with Julia (uses Tar/Artifacts only):  
-   ```julia
-   using Pkg.Artifacts, SHA, Tar
-   artifact_hash = create_artifact() do artdir
-       run(`cp -R testfiles/* $artdir`)
-   end
-   tarball = "testfiles-artifact.tar.gz"
-   archive_artifact(artifact_hash, tarball)
-   println((; artifact_hash, sha256=bytes2hex(open(sha256, tarball))))
-   ```
-4. Upload the new tarball to a release (same repo/tag is fine), update `test/Artifacts.toml` with the new `git-tree-sha1` and `sha256`, and keep the asset available so tests can download it.
+```sh
+julia --project=test test/dependencies.jl
+julia --project=test --check-bounds=yes -t4 test/runtests.jl
+julia --project=test test/quality.jl
+```
 
-Tests assume the artifact root contains the contents of the old `test/testfiles` directory (no extra nesting).
+Every dependency (DataStrings 1, DataDecimals 1, Parsers 3, InlineStrings 1.4.6 or 2,
+Tables 1.14) resolves from General; the dependency helper only develops this
+checkout into the environment and instantiates it. Tables.Scan runs in every
+main test job.
+
+Tests cover structural geometry, reader modes, explicit decimal types, string
+ownership, CPU-feature dispatch, ordered writers, and deterministic
+malformed-input fuzzing.
+Run Julia 1.10 and current Julia. Benchmark scripts use the same test environment.

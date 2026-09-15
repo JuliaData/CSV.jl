@@ -2,7 +2,37 @@
 
 ```@contents
 Pages = ["examples.md"]
+Depth = 2
 ```
+
+Most examples use literal data in an `IOBuffer` so the
+documentation build executes them. A `String` source is a file path or URL;
+wrap literal text in `IOBuffer`. Load `DataStrings` when you want to name the
+default text type.
+
+## [Start here: read, inspect, and write](@id first_example)
+
+Install CSV with `import Pkg; Pkg.add("CSV")`. Install any other package named
+in an example before using it. File paths and URLs below are placeholders;
+replace them with your own sources.
+
+```@example ex-first
+using CSV
+
+file = CSV.File(IOBuffer("id,name\n1,Ada\n2,Grace\n"))
+names(file)                 # column names
+collect(file.name)          # access a column
+first(file).id              # access a value in a row
+
+output = IOBuffer()
+CSV.write(output, file)
+String(take!(output))
+```
+
+`CSV.File` returns a table with parsed columns. Text uses
+`DataStrings.DataString` by default; pass `stringtype=String` for ordinary
+Julia strings. Use `CSV.read(source, DataFrame)` when you need a DataFrame
+(see [Read into another table package](@ref sink_example)).
 
 ## [Non-UTF-8 character encodings](@id stringencodings)
 
@@ -12,19 +42,16 @@ Pages = ["examples.md"]
 using CSV, StringEncodings
 
 # I open my `iso8859_encoded_file.csv` with the `enc"ISO-8859-1"` encoding
-# and pass the opened IO object to `CSV.File`, which will read the entire
-# input into a temporary file, then parse the data from the temp file
-file = CSV.File(open("iso8859_encoded_file.csv", enc"ISO-8859-1"))
-
-# to instead have the encoding conversion happen in memory, pass
-# `buffer_in_memory=true`; this can be faster, but obviously results
-# in more memory being used rather than disk via a temp file
-file = CSV.File(open("iso8859_encoded_file.csv", enc"ISO-8859-1"); buffer_in_memory=true)
+# and pass the opened IO object to `CSV.File`; the whole input is read into
+# memory through the converting stream, then parsed
+file = open("iso8859_encoded_file.csv", enc"ISO-8859-1") do io
+    CSV.File(io)
+end
 ```
 
 ## [Concatenate multiple inputs at once](@id vectorinputs)
 
-```julia
+```@example ex-vectorinputs
 using CSV
 
 # in this case, I have a vector of delimited data inputs that each have
@@ -38,34 +65,33 @@ data = [
 
 # I can just pass a `Vector` of inputs, in this case `IOBuffer(::String)`, but it
 # could also be a `Vector` of any valid input source, like `AbstractVector{UInt8}`,
-# filenames, `IO`, etc. Each input will be processed on a separate thread, with the results
-# being vertically concatenated afterwards as a single `CSV.File`. Each thread's columns
-# will be lazily concatenated using the `ChainedVector` type. As always, if we want to
+# filenames, `IO`, etc. Inputs are parsed on separate tasks and concatenated
+# in order. The first input defines the output columns. Later missing columns
+# are filled with `missing`, and later extra columns are ignored. To
 # send the parsed columns directly to a sink function, we can use `CSV.read`, like
 # `df = CSV.read(map(IOBuffer, data), DataFrame)`.
 f = CSV.File(map(IOBuffer, data))
 ```
 
+Pass `source=:origin` to add a column that records which input each row came
+from (paths for file sources, `"<source 1>"` and so on otherwise), or
+`source=:origin => labels` to supply your own labels.
+
 ## [Gzipped input](@id gzipped_input)
 
 ```julia
 # assume I have csv text data compressed via gzip
-# no additional packages are needed; CSV.jl can decompress automatically
+# no additional packages are needed; CSV.jl detects gzip by its magic bytes
 using CSV
 
-# pass name of gzipped input file directly; data will be decompressed to a
-# temporary file, then mmapped as a byte buffer for actual parsing
+# pass name of gzipped input file directly; data is decompressed into memory,
+# then parsed
 file = CSV.File("data.gz")
-
-# to instead have the decompression happen in memory, pass
-# `buffer_in_memory=true`; this can be faster, but obviously results
-# in more memory being used rather than disk via a temp file
-file = CSV.File("data.gz"; buffer_in_memory=true)
 ```
 
 ## [Delimited data in a string](@id csv_string)
 
-```julia
+```@example ex-string
 using CSV
 
 # I have csv data in a string I want to parse
@@ -83,24 +109,22 @@ file = CSV.File(IOBuffer(data))
 ## [Data from the web/a url](@id http)
 
 ```julia
-# assume there's delimited data I want to read from the web
-# one option is to use the HTTP.jl package
-using CSV, HTTP
+using CSV
 
-# I first make the web request to get the data via `HTTP.get` on the `url`
+# an http(s) URL string is downloaded to a temporary file, read into memory,
+# and parsed; the temporary file is removed afterwards
+url = "https://example.com/data.csv"
+file = CSV.File(url)
+
+# alternatively, fetch the bytes yourself with the HTTP.jl package and pass
+# the response body (a `Vector{UInt8}`) directly to `CSV.File`
+using HTTP
 http_response = HTTP.get(url)
-
-# I can then access the data of the response as a `Vector{UInt8}` and pass
-# it directly to `CSV.File` for parsing
 file = CSV.File(http_response.body)
 
-# another option, with Julia 1.6+, is using the Downloads stdlib
+# or download with the Downloads stdlib and pass the temporary file path
 using Downloads
-http_response = Downloads.download(url)
-
-# by default, `Downloads.download` writes the response data to a temporary file
-# which can then be passed to `CSV.File` for parsing
-file = CSV.File(http_response)
+file = CSV.File(Downloads.download(url))
 ```
 
 ## [Reading from a zip file](@id zip_example)
@@ -111,28 +135,24 @@ using ZipArchives, Mmap, CSV, DataFrames
 a = DataFrame(a = 1:3)
 CSV.write("a.csv", a)
 
-# zip the file; Windows users who do not have zip available on the PATH can manually zip the CSV
-# or write directly into the zip archive as shown below
-;zip a.zip a.csv
-
-# alternatively, write directly into the zip archive (without creating an unzipped csv file first)
-ZipWriter("a2.zip") do z
+# write directly into a zip archive
+ZipWriter("a.zip") do z
     zip_newfile(z, "a.csv"; compress=true)
-    a |> CSV.write(z)
+    CSV.write(z, a)
 end
 
 # read file from zip archive
-z = ZipReader(mmap(open("a.zip"))) # or "a2.zip"
+z = ZipReader(open(mmap, "a.zip"))
 
 # identify the right file in zip
-a_copy = CSV.File(zip_openentry(z, "a.csv")) |> DataFrame
+a_copy = CSV.read(zip_readentry(z, "a.csv"), DataFrame)
 
 a == a_copy
 ```
 
 ## [Column names on 2nd row](@id second_row_header)
 
-```julia
+```@example ex-header2
 using CSV
 
 data = """
@@ -151,7 +171,7 @@ file = CSV.File(IOBuffer(data); header=2)
 
 ## [No column names in data](@id no_header)
 
-```julia
+```@example ex-noheader
 using CSV
 
 # in this case, our data doesn't have any column names
@@ -168,7 +188,7 @@ file = CSV.File(IOBuffer(data); header=false)
 
 ## [Manually provide column names](@id manual_header)
 
-```julia
+```@example ex-manualheader
 using CSV
 
 # in this case, our data doesn't have any column names
@@ -188,7 +208,7 @@ file = CSV.File(IOBuffer(data); header=[:a, :b, :c])
 
 ## [Multi-row column names](@id multi_row_header)
 
-```julia
+```@example ex-multirowheader
 using CSV
 
 # in this case, our column names are `col_a`, `col_b`, and `col_c`,
@@ -207,7 +227,7 @@ file = CSV.File(IOBuffer(data); header=[1, 2])
 
 ## [Normalizing column names](@id normalize_header)
 
-```julia
+```@example ex-normalize
 using CSV
 
 # in this case, our data are single letters, with column names of "1", "2", and "3"
@@ -227,7 +247,9 @@ file = CSV.File(IOBuffer(data); normalizenames=true)
 
 # we can access the first column like
 file._1
+```
 
+```@example ex-normalize
 # another example where we may want to normalize is column names with spaces in them
 data = """
 column one,column two, column three
@@ -241,7 +263,7 @@ file = CSV.File(IOBuffer(data); normalizenames=true)
 
 ## [Skip to specific row where data starts](@id skipto_example)
 
-```julia
+```@example ex-skipto
 using CSV
 
 # our data has a first row that we'd like to ignore; our data also doesn't have
@@ -255,13 +277,13 @@ descriptive row that gives information about the data that we'd like to ignore
 # with no column names in the data, we first pass `header=false`; by itself,
 # this would result in parsing starting on row 1 to parse the actual data;
 # but we'd like to ignore the first row, so we pass `skipto=2` to skip over
-# the first row; our colum names will be generated like `Column1`, `Column2`, `Column3`
+# the first row; our column names will be generated like `Column1`, `Column2`, `Column3`
 file = CSV.File(IOBuffer(data); header=false, skipto=2)
 ```
 
 ## [Skipping trailing useless rows](@id footerskip_example)
 
-```julia
+```@example ex-footerskip
 using CSV
 
 # our data has column names of "a", "b", and "c"
@@ -276,15 +298,14 @@ totals: 12, 15, 18
 grand total: 45
 """
 
-# by passing `footerskip=2`, we tell parsing to start the end of the data and
-# read 2 rows, ignoring their contents, then mark the ending position where
-# the normal parsing process should finish
+# `footerskip=2` excludes the last two rows from value parsing.
+# CSV still scans the input to find the row boundaries.
 file = CSV.File(IOBuffer(data); footerskip=2)
 ```
 
 ## [Reading transposed data](@id transpose_example)
 
-```julia
+```@example ex-transpose
 using CSV
 
 # our data is transposed, meaning our column names are in the first column,
@@ -303,7 +324,7 @@ file = CSV.File(IOBuffer(data); transpose=true)
 
 ## [Ignoring commented rows](@id comment_example)
 
-```julia
+```@example ex-comment
 using CSV
 
 # here, we have several non-data rows that all begin with the "#" string
@@ -322,7 +343,7 @@ file = CSV.File(IOBuffer(data); comment="#")
 
 ## [Ignoring empty rows](@id ignoreemptyrows_example)
 
-```julia
+```@example ex-emptyrows
 using CSV
 
 # here, we have a "gap" row in between the first and second row of data
@@ -337,14 +358,16 @@ a,b,c
 4,5,6
 """
 
-# by passing `ignoreemptyrows=false`, we ensure parsing treats an empty row
-# as each column having a `missing` value set for that row
-file = CSV.File(IOBuffer(data); ignoreemptyrows=true)
+# `ignoreemptyrows=false` keeps the empty row and fills its columns with missing;
+# a kept empty row is not a parse problem
+file = CSV.File(IOBuffer(data); ignoreemptyrows=false)
+@assert isempty(CSV.problems(file)) # hide
+file
 ```
 
 ## [Including/excluding columns](@id select_example)
 
-```julia
+```@example ex-select
 using CSV
 
 # simple dataset, but we know column "b" isn't needed
@@ -363,19 +386,22 @@ file = CSV.File(IOBuffer(data); select=[1, 3])
 file = CSV.File(IOBuffer(data); select=[:a, :c])
 file = CSV.File(IOBuffer(data); select=["a", "c"])
 file = CSV.File(IOBuffer(data); select=[true, false, true])
-file = CSV.File(IOBuffer(data); select=(i, nm) -> i in (1, 3))
+file = CSV.File(IOBuffer(data); select=r"[ac]")
 # now examples of dropping, when we'd rather specify the column(s)
 # we'd like to drop/exclude from parsing
 file = CSV.File(IOBuffer(data); drop=[2])
 file = CSV.File(IOBuffer(data); drop=[:b])
 file = CSV.File(IOBuffer(data); drop=["b"])
 file = CSV.File(IOBuffer(data); drop=[false, true, false])
-file = CSV.File(IOBuffer(data); drop=(i, nm) -> i == 2)
+file = CSV.File(IOBuffer(data); drop=:b)
 ```
+
+`select` and `drop` take a list, one name or index,
+or a `Regex`; the selected columns keep their file order.
 
 ## [Limiting number of rows from data](@id limit_example)
 
-```julia
+```@example ex-limit
 using CSV
 
 # here, we have quite a few rows of data (relative to other examples, lol)
@@ -391,14 +417,15 @@ a,b,c
 13,14,15
 """
 
-# parsing will start reading rows, and once 3 have been read, it will
-# terminate early, avoiding the parsing of the rest of the data entirely
+# Only the first three data rows have their values parsed and returned.
+# CSV still reads or maps the source and builds its structural index.
+# The limit is exact at every thread count.
 file = CSV.File(IOBuffer(data); limit=3)
 ```
 
 ## [Specifying custom missing strings](@id missing_string_example)
 
-```julia
+```@example ex-missingstring
 using CSV
 
 # in this data, our first column has "missing" values coded with -999
@@ -417,9 +444,11 @@ code,age,score
 file = CSV.File(IOBuffer(data); missingstring=["-999", "NA"])
 ```
 
+An unquoted empty field is always `missing`; `missingstring` adds spellings.
+
 ## [String delimiter](@id string_delim)
 
-```julia
+```@example ex-stringdelim
 using CSV
 
 # our data has two columns, separated by double colon
@@ -436,7 +465,7 @@ file = CSV.File(IOBuffer(data); delim="::")
 
 ## [Fixed width files](@id ignorerepeated_example)
 
-```julia
+```@example ex-fixedwidth
 using CSV
 
 # This is an example of "fixed width" data, where each
@@ -451,14 +480,14 @@ col1    col2 col3
 """
 # In addition to our `delim`, we can pass
 # `ignorerepeated=true`, which tells parsing that
-#consecutive delimiters should be treated as a single
+# consecutive delimiters should be treated as a single
 # delimiter.
 file = CSV.File(IOBuffer(data); delim=' ', ignorerepeated=true)
 ```
 
 ## [Turning off quoted cell parsing](@id quoted_example)
 
-```julia
+```@example ex-quoted
 using CSV
 
 # by default, cells like the 1st column, 2nd row
@@ -481,7 +510,7 @@ file = CSV.File(IOBuffer(data); quoted=false)
 
 ## [Quoted & escaped fields](@id quotechar_example)
 
-```julia
+```@example ex-quotechar
 using CSV
 
 # In this data, we have a few "quoted" fields, which means the field's value starts and ends with `quotechar` (or
@@ -493,24 +522,26 @@ using CSV
 # values, so just doing `CSV.File(IOBuffer(data))` would result in successful parsing.
 data = """
 col1,col2
-"quoted field with a delimiter , inside","quoted field that contains a \\n newline and ""inner quotes\"\"\"
+"quoted field with a delimiter , inside","quoted field that contains a
+newline and ""inner quotes\"\"\"
 unquoted field,unquoted field with "inner quotes"
 """
 
 file = CSV.File(IOBuffer(data); quotechar='"', escapechar='"')
 
-file = CSV.File(IOBuffer(data); openquotechar='"' closequotechar='"', escapechar='"')
+file = CSV.File(IOBuffer(data); openquotechar='"', closequotechar='"', escapechar='"')
 ```
+
+A quote inside an unquoted field (`with "inner quotes"`) is content: the
+structural scan notices it and rebuilds its index under the field-start rule.
 
 ## [DateFormat](@id dateformat_example)
 
-```julia
+```@example ex-dateformat
 using CSV
 
 # In this file, our `date` column has dates that are formatted like `yyyy/mm/dd`. We can pass just such a string to the
-# `dateformat` keyword argument to tell parsing to use it when looking for `Date` or `DateTime` columns. Note that currently,
-# only a single `dateformat` string can be passed to parsing, meaning multiple columns with different date formats cannot all
-# be parsed as `Date`/`DateTime`.
+# `dateformat` keyword argument to tell parsing to use it when looking for date or date-time columns.
 data = """
 code,date
 0,2019/01/01
@@ -520,9 +551,27 @@ code,date
 file = CSV.File(IOBuffer(data); dateformat="yyyy/mm/dd")
 ```
 
+```@example ex-dateformat
+# columns with different formats take a dictionary keyed by column name or index
+data = """
+code,date,stamp
+0,2019/01/01,01-02-2019 10:30
+1,2019/01/02,02-02-2019 11:45
+"""
+
+file = CSV.File(IOBuffer(data); dateformat=Dict(:date => "yyyy/mm/dd", :stamp => "dd-mm-yyyy HH:MM"))
+```
+
+Without a `dateformat`, ISO dates, ISO date-times (with `T` or a space), and
+times are detected. Date-times prefer `Durations.Timestamp{Dates.Nanosecond}`.
+Wider dates use `Timestamp{Microsecond}` if every value fits exactly; otherwise
+the column stays text. Load `Dates` and request `types=Dict(:stamp => DateTime)`
+when a consumer needs `DateTime`. Fractions finer than whole milliseconds then
+produce parse problems instead of being rounded.
+
 ## [Custom decimal separator](@id decimal_example)
 
-```julia
+```@example ex-decimal
 using CSV
 
 # In many places in the world, floating point number decimals are separated with a comma instead of a period (`3,14` vs. `3.14`).
@@ -539,7 +588,7 @@ file = CSV.File(IOBuffer(data); delim=';', decimal=',')
 
 ## [Thousands separator](@id thousands_example)
 
-```julia
+```@example ex-thousands
 using CSV
 
 # In many places in the world, digits to the left of the decimal place are broken into
@@ -557,28 +606,34 @@ file = CSV.File(IOBuffer(data); groupmark=',')
 
 ## [Custom groupmarks](@id groupmark_example)
 
-```julia
+```@example ex-groupmark
 using CSV
 
 # In some contexts, separators other than thousands separators group digits in a number.
-# `groupmark` supports ignoring them as long as the separator character is ASCII
+# `groupmark` supports ignoring them as long as the separator character is ASCII and is not
+# itself numeric syntax (a digit, sign, decimal point, or exponent letter).
+# It must appear between digits in the integer part of the number.
 data = """
-name;ssn;credit card number
-Ayodele Beren;597-21-8366;5538-6111-0574-2633
-Trinidad Shiori;387-35-5126;3017-9300-0776-5301
-Ori Cherokee;731-12-4606;4682-5416-0636-3877
+name;part number
+Ayodele Beren;5538_6111_0574
+Trinidad Shiori;3017_9300_0776
+Ori Cherokee;4682_5416_0636
 """
 
-file = CSV.File(IOBuffer(data); groupmark='-')
+# Both spaces and semicolons divide each row consistently. Set the delimiter.
+file = CSV.File(IOBuffer(data); delim=';', groupmark='_')
+@assert file["part number"] == [553861110574, 301793000776, 468254160636] # hide
+file
 ```
 
 ## [Custom bool strings](@id truestrings_example)
 
-```julia
+```@example ex-bools
 using CSV
 
-# By default, parsing only considers the string values `true` and `false` as valid `Bool` values. To consider alternative
-# values, we can pass a `Vector{String}` to the `truestrings` and `falsestrings` keyword arguments.
+# By default, parsing considers `true`, `True`, `TRUE`, `false`, `False`, and `FALSE` as valid `Bool` values.
+# To consider alternative values, we can pass a `Vector{String}` to the `truestrings` and `falsestrings` keyword arguments;
+# a user list replaces the defaults.
 data = """
 id,paid,attended
 0,T,TRUE
@@ -592,11 +647,11 @@ file = CSV.File(IOBuffer(data); truestrings=["T", "TRUE"], falsestrings=["F", "F
 
 ## [Matrix-like Data](@id matrix_example)
 
-```julia
-using CSV
+```@example ex-matrix
+using CSV, Tables
 
 # This file contains a 3x3 identity matrix of `Float64`. By default, parsing will detect the delimiter and type, but we can
-# also explicitly pass `delim= ' '` and `types=Float64`, which tells parsing to explicitly treat each column as `Float64`,
+# also explicitly pass `delim=' '` and `types=Float64`, which tells parsing to explicitly treat each column as `Float64`,
 # without having to guess the type on its own.
 data = """
 1.0 0.0 0.0
@@ -607,27 +662,21 @@ data = """
 file = CSV.File(IOBuffer(data); header=false)
 file = CSV.File(IOBuffer(data); header=false, delim=' ', types=Float64)
 
-# as a last step if you want to convert this to a Matrix, this can be done by reading in first as a DataFrame and then
-# function chaining to a Matrix
-using DataFrames
-A = file|>DataFrame|>Matrix
-
-# another alternative is to simply use CSV.Tables.matrix and say
-B = file|>CSV.Tables.matrix # does not require DataFrames
+# to convert the table to a `Matrix`, use `Tables.matrix`
+B = Tables.matrix(file)
 ```
 
 ## [Providing types](@id types_example)
 
-```julia
+```@example ex-types
 using CSV
 
 # In this file, our 3rd column has an invalid value on the 2nd row `invalid`. Let's imagine we'd still like to treat it as an
 # `Int` column, and ignore the `invalid` value. The syntax examples provide several ways we can tell parsing to treat the 3rd
 # column as `Int`, by referring to column index `3`, or column name with `Symbol` or `String`. We can also provide an entire
-# `Vector` of types for each column (and which needs to match the length of columns in the file). There are two additional
-# keyword arguments that control parsing behavior; in the first 4 syntax examples, we would see a warning printed like
-# `"warning: invalid Int64 value on row 2, column 3"`. In the fifth example, passing `silencewarnings=true` will suppress this
-# warning printing. In the last syntax example, passing `strict=true` will result in an error being thrown during parsing.
+# `Vector` of types for each column (and which needs to match the length of columns in the file). An invalid value becomes
+# `missing` and is recorded as a problem; by default one summary warning is printed per read, `on_error=:collect` keeps the
+# problems silently for `CSV.problems(file)`, and `on_error=:error` throws a `CSV.ParseError` at the first problem.
 data = """
 col1,col2,col3
 1,2,3
@@ -635,38 +684,46 @@ col1,col2,col3
 6,7,8
 """
 
-file = CSV.File(IOBuffer(data); types=Dict(3 => Int))
-file = CSV.File(IOBuffer(data); types=Dict(:col3 => Int))
-file = CSV.File(IOBuffer(data); types=Dict("col3" => Int))
-file = CSV.File(IOBuffer(data); types=[Int, Int, Int])
-file = CSV.File(IOBuffer(data); types=[Int, Int, Int], silencewarnings=true)
-file = CSV.File(IOBuffer(data); types=[Int, Int, Int], strict=true)
+file = CSV.File(IOBuffer(data); types=Dict(3 => Int), on_error=:collect)
+file = CSV.File(IOBuffer(data); types=Dict(:col3 => Int), on_error=:collect)
+file = CSV.File(IOBuffer(data); types=Dict("col3" => Int), on_error=:collect)
+file = CSV.File(IOBuffer(data); types=[Int, Int, Int], on_error=:collect)
+CSV.problems(file)
+```
 
+```julia
+# stop at the first invalid value instead
+file = CSV.File(IOBuffer(data); types=[Int, Int, Int], on_error=:error)
+```
 
+```@example ex-types
 # In this file we have lots of columns, and would like to specify the same type for all
-# columns except one which should have a different type. We can do this by providing a
-# function that takes the column index and column name and uses these to decide the type.
+# columns except one which should have a different type. We can do this by providing the
+# exact name for the first column and a Regex to match the rest. Note that an exact
+# column name always takes precedence over a regular expression.
 data = """
 col1,col2,col3,col4,col5,col6,col7
 1,2,3,4,5,6,7
 0,2,3,4,5,6,7
 1,2,3,4,5,6,7
 """
-file = CSV.File(IOBuffer(data); types=(i, name) -> i == 1 ? Bool : Int8)
-file = CSV.File(IOBuffer(data); types=(i, name) -> name == :col1 ? Bool : Int8)
-# Alternatively by providing the exact name for the first column and a Regex to match the rest.
-# Note that an exact column name always takes precedence over a regular expression.
-file = CSV.File(IOBuffer(data); types=Dict(:col1 => Bool, r"^col\d" => Int8))
+# Numeric Boolean spellings need explicit lists, even with types=Bool.
+file = CSV.File(IOBuffer(data); types=Dict(:col1 => Bool, r"^col\d" => Int8),
+                truestrings=["1"], falsestrings=["0"])
+@assert file.col1 == [true, false, true] # hide
+@assert isempty(CSV.problems(file)) # hide
+file
 ```
 
 ## [Typemap](@id typemap_example)
 
-```julia
+```@example ex-typemap
 using CSV
 
 # In this file, we have U.S. zipcodes in the first column that we'd rather not treat as `Int`, but parsing will detect it as
-# such. In the first syntax example, we pass `typemap=IdDict(Int => String)`, which tells parsing to treat any detected `Int`
-# columns as `String` instead. In the second syntax example, we alternatively set the `zipcode` column type manually.
+# such. In the first syntax example, we pass `typemap=Dict(Int => String)`, which tells parsing to treat any detected `Int`
+# columns as text instead, using `stringtype` (DataString by default).
+# In the second example, an explicit String type also requests ordinary Julia strings.
 data = """
 zipcode,score
 03494,9.9
@@ -674,19 +731,20 @@ zipcode,score
 84044,3.4
 """
 
-file = CSV.File(IOBuffer(data); typemap=IdDict(Int => String))
+file = CSV.File(IOBuffer(data); typemap=Dict(Int => String))
 file = CSV.File(IOBuffer(data); types=Dict(:zipcode => String))
 ```
 
 ## [Pooled values](@id pool_example)
 
-```julia
+```@example ex-pool
 using CSV
 
 # In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations
-# like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt32`. By default,
-# `pool=(0.2, 500)`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide
-# greater control: `pool=0.4` means that if 40% or less of a column's values are unique, then it will be pooled.
+# like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt32`. Pooling is
+# off by default. Via the `pool` keyword argument, we can turn it on: `pool=true` pools every string column,
+# `pool=0.4` means that if 40% or less of a column's values are unique, then it will be pooled, and `pool=(0.2, 500)`
+# is the ratio-and-cap policy.
 data = """
 id,code
 A18E9,AT
@@ -696,20 +754,18 @@ BF392,GC
 8CD2E,GC
 """
 
-file = CSV.File(IOBuffer(data))
+file = CSV.File(IOBuffer(data); pool=true)
 file = CSV.File(IOBuffer(data); pool=0.4)
 file = CSV.File(IOBuffer(data); pool=0.6)
 ```
 
 ## [Non-string pooled values](@id nonstring_pool_example)
 
-```julia
-using CSV
+```@example ex-nonstringpool
+using CSV, PooledArrays
 
-# in this data, our `category` column is an integer type, but represents a limited set of values that could benefit from
-# pooling. Indeed, we may want to do various DataFrame grouping/joining operations on the column, which can be more
-# efficient if the column type is a PooledVector. By default, passing `pool=true` will only pool string column types,
-# if we pass a vector or dict however, we can specify how specific, non-string type, columns should be pooled.
+# CSV pools text columns only. To pool a numeric category, convert that column
+# after reading with PooledArrays.
 data = """
 category,amount
 1,100.01
@@ -718,19 +774,20 @@ category,amount
 2,202.40
 """
 
-file = CSV.File(IOBuffer(data); pool=Dict(1 => true))
-file = CSV.File(IOBuffer(data); pool=[true, false])
+file = CSV.File(IOBuffer(data))
+category = PooledArray(file.category)
+@assert category == [1, 1, 2, 2] # hide
+category
 ```
 
 ## [Pool with absolute threshold](@id pool_absolute_threshold)
 
-```julia
+```@example ex-poolthreshold
 using CSV
 
-# In this file, we have an `id` column and a `code` column. There can be advantages with various DataFrame/table operations
-# like joining and grouping when `String` values are "pooled", meaning each unique value is mapped to a `UInt32`. By default,
-# `pool=(0.2, 500)`, so string columns with low cardinality are pooled by default. Via the `pool` keyword argument, we can provide
-# greater control: `pool=(0.5, 2)` means that if a column has 2 or fewer unique values _and_ the total number of unique values is less than 50% of all values, then it will be pooled.
+# In this file, we have an `id` column and a `code` column. Via the `pool` keyword argument, we can provide
+# greater control: `pool=(0.5, 2)` means that if a column has 2 or fewer unique values _and_ the total number of unique
+# values is at most 50% of all values, then it will be pooled.
 data = """
 id,code
 A18E9,AT
@@ -741,4 +798,129 @@ BF392,GC
 """
 
 file = CSV.File(IOBuffer(data); pool=(0.5, 2))
+```
+
+## [Exact decimal columns](@id decimal_types_example)
+
+```@example ex-decimaltypes
+using CSV, DataDecimals
+
+# Loading DataDecimals lets an explicitly requested decimal type parse exactly from the field bytes.
+# CSV does not infer decimal types; fractional numbers infer as `Float64`.
+data = """
+item,amount
+coffee,3.50
+bagel,2.25
+"""
+
+file = CSV.File(IOBuffer(data); types=Dict(:amount => Decimal64{2}))
+collect(file.amount)
+```
+
+With `Decimal64{2}`, a value such as `1.235` needs rounding and becomes a
+parse problem. Extra trailing zeros, such as `1.2300`, are exact and accepted.
+Use `on_error=:collect` to inspect problems or `on_error=:error` to throw.
+
+## [Inspect bad values](@id problems_example)
+
+```@example ex-problems
+using CSV
+
+text = "id,amount\n1,10\n2,not-a-number\n"
+file = CSV.File(IOBuffer(text); types=Dict(:amount => Int), on_error=:collect)
+
+[(problem.row, problem.col, problem.kind, problem.message)
+ for problem in CSV.problems(file)]
+```
+
+## [Rows that do not match the header](@id ragged_example)
+
+A row with extra fields keeps the header schema: the extra fields are
+reported, not added as new columns. A row with fewer fields is padded with
+`missing`. An unclosed quote is reported and the affected text is kept.
+
+```@example ex-ragged
+using CSV
+
+text = "id,name\n1,Ada\n2,Grace,extra\n3\n4,\"unclosed\n"
+file = CSV.File(IOBuffer(text); on_error=:collect)
+
+(names(file), length(file), [(p.row, p.kind) for p in CSV.problems(file)])
+```
+
+## [Keep empty text distinct from missing](@id empty_text_example)
+
+```@example ex-empty
+using CSV
+
+table = (value=Union{Missing, String}[missing, "", "text"],)
+output = IOBuffer()
+CSV.write(output, table)
+bytes = String(take!(output))
+# A missing value in a one-column file occupies an empty row. Keep that row.
+roundtrip = CSV.File(IOBuffer(bytes); stringtype=String, ignoreemptyrows=false)
+@assert isequal(roundtrip.value, table.value) # hide
+
+(bytes, collect(roundtrip.value))
+```
+
+## [Write to an in-memory buffer](@id write_buffer_example)
+
+```@example ex-write
+using CSV
+
+table = (id=[1, 2], note=["plain", "comma, inside"])
+output = IOBuffer()
+CSV.write(output, table; newline="\r\n")
+String(take!(output))
+```
+
+An `IO` sink is written at its current position, like `Base.write`; a path
+sink ending in `.gz` is compressed automatically.
+
+## [Read into another table package](@id sink_example)
+
+`CSV.read` calls any Tables.jl sink. For example, with DataFrames.jl installed:
+
+```julia
+using CSV, DataFrames
+
+df = CSV.read("input.csv", DataFrame)
+CSV.write("output.csv", df)
+```
+
+## [Process rows or batches](@id rows_chunks_example)
+
+```@example ex-rows
+using CSV
+
+rows = CSV.Rows(IOBuffer("id,value\n1,10\n2,20\n"); types=[Int, Int])
+total = sum(row[:value] for row in rows)
+```
+
+Use `CSV.Chunks` when a downstream operation accepts table partitions; every
+batch is a `CSV.File` with the same column types:
+
+```@example ex-chunks
+using CSV
+
+chunks = CSV.Chunks(IOBuffer("id,value\n1,10\n2,20\n3,30\n"); ntasks=2)
+length(collect(chunks))
+```
+
+`CSV.Rows` defaults to text unless you supply `types`. Both readers retain the
+source bytes and structural index. `CSV.Chunks` also checks values across the
+input to choose one schema before iteration. These APIs reduce the parsed
+columns held at once; they do not read the source one batch at a time.
+
+## [Index first and parse later](@id lazy_example)
+
+```@example ex-lazy
+using CSV
+
+lazyfile = CSV.lazy(IOBuffer("id,value\n1,10.5\n2,20.0\n"))
+first_id = String(lazyfile.id[1])
+eager = CSV.File(lazyfile; types=Dict(:value => Float64))
+
+(first_id, collect(eager.value))
 ```
