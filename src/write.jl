@@ -238,45 +238,50 @@ end
     return false
 end
 
-# The cell quoting policy, appending to a Vector{UInt8}. `stringcell` says
+# The cell quoting policy, appending to a write buffer. `stringcell` says
 # whether the cell is a string (only strings get :all-quoting, the
 # empty-means-present rule, and whitespace-preserving quoting). Empty quoted
 # content is the parser's present-empty-string spelling; empty unquoted content
 # is missing, matching the parser's convention. A multi-byte
 # delimiter quotes on its first byte: over-quoting is harmless.
-function _appendbytes!(out::_WriteOutput, bytes::AbstractVector{UInt8}, o::WriteOpts,
-                       stringcell::Bool)
-    n = length(bytes)
-    if o.quotestyle === :none
-        stringcell && n == 0 &&
-            throw(ArgumentError("quotestyle=:none cannot distinguish an empty string from missing"))
-        for b in bytes
-            _needsquote(o, b) &&
-                throw(ArgumentError("quotestyle=:none cannot write a value containing " *
-                                    "a structural byte: $(repr(String(collect(bytes))))"))
-        end
-        return append!(out, bytes)
-    end
-    d, oq, cq, e = o.delim, o.oq, o.cq, o.e
+@inline _byteat(p::Ptr{UInt8}, i::Int) = unsafe_load(p, i)
+@inline _byteat(bytes::AbstractVector{UInt8}, i::Int) = @inbounds bytes[i]
+_needsquotebytes(o::WriteOpts, bytes::AbstractVector{UInt8}, n::Int) =
+    any(b -> _needsquote(o, b), bytes)
+_appendraw!(out::_WriteOutput, bytes::AbstractVector{UInt8}, n::Int) = append!(out, bytes)
+function _appendraw!(out::_WriteOutput, p::Ptr{UInt8}, n::Int)
+    len = length(out)
+    _room!(out, n)
+    GC.@preserve out unsafe_copyto!(pointer(out, len + 1), p, n)
+    return out
+end
+
+_appendbytes!(out::_WriteOutput, bytes::AbstractVector{UInt8}, o::WriteOpts, stringcell::Bool) =
+    _appendbytes!(out, bytes, length(bytes), o, stringcell)
+
+# One quote policy for pointer-backed strings and generic byte collections.
+# The caller preserves the owner whenever `bytes` is a pointer.
+Base.@constprop :aggressive function _appendbytes!(out::_WriteOutput, bytes, n::Int,
+                                                  o::WriteOpts, stringcell::Bool)
     quote_it = stringcell && (o.quotestyle === :all || n == 0)
-    if !quote_it
-        for b in bytes
-            if b == d || b == oq || b == cq || b == UInt8('\n') || b == UInt8('\r')
-                quote_it = true
-                break
-            end
-        end
-        if stringcell && !quote_it && n > 0
-            (bytes[1] == UInt8(' ') || bytes[end] == UInt8(' ')) && (quote_it = true)
-        end
+    if o.quotestyle === :none
+        stringcell && n == 0 && throw(ArgumentError("quotestyle=:none cannot distinguish an empty string from missing"))
+        _needsquotebytes(o, bytes, n) && throw(ArgumentError(
+            "quotestyle=:none cannot write a value containing a structural byte: $(repr(String(UInt8[_byteat(bytes, i) for i in 1:n])))"))
+        quote_it = false
+    elseif !quote_it
+        quote_it = (stringcell && n > 0 &&
+                    (_byteat(bytes, 1) == UInt8(' ') || _byteat(bytes, n) == UInt8(' '))) ||
+                   _needsquotebytes(o, bytes, n)
     end
-    quote_it || return append!(out, bytes)
-    # reserve the escaped upper bound once, then store bytes by index
+    quote_it || return _appendraw!(out, bytes, n)
     k = length(out)
     _room!(out, 2n + 2)
+    cq, e = o.cq, o.e
     @inbounds begin
-        out[k += 1] = oq
-        for b in bytes
+        out[k += 1] = o.oq
+        for i in 1:n
+            b = _byteat(bytes, i)
             (b == cq || (e != cq && b == e)) && (out[k += 1] = e)
             out[k += 1] = b
         end
@@ -290,42 +295,8 @@ _appendstring!(out::_WriteOutput, s::AbstractString, o::WriteOpts) =
     _appendbytes!(out, codeunits(s), o, true)
 _appendscalar!(out::_WriteOutput, s::AbstractString, o::WriteOpts) =
     _appendbytes!(out, codeunits(s), o, false)
-
-# String and DataString already expose contiguous UTF-8 bytes. Scan and
-# escape those bytes directly, including quoted values, without calling
-# codeunit for every character of an inline DataString.
-function _appendstringbytes!(out::_WriteOutput, p::Ptr{UInt8}, n::Int, o::WriteOpts)
-    quote_it = o.quotestyle === :all || n == 0
-    if o.quotestyle === :none
-        n == 0 && throw(ArgumentError("quotestyle=:none cannot distinguish an empty string from missing"))
-        _needsquotebytes(o, p, n) && throw(ArgumentError(
-            "quotestyle=:none cannot write a value containing a structural byte: $(repr(unsafe_string(p, n)))"))
-        quote_it = false
-    elseif !quote_it
-        quote_it = unsafe_load(p) == UInt8(' ') || unsafe_load(p, n) == UInt8(' ') ||
-                   _needsquotebytes(o, p, n)
-    end
-    len = length(out)
-    if !quote_it
-        _room!(out, n)
-        GC.@preserve out unsafe_copyto!(pointer(out, len + 1), p, n)
-        return out
-    end
-    _room!(out, 2n + 2)
-    k = len
-    cq, e = o.cq, o.e
-    @inbounds begin
-        out[k += 1] = o.oq
-        for i in 1:n
-            b = unsafe_load(p, i)
-            (b == cq || (e != cq && b == e)) && (out[k += 1] = e)
-            out[k += 1] = b
-        end
-        out[k += 1] = cq
-    end
-    resize!(out, k)
-    return out
-end
+_appendstringbytes!(out::_WriteOutput, p::Ptr{UInt8}, n::Int, o::WriteOpts) =
+    _appendbytes!(out, p, n, o, true)
 
 function _appendstring!(out::_WriteOutput, s::Union{String, SubString{String}}, o::WriteOpts)
     GC.@preserve s return _appendstringbytes!(out, pointer(s), ncodeunits(s), o)
@@ -414,8 +385,7 @@ end
 # generic writer spends ~60% of its time in option branches it cannot fold
 # (plus/space/hash/precision/typed/compact/padexp), so this is that function
 # with the defaults inlined: same digits (Ryu.reduce_shortest), same layout
-# rules — fixed notation for -4 < pt <= 6 (Float16: 3) unless an integer-valued
-# value would print more digits than its magnitude warrants, else `d.ddde±xx`;
+# rules — fixed notation for -4 < pt <= 6 (Float16: 3), else `d.ddde±xx`;
 # hash=true forces the trailing ".0". The output is byte-identical to
 # `string(x)` for every bit pattern, the specials, and every exponent form.
 @inline function _appendfloat!(out::_WriteOutput, x::Union{Float64, Float32, Float16}, o::WriteOpts)
@@ -897,7 +867,7 @@ _fallbackindices(direct::Vector{_WriteColumn}) = findall(col -> col.tag == 0x00,
 
 # One step per column, compiled once per column type: check the length,
 # store the descriptor, and return the column's cell byte bound. `@noinline`
-# keeps the descriptor stores (sixteen reference fields) out of the callers.
+# keeps the descriptor reference stores out of the callers.
 @noinline function _setdescriptor!(direct::Vector{_WriteColumn}, original::Vector{AbstractVector},
                                    i::Int, col::AbstractVector, nrows::Int, o::WriteOpts)
     length(col) == nrows || _lengthmismatch()

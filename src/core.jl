@@ -1054,11 +1054,10 @@ end
         @inbounds s = start + Int(rowstartrel[lr])
     else
         @inbounds e = tape[fi - 1]
-        k = e & 0x03
+        # A preceding event in the same row is always a delimiter.
         skip = delimskip
-        # ignorerepeated: the previous event closed a run of 1 + ext delimiters
-        k == 0x00 && !isempty(ext) && (skip += skip * Int(@inbounds ext[fi - 1]))
-        s = start + Int(e >> 2) + (k == 0x00 ? skip : Int(k))
+        isempty(ext) || (skip += skip * Int(@inbounds ext[fi - 1]))
+        s = start + Int(e >> 2) + skip
     end
     return (s, stop - s + 1)
 end
