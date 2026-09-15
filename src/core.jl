@@ -1018,14 +1018,19 @@ mutable struct ChunkIndex
                                 # row vectors from it instead of growing them)
     commentquote::Bool          # a dropped comment row held a quote byte (the fast
                                 # scan and the parallel plan may then be wrong)
+    heldrows::Int               # rows this chunk had when its payload was released;
+                                # `rowfirst` is empty exactly while it is released
 end
 
 ChunkIndex(start::Int, stop::Int) =
     ChunkIndex(start, stop, UInt32[], UInt32[], Int32[1], UInt32[], 1, 1, false, false, 0,
-               false)
+               false, 0)
 
-nrows(ci::ChunkIndex) = length(ci.rowfirst) - 1 - (ci.firstdatarow - 1)
-totalrows(ci::ChunkIndex) = length(ci.rowfirst) - 1
+nrows(ci::ChunkIndex) = totalrows(ci) - (ci.firstdatarow - 1)
+# A released chunk keeps only its row count: `rowfirst` always holds at least
+# the leading sentinel while the payload is present, so empty means released.
+@inline totalrows(ci::ChunkIndex) =
+    isempty(ci.rowfirst) ? ci.heldrows : length(ci.rowfirst) - 1
 nfields(ci::ChunkIndex, localrow::Int) = Int(ci.rowfirst[localrow + 1] - ci.rowfirst[localrow])
 
 # Absolute (pos, len) of field `col` in local row `localrow`, or `nothing` when the
@@ -1062,6 +1067,15 @@ end
     return (s, stop - s + 1)
 end
 
+# What a released chunk needs to index itself again: the dialect and scanner
+# that produced it, not the ones the caller asked for. `index` can fall back to
+# another dialect (a comment row holding a quote), so only the values it settled
+# on rebuild the same index.
+struct IndexSource
+    d::Dialect
+    scanner::Symbol
+end
+
 struct BufferIndex
     chunks::Vector{ChunkIndex}
     nrows::Int                  # total rows across chunks (header still included at this layer)
@@ -1070,6 +1084,75 @@ struct BufferIndex
     # structural scan, so this index may have merged rows: the reader must
     # rebuild it under the lenient quote rule before trusting it.
     barequote::Bool
+    src::IndexSource            # rebuilds a released chunk
+end
+
+# --- releasing and rebuilding one chunk's payload -----------------------------
+#
+# A whole-file index costs about `4 * (ncols + 1) + 8` bytes per row, which for
+# a narrow numeric file is several times the file itself. A batched reader only
+# ever reads one chunk at a time, so it releases each chunk once it is done and
+# rebuilds it on demand. `start`/`stop`/`firstdatarow` survive a release, so a
+# rebuilt chunk indexes exactly the same bytes; a row count trimmed by `limit`
+# is restored after the rebuild.
+
+indexreleased(ci::ChunkIndex) = isempty(ci.rowfirst)
+
+function releaseindex!(ci::ChunkIndex)
+    indexreleased(ci) && return ci
+    ci.heldrows = totalrows(ci)
+    # Fresh empty vectors, not `empty!`: a resized-down Array keeps its buffer.
+    ci.tape = UInt32[]
+    ci.ext = UInt32[]
+    ci.rowstartrel = UInt32[]
+    ci.rowfirst = Int32[]
+    return ci
+end
+
+function ensureindex!(ci::ChunkIndex, buf::Vector{UInt8}, src::IndexSource)
+    indexreleased(ci) || return ci
+    held, firstdatarow = ci.heldrows, ci.firstdatarow
+    ci.rowfirst = Int32[1]
+    indexone!(ci, buf, src.d, src.scanner)
+    # `limit` (and a multi-row header) trimmed this chunk after it was indexed;
+    # the rebuild sees the whole chunk again, so trim it back.
+    ci.firstdatarow = firstdatarow
+    if totalrows(ci) > held
+        resize!(ci.rowfirst, held + 1)
+        resize!(ci.rowstartrel, held)
+    end
+    return ci
+end
+
+# Bound a schema-pass window by both worker count and actual source bytes.
+# A single oversized chunk is allowed: row boundaries cannot be split.
+const INDEX_WINDOW_BYTES = 1 << 26
+
+chunkspan(ci::ChunkIndex) = ci.stop - ci.start + 1
+
+function indexwindow(tasklimit::Int, chunks, first::Int)
+    last = first
+    bytes = chunkspan(chunks[first])
+    maxchunks = max(tasklimit, 1)
+    while last < length(chunks) && last - first + 1 < maxchunks
+        nextbytes = chunkspan(chunks[last + 1])
+        nextbytes > INDEX_WINDOW_BYTES - bytes && break
+        bytes += nextbytes
+        last += 1
+    end
+    return last - first + 1
+end
+
+function indexgroup!(group, buf::Vector{UInt8}, src::IndexSource, tasklimit::Int)
+    n = length(group)
+    if n <= 1 || tasklimit <= 1
+        for ci in group
+            ensureindex!(ci, buf, src)
+        end
+    else
+        _taskforeach(ci -> ensureindex!(ci, buf, src), group, min(tasklimit, n))
+    end
+    return group
 end
 
 # --- tape plumbing -----------------------------------------------------------
@@ -2287,6 +2370,7 @@ function index(buf::Vector{UInt8}, d::Dialect;
                parallel::Bool=Threads.nthreads() > 1,
                ntasks::Union{Nothing, Int}=nothing,
                fastindex::Bool=true,
+               keepindex::Bool=true,
                _taskobserver=nothing)
     len = length(buf)
     # No lower bound beyond 1: a tiny chunkbytes forces row boundaries
@@ -2298,18 +2382,24 @@ function index(buf::Vector{UInt8}, d::Dialect;
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
     tasklimit = _readtasklimit(parallel, ntasks)
     sc = resolvescanner(d, fastindex)
-    datastart > len && return BufferIndex(ChunkIndex[], 0, false, false)
+    src = IndexSource(d, sc)
+    datastart > len && return BufferIndex(ChunkIndex[], 0, false, false, src)
 
     chunks = chunkplan(buf, d, datastart, chunkbytes, parallel, tasklimit;
                        _taskobserver)
+    # `keepindex=false` keeps only each chunk's row count and flags, so peak
+    # index memory is one chunk per task rather than the whole file. The
+    # reader rebuilds a chunk with `ensureindex!` when it needs its fields.
+    scanone! = ci -> begin
+        indexone!(ci, buf, d, sc)
+        keepindex || releaseindex!(ci)
+    end
     if length(chunks) == 1 || tasklimit <= 1
         for ci in chunks
-            indexone!(ci, buf, d, sc)
+            scanone!(ci)
         end
     else
-        _taskforeach(chunks, tasklimit, _taskobserver) do ci
-            indexone!(ci, buf, d, sc)
-        end
+        _taskforeach(scanone!, chunks, tasklimit, _taskobserver)
     end
 
     # A comment row held a quote byte: the parallel plan (and a fast scan)
@@ -2318,7 +2408,7 @@ function index(buf::Vector{UInt8}, d::Dialect;
     if commentaware(d) && !d.commentquotes && !d.lenient &&
        any(ci -> ci.commentquote, chunks)
         return index(buf, withcommentquotes(d); datastart, chunkbytes, parallel, ntasks,
-                     fastindex, _taskobserver)
+                     fastindex, keepindex, _taskobserver)
     end
     # Every non-final chunk ends after a complete row. It must therefore end
     # outside a quoted field. A failure here means that chunk planning is wrong.
@@ -2331,7 +2421,7 @@ function index(buf::Vector{UInt8}, d::Dialect;
     unclosed = !isempty(chunks) && last(chunks).unclosedquote
     bare = any(ci -> ci.barequote, chunks)
     filter!(ci -> totalrows(ci) > 0, chunks)
-    return BufferIndex(chunks, sum(totalrows, chunks; init=0), unclosed, bare)
+    return BufferIndex(chunks, sum(totalrows, chunks; init=0), unclosed, bare, src)
 end
 
 index(buf::Vector{UInt8}; kw...) = index(buf, Dialect(); kw...)
@@ -3235,7 +3325,8 @@ function sampletypes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncols::Int,
                      selected::Union{Nothing, Vector{Bool}}=nothing,
                      sawmissing::Union{Nothing, Vector{Bool}}=nothing,
                      colopts::Union{Nothing, Vector{ValueOpts}}=nothing,
-                     maxrows::Union{Nothing, Int}=nothing)
+                     maxrows::Union{Nothing, Int}=nothing,
+                     src::Union{Nothing, IndexSource}=nothing)
     nsample >= 1 || throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
     total = sum(nrows, chunks; init=0)
     # rows past `limit` are never output: they must not seed union finals
@@ -3243,12 +3334,24 @@ function sampletypes(buf::Vector{UInt8}, chunks::Vector{ChunkIndex}, ncols::Int,
     total == 0 && return fill(Missing, ncols)
     types = fill(Missing, ncols)
     count = min(total, nsample)
-    for k in 1:count
-        # Exact integer interpolation includes both ends without duplicates.
-        gr = count == 1 ? 1 :
-             1 + Int(widemul(k - 1, total - 1) ÷ (count - 1))
-        ci, lr = locate(chunks, gr)
-        sampledetect!(types, buf, ci, lr, ncols, opts, selected, sawmissing, colopts)
+    # Sample rows climb through the file, so released chunks are rebuilt at most
+    # once each and only one is held at a time.
+    held = nothing
+    try
+        for k in 1:count
+            # Exact integer interpolation includes both ends without duplicates.
+            gr = count == 1 ? 1 :
+                 1 + Int(widemul(k - 1, total - 1) ÷ (count - 1))
+            ci, lr = locate(chunks, gr)
+            if src !== nothing && ci !== held
+                held === nothing || releaseindex!(held)
+                # only a chunk this call rebuilt is released again
+                held = indexreleased(ci) ? ensureindex!(ci, buf, src) : nothing
+            end
+            sampledetect!(types, buf, ci, lr, ncols, opts, selected, sawmissing, colopts)
+        end
+    finally
+        held === nothing || releaseindex!(held)
     end
     return types
 end

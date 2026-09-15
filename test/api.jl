@@ -1749,6 +1749,96 @@ end
     @test values == ["v$(i % 17)" for i in 1:generatedrows]
 end
 
+@testset "Chunks streams its structural index (#1048)" begin
+    live(c) = count(!K.indexreleased, getfield(getfield(c, :inner), :chunks))
+    allchunks(c) = getfield(getfield(c, :inner), :chunks)
+    src = "a,b\n" * join(("$i,$(i * 3)" for i in 1:20_000), '\n') * "\n"
+
+    # Construction retains no field indexes; iteration keeps one bounded window.
+    c = A.Chunks(IOBuffer(src); chunkbytes=1024)
+    @test length(allchunks(c)) > 50
+    @test live(c) == 0
+    @test Base.summarysize(allchunks(c)) < length(src)
+    peak, total = 0, 0
+    for b in c
+        peak = max(peak, live(c))
+        total += length(b.a)
+    end
+    @test total == 20_000
+    @test peak <= max(0, Threads.nthreads() - 1)
+    @test live(c) == 0
+    # Early stops and restarted passes must not accumulate cached windows.
+    for stop in (10, 3, 1)
+        @test length(collect(Iterators.take(c, stop))) == stop
+        @test live(c) <= max(0, Threads.nthreads() - 1)
+    end
+    broken = A.Chunks(IOBuffer("a\n1\nnope\n"); types=Int, chunkbytes=2, on_error=:error)
+    @test_throws A.ParseError collect(broken)
+    @test live(broken) == 0
+
+    # keepindex=true is the 1.0.0 behavior: the whole index stays resident.
+    k = A.Chunks(IOBuffer(src); chunkbytes=1024, keepindex=true)
+    @test live(k) == length(allchunks(k))
+    @test Base.summarysize(allchunks(k)) > 4 * Base.summarysize(allchunks(c))
+    @test [collect(b.a) for b in k] == [collect(b.a) for b in A.Chunks(IOBuffer(src); chunkbytes=1024)]
+
+    # Every pass that reads the index agrees with the retained-index reading.
+    header3 = "x,y\n" * join(("r$i,$i" for i in 1:400), '\n') * "\n"
+    cases = [(; chunkbytes=64),
+             (; chunkbytes=64, skipto=25),
+             (; chunkbytes=64, footerskip=17),
+             (; chunkbytes=64, limit=101),
+             (; chunkbytes=64, limit=0),
+             (; chunkbytes=64, skipto=30, footerskip=5, limit=40),
+             (; chunkbytes=64, header=[1, 2]),
+             (; chunkbytes=64, header=false),
+             (; chunkbytes=64, select=[:y]),
+             (; chunkbytes=64, pool=true),
+             (; chunkbytes=1 << 20),
+             (; ntasks=3)]
+    for kw in cases, parallel in (false, true)
+        streamed = collect(A.Chunks(IOBuffer(header3); parallel, kw...))
+        kept = collect(A.Chunks(IOBuffer(header3); parallel, keepindex=true, kw...))
+        @test length(streamed) == length(kept)
+        @test Base.names(A.Chunks(IOBuffer(header3); parallel, kw...)) ==
+              Base.names(A.Chunks(IOBuffer(header3); parallel, keepindex=true, kw...))
+        for (a, b) in zip(streamed, kept)
+            @test Tables.columnnames(a) == Tables.columnnames(b)
+            for nm in Tables.columnnames(a)
+                @test isequal(collect(Tables.getcolumn(a, nm)), collect(Tables.getcolumn(b, nm)))
+            end
+        end
+    end
+
+    # A comment row holding a quote reindexes under another dialect; a released
+    # chunk must rebuild with THAT dialect, not the one first asked for.
+    poison = "# it\'s \"quoted\" here\na,b\n#\"\n1,2\n\"x\ny\",3\n4,5\n"
+    for cb in (8, 64, 1 << 20)
+        got = reduce(vcat, (String.(b.a) for b in A.Chunks(IOBuffer(poison); comment="#", chunkbytes=cb)))
+        @test got == ["1", "x\ny", "4"]
+    end
+    # Same for the lenient rebuild a bare quote forces.
+    bare = "a,b\n5\' 11\",x\n2,y\n"
+    @test reduce(vcat, (String.(b.b) for b in A.Chunks(IOBuffer(bare); chunkbytes=8))) == ["x", "y"]
+
+    # Both timestamp columns widen in a later index window. Earlier fine
+    # fractions must then be checked again, without losing values or precision.
+    ordinary = "2020-01-02T03:04:05.123456"
+    fine = "2020-01-02T03:04:05.123456789"
+    wide = "9999-12-31T23:59:59"
+    x, y = fill(ordinary, 1000), fill(ordinary, 1000)
+    x[2] = y[3] = fine
+    x[7] = y[8] = wide
+    timestamps = "x,y\n" * join(("$(x[i]),$(y[i])" for i in eachindex(x)), '\n') * "\n"
+    for parallel in (false, true), keepindex in (false, true)
+        batches = collect(A.Chunks(IOBuffer(timestamps); chunkbytes=16, ntasks=4,
+                                   parallel, keepindex))
+        @test all(b -> eltype(b.x) === A.DataString && eltype(b.y) === A.DataString, batches)
+        @test reduce(vcat, (collect(b.x) for b in batches)) == x
+        @test reduce(vcat, (collect(b.y) for b in batches)) == y
+    end
+end
+
 @testset "wide batches merge diagnostics in source order" begin
     ncols = 64
     header = join(("c$j" for j in 1:ncols), ',') * "\n"

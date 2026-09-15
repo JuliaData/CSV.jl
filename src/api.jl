@@ -610,13 +610,33 @@ function _countrows(buf::Vector{UInt8}, d::Dialect, from::Int)
     return total + ((total == 0 || lastnext <= len) ? 1 : 0)
 end
 
+# Run `f(ci)` with `ci`'s payload present, releasing it again when it arrived
+# released. `src === nothing` means this reader keeps every chunk indexed.
+@inline function withindex(f, ci::ChunkIndex, buf, src)
+    (src === nothing || !indexreleased(ci)) && return f(ci)
+    ensureindex!(ci, buf, src::IndexSource)
+    try
+        return f(ci)
+    finally
+        releaseindex!(ci)
+    end
+end
+
 # advance chunks past every row starting before `byteoff`
-function _skiptobyte!(chunks::Vector{ChunkIndex}, byteoff::Int)
+function _skiptobyte!(chunks::Vector{ChunkIndex}, byteoff::Int, buf=nothing, src=nothing)
     for ci in chunks
-        while nrows(ci) > 0 &&
-              ci.start + Int(ci.rowstartrel[ci.firstdatarow]) < byteoff
-            ci.firstdatarow += 1
+        # Chunks are in file order, so the first chunk that still has rows once
+        # the cursor stops has taken the whole skip: every later row starts
+        # after `byteoff`. Stopping here also spares a released index the
+        # rebuild of every remaining chunk.
+        ci.start >= byteoff && break
+        withindex(ci, buf, src) do ci
+            while nrows(ci) > 0 &&
+                  ci.start + Int(ci.rowstartrel[ci.firstdatarow]) < byteoff
+                ci.firstdatarow += 1
+            end
         end
+        nrows(ci) > 0 && break
     end
 end
 
@@ -662,10 +682,17 @@ function _footeroffset(buf::Vector{UInt8}, d::Dialect, rawstart::Int, footerskip
     return rawstart # target is guaranteed by the count pass
 end
 
-function _rowsbefore(chunks::Vector{ChunkIndex}, byteoff::Int)
+function _rowsbefore(chunks::Vector{ChunkIndex}, byteoff::Int, buf=nothing, src=nothing)
     n = 0
-    for ci in chunks, lr in ci.firstdatarow:totalrows(ci)
-        ci.start + Int(ci.rowstartrel[lr]) < byteoff && (n += 1)
+    for ci in chunks
+        ci.start >= byteoff && break     # this chunk and every later one start past it
+        n += withindex(ci, buf, src) do ci
+            m = 0
+            for lr in ci.firstdatarow:totalrows(ci)
+                ci.start + Int(ci.rowstartrel[lr]) < byteoff && (m += 1)
+            end
+            m
+        end
     end
     return n
 end
@@ -678,8 +705,12 @@ function _limitrows!(chunks::Vector{ChunkIndex}, limit::Int)
             remaining -= n
         elseif remaining > 0
             lastrow = ci.firstdatarow + remaining - 1
-            resize!(ci.rowfirst, lastrow + 1)
-            resize!(ci.rowstartrel, lastrow)
+            if indexreleased(ci)
+                ci.heldrows = lastrow            # the rebuild trims back to this
+            else
+                resize!(ci.rowfirst, lastrow + 1)
+                resize!(ci.rowstartrel, lastrow)
+            end
             remaining = 0
         else
             ci.firstdatarow = totalrows(ci) + 1
@@ -753,10 +784,11 @@ function _prepare(source;
                   prefetch::Bool=true,
                   validate::Bool=true,
                   lenient::Bool=false,
+                  keepindex::Bool=true,
                   kw...)
     return _prepare(source, header, normalizenames, skipto, footerskip, missingstring,
                     delim, limit, samplebytes, chunkbytes, parallel, ntasks,
-                    buffer_in_memory, prefetch, validate, lenient, kw)
+                    buffer_in_memory, prefetch, validate, lenient, keepindex, kw)
 end
 
 # Keep source handling, sniffing and row-window construction independent of the
@@ -767,7 +799,7 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
                   @nospecialize(chunkbytes::Union{Nothing, Int}), parallel::Bool,
                   @nospecialize(ntasks::Union{Nothing, Int}),
                   buffer_in_memory::Bool, prefetch::Bool, validate::Bool, lenient::Bool,
-                  @nospecialize(kw))
+                  keepindex::Bool, @nospecialize(kw))
     header isa Integer && header < 0 &&
         throw(ArgumentError("header must be ≥ 0 (got $header)"))
     if header isa AbstractVector{<:Integer} && !isempty(header)
@@ -860,7 +892,7 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
         datastart = anchoroff
         rowoff(n::Int) = n < firstrow ? _physicallineoffset(buf, rawstart, n) :
                                         _rawrowoffset(buf, d, anchoroff, n - firstrow + 1)
-        bi = index(buf, d; datastart, chunkbytes=cb, parallel, ntasks, fastindex)
+        bi = index(buf, d; datastart, chunkbytes=cb, parallel, ntasks, fastindex, keepindex)
         _joinprefetch!(workers)
         if bi.barequote && !lenient
             # A quote that did not start its field (`5' 11"`, `x"y`) made the
@@ -869,9 +901,12 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
             # Well-formed input never takes this path.
             return _prepare(buf, header, normalizenames, skipto, footerskip, missingstring,
                             delim, limit, samplebytes, chunkbytes, parallel, ntasks,
-                            buffer_in_memory, prefetch, validate, true, kw)
+                            buffer_in_memory, prefetch, validate, true, keepindex, kw)
         end
         chunks = bi.chunks
+        # `nothing` while every chunk stays indexed: the helpers then skip the
+        # release/rebuild bookkeeping entirely.
+        idxsrc = keepindex ? nothing : bi.src
         headerlog = ProblemLog(get(kw, :maxproblems, 10_000))
         headerrefs = Tuple{ChunkIndex, Int}[]
 
@@ -881,7 +916,8 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
         elseif header === false || isempty(chunks) ||
                (header isa AbstractVector && isempty(header))   # header=[] ⇒ generate ColumnN
             k = _firstlive(chunks)
-            n = k === nothing ? 0 : nfields(chunks[k], chunks[k].firstdatarow)
+            n = k === nothing ? 0 :
+                withindex(ci -> nfields(ci, ci.firstdatarow), chunks[k], buf, idxsrc)
             [Symbol("Column", j) for j in 1:n]
         elseif header === true || length(headerrows) == 1
             k = _firstlive(chunks)
@@ -889,7 +925,8 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
                 Symbol[]
             else
                 push!(headerrefs, (chunks[k], chunks[k].firstdatarow))
-                parseheader!(buf, chunks[k], opts, d, headerlog)
+                withindex(ci -> parseheader!(buf, ci, opts, d, headerlog),
+                          chunks[k], buf, idxsrc)
             end
         else
             # multi-row header: the LISTED raw rows (not necessarily consecutive —
@@ -899,16 +936,17 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
             parts = Vector{Vector{Symbol}}()
             firstrows = Int[ci.firstdatarow for ci in chunks]
             for hr in headerrows
-                _skiptobyte!(chunks, rowoff(hr))
+                _skiptobyte!(chunks, rowoff(hr), buf, idxsrc)
                 k = _firstlive(chunks)
                 k === nothing && break
                 push!(headerrefs, (chunks[k], chunks[k].firstdatarow))
-                push!(parts, parseheader!(buf, chunks[k], opts, d, headerlog))
+                push!(parts, withindex(ci -> parseheader!(buf, ci, opts, d, headerlog),
+                                       chunks[k], buf, idxsrc))
             end
             for (ci, firstrow) in zip(chunks, firstrows)
                 ci.firstdatarow = firstrow
             end
-            _skiptobyte!(chunks, rowoff(_saturatedinc(headerrow)))
+            _skiptobyte!(chunks, rowoff(_saturatedinc(headerrow)), buf, idxsrc)
             if isempty(parts)
                 Symbol[]
             else
@@ -923,7 +961,7 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
         if skipto !== nothing
             skipto > rawheaderrow ||
                 throw(ArgumentError("skipto=$skipto must be past the header (row $rawheaderrow)"))
-            _skiptobyte!(chunks, rowoff(_saturatedint(skipto)))
+            _skiptobyte!(chunks, rowoff(_saturatedint(skipto)), buf, idxsrc)
         end
         # A non-comment physical row consumes at least one source byte. A footer
         # count larger than the buffer therefore removes every possible row; avoid
@@ -932,7 +970,8 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
         # prefix row must not swallow the file (the prefix is quote-blind).
         footer = footerskip > 0 && footerskip >= length(buf) ? anchoroff :
                  _footeroffset(buf, d, anchoroff, Int(footerskip))
-        keep = footerskip == 0 ? sum(nrows, chunks; init=0) : _rowsbefore(chunks, footer)
+        keep = footerskip == 0 ? sum(nrows, chunks; init=0) :
+               _rowsbefore(chunks, footer, buf, idxsrc)
         lim = limit === nothing ? (footerskip > 0 ? keep : nothing) :
               limit >= keep ? keep : Int(limit)
 
@@ -2518,6 +2557,7 @@ struct Chunks
     stringrequests::Union{Nothing, Vector{Union{Nothing, Type}}}  # settled per column
     poolspec::Union{Nothing, Tuple{Float64, Int}}
     warned::Base.RefValue{Bool}   # on_error=:warn reports the first batch with problems
+    indexwindow::Base.RefValue{UnitRange{Int}} # sole live window of rebuilt indexes
 end
 
 Base.length(c::Chunks) = length(getfield(c, :inner))
@@ -2544,6 +2584,31 @@ end
 
 function Base.iterate(c::Chunks, state::Int=1)
     inner = getfield(c, :inner)
+    state > length(inner) && return nothing
+    chunks, src = inner.chunks, inner.src
+    window = getfield(c, :indexwindow)
+    ci = chunks[state]
+    try
+        if src !== nothing && indexreleased(ci)
+            # A restarted or interleaved pass replaces the previous window.
+            foreach(releaseindex!, view(chunks, window[]))
+            hi = state + indexwindow(inner.ntasks, chunks, state) - 1
+            window[] = state:hi
+            indexgroup!(view(chunks, window[]), inner.buf, src,
+                        _readtasklimit(true, inner.ntasks))
+        end
+        return _nextbatch(c, inner, state)
+    catch
+        src === nothing || foreach(releaseindex!, view(chunks, window[]))
+        window[] = 1:0
+        rethrow()
+    finally
+        # Diagnostics and conversions must finish before this payload is freed.
+        src === nothing || releaseindex!(ci)
+    end
+end
+
+function _nextbatch(c::Chunks, inner::Batches, state::Int)
     it = iterate(inner, state)
     it === nothing && return nothing
     t, next = it
@@ -2572,7 +2637,7 @@ end
 function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
                 maxproblems::Int=10_000, stringtype::Type=DataString,
                 pool=DEFAULT_POOL, select=nothing, drop=nothing, strict::Bool=false,
-                on_error::Symbol=strict ? :error : :warn, kw...)
+                on_error::Symbol=strict ? :error : :warn, keepindex::Bool=false, kw...)
     nt = something(ntasks, Threads.nthreads())
     nt >= 1 || throw(ArgumentError("ntasks must be ≥ 1 (got $nt)"))
     maxproblems >= 0 || throw(ArgumentError("maxproblems must be ≥ 0 (got $maxproblems)"))
@@ -2593,7 +2658,9 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     end
     haskey(kw, :parallel) || (kw = (; kw..., parallel=nt > 1))
     capturecap = max(maxproblems, 1)
-    p = _prepare(source; ntasks=nt, maxproblems=capturecap, kw...)
+    # Keep only chunk metadata between passes unless the caller retains indexes.
+    p = _prepare(source; ntasks=nt, maxproblems=capturecap, keepindex, kw...)
+    idxsrc = keepindex ? nothing : p.bi.src
     chunks = p.bi.chunks
     fullrows = sum(nrows, chunks; init=0)
     p.limit === nothing || _limitrows!(chunks, p.limit)
@@ -2606,7 +2673,8 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     # with the monomorphic scalar parsers (promoting on the first conflict).
     if any(j -> seed[j] === nothing, plan.sources)
         selected = _selectedmask(plan, p.ncols)
-        inferred = sampletypes(p.buf, chunks, p.ncols, p.opts; selected, colopts=plan.colopts)
+        inferred = sampletypes(p.buf, chunks, p.ncols, p.opts; selected, colopts=plan.colopts,
+                               src=idxsrc)
         for j in plan.sources
             seed[j] === nothing && (seed[j] = inferred[j])
         end
@@ -2614,14 +2682,15 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     seedtypes = Type[seed[j] for j in plan.sources]
     maxlens = zeros(Int, length(seedtypes))
     allowmissing = settlebatchschema!(seedtypes, p.buf, chunks, plan, maxlens;
-                                      parallel=get(kw, :parallel, nt > 1), tasklimit=nt)
+                                      parallel=get(kw, :parallel, nt > 1), tasklimit=nt,
+                                      src=idxsrc)
     stringrequests = _settlestringrequests(plan, seedtypes, maxlens, stringtype)
     unclosedquote = p.bi.unclosedquote && (p.limit === nothing || p.limit >= fullrows)
     inner = Batches(p.buf, chunks, p.names[plan.sources], plan, seedtypes,
                     allowmissing, p.d, capturecap, unclosedquote,
-                    get(kw, :parallel, nt > 1) ? nt : 1)
+                    get(kw, :parallel, nt > 1) ? nt : 1, idxsrc)
     return Chunks(name, inner, p.headerlog, maxproblems, plan, on_error,
-                  stringtype, stringrequests, poolspec, Ref(false))
+                  stringtype, stringrequests, poolspec, Ref(false), Ref(1:0))
 end
 
 # One output string type per text column for the whole row window: an

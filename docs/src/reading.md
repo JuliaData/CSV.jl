@@ -371,12 +371,27 @@ semantics as `CSV.File`.
 batch has the same column types. Pooling is evaluated separately in each
 batch.
 
-`ntasks` sets the target batch count. Pass `chunkbytes` for direct size
-control. A `CSV.Chunks` pool policy must be one `Bool`, ratio, or
-`(ratio, maximum_levels)` value; per-column pool dictionaries and vectors are
-only supported by `CSV.File`.
+`ntasks` controls the default target batch size and limits parallel work.
+The default `chunkbytes` is the source size divided by `ntasks`, clamped to
+1 KiB–4 MiB. Pass `chunkbytes` to choose another target; complete rows can
+exceed it, so `ntasks` is not an exact batch count. A `CSV.Chunks` pool policy
+must be one `Bool`, ratio, or `(ratio, maximum_levels)` value; per-column pool
+dictionaries and vectors are only supported by `CSV.File`.
 List `select` and `drop` forms project the same file-ordered column set in every
 batch.
+
+By default, `CSV.Chunks` keeps field indexes for a bounded window of batches
+and releases each index after use. Rebuilding indexes trades extra scanning
+for lower memory use.
+`keepindex=true` retains the complete field index to avoid that repeated work.
+The constructor still reads all rows to settle one schema before yielding a batch.
+
+This bounds the live field index by the active chunks, not total process memory.
+Stopping early can retain one index window. Chunk metadata and the source
+remain available throughout iteration. Large local
+files are normally memory-mapped; byte buffers, IO inputs, and
+`buffer_in_memory=true` keep source bytes in memory. Retaining batches also
+retains their columns and any source bytes referenced by string values.
 
 ## Tables.Scan pushdown
 

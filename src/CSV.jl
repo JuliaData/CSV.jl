@@ -82,16 +82,30 @@ retain parse diagnostics, so use [`CSV.File`](@ref CSV.File) when
 name, or a `Regex`) project columns in stable file order.
 """ Rows
 @doc """
-    CSV.Chunks(source; ntasks=Threads.nthreads(), keywords...)
+    CSV.Chunks(source; ntasks=Threads.nthreads(), keepindex=false, keywords...)
 
 Iterate a source as stable-schema [`CSV.File`](@ref CSV.File) batches and
 provide the Tables.jl partitions interface. Every batch has the same column
 types, including one settled width for an auto-width string request such as
-`stringtype=InlineString`. Pooling is evaluated per batch. `ntasks` sets the
-target batch count; use `chunkbytes` for direct size control. List `select`
+`stringtype=InlineString`. Pooling is evaluated per batch. List `select`
 and `drop` forms project every batch in stable file order. With the default
 `on_error=:warn`, the first batch with parse problems prints one summary
 warning; every batch keeps its own [`CSV.problems`](@ref CSV.problems).
+
+`ntasks` controls the default target batch size and limits parallel work.
+The default `chunkbytes` is the source size divided by `ntasks`, clamped to
+1 KiB–4 MiB. Pass `chunkbytes` for another target; complete rows can exceed it,
+so `ntasks` is not an exact batch count.
+
+By default, field indexes are rebuilt in bounded windows and released after
+each batch. Stopping early can retain one index window.
+`keepindex=true` retains the complete index to avoid repeated scanning. The
+constructor still reads all rows to settle the schema before yielding a batch.
+Chunk metadata and the source remain available throughout iteration; this
+bounds the live field index, not total process memory. Large local files are
+normally memory-mapped, while IO inputs and `buffer_in_memory=true` keep source
+bytes in memory. Retaining batches also retains their columns and any source
+bytes referenced by string values.
 """ Chunks
 @doc """
     CSV.read(source, sink; keywords...)
