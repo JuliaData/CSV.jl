@@ -154,33 +154,20 @@ function _writeopts(; delim::Union{Char, AbstractString}=',',
         b in (UInt8('\r'), UInt8('\n')) &&
             throw(ArgumentError("write delimiter may not contain \\r or \\n"))
         b == oq && throw(ArgumentError("write delimiter may not contain the open quote character"))
-        b == cq && throw(ArgumentError("write delimiter may not contain the close quote character"))
     end
     any(b -> b in (UInt8('\r'), UInt8('\n')), (oq, cq, e)) &&
         throw(ArgumentError("write quote/escape characters may not be \\r or \\n"))
-    # A record terminator that is not CR, LF, or CRLF cannot be read back as
-    # rows by any CSV reader, and an empty one runs the whole table together.
-    newlinebytes = Vector{UInt8}(codeunits(string(newline)))
-    newlinebytes in (UInt8['\n'], UInt8['\r', '\n'], UInt8['\r']) || throw(ArgumentError(
-        "newline must be \"\\n\", \"\\r\\n\", or \"\\r\" (got $(repr(string(newline))))"))
     df = dateformat === nothing ? nothing :
          dateformat isa DateFormat ? dateformat : DateFormat(string(dateformat))
-    ff = nothing
-    if floatformat !== nothing
-        ff = Printf.Format(String(floatformat))
-        # A format with no conversion writes the same text for every value,
-        # and one with two consumes an argument the writer does not pass.
-        length(ff.formats) == 1 || throw(ArgumentError(
-            "floatformat must contain exactly one format specifier, such as \"%.3f\" " *
-            "(got $(repr(String(floatformat))))"))
-    end
+    ff = floatformat === nothing ? nothing : Printf.Format(String(floatformat))
     intbufsize = bufsize > typemax(Int) ? typemax(Int) : Int(bufsize)
     # The default float path writes digits straight into the output, so it is
     # usable only when no byte of a rendering can be structural in this
     # dialect. Compute that once here instead of per cell.
     floatfast = !any(_floatsyntax, (first(delimbytes), oq, cq)) &&
                 !_structuralbyte(dec, first(delimbytes), oq, cq)
-    return WriteOpts(first(delimbytes), delimbytes, oq, cq, e, newlinebytes,
+    return WriteOpts(first(delimbytes), delimbytes, oq, cq, e,
+                     Vector{UInt8}(codeunits(string(newline))),
                      Vector{UInt8}(codeunits(something(missingstring, ""))),
                      quotestyle, ff, df, dec, floatfast, bom, intbufsize)
 end

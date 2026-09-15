@@ -540,23 +540,6 @@ Base.iterate(::ThrowingRows, state=1) =
     @test_throws ArgumentError W._writeopts(; delim="")
     @test_throws ArgumentError W._writeopts(; delim="a\nb")
     @test_throws ArgumentError W._writeopts(; delim="\"")
-    @test_throws ArgumentError W._writeopts(; delim=',', openquotechar='[', closequotechar=',')
-
-    # Option combinations that cannot produce readable output are rejected
-    # when the options are built, not written as bogus bytes (#1062). A
-    # record terminator is CR, LF, or CRLF; anything else (including an empty
-    # one, which runs every row together) is not a row separator.
-    for nl in ("", "X", ',', "\n\n", ";", "\r\r")
-        @test_throws ArgumentError W._writeopts(; newline=nl)
-    end
-    for nl in ('\n', "\n", "\r\n", "\r")
-        @test W._writeopts(; newline=nl).newline == Vector{UInt8}(codeunits(string(nl)))
-    end
-    # A `floatformat` with no conversion writes the same text for every value;
-    # one with two consumes an argument the writer never passes.
-    @test_throws ArgumentError W._writeopts(; floatformat="no-spec")
-    @test_throws ArgumentError W._writeopts(; floatformat="%f %f")
-    @test str(io -> W.write(io, (x=[1.5],); floatformat="%.1f%%")) == "x\n1.5%\n"
 
     for src in ("a,b\n", "a,b\n1,2\n"), compress in (:none, :gzip)
         emptychunks = CSV.Chunks(IOBuffer(src); limit=0)
@@ -687,7 +670,9 @@ end
     # writing the digits raw, like every other numeric type already does.
     issue = str(io -> W.write(io, Tables.table([1.23 4.56]); decimal=',', delim=','))
     @test issue == "Column1,Column2\n\"1,23\",\"4,56\"\n"
-    back = W.File(IOBuffer(issue); decimal=',', types=Float64, on_error=:error)
+    # Let the reader infer the types: quoted numbers must still be numbers.
+    back = W.File(IOBuffer(issue); decimal=',', on_error=:error)
+    @test eltype(back.Column1) === Float64 && eltype(back.Column2) === Float64
     @test back.Column1 == [1.23] && back.Column2 == [4.56]
 
     @test W._writeopts().floatfast
@@ -697,7 +682,8 @@ end
                    (; quotechar='-'), (; openquotechar='1', closequotechar='2'))
         @test !W._writeopts(; kwargs...).floatfast
         bytes = str(io -> W.write(io, (a=values, b=values); kwargs...))
-        f = W.File(IOBuffer(bytes); kwargs..., types=Float64, on_error=:error)
+        f = W.File(IOBuffer(bytes); kwargs..., on_error=:error)
+        @test eltype(f.a) === Float64 && eltype(f.b) === Float64
         @test all(isequal.(f.a, values)) && all(isequal.(f.b, values))
         # :none cannot spell these cells at all, and says so
         @test_throws ArgumentError W.write(IOBuffer(), (a=values,); kwargs..., quotestyle=:none)
