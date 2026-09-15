@@ -2490,17 +2490,23 @@ _rowcell(::Type{T}, v::_IndexedRow, j::Int, ::Val) where {T} = _typedvalue(T, v,
 _rowstring(::Type{String}, x::DataString) = String(x)
 _rowstring(::Type{DataString}, x::DataString) = x
 _rowstring(::Type{Symbol}, x::DataString) = Symbol(x)
-function Tables.getcolumn(row::Row{NT}, nm::Symbol) where {NT}
+# Inline the access wrappers so a literal column name or index reaches the
+# typed lookup above. This avoids dynamic dispatch and boxing on cell access.
+@inline function Tables.getcolumn(row::Row{NT}, nm::Symbol) where {NT}
     j = Base.fieldindex(NT, nm, false)
     j == 0 && throw(KeyError(nm))
     return Tables.getcolumn(row, j)
 end
 
-Tables.getcolumn(row::Row, ::Type{T}, j::Int, nm::Symbol) where {T} =
+@inline Tables.getcolumn(row::Row, ::Type{T}, j::Int,
+                         nm::Symbol) where {T} =
     Tables.getcolumn(row, j)
-Base.getindex(row::Row, j::Int) = Tables.getcolumn(row, j)
-Base.getindex(row::Row, nm::Symbol) = Tables.getcolumn(row, nm)
-Base.getindex(row::Row, nm::AbstractString) = Tables.getcolumn(row, Symbol(nm))
+@inline Base.getindex(row::Row, j::Int) =
+    Tables.getcolumn(row, j)
+@inline Base.getindex(row::Row, nm::Symbol) =
+    Tables.getcolumn(row, nm)
+@inline Base.getindex(row::Row, nm::AbstractString) =
+    Tables.getcolumn(row, Symbol(nm))
 rownumber(row::Row) = getfield(getfield(row, :view), :rownumber)
 
 # ---------------------------------------------------------------------------
