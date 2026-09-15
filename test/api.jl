@@ -1150,6 +1150,45 @@ end
     end
 end
 
+@testset "Rows cell access is allocation-free" begin
+    # `getcolumn(::Row, ::Int)` is typed only while `j` is a compile-time constant.
+    # Every user-facing form reaches it through a forwarding method, and a forward
+    # that blocks constant propagation makes the cell type unknown, the `_rowcell`
+    # call dynamic and the value boxed — several hundred bytes of garbage per cell.
+    # Guard the folded path: a scan over a typed `Rows` must not allocate at all.
+    input = IOBuffer("a,b,c\n" * join(("$(i),s$(i),$(i).5" for i in 1:2000), "\n") * "\n")
+    rows = A.Rows(seekstart(input); types=[Int64, String, Float64])
+
+    sumprop(r) = (s = 0.0; for row in r; s += row.c; end; s)
+    sumint(r) = (s = 0.0; for row in r; s += row[3]; end; s)
+    sumsym(r) = (s = 0.0; for row in r; s += row[:c]; end; s)
+    sumcol(r) = (s = 0.0; for row in r; s += Tables.getcolumn(row, 3); end; s)
+    sumtyped(r) = (s = 0.0; for row in r
+                       s += Tables.getcolumn(row, Float64, 3, :c)
+                   end; s)
+    sumfirst(r) = (s = 0; for row in r; s += row.a; end; s)
+
+    expected = sum(i + 0.5 for i in 1:2000)
+    for f in (sumprop, sumint, sumsym, sumcol, sumtyped)
+        @test f(rows) ≈ expected          # correct, and warms inference
+        @test @allocated(f(rows)) == 0
+    end
+    @test sumfirst(rows) == sum(1:2000)
+    @test @allocated(sumfirst(rows)) == 0
+
+    # A runtime index still resolves correctly; it just dispatches per cell.
+    function sumdynamic(r, j)
+        s = 0.0
+        for row in r
+            s += row[j]
+        end
+        return s
+    end
+    @test sumdynamic(rows, Ref(3)[]) ≈ expected
+    @test first(rows)["c"] == 1.5         # AbstractString lookup still works
+    @test_throws KeyError first(rows)[:nope]
+end
+
 @testset "source worker lifetime" begin
     env = dirname(Base.active_project())
     script = joinpath(@__DIR__, "prefetch.jl")
