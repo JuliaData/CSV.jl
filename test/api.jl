@@ -1155,9 +1155,15 @@ end
     # Every user-facing form reaches it through a forwarding method, and a forward
     # that blocks constant propagation makes the cell type unknown, the `_rowcell`
     # call dynamic and the value boxed — several hundred bytes of garbage per cell.
-    # Guard the folded path: a scan over a typed `Rows` must not allocate at all.
-    input = IOBuffer("a,b,c\n" * join(("$(i),s$(i),$(i).5" for i in 1:2000), "\n") * "\n")
-    rows = A.Rows(seekstart(input); types=[Int64, String, Float64])
+    # The invariant that pins that down is a scaling one: a scan's allocation must
+    # not grow with the row count. (Asserting a literal 0 is too strict — some
+    # Julia versions charge a fixed handful of bytes to the `@allocated` call
+    # itself, independent of the loop.)
+    function mkrows(n)
+        text = "a,b,c\n" * join(("$(i),s$(i),$(i).5" for i in 1:n), "\n") * "\n"
+        return A.Rows(IOBuffer(text); types=[Int64, String, Float64])
+    end
+    small, big = mkrows(500), mkrows(5000)
 
     sumprop(r) = (s = 0.0; for row in r; s += row.c; end; s)
     sumint(r) = (s = 0.0; for row in r; s += row[3]; end; s)
@@ -1168,13 +1174,16 @@ end
                    end; s)
     sumfirst(r) = (s = 0; for row in r; s += row.a; end; s)
 
-    expected = sum(i + 0.5 for i in 1:2000)
+    cexpected(n) = sum(i + 0.5 for i in 1:n)
     for f in (sumprop, sumint, sumsym, sumcol, sumtyped)
-        @test f(rows) ≈ expected          # correct, and warms inference
-        @test @allocated(f(rows)) == 0
+        @test f(small) ≈ cexpected(500)
+        @test f(big) ≈ cexpected(5000)       # also warms inference for both widths
+        # 10x the rows must cost the same: per-cell boxing would not be flat
+        @test @allocated(f(big)) == @allocated(f(small))
     end
-    @test sumfirst(rows) == sum(1:2000)
-    @test @allocated(sumfirst(rows)) == 0
+    @test sumfirst(small) == sum(1:500)
+    @test sumfirst(big) == sum(1:5000)
+    @test @allocated(sumfirst(big)) == @allocated(sumfirst(small))
 
     # A runtime index still resolves correctly; it just dispatches per cell.
     function sumdynamic(r, j)
@@ -1184,9 +1193,9 @@ end
         end
         return s
     end
-    @test sumdynamic(rows, Ref(3)[]) ≈ expected
-    @test first(rows)["c"] == 1.5         # AbstractString lookup still works
-    @test_throws KeyError first(rows)[:nope]
+    @test sumdynamic(small, Ref(3)[]) ≈ cexpected(500)
+    @test first(small)["c"] == 1.5           # AbstractString lookup still works
+    @test_throws KeyError first(small)[:nope]
 end
 
 @testset "source worker lifetime" begin
