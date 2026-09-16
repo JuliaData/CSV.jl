@@ -179,7 +179,8 @@ end
 end
 
 @testset "automatic delimiter detection" begin
-    detected(source; kw...) = A._prepare(source; kw...).d.delim
+    # `_prepare` takes resolved bytes: the reader owns the source and its workers
+    detected(source; kw...) = A._prepare(A.resolvesource(source); kw...).d.delim
     for (d, s) in ((',', "a,b\n1,2\n3,4\n"), (';', "a;b\n1;2\n3;4\n"),
                    ('\t', "a\tb\n1\t2\n3\t4\n"), ('|', "a|b\n1|2\n3|4\n"))
         sourceparity(s)

@@ -4034,9 +4034,6 @@ end
 parse(str::AbstractString; kw...) = parse(Vector{UInt8}(codeunits(str)); kw...)
 parse(io::IO; kw...) = parse(Base.read(io); kw...)
 
-chunkrowbase(chunks::Vector{ChunkIndex}, target::ChunkIndex) =
-    sum(nrows(c) for c in chunks if c.start < target.start; init=0)
-
 # One masked-driver task: report ragged rows with chunk-local row ids and parse
 # every selected column into chunk-local segment storage. All chunks are indexed
 # by the unconditional index wave before this function can run.

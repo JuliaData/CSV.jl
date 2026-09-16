@@ -176,8 +176,8 @@ end
 # Parse one indexed chunk with the types settled from a sample: a cell that
 # contradicts its column's type returns `nothing` instead of a value, and the
 # caller decides how to promote.
-function tryparsebatch(b::Batches, ci::ChunkIndex, n::Int=nrows(ci),
-                       rowbase::Int=chunkrowbase(b.chunks, ci))::Union{Nothing, ParsedTable}
+function tryparsebatch(b::Batches, ci::ChunkIndex, n::Int,
+                       rowbase::Int)::Union{Nothing, ParsedTable}
     ncols = length(b.names)
     log = ProblemLog(b.maxproblems)
     nsourcecols = length(b.plan.columns)
@@ -197,10 +197,9 @@ function tryparsebatch(b::Batches, ci::ChunkIndex, n::Int=nrows(ci),
     mergeproblems!(pending, log, 1)
 
     cols = Vector{AbstractVector}(undef, ncols)
-    conflicts = fill(false, ncols)
     # The caller parses whole chunks in parallel, so this pass is serial: it
     # holds one chunk's predicate columns and releases them before the next.
-    parseone = q -> begin
+    for q in 1:ncols
         j = b.plan.sources[q]
         T = b.seedtypes[q]
         opts = columnopts(b.plan, j)
@@ -210,15 +209,11 @@ function tryparsebatch(b::Batches, ci::ChunkIndex, n::Int=nrows(ci),
         conflict = T === Missing ?
             parsecolchunk_missing(b.buf, ci, j, rowbase, opts, userprovided, clog, nothing, 0, n) :
             parsecolchunk!(col, b.buf, ci, j, 0, opts, userprovided, clog, rowbase, nothing, 0, n)
-        if conflict != 0
-            conflicts[q] = true
-            return
-        end
+        # a cell that contradicts the sampled type: the caller parses the window
+        conflict == 0 || return nothing
         cols[q] = finalizecolumn(T, col, n, b.allowmissing[q]; tasklimit=1)
         mergeproblems!(pending, clog, 1)
     end
-    foreach(parseone, 1:ncols)
-    any(conflicts) && return nothing
     # Workers release each column log as it completes. Rows already use source
     # coordinates, so the one reservoir needs no row offset.
     log = finishproblems(pending, (0,))
