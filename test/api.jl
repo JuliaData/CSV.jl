@@ -886,7 +886,7 @@ end
     tasksrc = "a\n" * join(1:2000, '\n') * "\n"
     prepared = A._prepareindexed(IOBuffer(tasksrc); ntasks=2)
     @test length(getfield(prepared, :bi).chunks) <= 2
-    @test 1 <= length(A.Chunks(IOBuffer(tasksrc); ntasks=2, pool=false)) <= 2
+    @test 1 <= count(_ -> true, A.Chunks(IOBuffer(tasksrc); ntasks=2, pool=false)) <= 2
     empty!(API_PARSE_TASKS)
     A.File(IOBuffer(tasksrc); types=APITaskScalar, ntasks=2,
            parallel=true, chunkbytes=64, pool=false)
@@ -1687,7 +1687,7 @@ end
     # schema is stable and equals the File schema.
     widths = "s\n" * join((i % 50 == 0 ? "a much longer value $i" : "v$i" for i in 1:400), '\n') * "\n"
     chunks = A.Chunks(IOBuffer(widths); stringtype=InlineString, chunkbytes=64)
-    @test length(chunks) > 3
+    @test count(_ -> true, chunks) > 3
     @test unique(eltype(b.s) for b in chunks) == [String31]
     @test eltype(A.File(IOBuffer(widths); stringtype=InlineString).s) == String31
     @test occursin("s::String31", sprint(show, chunks))

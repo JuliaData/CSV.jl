@@ -2104,6 +2104,19 @@ function _rangerowstart(buf::Vector{UInt8}, from::Int, len::Int, d::Dialect, sta
     return nextrowstart(buf, from + 1, len, d, true)
 end
 
+# The first row start AT or after `from`, given the quote state there. A window
+# holds every row that starts within its bytes, so this closes it; `from` is
+# already a row start when the byte before it ended a row outside a quoted
+# field. An interior chunk boundary is a work split and uses `_rangerowstart`,
+# which may fall one row later.
+function _windowrowstart(buf::Vector{UInt8}, from::Int, len::Int, d::Dialect, state::UInt8)
+    if state == QUOTE_OUTSIDE && from > 1
+        b = @inbounds buf[from - 1]
+        (b == LF || (b == CR && !(from <= len && @inbounds(buf[from]) == LF))) && return from
+    end
+    return _rangerowstart(buf, from, len, d, state)
+end
+
 # Scan from `from` to the first row ending outside a quoted field. `inquote`
 # tells whether `from` is inside a quoted field. Return the byte after the row
 # ending. Return `to + 1` if this range has no complete row ending.
@@ -2238,19 +2251,21 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, stop::Int, ta
     end
     bounds = Vector{Int}(undef, nranges + 1)
     bounds[1] = datastart
-    if nstarts > 1
+    if nranges > 1
         if parallel && tasklimit > 1
-            _taskforeach(2:nstarts, tasklimit, _taskobserver) do i
+            _taskforeach(2:nranges, tasklimit, _taskobserver) do i
                 bounds[i] = _rangerowstart(buf, starts[i], stop, d, entry[i])
             end
         else
-            for i in 2:nstarts
+            for i in 2:nranges
                 bounds[i] = _rangerowstart(buf, starts[i], stop, d, entry[i])
             end
         end
     end
-    # a plan that covers the region ends where the region does
-    closing || (bounds[nranges + 1] = stop + 1)
+    # The last boundary closes the plan: where the region ends, or the row start
+    # that closes the window.
+    bounds[nranges + 1] = closing ?
+        _windowrowstart(buf, starts[nstarts], stop, d, entry[nstarts]) : stop + 1
     # Each chunk starts at a row boundary. Drop an empty chunk. This can occur
     # when one row crosses one or more complete byte ranges.
     chunks = ChunkIndex[]
@@ -2363,6 +2378,42 @@ function index(buf::Vector{UInt8}, d::Dialect;
 end
 
 index(buf::Vector{UInt8}; kw...) = index(buf, Dialect(); kw...)
+
+# The data range of one source, cut into byte windows. A window starts and ends
+# at a row boundary and is the streaming unit: it is indexed, used, and dropped.
+# `chunkbytes` sizes the parallel work units inside one window, the same way it
+# does for a whole-file read.
+struct WindowStream
+    buf::Vector{UInt8}
+    d::Dialect
+    dataend::Int                 # one byte past the data range
+    windowbytes::Int
+    chunkbytes::Int
+    parallel::Bool
+    ntasks::Union{Nothing, Int}
+    fastindex::Bool
+end
+
+# Index the window that starts at `pos`, or return `nothing` at the end of the
+# data range. `BufferIndex.nextstart` is the next window's first byte.
+function nextwindow(ws::WindowStream, pos::Int)
+    pos >= ws.dataend && return nothing
+    return index(ws.buf, ws.d; datastart=pos, stop=ws.dataend - 1,
+                 windowbytes=ws.windowbytes, chunkbytes=ws.chunkbytes,
+                 parallel=ws.parallel, ntasks=ws.ntasks, fastindex=ws.fastindex)
+end
+
+# The next window that holds at least one data row. A comment-only or empty
+# region spans windows without producing any, so it is skipped here rather than
+# handed to a reader as an empty batch.
+function nextdatawindow(ws::WindowStream, pos::Int)
+    while true
+        bi = nextwindow(ws, pos)
+        bi === nothing && return nothing
+        bi.nrows > 0 && return bi
+        pos = bi.nextstart
+    end
+end
 
 # ---------------------------------------------------------------------------
 # L2/L3: typed parsing over the index.

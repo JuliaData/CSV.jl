@@ -2630,68 +2630,200 @@ rownumber(row::Row) = getfield(getfield(row, :view), :rownumber)
 # ---------------------------------------------------------------------------
 # Chunks — batched
 # ---------------------------------------------------------------------------
+# One window of the data range is one batch: it is indexed, parsed, and dropped,
+# so a read holds one window's index, not the file's. The schema pre-pass
+# streams the same windows before the first batch, which is what lets every
+# batch share one column type, missingness, and settled text width.
 
 struct Chunks
     name::String
-    inner::Batches
+    p::Prepared                   # source bytes, names, data range, value rules
+    stream::WindowStream          # the data range as windows
+    names::Vector{Symbol}         # the selected columns, in file order
+    plan::ColumnPlan              # the settled schema, as a requested-type plan
     headerlog::ProblemLog
     maxproblems::Int
-    plan::ColumnPlan
     on_error::Symbol
     stringtype::Type
     stringrequests::Union{Nothing, Vector{Union{Nothing, Type}}}  # settled per column
     poolspec::Union{Nothing, Tuple{Float64, Int}}
+    ntasks::Int                   # batch columns and index chunks share this budget
     warned::Base.RefValue{Bool}   # on_error=:warn reports the first batch with problems
 end
 
-Base.length(c::Chunks) = length(getfield(c, :inner))
+# Where the next batch starts: the window's first byte, the data rows before it
+# (diagnostics name file-global rows), and the batch number.
+struct ChunkState
+    pos::Int
+    rowbase::Int
+    batch::Int
+end
+
+# The batch count is not known before the last window is indexed, and finding it
+# would cost the pass this reader exists to avoid.
+Base.IteratorSize(::Type{Chunks}) = Base.SizeUnknown()
 Base.eltype(::Type{Chunks}) = File
 Tables.partitions(c::Chunks) = c
-Base.names(c::Chunks) = getfield(getfield(c, :inner), :names)
+Base.names(c::Chunks) = getfield(c, :names)
+
 function Base.show(io::IO, c::Chunks)
-    inner = getfield(c, :inner)
-    n = length(inner)
+    plan = getfield(c, :plan)
+    nms = getfield(c, :names)
     st = getfield(c, :stringtype)
     reqs = getfield(c, :stringrequests)
-    print(io, "CSV.Chunks(", repr(getfield(c, :name)), "): ", n, " batch", n == 1 ? "" : "es",
-          " × ", length(inner.names), " column", length(inner.names) == 1 ? "" : "s")
-    for (q, (nm, T, allowmissing)) in enumerate(zip(inner.names, inner.seedtypes, inner.allowmissing))
-        decision = inner.plan.columns[inner.plan.sources[q]]
+    print(io, "CSV.Chunks(", repr(getfield(c, :name)), "): ", length(nms), " column",
+          length(nms) == 1 ? "" : "s", ", batches of up to ",
+          getfield(c, :stream).windowbytes, " bytes")
+    for (q, nm) in enumerate(nms)
+        decision = plan.columns[plan.sources[q]]
+        T = decision.parsetype
         S = reqs === nothing ? something(decision.resulttype, st) : something(reqs[q], st)
         E = T === String ? _rowstringtype(S) : something(decision.resulttype, T)
         # A ratio/cap pool policy can materialize some DataString batches and
         # leave others as views. Display the set of possible output scalars.
         getfield(c, :poolspec) !== nothing && E === DataString && (E = Union{DataString, String})
-        print(io, "\n  ", nm, "::", allowmissing ? Union{E, Missing} : E)
+        print(io, "\n  ", nm, "::", decision.declaredmissing ? Union{E, Missing} : E)
     end
 end
 
-function Base.iterate(c::Chunks, state::Int=1)
-    inner = getfield(c, :inner)
-    it = iterate(inner, state)
-    it === nothing && return nothing
-    t, next = it
-    headerlog = state == 1 ? getfield(c, :headerlog) : nothing
+# One batch: the eager driver over this window's index. Every selected column
+# carries its settled parse type, so the driver reads it as a requested type and
+# never infers or promotes.
+function _parsewindow(c::Chunks, bi::BufferIndex, limit::Union{Nothing, Int}, cap::Int)
+    p = getfield(c, :p)
+    settings = p.settings
+    tasklimit = _readtasklimit(settings.parallel, getfield(c, :ntasks))
+    return _parse(p.buf, p.d, p.opts, settings.scanner, settings.typemap,
+                  getfield(c, :stream).chunkbytes, settings.parallel, tasklimit, cap,
+                  :collect, settings.validate, true, settings.nsample, limit, p.names,
+                  nothing, nothing, settings.colopts, getfield(c, :plan), nothing, bi)
+end
+
+# A window's parse reports rows local to that window. Diagnostics name
+# file-global data rows, so shift the retained ones. Byte positions are already
+# absolute, and the problem cap keeps the source-earliest entries by position.
+function _rebaseproblems(t::ParsedTable, rowbase::Int)
+    (rowbase == 0 || isempty(t.problems)) && return t
+    shifted = Problem[pr.row == 0 ? pr :
+                      Problem(pr.row + rowbase, pr.col, pr.pos, pr.kind, pr.message)
+                      for pr in t.problems]
+    return ParsedTable(t.names, t.columns, t.nrows, shifted, t.droppedproblems)
+end
+
+function Base.iterate(c::Chunks, st::ChunkState=ChunkState(getfield(c, :p).datastart, 0, 1))
+    p = getfield(c, :p)
+    lim = p.limit
+    lim === nothing || st.rowbase < lim || return nothing
+    bi = nextdatawindow(getfield(c, :stream), st.pos)
+    bi === nothing && return nothing
+    # The pre-pass streamed these same windows and prepared the source again
+    # under the lenient rule for any bare quote it found.
+    bi.barequote && !p.d.lenient &&
+        error("internal error: a bare quote escaped the schema pass")
     cap = getfield(c, :maxproblems)
-    t, firstproblem = _mergeproblems(t, headerlog, cap)
-    ci = getfield(inner, :chunks)[state]
-    problemrowbase = chunkrowbase(getfield(inner, :chunks), ci)
-    t, firstproblem = _narrowtypes(t, getfield(c, :plan),
-                                   (ci,), cap, firstproblem; problemrowbase)
+    t = _parsewindow(c, bi, lim === nothing ? nothing : lim - st.rowbase, max(cap, 1))
+    t = _rebaseproblems(t, st.rowbase)
+    t, firstproblem = _mergeproblems(t, st.batch == 1 ? getfield(c, :headerlog) : nothing, cap)
+    t, firstproblem = _narrowtypes(t, getfield(c, :plan), bi.chunks, cap, firstproblem;
+                                   problemrowbase=st.rowbase)
     _reportproblems(t, getfield(c, :on_error), firstproblem,
-                    "batch $state of $(getfield(c, :name))", getfield(c, :warned),
+                    "batch $(st.batch) of $(getfield(c, :name))", getfield(c, :warned),
                     " Later batches do not warn; inspect CSV.problems(batch).")
     # Apply the same final steps as File. Build each requested PooledArray, then
     # build the requested string type.
-    st = getfield(c, :stringtype)
+    stringtype = getfield(c, :stringtype)
     ps = getfield(c, :poolspec)
-    tasklimit = getfield(inner, :ntasks)
+    tasklimit = getfield(c, :ntasks)
     ps === nothing || (t = _poolcolumns(t, fill(ps, length(t.columns)); tasklimit))
-    t = _finishstrings(t, st, getfield(c, :stringrequests); tasklimit)
-    f = File(getfield(c, :name), t,
-             Dict(nm => j for (j, nm) in enumerate(names(t))))
-    return f, next
+    t = _finishstrings(t, stringtype, getfield(c, :stringrequests); tasklimit)
+    f = File(getfield(c, :name), t, Dict(nm => j for (j, nm) in enumerate(names(t))))
+    return f, ChunkState(bi.nextstart, st.rowbase + t.nrows, st.batch + 1)
 end
+
+# One pass of the schema pre-pass over the row window. `types`, `allowmissing`
+# and `maxlens` restart from `seed` and then only grow. An unseeded column takes
+# its starting type from a sample of the FIRST window; validation promotes it
+# from there, so the seed changes the work, never the result.
+# Returns `:done`, `:restart` (a Timestamp widened after the first window), or
+# `:barequote` (the structural scan was unsound).
+function _settlewindows!(types::Vector{Type}, allowmissing::Vector{Bool},
+                         maxlens::Vector{Int}, seed::Vector{Union{Nothing, Type}},
+                         p::Prepared, ws::WindowStream, plan::ColumnPlan, ntasks::Int)
+    for (q, j) in enumerate(plan.sources)
+        types[q] = something(seed[q], Missing)
+        allowmissing[q] = plan.columns[j].declaredmissing
+        maxlens[q] = 0
+    end
+    lim = p.limit
+    pos = p.datastart
+    rows = 0
+    windows = 0
+    seeded = !any(isnothing, seed)
+    while lim === nothing || rows < lim
+        bi = nextwindow(ws, pos)
+        bi === nothing && break
+        bi.barequote && !p.d.lenient && return :barequote
+        pos = bi.nextstart
+        bi.nrows == 0 && continue
+        # rows past the limit are never output: they must not settle a type
+        lim === nothing || lim - rows >= bi.nrows || _limitrows!(bi.chunks, lim - rows)
+        rows += sum(nrows, bi.chunks; init=0)
+        windows += 1
+        if !seeded
+            selected = _selectedmask(plan, p.ncols)
+            inferred = sampletypes(p.buf, bi.chunks, p.ncols, p.opts; selected,
+                                   colopts=plan.colopts)
+            for (q, j) in enumerate(plan.sources)
+                seed[q] === nothing && (types[q] = inferred[j])
+            end
+            seeded = true
+        end
+        before = copy(types)
+        settlebatchschema!(types, p.buf, bi.chunks, plan, maxlens, allowmissing;
+                           parallel=p.settings.parallel, tasklimit=ntasks)
+        # Microseconds extend the date range but cannot hold every nanosecond
+        # value, so this one widening can reject a value an earlier window
+        # accepted. Every other promotion accepts prior values.
+        windows > 1 && any(q -> before[q] === _TS_NS && types[q] === _TS_US,
+                           eachindex(types)) && return :restart
+    end
+    return :done
+end
+
+# The batch schema: one parse type, one missing flag and one settled text width
+# per selected column, from validating every cell of the row window one window
+# at a time. Returns `nothing` when a window holds a quote that did not start
+# its field: the caller prepares the source again under the lenient quote rule.
+function _settleschema(p::Prepared, ws::WindowStream, plan::ColumnPlan, ntasks::Int)
+    seed = Union{Nothing, Type}[plan.columns[j].parsetype for j in plan.sources]
+    n = length(seed)
+    types = Vector{Type}(undef, n)
+    allowmissing = Vector{Bool}(undef, n)
+    maxlens = Vector{Int}(undef, n)
+    while true
+        outcome = _settlewindows!(types, allowmissing, maxlens, seed, p, ws, plan, ntasks)
+        outcome === :barequote && return nothing
+        outcome === :done && return (types, allowmissing, maxlens)
+        seed = Union{Nothing, Type}[T for T in types]   # the wider Timestamp seed
+    end
+end
+
+# The settled schema as a column plan. A selected column becomes a requested
+# column: the batch driver parses it at that type, leaves an invalid cell
+# missing (the pre-pass proved there are none), and honors the missing flag.
+function _settledplan(plan::ColumnPlan, types::Vector{Type}, allowmissing::Vector{Bool})
+    columns = copy(plan.columns)
+    for (q, j) in enumerate(plan.sources)
+        columns[j] = ColumnDecision(types[q], plan.columns[j].resulttype, allowmissing[q])
+    end
+    return ColumnPlan(columns, plan.sources, plan.positions, plan.predicate, plan.opts,
+                      plan.colopts)
+end
+
+_windowstream(p::Prepared, windowbytes::Int, nt::Int) =
+    WindowStream(p.buf, p.d, p.dataend, windowbytes,
+                 _defaultchunkbytes(windowbytes, nt), p.settings.parallel, nt,
+                 p.settings.fastindex)
 
 function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
                 maxproblems::Int=10_000, stringtype::Type=DataString,
@@ -2708,45 +2840,38 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
         throw(ArgumentError("Chunks takes a single pool policy (Bool / ratio / (ratio, cap))"))
     allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...)
     _checkkwargs("Chunks", kw, allowed)
-    if !haskey(kw, :chunkbytes)
-        buf = resolvesource(source;
-                            buffer_in_memory=get(kw, :buffer_in_memory, false),
-                            prefetch=get(kw, :prefetch, true))
-        kw = (; kw..., chunkbytes=clamp(cld(length(buf), nt), 1 << 10, 1 << 22))
-        source = buf
+    buf = resolvesource(source;
+                        buffer_in_memory=get(kw, :buffer_in_memory, false),
+                        prefetch=get(kw, :prefetch, true))
+    # `chunkbytes` is the batch size in bytes: one window is one batch. `ntasks`
+    # is the parallelism inside a window and only sets this default, so it is not
+    # a batch count. The chunks inside a window keep their cache-resident size.
+    windowbytes = get(kw, :chunkbytes, nothing)::Union{Nothing, Int}
+    windowbytes === nothing &&
+        (windowbytes = clamp(cld(length(buf), nt), 1 << 10, 1 << 25))
+    windowbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $windowbytes)"))
+    prepkw = NamedTuple(pair for pair in pairs(kw) if pair.first !== :chunkbytes)
+    haskey(prepkw, :parallel) || (prepkw = (; prepkw..., parallel=nt > 1))
+    prepkw = (; prepkw..., ntasks=nt, maxproblems=max(maxproblems, 1),
+              chunkbytes=_defaultchunkbytes(windowbytes, nt))
+    validate = get(kw, :validate, true)
+    p = _prepare(buf; prepkw...)
+    plan = settlecolumns(p; select, drop, types, validate)
+    settled = _settleschema(p, _windowstream(p, windowbytes, nt), plan, nt)
+    if settled === nothing
+        # A quote that did not start its field made the structural scan unsound.
+        # Prepare the source again under the lenient quote rule and settle the
+        # schema from the first window. Well-formed input never takes this path.
+        p = _prepare(buf; prepkw..., lenient=true)
+        plan = settlecolumns(p; select, drop, types, validate)
+        settled = _settleschema(p, _windowstream(p, windowbytes, nt), plan, nt)
     end
-    haskey(kw, :parallel) || (kw = (; kw..., parallel=nt > 1))
-    capturecap = max(maxproblems, 1)
-    src = _prepareindexed(source; ntasks=nt, maxproblems=capturecap, kw...)
-    p = src.p
-    chunks = src.bi.chunks
-    fullrows = sum(nrows, chunks; init=0)
-    p.limit === nothing || _limitrows!(chunks, p.limit)
-    filter!(ci -> nrows(ci) > 0, chunks)
-    plan = settlecolumns(p; select, drop, types,
-                         validate=get(kw, :validate, true))
-    seed = Union{Nothing, Type}[d.parsetype for d in plan.columns]
-    # One stable schema for the whole row window: seed from the usual
-    # stratified sample, then validate every cell of every selected column
-    # with the monomorphic scalar parsers (promoting on the first conflict).
-    if any(j -> seed[j] === nothing, plan.sources)
-        selected = _selectedmask(plan, p.ncols)
-        inferred = sampletypes(p.buf, chunks, p.ncols, p.opts; selected, colopts=plan.colopts)
-        for j in plan.sources
-            seed[j] === nothing && (seed[j] = inferred[j])
-        end
-    end
-    seedtypes = Type[seed[j] for j in plan.sources]
-    maxlens = zeros(Int, length(seedtypes))
-    allowmissing = settlebatchschema!(seedtypes, p.buf, chunks, plan, maxlens;
-                                      parallel=get(kw, :parallel, nt > 1), tasklimit=nt)
+    seedtypes, allowmissing, maxlens = something(settled)
     stringrequests = _settlestringrequests(plan, seedtypes, maxlens, stringtype)
-    unclosedquote = src.bi.unclosedquote && (p.limit === nothing || p.limit >= fullrows)
-    inner = Batches(p.buf, chunks, p.names[plan.sources], plan, seedtypes,
-                    allowmissing, p.d, capturecap, unclosedquote,
-                    get(kw, :parallel, nt > 1) ? nt : 1)
-    return Chunks(name, inner, p.headerlog, maxproblems, plan, on_error,
-                  stringtype, stringrequests, poolspec, Ref(false))
+    return Chunks(name, p, _windowstream(p, windowbytes, nt), p.names[plan.sources],
+                  _settledplan(plan, seedtypes, allowmissing), p.headerlog, maxproblems,
+                  on_error, stringtype, stringrequests, poolspec,
+                  p.settings.parallel ? nt : 1, Ref(false))
 end
 
 # One output string type per text column for the whole row window: an
