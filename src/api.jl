@@ -993,11 +993,15 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
         # at or after the anchor, and the data starts one raw row past it. A
         # comment or empty row at the start of the range is dropped by the
         # range's own index, exactly as it was by the whole-file index.
-        datastart = skipto !== nothing ? rowoff(_saturatedint(skipto)) :
-                    headerrow == 0 ? anchoroff :
-                    length(headerrows) > 1 ? rowoff(_saturatedinc(headerrow)) :
-                    headerbyte == 0 ? _saturatedinc(length(buf)) :
-                    nextrowstart(buf, headerbyte, length(buf), d, false, true)
+        afterheader = headerrow == 0 ? anchoroff :
+                      length(headerrows) > 1 ? rowoff(_saturatedinc(headerrow)) :
+                      headerbyte == 0 ? _saturatedinc(length(buf)) :
+                      nextrowstart(buf, headerbyte, length(buf), d, false, true)
+        # `skipto` moves the start forward, never back: a comment row can push
+        # the live header row past the requested offset, and a header row that
+        # was consumed must not become data again.
+        datastart = skipto === nothing ? afterheader :
+                    max(afterheader, rowoff(_saturatedint(skipto)))
         # A non-comment physical row consumes at least one source byte. A footer
         # count larger than the buffer therefore removes every possible row; avoid
         # narrowing the count or scanning the source in that known-empty case.

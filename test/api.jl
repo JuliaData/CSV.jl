@@ -1402,6 +1402,24 @@ end
                 collect(A.Chunks(IOBuffer(unclosed); on_error=:collect, chunkbytes=2))) == 1
 end
 
+@testset "the window reader keeps the 1.0 row window" begin
+    # Preparing a source from byte ranges instead of a whole-file index must not
+    # move a row into or out of the window, or change a name or a diagnostic.
+    chunkcol(input, nm; kw...) =
+        reduce(vcat, (collect(Tables.getcolumn(b, nm)) for b in A.Chunks(IOBuffer(input); kw...));
+               init=Any[])
+
+    # The 1.0 cursor only ever advanced: a comment row can push the live header
+    # row past the `skipto` row, and the consumed header must not become data.
+    @test collect(A.File(IOBuffer("# c\na\n1\n2\n"); comment="#", skipto=2).a) == [1, 2]
+    @test chunkcol("# c\na\n1\n2\n", :a; comment="#", skipto=2, chunkbytes=2) == [1, 2]
+    hdr2 = "a,b\n# skip\n1,2\n#x\n3,4\n5,6\n"
+    @test collect(A.File(IOBuffer(hdr2); header=2, skipto=3, comment="#")[Symbol("1")]) == [3, 5]
+    @test chunkcol(hdr2, Symbol("1"); header=2, skipto=3, comment="#", chunkbytes=3) == [3, 5]
+    # a `skipto` past the consumed header still advances
+    @test collect(A.File(IOBuffer("a\n1\n2\n3\n"); skipto=3).a) == [2, 3]
+end
+
 end # @testset CSV readers
 
 @testset "transposed diagnostics" begin
