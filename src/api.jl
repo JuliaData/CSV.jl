@@ -939,10 +939,13 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
                 # A quote that did not start its field (`5' 11"`, `x"y`) made the
                 # parallel toggle scan unsound: rows may have merged into one
                 # cell. Prepare again under the lenient quote rule, from the same
-                # bytes. Well-formed input never takes this path.
+                # bytes. Well-formed input never takes this path. The resolved
+                # syntax is frozen: `delim` is already the sniffed byte, and a
+                # sniffed `ignorerepeated` travels with it (see `_relenient`).
                 return _prepare(buf, header, normalizenames, skipto, footerskip, missingstring,
                                 delim, limit, samplebytes, chunkbytes, parallel, ntasks,
-                                buffer_in_memory, prefetch, validate, true, kw)
+                                buffer_in_memory, prefetch, validate, true,
+                                (; kw..., ignorerepeated=d.ignorerepeated))
             end
             chunks = prefix.chunks
             # The single-row header forms read the first live row of the prefix;
@@ -1035,7 +1038,8 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
                         fastindex).barequote)
             return _prepare(buf, header, normalizenames, skipto, footerskip, missingstring,
                             delim, limit, samplebytes, chunkbytes, parallel, ntasks,
-                            buffer_in_memory, prefetch, validate, true, kw)
+                            buffer_in_memory, prefetch, validate, true,
+                            (; kw..., ignorerepeated=d.ignorerepeated))
         end
         # The source ends inside a quoted field. Whichever region reached the end
         # of the source saw it; the data range's own index sees it whenever that
@@ -1087,12 +1091,17 @@ end
 _resolveddelim(d::Dialect) = d.delim isa UInt8 ? Char(d.delim) : String(copy(d.delim))
 
 # Prepare the same bytes again under the lenient quote rule. The syntax the
-# first pass resolved is FROZEN: sniffing again under the lenient rule can elect
-# a different delimiter, and the reader would then disagree with itself (`File`
-# with a bare quote past `limit` against `Chunks`, batch against batch) and with
-# 1.0.0. `_prepare`'s own recursion freezes the same way, with its locals.
+# first pass resolved is FROZEN — the delimiter AND the repeated-delimiter rule.
+# Sniffing again can elect a different delimiter, and a sniffed `ignorerepeated`
+# that the retry dropped would re-split every row, so the retry would change the
+# names and the column count. Freezing both leaves the quote rule as the only
+# difference, and rows before the first bare quote parse the same under either
+# rule: a reader that retried then agrees with one that did not, whatever made it
+# retry (a bare quote past `limit` for `File`, a window boundary for `Chunks`).
+# `_prepare`'s own recursion freezes the same way, with its locals.
 _relenient(p::Prepared; kw...) =
-    _prepare(p.buf; kw..., delim=_resolveddelim(p.d), lenient=true)
+    _prepare(p.buf; kw..., delim=_resolveddelim(p.d),
+             ignorerepeated=p.d.ignorerepeated, lenient=true)
 
 # A bare quote in the data range makes the structural scan unsound the same way
 # one in the header prefix does. Prepare the source again under the lenient

@@ -1487,6 +1487,30 @@ end
     @test chunkcol(late, Symbol("b;c"); limit=1, chunkbytes=1, on_error=:collect) ==
           collect(A.File(IOBuffer(late); limit=1, on_error=:collect)[Symbol("b;c")])
 
+    # A sniffed `ignorerepeated` is frozen with the delimiter. Dropping it on the
+    # retry would re-split every row, so a reader that found the bare quote (File,
+    # or a Chunks whose pre-pass reached it) would report different columns from
+    # one that stopped at `limit` first.
+    aligned = "a  b\n1  2\n3  x\"y\n4  5\n"
+    @test Base.names(A.File(IOBuffer(aligned); on_error=:collect)) == [:a, :b]
+    for lim in (nothing, 0, 1, 2, 9), cb in (1, 64, 1 << 20)
+        kw = lim === nothing ? (;) : (; limit=lim)
+        c = A.Chunks(IOBuffer(aligned); chunkbytes=cb, on_error=:collect, kw...)
+        # the names of an iterator that yields no batch still describe the source
+        @test Base.names(c) == [:a, :b]
+        @test Base.names(A.File(IOBuffer(aligned); on_error=:collect, kw...)) == [:a, :b]
+        @test chunkcol(aligned, :a; chunkbytes=cb, on_error=:collect, kw...) ==
+              collect(A.File(IOBuffer(aligned); on_error=:collect, kw...).a)
+    end
+    # supplied names take the same repeated-delimiter rule
+    @test Base.names(A.Chunks(IOBuffer(aligned); header=["p", "q"], chunkbytes=1,
+                              on_error=:collect)) == [:p, :q]
+    @test chunkcol(aligned, :p; header=["p", "q"], chunkbytes=1, on_error=:collect) ==
+          collect(A.File(IOBuffer(aligned); header=["p", "q"], on_error=:collect).p)
+    # an explicit ignorerepeated survives the retry the same way
+    @test Base.names(A.File(IOBuffer(aligned); delim=' ', ignorerepeated=true,
+                            on_error=:collect)) == [:a, :b]
+
     # The malformed end of input is reported by whichever region reached it, and
     # only when the data range runs to it.
     kinds(s; kw...) = [p.kind for p in A.problems(A.File(IOBuffer(s); on_error=:collect, kw...))]

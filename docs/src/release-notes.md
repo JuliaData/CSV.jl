@@ -26,6 +26,15 @@ that cannot start on a file larger than memory.
 Batch boundaries therefore differ from 1.0 for the same options. The rows,
 column types, values, and diagnostics do not.
 
+## Fixes
+
+- A quote that does not start its field makes a reader prepare the source again
+  under the lenient quote rule. That retry now keeps the whole syntax the first
+  pass resolved, including a sniffed `ignorerepeated`. 1.0 kept only the
+  delimiter, so an aligned-column source such as `"a  b\n1  2\n3  x\"y\n"` gained
+  an empty column between `a` and `b`; it now reads as the two columns an
+  explicit `delim=' ', ignorerepeated=true` always gave.
+
 # CSV.jl 1.0 release notes
 
 CSV.jl 1.0 replaces the parsing and writing internals while keeping the main
