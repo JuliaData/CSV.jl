@@ -2786,8 +2786,11 @@ function _settlewindows!(types::Vector{Type}, allowmissing::Vector{Bool},
         # Microseconds extend the date range but cannot hold every nanosecond
         # value, so this one widening can reject a value an earlier window
         # accepted. Every other promotion accepts prior values.
-        windows > 1 && any(q -> before[q] === _TS_NS && types[q] === _TS_US,
-                           eachindex(types)) && return :restart
+        if windows > 1
+            for q in eachindex(types)
+                before[q] === _TS_NS && types[q] === _TS_US && return :restart
+            end
+        end
     end
     return :done
 end
