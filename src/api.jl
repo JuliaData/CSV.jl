@@ -1,12 +1,18 @@
 # The public readers and internal delimiter detection.
 #
 # Every entry point uses the same pipeline: resolve source bytes → settle the
-# dialect (sniffing if asked) → index once (rebuilt under the field-start
-# quote rule when a bare quote is flagged) → settle names/row-window
-# (header/skipto/footerskip/limit as *index arithmetic*, before any value
-# work) → hand the parse driver or the streaming primitives the prepared
-# index. There is no per-entrypoint parsing code and no mode flags inside the
-# driver: File/Rows/Chunks differ only in what they do AFTER `_prepare`.
+# dialect (sniffing if asked) → `_prepare` the source: names from a small index
+# of the header prefix, then the data region as the BYTE RANGE
+# [datastart, dataend) that header/skipto/footerskip select, before any value
+# work → read that range as windows. A window is a byte range that begins and
+# ends at a row boundary; it is indexed when it is read and its index dies with
+# it. File, lazy, Rows and Tables.Scan take the whole range as one window
+# (`_prepareindexed`); Chunks streams it one window per batch and `_scanregion`
+# walks a skipped region without keeping one. The field-start quote rule is
+# applied per index: `_prepare` retries the prefix and the regions it skips,
+# `_prepareindexed` the data range, and Chunks the whole pre-pass. There is no
+# per-entrypoint parsing code and no mode flags inside the driver:
+# File/Rows/Chunks differ only in what they do AFTER `_prepare`.
 #
 # Reader conventions:
 #   • problems are retained data; eager readers also warn once by default
