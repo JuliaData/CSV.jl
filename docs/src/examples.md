@@ -904,15 +904,15 @@ batch is a `CSV.File` with the same column types:
 ```@example ex-chunks
 using CSV
 
-chunks = CSV.Chunks(IOBuffer("id,value\n1,10\n2,20\n3,30\n"); ntasks=2)
-length(collect(chunks))
+chunks = CSV.Chunks(IOBuffer("id,value\n1,10\n2,20\n3,30\n"); chunkbytes=8)
+length(chunks)
 ```
 
 `CSV.Rows` defaults to text unless you supply `types`. Both readers retain the
 source bytes; `CSV.Rows` also retains the whole structural index, while
 `CSV.Chunks` indexes one batch at a time. `CSV.Chunks` checks values across the
-input to choose one schema before iteration, so its constructor reads every row;
-its batch count is only known once you iterate.
+input to choose one schema before iteration, so its constructor reads every row
+and knows the batch count.
 
 ## [Index first and parse later](@id lazy_example)
 

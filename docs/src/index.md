@@ -47,8 +47,9 @@ String(take!(output))
 | `CSV.Chunks` | You process a large table in bounded batches | Indexes and parses one stable-schema batch at a time |
 
 `CSV.lazy`, `CSV.Rows`, and `CSV.Chunks` do not stream an unbounded input.
-They retain the source bytes; `CSV.lazy` and `CSV.Rows` also retain a structural
-index of the whole row window, while `CSV.Chunks` holds one batch's. See [Input and memory
+They all retain the source bytes. `CSV.lazy` and `CSV.Rows` also retain a
+structural index of the whole row window; `CSV.Chunks` holds one batch's.
+See [Input and memory
 behavior](reading.md#Input-and-memory-behavior) for the exact source rules.
 
 ## Data model

@@ -102,9 +102,8 @@ from 0.10 paths that could use temporary files for these inputs. Account for
 the full uncompressed size when a gzip file or non-file stream is large.
 
 `CSV.Rows` and `CSV.lazy` retain the source bytes and a complete structural
-index. `CSV.Chunks` retains the source bytes and one batch's index, and defines
-no `length`: its batch count is only known once every window is read. They
-reduce value or column materialization. They do not provide unbounded
+index. `CSV.Chunks` retains the source bytes and one batch's index. All three
+reduce value or column materialization. None of them provides unbounded
 network-stream processing.
 
 ## Multiple sources
