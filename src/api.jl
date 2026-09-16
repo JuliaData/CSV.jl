@@ -1067,6 +1067,18 @@ function _indexdata(p::Prepared)
     return BufferIndex(bi.chunks, bi.nrows, true, bi.barequote, bi.nextstart)
 end
 
+# The resolved delimiter, as a keyword value. A sniffed delimiter is a single
+# byte; an explicit multi-byte delimiter round-trips as its string.
+_resolveddelim(d::Dialect) = d.delim isa UInt8 ? Char(d.delim) : String(copy(d.delim))
+
+# Prepare the same bytes again under the lenient quote rule. The syntax the
+# first pass resolved is FROZEN: sniffing again under the lenient rule can elect
+# a different delimiter, and the reader would then disagree with itself (`File`
+# with a bare quote past `limit` against `Chunks`, batch against batch) and with
+# 1.0.0. `_prepare`'s own recursion freezes the same way, with its locals.
+_relenient(p::Prepared; kw...) =
+    _prepare(p.buf; kw..., delim=_resolveddelim(p.d), lenient=true)
+
 # A bare quote in the data range makes the structural scan unsound the same way
 # one in the header prefix does. Prepare the source again under the lenient
 # quote rule, from the bytes already resolved. Well-formed input never takes
@@ -1075,7 +1087,7 @@ function _prepareindexed(source; kw...)
     p = _prepare(source; kw...)
     bi = _indexdata(p)
     if bi.barequote && !p.d.lenient
-        p = _prepare(p.buf; kw..., lenient=true)
+        p = _relenient(p; kw...)
         bi = _indexdata(p)
     end
     return IndexedSource(p, bi)
@@ -2879,7 +2891,7 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
         # A quote that did not start its field made the structural scan unsound.
         # Prepare the source again under the lenient quote rule and settle the
         # schema from the first window. Well-formed input never takes this path.
-        p = _prepare(buf; prepkw..., lenient=true)
+        p = _relenient(p; prepkw...)
         plan = settlecolumns(p; select, drop, types, validate)
         settled = _settleschema(p, _windowstream(p, windowbytes, nt), plan, nt)
     end

@@ -1437,6 +1437,22 @@ end
     @test chunkcol(gap, :h1_h3; header=[1, 10], chunkbytes=2) == [1, 3]
     # a listed row past the end of the source still names what it found
     @test Base.names(A.File(IOBuffer("a,b\n1,2\n"); header=[1, 9])) == [:a, :b]
+
+    # A lenient retry keeps the delimiter the first pass sniffed. Sniffing again
+    # under the lenient rule sees different rows and can elect a different
+    # delimiter, which would change names, values and diagnostics.
+    flip = "a,b;c\n1,x\"y;z\n2,w,u;q\n3,w,u;t\n"
+    @test Base.names(A.File(IOBuffer(flip); on_error=:collect)) == [:a, Symbol("b;c")]
+    @test Base.names(A.Chunks(IOBuffer(flip); on_error=:collect, chunkbytes=1)) ==
+          [:a, Symbol("b;c")]
+    # the bare quote falls past `limit`: File and a limited Chunks must agree
+    late = "a,b;c\n1,x;z\n2,x\"y;z\n3,w,u;q\n4,w,u;t\n"
+    @test Base.names(A.File(IOBuffer(late); limit=1, on_error=:collect)) ==
+          [:a, Symbol("b;c")]
+    @test Base.names(A.Chunks(IOBuffer(late); limit=1, chunkbytes=1, on_error=:collect)) ==
+          [:a, Symbol("b;c")]
+    @test chunkcol(late, Symbol("b;c"); limit=1, chunkbytes=1, on_error=:collect) ==
+          collect(A.File(IOBuffer(late); limit=1, on_error=:collect)[Symbol("b;c")])
 end
 
 end # @testset CSV readers
