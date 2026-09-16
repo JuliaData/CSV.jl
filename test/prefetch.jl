@@ -28,6 +28,16 @@ end
             @test CSV._PREFETCH_TEST_DONE[] == min(4, Threads.nthreads())
             sleep(0.3) # failed assertions must not let workers outlive this file
         end
+        # Chunks reads the source in windows, so it owns the workers across the
+        # header prefix and the schema pre-pass and joins them before it returns.
+        CSV._PREFETCH_TEST_DONE[] = 0
+        c = CSV.Chunks(path; parallel=false)
+        @test CSV._PREFETCH_TEST_DONE[] == min(4, Threads.nthreads())
+        @test sum(length, c) == 30_000
+        CSV._PREFETCH_TEST_DONE[] = 0
+        @test_throws ArgumentError CSV.Chunks(path; quotechar='λ')
+        @test CSV._PREFETCH_TEST_DONE[] == min(4, Threads.nthreads())
+        sleep(0.3)
         # Release the mapping before Windows removes the temporary file.
         GC.gc()
     end

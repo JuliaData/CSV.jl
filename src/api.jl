@@ -935,7 +935,6 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
             prefix = explicitnames ? BufferIndex(ChunkIndex[], 0, false, false, anchoroff) :
                      _headerprefix(buf, d, anchoroff, prefixrows, cb, parallel, ntasks,
                                    fastindex)
-            _joinprefetch!(workers)
             if prefix.barequote && !lenient
                 # A quote that did not start its field (`5' 11"`, `x"y`) made the
                 # parallel toggle scan unsound: rows may have merged into one
@@ -1100,13 +1099,23 @@ _relenient(p::Prepared; kw...) =
 # quote rule, from the bytes already resolved. Well-formed input never takes
 # this path.
 function _prepareindexed(source; kw...)
-    p = _prepare(source; kw...)
-    bi = _indexdata(p)
-    if bi.barequote && !p.d.lenient
-        p = _relenient(p; kw...)
+    # An eager reader owns the page-touch workers of a mapped file: they run
+    # while the header prefix AND the data range are indexed, and are joined
+    # before the mapping escapes this call.
+    workers = Task[]
+    try
+        buf = resolvesource(source; buffer_in_memory=get(kw, :buffer_in_memory, false)::Bool,
+                            prefetch=get(kw, :prefetch, true)::Bool, workers)
+        p = _prepare(buf; kw...)
         bi = _indexdata(p)
+        if bi.barequote && !p.d.lenient
+            p = _relenient(p; kw...)
+            bi = _indexdata(p)
+        end
+        return IndexedSource(p, bi)
+    finally
+        _joinprefetch!(workers)
     end
-    return IndexedSource(p, bi)
 end
 
 # Prepared already owns the dialect, value options and structural index.
@@ -2885,38 +2894,47 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
         throw(ArgumentError("Chunks takes a single pool policy (Bool / ratio / (ratio, cap))"))
     allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...)
     _checkkwargs("Chunks", kw, allowed)
-    buf = resolvesource(source;
-                        buffer_in_memory=get(kw, :buffer_in_memory, false),
-                        prefetch=get(kw, :prefetch, true))
-    # `chunkbytes` is the batch size in bytes: one window is one batch. `ntasks`
-    # is the parallelism inside a window and only sets this default, so it is not
-    # a batch count. The chunks inside a window keep their cache-resident size.
-    windowbytes = get(kw, :chunkbytes, nothing)::Union{Nothing, Int}
-    windowbytes === nothing &&
-        (windowbytes = clamp(cld(length(buf), nt), 1 << 10, 1 << 25))
-    windowbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $windowbytes)"))
-    prepkw = NamedTuple(pair for pair in pairs(kw) if pair.first !== :chunkbytes)
-    haskey(prepkw, :parallel) || (prepkw = (; prepkw..., parallel=nt > 1))
-    prepkw = (; prepkw..., ntasks=nt, maxproblems=max(maxproblems, 1),
-              chunkbytes=_defaultchunkbytes(windowbytes, nt))
-    validate = get(kw, :validate, true)
-    p = _prepare(buf; prepkw...)
-    plan = settlecolumns(p; select, drop, types, validate)
-    settled = _settleschema(p, _windowstream(p, windowbytes, nt), plan, nt)
-    if settled === nothing
-        # A quote that did not start its field made the structural scan unsound.
-        # Prepare the source again under the lenient quote rule and settle the
-        # schema from the first window. Well-formed input never takes this path.
-        p = _relenient(p; prepkw...)
+    # The page-touch workers of a mapped file run while the header prefix and
+    # the schema pre-pass read it, and are joined before the mapping escapes.
+    workers = Task[]
+    try
+        buf = resolvesource(source;
+                            buffer_in_memory=get(kw, :buffer_in_memory, false)::Bool,
+                            prefetch=get(kw, :prefetch, true)::Bool, workers)
+        # `chunkbytes` is the batch size in bytes: one window is one batch.
+        # `ntasks` is the parallelism inside a window and only sets this default,
+        # so it is not a batch count. The chunks inside a window keep their
+        # cache-resident size.
+        windowbytes = get(kw, :chunkbytes, nothing)::Union{Nothing, Int}
+        windowbytes === nothing &&
+            (windowbytes = clamp(cld(length(buf), nt), 1 << 10, 1 << 25))
+        windowbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $windowbytes)"))
+        prepkw = NamedTuple(pair for pair in pairs(kw) if pair.first !== :chunkbytes)
+        haskey(prepkw, :parallel) || (prepkw = (; prepkw..., parallel=nt > 1))
+        prepkw = (; prepkw..., ntasks=nt, maxproblems=max(maxproblems, 1),
+                  chunkbytes=_defaultchunkbytes(windowbytes, nt))
+        validate = get(kw, :validate, true)
+        p = _prepare(buf; prepkw...)
         plan = settlecolumns(p; select, drop, types, validate)
         settled = _settleschema(p, _windowstream(p, windowbytes, nt), plan, nt)
+        if settled === nothing
+            # A quote that did not start its field made the structural scan
+            # unsound. Prepare the source again under the lenient quote rule and
+            # settle the schema from the first window. Well-formed input never
+            # takes this path.
+            p = _relenient(p; prepkw...)
+            plan = settlecolumns(p; select, drop, types, validate)
+            settled = _settleschema(p, _windowstream(p, windowbytes, nt), plan, nt)
+        end
+        seedtypes, allowmissing, maxlens = something(settled)
+        stringrequests = _settlestringrequests(plan, seedtypes, maxlens, stringtype)
+        return Chunks(name, p, _windowstream(p, windowbytes, nt), p.names[plan.sources],
+                      _settledplan(plan, seedtypes, allowmissing), p.headerlog, maxproblems,
+                      on_error, stringtype, stringrequests, poolspec,
+                      p.settings.parallel ? nt : 1, Ref(false))
+    finally
+        _joinprefetch!(workers)
     end
-    seedtypes, allowmissing, maxlens = something(settled)
-    stringrequests = _settlestringrequests(plan, seedtypes, maxlens, stringtype)
-    return Chunks(name, p, _windowstream(p, windowbytes, nt), p.names[plan.sources],
-                  _settledplan(plan, seedtypes, allowmissing), p.headerlog, maxproblems,
-                  on_error, stringtype, stringrequests, poolspec,
-                  p.settings.parallel ? nt : 1, Ref(false))
 end
 
 # One output string type per text column for the whole row window: an
