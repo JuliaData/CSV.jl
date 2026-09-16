@@ -1150,8 +1150,6 @@ function settlecolumns(p::Prepared; select=nothing, drop=nothing, types=nothing,
                          matchnormalized=true)
 end
 
-settlecolumns(s::IndexedSource; kw...) = settlecolumns(s.p; kw...)
-
 # ---------------------------------------------------------------------------
 # File — the eager table
 # ---------------------------------------------------------------------------
@@ -2765,18 +2763,6 @@ function Base.show(io::IO, c::Chunks)
     end
 end
 
-# One batch: the eager driver over this window's index. Every selected column
-# carries its settled parse type, so the driver reads it as a requested type and
-# never infers or promotes.
-function _parsewindow(c::Chunks, bi::BufferIndex, limit::Union{Nothing, Int}, cap::Int)
-    p = getfield(c, :p)
-    settings = p.settings
-    return _parse(p.buf, p.d, p.opts, settings.scanner, settings.typemap,
-                  settings.chunkbytes, settings.parallel, _chunktasks(c), cap,
-                  :collect, settings.validate, true, settings.nsample, limit, p.names,
-                  nothing, nothing, settings.colopts, getfield(c, :plan), nothing, bi)
-end
-
 # A window's parse reports rows local to that window. Diagnostics name
 # file-global data rows, so shift the retained ones. Byte positions are already
 # absolute, and the problem cap keeps the source-earliest entries by position.
@@ -2799,7 +2785,12 @@ function Base.iterate(c::Chunks, st::ChunkState=ChunkState(getfield(c, :p).datas
     bi.barequote && !p.d.lenient &&
         error("internal error: a bare quote escaped the schema pass")
     cap = getfield(c, :maxproblems)
-    t = _parsewindow(c, bi, lim === nothing ? nothing : lim - st.rowbase, max(cap, 1))
+    # One batch: the eager driver over this window's index. Every selected
+    # column carries its settled parse type, so the driver reads it as a
+    # requested type and never infers or promotes.
+    t = _parseprepared(IndexedSource(p, bi), getfield(c, :plan);
+                       limit=lim === nothing ? nothing : lim - st.rowbase,
+                       maxproblems=max(cap, 1))
     t = _rebaseproblems(t, st.rowbase)
     t, firstproblem = _mergeproblems(t, st.batch == 1 ? p.headerlog : nothing, cap)
     t, firstproblem = _narrowtypes(t, getfield(c, :plan), bi.chunks, cap, firstproblem;
