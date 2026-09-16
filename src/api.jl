@@ -2686,21 +2686,54 @@ rownumber(row::Row) = getfield(getfield(row, :view), :rownumber)
 # streams the same windows before the first batch, which is what lets every
 # batch share one column type, missingness, and settled text width.
 
+# Index the window of `windowbytes` source bytes that starts at `pos`, or return
+# `nothing` at the end of the data range. The window ends at the first row
+# boundary at or after its last byte; `BufferIndex.nextstart` is the next
+# window's first byte. `p.settings.chunkbytes` sizes the parallel work units
+# inside the window, the same way it does for a whole-range read.
+function nextwindow(p::Prepared, pos::Int, windowbytes::Int)
+    pos >= p.dataend && return nothing
+    settings = p.settings
+    bi = index(p.buf, p.d; datastart=pos, stop=p.dataend - 1, windowbytes,
+               chunkbytes=settings.chunkbytes, parallel=settings.parallel,
+               ntasks=settings.ntasks, fastindex=settings.fastindex)
+    # A data range that a footer cut does not reach the end of the source, so no
+    # window of it reports the malformed end of input.
+    bi.unclosedquote && p.dataend != length(p.buf) + 1 &&
+        return BufferIndex(bi.chunks, bi.nrows, false, bi.barequote, bi.nextstart)
+    return bi
+end
+
+# The next window that holds at least one data row. A comment-only or empty
+# region spans windows without producing any, so it is skipped here rather than
+# handed to a reader as an empty batch.
+function nextdatawindow(p::Prepared, pos::Int, windowbytes::Int)
+    while true
+        bi = nextwindow(p, pos, windowbytes)
+        bi === nothing && return nothing
+        bi.nrows > 0 && return bi
+        pos = bi.nextstart
+    end
+end
+
 struct Chunks
     name::String
     p::Prepared                   # source bytes, names, data range, value rules
-    stream::WindowStream          # the data range as windows
+    windowbytes::Int              # one window of source bytes is one batch
     names::Vector{Symbol}         # the selected columns, in file order
     plan::ColumnPlan              # the settled schema, as a requested-type plan
-    headerlog::ProblemLog
     maxproblems::Int
     on_error::Symbol
     stringtype::Type
     stringrequests::Union{Nothing, Vector{Union{Nothing, Type}}}  # settled per column
     poolspec::Union{Nothing, Tuple{Float64, Int}}
-    ntasks::Int                   # batch columns and index chunks share this budget
     warned::Base.RefValue{Bool}   # on_error=:warn reports the first batch with problems
 end
+
+# The tasks one batch may use: the index chunks of its window and then its
+# columns. `Chunks` passes its own `ntasks` into the preparation.
+_chunktasks(c::Chunks) =
+    _readtasklimit(getfield(c, :p).settings.parallel, getfield(c, :p).settings.ntasks)
 
 # Where the next batch starts: the window's first byte, the data rows before it
 # (diagnostics name file-global rows), and the batch number.
@@ -2723,8 +2756,8 @@ function Base.show(io::IO, c::Chunks)
     st = getfield(c, :stringtype)
     reqs = getfield(c, :stringrequests)
     print(io, "CSV.Chunks(", repr(getfield(c, :name)), "): ", length(nms), " column",
-          length(nms) == 1 ? "" : "s", ", batches of up to ",
-          getfield(c, :stream).windowbytes, " bytes")
+          length(nms) == 1 ? "" : "s", ", batches of a target ",
+          getfield(c, :windowbytes), " source bytes")
     for (q, nm) in enumerate(nms)
         decision = plan.columns[plan.sources[q]]
         T = decision.parsetype
@@ -2743,9 +2776,8 @@ end
 function _parsewindow(c::Chunks, bi::BufferIndex, limit::Union{Nothing, Int}, cap::Int)
     p = getfield(c, :p)
     settings = p.settings
-    tasklimit = _readtasklimit(settings.parallel, getfield(c, :ntasks))
     return _parse(p.buf, p.d, p.opts, settings.scanner, settings.typemap,
-                  getfield(c, :stream).chunkbytes, settings.parallel, tasklimit, cap,
+                  settings.chunkbytes, settings.parallel, _chunktasks(c), cap,
                   :collect, settings.validate, true, settings.nsample, limit, p.names,
                   nothing, nothing, settings.colopts, getfield(c, :plan), nothing, bi)
 end
@@ -2765,7 +2797,7 @@ function Base.iterate(c::Chunks, st::ChunkState=ChunkState(getfield(c, :p).datas
     p = getfield(c, :p)
     lim = p.limit
     lim === nothing || st.rowbase < lim || return nothing
-    bi = nextdatawindow(getfield(c, :stream), st.pos)
+    bi = nextdatawindow(p, st.pos, getfield(c, :windowbytes))
     bi === nothing && return nothing
     # The pre-pass streamed these same windows and prepared the source again
     # under the lenient rule for any bare quote it found.
@@ -2774,7 +2806,7 @@ function Base.iterate(c::Chunks, st::ChunkState=ChunkState(getfield(c, :p).datas
     cap = getfield(c, :maxproblems)
     t = _parsewindow(c, bi, lim === nothing ? nothing : lim - st.rowbase, max(cap, 1))
     t = _rebaseproblems(t, st.rowbase)
-    t, firstproblem = _mergeproblems(t, st.batch == 1 ? getfield(c, :headerlog) : nothing, cap)
+    t, firstproblem = _mergeproblems(t, st.batch == 1 ? p.headerlog : nothing, cap)
     t, firstproblem = _narrowtypes(t, getfield(c, :plan), bi.chunks, cap, firstproblem;
                                    problemrowbase=st.rowbase)
     _reportproblems(t, getfield(c, :on_error), firstproblem,
@@ -2784,7 +2816,7 @@ function Base.iterate(c::Chunks, st::ChunkState=ChunkState(getfield(c, :p).datas
     # build the requested string type.
     stringtype = getfield(c, :stringtype)
     ps = getfield(c, :poolspec)
-    tasklimit = getfield(c, :ntasks)
+    tasklimit = _chunktasks(c)
     ps === nothing || (t = _poolcolumns(t, fill(ps, length(t.columns)); tasklimit))
     t = _finishstrings(t, stringtype, getfield(c, :stringrequests); tasklimit)
     f = File(getfield(c, :name), t, Dict(nm => j for (j, nm) in enumerate(names(t))))
@@ -2799,7 +2831,7 @@ end
 # `:barequote` (the structural scan was unsound).
 function _settlewindows!(types::Vector{Type}, allowmissing::Vector{Bool},
                          maxlens::Vector{Int}, seed::Vector{Union{Nothing, Type}},
-                         p::Prepared, ws::WindowStream, plan::ColumnPlan, ntasks::Int)
+                         p::Prepared, windowbytes::Int, plan::ColumnPlan, ntasks::Int)
     for (q, j) in enumerate(plan.sources)
         types[q] = something(seed[q], Missing)
         allowmissing[q] = plan.columns[j].declaredmissing
@@ -2811,7 +2843,7 @@ function _settlewindows!(types::Vector{Type}, allowmissing::Vector{Bool},
     windows = 0
     seeded = !any(isnothing, seed)
     while lim === nothing || rows < lim
-        bi = nextwindow(ws, pos)
+        bi = nextwindow(p, pos, windowbytes)
         bi === nothing && break
         bi.barequote && !p.d.lenient && return :barequote
         pos = bi.nextstart
@@ -2848,14 +2880,15 @@ end
 # per selected column, from validating every cell of the row window one window
 # at a time. Returns `nothing` when a window holds a quote that did not start
 # its field: the caller prepares the source again under the lenient quote rule.
-function _settleschema(p::Prepared, ws::WindowStream, plan::ColumnPlan, ntasks::Int)
+function _settleschema(p::Prepared, windowbytes::Int, plan::ColumnPlan, ntasks::Int)
     seed = Union{Nothing, Type}[plan.columns[j].parsetype for j in plan.sources]
     n = length(seed)
     types = Vector{Type}(undef, n)
     allowmissing = Vector{Bool}(undef, n)
     maxlens = Vector{Int}(undef, n)
     while true
-        outcome = _settlewindows!(types, allowmissing, maxlens, seed, p, ws, plan, ntasks)
+        outcome = _settlewindows!(types, allowmissing, maxlens, seed, p, windowbytes,
+                                  plan, ntasks)
         outcome === :barequote && return nothing
         outcome === :done && return (types, allowmissing, maxlens)
         seed = Union{Nothing, Type}[T for T in types]   # the wider Timestamp seed
@@ -2873,11 +2906,6 @@ function _settledplan(plan::ColumnPlan, types::Vector{Type}, allowmissing::Vecto
     return ColumnPlan(columns, plan.sources, plan.positions, plan.predicate, plan.opts,
                       plan.colopts)
 end
-
-_windowstream(p::Prepared, windowbytes::Int, nt::Int) =
-    WindowStream(p.buf, p.d, p.dataend, windowbytes,
-                 _defaultchunkbytes(windowbytes, nt), p.settings.parallel, nt,
-                 p.settings.fastindex)
 
 function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
                 maxproblems::Int=10_000, stringtype::Type=DataString,
@@ -2916,7 +2944,7 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
         validate = get(kw, :validate, true)
         p = _prepare(buf; prepkw...)
         plan = settlecolumns(p; select, drop, types, validate)
-        settled = _settleschema(p, _windowstream(p, windowbytes, nt), plan, nt)
+        settled = _settleschema(p, windowbytes, plan, nt)
         if settled === nothing
             # A quote that did not start its field made the structural scan
             # unsound. Prepare the source again under the lenient quote rule and
@@ -2924,14 +2952,13 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
             # takes this path.
             p = _relenient(p; prepkw...)
             plan = settlecolumns(p; select, drop, types, validate)
-            settled = _settleschema(p, _windowstream(p, windowbytes, nt), plan, nt)
+            settled = _settleschema(p, windowbytes, plan, nt)
         end
         seedtypes, allowmissing, maxlens = something(settled)
         stringrequests = _settlestringrequests(plan, seedtypes, maxlens, stringtype)
-        return Chunks(name, p, _windowstream(p, windowbytes, nt), p.names[plan.sources],
-                      _settledplan(plan, seedtypes, allowmissing), p.headerlog, maxproblems,
-                      on_error, stringtype, stringrequests, poolspec,
-                      p.settings.parallel ? nt : 1, Ref(false))
+        return Chunks(name, p, windowbytes, p.names[plan.sources],
+                      _settledplan(plan, seedtypes, allowmissing), maxproblems,
+                      on_error, stringtype, stringrequests, poolspec, Ref(false))
     finally
         _joinprefetch!(workers)
     end

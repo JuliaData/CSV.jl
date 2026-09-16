@@ -2379,47 +2379,6 @@ end
 
 index(buf::Vector{UInt8}; kw...) = index(buf, Dialect(); kw...)
 
-# The data range of one source, cut into byte windows. A window starts and ends
-# at a row boundary and is the streaming unit: it is indexed, used, and dropped.
-# `chunkbytes` sizes the parallel work units inside one window, the same way it
-# does for a whole-file read.
-struct WindowStream
-    buf::Vector{UInt8}
-    d::Dialect
-    dataend::Int                 # one byte past the data range
-    windowbytes::Int
-    chunkbytes::Int
-    parallel::Bool
-    ntasks::Union{Nothing, Int}
-    fastindex::Bool
-end
-
-# Index the window that starts at `pos`, or return `nothing` at the end of the
-# data range. `BufferIndex.nextstart` is the next window's first byte.
-function nextwindow(ws::WindowStream, pos::Int)
-    pos >= ws.dataend && return nothing
-    bi = index(ws.buf, ws.d; datastart=pos, stop=ws.dataend - 1,
-               windowbytes=ws.windowbytes, chunkbytes=ws.chunkbytes,
-               parallel=ws.parallel, ntasks=ws.ntasks, fastindex=ws.fastindex)
-    # A data range that a footer cut does not reach the end of the source, so no
-    # window of it reports the malformed end of input.
-    bi.unclosedquote && ws.dataend != length(ws.buf) + 1 &&
-        return BufferIndex(bi.chunks, bi.nrows, false, bi.barequote, bi.nextstart)
-    return bi
-end
-
-# The next window that holds at least one data row. A comment-only or empty
-# region spans windows without producing any, so it is skipped here rather than
-# handed to a reader as an empty batch.
-function nextdatawindow(ws::WindowStream, pos::Int)
-    while true
-        bi = nextwindow(ws, pos)
-        bi === nothing && return nothing
-        bi.nrows > 0 && return bi
-        pos = bi.nextstart
-    end
-end
-
 # ---------------------------------------------------------------------------
 # L2/L3: typed parsing over the index.
 # ---------------------------------------------------------------------------
