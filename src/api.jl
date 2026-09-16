@@ -2933,13 +2933,13 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
         buf = resolvesource(source;
                             buffer_in_memory=get(kw, :buffer_in_memory, false)::Bool,
                             prefetch=get(kw, :prefetch, true)::Bool, workers)
-        # `chunkbytes` is the batch size in bytes: one window is one batch.
-        # `ntasks` is the parallelism inside a window and only sets this default,
-        # so it is not a batch count. The chunks inside a window keep their
+        # `chunkbytes` is the batch size in bytes: one window is one batch. It
+        # defaults to 64 MiB of source bytes, which amortizes the per-window
+        # index over enough rows. `ntasks` is the parallelism inside a window,
+        # never a batch count; the chunks inside a window keep their
         # cache-resident size.
         windowbytes = get(kw, :chunkbytes, nothing)::Union{Nothing, Int}
-        windowbytes === nothing &&
-            (windowbytes = clamp(cld(length(buf), nt), 1 << 10, 1 << 25))
+        windowbytes === nothing && (windowbytes = clamp(length(buf), 1, 1 << 26))
         windowbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $windowbytes)"))
         prepkw = NamedTuple(pair for pair in pairs(kw) if pair.first !== :chunkbytes)
         haskey(prepkw, :parallel) || (prepkw = (; prepkw..., parallel=nt > 1))
