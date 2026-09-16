@@ -662,14 +662,17 @@ function _footeroffset(buf::Vector{UInt8}, d::Dialect, rawstart::Int, footerskip
     return rawstart # target is guaranteed by the count pass
 end
 
-function _rowsbefore(chunks::Vector{ChunkIndex}, byteoff::Int)
-    n = 0
+# The first live row at or after `byteoff`, as (chunk, local row). The header
+# forms read live rows: a comment row at a listed header position is skipped.
+function _liverowat(chunks::Vector{ChunkIndex}, byteoff::Int)
     for ci in chunks, lr in ci.firstdatarow:totalrows(ci)
-        ci.start + Int(ci.rowstartrel[lr]) < byteoff && (n += 1)
+        ci.start + Int(ci.rowstartrel[lr]) >= byteoff && return (ci, lr)
     end
-    return n
+    return nothing
 end
 
+# Trim a window's index to its first `limit` data rows. The schema pre-pass owns
+# the window it trims and drops it afterwards.
 function _limitrows!(chunks::Vector{ChunkIndex}, limit::Int)
     remaining = limit
     for ci in chunks
@@ -698,6 +701,7 @@ struct ReadSettings
     parallel::Bool
     ntasks::Union{Nothing, Int}
     scanner::Symbol
+    fastindex::Bool
     maxproblems::Int
     nsample::Union{Nothing, Int}
     typemap::Union{Nothing, Dict{Type, Type}}
@@ -705,21 +709,36 @@ struct ReadSettings
     colopts::Union{Nothing, Vector{ValueOpts}}
 end
 
+# A prepared source names its columns and its data byte range. It holds no
+# structural index of that range: a reader either indexes the range once
+# (`_prepareindexed`) or streams it one window at a time.
 struct Prepared
     buf::Vector{UInt8}
-    bi::BufferIndex
+    datastart::Int              # first byte of the data region
+    dataend::Int                # one byte past the data region
+    # The header prefix reached the end of the source inside a quoted field. The
+    # data range can then be empty, and the reader still reports the malformed
+    # end of input.
+    unclosedquote::Bool
     names::Vector{Symbol}
     ncols::Int
     limit::Union{Nothing, Int}
     opts::ValueOpts
     d::Dialect
     headerlog::ProblemLog
-    # Header rows are consumed from the structural index during preparation.
+    # Header rows are consumed from the header prefix index during preparation.
     # Retain their compact structural locations so a later File(::LazyFile)
     # can replay diagnostics at its own cap without retaining every malformed
     # header field in memory.
     headerrefs::Vector{Tuple{ChunkIndex, Int}}
     settings::ReadSettings
+end
+
+# The data range indexed as one window. The readers that expose every row of the
+# range at once — File, lazy, Rows, Tables.Scan — take this.
+struct IndexedSource
+    p::Prepared
+    bi::BufferIndex
 end
 
 function _headerproblems(buf::Vector{UInt8}, refs::Vector{Tuple{ChunkIndex, Int}},
@@ -735,6 +754,46 @@ function _headerproblems(buf::Vector{UInt8}, refs::Vector{Tuple{ChunkIndex, Int}
     end
     sortproblems!(log)
     return log
+end
+
+# A window size for the scans that keep no index. Small enough that a long
+# skipped region costs bytes rather than memory, large enough to plan in
+# parallel.
+const SCAN_WINDOW = 1 << 22
+
+# Is there a quote that did not start its field anywhere in `[from, to]`? The
+# region is indexed one window at a time and every window's index is dropped:
+# only the finding survives. `from` and `to + 1` are row boundaries.
+function _hasbarequote(buf::Vector{UInt8}, d::Dialect, from::Int, to::Int,
+                       chunkbytes::Int, parallel::Bool, ntasks::Union{Nothing, Int},
+                       fastindex::Bool)
+    pos = from
+    while pos <= to
+        bi = index(buf, d; datastart=pos, stop=to, windowbytes=SCAN_WINDOW, chunkbytes,
+                   parallel, ntasks, fastindex)
+        bi.barequote && return true
+        pos = bi.nextstart
+    end
+    return false
+end
+
+# Index the source prefix that holds the header rows. `rows` is the raw row
+# count the header forms need from the anchor and `needbyte` the byte where the
+# last of them may start; a comment row at a listed position pushes the live row
+# further out, so the prefix doubles until one starts at or after `needbyte`, or
+# until the prefix is the whole source.
+function _headerprefix(buf::Vector{UInt8}, d::Dialect, anchoroff::Int, needbyte::Int,
+                       rows::Int, chunkbytes::Int, parallel::Bool,
+                       ntasks::Union{Nothing, Int}, fastindex::Bool)
+    len = length(buf)
+    need = rows
+    while true
+        stop = min(_rawrowoffset(buf, d, anchoroff, _saturatedinc(need)) - 1, len)
+        bi = index(buf, d; datastart=anchoroff, stop, chunkbytes, parallel, ntasks,
+                   fastindex)
+        (stop >= len || _liverowat(bi.chunks, needbyte) !== nothing) && return bi
+        need = need > typemax(Int) >> 1 ? typemax(Int) - 1 : 2 * need
+    end
 end
 
 function _prepare(source;
@@ -857,12 +916,22 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
         # otherwise come from a junk first row instead of the first DATA row) —
         # the index starts at the anchor. Row `n` at/after the anchor is
         # `n - firstrow + 1` quote-aware structural rows from it.
-        datastart = anchoroff
         rowoff(n::Int) = n < firstrow ? _physicallineoffset(buf, rawstart, n) :
                                         _rawrowoffset(buf, d, anchoroff, n - firstrow + 1)
-        bi = index(buf, d; datastart, chunkbytes=cb, parallel, ntasks, fastindex)
+        headerlog = ProblemLog(get(kw, :maxproblems, 10_000))
+        headerrefs = Tuple{ChunkIndex, Int}[]
+        # The header rows sit in a small prefix of the source. Index that prefix
+        # only: the names and the first data byte come from it, and nothing here
+        # needs the rest of the file indexed. Explicit names need no prefix.
+        explicitnames = header isa AbstractVector && !(header isa AbstractVector{<:Integer}) &&
+                        !isempty(header)
+        needbyte = headerrow == 0 ? anchoroff : rowoff(headerrow)
+        prefix = explicitnames ? BufferIndex(ChunkIndex[], 0, false, false, anchoroff) :
+                 _headerprefix(buf, d, anchoroff, needbyte,
+                               headerrow == 0 ? 1 : max(1, headerrow - firstrow + 1),
+                               cb, parallel, ntasks, fastindex)
         _joinprefetch!(workers)
-        if bi.barequote && !lenient
+        if prefix.barequote && !lenient
             # A quote that did not start its field (`5' 11"`, `x"y`) made the
             # parallel toggle scan unsound: rows may have merged into one cell.
             # Prepare again under the lenient quote rule, from the same bytes.
@@ -871,12 +940,14 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
                             delim, limit, samplebytes, chunkbytes, parallel, ntasks,
                             buffer_in_memory, prefetch, validate, true, kw)
         end
-        chunks = bi.chunks
-        headerlog = ProblemLog(get(kw, :maxproblems, 10_000))
-        headerrefs = Tuple{ChunkIndex, Int}[]
+        chunks = prefix.chunks
+        # The single-row header forms read the first live row of the prefix;
+        # `parseheader!` consumes it, so its byte start is taken first.
+        hlive = _liverowat(chunks, anchoroff)
+        headerbyte = hlive === nothing ? 0 :
+                     hlive[1].start + Int(hlive[1].rowstartrel[hlive[2]])
 
-        names = if header isa AbstractVector && !(header isa AbstractVector{<:Integer}) &&
-                   !isempty(header)
+        names = if explicitnames
             Symbol.(header)
         elseif header === false || isempty(chunks) ||
                (header isa AbstractVector && isempty(header))   # header=[] ⇒ generate ColumnN
@@ -897,7 +968,6 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
             # to ColumnN first. Each listed row is parsed
             # in place by advancing the chunk cursor to that raw row's byte offset.
             parts = Vector{Vector{Symbol}}()
-            firstrows = Int[ci.firstdatarow for ci in chunks]
             for hr in headerrows
                 _skiptobyte!(chunks, rowoff(hr))
                 k = _firstlive(chunks)
@@ -905,10 +975,6 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
                 push!(headerrefs, (chunks[k], chunks[k].firstdatarow))
                 push!(parts, parseheader!(buf, chunks[k], opts, d, headerlog))
             end
-            for (ci, firstrow) in zip(chunks, firstrows)
-                ci.firstdatarow = firstrow
-            end
-            _skiptobyte!(chunks, rowoff(_saturatedinc(headerrow)))
             if isempty(parts)
                 Symbol[]
             else
@@ -920,11 +986,18 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
         normalizenames && (names = [normalizename(String(nm)) for nm in names])
         names = makeunique!(names)
 
-        if skipto !== nothing
-            skipto > rawheaderrow ||
-                throw(ArgumentError("skipto=$skipto must be past the header (row $rawheaderrow)"))
-            _skiptobyte!(chunks, rowoff(_saturatedint(skipto)))
-        end
+        skipto === nothing || skipto > rawheaderrow ||
+            throw(ArgumentError("skipto=$skipto must be past the header (row $rawheaderrow)"))
+        # The first data byte. `skipto` and a multi-row header name RAW rows, so
+        # their offsets are index-free; a single header row is the first LIVE row
+        # at or after the anchor, and the data starts one raw row past it. A
+        # comment or empty row at the start of the range is dropped by the
+        # range's own index, exactly as it was by the whole-file index.
+        datastart = skipto !== nothing ? rowoff(_saturatedint(skipto)) :
+                    headerrow == 0 ? anchoroff :
+                    length(headerrows) > 1 ? rowoff(_saturatedinc(headerrow)) :
+                    headerbyte == 0 ? _saturatedinc(length(buf)) :
+                    nextrowstart(buf, headerbyte, length(buf), d, false, true)
         # A non-comment physical row consumes at least one source byte. A footer
         # count larger than the buffer therefore removes every possible row; avoid
         # narrowing the count or scanning the source in that known-empty case.
@@ -932,9 +1005,22 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
         # prefix row must not swallow the file (the prefix is quote-blind).
         footer = footerskip > 0 && footerskip >= length(buf) ? anchoroff :
                  _footeroffset(buf, d, anchoroff, Int(footerskip))
-        keep = footerskip == 0 ? sum(nrows, chunks; init=0) : _rowsbefore(chunks, footer)
-        lim = limit === nothing ? (footerskip > 0 ? keep : nothing) :
-              limit >= keep ? keep : Int(limit)
+        dataend = max(footer, datastart)
+        lim = limit === nothing ? nothing : _saturatedint(limit)
+        # Rows outside the data range are positioned, never indexed, and the
+        # quote rule decides where they end: a bare quote among them moves every
+        # later row boundary. Scan those two regions for one — the skipped head
+        # and the footer — and prepare again under the lenient rule when one
+        # turns up. The reader that indexes the data range reports its own.
+        # Both regions are empty for a plain read.
+        if !lenient &&
+           (_hasbarequote(buf, d, max(anchoroff, prefix.nextstart), datastart - 1, cb,
+                          parallel, ntasks, fastindex) ||
+            _hasbarequote(buf, d, dataend, length(buf), cb, parallel, ntasks, fastindex))
+            return _prepare(buf, header, normalizenames, skipto, footerskip, missingstring,
+                            delim, limit, samplebytes, chunkbytes, parallel, ntasks,
+                            buffer_in_memory, prefetch, validate, true, kw)
+        end
 
         # engine + diagnostics kwargs the parse driver consumes directly
         colopts = nothing
@@ -948,32 +1034,58 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
         nsample = get(kw, :nsample, nothing)::Union{Nothing, Int}
         nsample === nothing || nsample >= 1 ||
             throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
-        settings = ReadSettings(cb, parallel, ntasks, resolvescanner(d, fastindex),
+        settings = ReadSettings(cb, parallel, ntasks, resolvescanner(d, fastindex), fastindex,
                                 get(kw, :maxproblems, 10_000), nsample,
                                 _normalizetypemap(get(kw, :typemap, nothing)::Union{Nothing, AbstractDict}),
                                 validate, colopts)
-        return Prepared(buf, bi, names, length(names), lim, opts, d, headerlog, headerrefs, settings)
+        return Prepared(buf, datastart, dataend, prefix.unclosedquote, names,
+                        length(names), lim, opts, d, headerlog, headerrefs, settings)
     finally
         _joinprefetch!(workers)
     end
 end
 
+# The data range as one window. `File`, `lazy`, `Rows` and a `Tables.Scan` all
+# read every row of the range, so they index it once, here.
+function _indexdata(p::Prepared)
+    bi = index(p.buf, p.d; datastart=p.datastart, stop=p.dataend - 1,
+               chunkbytes=p.settings.chunkbytes, parallel=p.settings.parallel,
+               ntasks=p.settings.ntasks, fastindex=p.settings.fastindex)
+    p.unclosedquote || return bi
+    return BufferIndex(bi.chunks, bi.nrows, true, bi.barequote, bi.nextstart)
+end
+
+# A bare quote in the data range makes the structural scan unsound the same way
+# one in the header prefix does. Prepare the source again under the lenient
+# quote rule, from the bytes already resolved. Well-formed input never takes
+# this path.
+function _prepareindexed(source; kw...)
+    p = _prepare(source; kw...)
+    bi = _indexdata(p)
+    if bi.barequote && !p.d.lenient
+        p = _prepare(p.buf; kw..., lenient=true)
+        bi = _indexdata(p)
+    end
+    return IndexedSource(p, bi)
+end
+
 # Prepared already owns the dialect, value options and structural index.
 # Reuse them rather than rebuilding them through parse's keyword front.
-function _parseprepared(p::Prepared, plan::ColumnPlan;
-                        parallel::Bool=p.settings.parallel,
-                        ntasks::Union{Nothing, Int}=p.settings.ntasks,
-                        validate::Bool=p.settings.validate,
-                        maxproblems::Int=p.settings.maxproblems,
-                        limit::Union{Nothing, Int}=p.limit,
+function _parseprepared(s::IndexedSource, plan::ColumnPlan;
+                        parallel::Bool=s.p.settings.parallel,
+                        ntasks::Union{Nothing, Int}=s.p.settings.ntasks,
+                        validate::Bool=s.p.settings.validate,
+                        maxproblems::Int=s.p.settings.maxproblems,
+                        limit::Union{Nothing, Int}=s.p.limit,
                         rowmask::Union{Nothing, Vector{Bool}}=nothing,
                         reportstructural::Bool=true)
     tasklimit = _readtasklimit(parallel, ntasks)
+    p = s.p
     settings = p.settings
     return _parse(p.buf, p.d, p.opts, settings.scanner, settings.typemap,
                   settings.chunkbytes, parallel, tasklimit, maxproblems, :collect,
                   validate, reportstructural, settings.nsample, limit,
-                  p.names, nothing, nothing, settings.colopts, plan, rowmask, p.bi)
+                  p.names, nothing, nothing, settings.colopts, plan, rowmask, s.bi)
 end
 
 # kwargs _prepare consumes itself (not forwarded to the parse driver)
@@ -982,6 +1094,7 @@ const _PREPKW = (:header, :normalizenames, :skipto, :footerskip, :missingstring,
                  :buffer_in_memory, :prefetch, :validate)
 
 _preparedcolopts(p::Prepared) = p.settings.colopts
+_preparedcolopts(s::IndexedSource) = _preparedcolopts(s.p)
 
 # Create the column plan from the names and value rules found during source
 # preparation. Name selection also accepts the spelling used before
@@ -993,6 +1106,8 @@ function settlecolumns(p::Prepared; select=nothing, drop=nothing, types=nothing,
                          colopts=_preparedcolopts(p), validate,
                          matchnormalized=true)
 end
+
+settlecolumns(s::IndexedSource; kw...) = settlecolumns(s.p; kw...)
 
 # ---------------------------------------------------------------------------
 # File — the eager table
@@ -1063,9 +1178,9 @@ Base.@nospecializeinfer function _file(@nospecialize(source), @nospecialize(type
             throw(ArgumentError("pass column types through the Scan's select items (`:col => T`), not types="))
         haskey(kw, :limit) &&
             throw(ArgumentError("pass the row limit through the Scan, not limit="))
-        p = _prepare(source; parallel, ntasks, maxproblems=capturecap, validate, kw...)
+        s = _prepareindexed(source; parallel, ntasks, maxproblems=capturecap, validate, kw...)
         nm = _sourcename(source)
-        t, requests = _executescan(p, scan; maxproblems, on_error, source=nm)
+        t, requests = _executescan(s, scan; maxproblems, on_error, source=nm)
         # pool keys name the scan's OUTPUT columns (the request already renamed
         # and reordered them)
         tasklimit = _readtasklimit(parallel, ntasks)
@@ -1074,8 +1189,8 @@ Base.@nospecializeinfer function _file(@nospecialize(source), @nospecialize(type
         downcast && (t = _downcast(t))
         return File(nm, t, Dict(n => j for (j, n) in enumerate(names(t))))
     end
-    p = _prepare(source; parallel, ntasks, maxproblems=capturecap, validate, kw...)
-    return _filefromprepared(p, _sourcename(source); types, select, drop, pool, downcast,
+    s = _prepareindexed(source; parallel, ntasks, maxproblems=capturecap, validate, kw...)
+    return _filefromprepared(s, _sourcename(source); types, select, drop, pool, downcast,
                              stringtype, on_error, maxproblems, parallel, ntasks, validate)
 end
 
@@ -1091,22 +1206,23 @@ function _setemptytypes!(plan::ColumnPlan)
     return plan
 end
 
-function _filefromprepared(p::Prepared, nm::String; types=nothing, select=nothing, drop=nothing,
+function _filefromprepared(s::IndexedSource, nm::String; types=nothing, select=nothing, drop=nothing,
                            pool=DEFAULT_POOL, downcast::Bool=false, stringtype::Type=DataString,
                            on_error::Symbol=:warn, maxproblems::Int=10_000,
                            parallel::Bool=Threads.nthreads() > 1, validate::Bool=true,
                            ntasks::Union{Nothing, Int}=nothing,
                            available::Union{Nothing, Vector{Int}}=nothing)
-    return _filefromprepared(p, nm, types, select, drop, pool, downcast, stringtype,
+    return _filefromprepared(s, nm, types, select, drop, pool, downcast, stringtype,
                              on_error, maxproblems, parallel, validate, ntasks, available)
 end
 
-Base.@nospecializeinfer function _filefromprepared(p::Prepared, nm::String, @nospecialize(types),
+Base.@nospecializeinfer function _filefromprepared(s::IndexedSource, nm::String, @nospecialize(types),
                            @nospecialize(select), @nospecialize(drop), @nospecialize(pool),
                            downcast::Bool, @nospecialize(stringtype::Type),
                            on_error::Symbol, maxproblems::Int, parallel::Bool, validate::Bool,
                            @nospecialize(ntasks::Union{Nothing, Int}),
                            @nospecialize(available::Union{Nothing, Vector{Int}}))
+    p = s.p
     viewnames = available === nothing ? p.names : p.names[available]
     plan = settlecolumns(p; select, drop, types, available, validate)
     p.limit == 0 && _setemptytypes!(plan)
@@ -1117,11 +1233,11 @@ Base.@nospecializeinfer function _filefromprepared(p::Prepared, nm::String, @nos
     # belongs to this File call. Override every value-driver option that this
     # method exposes; in particular, a LazyFile prepared with defaults must not
     # silently cap a later larger maxproblems request at 10,000.
-    t = _parseprepared(p, plan; parallel, ntasks, validate,
+    t = _parseprepared(s, plan; parallel, ntasks, validate,
                        maxproblems=max(maxproblems, 1))
     headerlog = _headerproblems(p.buf, p.headerrefs, p.opts, max(maxproblems, 1))
     t, firstproblem = _mergeproblems(t, headerlog, maxproblems)
-    t, firstproblem = _narrowtypes(t, plan, p.bi.chunks, maxproblems, firstproblem)
+    t, firstproblem = _narrowtypes(t, plan, s.bi.chunks, maxproblems, firstproblem)
     _reportproblems(t, on_error, firstproblem, nm)
     tasklimit = _readtasklimit(parallel, ntasks)
     t = _poolcolumns(t, poolspecs[plan.positions]; tasklimit)
@@ -1187,9 +1303,9 @@ function _finishstrings(t::ParsedTable, stringtype::Type, requests; tasklimit::I
 end
 
 # Tables.Scan execution is included after this file.
-function _executescan(p::Prepared, scan; maxproblems::Int, on_error::Symbol,
+function _executescan(s::IndexedSource, scan; maxproblems::Int, on_error::Symbol,
                       source::String="")
-    return _executescanplan(p, scan; headerlog=p.headerlog,
+    return _executescanplan(s, scan; headerlog=s.p.headerlog,
                             maxproblems, on_error, source)
 end
 
@@ -2147,10 +2263,11 @@ function lazy(source; types=nothing, stringtype::Type=DataString,
     allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW..., :validate)
     _checkkwargs("lazy", kw, allowed)
     _checkstringtype(stringtype)
-    p = _prepare(source; kw...)
+    src = _prepareindexed(source; kw...)
+    p = src.p
     validate = get(kw, :validate, true)
     plan = settlecolumns(p; select, drop, types, validate)
-    chunks = p.bi.chunks
+    chunks = src.bi.chunks
     rowbases = cumsum([0; Int[nrows(ci) for ci in chunks[1:max(length(chunks) - 1, 0)]]])
     total = sum(nrows, chunks; init=0)
     nr = p.limit === nothing ? total : min(total, p.limit)
@@ -2171,7 +2288,7 @@ function lazy(source; types=nothing, stringtype::Type=DataString,
         push!(cols, c)
     end
     names = p.names[js]
-    return LazyFile(_sourcename(source), p, js, names, cols, nr,
+    return LazyFile(_sourcename(source), src, js, names, cols, nr,
                     Dict(nm => i for (i, nm) in enumerate(names)))
 end
 
@@ -2273,7 +2390,7 @@ end
 
 struct LazyFile
     name::String
-    prepared::Prepared
+    prepared::IndexedSource
     sourceindices::Vector{Int}
     names::Vector{Symbol}
     columns::Vector{AbstractVector}
@@ -2354,7 +2471,8 @@ function Rows(source; types=nothing, reusebuffer::Bool=false, select=nothing, dr
         "Rows does not retain diagnostics; use File with on_error=:warn, " *
         "or Rows with on_error=:error to check cells on access"))
     _checkstringtype(stringtype)
-    p = _prepare(source; kw...)
+    src = _prepareindexed(source; kw...)
+    p = src.p
     plan = settlecolumns(p; select, drop, types,
                          validate=get(kw, :validate, true))
     names = p.names[plan.sources]
@@ -2363,7 +2481,7 @@ function Rows(source; types=nothing, reusebuffer::Bool=false, select=nothing, dr
     access = Type[something(accessparsetype(plan.columns[j]), stringtype) for j in plan.sources]
     NT = NamedTuple{Tuple(names), Tuple{access...}}
     name = _sourcename(source)
-    inner = _IndexedRows(p.buf, p.bi.chunks, p.names,
+    inner = _IndexedRows(p.buf, src.bi.chunks, p.names,
                          Dict(nm => j for (j, nm) in enumerate(p.names)),
                          plan, p.d, name)
     # The schema is in the type, so a caller that constructs and iterates the
@@ -2599,8 +2717,9 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     end
     haskey(kw, :parallel) || (kw = (; kw..., parallel=nt > 1))
     capturecap = max(maxproblems, 1)
-    p = _prepare(source; ntasks=nt, maxproblems=capturecap, kw...)
-    chunks = p.bi.chunks
+    src = _prepareindexed(source; ntasks=nt, maxproblems=capturecap, kw...)
+    p = src.p
+    chunks = src.bi.chunks
     fullrows = sum(nrows, chunks; init=0)
     p.limit === nothing || _limitrows!(chunks, p.limit)
     filter!(ci -> nrows(ci) > 0, chunks)
@@ -2622,7 +2741,7 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
     allowmissing = settlebatchschema!(seedtypes, p.buf, chunks, plan, maxlens;
                                       parallel=get(kw, :parallel, nt > 1), tasklimit=nt)
     stringrequests = _settlestringrequests(plan, seedtypes, maxlens, stringtype)
-    unclosedquote = p.bi.unclosedquote && (p.limit === nothing || p.limit >= fullrows)
+    unclosedquote = src.bi.unclosedquote && (p.limit === nothing || p.limit >= fullrows)
     inner = Batches(p.buf, chunks, p.names[plan.sources], plan, seedtypes,
                     allowmissing, p.d, capturecap, unclosedquote,
                     get(kw, :parallel, nt > 1) ? nt : 1)

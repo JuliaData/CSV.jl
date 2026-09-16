@@ -550,8 +550,8 @@ end
     @test getfield(manybadfile, :table).droppedproblems == 0
     wideheader = join(fill("\"a\"x", manyproblemcount), ',') * "\n"
     wideheaderlazy = A.lazy(IOBuffer(wideheader))
-    @test length(getfield(getfield(wideheaderlazy, :prepared), :headerlog).items) == 10_000
-    @test length(getfield(getfield(wideheaderlazy, :prepared), :headerrefs)) == 1
+    @test length(getfield(getfield(getfield(wideheaderlazy, :prepared), :p), :headerlog).items) == 10_000
+    @test length(getfield(getfield(getfield(wideheaderlazy, :prepared), :p), :headerrefs)) == 1
     wideheaderfile = A.File(wideheaderlazy; on_error=:collect,
                             maxproblems=manyproblemcount, ntasks=1)
     @test length(A.problems(wideheaderfile)) == manyproblemcount
@@ -884,7 +884,7 @@ end
     @test Base.names(fsh) == [:table, :name, :lookup]
     @test_throws ArgumentError A.File(IOBuffer("a\n1\n"); ntasks=0)
     tasksrc = "a\n" * join(1:2000, '\n') * "\n"
-    prepared = A._prepare(IOBuffer(tasksrc); ntasks=2)
+    prepared = A._prepareindexed(IOBuffer(tasksrc); ntasks=2)
     @test length(getfield(prepared, :bi).chunks) <= 2
     @test 1 <= length(A.Chunks(IOBuffer(tasksrc); ntasks=2, pool=false)) <= 2
     empty!(API_PARSE_TASKS)
@@ -2201,8 +2201,8 @@ end
     bare = "a,b\n1,x\"y\n2,z\n3,w\n"
     f = A.File(IOBuffer(bare))
     @test length(f) == 3 && String.(f.b) == ["x\"y", "z", "w"] && isempty(A.problems(f))
-    @test getfield(getfield(A.lazy(IOBuffer(bare)), :prepared), :d).lenient
-    @test !getfield(getfield(A.lazy(IOBuffer("a,b\n1,\"x\"\n")), :prepared), :d).lenient
+    @test getfield(getfield(getfield(A.lazy(IOBuffer(bare)), :prepared), :p), :d).lenient
+    @test !getfield(getfield(getfield(A.lazy(IOBuffer("a,b\n1,\"x\"\n")), :prepared), :p), :d).lenient
     inch = "size,desc\n10,Pipe 3\" long\n12,Rod 5' 11\"\n14,plain\n"
     f = A.File(IOBuffer(inch))
     @test f.size == [10, 12, 14] && String.(f.desc) == ["Pipe 3\" long", "Rod 5' 11\"", "plain"]
