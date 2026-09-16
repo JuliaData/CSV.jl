@@ -761,20 +761,23 @@ end
 # parallel.
 const SCAN_WINDOW = 1 << 22
 
-# Is there a quote that did not start its field anywhere in `[from, to]`? The
-# region is indexed one window at a time and every window's index is dropped:
-# only the finding survives. `from` and `to + 1` are row boundaries.
-function _hasbarequote(buf::Vector{UInt8}, d::Dialect, from::Int, to::Int,
-                       chunkbytes::Int, parallel::Bool, ntasks::Union{Nothing, Int},
-                       fastindex::Bool)
+# Scan `[from, to]` without keeping an index: is there a quote that did not
+# start its field, and does the region end inside a quoted field? The region is
+# indexed one window at a time and every window's index is dropped, so only the
+# two findings survive. `from` and `to + 1` are row boundaries.
+function _scanregion(buf::Vector{UInt8}, d::Dialect, from::Int, to::Int,
+                     chunkbytes::Int, parallel::Bool, ntasks::Union{Nothing, Int},
+                     fastindex::Bool)
     pos = from
+    unclosed = false
     while pos <= to
         bi = index(buf, d; datastart=pos, stop=to, windowbytes=SCAN_WINDOW, chunkbytes,
                    parallel, ntasks, fastindex)
-        bi.barequote && return true
+        bi.barequote && return (barequote=true, unclosedquote=false)
+        unclosed = bi.unclosedquote
         pos = bi.nextstart
     end
-    return false
+    return (barequote=false, unclosedquote=unclosed)
 end
 
 # Index the source prefix that holds the header rows. `rows` is the raw row
@@ -1025,14 +1028,22 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
         # and the footer — and prepare again under the lenient rule when one
         # turns up. The reader that indexes the data range reports its own.
         # Both regions are empty for a plain read.
+        headstart = max(anchoroff, prefix.nextstart)
+        head = _scanregion(buf, d, headstart, datastart - 1, cb, parallel, ntasks, fastindex)
         if !lenient &&
-           (_hasbarequote(buf, d, max(anchoroff, prefix.nextstart), datastart - 1, cb,
-                          parallel, ntasks, fastindex) ||
-            _hasbarequote(buf, d, dataend, length(buf), cb, parallel, ntasks, fastindex))
+           (head.barequote ||
+            _scanregion(buf, d, dataend, length(buf), cb, parallel, ntasks,
+                        fastindex).barequote)
             return _prepare(buf, header, normalizenames, skipto, footerskip, missingstring,
                             delim, limit, samplebytes, chunkbytes, parallel, ntasks,
                             buffer_in_memory, prefetch, validate, true, kw)
         end
+        # The source ends inside a quoted field. Whichever region reached the end
+        # of the source saw it; the data range's own index sees it whenever that
+        # range is not empty, so only the empty case is recorded here.
+        unclosedatend = datastart > length(buf) &&
+                        (datastart - 1 >= headstart ? head.unclosedquote :
+                         prefix.unclosedquote)
 
         # engine + diagnostics kwargs the parse driver consumes directly
         colopts = nothing
@@ -1050,7 +1061,7 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
                                 get(kw, :maxproblems, 10_000), nsample,
                                 _normalizetypemap(get(kw, :typemap, nothing)::Union{Nothing, AbstractDict}),
                                 validate, colopts)
-        return Prepared(buf, datastart, dataend, prefix.unclosedquote, names,
+        return Prepared(buf, datastart, dataend, unclosedatend, names,
                         length(names), lim, opts, d, headerlog, headerrefs, settings)
     finally
         _joinprefetch!(workers)
@@ -1063,8 +1074,13 @@ function _indexdata(p::Prepared)
     bi = index(p.buf, p.d; datastart=p.datastart, stop=p.dataend - 1,
                chunkbytes=p.settings.chunkbytes, parallel=p.settings.parallel,
                ntasks=p.settings.ntasks, fastindex=p.settings.fastindex)
-    p.unclosedquote || return bi
-    return BufferIndex(bi.chunks, bi.nrows, true, bi.barequote, bi.nextstart)
+    # The malformed end of the source is reported only when the data range runs
+    # to it. A footer cut excludes it, exactly as the row limit of 1.0.0 did; an
+    # empty range never indexed it, so the preparation's finding stands in.
+    unclosed = p.dataend == length(p.buf) + 1 &&
+               (p.datastart > length(p.buf) ? p.unclosedquote : bi.unclosedquote)
+    unclosed == bi.unclosedquote && return bi
+    return BufferIndex(bi.chunks, bi.nrows, unclosed, bi.barequote, bi.nextstart)
 end
 
 # The resolved delimiter, as a keyword value. A sniffed delimiter is a single

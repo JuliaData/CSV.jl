@@ -2398,9 +2398,14 @@ end
 # data range. `BufferIndex.nextstart` is the next window's first byte.
 function nextwindow(ws::WindowStream, pos::Int)
     pos >= ws.dataend && return nothing
-    return index(ws.buf, ws.d; datastart=pos, stop=ws.dataend - 1,
-                 windowbytes=ws.windowbytes, chunkbytes=ws.chunkbytes,
-                 parallel=ws.parallel, ntasks=ws.ntasks, fastindex=ws.fastindex)
+    bi = index(ws.buf, ws.d; datastart=pos, stop=ws.dataend - 1,
+               windowbytes=ws.windowbytes, chunkbytes=ws.chunkbytes,
+               parallel=ws.parallel, ntasks=ws.ntasks, fastindex=ws.fastindex)
+    # A data range that a footer cut does not reach the end of the source, so no
+    # window of it reports the malformed end of input.
+    bi.unclosedquote && ws.dataend != length(ws.buf) + 1 &&
+        return BufferIndex(bi.chunks, bi.nrows, false, bi.barequote, bi.nextstart)
+    return bi
 end
 
 # The next window that holds at least one data row. A comment-only or empty
@@ -4041,7 +4046,10 @@ Base.@nospecializeinfer function _parse(buf::Vector{UInt8}, d::Dialect, baseopts
     # problem rows always reference INPUT data-row numbers (diagnostics point
     # at the file, not at the filtered output)
     log = finishproblems(pendingproblems, rowmask === nothing ? rowbases : rowbases0)
-    hasunclosed = indexunclosed || (nch > 0 && last(chunks).unclosedquote)
+    # A supplied index owns this finding: it captured the last planned chunk
+    # before empty chunks were filtered out, and it knows whether its region
+    # reached the end of the source at all.
+    hasunclosed = index === nothing ? (nch > 0 && last(chunks).unclosedquote) : indexunclosed
     unclosedincluded = rowmask === nothing || fullrows == 0 || rowmask[end]
     if reportstructural && hasunclosed && unclosedincluded &&
        (limit === nothing || limit >= fullrows)

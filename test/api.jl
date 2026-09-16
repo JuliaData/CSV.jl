@@ -1453,6 +1453,35 @@ end
           [:a, Symbol("b;c")]
     @test chunkcol(late, Symbol("b;c"); limit=1, chunkbytes=1, on_error=:collect) ==
           collect(A.File(IOBuffer(late); limit=1, on_error=:collect)[Symbol("b;c")])
+
+    # The malformed end of input is reported by whichever region reached it, and
+    # only when the data range runs to it.
+    kinds(s; kw...) = [p.kind for p in A.problems(A.File(IOBuffer(s); on_error=:collect, kw...))]
+    chunkkinds(s; kw...) =
+        sort!(reduce(vcat, ([p.kind for p in A.problems(b)]
+                            for b in A.Chunks(IOBuffer(s); on_error=:collect, kw...));
+                     init=Symbol[]))
+    # the data range is empty: the scan before it carries the finding
+    @test kinds("a\n\"x\n"; skipto=3) == [:unclosed_quote]
+    @test kinds("a\n\"x\n"; skipto=3, limit=0) == [:unclosed_quote]
+    # a footer cut excludes the end of the source
+    @test kinds("\"a\n"; header=false, footerskip=1) == Symbol[]
+    @test chunkkinds("\"a\n"; header=false, footerskip=1, chunkbytes=1) == Symbol[]
+    eof = "a,b\n1,2\n3,\"x\n"
+    @test kinds(eof) == [:invalid_quoted_field, :unclosed_quote]
+    @test kinds(eof; footerskip=1) == Symbol[]
+    @test chunkkinds(eof; footerskip=1, chunkbytes=1) == Symbol[]
+    # `limit` below the row count suppresses it, at or above it does not
+    @test kinds(eof; limit=1) == Symbol[]
+    @test chunkkinds(eof; limit=1, chunkbytes=1) == Symbol[]
+    for lim in (2, 5)
+        @test kinds(eof; limit=lim) == [:invalid_quoted_field, :unclosed_quote]
+        @test chunkkinds(eof; limit=lim, chunkbytes=1) ==
+              [:invalid_quoted_field, :unclosed_quote]
+    end
+    # `on_error=:error` follows the same condition
+    @test_throws A.ParseError A.File(IOBuffer(eof); on_error=:error)
+    @test A.File(IOBuffer(eof); on_error=:error, footerskip=1) isa A.File
 end
 
 end # @testset CSV readers
