@@ -392,12 +392,14 @@ local file stays memory-mapped for the life of the iterator. `CSV.File`,
 batch owns its own bytes, so retaining batches retains their columns.
 
 The constructor validates every row it will yield, before the first batch, to
-settle one schema. That pass stops where `limit` stops and never reads past it.
-It starts over when a finding invalidates what it settled: a quote that did not
-start its field prepares the source again under the lenient rule, and a later
-timestamp that needs microseconds reseeds the column types. Well-formed input
-takes neither path. The final pass walks exactly the windows iteration walks, so
-it also counts them: `length(chunks)` is the batch count and costs no extra pass.
+settle one schema. Value validation excludes the rows after `limit`: the window
+that holds the limit is indexed to its end, and the rows past the limit are
+dropped before any value is read, so they cannot settle a type. The pass reads
+no later window. It starts over when a finding invalidates what it settled: a
+quote that did not start its field prepares the source again under the lenient
+rule, and a later timestamp that needs microseconds reseeds the column types.
+The final pass walks exactly the windows iteration walks, so it also counts
+them: `length(chunks)` is the batch count and costs no extra pass.
 
 ## Tables.Scan pushdown
 

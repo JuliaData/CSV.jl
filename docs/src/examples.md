@@ -912,7 +912,8 @@ length(chunks)
 source bytes; `CSV.Rows` also retains the whole structural index, while
 `CSV.Chunks` indexes one batch at a time. `CSV.Chunks` checks values across the
 input to choose one schema before iteration, so its constructor reads every row
-and knows the batch count.
+it will yield — `limit` excludes the rest from that check — and knows the batch
+count.
 
 ## [Index first and parse later](@id lazy_example)
 
