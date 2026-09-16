@@ -82,16 +82,29 @@ retain parse diagnostics, so use [`CSV.File`](@ref CSV.File) when
 name, or a `Regex`) project columns in stable file order.
 """ Rows
 @doc """
-    CSV.Chunks(source; ntasks=Threads.nthreads(), keywords...)
+    CSV.Chunks(source; ntasks=Threads.nthreads(), chunkbytes=nothing, keywords...)
 
 Iterate a source as stable-schema [`CSV.File`](@ref CSV.File) batches and
 provide the Tables.jl partitions interface. Every batch has the same column
 types, including one settled width for an auto-width string request such as
-`stringtype=InlineString`. Pooling is evaluated per batch. `ntasks` sets the
-target batch count; use `chunkbytes` for direct size control. List `select`
+`stringtype=InlineString`. Pooling is evaluated per batch. List `select`
 and `drop` forms project every batch in stable file order. With the default
 `on_error=:warn`, the first batch with parse problems prints one summary
 warning; every batch keeps its own [`CSV.problems`](@ref CSV.problems).
+
+One batch is one window of the source's data bytes. `chunkbytes` is that window
+size and defaults to `clamp(cld(sizeof(source), ntasks), 1 KiB, 32 MiB)`. A
+window ends at a row boundary, so a batch holds every row that starts within its
+bytes and complete rows can push it past `chunkbytes`; `ntasks` bounds the
+parallel work inside a window and only sets this default, so it is not a batch
+count.
+
+Each window is indexed when its batch is produced and released with it, so a
+read holds one window's structural index rather than the whole source's. The
+constructor still reads every row once, before the first batch, to settle one
+schema. The batch count is therefore unknown until the last window is read:
+`CSV.Chunks` reports `Base.SizeUnknown()` and defines no `length`. The source
+bytes stay in memory for later batches; a returned batch owns its own.
 """ Chunks
 @doc """
     CSV.read(source, sink; keywords...)

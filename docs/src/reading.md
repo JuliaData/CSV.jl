@@ -46,7 +46,8 @@ source. Finished worker tasks release their input references, so garbage
 collection can unmap the file. Rewriting the file afterwards cannot affect
 the table. One value retains at most the parse chunk's text buffer, and a
 `Vector{UInt8}` input is never aliased. A `CSV.Chunks` iterator retains its
-source for later batches; the returned batches own their bytes. `CSV.Rows` and `CSV.lazy`
+source for later batches, but only one batch's structural index; the returned
+batches own their bytes. `CSV.Rows` and `CSV.lazy`
 are the exceptions: their cells are views into the retained source, so keep
 the source unchanged while you use them, or convert values with `String`.
 
@@ -371,12 +372,29 @@ semantics as `CSV.File`.
 batch has the same column types. Pooling is evaluated separately in each
 batch.
 
-`ntasks` sets the target batch count. Pass `chunkbytes` for direct size
-control. A `CSV.Chunks` pool policy must be one `Bool`, ratio, or
+One batch is one window of the source's data bytes. `chunkbytes` is that window
+size; it defaults to the source size divided by `ntasks`, clamped to 1 KiB–32
+MiB. A window ends at a row boundary, so a batch holds every row that starts
+within its bytes and complete rows can push it past `chunkbytes`. `ntasks`
+bounds the parallel work inside one window and only sets this default, so it is
+not a batch count. A `CSV.Chunks` pool policy must be one `Bool`, ratio, or
 `(ratio, maximum_levels)` value; per-column pool dictionaries and vectors are
 only supported by `CSV.File`.
 List `select` and `drop` forms project the same file-ordered column set in every
 batch.
+
+Each window is indexed when its batch is produced and released with it, so the
+live structural index is one window's, not the whole source's. This is the one
+reader whose memory does not grow with the source; `CSV.File`, `CSV.lazy` and
+`CSV.Rows` index the whole row window at once. The source bytes stay in memory
+for later batches — a large local file is normally memory-mapped, while an `IO`
+input, a byte buffer and `buffer_in_memory=true` hold it — and each returned
+batch owns its own bytes, so retaining batches retains their columns.
+
+The constructor still reads every row once, before the first batch, to settle
+one schema. The batch count is therefore unknown until the last window is read:
+`CSV.Chunks` reports `Base.SizeUnknown()` and defines no `length`. Count the
+batches by iterating, or ask the source for its size.
 
 ## Tables.Scan pushdown
 

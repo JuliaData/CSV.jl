@@ -909,9 +909,10 @@ length(collect(chunks))
 ```
 
 `CSV.Rows` defaults to text unless you supply `types`. Both readers retain the
-source bytes and structural index. `CSV.Chunks` also checks values across the
-input to choose one schema before iteration. These APIs reduce the parsed
-columns held at once; they do not read the source one batch at a time.
+source bytes; `CSV.Rows` also retains the whole structural index, while
+`CSV.Chunks` indexes one batch at a time. `CSV.Chunks` checks values across the
+input to choose one schema before iteration, so its constructor reads every row;
+its batch count is only known once you iterate.
 
 ## [Index first and parse later](@id lazy_example)
 

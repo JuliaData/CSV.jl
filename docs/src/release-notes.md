@@ -18,7 +18,10 @@ CSV.jl entry points. It requires Julia 1.10 or later.
 - Parse recovery produces structured `CSV.problems(file)` data. `on_error`
   selects one summary warning (`:warn`, the default), silent collection
   (`:collect`), or fail-fast `CSV.ParseError` (`:error`).
-- `CSV.Chunks` uses one stable schema for its complete row window.
+- `CSV.Chunks` uses one stable schema for its complete row window and reads one
+  window of source bytes at a time: a batch's structural index is built with the
+  batch and released with it, so a chunked read no longer holds an index of the
+  whole source.
 - A `Tables.Scan` projection, filter, type request, offset, and limit go into
   the parser.
 - The writer has deterministic parallel output, explicit quote styles,
@@ -46,9 +49,16 @@ The most important default changes are:
   spellings;
 - a date-time column is a `Timestamp{Nanosecond}` (Durations.jl) instead of a
   `Dates.DateTime`, ISO date-times accept `T` or a space, and no fraction digit
-  is truncated; and
+  is truncated;
 - parse problems are retained as problem objects, with one summary warning per
-  read instead of one warning per problem.
+  read instead of one warning per problem; and
+- `CSV.Chunks` defines no `length` and reports `Base.SizeUnknown()`. A batch is
+  one window of source bytes, and the number of windows is only known once the
+  last one is read; counting them up front would cost the pass over the source
+  that streaming exists to avoid. `chunkbytes` now names that window size (the
+  batch size in bytes, clamped to 1 KiB–32 MiB by default) and `ntasks` bounds
+  the parallel work inside one window rather than setting a batch count. Count
+  batches by iterating.
 
 See [Migrating from 0.10 to 1.0](migration.md) for option mappings, writer
 compatibility, source-memory behavior, and upgrade examples.
