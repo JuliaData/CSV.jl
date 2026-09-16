@@ -171,7 +171,6 @@ struct Batches
     d::Dialect
     maxproblems::Int
     unclosedquote::Bool
-    ntasks::Int        # columns of a batch parse in parallel under this budget
 end
 
 # Parse one indexed chunk with the types settled from a sample: a cell that
@@ -199,9 +198,8 @@ function tryparsebatch(b::Batches, ci::ChunkIndex, n::Int=nrows(ci),
 
     cols = Vector{AbstractVector}(undef, ncols)
     conflicts = fill(false, ncols)
-    parallelcolumns = b.ntasks > 1 && ncols > 1 && n >= 1024
-    columnbudget = parallelcolumns ? 1 : b.ntasks
-    # columns are independent: each parses into its own column and problem log
+    # The caller parses whole chunks in parallel, so this pass is serial: it
+    # holds one chunk's predicate columns and releases them before the next.
     parseone = q -> begin
         j = b.plan.sources[q]
         T = b.seedtypes[q]
@@ -216,14 +214,10 @@ function tryparsebatch(b::Batches, ci::ChunkIndex, n::Int=nrows(ci),
             conflicts[q] = true
             return
         end
-        cols[q] = finalizecolumn(T, col, n, b.allowmissing[q]; tasklimit=columnbudget)
+        cols[q] = finalizecolumn(T, col, n, b.allowmissing[q]; tasklimit=1)
         mergeproblems!(pending, clog, 1)
     end
-    if parallelcolumns
-        _taskforeach(parseone, 1:ncols, b.ntasks)
-    else
-        foreach(parseone, 1:ncols)
-    end
+    foreach(parseone, 1:ncols)
     any(conflicts) && return nothing
     # Workers release each column log as it completes. Rows already use source
     # coordinates, so the one reservoir needs no row offset.

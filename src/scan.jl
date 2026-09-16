@@ -165,7 +165,7 @@ function _streampredicate(src::IndexedSource, plan::ColumnPlan, b::Tables.BoundS
     predplan = ColumnPlan(predcolumns, predicate, Int[], Int[], plan.opts, plan.colopts)
     batches = Batches(p.buf, chunks, inputnames[predicate], predplan, seedtypes,
                       fill(true, length(predicate)), p.d, cap,
-                      bi.unclosedquote && window == total, 1)
+                      bi.unclosedquote && window == total)
     seeds = Dict{Int, Type}(j => seedtypes[q] for (q, j) in enumerate(predicate))
     # result columns that may reuse this parse: same source, same parse type
     slices = Dict{Int, Vector{AbstractVector}}()
