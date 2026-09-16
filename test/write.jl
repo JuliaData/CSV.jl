@@ -552,7 +552,7 @@ Base.iterate(::ThrowingRows, state=1) =
     end
     # CSV.Chunks streams every batch under one header.
     chunks = CSV.Chunks(IOBuffer("a,b\n1,2\n3,4\n5,6\n"); chunkbytes=4)
-    @test count(_ -> true, chunks) == 3
+    @test length(chunks) == 3
     @test str(io -> W.write(io, chunks)) == "a,b\n1,2\n3,4\n5,6\n"
     @test str(io -> W.write(io, chunks; writeheader=false)) == "1,2\n3,4\n5,6\n"
     @test str(io -> W.write(io, chunks; header=["x", "y"], delim=';')) == "x;y\n1;2\n3;4\n5;6\n"

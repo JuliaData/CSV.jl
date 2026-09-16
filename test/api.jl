@@ -886,7 +886,7 @@ end
     tasksrc = "a\n" * join(1:2000, '\n') * "\n"
     prepared = A._prepareindexed(IOBuffer(tasksrc); ntasks=2)
     @test length(getfield(prepared, :bi).chunks) <= 2
-    @test 1 <= count(_ -> true, A.Chunks(IOBuffer(tasksrc); ntasks=2, pool=false)) <= 2
+    @test 1 <= length(A.Chunks(IOBuffer(tasksrc); ntasks=2, pool=false)) <= 2
     empty!(API_PARSE_TASKS)
     A.File(IOBuffer(tasksrc); types=APITaskScalar, ntasks=2,
            parallel=true, chunkbytes=64, pool=false)
@@ -1284,26 +1284,31 @@ end
             @test isequal(batchvalues(batches), ref[2])
             @test all(b -> Tables.schema(b).types == Tables.schema(batches[1]).types, batches)
             @test all(b -> length(b) > 0, batches)
+            # the schema pre-pass walked exactly these windows, so it counted them
+            @test length(c) == length(batches)
         end
     end
     # a window bigger than the source is one batch; one byte is one row a batch
     onerow = A.Chunks(IOBuffer(inputs[1]); chunkbytes=1)
-    @test count(_ -> true, onerow) == 40
-    @test count(_ -> true, A.Chunks(IOBuffer(inputs[1]); chunkbytes=1 << 20)) == 1
+    @test length(onerow) == count(_ -> true, onerow) == 40
+    @test length(A.Chunks(IOBuffer(inputs[1]); chunkbytes=1 << 20)) == 1
 
     # early stop and repeated iteration: the iterator keeps no cursor
     c = A.Chunks(IOBuffer(inputs[1]); chunkbytes=16)
     @test first(c)[:a] == first(c)[:a]
     @test collect(Iterators.take(c, 2)) |> length == 2
     @test isequal(batchvalues(collect(c)), batchvalues(collect(c)))
-    @test Base.IteratorSize(typeof(c)) === Base.SizeUnknown()
-    @test_throws MethodError length(c)
+    @test Base.IteratorSize(typeof(c)) === Base.HasLength()
+    @test length(c) == count(_ -> true, c)
 
     # a bare quote in a LATER window: the whole read repeats under the lenient
     # rule, so every batch reads it as content, exactly as CSV.File does
     bare = "a,b\n" * join(("$(i),v$(i)" for i in 1:30), "\n") * "\n31,x\"y\n32,z\n"
-    @test isequal(batchvalues(collect(A.Chunks(IOBuffer(bare); chunkbytes=16, pool=false))),
+    barechunks = A.Chunks(IOBuffer(bare); chunkbytes=16, pool=false)
+    @test isequal(batchvalues(collect(barechunks)),
                   colvalues(A.File(IOBuffer(bare); pool=false))[2])
+    # the count comes from the pre-pass that ran after the lenient re-preparation
+    @test length(barechunks) == count(_ -> true, barechunks)
     @test String.(reduce(vcat, (collect(b.b) for b in A.Chunks(IOBuffer(bare); chunkbytes=16))))[31] ==
           "x\"y"
 
@@ -1315,17 +1320,19 @@ end
 
     # an all-comment region larger than a window yields no empty batch
     gap = "a,b\n1,x\n" * ("# filler comment row\n"^40) * "2,y\n"
-    parts = collect(A.Chunks(IOBuffer(gap); chunkbytes=8, comment="#", pool=false))
+    gapchunks = A.Chunks(IOBuffer(gap); chunkbytes=8, comment="#", pool=false)
+    parts = collect(gapchunks)
     @test all(b -> length(b) > 0, parts)
     @test reduce(vcat, (collect(b.a) for b in parts)) == [1, 2]
+    @test length(gapchunks) == length(parts)
 
     # `limit` crossing a window, and a limit that ends exactly on one
     for lim in 0:12
         for cb in (1, 5, 16, 1 << 20)
-            got = reduce(vcat, (collect(b.a) for b in A.Chunks(IOBuffer(inputs[1]);
-                                                               chunkbytes=cb, limit=lim));
-                         init=Int[])
+            c = A.Chunks(IOBuffer(inputs[1]); chunkbytes=cb, limit=lim)
+            got = reduce(vcat, (collect(b.a) for b in c); init=Int[])
             @test got == collect(1:lim)
+            @test length(c) == count(_ -> true, c)
         end
     end
     # rows past the limit cannot settle a type
@@ -1907,7 +1914,7 @@ end
     # schema is stable and equals the File schema.
     widths = "s\n" * join((i % 50 == 0 ? "a much longer value $i" : "v$i" for i in 1:400), '\n') * "\n"
     chunks = A.Chunks(IOBuffer(widths); stringtype=InlineString, chunkbytes=64)
-    @test count(_ -> true, chunks) > 3
+    @test length(chunks) > 3
     @test unique(eltype(b.s) for b in chunks) == [String31]
     @test eltype(A.File(IOBuffer(widths); stringtype=InlineString).s) == String31
     @test occursin("s::String31", sprint(show, chunks))

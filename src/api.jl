@@ -2720,6 +2720,8 @@ struct Chunks
     name::String
     p::Prepared                   # source bytes, names, data range, value rules
     windowbytes::Int              # one window of source bytes is one batch
+    nbatches::Int                 # counted by the schema pre-pass, which streams
+                                  # the same windows under the same conditions
     names::Vector{Symbol}         # the selected columns, in file order
     plan::ColumnPlan              # the settled schema, as a requested-type plan
     maxproblems::Int
@@ -2743,9 +2745,7 @@ struct ChunkState
     batch::Int
 end
 
-# The batch count is not known before the last window is indexed, and finding it
-# would cost the pass this reader exists to avoid.
-Base.IteratorSize(::Type{Chunks}) = Base.SizeUnknown()
+Base.length(c::Chunks) = getfield(c, :nbatches)
 Base.eltype(::Type{Chunks}) = File
 Tables.partitions(c::Chunks) = c
 Base.names(c::Chunks) = getfield(c, :names)
@@ -2755,9 +2755,10 @@ function Base.show(io::IO, c::Chunks)
     nms = getfield(c, :names)
     st = getfield(c, :stringtype)
     reqs = getfield(c, :stringrequests)
-    print(io, "CSV.Chunks(", repr(getfield(c, :name)), "): ", length(nms), " column",
-          length(nms) == 1 ? "" : "s", ", batches of a target ",
-          getfield(c, :windowbytes), " source bytes")
+    n = length(c)
+    print(io, "CSV.Chunks(", repr(getfield(c, :name)), "): ", n, " batch",
+          n == 1 ? "" : "es", " × ", length(nms), " column", length(nms) == 1 ? "" : "s",
+          ", target ", getfield(c, :windowbytes), " source bytes each")
     for (q, nm) in enumerate(nms)
         decision = plan.columns[plan.sources[q]]
         T = decision.parsetype
@@ -2828,7 +2829,9 @@ end
 # its starting type from a sample of the FIRST window; validation promotes it
 # from there, so the seed changes the work, never the result.
 # Returns `:done`, `:restart` (a Timestamp widened after the first window), or
-# `:barequote` (the structural scan was unsound).
+# `:barequote` (the structural scan was unsound), with the number of windows
+# that held rows. Iteration walks these same windows under the same conditions,
+# so a completed pass has counted the batches.
 function _settlewindows!(types::Vector{Type}, allowmissing::Vector{Bool},
                          maxlens::Vector{Int}, seed::Vector{Union{Nothing, Type}},
                          p::Prepared, windowbytes::Int, plan::ColumnPlan, ntasks::Int)
@@ -2845,7 +2848,7 @@ function _settlewindows!(types::Vector{Type}, allowmissing::Vector{Bool},
     while lim === nothing || rows < lim
         bi = nextwindow(p, pos, windowbytes)
         bi === nothing && break
-        bi.barequote && !p.d.lenient && return :barequote
+        bi.barequote && !p.d.lenient && return (:barequote, 0)
         pos = bi.nextstart
         bi.nrows == 0 && continue
         # rows past the limit are never output: they must not settle a type
@@ -2869,17 +2872,18 @@ function _settlewindows!(types::Vector{Type}, allowmissing::Vector{Bool},
         # accepted. Every other promotion accepts prior values.
         if windows > 1
             for q in eachindex(types)
-                before[q] === _TS_NS && types[q] === _TS_US && return :restart
+                before[q] === _TS_NS && types[q] === _TS_US && return (:restart, 0)
             end
         end
     end
-    return :done
+    return (:done, windows)
 end
 
 # The batch schema: one parse type, one missing flag and one settled text width
 # per selected column, from validating every cell of the row window one window
-# at a time. Returns `nothing` when a window holds a quote that did not start
-# its field: the caller prepares the source again under the lenient quote rule.
+# at a time, and the number of batches those windows make. Returns `nothing`
+# when a window holds a quote that did not start its field: the caller prepares
+# the source again under the lenient quote rule.
 function _settleschema(p::Prepared, windowbytes::Int, plan::ColumnPlan, ntasks::Int)
     seed = Union{Nothing, Type}[plan.columns[j].parsetype for j in plan.sources]
     n = length(seed)
@@ -2887,10 +2891,10 @@ function _settleschema(p::Prepared, windowbytes::Int, plan::ColumnPlan, ntasks::
     allowmissing = Vector{Bool}(undef, n)
     maxlens = Vector{Int}(undef, n)
     while true
-        outcome = _settlewindows!(types, allowmissing, maxlens, seed, p, windowbytes,
-                                  plan, ntasks)
+        outcome, windows = _settlewindows!(types, allowmissing, maxlens, seed, p,
+                                           windowbytes, plan, ntasks)
         outcome === :barequote && return nothing
-        outcome === :done && return (types, allowmissing, maxlens)
+        outcome === :done && return (types, allowmissing, maxlens, windows)
         seed = Union{Nothing, Type}[T for T in types]   # the wider Timestamp seed
     end
 end
@@ -2954,9 +2958,9 @@ function Chunks(source; types=nothing, ntasks::Union{Nothing, Int}=nothing,
             plan = settlecolumns(p; select, drop, types, validate)
             settled = _settleschema(p, windowbytes, plan, nt)
         end
-        seedtypes, allowmissing, maxlens = something(settled)
+        seedtypes, allowmissing, maxlens, nbatches = something(settled)
         stringrequests = _settlestringrequests(plan, seedtypes, maxlens, stringtype)
-        return Chunks(name, p, windowbytes, p.names[plan.sources],
+        return Chunks(name, p, windowbytes, nbatches, p.names[plan.sources],
                       _settledplan(plan, seedtypes, allowmissing), maxproblems,
                       on_error, stringtype, stringrequests, poolspec, Ref(false))
     finally
