@@ -897,6 +897,21 @@ end
         @test length(c) == 1
     end
     @test length(A.Chunks(IOBuffer(tasksrc); ntasks=2, chunkbytes=64, pool=false)) > 2
+    # A source above the cap keeps the 64 MiB window for every task count.
+    # `limit=0` settles the schema without indexing a window, so the cap is
+    # checked without reading 64 MiB of values. A 32-bit process has no address
+    # space to spare for the buffer.
+    if Sys.WORD_SIZE == 64
+        capsrc = repeat(UInt8['1', '\n'], (1 << 25) + (1 << 11))  # 64 MiB + 4 KiB
+        capsrc[1] = UInt8('a')                   # "a\n1\n1\n…": one column, 2-byte rows
+        @test length(capsrc) > 1 << 26
+        for nt in (1, 2, 8)
+            c = A.Chunks(capsrc; ntasks=nt, limit=0, pool=false)
+            @test getfield(c, :windowbytes) == 1 << 26
+            @test isempty(collect(c))
+        end
+        capsrc = UInt8[]
+    end
     empty!(API_PARSE_TASKS)
     A.File(IOBuffer(tasksrc); types=APITaskScalar, ntasks=2,
            parallel=true, chunkbytes=64, pool=false)
