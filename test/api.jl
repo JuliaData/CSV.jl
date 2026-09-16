@@ -1264,6 +1264,144 @@ end
           (Date(2023, 1, 15), Date(2023, 1, 16))
 end
 
+@testset "Chunks streams windows of the data range" begin
+    # One window is one batch. Batch boundaries move with `chunkbytes`; the rows,
+    # the schema, and the diagnostics do not.
+    batchvalues(bs) =
+        [reduce(vcat, (Any[_norm(x) for x in Tables.getcolumn(Tables.columns(b), nm)]
+                       for b in bs); init=Any[])
+         for nm in collect(Symbol, Tables.columnnames(Tables.columns(first(bs))))]
+    inputs = ("a,b\n" * join(("$(i),v$(i)" for i in 1:40), "\n") * "\n",
+              "a,b\r\n" * join(("$(i),\"v $(i)\"" for i in 1:40), "\r\n") * "\r\n",
+              "a,b\n" * join((i % 7 == 0 ? "$(i)," : "$(i),\"x\ny$(i)\"" for i in 1:40), "\n") * "\n",
+              "a,b\n" * join(("$(i),$(i % 5 == 0 ? "" : "v$(i)")" for i in 1:40), "\n"))
+    for input in inputs
+        ref = colvalues(A.File(IOBuffer(input); pool=false, on_error=:collect))
+        for cb in (1, 2, 3, 7, 13, 64, 1 << 10, 1 << 12, length(input), 1 << 20)
+            c = A.Chunks(IOBuffer(input); chunkbytes=cb, on_error=:collect, pool=false)
+            batches = collect(c)
+            @test Base.names(c) == ref[1]
+            @test isequal(batchvalues(batches), ref[2])
+            @test all(b -> Tables.schema(b).types == Tables.schema(batches[1]).types, batches)
+            @test all(b -> length(b) > 0, batches)
+        end
+    end
+    # a window bigger than the source is one batch; one byte is one row a batch
+    onerow = A.Chunks(IOBuffer(inputs[1]); chunkbytes=1)
+    @test count(_ -> true, onerow) == 40
+    @test count(_ -> true, A.Chunks(IOBuffer(inputs[1]); chunkbytes=1 << 20)) == 1
+
+    # early stop and repeated iteration: the iterator keeps no cursor
+    c = A.Chunks(IOBuffer(inputs[1]); chunkbytes=16)
+    @test first(c)[:a] == first(c)[:a]
+    @test collect(Iterators.take(c, 2)) |> length == 2
+    @test isequal(batchvalues(collect(c)), batchvalues(collect(c)))
+    @test Base.IteratorSize(typeof(c)) === Base.SizeUnknown()
+    @test_throws MethodError length(c)
+
+    # a bare quote in a LATER window: the whole read repeats under the lenient
+    # rule, so every batch reads it as content, exactly as CSV.File does
+    bare = "a,b\n" * join(("$(i),v$(i)" for i in 1:30), "\n") * "\n31,x\"y\n32,z\n"
+    @test isequal(batchvalues(collect(A.Chunks(IOBuffer(bare); chunkbytes=16, pool=false))),
+                  colvalues(A.File(IOBuffer(bare); pool=false))[2])
+    @test String.(reduce(vcat, (collect(b.b) for b in A.Chunks(IOBuffer(bare); chunkbytes=16))))[31] ==
+          "x\"y"
+
+    # a comment row holding a quote in a later window: that window rebuilds with
+    # the scalar scanner inside `index`, and the rows are the File's rows
+    cq = "a,b\n" * join(("$(i),v$(i)" for i in 1:20), "\n") * "\n# note \" here\n21,v21\n"
+    @test isequal(batchvalues(collect(A.Chunks(IOBuffer(cq); chunkbytes=8, comment="#", pool=false))),
+                  colvalues(A.File(IOBuffer(cq); comment="#", pool=false))[2])
+
+    # an all-comment region larger than a window yields no empty batch
+    gap = "a,b\n1,x\n" * ("# filler comment row\n"^40) * "2,y\n"
+    parts = collect(A.Chunks(IOBuffer(gap); chunkbytes=8, comment="#", pool=false))
+    @test all(b -> length(b) > 0, parts)
+    @test reduce(vcat, (collect(b.a) for b in parts)) == [1, 2]
+
+    # `limit` crossing a window, and a limit that ends exactly on one
+    for lim in 0:12
+        for cb in (1, 5, 16, 1 << 20)
+            got = reduce(vcat, (collect(b.a) for b in A.Chunks(IOBuffer(inputs[1]);
+                                                               chunkbytes=cb, limit=lim));
+                         init=Int[])
+            @test got == collect(1:lim)
+        end
+    end
+    # rows past the limit cannot settle a type
+    limited = A.Chunks(IOBuffer("a\n1\n2\nnope\n"); chunkbytes=2, limit=2)
+    @test reduce(vcat, (collect(b.a) for b in limited)) == [1, 2]
+
+    # footerskip with windows, including a footer inside the last window
+    footered = "a,b\n" * join(("$(i),v$(i)" for i in 1:20), "\n") * "\n"
+    for fs in (0, 1, 3, 19, 20, 25), cb in (1, 9, 1 << 20)
+        got = reduce(vcat, (collect(b.a) for b in A.Chunks(IOBuffer(footered);
+                                                           chunkbytes=cb, footerskip=fs));
+                     init=Int[])
+        @test got == collect(1:max(0, 20 - fs))
+    end
+
+    # header forms reach the data through the prefix index, not a full one
+    multi = "g1,g2\nc1,c2\n\n1,2\n3,4\n5,6\n"
+    @test Base.names(A.Chunks(IOBuffer(multi); chunkbytes=2, header=[1, 2])) == [:g1_c1, :g2_c2]
+    @test reduce(vcat, (collect(b.g1_c1) for b in A.Chunks(IOBuffer(multi); chunkbytes=2,
+                                                           header=[1, 2]))) == [1, 3, 5]
+    spaced = "g1,g2\n\n\nc1,c2\n1,2\n3,4\n"
+    @test reduce(vcat, (collect(b.g1_c1) for b in A.Chunks(IOBuffer(spaced); chunkbytes=2,
+                                                           header=[1, 4]))) == [1, 3]
+    commented = "# note\n# note\na,b\n1,2\n3,4\n"
+    @test reduce(vcat, (collect(b.a) for b in A.Chunks(IOBuffer(commented); chunkbytes=2,
+                                                       comment="#"))) == [1, 3]
+    noheader = "1,2\n3,4\n5,6\n"
+    @test Base.names(A.Chunks(IOBuffer(noheader); chunkbytes=2, header=false)) ==
+          [:Column1, :Column2]
+    @test reduce(vcat, (collect(b.Column1) for b in A.Chunks(IOBuffer(noheader);
+                                                             chunkbytes=2, header=false))) ==
+          [1, 3, 5]
+    @test reduce(vcat, (collect(b.a) for b in A.Chunks(IOBuffer("junk\na,b\n1,2\n3,4\n");
+                                                       chunkbytes=2, header=2))) == [1, 3]
+    @test reduce(vcat, (collect(b.a) for b in A.Chunks(IOBuffer("a,b\n1,2\n3,4\n5,6\n");
+                                                       chunkbytes=2, skipto=3))) == [3, 5]
+
+    # the Timestamp widening restarts the pre-pass: a later window's wide date
+    # forces microseconds, which the first window's value must still satisfy
+    nswide = "t\n2020-01-01T00:00:00.123456789\n2020-01-02T00:00:00\n"
+    narrowed = collect(A.Chunks(IOBuffer(nswide); chunkbytes=8))
+    @test unique(eltype(b.t) for b in narrowed) ==
+          [eltype(A.File(IOBuffer(nswide)).t)]
+    uswide = "t\n2020-01-01T00:00:00.123\n4000-01-02T00:00:00\n"
+    uschunks = collect(A.Chunks(IOBuffer(uswide); chunkbytes=8))
+    @test unique(eltype(b.t) for b in uschunks) == [eltype(A.File(IOBuffer(uswide)).t)]
+    @test isequal(reduce(vcat, (collect(b.t) for b in uschunks)),
+                  collect(A.File(IOBuffer(uswide)).t))
+    # the value that only nanoseconds can hold now needs microseconds: text
+    both = "t\n2020-01-01T00:00:00.123456789\n4000-01-02T00:00:00\n"
+    @test unique(eltype(b.t) for b in A.Chunks(IOBuffer(both); chunkbytes=8)) ==
+          [eltype(A.File(IOBuffer(both)).t)]
+
+    # problems carry file-global data rows across batches
+    dirty = "a\n" * join((i == 9 || i == 25 ? "bad" : string(i) for i in 1:30), "\n") * "\n"
+    rows = Int[]
+    for b in A.Chunks(IOBuffer(dirty); types=Int64, on_error=:collect, chunkbytes=6)
+        append!(rows, (p.row for p in A.problems(b)))
+    end
+    @test rows == [9, 25]
+    ragged = "a,b\n1,2\n3\n5,6\n7\n"
+    raggedrows = Int[]
+    for b in A.Chunks(IOBuffer(ragged); on_error=:collect, chunkbytes=4)
+        append!(raggedrows, (p.row for p in A.problems(b)))
+    end
+    @test raggedrows == [2, 4]
+    # the same rows the eager reader reports
+    @test raggedrows == [p.row for p in A.problems(A.File(IOBuffer(ragged); on_error=:collect))]
+    # an unclosed quote at the end of input is reported once, from the last batch
+    unclosed = "a\n1\n2\n\"x\n"
+    lastbatch = last(collect(A.Chunks(IOBuffer(unclosed); on_error=:collect, chunkbytes=2)))
+    @test any(p -> p.kind == :unclosed_quote, A.problems(lastbatch))
+    @test count(b -> any(p -> p.kind == :unclosed_quote, A.problems(b)),
+                collect(A.Chunks(IOBuffer(unclosed); on_error=:collect, chunkbytes=2))) == 1
+end
+
 end # @testset CSV readers
 
 @testset "transposed diagnostics" begin
