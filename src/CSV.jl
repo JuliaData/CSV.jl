@@ -102,8 +102,11 @@ affects the batch size.
 Each window is indexed when its batch is produced and released with it, so a
 read holds one window's structural index rather than the whole source's. The
 source bytes stay in memory for later batches, and a returned batch owns its
-own. The constructor reads every row once, before the first batch, to settle one
-schema; that pass also counts the batches, so `length` is defined.
+own. The constructor validates every row it will yield, before the first batch,
+to settle one schema. That pass stops where `limit` stops, and starts over when
+a quote that did not start its field, or a timestamp that needs microseconds,
+invalidates what it settled. Its final run walks the windows iteration walks, so
+it also counts the batches and `length` is defined.
 """ Chunks
 @doc """
     CSV.read(source, sink; keywords...)

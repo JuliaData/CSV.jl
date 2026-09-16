@@ -887,7 +887,16 @@ end
     tasksrc = "a\n" * join(1:2000, '\n') * "\n"
     prepared = A._prepareindexed(IOBuffer(tasksrc); ntasks=2)
     @test length(getfield(prepared, :bi).chunks) <= 2
-    @test 1 <= length(A.Chunks(IOBuffer(tasksrc); ntasks=2, pool=false)) <= 2
+    # A batch is one window of source bytes. The window defaults to 64 MiB of
+    # them, or the whole source when it is smaller, and `ntasks` — parallelism
+    # inside a window — does not change it: this source is one batch for every
+    # task count.
+    for nt in (1, 2, 8)
+        c = A.Chunks(IOBuffer(tasksrc); ntasks=nt, pool=false)
+        @test getfield(c, :windowbytes) == min(length(tasksrc), 1 << 26)
+        @test length(c) == 1
+    end
+    @test length(A.Chunks(IOBuffer(tasksrc); ntasks=2, chunkbytes=64, pool=false)) > 2
     empty!(API_PARSE_TASKS)
     A.File(IOBuffer(tasksrc); types=APITaskScalar, ntasks=2,
            parallel=true, chunkbytes=64, pool=false)

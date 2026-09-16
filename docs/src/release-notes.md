@@ -16,10 +16,11 @@ that cannot start on a file larger than memory.
   boundary, so one complete row can push a batch past `chunkbytes`.
 - `ntasks` bounds the parallel work inside one window. It is not a batch count
   and no longer affects the batch size.
-- The constructor still reads every row once, before the first batch, to settle
-  one schema: every batch has the same column types, missingness, and settled
-  text width, as in 1.0. That pass walks the same windows iteration walks, so it
-  also counts them. `length(chunks)` is the batch count and costs no extra pass.
+- The constructor still validates every row it will yield, before the first
+  batch, to settle one schema: every batch has the same column types,
+  missingness, and settled text width, as in 1.0. That pass stops where `limit`
+  stops, and its final run walks the same windows iteration walks, so it also
+  counts them. `length(chunks)` is the batch count and costs no extra pass.
 - Only the structural index is bounded. The source bytes stay in memory for
   later batches, and each returned batch owns its own bytes.
 
