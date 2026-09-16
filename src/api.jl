@@ -778,22 +778,14 @@ function _hasbarequote(buf::Vector{UInt8}, d::Dialect, from::Int, to::Int,
 end
 
 # Index the source prefix that holds the header rows. `rows` is the raw row
-# count the header forms need from the anchor and `needbyte` the byte where the
-# last of them may start; a comment row at a listed position pushes the live row
-# further out, so the prefix doubles until one starts at or after `needbyte`, or
-# until the prefix is the whole source.
-function _headerprefix(buf::Vector{UInt8}, d::Dialect, anchoroff::Int, needbyte::Int,
-                       rows::Int, chunkbytes::Int, parallel::Bool,
+# count from the anchor; the prefix ends at the raw row boundary after them, or
+# at the end of the source. `nextstart` past the last byte means the prefix IS
+# the whole source, so the caller knows that growing it cannot help.
+function _headerprefix(buf::Vector{UInt8}, d::Dialect, anchoroff::Int, rows::Int,
+                       chunkbytes::Int, parallel::Bool,
                        ntasks::Union{Nothing, Int}, fastindex::Bool)
-    len = length(buf)
-    need = rows
-    while true
-        stop = min(_rawrowoffset(buf, d, anchoroff, _saturatedinc(need)) - 1, len)
-        bi = index(buf, d; datastart=anchoroff, stop, chunkbytes, parallel, ntasks,
-                   fastindex)
-        (stop >= len || _liverowat(bi.chunks, needbyte) !== nothing) && return bi
-        need = need > typemax(Int) >> 1 ? typemax(Int) - 1 : 2 * need
-    end
+    stop = min(_rawrowoffset(buf, d, anchoroff, _saturatedinc(rows)) - 1, length(buf))
+    return index(buf, d; datastart=anchoroff, stop, chunkbytes, parallel, ntasks, fastindex)
 end
 
 function _prepare(source;
@@ -918,70 +910,86 @@ Base.@nospecializeinfer function _prepare(@nospecialize(source), @nospecialize(h
         # `n - firstrow + 1` quote-aware structural rows from it.
         rowoff(n::Int) = n < firstrow ? _physicallineoffset(buf, rawstart, n) :
                                         _rawrowoffset(buf, d, anchoroff, n - firstrow + 1)
-        headerlog = ProblemLog(get(kw, :maxproblems, 10_000))
         headerrefs = Tuple{ChunkIndex, Int}[]
         # The header rows sit in a small prefix of the source. Index that prefix
         # only: the names and the first data byte come from it, and nothing here
         # needs the rest of the file indexed. Explicit names need no prefix.
         explicitnames = header isa AbstractVector && !(header isa AbstractVector{<:Integer}) &&
                         !isempty(header)
-        needbyte = headerrow == 0 ? anchoroff : rowoff(headerrow)
-        prefix = explicitnames ? BufferIndex(ChunkIndex[], 0, false, false, anchoroff) :
-                 _headerprefix(buf, d, anchoroff, needbyte,
-                               headerrow == 0 ? 1 : max(1, headerrow - firstrow + 1),
-                               cb, parallel, ntasks, fastindex)
-        _joinprefetch!(workers)
-        if prefix.barequote && !lenient
-            # A quote that did not start its field (`5' 11"`, `x"y`) made the
-            # parallel toggle scan unsound: rows may have merged into one cell.
-            # Prepare again under the lenient quote rule, from the same bytes.
-            # Well-formed input never takes this path.
-            return _prepare(buf, header, normalizenames, skipto, footerskip, missingstring,
-                            delim, limit, samplebytes, chunkbytes, parallel, ntasks,
-                            buffer_in_memory, prefetch, validate, true, kw)
-        end
-        chunks = prefix.chunks
-        # The single-row header forms read the first live row of the prefix;
-        # `parseheader!` consumes it, so its byte start is taken first.
-        hlive = _liverowat(chunks, anchoroff)
-        headerbyte = hlive === nothing ? 0 :
-                     hlive[1].start + Int(hlive[1].rowstartrel[hlive[2]])
-
-        names = if explicitnames
-            Symbol.(header)
-        elseif header === false || isempty(chunks) ||
-               (header isa AbstractVector && isempty(header))   # header=[] ⇒ generate ColumnN
-            k = _firstlive(chunks)
-            n = k === nothing ? 0 : nfields(chunks[k], chunks[k].firstdatarow)
-            [Symbol("Column", j) for j in 1:n]
-        elseif header === true || length(headerrows) == 1
-            k = _firstlive(chunks)
-            if k === nothing
-                Symbol[]
-            else
-                push!(headerrefs, (chunks[k], chunks[k].firstdatarow))
-                parseheader!(buf, chunks[k], opts, d, headerlog)
+        # A listed header row reads the first UNCONSUMED live row at or after its
+        # raw offset, so an earlier entry can take the row a later one needs, and
+        # a comment row can push a live row out of a short prefix. Grow the
+        # prefix until the whole ordered request finds its rows, or until the
+        # prefix is the source, and read the header again from scratch each time.
+        prefixrows = headerrow == 0 ? 1 : max(1, headerrow - firstrow + 1)
+        local prefix::BufferIndex
+        local names::Vector{Symbol}
+        local headerbyte::Int
+        local headerlog::ProblemLog
+        while true
+            empty!(headerrefs)
+            headerlog = ProblemLog(get(kw, :maxproblems, 10_000))
+            prefix = explicitnames ? BufferIndex(ChunkIndex[], 0, false, false, anchoroff) :
+                     _headerprefix(buf, d, anchoroff, prefixrows, cb, parallel, ntasks,
+                                   fastindex)
+            _joinprefetch!(workers)
+            if prefix.barequote && !lenient
+                # A quote that did not start its field (`5' 11"`, `x"y`) made the
+                # parallel toggle scan unsound: rows may have merged into one
+                # cell. Prepare again under the lenient quote rule, from the same
+                # bytes. Well-formed input never takes this path.
+                return _prepare(buf, header, normalizenames, skipto, footerskip, missingstring,
+                                delim, limit, samplebytes, chunkbytes, parallel, ntasks,
+                                buffer_in_memory, prefetch, validate, true, kw)
             end
-        else
-            # multi-row header: the LISTED raw rows (not necessarily consecutive —
-            # blank rows may sit between them) join with "_"; blank cells resolve
-            # to ColumnN first. Each listed row is parsed
-            # in place by advancing the chunk cursor to that raw row's byte offset.
-            parts = Vector{Vector{Symbol}}()
-            for hr in headerrows
-                _skiptobyte!(chunks, rowoff(hr))
+            chunks = prefix.chunks
+            # The single-row header forms read the first live row of the prefix;
+            # `parseheader!` consumes it, so its byte start is taken first.
+            hlive = _liverowat(chunks, anchoroff)
+            headerbyte = hlive === nothing ? 0 :
+                         hlive[1].start + Int(hlive[1].rowstartrel[hlive[2]])
+            complete = true
+            names = if explicitnames
+                Symbol.(header)
+            elseif header === false ||
+                   (header isa AbstractVector && isempty(header))   # header=[] ⇒ ColumnN
                 k = _firstlive(chunks)
-                k === nothing && break
-                push!(headerrefs, (chunks[k], chunks[k].firstdatarow))
-                push!(parts, parseheader!(buf, chunks[k], opts, d, headerlog))
-            end
-            if isempty(parts)
-                Symbol[]
+                complete = k !== nothing
+                n = k === nothing ? 0 : nfields(chunks[k], chunks[k].firstdatarow)
+                [Symbol("Column", j) for j in 1:n]
+            elseif header === true || length(headerrows) == 1
+                k = _firstlive(chunks)
+                complete = k !== nothing
+                if k === nothing
+                    Symbol[]
+                else
+                    push!(headerrefs, (chunks[k], chunks[k].firstdatarow))
+                    parseheader!(buf, chunks[k], opts, d, headerlog)
+                end
             else
-                n = maximum(length, parts)
-                [Symbol(join((j <= length(p) ? String(p[j]) : "Column$j" for p in parts), "_"))
-                 for j in 1:n]
+                # multi-row header: the LISTED raw rows (not necessarily consecutive —
+                # blank rows may sit between them) join with "_"; blank cells resolve
+                # to ColumnN first. Each listed row is parsed
+                # in place by advancing the chunk cursor to that raw row's byte offset.
+                parts = Vector{Vector{Symbol}}()
+                for hr in headerrows
+                    _skiptobyte!(chunks, rowoff(hr))
+                    k = _firstlive(chunks)
+                    k === nothing && break
+                    push!(headerrefs, (chunks[k], chunks[k].firstdatarow))
+                    push!(parts, parseheader!(buf, chunks[k], opts, d, headerlog))
+                end
+                complete = length(parts) == length(headerrows)
+                if isempty(parts)
+                    Symbol[]
+                else
+                    n = maximum(length, parts)
+                    [Symbol(join((j <= length(p) ? String(p[j]) : "Column$j" for p in parts), "_"))
+                     for j in 1:n]
+                end
             end
+            (complete || prefix.nextstart > length(buf)) && break
+            prefixrows = prefixrows > typemax(Int) >> 1 ? typemax(Int) - 1 : 2 * prefixrows
         end
         normalizenames && (names = [normalizename(String(nm)) for nm in names])
         names = makeunique!(names)

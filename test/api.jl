@@ -1418,6 +1418,25 @@ end
     @test chunkcol(hdr2, Symbol("1"); header=2, skipto=3, comment="#", chunkbytes=3) == [3, 5]
     # a `skipto` past the consumed header still advances
     @test collect(A.File(IOBuffer("a\n1\n2\n3\n"); skipto=3).a) == [2, 3]
+
+    # A listed header row reads the first UNCONSUMED live row at or after its
+    # offset. The prefix must therefore hold enough live rows for the whole
+    # ordered request, not just one row at the last listed offset.
+    ovl = "#c\n#c\na,b\n1,2\n3,4\n"
+    @test Base.names(A.File(IOBuffer(ovl); header=[1, 3], comment="#", delim=',')) ==
+          [:a_1, :b_2]
+    @test Base.names(A.Chunks(IOBuffer(ovl); header=[1, 3], comment="#", delim=',',
+                              chunkbytes=2)) == [:a_1, :b_2]
+    # the listed rows name the columns; the data still starts one raw row after
+    # the last listed row, as it did in 1.0
+    @test collect(A.File(IOBuffer(ovl); header=[1, 3], comment="#", delim=',').a_1) == [1, 3]
+    # live rows the request does not list sit between the listed ones
+    gap = "h1,h2\n" * join(("x$(i),y$(i)" for i in 1:8), "\n") * "\nh3,h4\n1,2\n3,4\n"
+    @test Base.names(A.File(IOBuffer(gap); header=[1, 10])) == [:h1_h3, :h2_h4]
+    @test collect(A.File(IOBuffer(gap); header=[1, 10]).h1_h3) == [1, 3]
+    @test chunkcol(gap, :h1_h3; header=[1, 10], chunkbytes=2) == [1, 3]
+    # a listed row past the end of the source still names what it found
+    @test Base.names(A.File(IOBuffer("a,b\n1,2\n"); header=[1, 9])) == [:a, :b]
 end
 
 end # @testset CSV readers
