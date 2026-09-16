@@ -1079,8 +1079,8 @@ function _parseprepared(s::IndexedSource, plan::ColumnPlan;
                         limit::Union{Nothing, Int}=s.p.limit,
                         rowmask::Union{Nothing, Vector{Bool}}=nothing,
                         reportstructural::Bool=true)
-    tasklimit = _readtasklimit(parallel, ntasks)
     p = s.p
+    tasklimit = _readtasklimit(parallel, ntasks)
     settings = p.settings
     return _parse(p.buf, p.d, p.opts, settings.scanner, settings.typemap,
                   settings.chunkbytes, parallel, tasklimit, maxproblems, :collect,
@@ -1206,8 +1206,9 @@ function _setemptytypes!(plan::ColumnPlan)
     return plan
 end
 
-function _filefromprepared(s::IndexedSource, nm::String; types=nothing, select=nothing, drop=nothing,
-                           pool=DEFAULT_POOL, downcast::Bool=false, stringtype::Type=DataString,
+function _filefromprepared(s::IndexedSource, nm::String; types=nothing, select=nothing,
+                           drop=nothing, pool=DEFAULT_POOL, downcast::Bool=false,
+                           stringtype::Type=DataString,
                            on_error::Symbol=:warn, maxproblems::Int=10_000,
                            parallel::Bool=Threads.nthreads() > 1, validate::Bool=true,
                            ntasks::Union{Nothing, Int}=nothing,
@@ -1216,7 +1217,8 @@ function _filefromprepared(s::IndexedSource, nm::String; types=nothing, select=n
                              on_error, maxproblems, parallel, validate, ntasks, available)
 end
 
-Base.@nospecializeinfer function _filefromprepared(s::IndexedSource, nm::String, @nospecialize(types),
+Base.@nospecializeinfer function _filefromprepared(s::IndexedSource, nm::String,
+                           @nospecialize(types),
                            @nospecialize(select), @nospecialize(drop), @nospecialize(pool),
                            downcast::Bool, @nospecialize(stringtype::Type),
                            on_error::Symbol, maxproblems::Int, parallel::Bool, validate::Bool,

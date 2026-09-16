@@ -2207,8 +2207,8 @@ function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, stop::Int, ta
     end
     nranges = splittable(d) ? max(1, cld(target - datastart + 1, chunkbytes)) : 1
     # The closing boundary is one more range start. The serial path above owns
-    # every dialect whose quote state a range start cannot resolve, so the
-    # planner below always may use quote counts for it.
+    # every dialect whose quote state a range start cannot resolve, so quote
+    # counts settle every boundary the planner below finds.
     nstarts = nranges + closing
     starts = [i <= nranges ? datastart + (i - 1) * chunkbytes : target + 1 for i in 1:nstarts]
     entry = fill(QUOTE_OUTSIDE, nstarts)
