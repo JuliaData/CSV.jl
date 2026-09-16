@@ -1407,6 +1407,32 @@ end
     @test any(p -> p.kind == :unclosed_quote, A.problems(lastbatch))
     @test count(b -> any(p -> p.kind == :unclosed_quote, A.problems(b)),
                 collect(A.Chunks(IOBuffer(unclosed); on_error=:collect, chunkbytes=2))) == 1
+
+    # `on_error=:warn` warns once even when several batches have problems
+    manybad = "a\n" * join((i % 4 == 0 ? "bad" : string(i) for i in 1:24), "\n") * "\n"
+    @test_logs (:warn, r"CSV: 1 parse problem in batch 1") begin
+        sum(length, A.Chunks(IOBuffer(manybad); types=Int64, on_error=:warn, chunkbytes=8))
+    end
+    # `on_error=:error` throws from the batch that holds the problem, not the first
+    latebad = "a\n" * join((i == 20 ? "bad" : string(i) for i in 1:24), "\n") * "\n"
+    late = A.Chunks(IOBuffer(latebad); types=Int64, on_error=:error, chunkbytes=8)
+    seen = 0
+    @test_throws A.ParseError for b in late
+        seen += 1
+    end
+    @test seen > 0
+    # maxproblems=0 keeps no problem but still counts and still throws
+    capped = collect(A.Chunks(IOBuffer(manybad); types=Int64, on_error=:collect,
+                              chunkbytes=8, maxproblems=0))
+    @test sum(b -> length(A.problems(b)), capped) == 0
+    @test sum(b -> getfield(b, :table).droppedproblems, capped) == 6
+    @test_throws A.ParseError collect(A.Chunks(IOBuffer(manybad); types=Int64,
+                                               on_error=:error, chunkbytes=8, maxproblems=0))
+    # a header problem is merged into batch 1 only
+    badheader = "a,\"b\"x\n" * join(("$(i),$(i)" for i in 1:12), "\n") * "\n"
+    hb = collect(A.Chunks(IOBuffer(badheader); on_error=:collect, chunkbytes=8))
+    @test [(p.row, p.col, p.kind) for p in A.problems(hb[1])] == [(0, 2, :invalid_quoted_field)]
+    @test all(b -> isempty(A.problems(b)), hb[2:end])
 end
 
 @testset "the window reader keeps the 1.0 row window" begin
