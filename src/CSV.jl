@@ -82,16 +82,33 @@ retain parse diagnostics, so use [`CSV.File`](@ref CSV.File) when
 name, or a `Regex`) project columns in stable file order.
 """ Rows
 @doc """
-    CSV.Chunks(source; ntasks=Threads.nthreads(), keywords...)
+    CSV.Chunks(source; ntasks=Threads.nthreads(), chunkbytes=nothing, keywords...)
 
 Iterate a source as stable-schema [`CSV.File`](@ref CSV.File) batches and
 provide the Tables.jl partitions interface. Every batch has the same column
 types, including one settled width for an auto-width string request such as
-`stringtype=InlineString`. Pooling is evaluated per batch. `ntasks` sets the
-target batch count; use `chunkbytes` for direct size control. List `select`
+`stringtype=InlineString`. Pooling is evaluated per batch. List `select`
 and `drop` forms project every batch in stable file order. With the default
 `on_error=:warn`, the first batch with parse problems prints one summary
 warning; every batch keeps its own [`CSV.problems`](@ref CSV.problems).
+
+One batch is one window of the source's data bytes. `chunkbytes` is the target
+size of that window and defaults to 64 MiB, or the whole source when it is
+smaller. A window ends at a row boundary, so a batch holds every row that starts
+within its bytes and one complete row can push it past `chunkbytes`. `ntasks`
+bounds the parallel work inside a window; it is not a batch count and no longer
+affects the batch size.
+
+Each window is indexed when its batch is produced and released with it, so a
+read holds one window's structural index rather than the whole source's. The
+source bytes stay in memory for later batches, and a returned batch owns its
+own. The constructor validates every row it will yield, before the first batch,
+to settle one schema. Value validation excludes the rows after `limit`: the
+window that holds the limit is indexed to its end, and the rows past the limit
+are dropped before any value is read. The pass starts over when a quote that did
+not start its field, or a timestamp that needs microseconds, invalidates what it
+settled. Its final run walks the windows iteration walks, so it also counts the
+batches and `length` is defined.
 """ Chunks
 @doc """
     CSV.read(source, sink; keywords...)

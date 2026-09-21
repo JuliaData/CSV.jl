@@ -44,10 +44,12 @@ String(take!(output))
 | `CSV.read` | You want to hand the parsed columns to a sink | Same parse as `CSV.File`; marks columns as safe to take |
 | `CSV.lazy` | You need a fast first look or sparse cell access | Index now; parse each accessed cell later |
 | `CSV.Rows` | You process rows once and do not need columns | Indexes the source; materializes cells on access |
-| `CSV.Chunks` | You process a large table in bounded batches | Indexes once; parses one stable-schema batch at a time |
+| `CSV.Chunks` | You process a large table in bounded batches | Indexes and parses one stable-schema batch at a time |
 
 `CSV.lazy`, `CSV.Rows`, and `CSV.Chunks` do not stream an unbounded input.
-They retain the source bytes and a structural index. See [Input and memory
+They all retain the source bytes. `CSV.lazy` and `CSV.Rows` also retain a
+structural index of the whole row window; `CSV.Chunks` holds one batch's.
+See [Input and memory
 behavior](reading.md#Input-and-memory-behavior) for the exact source rules.
 
 ## Data model

@@ -1070,6 +1070,10 @@ struct BufferIndex
     # structural scan, so this index may have merged rows: the reader must
     # rebuild it under the lenient quote rule before trusting it.
     barequote::Bool
+    # The byte after the last indexed row. A reader that indexes one window at a
+    # time starts the next window here; an all-comment window keeps no chunk, so
+    # this cannot be read back from the chunks.
+    nextstart::Int
 end
 
 # --- tape plumbing -----------------------------------------------------------
@@ -2095,6 +2099,19 @@ function _rangerowstart(buf::Vector{UInt8}, from::Int, len::Int, d::Dialect, sta
     return nextrowstart(buf, from + 1, len, d, true)
 end
 
+# The first row start AT or after `from`, given the quote state there. A window
+# holds every row that starts within its bytes, so this closes it; `from` is
+# already a row start when the byte before it ended a row outside a quoted
+# field. An interior chunk boundary is a work split and uses `_rangerowstart`,
+# which may fall one row later.
+function _windowrowstart(buf::Vector{UInt8}, from::Int, len::Int, d::Dialect, state::UInt8)
+    if state == QUOTE_OUTSIDE && from > 1
+        b = @inbounds buf[from - 1]
+        (b == LF || (b == CR && !(from <= len && @inbounds(buf[from]) == LF))) && return from
+    end
+    return _rangerowstart(buf, from, len, d, state)
+end
+
 # Scan from `from` to the first row ending outside a quoted field. `inquote`
 # tells whether `from` is inside a quoted field. Return the byte after the row
 # ending. Return `to + 1` if this range has no complete row ending.
@@ -2150,85 +2167,100 @@ end
 # Choose the start and end of each chunk. This function does not build the field
 # index. `index` and `parse` both use this plan. They build the indexes for the
 # planned chunks before they parse field values.
-function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, chunkbytes::Int,
-                   parallel::Bool, tasklimit::Int; _taskobserver=nothing)
-    len = length(buf)
+#
+# `stop` is the last byte of the data region. The region ends there, at a row
+# boundary. `target` is the last byte this plan covers. The final chunk runs on
+# to the first row boundary after `target`, so a plan for part of the region
+# still holds whole rows. `target == stop` plans the whole region.
+function chunkplan(buf::Vector{UInt8}, d::Dialect, datastart::Int, stop::Int, target::Int,
+                   chunkbytes::Int, parallel::Bool, tasklimit::Int; _taskobserver=nothing)
+    # A plan that ends before the region does needs one more row boundary, at
+    # `target + 1`.
+    closing = target < stop
     # Split compatible input into bounded chunks even when `parallel` is false.
     # Bounded chunks keep each parsing pass on a smaller part of the input.
     # `parallel` only controls whether this work uses tasks or a plain loop.
-    if (d.lenient || (commentserial(d) && splittable(d))) && len - datastart + 1 > chunkbytes
+    if (d.lenient || (commentserial(d) && splittable(d))) &&
+       (target - datastart + 1 > chunkbytes || closing)
         # Raw quote counts are not valid under the lenient quote rule, or when
         # a comment row is known to hold a quote. Start at a known row boundary
         # and find later row boundaries in file order. The later index work can
         # still use multiple tasks.
         chunks = ChunkIndex[]
         b0 = datastart
-        while b0 <= len
-            target = min(b0 + chunkbytes - 1, len)
+        while b0 <= target
+            t = min(b0 + chunkbytes - 1, target)
             # Start at the known row boundary `b0`. Move through complete rows
-            # until the scan passes `target`. This keeps quoted line endings and
+            # until the scan passes `t`. This keeps quoted line endings and
             # comment rows intact.
-            b1 = target >= len ? len + 1 : _rowstartatorafter(buf, b0, target, len, d)
+            b1 = t >= stop ? stop + 1 : _rowstartatorafter(buf, b0, t, stop, d)
             push!(chunks, ChunkIndex(b0, b1 - 1))
             b0 = b1
         end
         foreach(checktaperange, chunks)
         return chunks
     end
-    nranges = splittable(d) ? max(1, cld(len - datastart + 1, chunkbytes)) : 1
-    starts = [datastart + (i - 1) * chunkbytes for i in 1:nranges]
-    entry = fill(QUOTE_OUTSIDE, nranges)
-    if nranges > 1 && symmetricquotes(d)
+    nranges = splittable(d) ? max(1, cld(target - datastart + 1, chunkbytes)) : 1
+    # The closing boundary is one more range start. The serial path above owns
+    # every dialect whose quote state a range start cannot resolve, so quote
+    # counts settle every boundary the planner below finds.
+    nstarts = nranges + closing
+    starts = [i <= nranges ? datastart + (i - 1) * chunkbytes : target + 1 for i in 1:nstarts]
+    entry = fill(QUOTE_OUTSIDE, nstarts)
+    if nstarts > 1 && symmetricquotes(d)
         par = Vector{Bool}(undef, nranges)
         if parallel && tasklimit > 1
             _taskforeach(1:nranges, tasklimit, _taskobserver) do i
-                to = i == nranges ? len : starts[i + 1] - 1
+                to = i == nranges ? target : starts[i + 1] - 1
                 par[i] = quoteparity(buf, starts[i], to, d)
             end
         else
             for i in 1:nranges
-                to = i == nranges ? len : starts[i + 1] - 1
+                to = i == nranges ? target : starts[i + 1] - 1
                 par[i] = quoteparity(buf, starts[i], to, d)
             end
         end
         acc = false
-        for i in 2:nranges
+        for i in 2:nstarts
             acc ⊻= par[i - 1]
             entry[i] = acc ? QUOTE_INSIDE : QUOTE_OUTSIDE
         end
-    elseif nranges > 1
+    elseif nstarts > 1
         exits = Vector{NTuple{3, UInt8}}(undef, nranges)
         if parallel && tasklimit > 1
             _taskforeach(1:nranges, tasklimit, _taskobserver) do i
-                to = i == nranges ? len : starts[i + 1] - 1
+                to = i == nranges ? target : starts[i + 1] - 1
                 exits[i] = quotetransitions(buf, starts[i], to, d)
             end
         else
             for i in 1:nranges
-                to = i == nranges ? len : starts[i + 1] - 1
+                to = i == nranges ? target : starts[i + 1] - 1
                 exits[i] = quotetransitions(buf, starts[i], to, d)
             end
         end
         acc = QUOTE_OUTSIDE
-        for i in 2:nranges
+        for i in 2:nstarts
             acc = exits[i - 1][acc + 1]
             entry[i] = acc
         end
     end
-    bounds = Vector{Int}(undef, nranges)
+    bounds = Vector{Int}(undef, nranges + 1)
     bounds[1] = datastart
     if nranges > 1
         if parallel && tasklimit > 1
             _taskforeach(2:nranges, tasklimit, _taskobserver) do i
-                bounds[i] = _rangerowstart(buf, starts[i], len, d, entry[i])
+                bounds[i] = _rangerowstart(buf, starts[i], stop, d, entry[i])
             end
         else
             for i in 2:nranges
-                bounds[i] = _rangerowstart(buf, starts[i], len, d, entry[i])
+                bounds[i] = _rangerowstart(buf, starts[i], stop, d, entry[i])
             end
         end
     end
-    push!(bounds, len + 1)
+    # The last boundary closes the plan: where the region ends, or the row start
+    # that closes the window.
+    bounds[nranges + 1] = closing ?
+        _windowrowstart(buf, starts[nstarts], stop, d, entry[nstarts]) : stop + 1
     # Each chunk starts at a row boundary. Drop an empty chunk. This can occur
     # when one row crosses one or more complete byte ranges.
     chunks = ChunkIndex[]
@@ -2268,35 +2300,46 @@ function resolvescanner(d::Dialect, fastindex::Bool)
 end
 
 """
-    index(buf, d::Dialect; datastart=1, chunkbytes=2^23, parallel=true,
-          ntasks=nothing, fastindex=true)
+    index(buf, d::Dialect; datastart=1, stop=length(buf), windowbytes=typemax(Int),
+          chunkbytes=2^23, parallel=true, ntasks=nothing, fastindex=true)
 
-Build an index of the rows and fields in `buf[datastart:end]`. Each chunk starts
-and ends at a complete row boundary. Each stored field has its exact byte
-position and length. The same input gives the same index for every valid
-`chunkbytes` value and thread count.
+Build an index of the rows and fields in `buf[datastart:stop]`. The caller
+guarantees that the region ends at a row boundary. `windowbytes` indexes only
+the first window of the region: the index then ends at the first row boundary
+after `datastart + windowbytes - 1` and `nextstart` gives the next window's
+first byte. Each chunk starts and ends at a complete row boundary. Each stored
+field has its exact byte position and length. The same input gives the same
+index for every valid `chunkbytes` value and thread count.
 """
 function index(buf::Vector{UInt8}, d::Dialect;
                datastart::Int=1,
+               stop::Int=length(buf),
+               windowbytes::Int=typemax(Int),
                chunkbytes::Int=1 << 23,
                parallel::Bool=Threads.nthreads() > 1,
                ntasks::Union{Nothing, Int}=nothing,
                fastindex::Bool=true,
                _taskobserver=nothing)
-    len = length(buf)
     # No lower bound beyond 1: a tiny chunkbytes forces row boundaries
     # everywhere, which exercises every chunk geometry. The standalone index
     # default is 8 MiB; `parse` passes its size-aware 64 KiB–1 MiB default.
     chunkbytes >= 1 || throw(ArgumentError("chunkbytes must be ≥ 1 (got $chunkbytes)"))
     datastart >= 1 || throw(ArgumentError("datastart must be ≥ 1 (got $datastart)"))
+    windowbytes >= 1 || throw(ArgumentError("windowbytes must be ≥ 1 (got $windowbytes)"))
     ntasks === nothing || ntasks >= 1 ||
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
     tasklimit = _readtasklimit(parallel, ntasks)
     sc = resolvescanner(d, fastindex)
-    datastart > len && return BufferIndex(ChunkIndex[], 0, false, false)
+    stop = min(stop, length(buf))
+    datastart > stop && return BufferIndex(ChunkIndex[], 0, false, false, datastart)
 
-    chunks = chunkplan(buf, d, datastart, chunkbytes, parallel, tasklimit;
+    target = windowbytes >= stop - datastart + 1 ? stop : datastart + windowbytes - 1
+    chunks = chunkplan(buf, d, datastart, stop, target, chunkbytes, parallel, tasklimit;
                        _taskobserver)
+    # Where this call's region ends. The chunks are contiguous and the first one
+    # is never empty, so the last planned chunk closes the region; empty-chunk
+    # filtering below can drop it.
+    nextstart = isempty(chunks) ? stop + 1 : last(chunks).stop + 1
     if length(chunks) == 1 || tasklimit <= 1
         for ci in chunks
             indexone!(ci, buf, d, sc)
@@ -2312,8 +2355,8 @@ function index(buf::Vector{UInt8}, d::Dialect;
     # comes before the boundary check below, which that assumption can break.
     if commentaware(d) && !d.commentquotes && !d.lenient &&
        any(ci -> ci.commentquote, chunks)
-        return index(buf, withcommentquotes(d); datastart, chunkbytes, parallel, ntasks,
-                     fastindex, _taskobserver)
+        return index(buf, withcommentquotes(d); datastart, stop, windowbytes, chunkbytes,
+                     parallel, ntasks, fastindex, _taskobserver)
     end
     # Every non-final chunk ends after a complete row. It must therefore end
     # outside a quoted field. A failure here means that chunk planning is wrong.
@@ -2326,7 +2369,7 @@ function index(buf::Vector{UInt8}, d::Dialect;
     unclosed = !isempty(chunks) && last(chunks).unclosedquote
     bare = any(ci -> ci.barequote, chunks)
     filter!(ci -> totalrows(ci) > 0, chunks)
-    return BufferIndex(chunks, sum(totalrows, chunks; init=0), unclosed, bare)
+    return BufferIndex(chunks, sum(totalrows, chunks; init=0), unclosed, bare, nextstart)
 end
 
 index(buf::Vector{UInt8}; kw...) = index(buf, Dialect(); kw...)
@@ -3721,7 +3764,8 @@ Base.@nospecializeinfer function _parse(buf::Vector{UInt8}, d::Dialect, baseopts
     # in a `Core.Box` when the code assigns it more than once. Tasks would then
     # share a mutable value, and the compiler could not know its exact type.
     allchunks::Vector{ChunkIndex} = index === nothing ?
-        chunkplan(buf, d, datastart, chunkbytes, parallel, tasklimit) : index.chunks
+        chunkplan(buf, d, datastart, length(buf), length(buf), chunkbytes, parallel,
+                  tasklimit) : index.chunks
     indexed = fill(index !== nothing, length(allchunks))
     indexunclosed = index !== nothing && index.unclosedquote
     nchall = length(allchunks)
@@ -3956,7 +4000,10 @@ Base.@nospecializeinfer function _parse(buf::Vector{UInt8}, d::Dialect, baseopts
     # problem rows always reference INPUT data-row numbers (diagnostics point
     # at the file, not at the filtered output)
     log = finishproblems(pendingproblems, rowmask === nothing ? rowbases : rowbases0)
-    hasunclosed = indexunclosed || (nch > 0 && last(chunks).unclosedquote)
+    # A supplied index owns this finding: it captured the last planned chunk
+    # before empty chunks were filtered out, and it knows whether its region
+    # reached the end of the source at all.
+    hasunclosed = index === nothing ? (nch > 0 && last(chunks).unclosedquote) : indexunclosed
     unclosedincluded = rowmask === nothing || fullrows == 0 || rowmask[end]
     if reportstructural && hasunclosed && unclosedincluded &&
        (limit === nothing || limit >= fullrows)
@@ -3981,9 +4028,6 @@ end
 
 parse(str::AbstractString; kw...) = parse(Vector{UInt8}(codeunits(str)); kw...)
 parse(io::IO; kw...) = parse(Base.read(io); kw...)
-
-chunkrowbase(chunks::Vector{ChunkIndex}, target::ChunkIndex) =
-    sum(nrows(c) for c in chunks if c.start < target.start; init=0)
 
 # One masked-driver task: report ragged rows with chunk-local row ids and parse
 # every selected column into chunk-local segment storage. All chunks are indexed

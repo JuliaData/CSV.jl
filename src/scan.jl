@@ -58,10 +58,11 @@ function settlecolumns(names::Vector{Symbol}, opts::ValueOpts,
     return ColumnPlan(columns, sources, Int[], predicate, opts, colopts)
 end
 
-function _executescanplan(p::Prepared, scan::Tables.Scan;
+function _executescanplan(src::IndexedSource, scan::Tables.Scan;
                           headerlog::ProblemLog, maxproblems::Int,
                           on_error::Symbol, source::String="")
-    bi = p.bi
+    p = src.p
+    bi = src.bi
     inputnames = p.names
     phasecap = max(maxproblems, on_error === :error ? 1 : 0)
     b = Tables.resolve(scan, inputnames)
@@ -80,7 +81,7 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
             fill!(view(mask, (window + 1):total), false)
             _cliprows!(mask, b.offset, b.limit)
         end
-        t = _parseprepared(p, plan; limit=nothing, rowmask=mask, maxproblems=phasecap)
+        t = _parseprepared(src, plan; limit=nothing, rowmask=mask, maxproblems=phasecap)
         sourcerows = mask === nothing ? nothing : findall(mask)
         t = _narrowphase(t, plan, bi, phasecap; sourcerows)
         t = _project(t, b, inputnames)
@@ -91,12 +92,12 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
     # A chunk whose cell contradicts the sampled type of its column falls
     # back to one parse of the whole window, which promotes the column the
     # usual way.
-    streamed = _streampredicate(p, plan, b, window, total, phasecap)
+    streamed = _streampredicate(src, plan, b, window, total, phasecap)
     if streamed === nothing
         predcolumns = [ColumnDecision() for _ in inputnames]
         predplan = ColumnPlan(predcolumns, plan.predicate, Int[], Int[],
                               plan.opts, plan.colopts)
-        t1 = _parseprepared(p, predplan; limit=p.limit, maxproblems=phasecap)
+        t1 = _parseprepared(src, predplan; limit=p.limit, maxproblems=phasecap)
         mask = Vector{Bool}(Tables.filtermask(b, PredicateColumns(t1, inputnames, plan.predicate)))
         length(mask) == window ||
             throw(ArgumentError("filter mask has $(length(mask)) entries for $window rows"))
@@ -113,14 +114,14 @@ function _executescanplan(p::Prepared, scan::Tables.Scan;
 
     # A result column that the predicate pass parsed with the type the result
     # needs keeps those values; the others parse only the rows that passed.
-    reused = _reusepredicate(p, plan, kept, slices, seeds, b.offset)
+    reused = _reusepredicate(src, plan, kept, slices, seeds, b.offset)
     sources = Int[j for j in plan.sources if !haskey(reused, j)]
     if isempty(sources)
         t2 = ParsedTable(Symbol[], AbstractVector[], nkept, Problem[], 0)
     else
         plan2 = ColumnPlan(plan.columns, sources, plan.positions, plan.predicate,
                            plan.opts, plan.colopts)
-        t2 = _parseprepared(p, plan2; limit=nothing, rowmask=mask,
+        t2 = _parseprepared(src, plan2; limit=nothing, rowmask=mask,
                             reportstructural=false, maxproblems=phasecap)
         t2 = _narrowphase(t2, plan2, bi, phasecap; sourcerows=kept)
     end
@@ -138,9 +139,10 @@ end
 # that can reuse this parse. Chunks parse in groups of `tasklimit`, in file
 # order. Returns `nothing` when a cell contradicts its sampled type or when the
 # filter uses no column; the caller then parses the window at once.
-function _streampredicate(p::Prepared, plan::ColumnPlan, b::Tables.BoundScan,
+function _streampredicate(src::IndexedSource, plan::ColumnPlan, b::Tables.BoundScan,
                           window::Int, total::Int, cap::Int)
-    bi = p.bi
+    p = src.p
+    bi = src.bi
     chunks = bi.chunks
     settings = p.settings
     inputnames = p.names
@@ -163,7 +165,7 @@ function _streampredicate(p::Prepared, plan::ColumnPlan, b::Tables.BoundScan,
     predplan = ColumnPlan(predcolumns, predicate, Int[], Int[], plan.opts, plan.colopts)
     batches = Batches(p.buf, chunks, inputnames[predicate], predplan, seedtypes,
                       fill(true, length(predicate)), p.d, cap,
-                      bi.unclosedquote && window == total, 1)
+                      bi.unclosedquote && window == total)
     seeds = Dict{Int, Type}(j => seedtypes[q] for (q, j) in enumerate(predicate))
     # result columns that may reuse this parse: same source, same parse type
     slices = Dict{Int, Vector{AbstractVector}}()
@@ -221,11 +223,12 @@ _keptslice(col::DataStringVector, m::Vector{Bool}) =
 # type that equals the parse type always can. An inferred result type can
 # only when the kept rows infer the same type the window sample gave; the
 # kept rows alone decide an inferred result type.
-function _reusepredicate(p::Prepared, plan::ColumnPlan, kept::Vector{Int},
+function _reusepredicate(src::IndexedSource, plan::ColumnPlan, kept::Vector{Int},
                          slices::Dict{Int, Vector{AbstractVector}}, seeds::Dict{Int, Type},
                          offset::Int)
     reused = Dict{Int, AbstractVector}()
     (isempty(slices) || isempty(kept)) && return reused
+    p = src.p
     settings = p.settings
     inferredcands = Int[j for j in keys(slices) if plan.columns[j].parsetype === nothing]
     if !isempty(inferredcands)
@@ -234,7 +237,7 @@ function _reusepredicate(p::Prepared, plan::ColumnPlan, kept::Vector{Int},
         for j in inferredcands
             selected[j] = true
         end
-        chunks = p.bi.chunks
+        chunks = src.bi.chunks
         rowbases0 = cumsum([0; Int[nrows(ci) for ci in chunks[1:max(length(chunks) - 1, 0)]]])
         ns = settings.nsample === nothing ? clamp(length(kept) >> 6, 8, 128) : settings.nsample
         sawmissing = Bool[plan.columns[j].declaredmissing for j in 1:ncols]

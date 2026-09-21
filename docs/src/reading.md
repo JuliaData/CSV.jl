@@ -46,7 +46,8 @@ source. Finished worker tasks release their input references, so garbage
 collection can unmap the file. Rewriting the file afterwards cannot affect
 the table. One value retains at most the parse chunk's text buffer, and a
 `Vector{UInt8}` input is never aliased. A `CSV.Chunks` iterator retains its
-source for later batches; the returned batches own their bytes. `CSV.Rows` and `CSV.lazy`
+source for later batches, but only one batch's structural index; the returned
+batches own their bytes. `CSV.Rows` and `CSV.lazy`
 are the exceptions: their cells are views into the retained source, so keep
 the source unchanged while you use them, or convert values with `String`.
 
@@ -371,12 +372,34 @@ semantics as `CSV.File`.
 batch has the same column types. Pooling is evaluated separately in each
 batch.
 
-`ntasks` sets the target batch count. Pass `chunkbytes` for direct size
-control. A `CSV.Chunks` pool policy must be one `Bool`, ratio, or
+One batch is one window of the source's data bytes. `chunkbytes` is the target
+size of that window and defaults to 64 MiB, or the whole source when it is
+smaller. A window ends at a row boundary, so a batch holds every row that starts
+within its bytes and one complete row can push it past `chunkbytes`. `ntasks`
+bounds the parallel work inside one window; it is not a batch count and does not
+affect the batch size. A `CSV.Chunks` pool policy must be one `Bool`, ratio, or
 `(ratio, maximum_levels)` value; per-column pool dictionaries and vectors are
 only supported by `CSV.File`.
 List `select` and `drop` forms project the same file-ordered column set in every
 batch.
+
+Each window is indexed when its batch is produced and released with it, so the
+live structural index is one window's, not the whole source's. Only that index
+is bounded. The source bytes stay in memory for later batches: an `IO` input, a
+byte buffer, and `buffer_in_memory=true` still hold the whole input, and a large
+local file stays memory-mapped for the life of the iterator. `CSV.File`,
+`CSV.lazy` and `CSV.Rows` index the whole row window at once. Each returned
+batch owns its own bytes, so retaining batches retains their columns.
+
+The constructor validates every row it will yield, before the first batch, to
+settle one schema. Value validation excludes the rows after `limit`: the window
+that holds the limit is indexed to its end, and the rows past the limit are
+dropped before any value is read, so they cannot settle a type. The pass reads
+no later window. It starts over when a finding invalidates what it settled: a
+quote that did not start its field prepares the source again under the lenient
+rule, and a later timestamp that needs microseconds reseeds the column types.
+The final pass walks exactly the windows iteration walks, so it also counts
+them: `length(chunks)` is the batch count and costs no extra pass.
 
 ## Tables.Scan pushdown
 

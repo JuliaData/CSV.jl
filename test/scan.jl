@@ -453,11 +453,12 @@ end # testset
     end
     # The predicate pass must retain one capped log across all chunks.
     input = "a,b\n" * "1\n"^100
-    p = CSV._prepare(IOBuffer(input); chunkbytes=2, maxproblems=2)
+    src = CSV._prepareindexed(IOBuffer(input); chunkbytes=2, maxproblems=2)
+    p = src.p
     b = Tables.resolve(Tables.Scan(select=(:a,), filter=Tables.col(:a) > 0), p.names)
     plan = CSV.settlecolumns(p.names, p.opts, b)
-    total = sum(CSV.nrows, p.bi.chunks; init=0)
-    _, phase, _, _ = CSV._streampredicate(p, plan, b, total, total, 2)
+    total = sum(CSV.nrows, src.bi.chunks; init=0)
+    _, phase, _, _ = CSV._streampredicate(src, plan, b, total, total, 2)
     @test length(phase.problems) == 2
     @test phase.droppedproblems == 98
     @test getfield.(phase.problems, :row) == [1, 2]

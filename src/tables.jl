@@ -19,35 +19,21 @@ Tables.schema(t::ParsedTable) =
     Tables.Schema(names(t), Type[eltype(c) for c in columns(t)])
 
 # ---------------------------------------------------------------------------
-# 2. Batched reading — CSV.Chunks
+# 2. The batch schema — CSV.Chunks
 # ---------------------------------------------------------------------------
-# Each item holds values from one nonempty data chunk. The structural index
-# still covers the full file. Before iteration starts, a full-file pass finds
-# each column type and whether the column can contain `missing`. This gives each
-# batch the same schema. A sample cannot give this guarantee.
+# Every cell of every selected column is validated before the first batch, one
+# window at a time. That is what gives each batch the same column types,
+# missingness, and settled text width. A sample cannot give this guarantee.
 
-struct Batches
-    buf::Vector{UInt8}
-    chunks::Vector{ChunkIndex}
-    names::Vector{Symbol}
-    plan::ColumnPlan
-    seedtypes::Vector{Type}
-    allowmissing::Vector{Bool}
-    d::Dialect
-    maxproblems::Int
-    unclosedquote::Bool
-    ntasks::Int        # columns of a batch parse in parallel under this budget
-end
-
-# Settle the batch schema in place: `types[q]` is promoted until every cell of
-# the window parses, and the returned vector says whether column q can hold
-# `missing` (an empty or sentinel cell, a short row, or — for a requested
-# type — an invalid cell that the parse will report and leave missing).
-# Columns are independent, so they validate in parallel.
+# Settle the batch schema in place over one window: `types[q]` is promoted until
+# every cell of the window parses, `allowmissing[q]` records whether column q can
+# hold `missing` (an empty or sentinel cell, a short row, or — for a requested
+# type — an invalid cell that the parse will report and leave missing), and
+# `maxlens[q]` grows to the longest text value. All three carry from window to
+# window: they only grow. Columns are independent, so they validate in parallel.
 function settlebatchschema!(types::Vector{Type}, buf, chunks, plan::ColumnPlan,
-                            maxlens::Union{Nothing, Vector{Int}}=nothing;
+                            maxlens::Vector{Int}, allowmissing::Vector{Bool};
                             parallel::Bool=false, tasklimit::Int=1)
-    allowmissing = Bool[plan.columns[j].declaredmissing for j in plan.sources]
     settle = q -> begin
         j = plan.sources[q]
         d = plan.columns[j]
@@ -57,9 +43,9 @@ function settlebatchschema!(types::Vector{Type}, buf, chunks, plan::ColumnPlan,
         checktype = requested && !_hasstringrequest(d) ?
                     something(accessparsetype(d), types[q]) : types[q]
         T, sawmissing, maxlen = _settlecolumn(checktype, buf, chunks, j, columnopts(plan, j),
-                                              requested, allowmissing[q])
+                                              requested, allowmissing[q], maxlens[q])
         allowmissing[q] = sawmissing
-        maxlens === nothing || (maxlens[q] = maxlen)
+        maxlens[q] = maxlen
         # the batch parses with the native (wide) parser; narrowing follows
         requested || (types[q] = T)
     end
@@ -77,9 +63,9 @@ end
 # Each entry is monomorphic in `T`. The longest value
 # (in output bytes) settles an auto-width string request for the whole window.
 function _settlecolumn(::Type{T0}, buf, chunks, j::Int, opts::ValueOpts,
-                       requested::Bool, sawmissing::Bool) where {T0}
+                       requested::Bool, sawmissing::Bool, maxlen0::Int) where {T0}
     T = T0
-    k, lr, maxlen = 1, 0, 0
+    k, lr, maxlen = 1, 0, maxlen0
     while true
         T2, sawmissing, k, lr, maxlen = _settlecolumnfrom(T, buf, chunks, j, opts, requested,
                                                           sawmissing, k, lr, maxlen)
@@ -166,26 +152,32 @@ function _settlecolumnfrom(::Type{T}, buf::Vector{UInt8}, chunks, j::Int, opts::
     return T, sawmissing, k, lr, maxlen
 end
 
-Base.length(b::Batches) = length(b.chunks)
-Base.eltype(::Type{Batches}) = ParsedTable
-Tables.partitions(b::Batches) = b
+# ---------------------------------------------------------------------------
+# 3. One chunk at a time — the Tables.Scan predicate pass
+# ---------------------------------------------------------------------------
+# A filter reads its predicate columns one indexed chunk at a time and keeps
+# only the row mask, so the values of one chunk are released before the next
+# one parses. The types come from a sample of the row window, so a cell can
+# contradict its column's type: the parse then returns nothing instead of
+# promoting, and the caller falls back to one parse of the whole window.
 
-function Base.iterate(b::Batches, i::Int=1)
-    i > length(b.chunks) && return nothing
-    return parsebatch(b, b.chunks[i]), i + 1
+struct Batches
+    buf::Vector{UInt8}
+    chunks::Vector{ChunkIndex}
+    names::Vector{Symbol}
+    plan::ColumnPlan
+    seedtypes::Vector{Type}
+    allowmissing::Vector{Bool}
+    d::Dialect
+    maxproblems::Int
+    unclosedquote::Bool
 end
 
-# Parse one indexed chunk with the types and options settled for this request.
-parsebatch(b::Batches, ci::ChunkIndex) = something(_parsebatch(b, ci, true))
-
-# The same parse for types settled from a sample only: a cell that
-# contradicts its column's type returns `nothing` instead of an error, and
-# the caller decides how to promote.
-tryparsebatch(b::Batches, ci::ChunkIndex, n::Int=nrows(ci),
-              rowbase::Int=chunkrowbase(b.chunks, ci)) = _parsebatch(b, ci, false, n, rowbase)
-
-function _parsebatch(b::Batches, ci::ChunkIndex, strict::Bool, n::Int=nrows(ci),
-                     rowbase::Int=chunkrowbase(b.chunks, ci))::Union{Nothing, ParsedTable}
+# Parse one indexed chunk with the types settled from a sample: a cell that
+# contradicts its column's type returns `nothing` instead of a value, and the
+# caller decides how to promote.
+function tryparsebatch(b::Batches, ci::ChunkIndex, n::Int,
+                       rowbase::Int)::Union{Nothing, ParsedTable}
     ncols = length(b.names)
     log = ProblemLog(b.maxproblems)
     nsourcecols = length(b.plan.columns)
@@ -205,11 +197,9 @@ function _parsebatch(b::Batches, ci::ChunkIndex, strict::Bool, n::Int=nrows(ci),
     mergeproblems!(pending, log, 1)
 
     cols = Vector{AbstractVector}(undef, ncols)
-    conflicts = fill(false, ncols)
-    parallelcolumns = b.ntasks > 1 && ncols > 1 && n >= 1024
-    columnbudget = parallelcolumns ? 1 : b.ntasks
-    # columns are independent: each parses into its own column and problem log
-    parseone = q -> begin
+    # The caller parses whole chunks in parallel, so this pass is serial: it
+    # holds one chunk's predicate columns and releases them before the next.
+    for q in 1:ncols
         j = b.plan.sources[q]
         T = b.seedtypes[q]
         opts = columnopts(b.plan, j)
@@ -219,20 +209,11 @@ function _parsebatch(b::Batches, ci::ChunkIndex, strict::Bool, n::Int=nrows(ci),
         conflict = T === Missing ?
             parsecolchunk_missing(b.buf, ci, j, rowbase, opts, userprovided, clog, nothing, 0, n) :
             parsecolchunk!(col, b.buf, ci, j, 0, opts, userprovided, clog, rowbase, nothing, 0, n)
-        if conflict != 0
-            strict && error("internal error: batch schema prepass disagreed with value parsing")
-            conflicts[q] = true
-            return
-        end
-        cols[q] = finalizecolumn(T, col, n, b.allowmissing[q]; tasklimit=columnbudget)
+        # a cell that contradicts the sampled type: the caller parses the window
+        conflict == 0 || return nothing
+        cols[q] = finalizecolumn(T, col, n, b.allowmissing[q]; tasklimit=1)
         mergeproblems!(pending, clog, 1)
     end
-    if parallelcolumns
-        _taskforeach(parseone, 1:ncols, b.ntasks)
-    else
-        foreach(parseone, 1:ncols)
-    end
-    any(conflicts) && return nothing
     # Workers release each column log as it completes. Rows already use source
     # coordinates, so the one reservoir needs no row offset.
     log = finishproblems(pending, (0,))
@@ -241,7 +222,7 @@ function _parsebatch(b::Batches, ci::ChunkIndex, strict::Bool, n::Int=nrows(ci),
 end
 
 # ---------------------------------------------------------------------------
-# 3. Row streaming — CSV.Rows
+# 4. Row streaming — CSV.Rows
 # ---------------------------------------------------------------------------
 # Iteration returns small row views over the index. A cell is parsed only when
 # the caller reads it.
