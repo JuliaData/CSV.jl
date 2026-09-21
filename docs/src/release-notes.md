@@ -1,6 +1,6 @@
-# CSV.jl 1.1 release notes
+# CSV.jl 1.1.0 release notes
 
-Unreleased.
+Released September 21, 2026. Requires Julia 1.10 or later.
 
 ## `CSV.Chunks` streams windows of the source
 
@@ -29,6 +29,13 @@ column types, values, and diagnostics do not.
 
 ## Fixes
 
+- Generic ARM64 package precompilation works on Julia 1.13. The quote scanner
+  retains its accelerated PMULL path behind a runtime CPU check, with a
+  shift/XOR fallback. CI checks generic package images and JIT compilation on
+  ARM64 and x86-64 with Julia 1.10 and current Julia.
+- Typed `CSV.Rows` column access avoids per-row allocations.
+- Floating-point output is quoted when its text conflicts with the delimiter
+  or quote characters, including decimal separators, exponents, and `NaN`/`Inf`.
 - A quote that does not start its field makes a reader prepare the source again
   under the lenient quote rule. That retry now keeps the whole syntax the first
   pass resolved, including a sniffed `ignorerepeated`. 1.0 kept only the
