@@ -1567,25 +1567,20 @@ end
 elseif Sys.ARCH === :aarch64
     # `pmull` computes the running quote mask in one instruction. Every Apple
     # silicon CPU has it; another aarch64 host has it when the CPU has the AES
-    # extension, which `__init__` probes through Base. The instruction lives
-    # in a helper that carries its own target features, so a package image
-    # built for a generic aarch64 target still compiles it, and the probe keeps
-    # it from running on a CPU that would trap. The helper is a real call.
+    # extension, which `__init__` probes through Base. Inline assembly permits
+    # generic package-image compilation without an AES-enabled LLVM target.
+    # The directive enables AES in the assembler. `sideeffect` prevents LLVM
+    # from moving the instruction before the runtime CPU check.
     @inline function prefix_xor64_pmull(m::UInt64)::UInt64
-        v = Base.llvmcall(("""
-            declare <16 x i8> @llvm.aarch64.neon.pmull64(i64, i64)
-            define internal i64 @pmull_impl(i64 %m) #1 {
-                %r = call <16 x i8> @llvm.aarch64.neon.pmull64(i64 %m, i64 -1)
-                %v = bitcast <16 x i8> %r to <2 x i64>
-                %lo = extractelement <2 x i64> %v, i32 0
+        v = Base.llvmcall((raw"""
+            define i64 @entry(i64 %m) #0 {
+                %a = insertelement <1 x i64> zeroinitializer, i64 %m, i32 0
+                %b = insertelement <1 x i64> zeroinitializer, i64 -1, i32 0
+                %r = call <2 x i64> asm sideeffect ".arch_extension aes\0Apmull $0.1q, $1.1d, $2.1d", "=w,w,w"(<1 x i64> %a, <1 x i64> %b)
+                %lo = extractelement <2 x i64> %r, i32 0
                 ret i64 %lo
             }
-            define i64 @entry(i64 %m) #0 {
-                %r = call i64 @pmull_impl(i64 %m)
-                ret i64 %r
-            }
-            attributes #0 = { alwaysinline }
-            attributes #1 = { noinline "target-features"="+neon,+aes" }""", "entry"),
+            attributes #0 = { alwaysinline }""", "entry"),
             UInt64, Tuple{UInt64}, m)
         return v
     end

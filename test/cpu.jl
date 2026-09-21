@@ -1,5 +1,5 @@
-# Also run with --cpu-target=generic --compiled-modules=no to check that
-# optional CPU instructions do not require the compiler's baseline target.
+# Run after precompiling with JULIA_CPU_TARGET=generic, and separately with
+# --cpu-target=generic --compiled-modules=no, to cover package images and JIT code.
 using Test, CSV, Random
 
 @testset "CPU feature dispatch" begin
@@ -12,12 +12,14 @@ using Test, CSV, Random
     if feature !== nothing
         enabled = feature[]
         try
-            feature[] = false
-            @test CSV.prefix_xor64.(masks) == expected
-            input = "a,b\n" * "1,\"x,y\"\n"^100
-            f = CSV.File(IOBuffer(input); chunkbytes=65)
-            @test f.a == fill(1, 100)
-            @test f.b == fill("x,y", 100)
+            for usefeature in (enabled, false)
+                feature[] = usefeature
+                @test CSV.prefix_xor64.(masks) == expected
+                input = "a,b\n" * "1,\"x,y\"\n"^100
+                f = CSV.File(IOBuffer(input); chunkbytes=65)
+                @test f.a == fill(1, 100)
+                @test f.b == fill("x,y", 100)
+            end
         finally
             feature[] = enabled
         end
