@@ -51,6 +51,39 @@ batches own their bytes. `CSV.Rows` and `CSV.lazy`
 are the exceptions: their cells are views into the retained source, so keep
 the source unchanged while you use them, or convert values with `String`.
 
+### Gzipped text in other encodings
+
+Gzip decompression does not convert the text encoding. For a non-UTF-8 gzip
+file, decompress its bytes first, then decode them before calling CSV.jl.
+Install `CodecZlib` and `StringEncodings` in your environment for this example.
+For an ISO-8859-1 file at `path`:
+
+```@example reading-encoded-gzip
+using CSV, CodecZlib, StringEncodings
+
+dir = mktempdir() # hide
+path = joinpath(dir, "cities.csv.gz") # hide
+write(path, transcode(GzipCompressor, encode("city,population\nMontréal,100\nMálaga,200\n", "ISO-8859-1"))) # hide
+bytes = transcode(GzipDecompressor, read(path))
+decoder = StringDecoder(IOBuffer(bytes), "ISO-8859-1")
+file = try
+    CSV.File(decoder)
+finally
+    close(decoder)
+end
+@assert names(file) == [:city, :population] # hide
+@assert collect(file.population) == [100, 200] # hide
+@assert String.(file.city) == ["Montréal", "Málaga"] # hide
+rm(dir; recursive=true) # hide
+
+String.(file.city)
+```
+
+Use the file's actual encoding; it is not detected automatically. The decoder
+supplies UTF-8 bytes to CSV.jl. Closing it releases conversion resources and
+checks for an incomplete final character. CSV.jl still reads the converted
+input into memory; this is not a streaming table parser.
+
 ## Headers and row windows
 
 `header=1` reads names from the first row. Other accepted forms are:
