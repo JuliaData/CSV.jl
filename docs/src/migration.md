@@ -63,6 +63,37 @@ name or index, or a `Regex`; they work on `CSV.File`, `CSV.lazy`, `CSV.Rows`,
 and `CSV.Chunks` and return a unique file-ordered column set. Use
 `Tables.Scan` for a serializable projection and filter expression.
 
+### Selecting columns with a name predicate
+
+For a former `drop=(i, name) -> ...` callback, inspect the names with
+`CSV.lazy`, run the predicate yourself, and pass the resulting names to
+`CSV.File`. This supports transformations such as case folding and accent
+removal without renaming the output columns:
+
+```@example migration-selection
+using CSV, Tables, Unicode
+
+normalisename(name) = replace(
+    Unicode.normalize(String(name); casefold=true, stripmark=true),
+    r"[ \-\_\d]" => "",
+)
+ignorelist = Set(["internal"])
+shoulddrop(i, name) = normalisename(name) in ignorelist
+
+indexed = CSV.lazy(IOBuffer("ID,Ínternal_1,Amount\n1,private,12.5\n"))
+dropped = [name for (i, name) in enumerate(Tables.columnnames(indexed))
+           if shoulddrop(i, name)]
+file = CSV.File(indexed; drop=dropped)
+@assert Tables.columnnames(file) == [:ID, :Amount] # hide
+Tables.columntable(file)
+```
+
+`CSV.lazy` retains the source bytes and builds the full structural index; it
+is not a header-only read. `CSV.File(indexed; ...)` reuses that index and
+parses only the selected columns. Set source and dialect options, such as
+`delim` and `header`, on `CSV.lazy`. Set eager parsing options, such as
+`types` and `pool`, on `CSV.File`.
+
 ## Table access
 
 Column and row access on `CSV.File` is unchanged. `CSV.lazy` is new: it builds
