@@ -79,7 +79,8 @@ become `missing` by default; `strict=true` or `on_error=:error` throws a
 [`CSV.ParseError`](@ref CSV.ParseError) when the cell is accessed. Rows do not
 retain parse diagnostics, so use [`CSV.File`](@ref CSV.File) when
 `CSV.problems` or a diagnostic cap is needed. `select` and `drop` (a list, one
-name, or a `Regex`) project columns in stable file order.
+name, a `Regex`, or an `(i, name) -> Bool` function) project columns in stable
+file order.
 """ Rows
 @doc """
     CSV.Chunks(source; ntasks=Threads.nthreads(), chunkbytes=nothing, keywords...)

@@ -387,6 +387,7 @@ file = CSV.File(IOBuffer(data); select=[:a, :c])
 file = CSV.File(IOBuffer(data); select=["a", "c"])
 file = CSV.File(IOBuffer(data); select=[true, false, true])
 file = CSV.File(IOBuffer(data); select=r"[ac]")
+file = CSV.File(IOBuffer(data); select=(i, name) -> name in (:a, :c))
 # now examples of dropping, when we'd rather specify the column(s)
 # we'd like to drop/exclude from parsing
 file = CSV.File(IOBuffer(data); drop=[2])
@@ -394,10 +395,11 @@ file = CSV.File(IOBuffer(data); drop=[:b])
 file = CSV.File(IOBuffer(data); drop=["b"])
 file = CSV.File(IOBuffer(data); drop=[false, true, false])
 file = CSV.File(IOBuffer(data); drop=:b)
+file = CSV.File(IOBuffer(data); drop=(i, name) -> i == 2)
 ```
 
-`select` and `drop` take a list, one name or index,
-or a `Regex`; the selected columns keep their file order.
+`select` and `drop` take a list, one name or index, a `Regex`, or an
+`(i, name) -> Bool` function; the selected columns keep their file order.
 
 ## [Limiting number of rows from data](@id limit_example)
 

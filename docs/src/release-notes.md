@@ -1,3 +1,13 @@
+# CSV.jl 1.2.0 release notes
+
+Released September 23, 2026. Requires Julia 1.10 or later.
+
+## Changes
+
+- `select` and `drop` accept an `(i, name) -> Bool` function again, as in 0.10.
+  It receives each column's position and name before any value is read. 1.0
+  and 1.1 rejected it. `types` and `pool` still do not accept functions.
+
 # CSV.jl 1.1.0 release notes
 
 Released September 21, 2026. Requires Julia 1.10 or later.
