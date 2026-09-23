@@ -1,6 +1,6 @@
-# CSV.jl 1.2 release notes
+# CSV.jl 1.2.0 release notes
 
-Unreleased.
+Released September 23, 2026. Requires Julia 1.10 or later.
 
 ## Changes
 
