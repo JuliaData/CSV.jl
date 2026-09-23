@@ -9,7 +9,6 @@
 #   • empty unquoted cells are ALWAYS missing (custom missingstring ADDS)
 #   • long rows do not widen the schema (extra fields ⇒ problem, not Column4)
 #   • diagnostics are retained data, with one summary warning by default
-#   • function-typed select/drop retired
 #   • wide integers that fit Int128 remain exact
 
 using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings, FilePathsBase, Random, Mmap, Parsers
@@ -459,7 +458,7 @@ end
     sourceparity(input; kw=(; drop=[2]))
     sourceparity(input; kw=(; drop=[false, true, false]))
     @test_throws ArgumentError A.File(IOBuffer(input); select=[:a], drop=[:b])
-    @test_throws ArgumentError A.File(IOBuffer(input); select=(nm, i) -> i == 1)
+    @test_throws ArgumentError A.File(IOBuffer(input); select=(i, nm) -> i == 1, drop=[:b])
     @test_throws ArgumentError A.File(IOBuffer(input); select=[:nope])
     f = sourceparity("my col,b\n1,2\n"; kw=(; normalizenames=true, select=[:my_col]))
     @test Base.names(f) == [:my_col]
@@ -2391,7 +2390,28 @@ end
     @test names(first(A.Chunks(IOBuffer(src); drop=r"^a"))) == [:b]
     @test_throws ArgumentError A.File(IOBuffer(src); select=r"^z")
     @test names(A.File(IOBuffer(src); drop=r"^z")) == [:ax, :ay, :b]
-    @test_throws ArgumentError A.File(IOBuffer(src); select=(i, nm) -> true)
+end
+
+@testset "select and drop functions" begin
+    input = "a,b,c\n1,2,3\n4,5,6\n"
+    seen = Tuple{Int, Symbol}[]
+    f = sourceparity(input; kw=(; select=(i, nm) -> (push!(seen, (i, nm)); nm !== :b)))
+    @test Base.names(f) == [:a, :c] && f.c == [3, 6]
+    @test unique(seen) == [(1, :a), (2, :b), (3, :c)]
+    @test Base.names(sourceparity(input; kw=(; drop=(i, nm) -> i == 2))) == [:a, :c]
+    @test isempty(Base.names(A.File(IOBuffer(input); select=(i, nm) -> false)))
+    @test Base.names(A.File(IOBuffer(input); drop=(i, nm) -> false)) == [:a, :b, :c]
+    @test names(A.lazy(IOBuffer(input); drop=(i, nm) -> nm === :a)) == [:b, :c]
+    @test Tables.columnnames(A.Rows(IOBuffer(input); select=(i, nm) -> i > 1)) == [:b, :c]
+    @test all(ch -> names(ch) == [:a], A.Chunks(IOBuffer(input); select=(i, nm) -> i == 1))
+    @test names(A.File([IOBuffer(input), IOBuffer(input)]; drop=(i, nm) -> i == 1)) == [:b, :c]
+    # the function sees the names after normalizenames
+    @test Base.names(A.File(IOBuffer("my col,b\n1,2\n"); normalizenames=true,
+                            select=(i, nm) -> nm === :my_col)) == [:my_col]
+    # CSV.File(lazyfile) passes positions among the lazy file's columns
+    lf = A.lazy(IOBuffer(input); drop=[:a])
+    @test Base.names(A.File(lf; select=(i, nm) -> i == 1)) == [:b]
+    @test_throws TypeError A.File(IOBuffer(input); select=(i, nm) -> missing)
 end
 
 @testset "types=String names the output type" begin

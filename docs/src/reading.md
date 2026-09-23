@@ -218,8 +218,11 @@ numbers infer as `Float64`.
 name or index, or a `Regex` matched against the column names. They are
 mutually exclusive. `CSV.File`, `CSV.lazy`, `CSV.Rows`, and `CSV.Chunks` all
 return selected columns once, in file order, even when the list is repeated or
-reordered. Function-valued selection is not supported. Use a `Tables.Scan`
-request for expression-based projection and filtering.
+reordered. A function of the form `(i, name) -> Bool` receives each column's
+position and name (a `Symbol`); `select` keeps and `drop` removes the columns
+for which it returns `true`. It sees only header names, so it runs before any
+value is read, and CSV can call it more than once for a column. Use a
+`Tables.Scan` request for expression-based projection and filtering.
 
 CSV.jl uses `DataStrings.DataString` for inferred text columns by default:
 
