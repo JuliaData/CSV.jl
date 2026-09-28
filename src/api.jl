@@ -321,8 +321,10 @@ function _detectdelim(sample::Vector{UInt8}, d::Dialect, fastindex::Bool)
     end
     # a candidate that structures the header AND the data rows won above; the
     # remaining cases (delimiter only in the header, or the sample too short
-    # for field-consistency evidence) follow the byte-count tiers below
-    delim = (best[1] && best[2]) ? bestdelim :
+    # for field-consistency evidence) follow the byte-count tiers below.
+    # With no candidate in the first surviving row, keep the single-column
+    # default: punctuation in data can be divisible by the row count by chance.
+    delim = !headercandidate ? ',' : (best[1] && best[2]) ? bestdelim :
             _detectdelim_bytecounts(scoresample, datastart, d, bestdelim,
                                     best[1] && headercandidate)
     # Space-ALIGNED files: a run of blanks between fields is one
