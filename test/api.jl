@@ -14,6 +14,20 @@
 
 using Test, Dates, Tables, PooledArrays, CodecZlib, InlineStrings, FilePathsBase, Random, Mmap, Parsers
 using Durations: Timestamp
+
+# On older Julia, Parsers can load before Durations registers the Dates n token.
+@testset "nanosecond format import order" begin
+    code = raw"""
+    using Parsers
+    using CSV, Dates, Durations, Test
+    for format in ("yyyy-mm-dd.n", DateFormat("yyyy-mm-dd.n"))
+        table = CSV.File(IOBuffer("t\n2024-02-29.123456789\n"); delim=',', dateformat=format)
+        @test eltype(table.t) === Timestamp{Nanosecond}
+        @test only(table.t) == Timestamp(2024, 2, 29, 0, 0, 0, 123, 456, 789)
+    end
+    """
+    @test success(run(`$(Base.julia_cmd()) --startup-file=no --project=$(Base.active_project()) -e $code`))
+end
 using CSV
 const A = CSV
 const K = CSV

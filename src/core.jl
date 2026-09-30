@@ -342,7 +342,7 @@ function _dateformatkind(fmt::AbstractString)
             end
         else
             c in ('y', 'Y', 'm', 'd', 'u', 'U') && (kind |= 0x01)
-            c in ('H', 'M', 'S', 's', 'I', 'p') && (kind |= 0x02)
+            c in ('H', 'M', 'S', 's', 'n', 'I', 'p') && (kind |= 0x02)
         end
         i <= lastindex(fmt) && (i = nextind(fmt, i))
     end
@@ -390,9 +390,9 @@ Base.@nospecializeinfer function makevalueopts(d::Dialect, @nospecialize(datefor
         dp, dtp, dtsp, tp, custom = _ISO_DATE_PATTERN, _ISO_DATETIME_PATTERN,
                                     _ISO_DATETIME_SPACE_PATTERN, _ISO_TIME_PATTERN, false
     else
-        dateformat = _dateformatstring(dateformat)
-        p = Parsers.compilepattern(dateformat)
-        kind = _dateformatkind(dateformat)
+        fmt = dateformat isa DateFormat ? dateformat : DateFormat(_dateformatstring(dateformat))
+        p = Parsers.compilepattern(fmt)
+        kind = _dateformatkind(_dateformatstring(fmt))
         kind != 0x00 ||
             throw(ArgumentError("dateformat must contain a date or time token"))
         dp = dtp = dtsp = tp = p
