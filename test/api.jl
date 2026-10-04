@@ -18,6 +18,21 @@ using CSV
 const A = CSV
 const K = CSV
 
+# A non-seekable source that rejects unbounded reads and can return short reads.
+struct SourceReadIO <: IO
+    io::IOBuffer
+    requests::Vector{Int}
+    maxbytes::Int
+end
+SourceReadIO(data; maxbytes=typemax(Int)) = SourceReadIO(IOBuffer(data), Int[], maxbytes)
+Base.eof(io::SourceReadIO) = eof(io.io)
+Base.read(::SourceReadIO) = error("unbounded source read")
+function Base.read(io::SourceReadIO, nb::Integer)
+    nb <= 1 << 24 || error("source read exceeds 16 MiB")
+    push!(io.requests, nb)
+    return read(io.io, min(nb, io.maxbytes))
+end
+
 # Minimal ordered AbstractDict for precedence tests. Base.Dict iteration order
 # is not an API contract, while CSV's rule is explicitly first matching Regex.
 struct OrderedTestDict <: AbstractDict{Any, Any}
@@ -959,6 +974,37 @@ end
     @test ct.a == [1, 2] && String.(ct.b) == ["x", "y"]
     rt = Tables.rowtable(A.File(IOBuffer(input)))
     @test length(rt) == 2 && rt[1].a == 1
+end
+
+@testset "sources: bounded custom IO reads" begin
+    input = "a,b\n1,α\n2,hello\n"
+    for maxbytes in (3, typemax(Int))
+        io = SourceReadIO(input; maxbytes)
+        f = A.File(io; pool=false)
+        @test f.a == [1, 2]
+        @test String.(f.b) == ["α", "hello"]
+        @test eof(io)
+        @test isopen(io.io)
+        @test !isempty(io.requests)
+        @test all(nb -> 0 < nb <= 1 << 24, io.requests)
+        @test [r.a for r in A.Rows(SourceReadIO(input; maxbytes); types=Dict(:a => Int))] == [1, 2]
+        @test collect(A.lazy(SourceReadIO(input; maxbytes); types=Dict(:a => Int)).a) == [1, 2]
+        @test reduce(vcat, (c.a for c in A.Chunks(SourceReadIO(input; maxbytes); chunkbytes=8))) == [1, 2]
+        @test A.read(SourceReadIO(input; maxbytes), Tables.columntable).a == [1, 2]
+        gz = transcode(CodecZlib.GzipCompressor, Vector{UInt8}(codeunits(input)))
+        @test A.File(SourceReadIO(gz; maxbytes)).a == [1, 2]
+    end
+    emptyio = SourceReadIO(UInt8[])
+    @test isempty(A.resolvesource(emptyio))
+    @test isempty(emptyio.requests)
+    positioned = SourceReadIO("skip" * input; maxbytes=3)
+    read(positioned.io, 4)
+    @test A.resolvesource(positioned) == codeunits(input)
+    data = fill(UInt8('x'), (1 << 24) + 17)
+    bigio = SourceReadIO(data)
+    @test A.resolvesource(bigio) == data
+    @test maximum(bigio.requests) == 1 << 24
+    @test eof(bigio)
 end
 
 @testset "sources: path, IO, bytes, Cmd" begin
