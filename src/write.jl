@@ -211,12 +211,18 @@ function _room!(v::_WriteOutput, n::Int)
     return
 end
 
-# structural-byte scan for a byte range: any delimiter/quote/CR/LF? Eight
-# bytes per step (the marks can only be set when some byte matches, so the
+# Structural-byte scan: reuse the reader's vector masks for long strings,
+# then check eight bytes per step (the marks only appear on a match, so the
 # borrow-propagation false positives of `_eqmask8_c` cannot create a match).
 @inline function _needsquotebytes(o::WriteOpts, p::Ptr{UInt8}, n::Int)
     d, oq, cq = o.delim, o.oq, o.cq
     k = 0
+    while k + 64 <= n
+        m = threebyte_mask_vec(p + k, d, oq, cq) |
+            threebyte_mask_vec(p + k, UInt8('\n'), UInt8('\r'), UInt8('\r'))
+        m != zero(UInt64) && return true
+        k += 64
+    end
     while k + 8 <= n
         w = unsafe_load(Ptr{UInt64}(p + k))
         m = _eqmask8_c(w, d) | _eqmask8_c(w, oq) | _eqmask8_c(w, cq) |
@@ -285,56 +291,59 @@ _appendstring!(out::_WriteOutput, s::AbstractString, o::WriteOpts) =
 _appendscalar!(out::_WriteOutput, s::AbstractString, o::WriteOpts) =
     _appendbytes!(out, codeunits(s), o, false)
 
-# fast path for String / SubString{String}: pointer scan, one memcpy when no
-# quoting is needed (the overwhelmingly common case)
-function _appendstring!(out::_WriteOutput, s::Union{String, SubString{String}}, o::WriteOpts)
-    n = ncodeunits(s)
-    if o.quotestyle === :minimal && n > 0
-        GC.@preserve s begin
-            p = pointer(s)
-            if !_needsquotebytes(o, p, n) &&
-               unsafe_load(p) != UInt8(' ') && unsafe_load(p, n) != UInt8(' ')
-                len = length(out)
-                _room!(out, n)
-                GC.@preserve out unsafe_copyto!(pointer(out, len + 1), p, n)
-                return out
-            end
-        end
+# String and DataString already expose contiguous UTF-8 bytes. Scan and
+# escape those bytes directly, including quoted values, without calling
+# codeunit for every character of an inline DataString.
+function _appendstringbytes!(out::_WriteOutput, p::Ptr{UInt8}, n::Int, o::WriteOpts)
+    quote_it = o.quotestyle === :all || n == 0
+    if o.quotestyle === :none
+        n == 0 && throw(ArgumentError("quotestyle=:none cannot distinguish an empty string from missing"))
+        _needsquotebytes(o, p, n) && throw(ArgumentError(
+            "quotestyle=:none cannot write a value containing a structural byte: $(repr(unsafe_string(p, n)))"))
+        quote_it = false
+    elseif !quote_it
+        quote_it = unsafe_load(p) == UInt8(' ') || unsafe_load(p, n) == UInt8(' ') ||
+                   _needsquotebytes(o, p, n)
     end
-    return _appendbytes!(out, codeunits(s), o, true)
+    len = length(out)
+    if !quote_it
+        _room!(out, n)
+        GC.@preserve out unsafe_copyto!(pointer(out, len + 1), p, n)
+        return out
+    end
+    _room!(out, 2n + 2)
+    k = len
+    cq, e = o.cq, o.e
+    @inbounds begin
+        out[k += 1] = o.oq
+        for i in 1:n
+            b = unsafe_load(p, i)
+            (b == cq || (e != cq && b == e)) && (out[k += 1] = e)
+            out[k += 1] = b
+        end
+        out[k += 1] = cq
+    end
+    resize!(out, k)
+    return out
 end
 
-# DataString cells: a view payload has its bytes in the column buffer; an
-# inline payload (at most 12 bytes) is copied to a stack scratch first. Both
-# then take the same pointer scan and single memcpy as String.
+function _appendstring!(out::_WriteOutput, s::Union{String, SubString{String}}, o::WriteOpts)
+    GC.@preserve s return _appendstringbytes!(out, pointer(s), ncodeunits(s), o)
+end
+
+# Inline payloads already contain the UTF-8 bytes after the length word.
+# Put the two words on the stack rather than rebuilding them byte by byte.
+# htol also preserves the payload's byte order on big-endian hosts.
 function _appendstring!(out::_WriteOutput, s::DataString, o::WriteOpts)
     n = ncodeunits(s)
-    if o.quotestyle === :minimal && n > 0
-        if n > INLINE_MAX
-            GC.@preserve s begin
-                _appendscanned!(out, pointer(s.data, payloadpos(s.p)), n, o) && return out
-            end
-        else
-            scratch = Ref{NTuple{16, UInt8}}()
-            p = Ptr{UInt8}(Base.unsafe_convert(Ptr{NTuple{16, UInt8}}, scratch))
-            GC.@preserve scratch begin
-                @inbounds for i in 1:n
-                    unsafe_store!(p, codeunit(s, i), i)
-                end
-                _appendscanned!(out, p, n, o) && return out
-            end
-        end
+    if n > INLINE_MAX
+        GC.@preserve s return _appendstringbytes!(out, pointer(s.data, payloadpos(s.p)), n, o)
     end
-    return _appendbytes!(out, codeunits(s), o, true)
-end
-# the unquoted fast path shared by String and DataString: true when appended
-@inline function _appendscanned!(out::_WriteOutput, p::Ptr{UInt8}, n::Int, o::WriteOpts)
-    (!_needsquotebytes(o, p, n) && unsafe_load(p) != UInt8(' ') &&
-     unsafe_load(p, n) != UInt8(' ')) || return false
-    len = length(out)
-    _room!(out, n)
-    GC.@preserve out unsafe_copyto!(pointer(out, len + 1), p, n)
-    return true
+    scratch = Ref((htol(s.p.a), htol(s.p.b)))
+    GC.@preserve scratch begin
+        p = Ptr{UInt8}(Base.unsafe_convert(Ptr{NTuple{2, UInt64}}, scratch)) + 4
+        return _appendstringbytes!(out, p, n, o)
+    end
 end
 
 # --- integers: digits straight into the buffer ---------------------------------
@@ -417,6 +426,29 @@ end
     return out
 end
 
+const _WRITE_POW5 = ntuple(i -> UInt64(5)^i, 8)
+const _WRITE_COEFFLIMIT = ntuple(i -> UInt64(999_999_999_999_999) ÷ _WRITE_POW5[i], 8)
+
+# Small binary fractions have an exact short decimal: m / 2^k = m*5^k / 10^k.
+# With fewer than 10^15 coefficient units, removing a nonzero decimal digit
+# moves farther than a Float64 rounding interval. The exact coefficient is
+# therefore already shortest. Other values use Ryu's general reduction.
+@inline _writereduce(x) = Base.Ryu.reduce_shortest(x, nothing)
+@inline function _writereduce(x::Float64)
+    bits = reinterpret(UInt64, x)
+    m = (bits & 0x000fffffffffffff) | 0x0010000000000000
+    z = trailing_zeros(m)
+    e = Int((bits >> 52) & 0x7ff) - 1075 + z
+    if -8 <= e < 0
+        m >>= z
+        i = -e
+        @inbounds if m <= _WRITE_COEFFLIMIT[i]
+            return m * _WRITE_POW5[i], e
+        end
+    end
+    return Base.Ryu.reduce_shortest(x, nothing)
+end
+
 function _writeshortest_default(buf::_WriteOutput, pos::Int, x::T, decchar::UInt8) where {T <: Union{Float64, Float32, Float16}}
     @inbounds begin
         if x == 0
@@ -431,13 +463,15 @@ function _writeshortest_default(buf::_WriteOutput, pos::Int, x::T, decchar::UInt
             buf[pos] = UInt8('I'); buf[pos + 1] = UInt8('n'); buf[pos + 2] = UInt8('f')
             return pos + 3
         end
-        output, nexp = Base.Ryu.reduce_shortest(x, nothing)
+        output, nexp = _writereduce(x)
         signbit(x) && (buf[pos] = UInt8('-'); pos += 1)
         olength = Base.Ryu.decimallength(output)
         pt = nexp + olength
         maxpt = T == Float16 ? 3 : 6
-        expform = !(-4 < pt <= maxpt &&
-                    !(pt >= olength && abs(mod(x + 0.05, 10^(pt - olength)) - 0.05) > 0.05))
+        # This call never limits significant digits. When nexp >= 0 in
+        # this small fixed-notation range, x is an exactly represented
+        # integer. A floating remainder test cannot change the decision.
+        expform = !(-4 < pt <= maxpt)
         if !expform
             if pt <= 0
                 buf[pos] = UInt8('0'); pos += 1
@@ -558,7 +592,13 @@ function _appendtimestamp!(out::_WriteOutput, x::Timestamp)
     _appendyear!(out, y); push!(out, UInt8('-'))
     _append2!(out, m); push!(out, UInt8('-'))
     _append2!(out, d); push!(out, UInt8('T'))
-    ns = Dates.value(Time(x))                      # nanoseconds of the day
+    return _appendtime!(out, Time(x))
+end
+
+# Time columns used to allocate a temporary String for every value, then
+# stage and copy it again. Use the same ISO clock renderer as Timestamp.
+function _appendtime!(out::_WriteOutput, x::Time)
+    ns = Dates.value(x)                            # nanoseconds of the day
     h, rest = divrem(ns, 3_600_000_000_000)
     mi, rest = divrem(rest, 60_000_000_000)
     s, frac = divrem(rest, 1_000_000_000)
@@ -611,17 +651,19 @@ _stagecell!(st::ColStage, x, o::WriteOpts) = _appendcell!(st.bytes, x, o)
             _appendscalar!(out, s, o)
         end
     elseif x isa Dates.TimeType
-        if o.dateformat === nothing && x isa Union{Date, DateTime, Timestamp}
+        if o.dateformat === nothing && x isa Union{Date, DateTime, Timestamp, Time}
             if !any(_datesyntax, (o.delim, o.oq, o.cq))
                 x isa Date ? _appenddate!(out, x) :
-                x isa DateTime ? _appenddatetime!(out, x) : _appendtimestamp!(out, x)
+                x isa DateTime ? _appenddatetime!(out, x) :
+                x isa Time ? _appendtime!(out, x) : _appendtimestamp!(out, x)
             else
                 # a dialect whose delimiter or quote is date syntax: render
                 # with the same digits, then quote through the scalar path
                 # (never `string(x)`: Dates' printer is not trim-safe)
                 tmp = UInt8[]
                 x isa Date ? _appenddate!(tmp, x) :
-                x isa DateTime ? _appenddatetime!(tmp, x) : _appendtimestamp!(tmp, x)
+                x isa DateTime ? _appenddatetime!(tmp, x) :
+                x isa Time ? _appendtime!(tmp, x) : _appendtimestamp!(tmp, x)
                 _appendbytes!(out, tmp, o, false)
             end
         else
@@ -701,6 +743,17 @@ function _encodedbound(n::Int, cap::Int)
     return min(2n + 2, cap) # every source byte escaped, plus quote pair
 end
 
+# The payload carries the byte length, including the missing marker. Computing
+# a storage bound does not need to construct scalars or find their buffers.
+@noinline function _columncellbound(col::DataStringVector{T}, o::WriteOpts) where {T}
+    n = 0
+    @inbounds @simd for p in col.payloads
+        n = max(n, Int(payloadlen(p)))
+    end
+    bound = Missing <: T ? _encodedbound(length(o.missingstring), o.bufsize) : 0
+    return max(bound, _encodedbound(n, o.bufsize))
+end
+
 # `@noinline`: the typed prelude calls this once per column of a new schema;
 # inlining it there would re-generate its body per column.
 @noinline function _columncellbound(col::AbstractVector, o::WriteOpts)
@@ -764,6 +817,8 @@ struct _WriteColumn
     missingtimestamps::Vector{Union{Missing, Timestamp{Dates.Nanosecond}}}
     pooled::PooledVector{String, UInt32, Vector{UInt32}}                   # pool=true output
     missingpooled::PooledVector{Union{Missing, String}, UInt32, Vector{UInt32}}
+    times::Vector{Time}
+    missingtimes::Vector{Union{Missing, Time}}
     stage::ColStage
 end
 
@@ -786,6 +841,8 @@ const _EMPTY_WRITECOLUMNS = (
     Vector{Union{Missing, Timestamp{Dates.Nanosecond}}}(),
     PooledArray(String[]),
     PooledArray(Union{Missing, String}[]),
+    Vector{Time}(),
+    Vector{Union{Missing, Time}}(),
 )
 const _EMPTY_WRITESTAGE = ColStage()
 # These methods are generated once for a fixed set of column types, never
@@ -923,6 +980,10 @@ end
         @inbounds _appendcell!(out, col.pooled[r], o)
     elseif col.tag == 0x12
         @inbounds _appendcell!(out, col.missingpooled[r], o)
+    elseif col.tag == 0x13
+        @inbounds _appendcell!(out, col.times[r], o)
+    elseif col.tag == 0x14
+        @inbounds _appendcell!(out, col.missingtimes[r], o)
     else
         st = col.stage
         @inbounds s = k == 1 ? 1 : st.ends[k - 1] + 1
@@ -1009,7 +1070,8 @@ end
 const _WRITECOLUMN_FIELDS = (:ints, :floats, :strings, :missingints, :bools, :dates,
                              :datetimes, :missingfloats, :missingstrings, :missingbools,
                              :missingdates, :missingdatetimes, :datatext, :missingdatatext,
-                             :timestamps, :missingtimestamps, :pooled, :missingpooled)
+                             :timestamps, :missingtimestamps, :pooled, :missingpooled,
+                             :times, :missingtimes)
 let ex = :(_appendcell!(out, transform(j, orig[r]), o))
     # widened narrow-integer columns: the transform sees the original element
     # type through a typed branch rather than the dynamic fallback
