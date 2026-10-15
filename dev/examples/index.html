@@ -75,7 +75,7 @@ file = CSV.File(http_response.body)
 
 # or download with the Downloads stdlib and pass the temporary file path
 using Downloads
-file = CSV.File(Downloads.download(url))</code></pre><h2 id="zip_example"><a class="docs-heading-anchor" href="#zip_example">Reading from a zip file</a><a id="zip_example-1"></a><a class="docs-heading-anchor-permalink" href="#zip_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using ZipArchives, Mmap, CSV, DataFrames
+file = CSV.File(Downloads.download(url))</code></pre><h2 id="zip_example"><a class="docs-heading-anchor" href="#zip_example">Reading from a zip file</a><a id="zip_example-1"></a><a class="docs-heading-anchor-permalink" href="#zip_example" title="Permalink"></a></h2><pre><code class="language-julia hljs">using ZipArchives, CSV, DataFrames
 
 a = DataFrame(a = 1:3)
 CSV.write(&quot;a.csv&quot;, a)
@@ -87,12 +87,12 @@ ZipWriter(&quot;a.zip&quot;) do z
 end
 
 # read file from zip archive
-z = ZipReader(open(mmap, &quot;a.zip&quot;))
+z = ZipReader(read(&quot;a.zip&quot;))
 
 # identify the right file in zip
 a_copy = CSV.read(zip_readentry(z, &quot;a.csv&quot;), DataFrame)
 
-a == a_copy</code></pre><h2 id="second_row_header"><a class="docs-heading-anchor" href="#second_row_header">Column names on 2nd row</a><a id="second_row_header-1"></a><a class="docs-heading-anchor-permalink" href="#second_row_header" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
+a == a_copy</code></pre><p>This example buffers the compressed archive and the uncompressed CSV entry in memory. For archives too large to buffer, see ZipArchives&#39; <a href="https://github.com/JuliaIO/ZipArchives.jl/blob/v2.5.1/test/test_file-array.jl#L66">file-backed archive example</a>.</p><h2 id="second_row_header"><a class="docs-heading-anchor" href="#second_row_header">Column names on 2nd row</a><a id="second_row_header-1"></a><a class="docs-heading-anchor-permalink" href="#second_row_header" title="Permalink"></a></h2><pre><code class="language-julia hljs">using CSV
 
 data = &quot;&quot;&quot;
 descriptive row with information about the file that we&#39;d like to ignore
@@ -677,4 +677,4 @@ lazyfile = CSV.lazy(IOBuffer(&quot;id,value\n1,10.5\n2,20.0\n&quot;))
 first_id = String(lazyfile.id[1])
 eager = CSV.File(lazyfile; types=Dict(:value =&gt; Float64))
 
-(first_id, collect(eager.value))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(&quot;1&quot;, [10.5, 20.0])</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../writing/">« Writing</a><a class="docs-footer-nextpage" href="../reference/">API reference »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.19.0 on <span class="colophon-date" title="Wednesday 23 September 2026 01:32">Wednesday 23 September 2026</span>. Using Julia version 1.13.0.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+(first_id, collect(eager.value))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(&quot;1&quot;, [10.5, 20.0])</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../writing/">« Writing</a><a class="docs-footer-nextpage" href="../reference/">API reference »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.19.0 on <span class="colophon-date" title="Thursday 15 October 2026 17:45">Thursday 15 October 2026</span>. Using Julia version 1.13.2.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
