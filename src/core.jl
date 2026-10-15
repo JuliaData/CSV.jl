@@ -390,9 +390,12 @@ Base.@nospecializeinfer function makevalueopts(d::Dialect, @nospecialize(datefor
         dp, dtp, dtsp, tp, custom = _ISO_DATE_PATTERN, _ISO_DATETIME_PATTERN,
                                     _ISO_DATETIME_SPACE_PATTERN, _ISO_TIME_PATTERN, false
     else
-        fmt = dateformat isa DateFormat ? dateformat : DateFormat(_dateformatstring(dateformat))
-        p = Parsers.compilepattern(fmt)
-        kind = _dateformatkind(_dateformatstring(fmt))
+        # strings keep Parsers' grammar, where a letter that another package
+        # registers with Dates (TimeZones' `Z`) stays a literal; a DateFormat
+        # object compiles from its own tokens and locale
+        fmt = _dateformatstring(dateformat)
+        p = Parsers.compilepattern(dateformat isa DateFormat ? dateformat : fmt)
+        kind = _dateformatkind(fmt)
         kind != 0x00 ||
             throw(ArgumentError("dateformat must contain a date or time token"))
         dp = dtp = dtsp = tp = p

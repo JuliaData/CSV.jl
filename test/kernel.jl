@@ -924,6 +924,22 @@ end
         end
     end
     @test K._dateformatkind("yyyy-mm-dd\\n") == 0x01
+    # A DateFormat object keeps its locale.
+    months = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
+              "septembre", "octobre", "novembre", "décembre"]
+    french = Dates.DateLocale(months, first.(months, 4), ["lundi", "mardi", "mercredi",
+                              "jeudi", "vendredi", "samedi", "dimanche"], [""])
+    table = K.parse("d\n14 mars 2021\n"; dateformat=DateFormat("dd U yyyy", french))
+    @test only(table[:d]) == Date(2021, 3, 14)
+    # A format string keeps Parsers' grammar: a letter that another package
+    # registers with Dates (TimeZones registers `Z`) stays a literal.
+    Dates.CONVERSION_SPECIFIERS['Z'] = Any
+    try
+        table = K.parse("t\n2026-01-02T03:04:05Z\n"; dateformat="yyyy-mm-ddTHH:MM:SSZ")
+        @test only(table[:t]) == Timestamp(2026, 1, 2, 3, 4, 5)
+    finally
+        delete!(Dates.CONVERSION_SPECIFIERS, 'Z')
+    end
 end
 
 @testset "typed: missing values" begin
