@@ -599,13 +599,16 @@ using CSV
 # In many places in the world, floating point number decimals are separated with a comma instead of a period (`3,14` vs. `3.14`).
 # We can correctly parse these numbers by passing in the `decimal=','` keyword argument. If the file has no header or
 # delimiter detection is otherwise ambiguous, pass `delim=';'` explicitly so commas are treated only as decimal markers.
+# Such files often group thousands with a period (`1.234,01`); `groupmark='.'` reads those.
 data = """
 col1;col2;col3
-1,01;2,02;3,03
+1.234,01;2,02;3,03
 4,04;5,05;6,06
 """
 
-file = CSV.File(IOBuffer(data); delim=';', decimal=',')
+file = CSV.File(IOBuffer(data); delim=';', decimal=',', groupmark='.')
+@assert file.col1 == [1234.01, 4.04] # hide
+file
 ```
 
 ## [Thousands separator](@id thousands_example)
