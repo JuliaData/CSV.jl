@@ -18,8 +18,9 @@
 #   • problems are retained data; eager readers also warn once by default
 #     (`strict=true` maps to `on_error=:error`, `maxwarnings` to `maxproblems`)
 #   • empty unquoted cells are ALWAYS missing; `missingstring` ADDS spellings
-#   • `select`/`drop`/`types` take lists, names, regexes, or dictionaries
-#     (Tables.Scan is the expression channel)
+#   • `select`/`drop`/`types` take lists, names, regexes, or dictionaries;
+#     `select`/`drop` also take a `(i, name) -> Bool` function over header
+#     names (Tables.Scan is the expression channel)
 #   • `stringtype` defaults to DataString; `stringtype=String` materializes;
 #     InlineStrings are an extension
 #   • Bool defaults accept lower, title, and upper case; user lists replace them

@@ -3480,9 +3480,12 @@ function _selectpositions(select, drop, names::Vector{Symbol};
         throw(ArgumentError("select and drop are mutually exclusive"))
     spec = select === nothing ? drop : select
     spec === nothing && return collect(eachindex(names))
-    spec isa Base.Callable &&
-        throw(ArgumentError("function-typed select/drop is retired; pass a list, " *
-                            "a Regex, or use Tables.Scan for expressions"))
+    if spec isa Base.Callable
+        # a `(i, name) -> Bool` function sees header names only, so it becomes
+        # the Bool mask before any value is read
+        f = spec   # the comprehension captures a single-assignment name
+        spec = Bool[f(i, nm)::Bool for (i, nm) in enumerate(names)]
+    end
     if spec isa Regex
         re = spec   # the comprehension captures a single-assignment name
         matched = [nm for nm in names if occursin(re, String(nm))]
