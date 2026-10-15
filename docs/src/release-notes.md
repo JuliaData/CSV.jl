@@ -1,12 +1,19 @@
 # CSV.jl 1.2.0 release notes
 
-Released September 23, 2026. Requires Julia 1.10 or later.
+Released October 15, 2026. Requires Julia 1.10 or later.
 
 ## Changes
 
 - `select` and `drop` accept an `(i, name) -> Bool` function again, as in 0.10.
   It receives each column's position and name before any value is read. 1.0
   and 1.1 rejected it. `types` and `pool` still do not accept functions.
+
+## Fixes
+
+- Delimiter detection only elects a delimiter that splits the first row. A
+  single-column file of times or timestamps, such as `event time` over
+  `10:30:00` rows, is read as one column again instead of being split on `:`,
+  as in 0.10.
 
 # CSV.jl 1.1.0 release notes
 
