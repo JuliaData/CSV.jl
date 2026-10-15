@@ -211,23 +211,24 @@ end
     # Two rows establish consistency. Equal scores retain candidate order.
     @test detected(IOBuffer("x y:a:p,q:p,q:p,q\r\n\"p:q\":b:c:d:x y")) == UInt8(':')
     @test detected(IOBuffer("a,b;c\n1,2;3\n")) == UInt8(',')
-    # Header punctuation takes precedence over delimiters found only in data.
+    # Punctuation found only in data rows never elects a delimiter.
     @test detected(IOBuffer("header, text\n1:2\n3:4\n")) == UInt8(',')
-    @test detected(IOBuffer("header text\n1:2\n3:4\n")) == UInt8(':')
+    @test detected(IOBuffer("header text\n1:2\n3:4\n")) == UInt8(',')
     @test_throws ArgumentError A.File(IOBuffer("a b\n1  2\n"); ignorerepeated=true)
 end
 
 @testset "single-column punctuation does not elect a delimiter" begin
-    # Two colons over a header and one data row are divisible by the line
-    # count, but are not evidence of a colon-delimited table.
-    for (value, expected) in (("01:02:03", Time(1, 2, 3)),
+    # Colons inside values are not evidence of a colon-delimited table, whether
+    # their count divides the line count or the header contains a space.
+    for header in ("ts", "event time"),
+        (value, expected) in (("01:02:03", Time(1, 2, 3)),
                               ("2026-09-28T01:02:03", Timestamp{Nanosecond}("2026-09-28T01:02:03")),
                               ("2026-09-28T01:02:03.123456789", Timestamp{Nanosecond}("2026-09-28T01:02:03.123456789"))),
         n in (1, 2, 10), ending in ("\n", ""), fastindex in (false, true)
-        input = "ts\n" * join(fill(value, n), '\n') * ending
+        input = header * "\n" * join(fill(value, n), '\n') * ending
         f = A.File(IOBuffer(input); fastindex, on_error=:collect)
-        @test f.ts == fill(expected, n)
-        @test eltype(f.ts) === typeof(expected)
+        @test Tables.getcolumn(f, Symbol(header)) == fill(expected, n)
+        @test eltype(Tables.getcolumn(f, Symbol(header))) === typeof(expected)
         @test isempty(A.problems(f))
     end
     # Other punctuation in data must not override the comma default.
