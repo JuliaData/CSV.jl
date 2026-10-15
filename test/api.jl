@@ -210,10 +210,47 @@ end
     # Two rows establish consistency. Equal scores retain candidate order.
     @test detected(IOBuffer("x y:a:p,q:p,q:p,q\r\n\"p:q\":b:c:d:x y")) == UInt8(':')
     @test detected(IOBuffer("a,b;c\n1,2;3\n")) == UInt8(',')
-    # Header punctuation takes precedence over delimiters found only in data.
+    # Punctuation found only in data rows never elects a delimiter.
     @test detected(IOBuffer("header, text\n1:2\n3:4\n")) == UInt8(',')
-    @test detected(IOBuffer("header text\n1:2\n3:4\n")) == UInt8(':')
+    @test detected(IOBuffer("header text\n1:2\n3:4\n")) == UInt8(',')
     @test_throws ArgumentError A.File(IOBuffer("a b\n1  2\n"); ignorerepeated=true)
+end
+
+@testset "single-column punctuation does not elect a delimiter" begin
+    # Colons inside values are not evidence of a colon-delimited table, whether
+    # their count divides the line count or the header contains a space.
+    for header in ("ts", "event time"),
+        (value, expected) in (("01:02:03", Time(1, 2, 3)),
+                              ("2026-09-28T01:02:03", Timestamp{Nanosecond}("2026-09-28T01:02:03")),
+                              ("2026-09-28T01:02:03.123456789", Timestamp{Nanosecond}("2026-09-28T01:02:03.123456789"))),
+        n in (1, 2, 10), ending in ("\n", ""), fastindex in (false, true)
+        input = header * "\n" * join(fill(value, n), '\n') * ending
+        f = A.File(IOBuffer(input); fastindex, on_error=:collect)
+        @test Tables.getcolumn(f, Symbol(header)) == fill(expected, n)
+        @test eltype(Tables.getcolumn(f, Symbol(header))) === typeof(expected)
+        @test isempty(A.problems(f))
+    end
+    # Other punctuation in data must not override the comma default.
+    for c in ('\t', ' ', '|', ';', ':')
+        value = "a$(c)b$(c)c"
+        f = A.File(IOBuffer("value\n$value\n"); on_error=:collect)
+        @test f.value == [value]
+        @test isempty(A.problems(f))
+    end
+    input = "ts\n2026-09-28T01:02:03.123456789\n"
+    for reader in (A.Rows, A.lazy)
+        f = reader(IOBuffer(input); types=Timestamp{Nanosecond})
+        @test Tables.columntable(f).ts == [Timestamp{Nanosecond}("2026-09-28T01:02:03.123456789")]
+    end
+    f = only(A.Chunks(IOBuffer(input); on_error=:error))
+    @test f.ts == [Timestamp{Nanosecond}("2026-09-28T01:02:03.123456789")]
+    # Real colon delimiters still structure the first row, with or without a header.
+    f = A.File(IOBuffer("a:b:c\n1:2:3\n"); on_error=:error)
+    @test (f.a, f.b, f.c) == ([1], [2], [3])
+    for header in (false, [:a, :b, :c])
+        f = A.File(IOBuffer("1:2:3\n4:5:6\n"); header, on_error=:error)
+        @test Tuple(Tables.columntable(f)) == ([1, 4], [2, 5], [3, 6])
+    end
 end
 
 @testset "headers and source modes" begin

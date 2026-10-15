@@ -130,7 +130,7 @@ file = CSV.File(Downloads.download(url))
 ## [Reading from a zip file](@id zip_example)
 
 ```julia
-using ZipArchives, Mmap, CSV, DataFrames
+using ZipArchives, CSV, DataFrames
 
 a = DataFrame(a = 1:3)
 CSV.write("a.csv", a)
@@ -142,13 +142,17 @@ ZipWriter("a.zip") do z
 end
 
 # read file from zip archive
-z = ZipReader(open(mmap, "a.zip"))
+z = ZipReader(read("a.zip"))
 
 # identify the right file in zip
 a_copy = CSV.read(zip_readentry(z, "a.csv"), DataFrame)
 
 a == a_copy
 ```
+
+This example buffers the compressed archive and the uncompressed CSV entry in
+memory. For archives too large to buffer, see ZipArchives'
+[file-backed archive example](https://github.com/JuliaIO/ZipArchives.jl/blob/v2.5.1/test/test_file-array.jl#L66).
 
 ## [Column names on 2nd row](@id second_row_header)
 
@@ -562,6 +566,24 @@ code,date,stamp
 """
 
 file = CSV.File(IOBuffer(data); dateformat=Dict(:date => "yyyy/mm/dd", :stamp => "dd-mm-yyyy HH:MM"))
+```
+
+Numeric inference runs before custom date formats. When digits represent a
+date, request the date type with `types`:
+
+```@example ex-dateformat
+using Dates
+
+data = """
+code,date
+0,20190101
+1,20190102
+"""
+
+file = CSV.File(IOBuffer(data); dateformat="yyyymmdd", types=Dict(:date => Date))
+@assert eltype(file.date) === Date # hide
+@assert collect(file.date) == [Date(2019, 1, 1), Date(2019, 1, 2)] # hide
+collect(file.date)
 ```
 
 Without a `dateformat`, ISO dates, ISO date-times (with `T` or a space), and

@@ -231,8 +231,8 @@ end
 # ---------------------------------------------------------------------------
 # The structural index IS the detector: for each candidate delimiter, index a
 # bounded quote-aware sample and score how consistent the per-row field counts
-# are. Candidates represented in the first surviving row win before data-only
-# punctuation, which prevents Time values from making `:` look like a delimiter.
+# are. Only a candidate that splits the first surviving row can win, which
+# prevents Time values from making `:` look like a delimiter.
 # `DELIM_CANDIDATES` order breaks score ties.
 
 const DELIM_CANDIDATES = (',', '\t', ' ', '|', ';', ':')
@@ -294,7 +294,7 @@ function _detectdelim(sample::Vector{UInt8}, d::Dialect, fastindex::Bool)
     end
     scoresample = stop > length(sample) ? sample : sample[1:stop - 1]
     best, bestdelim = (false, false, 0.0, 0), first(DELIM_CANDIDATES)
-    headercandidate = false
+    headerdelims = Char[]   # candidates that split the first surviving row
     for c in DELIM_CANDIDATES
         consistency, fields, firstfields, nrows = _scoredelim(scoresample, c, datastart,
                                                               d, fastindex)
@@ -310,7 +310,7 @@ function _detectdelim(sample::Vector{UInt8}, d::Dialect, fastindex::Bool)
         # tier order: a candidate PRESENT IN THE HEADER outranks one that
         # only appears in the data ("A;B;C" over "1,1,10" rows keeps ';')
         inheader = firstfields > 1
-        headercandidate |= inheader
+        inheader && push!(headerdelims, c)
         score = represented && nrows >= 2 ?
                     (true, inheader, consistency, evidence ? fields : 0) :
                 evidence ?
@@ -324,8 +324,10 @@ function _detectdelim(sample::Vector{UInt8}, d::Dialect, fastindex::Bool)
     # remaining cases (delimiter only in the header, or the sample too short
     # for field-consistency evidence) follow the byte-count tiers below
     delim = (best[1] && best[2]) ? bestdelim :
-            _detectdelim_bytecounts(scoresample, datastart, d, bestdelim,
-                                    best[1] && headercandidate)
+            _detectdelim_bytecounts(scoresample, datastart, d, bestdelim, best[1])
+    # a delimiter missing from the first row would leave the header one column
+    # wide, so punctuation inside values (times, timestamps) cannot elect one
+    delim in headerdelims || (delim = ',')
     # Space-ALIGNED files: a run of blanks between fields is one
     # separator. Score the (' ', ignorerepeated=true) reading last, and elect it
     # only when it cannot change a file that detected before: the plain space
@@ -348,10 +350,10 @@ end
 
 # The byte-count detector: count candidate bytes outside quotes over the
 # header row and up to 10 data rows; tier 1 = present in header AND total count
-# divisible by nlines; tier 2 = divisible by nlines; tier 3 = most frequent in
-# the header, SPACE excluded; else ','. A one-row sample goes directly to tier
-# 3 so a header phrase cannot elect space. `fallback` is the consistency
-# scorer's data-only pick, used when it found real data evidence.
+# divisible by nlines; tier 2 = most frequent in the header, SPACE excluded;
+# else ','. A one-row sample goes directly to tier 2 so a header phrase cannot
+# elect space. `fallback` is the consistency scorer's data-only pick, used when
+# it found real data evidence.
 function _detectdelim_bytecounts(sample::Vector{UInt8}, datastart::Int, d::Dialect,
                                  fallback::Char, havedataevidence::Bool)
     oq, cq, eq = d.oq, d.cq, d.e
@@ -401,12 +403,8 @@ function _detectdelim_bytecounts(sample::Vector{UInt8}, datastart::Int, d::Diale
         h = hcounts[UInt8(c) + 1]; n = counts[UInt8(c) + 1]
         h > 0 && n > 0 && n % nlines == 0 && return c
     end
-    for c in cands   # tier 2
-        n = counts[UInt8(c) + 1]
-        n > 0 && n % nlines == 0 && return c
-    end
     bestc, bestn = ',', 0
-    for c in (',', '\t', '|', ';', ':')   # tier 3: header max, no space
+    for c in (',', '\t', '|', ';', ':')   # tier 2: header max, no space
         n = hcounts[UInt8(c) + 1]
         if n > bestn            # NOT `cond && (a, b = c, d)`: that parses as a tuple
             bestc, bestn = c, n

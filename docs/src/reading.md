@@ -165,6 +165,11 @@ replaces the defaults. Other value options include:
 - `stripwhitespace`; and
 - `typemap` to replace an inferred type.
 
+Numeric detection runs before custom date formats, so `20190101` infers as an
+integer even with `dateformat="yyyymmdd"`. Load `Dates` and pass
+`types=Dict(:date => Date)` to request date parsing for that column. See the
+[DateFormat example](@ref dateformat_example).
+
 Default date and time inference accepts the ISO forms `yyyy-mm-dd`,
 `yyyy-mm-ddTHH:MM:SS`, `yyyy-mm-dd HH:MM:SS`, and `HH:MM:SS`. The time forms
 accept fractional seconds. A date-time column infers as
