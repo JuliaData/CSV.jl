@@ -140,7 +140,7 @@ is reported as an `:unclosed_quote` problem.
 
 ## Missing values and value syntax
 
-An unquoted empty field is always `missing` in CSV.jl 1.0. `missingstring`
+An unquoted empty field is always `missing`. `missingstring`
 adds one sentinel or a vector of sentinels. It does not turn off the empty-field
 rule. The writer uses a quoted empty field for a present empty string.
 
@@ -242,7 +242,7 @@ types. `stringtype=InlineString` picks the smallest width per column up to
 A fixed type such as `String15` is an error when a value does not fit.
 InlineStrings 1.4.6 and 2 are supported.
 
-Pooling is independent of `stringtype`. `pool=false` is the 1.0 default. The
+Pooling is independent of `stringtype`. `pool=false` is the default. The
 accepted forms are:
 
 - `pool=true` to pool every text column;
@@ -441,7 +441,7 @@ them: `length(chunks)` is the batch count and costs no extra pass.
 
 ## Tables.Scan pushdown
 
-CSV.jl 1.0 accepts `scan=Tables.Scan(...)` (Tables.jl 1.14 or later).
+`CSV.File` accepts `scan=Tables.Scan(...)` (Tables.jl 1.14 or later).
 Projection, renaming, type overrides, filters,
 offsets, and limits are applied inside the parser. Unselected columns are not
 sampled or parsed. Rows rejected by the filter do not parse unrelated values.
