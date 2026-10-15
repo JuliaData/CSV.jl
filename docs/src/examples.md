@@ -566,6 +566,24 @@ code,date,stamp
 file = CSV.File(IOBuffer(data); dateformat=Dict(:date => "yyyy/mm/dd", :stamp => "dd-mm-yyyy HH:MM"))
 ```
 
+Numeric inference runs before custom date formats. When digits represent a
+date, request the date type with `types`:
+
+```@example ex-dateformat
+using Dates
+
+data = """
+code,date
+0,20190101
+1,20190102
+"""
+
+file = CSV.File(IOBuffer(data); dateformat="yyyymmdd", types=Dict(:date => Date))
+@assert eltype(file.date) === Date # hide
+@assert collect(file.date) == [Date(2019, 1, 1), Date(2019, 1, 2)] # hide
+collect(file.date)
+```
+
 Without a `dateformat`, ISO dates, ISO date-times (with `T` or a space), and
 times are detected. Date-times prefer `Durations.Timestamp{Dates.Nanosecond}`.
 Wider dates use `Timestamp{Microsecond}` if every value fits exactly; otherwise
