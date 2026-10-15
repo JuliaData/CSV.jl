@@ -44,7 +44,7 @@ and source-ordered diagnostics for multi-file and parallel changes.
 
 ## Release boundary
 
-The version is 1.0.0 for the release. Bump it only for a registered release.
+Bump the version only for a registered release.
 Before tagging, verify clean registry resolution, run all CI and downstream
 checks, and update migration and release notes. Preserve unrelated source
 checkouts.

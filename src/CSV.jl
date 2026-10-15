@@ -36,10 +36,67 @@ pooling is off, and recoverable parse problems are available through
 summary warning per read; `on_error=:collect` records problems silently;
 `on_error=:error` (or `strict=true`) throws a
 [`CSV.ParseError`](@ref CSV.ParseError) at the first problem.
-Reader keywords control the header and row window, dialect, missing
-values, types, selected columns, strings, pooling, validation, and task count.
-`ntasks=N` bounds parsing to at most `N` worker tasks, in transpose mode as
-well.
+
+# Keywords
+
+Header and rows:
+- `header=1`: the header row number, `false` for `Column1`, `Column2`, ...
+  names, a vector of names, or a vector of row numbers whose cells are joined.
+- `normalizenames=false`: turn names into valid Julia identifiers.
+- `skipto`: the first data row. `footerskip=0`: rows to omit at the end.
+  `limit`: the maximum number of data rows.
+
+Dialect:
+- `delim=nothing`: a `Char` or `String` delimiter. `nothing` detects one of
+  comma, tab, space, pipe, semicolon, or colon.
+- `quoted=true`, `quotechar='"'`, `openquotechar`, `closequotechar`, and
+  `escapechar` (the closing quote by default).
+- `comment`: skip rows that start with this string.
+- `ignoreemptyrows=true`; `ignorerepeated=false` treats a run of delimiters
+  as one.
+
+Values:
+- `missingstring`: a string or vector of strings that also read as `missing`.
+  An unquoted empty field is always `missing`.
+- `truestrings`, `falsestrings`: Bool spellings; a list replaces the defaults.
+- `dateformat`: a format string or `Dates.DateFormat`, or a per-column
+  dictionary of them.
+- `decimal='.'`, `groupmark` (digit grouping), and `stripwhitespace=false`.
+
+Types and columns:
+- `types`: one type, a vector with one type per column, or a dictionary keyed
+  by column index, name, or `Regex`.
+- `typemap`: a dictionary that replaces inferred types, such as
+  `Dict(Int64 => Float64)`.
+- `downcast=false`: narrow `Int64` columns to the smallest integer type that
+  holds their values.
+- `select`, `drop`: column indices, names, or a Bool mask; one name or index;
+  or a `Regex`.
+- `stringtype=DataStrings.DataString`: the type of inferred text.
+- `pool=false`: `true`, a ratio, `(ratio, maximum_levels)`, or per-column
+  policies.
+- `transpose=false`: read input rows as output columns.
+- `scan`: a `Tables.Scan` request for projection, filters, and row bounds.
+- `source`: with a vector of sources, add a column naming each row's source.
+
+Problems:
+- `on_error=:warn`: `:warn`, `:collect`, or `:error`. `strict=true` means
+  `:error`.
+- `maxproblems=10_000` (or `maxwarnings`): the number of problems retained.
+- `validate=true`: require `types`, `dateformat`, and `pool` dictionary keys
+  to match a column.
+
+Performance:
+- `ntasks`: the maximum number of parsing tasks. `parallel=false` uses one.
+- `chunkbytes`: the target size of a structural-index chunk.
+- `nsample`: rows sampled for type inference. `samplebytes=65536`: bytes
+  sampled for delimiter detection.
+- `fastindex=true`: the vector scanner; `false` uses the byte-at-a-time
+  scanner.
+- `buffer_in_memory=false`: copy a local file into memory instead of mapping
+  it. `prefetch=true`: touch a mapped file's pages on worker threads.
+
+See the [Reading data](@ref) guide for details.
 """ File
 @doc """
     CSV.lazy(source; keywords...) -> CSV.LazyFile
@@ -53,6 +110,10 @@ removes duplicates. A later `CSV.File(lazyfile)` retains those visible columns
 and can only project them further. Ordinary text cells are zero-copy views. A
 long cell whose absolute source offset cannot fit the compact view word copies
 only that cell into a bounded backing buffer.
+
+It takes the keywords of [`CSV.File`](@ref CSV.File) for one source, except
+`pool`, `typemap`, `downcast`, `transpose`, `scan`, `on_error`, `strict`,
+`maxproblems`, `ntasks`, and `nsample`.
 """ lazy
 @doc """
     CSV.LazyFile
@@ -79,7 +140,9 @@ become `missing` by default; `strict=true` or `on_error=:error` throws a
 [`CSV.ParseError`](@ref CSV.ParseError) when the cell is accessed. Rows do not
 retain parse diagnostics, so use [`CSV.File`](@ref CSV.File) when
 `CSV.problems` or a diagnostic cap is needed. `select` and `drop` (a list, one
-name, or a `Regex`) project columns in stable file order.
+name, or a `Regex`) project columns in stable file order. Other keywords are
+those of [`CSV.File`](@ref CSV.File) for one source, except `pool`, `typemap`,
+`downcast`, `transpose`, `scan`, `maxproblems`, `ntasks`, and `nsample`.
 """ Rows
 @doc """
     CSV.Chunks(source; ntasks=Threads.nthreads(), chunkbytes=nothing, keywords...)
@@ -96,8 +159,8 @@ One batch is one window of the source's data bytes. `chunkbytes` is the target
 size of that window and defaults to 64 MiB, or the whole source when it is
 smaller. A window ends at a row boundary, so a batch holds every row that starts
 within its bytes and one complete row can push it past `chunkbytes`. `ntasks`
-bounds the parallel work inside a window; it is not a batch count and no longer
-affects the batch size.
+bounds the parallel work inside a window; it is not a batch count and does not
+affect the batch size.
 
 Each window is indexed when its batch is produced and released with it, so a
 read holds one window's structural index rather than the whole source's. The
@@ -109,6 +172,10 @@ are dropped before any value is read. The pass starts over when a quote that did
 not start its field, or a timestamp that needs microseconds, invalidates what it
 settled. Its final run walks the windows iteration walks, so it also counts the
 batches and `length` is defined.
+
+Other keywords are those of [`CSV.File`](@ref CSV.File) for one source, except
+`typemap`, `downcast`, `transpose`, `scan`, `maxwarnings`, and `nsample`;
+`pool` takes one policy for every column.
 """ Chunks
 @doc """
     CSV.read(source, sink; keywords...)
