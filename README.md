@@ -32,7 +32,9 @@ CSV.write("output.csv", file)
 
 Use `CSV.read("input.csv", DataFrame)` after you load DataFrames.jl. Use
 `CSV.Rows` to process one row at a time, `CSV.Chunks` to process batches, or
-`CSV.lazy` to index a source before you choose which cells to parse.
+`CSV.lazy` to index a source before you choose which cells to parse. With
+DataDecimals.jl loaded, `types=Dict(:amount => DataDecimals.Decimal64{2})`
+reads a column as exact decimals; CSV.jl does not infer decimal types.
 
 ## Documentation
 
@@ -40,7 +42,7 @@ Use `CSV.read("input.csv", DataFrame)` after you load DataFrames.jl. Use
   the latest registered release.
 - [Development documentation](https://JuliaData.github.io/CSV.jl/latest)
   describes the `main` branch.
-- [1.0 release notes](docs/src/release-notes.md) summarize what changed.
+- [Release notes](docs/src/release-notes.md)
 
 ## Support
 
@@ -62,8 +64,3 @@ changes and own the final approval.
   `load` and `save` integration.
 - [DLMReader.jl](https://github.com/sl-solution/DLMReader.jl) reads delimited
   data and integrates with InMemoryDatasets.jl.
-
-CSV.jl uses shared string columns from DataStrings.jl. With
-DataDecimals.jl loaded, an explicitly requested decimal type such as
-`types=Dict(:amount => DataDecimals.Decimal64{2})` parses exactly; CSV does not
-infer decimal types, and fractional numbers infer as `Float64`.
