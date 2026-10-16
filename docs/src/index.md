@@ -2,8 +2,7 @@
 
 CSV.jl reads and writes comma-separated and other delimited text data. Its
 readers and writer implement the [Tables.jl](https://github.com/JuliaData/Tables.jl)
-interfaces, so CSV data can move between Julia table packages without a
-CSV-specific adapter.
+interfaces, so they work with any Julia table package.
 
 ## Installation
 
@@ -38,30 +37,27 @@ String(take!(output))
 
 ## Select a reader
 
-| API | Use it when | Materialization model |
-|:----|:------------|:----------------------|
-| `CSV.File` | You need a normal in-memory table | Index once, then parse columns |
-| `CSV.read` | You want to hand the parsed columns to a sink | Same parse as `CSV.File`; marks columns as safe to take |
-| `CSV.lazy` | You need a fast first look or sparse cell access | Index now; parse each accessed cell later |
-| `CSV.Rows` | You process rows once and do not need columns | Indexes the source; materializes cells on access |
-| `CSV.Chunks` | You process a large table in bounded batches | Indexes and parses one stable-schema batch at a time |
+| API | Use it when | What it does |
+|:----|:------------|:-------------|
+| `CSV.File` | You need a normal in-memory table | Parses every selected column |
+| `CSV.read` | You want the columns in another table type | Parses like `CSV.File`, then lets the sink take the columns without copying |
+| `CSV.lazy` | You need a fast first look or sparse cell access | Indexes the input; parses each cell when it is accessed |
+| `CSV.Rows` | You process rows once and do not need columns | Indexes the input; parses cells on access |
+| `CSV.Chunks` | You process a large table in batches | Parses one batch at a time; every batch has the same column types |
 
-`CSV.lazy`, `CSV.Rows`, and `CSV.Chunks` do not stream an unbounded input.
-They all retain the source bytes. `CSV.lazy` and `CSV.Rows` also retain a
-structural index of the whole row window; `CSV.Chunks` holds one batch's.
-See [Input and memory
-behavior](reading.md#Input-and-memory-behavior) for the exact source rules.
+`CSV.lazy`, `CSV.Rows`, and `CSV.Chunks` keep the whole input in memory (or
+memory-mapped) while you use them, so none of them streams an unbounded input.
+`CSV.lazy` and `CSV.Rows` also keep an index of every row; `CSV.Chunks` keeps
+one batch's. See [Input and memory
+behavior](reading.md#Input-and-memory-behavior) for details. Results do not
+depend on the number of threads.
 
 ## Data model
 
-CSV.jl builds one quote-aware structural index. It then parses each selected
-column with a type-specialized loop. Parallel execution does not change row
-order, `limit` results, or output bytes.
-
-Date-time columns prefer `Timestamp{Nanosecond}` from Durations.jl, which
-uses `Dates.Timestamp` when the standard library provides it. Wider dates use microseconds if all values
-fit exactly; otherwise the column stays text. Request `Dates.DateTime` with
-`types` when a consumer needs it.
+Date-time columns are `Timestamp{Nanosecond}` from Durations.jl (the
+`Dates.Timestamp` type where the standard library provides it). Wider dates
+use microseconds if all values fit exactly; otherwise the column stays text.
+Request `Dates.DateTime` with `types` when a consumer needs it.
 
 Text columns use `DataStrings.DataString` by default. Short values are stored in the
 value; longer values live in buffers the column owns, so an eager table never

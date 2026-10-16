@@ -39,17 +39,11 @@ from its magic bytes for every source type and is fully decompressed into
 memory before parsing. Other compression formats must be decompressed before
 they are passed to CSV.jl.
 
-`CSV.File`, `CSV.read`, and `CSV.Chunks` return columns that own their bytes:
-text longer than a `DataStrings.DataString` inline payload is copied into
-column-owned buffers during parsing, so a finished table never refers to the
-source. Finished worker tasks release their input references, so garbage
-collection can unmap the file. Rewriting the file afterwards cannot affect
-the table. One value retains at most the parse chunk's text buffer, and a
-`Vector{UInt8}` input is never aliased. A `CSV.Chunks` iterator retains its
-source for later batches, but only one batch's structural index; the returned
-batches own their bytes. `CSV.Rows` and `CSV.lazy`
-are the exceptions: their cells are views into the retained source, so keep
-the source unchanged while you use them, or convert values with `String`.
+Tables from `CSV.File` and `CSV.read`, and `CSV.Chunks` batches, own their
+text: they never refer to the source, so rewriting or deleting the file
+afterwards does not change them, and a `Vector{UInt8}` source is never
+aliased. `CSV.Rows` and `CSV.lazy` cells are views into the source; keep the
+source unchanged while you use them, or convert values with `String`.
 
 ### Gzipped text in other encodings
 
@@ -79,10 +73,8 @@ rm(dir; recursive=true) # hide
 String.(file.city)
 ```
 
-Use the file's actual encoding; it is not detected automatically. The decoder
-supplies UTF-8 bytes to CSV.jl. Closing it releases conversion resources and
-checks for an incomplete final character. CSV.jl still reads the converted
-input into memory; this is not a streaming table parser.
+CSV.jl does not detect encodings; name the file's actual encoding. Closing the
+decoder checks for an incomplete final character.
 
 ## Headers and row windows
 
@@ -97,9 +89,9 @@ Duplicate names are made unique. `normalizenames=true` converts names to valid
 Julia identifiers.
 
 Use `skipto` for the first data row, `footerskip` to omit rows at the end, and
-`limit` to cap the returned data rows. `limit` is exact at every thread count.
-Comment rows do not count toward `footerskip`. Empty rows and comment rows keep
-their physical positions for header and `skipto` handling.
+`limit` to cap the returned data rows. `header` and `skipto` count every
+physical row, including empty and comment rows. `footerskip` counts empty rows
+but not comment rows.
 
 ```@example reading-window
 using CSV
@@ -130,13 +122,10 @@ The main dialect options are:
 
 Input must be ASCII or UTF-8. Convert other encodings before parsing.
 
-A quote that does not start its field is content:
-`10,Pipe 3" long` and `1,x"y` are ordinary two-field rows. The parallel
-structural scan treats every quote as a field boundary; when it meets a quote
-that does not start its field, CSV.jl rebuilds the index with a serial pass
-that applies the field-start rule. Well-formed input never takes that path. A
-quote that does start a field and is never closed is still malformed input and
-is reported as an `:unclosed_quote` problem.
+A quote that does not start its field is content: `10,Pipe 3" long` and
+`1,x"y` are ordinary two-field rows. Such a quote makes CSV.jl index the input
+a second time with a slower scanner. A quote that starts a field and is never
+closed is reported as an `:unclosed_quote` problem.
 
 ## Missing values and value syntax
 
@@ -250,24 +239,19 @@ accepted forms are:
 - `(ratio, maximum_levels)` such as `pool=(0.2, 500)`; or
 - a dictionary or vector of per-column policies for `CSV.File`.
 
-The ratio-and-cap policy is available as `pool=(0.2, 500)`. Pooled output
-uses PooledArrays.jl. Pool levels own their strings even when
-`stringtype=DataStrings.DataString`.
+Only text columns are pooled, into PooledArrays.jl vectors.
 
-With `transpose=true`, input rows become output columns. `types`, per-output
-`dateformat` dictionaries, `stringtype`, and `pool` use those output column
-names. `select` and `drop` are not supported in transpose mode.
-Transpose mode indexes the input and parses its output columns in parallel,
-like the row-wise readers; `ntasks` and `parallel` apply to it as well.
+With `transpose=true`, input rows become output columns, and `types`,
+`dateformat`, and `pool` dictionaries use the output column names. `select`,
+`drop`, and `scan` are not supported with `transpose=true`.
 
 ## Parse problems
 
-Every eager reader keeps rows and records malformed quotes, invalid typed
-values, long rows, and other parse problems as `CSV.Problem` values. Inspect
-the retained items with `CSV.problems(file)`. Each item contains `row`, `col`,
-`pos`, `kind`, and `message` fields. The default `on_error=:warn` also prints
-one summary warning per read, so a problem is never silent; `on_error=:collect`
-records problems without the warning.
+`CSV.File` and `CSV.Chunks` batches record malformed quotes, invalid typed
+values, and short or long rows as `CSV.Problem` values instead of failing the
+read. `CSV.problems(file)` returns them; each has `row`, `col`, `pos`, `kind`,
+and `message` fields. The default `on_error=:warn` also prints one summary
+warning per read; `on_error=:collect` records problems without the warning.
 
 ```@example reading-problems
 using CSV
@@ -278,33 +262,28 @@ file = CSV.File(IOBuffer("count\n1\ninvalid\n"); types=Int, on_error=:collect)
 
 `maxproblems` caps retained diagnostics and defaults to 10,000.
 `CSV.Chunks` warns once, for its first batch with problems; every batch still
-carries its own `CSV.problems(batch)`. `on_error=:error`, or the compatibility
-shorthand `strict=true`, throws a `CSV.ParseError` at the first problem in
-source order;
-the exception carries that `problem`, the total `nproblems`, and the `source`
-label. `validate=false` ignores `types`, `dateformat`, and `pool` dictionary
-keys that do not match an input column; validation is on by default.
+carries its own `CSV.problems(batch)`. `on_error=:error` (or `strict=true`)
+throws a `CSV.ParseError` carrying the first problem in source order, the
+total `nproblems`, and the `source` label. `validate=false` ignores `types`,
+`dateformat`, and `pool` dictionary keys that do not match an input column;
+validation is on by default.
 
 ## Parallel parsing and sampling
 
-Parsing is parallel by default when Julia has multiple threads. Use
-`ntasks=1` or `parallel=false` for one task. `ntasks=N` bounds parsing to at
-most `N` worker tasks. A direct `CSV.File` targets about four structural
-chunks per task, each between 64 KiB and 1 MiB, unless `chunkbytes` is
-explicit. `CSV.File(lazyfile)`
-keeps the existing index geometry but applies the same worker bound.
-`chunkbytes` directly controls the target structural-index chunk size. Keep
-it at the default unless a measurement says otherwise: each parsing pass
-walks one chunk at a time, so a chunk that fits in cache keeps the value
-loops fast, and a `chunkbytes` of several MiB or more slows wide files with
-many columns.
+Parsing is parallel by default when Julia has multiple threads. `ntasks=N`
+uses at most `N` tasks; `ntasks=1` or `parallel=false` uses one. Results do not
+depend on the number of tasks.
 
-Type inference samples indexed rows. `nsample` controls its row sample and
-`samplebytes` controls the delimiter-detection sample. Parallel and
-single-task parses have the same row order and exact row limit.
-`fastindex=false` builds the structural index with the byte-at-a-time
-reference scanner instead of the 64-byte vector scanner. Use it to check
-that the two scanners produce the same result.
+The input is split into chunks of about `chunkbytes` bytes: by default about
+four per task, each between 64 KiB and 1 MiB. Keep the default unless a
+measurement says otherwise: a chunk that fits in cache keeps parsing fast, and
+chunks of several MiB slow down files with many columns. `CSV.File(lazyfile)`
+reuses the lazy file's chunks.
+
+Type inference starts from a sample of `nsample` rows and widens a column's
+type when a later value needs it. `samplebytes` sets how much input delimiter
+detection reads. `fastindex=false` indexes with a slower byte-at-a-time
+scanner, to check that it agrees with the default vector scanner.
 
 ## Multiple sources
 
@@ -319,10 +298,10 @@ file = CSV.File(sources; source=:origin => ["first", "second"], stringtype=Strin
 (collect(file.id), collect(file.value), collect(file.origin))
 ```
 
-The first source defines the output column set. Later sources match columns by
-name. A missing column is filled with `missing`; an extra column is ignored.
-Types promote across sources. Text columns concatenate as `DataString` columns
-that own their bytes, as in a single-source read.
+The first source defines the output columns. Later sources match columns by
+name: a missing column is filled with `missing`, and an extra column is
+ignored. Column types combine with `promote_type`, so `Int64` and `Float64`
+give `Float64`.
 
 `source=:origin` adds a pooled source-label column. Path sources use their
 paths. Other sources use deterministic labels such as `"<source 1>"`. Use
@@ -341,14 +320,10 @@ df = CSV.read("input.csv", DataFrame)
 
 ## Lazy indexed access
 
-`CSV.lazy` builds the structural index but does not eagerly type and parse all
-columns. Its `CSV.LazyFile` result supports `lazyfile.column`,
-`lazyfile[:column]`, `lazyfile[row, column]`, and the Tables.jl column
-interface.
-
-Ordinary lazy text cells are zero-copy views into the retained source. If a
-long cell starts beyond the compact view format's Int32 source-offset limit,
-CSV copies only that cell into a bounded backing buffer when it is accessed.
+`CSV.lazy` indexes the input but parses a cell only when it is accessed. Its
+`CSV.LazyFile` result supports `lazyfile.column`, `lazyfile[:column]`,
+`lazyfile[row, column]`, and the Tables.jl column interface. It does not infer
+types: a cell is text unless `types` names its column's type.
 
 ```@example reading-lazy
 using CSV
@@ -358,9 +333,9 @@ lazyfile = CSV.lazy(IOBuffer("id,price\n1,3.5\n2,4.0\n");
 (String(lazyfile.id[2]), lazyfile[1, :price])
 ```
 
-`CSV.File(lazyfile)` performs the full parse without repeating the structural
-scan. Row-position, dialect, and input-buffer options were fixed when the lazy
-file was created. Selection is sticky: an eager parse starts from the columns
+`CSV.File(lazyfile)` performs the full parse without indexing the input again.
+Row-position, dialect, and input-buffer options were fixed when the lazy file
+was created. Selection is sticky: an eager parse starts from the columns
 visible on the lazy file and can only select or drop further columns.
 
 ## Row iteration
@@ -377,10 +352,8 @@ rows = CSV.Rows(IOBuffer("id,value\n1,10\n2,20\n"); types=[Int, Int])
 [row[:value] for row in rows]
 ```
 
-`reusebuffer` is accepted but has no effect. The
-row view does not allocate a reusable per-row buffer. Because the structural
-index is complete before iteration, `length(rows)` and `names(rows)` are
-available, and consumers such as `Tables.columntable` can preallocate.
+`length(rows)` and `names(rows)` are known before iteration. `reusebuffer` is
+accepted and ignored.
 
 The row type carries the column names and types, so a loop over rows that a
 function receives as an argument reads `row.value` as a typed value with no
@@ -396,48 +369,28 @@ then costs a dynamic dispatch.
 
 An invalid or malformed cell becomes `missing` when it is accessed. Pass
 `strict=true` or `on_error=:error` to throw a `CSV.ParseError` at that access
-instead. `CSV.Rows` does not retain a problem log and does not accept
-`maxproblems` or `maxwarnings`. It rejects `on_error=:warn` because it cannot
-produce a read summary. Use `CSV.File` when you need `CSV.problems(file)`
-or a summary warning.
-List `select` and `drop` forms are supported and use the same stable file-order
-semantics as `CSV.File`.
+instead. `CSV.Rows` keeps no problem log, so it rejects `on_error=:warn`,
+`maxproblems`, and `maxwarnings`; use `CSV.File` for `CSV.problems`. `select`
+and `drop` work as in `CSV.File`.
 
 ## Batch iteration
 
-`CSV.Chunks` yields Tables.jl-compatible batches and implements
-`Tables.partitions`. It infers one schema for the full row window, so each
-batch has the same column types. Pooling is evaluated separately in each
-batch.
+`CSV.Chunks` yields batches, each a `CSV.File`, and implements
+`Tables.partitions`. Every batch has the same column types; pooling is decided
+per batch.
 
-One batch is one window of the source's data bytes. `chunkbytes` is the target
-size of that window and defaults to 64 MiB, or the whole source when it is
-smaller. A window ends at a row boundary, so a batch holds every row that starts
-within its bytes and one complete row can push it past `chunkbytes`. `ntasks`
-bounds the parallel work inside one window; it is not a batch count and does not
-affect the batch size. A `CSV.Chunks` pool policy must be one `Bool`, ratio, or
-`(ratio, maximum_levels)` value; per-column pool dictionaries and vectors are
-only supported by `CSV.File`.
-List `select` and `drop` forms project the same file-ordered column set in every
-batch.
+A batch covers about `chunkbytes` bytes of the input (64 MiB by default) and
+ends at a row boundary, so one long row can make it larger. `ntasks` sets the
+parallelism within a batch, not the number of batches. `pool` takes one policy
+for every column, and `select` and `drop` apply to every batch.
 
-Each window is indexed when its batch is produced and released with it, so the
-live structural index is one window's, not the whole source's. Only that index
-is bounded. The source bytes stay in memory for later batches: an `IO` input, a
-byte buffer, and `buffer_in_memory=true` still hold the whole input, and a large
-local file stays memory-mapped for the life of the iterator. `CSV.File`,
-`CSV.lazy` and `CSV.Rows` index the whole row window at once. Each returned
-batch owns its own bytes, so retaining batches retains their columns.
+Each batch is indexed when it is produced, and the index is released with it.
+The source stays in memory, or memory-mapped, until the iterator is released.
+Each batch owns its columns.
 
-The constructor validates every row it will yield, before the first batch, to
-settle one schema. Value validation excludes the rows after `limit`: the window
-that holds the limit is indexed to its end, and the rows past the limit are
-dropped before any value is read, so they cannot settle a type. The pass reads
-no later window. It starts over when a finding invalidates what it settled: a
-quote that did not start its field prepares the source again under the lenient
-rule, and a later timestamp that needs microseconds reseeds the column types.
-The final pass walks exactly the windows iteration walks, so it also counts
-them: `length(chunks)` is the batch count and costs no extra pass.
+To settle one schema, the constructor checks every value it will return before
+the first batch; rows after `limit` are not checked. `length(chunks)` is the
+number of batches.
 
 ## Tables.Scan pushdown
 
@@ -461,5 +414,5 @@ request = Tables.Scan(
 file = CSV.File("orders.csv"; scan=request)
 ```
 
-A scan owns selection, types, and row bounds. Do not combine `scan` with
-`select`, `drop`, `types`, or `limit`. Tables 1.14 is the minimum dependency.
+A scan owns selection, types, and row bounds, so `scan` cannot be combined
+with `select`, `drop`, `types`, or `limit`.

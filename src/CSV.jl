@@ -7,9 +7,8 @@ Reading — `CSV.File`, `CSV.read`, `CSV.lazy`, `CSV.Rows`, `CSV.Chunks`.
 Writing — `CSV.write`, `CSV.RowWriter`.
 Diagnostics — `CSV.problems`, `CSV.Problem`, `CSV.ParseError`.
 
-All public names live under the `CSV` namespace. Reading supports eager,
-lazy, row-wise, and chunked workflows. Parsing and writing are deterministic
-for any supported thread count.
+All public names live under the `CSV` namespace. Results do not depend on the
+number of threads.
 """
 module CSV
 
@@ -58,10 +57,10 @@ only that cell into a bounded backing buffer.
     CSV.LazyFile
 
 The indexed table that [`CSV.lazy`](@ref CSV.lazy) returns. It holds the
-source bytes and the structural index, and no parsed values. `names(lf)`,
-`size(lf)`, and `Tables.columnnames` come from the index. `lf.name` and
-`lf[:name]` return a column view whose cells parse when read; `lf.name[i]`
-parses one cell. Every cell is `DataString` or `missing` unless `types`
+source bytes and the index, and no parsed values. `names(lf)`, `size(lf)`, and
+`Tables.columnnames` come from the index. `lf.name` and `lf[:name]` return a
+column view whose cells parse when read; `lf.name[i]` parses one cell. A cell
+is text (`stringtype`, `DataString` by default) or `missing` unless `types`
 requested a type for its column. A view keeps the source alive, so a
 `LazyFile` is a way to look before parsing, not a way to hold a large file
 cheaply. [`CSV.File`](@ref CSV.File)`(lf)` runs the eager typed parse on the
@@ -70,11 +69,10 @@ existing index and keeps the columns `lf` selected.
 @doc """
     CSV.Rows(source; types=nothing, stringtype=DataStrings.DataString, keywords...)
 
-Iterate lightweight Tables.jl row views without allocating eager columns.
-Cells materialize on access. The source bytes and complete structural index
-remain in memory, so `length(rows)` and `names(rows)` are known before
-iteration. `reusebuffer` is accepted but is inert because the row view has
-no per-row value buffer. Invalid or malformed cells
+Iterate Tables.jl row views; each cell parses when it is accessed. The source
+and an index of every row stay in memory, so `length(rows)` and `names(rows)`
+are known before iteration. `reusebuffer` is accepted and ignored. Invalid or
+malformed cells
 become `missing` by default; `strict=true` or `on_error=:error` throws a
 [`CSV.ParseError`](@ref CSV.ParseError) when the cell is accessed. Rows do not
 retain parse diagnostics, so use [`CSV.File`](@ref CSV.File) when
@@ -84,11 +82,9 @@ name, or a `Regex`) project columns in stable file order.
 @doc """
     CSV.Chunks(source; ntasks=Threads.nthreads(), chunkbytes=nothing, keywords...)
 
-Iterate a source as stable-schema [`CSV.File`](@ref CSV.File) batches and
-provide the Tables.jl partitions interface. Every batch has the same column
-types, including one settled width for an auto-width string request such as
-`stringtype=InlineString`. Pooling is evaluated per batch. List `select`
-and `drop` forms project every batch in stable file order. With the default
+Iterate a source as [`CSV.File`](@ref CSV.File) batches that all have the
+same column types, and serve them through `Tables.partitions`. Pooling is
+decided per batch; `select` and `drop` apply to every batch. With the default
 `on_error=:warn`, the first batch with parse problems prints one summary
 warning; every batch keeps its own [`CSV.problems`](@ref CSV.problems).
 
@@ -114,44 +110,63 @@ batches and `length` is defined.
     CSV.read(source, sink; keywords...)
 
 Parse with the same options as [`CSV.File`](@ref CSV.File), then call the
-Tables.jl `sink`. The new columns are passed as `Tables.CopiedColumns`, so a
-sink that honors that marker can take ownership without another copy.
+Tables.jl `sink`, as in `CSV.read("data.csv", DataFrame)`. The new columns are
+passed as `Tables.CopiedColumns`, so a sink that honors that marker can take
+ownership without another copy.
 """ read
 @doc """
     CSV.problems(file) -> Vector{CSV.Problem}
 
-Return the retained parse problems for a `CSV.File`, in source order. The
-parser can retain at most `maxproblems` entries; the file display reports any
-additional dropped count. The default `on_error=:warn` also prints one summary
-warning per read; use `on_error=:collect` to record problems silently, or
-`strict=true` / `on_error=:error` to stop at the first parse problem with a
-[`CSV.ParseError`](@ref CSV.ParseError).
+Return the parse problems a `CSV.File` retained, in source order: at most
+`maxproblems` of them (10,000 by default). Showing the file reports how many
+were recorded in total. Pass `on_error=:collect` to a reader to record problems
+without the summary warning, or `on_error=:error` to throw a
+[`CSV.ParseError`](@ref CSV.ParseError) instead.
 """ problems
 @doc """
-    CSV.write(sink, table; keywords...)
+    CSV.write(sink, table; keywords...) -> sink
 
-Write any Tables.jl table as delimited text to a path or `IO`. The writer
-supports header control (`writeheader`, `header`), `append` mode, gzip
-(`compress`), partitioned sinks (`partition`), quote styles (`quotestyle`,
-`quotestrings`), dialect bytes (`delim` of any length, `quotechar`,
-`openquotechar`/`closequotechar`, `escapechar`, `newline`, `decimal`,
-`missingstring`, `bom`), number and date formats (`floatformat`,
-`dateformat`), cell transforms (`transform`), a rendered-row size bound
-(`bufsize`), task count (`ntasks`), and deterministic ordered output.
-Column-access tables can render row blocks in parallel. Row-access sources
-and [`CSV.Chunks`](@ref CSV.Chunks) stream without being collected. An `IO`
-sink is written at its current position and never rewound or truncated. A
-partitioned string base path returns the generated path vector; other forms
-return the supplied sink. `CSV.write(sink; keywords...)` returns a function
-of the table, for `table |> CSV.write(path)`.
+Write any Tables.jl `table` as delimited text to a path or `IO` and return
+`sink`. An `IO` is written at its current position. Column tables render in
+parallel; row tables and [`CSV.Chunks`](@ref CSV.Chunks) stream without being
+collected. The output is the same for every `ntasks` value.
+`CSV.write(sink; keywords...)` returns a function of the table, for
+`table |> CSV.write(path)`.
+
+# Keywords
+
+- `delim=','`: a character or a string such as `"::"`.
+- `quotechar='"'`, `openquotechar`, `closequotechar`, and `escapechar` (the
+  closing quote by default).
+- `quotestyle=:minimal`: quote text only when it needs quotes; `:all` quotes
+  all text, and `:none` throws for text that needs quotes. `quotestrings=true`
+  means `:all`.
+- `newline='\\n'`, `missingstring=""`, and `bom=false`.
+- `writeheader=true` (`false` when appending) and `header`, a vector of
+  replacement names.
+- `append=false`: append to a path instead of replacing it.
+- `compress=:auto`: gzip a path ending in `.gz`; `:gzip` or `:none` force it
+  on or off.
+- `floatformat`: a Printf format such as `"%.2f"`; `decimal='.'`.
+- `dateformat`: a Dates format for `Date`, `DateTime`, `Timestamp`, and `Time`
+  values.
+- `transform`: a `(col, val) -> val` function applied to each cell in
+  row-major order.
+- `partition=false`: write each of `Tables.partitions(table)` to its own sink,
+  from a vector of sinks or a base path that gets `_1`, `_2`, ... appended (the
+  generated paths are returned).
+- `ntasks=Threads.nthreads()`: the maximum number of tasks.
+- `bufsize=4 MiB`: the largest allowed row, in bytes.
+
+See the [Writing data](@ref) guide for details.
 """ write
 @doc """
     CSV.RowWriter(table; keywords...)
 
-Iterate complete CSV-formatted row strings. The header is first unless it is
-disabled. Rows render on demand with the same dialect and value formatting as
-[`CSV.write`](@ref CSV.write). With the same formatting options, joining the
-iterator gives the same uncompressed bytes as `CSV.write`.
+Iterate the rows of `table` as CSV-formatted strings, the header first unless
+`writeheader=false`. It takes the dialect and formatting keywords of
+[`CSV.write`](@ref CSV.write); joining its rows gives the text `CSV.write`
+writes with the same keywords.
 """ RowWriter
 # Julia 1.11 added `public`. Build the expression at runtime so Julia 1.10 can
 # still parse this file. The surface remains deliberately unexported: users
