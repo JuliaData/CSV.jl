@@ -1153,6 +1153,21 @@ end
     @test (daterow.d1, daterow.d2) == (Date(2023, 1, 15), Date(2023, 1, 16))
 end
 
+@testset "Rows retains empty rows in strict mode" begin
+    for newline in ("\n", "\r\n", "\r"), kw in ((; strict=true), (; on_error=:error))
+        src = join(("a,b", "1,2", "", "3,4", "", ""), newline)
+        for chunkbytes in (4, 1 << 20)
+            rows = A.Rows(IOBuffer(src); types=Int, ignoreemptyrows=false, chunkbytes, kw...)
+            @test isequal([r[2] for r in rows], [2, missing, 4, missing])
+        end
+        for short in ("1", "\"\"", " ")
+            row = first(A.Rows(IOBuffer("a,b\n$short\n");
+                               types=Int, ignoreemptyrows=false, kw...))
+            @test_throws A.ParseError row[2]
+        end
+    end
+end
+
 @testset "typed cells accept blanks in every reader" begin
     for (T, token, value) in ((Int64, "1", 1), (Float64, "1.5", 1.5),
                               (Date, "2024-01-02", Date(2024, 1, 2)),
