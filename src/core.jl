@@ -4666,18 +4666,24 @@ materialize(v::Vector) = v
 # A duplicate takes the smallest `name_k` not used by ANY
 # name — original or already assigned — so `a,a,a_1` becomes `a,a_2,a_1`
 # (renames never collide with an original that appears later).
+#
+# `taken` only grows, so every suffix below the last one assigned to a name is
+# still taken: the search resumes there, which keeps N copies of one name linear.
 function makeunique!(names::Vector{Symbol})
     taken = Set(names)
+    length(taken) == length(names) && return names
     seen = Set{Symbol}()
+    nextk = Dict{Symbol, Int}()
     for i in eachindex(names)
         nm = names[i]
         if nm in seen
-            k = 1
+            k = get(nextk, nm, 1)
             newnm = Symbol(nm, :_, k)
             while newnm in taken
                 k += 1
                 newnm = Symbol(nm, :_, k)
             end
+            nextk[nm] = k + 1
             push!(taken, newnm)
             names[i] = newnm
             push!(seen, newnm)
