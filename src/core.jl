@@ -4362,13 +4362,18 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
     end
     segs = Vector{Any}(undef, ncols)
     st = Vector{Type}(undef, ncols)
+    # One snapshot of every column's type and final per chunk. A column that
+    # another chunk promotes after the snapshot parses here under its old type
+    # and is re-parsed after the wave, exactly as when the promotion lands
+    # while this chunk is parsing it.
+    types, dests = lock(() -> (copy(promo), copy(finals)), promolock)
     for j in 1:ncols
         if selected !== nothing && !selected[j]
             segs[j] = nothing
             st[j] = Missing
             continue
         end
-        T, dest = lock(() -> (promo[j], finals[j]), promolock)
+        T, dest = types[j], dests[j]
         attempts = 0
         lo = rowbase + 1
         hi = rowbase + min(n, reportlimit)
