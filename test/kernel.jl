@@ -1623,6 +1623,16 @@ end
         @test sum(Base.summarysize, col.buffers) <=
               used + 4 * length(cells) + 64 * length(col.buffers)
     end
+    # Quoted 12-byte values and short escaped values fit inline although their
+    # spans are longer, so the reservation over-counts them; the column gives
+    # the unused part back instead of keeping it.
+    for short in ("\"555-123-4567\"", "\"a\"\"b\"\"c\"\"d\"\"e\"")
+        cells = [i % 500 == 1 ? "\"555-123-4567 ext 99\"" : short for i in 1:100_000]
+        col = K.parse("p\n" * join(cells, '\n') * "\n"; chunkbytes=1 << 20, parallel=false)[:p]
+        used = sum(length, col.buffers)
+        @test used == 200 * ncodeunits("555-123-4567 ext 99")
+        @test sum(Base.summarysize, col.buffers) <= used + 64 * length(col.buffers) + (1 << 16)
+    end
 end
 
 @testset "DataString: inline-else-view strings" begin

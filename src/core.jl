@@ -2830,7 +2830,7 @@ end
 # parses, an upper bound since content never exceeds its span. One reservation
 # replaces the buffer's growth by repeated reallocation, which dominates
 # parallel string parsing. The loop calls this at its first long cell, so a
-# column of inline-length cells pays nothing.
+# column of inline-length cells pays nothing. Returns the reserved capacity.
 @noinline function _reservelong!(col::StringColumn, ci::ChunkIndex, j::Int, lr0::Int,
                                  rowbase::Int, mask::Union{Nothing, Vector{Bool}},
                                  maskbase::Int, reportlimit::Int)
@@ -2846,8 +2846,9 @@ end
         sp === nothing && continue
         sp[2] > INLINE_MAX && (need += sp[2])
     end
-    sizehint!(col.extra, length(col.extra) + need)
-    return true
+    reserved = length(col.extra) + need
+    sizehint!(col.extra, reserved)
+    return reserved
 end
 
 # The string loop writes into a column that is PRIVATE to this call (a chunk
@@ -2859,7 +2860,7 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
                         mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
                         reportlimit::Int=typemax(Int))
     payloads = col.payloads
-    reserved = false
+    reserved = 0
     tape, rowfirst, rowstartrel, ext = ci.tape, ci.rowfirst, ci.rowstartrel, ci.ext
     start, skip, fdr, total = ci.start, ci.delimskip, ci.firstdatarow, totalrows(ci)
     @inbounds first = fdr <= total ? Int(rowfirst[fdr]) : 0
@@ -2886,8 +2887,8 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
             if len <= INLINE_MAX
                 payloads[out] = inline_payload(buf, pos, len)
             else
-                reserved = reserved || _reservelong!(col, ci, j, lr, rowbase, mask, maskbase,
-                                                     reportlimit)
+                reserved == 0 && (reserved = _reservelong!(col, ci, j, lr, rowbase, mask,
+                                                           maskbase, reportlimit))
                 _own!(col, buf, pos, len, out)
             end
             continue
@@ -2901,8 +2902,8 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
             # allocation-free; long ones unescape into the column's bytes
             inl = _unescape_inline(buf, cpos, clen, col.e, col.cq)
             if inl === nothing
-                reserved = reserved || _reservelong!(col, ci, j, lr, rowbase, mask, maskbase,
-                                                     reportlimit)
+                reserved == 0 && (reserved = _reservelong!(col, ci, j, lr, rowbase, mask,
+                                                           maskbase, reportlimit))
                 _ownescaped!(col, buf, cpos, clen, out)
             else
                 payloads[out] = inl
@@ -2910,11 +2911,16 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
         elseif clen <= INLINE_MAX
             payloads[out] = inline_payload(buf, cpos, clen)
         else
-            reserved = reserved || _reservelong!(col, ci, j, lr, rowbase, mask, maskbase,
-                                                 reportlimit)
+            reserved == 0 && (reserved = _reservelong!(col, ci, j, lr, rowbase, mask,
+                                                       maskbase, reportlimit))
             _own!(col, buf, cpos, clen, out)
         end
     end
+    # The reservation counts every long span, but a quoted or escaped value can
+    # still fit inline and a sentinel copies nothing. Give a large unused part
+    # back: the finished column keeps this buffer.
+    used = length(col.extra)
+    reserved - used > max(used >> 1, 1 << 16) && sizehint!(col.extra, used)
     return 0
 end
 
