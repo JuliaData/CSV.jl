@@ -1685,6 +1685,32 @@ end
     mappedpool = A.File(IOBuffer("a\n" * join((string(i % 3) for i in 1:300), '\n') * "\n");
                         typemap=IdDict(Int64 => String), pool=true)
     @test mappedpool.a isa PooledArrays.PooledArray{String}
+    # Sparse columns sampled as all-missing promote during the value wave, to
+    # a mapped type outside the promotion order. A chunk still parsing such a
+    # column as missing re-parses under the mapped type, so a parallel read
+    # matches the serial read and never turns the column into text.
+    sparse = let rng = Random.Xoshiro(42), io = IOBuffer()
+        println(io, join(("c$i" for i in 1:30), ','), ",t,u")
+        for r in 1:40_000
+            for _ in 1:30
+                print(io, rand(rng, 1:999), ',')
+            end
+            hit = r > 1 && r % 97 == 0
+            println(io, hit ? string(rand(rng, 1:999)) : "", ',',
+                    hit ? "2024-01-02T03:04:05" : "")
+        end
+        take!(io)
+    end
+    sparsetm = Dict(Int64 => Int32, Timestamp{Dates.Nanosecond} => DateTime)
+    serial = A.File(sparse; nsample=1, ntasks=1, typemap=sparsetm, chunkbytes=1 << 14)
+    @test eltype(serial.t) == Union{Int32, Missing}
+    @test eltype(serial.u) == Union{DateTime, Missing}
+    for _ in 1:8
+        par = A.File(sparse; nsample=1, ntasks=Threads.nthreads(), typemap=sparsetm,
+                     chunkbytes=1 << 14)
+        @test eltype(par.t) == eltype(serial.t) && isequal(par.t, serial.t)
+        @test eltype(par.u) == eltype(serial.u) && isequal(par.u, serial.u)
+    end
 
     # per-column dateformat
     input = "d1,d2\n03/04/2020,2020-01-02\n05/06/2021,2021-07-08\n"

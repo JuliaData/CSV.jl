@@ -2407,7 +2407,13 @@ function _normalizetypemap(typemap)
 end
 
 _maptype(tm, T) = tm === nothing || T === Missing ? T : get(tm, T, T)
-@inline function _promotemapped(tm, current::Type, detected::Type)
+# `parsed` is the type the chunk read the conflicting cell under. Another chunk
+# can promote the column while this one is still parsing it: that conflict says
+# nothing against the newer type, so the chunk re-parses under it. Joining the
+# stale detection with a mapped current type (a `typemap` target outside the
+# promotion order, such as Int32) would otherwise give String.
+@inline function _promotemapped(tm, current::Type, parsed::Type, detected::Type)
+    parsed === current || return current
     joined = promote_kernel(current, detected)
     # A mapped result is already the selected parse type. Do not map it again
     # when a later result keeps the same type.
@@ -4087,8 +4093,9 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ncols::Int,
             # single assignment: the lock closure captures it, and a captured
             # local that is reassigned is boxed (and shared across tasks)
             promoT = detected === T ? String : detected   # a conflicting value must move the type
+            parsedT = T
             T = lock(promolock) do
-                promo[j] = _promotemapped(tm, promo[j], promoT)
+                promo[j] = _promotemapped(tm, promo[j], parsedT, promoT)
             end
         end
     end
@@ -4400,8 +4407,9 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
             # single assignment: promoT is captured by the lock closure below,
             # and a captured-and-reassigned local boxes
             promoT = detected === T ? String : detected
+            parsedT = T
             T, dest = lock(promolock) do
-                joined = _promotemapped(tm, promo[j], promoT)
+                joined = _promotemapped(tm, promo[j], parsedT, promoT)
                 if joined !== promo[j]
                     promo[j] = joined
                     finals[j] = _allocdirect(joined, ndata, buf, opts, d, j,
