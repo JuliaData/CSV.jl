@@ -2407,7 +2407,13 @@ function _normalizetypemap(typemap)
 end
 
 _maptype(tm, T) = tm === nothing || T === Missing ? T : get(tm, T, T)
-@inline function _promotemapped(tm, current::Type, detected::Type)
+# `parsed` is the type the chunk read the conflicting cell under. Another chunk
+# can promote the column while this one is still parsing it: that conflict says
+# nothing against the newer type, so the chunk re-parses under it. Joining the
+# stale detection with a mapped current type (a `typemap` target outside the
+# promotion order, such as Int32) would otherwise give String.
+@inline function _promotemapped(tm, current::Type, parsed::Type, detected::Type)
+    parsed === current || return current
     joined = promote_kernel(current, detected)
     # A mapped result is already the selected parse type. Do not map it again
     # when a later result keeps the same type.
@@ -4087,8 +4093,9 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ncols::Int,
             # single assignment: the lock closure captures it, and a captured
             # local that is reassigned is boxed (and shared across tasks)
             promoT = detected === T ? String : detected   # a conflicting value must move the type
+            parsedT = T
             T = lock(promolock) do
-                promo[j] = _promotemapped(tm, promo[j], promoT)
+                promo[j] = _promotemapped(tm, promo[j], parsedT, promoT)
             end
         end
     end
@@ -4355,13 +4362,18 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
     end
     segs = Vector{Any}(undef, ncols)
     st = Vector{Type}(undef, ncols)
+    # One snapshot of every column's type and final per chunk. A column that
+    # another chunk promotes after the snapshot parses here under its old type
+    # and is re-parsed after the wave, exactly as when the promotion lands
+    # while this chunk is parsing it.
+    types, dests = lock(() -> (copy(promo), copy(finals)), promolock)
     for j in 1:ncols
         if selected !== nothing && !selected[j]
             segs[j] = nothing
             st[j] = Missing
             continue
         end
-        T, dest = lock(() -> (promo[j], finals[j]), promolock)
+        T, dest = types[j], dests[j]
         attempts = 0
         lo = rowbase + 1
         hi = rowbase + min(n, reportlimit)
@@ -4400,8 +4412,9 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
             # single assignment: promoT is captured by the lock closure below,
             # and a captured-and-reassigned local boxes
             promoT = detected === T ? String : detected
+            parsedT = T
             T, dest = lock(promolock) do
-                joined = _promotemapped(tm, promo[j], promoT)
+                joined = _promotemapped(tm, promo[j], parsedT, promoT)
                 if joined !== promo[j]
                     promo[j] = joined
                     finals[j] = _allocdirect(joined, ndata, buf, opts, d, j,

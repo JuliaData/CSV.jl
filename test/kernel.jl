@@ -1859,6 +1859,30 @@ end
     @test any(p -> p.kind == :unclosed_quote, K.problems(malformedseq))
 end
 
+@testset "promotions that land while another chunk parses" begin
+    # nsample=1 types every column from the first data row, so chunks promote
+    # columns while other chunks are parsing them. A chunk that read a column's
+    # type before such a promotion finishes under the old type and is re-parsed
+    # after the wave; parallel reads must equal the serial read.
+    rng = Random.Xoshiro(1221)
+    ncols = 40
+    cell(j) = rand(rng) < 0.003 * j ? string(rand(rng)) :
+              rand(rng) < 0.0005 ? "x" : rand(rng) < 0.02 ? "" : string(rand(rng, 1:9))
+    rows = [join((cell(j) for j in 1:ncols), ',') for _ in 1:4000]
+    names = ["c$j" for j in 1:ncols]
+    input = join(names, ',') * "\n" * join(rows, '\n') * "\n"
+    # a typemap target outside the promotion order must survive a stale chunk too
+    for tm in (nothing, Dict(Int64 => Int32))
+        ref = K.parse(input; nsample=1, chunkbytes=512, parallel=false, typemap=tm)
+        for _ in 1:4
+            t = K.parse(input; nsample=1, chunkbytes=512, parallel=true, typemap=tm)
+            @test all(nm -> eltype(t[Symbol(nm)]) == eltype(ref[Symbol(nm)]) &&
+                            isequal(collect(t[Symbol(nm)]), collect(ref[Symbol(nm)])), names)
+            @test K.problems(t) == K.problems(ref)
+        end
+    end
+end
+
 @testset "direct final slice coverage" begin
     quote_csv(s) = "\"" * replace(s, "\"" => "\"\"") * "\""
     nums = Union{Int64, Missing}[]
