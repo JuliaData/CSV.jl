@@ -741,6 +741,41 @@ end
 
 # ---------------------------------------------------------------------------
 
+@testset "quoted field content around the 64-byte check" begin
+    # A clean quoted field of up to 63 content bytes with 64 bytes of buffer
+    # after its start is decided by one vector compare; every other field takes
+    # the byte loop. Both must give the exact rule's answer.
+    q = UInt8('"')
+    function reference(buf, i, j)
+        k = i + 1
+        esc = false
+        while k <= j
+            if buf[k] == q
+                if k < j && buf[k + 1] == q
+                    esc = true
+                    k += 2
+                    continue
+                end
+                return (i + 1, j - i - 1, esc, k == j ? Parsers.RC_OK : Parsers.RC_INVALID)
+            end
+            k += 1
+        end
+        return (i + 1, j - i, esc, Parsers.RC_INVALID)
+    end
+    for n in (0, 1, 7, 8, 62, 63, 64, 65, 130), tail in (0, 1, 62, 63, 64, 65),
+        inner in (:none, :lone_first, :lone_last, :doubled_first, :doubled_last)
+        content = fill(UInt8('a'), n)
+        inner === :lone_first && n >= 1 && (content[1] = q)
+        inner === :lone_last && n >= 1 && (content[n] = q)
+        inner === :doubled_first && n >= 2 && (content[1:2] .= q)
+        inner === :doubled_last && n >= 2 && (content[n-1:n] .= q)
+        field = [q; content; q]
+        buf = [UInt8('x'); field; fill(UInt8('y'), tail)]
+        i, j = 2, 1 + length(field)
+        @test K.findcontent(buf, i, j, q, q, q) == reference(buf, i, j)
+    end
+end
+
 @testset "Parsers 3 integration" begin
     quotechar = UInt8('"')
     quoted = Vector{UInt8}(codeunits("\"a\"\"b\""))
