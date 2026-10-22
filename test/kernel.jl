@@ -1604,6 +1604,27 @@ end
 end
 
 
+@testset "DataString: owned bytes are reserved at their final size" begin
+    # Long plain, quoted, and quote-escaped cells across many chunks. Each
+    # chunk reserves its column bytes once from the cell spans, so a buffer
+    # holds at most the quote bytes of its cells beyond the bytes it uses.
+    # (Julia 1.10's summarysize ignores capacity, so the bound is vacuous there.)
+    cells = [isodd(i) ? "v" * "x"^(13 + i % 40) :
+             iszero(i % 4) ? "\"q," * "y"^(13 + i % 30) * "\"" :
+             "\"e\"\"" * "z"^(13 + i % 20) * "\"" for i in 1:6_000]
+    decoded = [isodd(i) ? c : iszero(i % 4) ? c[2:end-1] : replace(c[2:end-1], "\"\"" => "\"")
+               for (i, c) in enumerate(cells)]
+    input = "a\n" * join(cells, '\n') * "\n"
+    for parallel in (false, true)
+        col = K.parse(input; chunkbytes=1 << 13, parallel)[:a]
+        @test collect(col) == decoded
+        used = sum(length, col.buffers)
+        @test used == sum(ncodeunits, decoded)
+        @test sum(Base.summarysize, col.buffers) <=
+              used + 4 * length(cells) + 64 * length(col.buffers)
+    end
+end
+
 @testset "DataString: inline-else-view strings" begin
     # inline/view boundary: 12 bytes inline, 13 views the buffer
     t = K.parse("a\n" * "x"^12 * "\n" * "y"^13 * "\n")
