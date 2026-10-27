@@ -29,6 +29,8 @@ Released October 27, 2026. Requires Julia 1.10 or later.
   column's type under one lock.
 - Quoted fields are checked for inner quotes with one vector compare, so quoted
   files use about 10% less CPU.
+- Loading CSV no longer invalidates compiled Base code: a redundant `eltype`
+  method for `CSV.File` invalidated about 400 method instances.
 
 ## Documentation
 
