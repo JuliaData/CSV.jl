@@ -276,6 +276,17 @@ end
     @test_throws ArgumentError A.File(IOBuffer("a,b\nx,y\n1,2\n"); header=[3, 1])
 end
 
+@testset "duplicate column names" begin
+    @test Base.names(A.File(IOBuffer("a,a,a\n"))) == [:a, :a_1, :a_2]
+    @test Base.names(A.File(IOBuffer("a,a_1,a\n"))) == [:a, :a_1, :a_2]
+    @test Base.names(A.File(IOBuffer("a,a,a_1\n"))) == [:a, :a_2, :a_1]
+    # Each copy resumes the suffix search, so many copies of one name stay
+    # linear; a search that restarts at 1 for every copy allocates gigabytes.
+    n = 4_000
+    @test A.makeunique!(fill(:x, n)) == [:x; [Symbol(:x_, k) for k in 1:(n - 1)]]
+    @test (@allocated A.makeunique!(fill(:x, n))) < 100_000_000
+end
+
 @testset "row windowing and source modes (raw-row semantics)" begin
     sourceparity("a,b\n1,2\n3,4\n5,6\n"; kw=(; limit=2))
     sourceparity("a,b\n1,2\n3,4\n5,6\n"; kw=(; footerskip=2))
