@@ -70,7 +70,7 @@ Types and columns:
 - `downcast=false`: narrow `Int64` columns to the smallest integer type that
   holds their values.
 - `select`, `drop`: column indices, names, or a Bool mask; one name or index;
-  or a `Regex`.
+  a `Regex`; or an `(i, name) -> Bool` function.
 - `stringtype=DataStrings.DataString`: the type of inferred text.
 - `pool=false`: `true`, a ratio, `(ratio, maximum_levels)`, or per-column
   policies.
@@ -138,9 +138,10 @@ become `missing` by default; `strict=true` or `on_error=:error` throws a
 [`CSV.ParseError`](@ref CSV.ParseError) when the cell is accessed. Rows do not
 retain parse diagnostics, so use [`CSV.File`](@ref CSV.File) when
 `CSV.problems` or a diagnostic cap is needed. `select` and `drop` (a list, one
-name, or a `Regex`) project columns in stable file order. Other keywords are
-those of [`CSV.File`](@ref CSV.File) for one source, except `pool`, `typemap`,
-`downcast`, `transpose`, `scan`, `maxproblems`, `ntasks`, and `nsample`.
+name, a `Regex`, or an `(i, name) -> Bool` function) project columns in stable
+file order. Other keywords are those of [`CSV.File`](@ref CSV.File) for one
+source, except `pool`, `typemap`, `downcast`, `transpose`, `scan`,
+`maxproblems`, `ntasks`, and `nsample`.
 """ Rows
 @doc """
     CSV.Chunks(source; ntasks=Threads.nthreads(), chunkbytes=nothing, keywords...)

@@ -1,3 +1,44 @@
+# CSV.jl 1.2.0 release notes
+
+Released October 27, 2026. Requires Julia 1.10 or later.
+
+## Changes
+
+- `select` and `drop` accept an `(i, name) -> Bool` function again, as in 0.10.
+  It receives each column's position and name before any value is read. 1.0
+  and 1.1 rejected it. `types` and `pool` still do not accept functions.
+
+## Fixes
+
+- Delimiter detection only elects a delimiter that splits the first row. A
+  single-column file of times or timestamps, such as `event time` over
+  `10:30:00` rows, is read as one column again instead of being split on `:`,
+  as in 0.10.
+- A parallel read with a `typemap` whose target is outside the promotion order
+  (such as `Int64 => Int32` or `Timestamp{Nanosecond} => DateTime`) could read a
+  sparse column as text. It now gives the same type as a serial read.
+- A header with many copies of one name is no longer quadratic to read: 10,000
+  copies took 40 s and now take milliseconds.
+
+## Performance
+
+- Text columns reserve each chunk's string bytes once instead of growing their
+  buffers cell by cell: text-heavy files read up to twice as fast with several
+  tasks and use less memory.
+- Wide files read 20-25% faster with several tasks: each chunk reads every
+  column's type under one lock.
+- Quoted fields are checked for inner quotes with one vector compare, so quoted
+  files use about 10% less CPU.
+- Loading CSV no longer invalidates compiled Base code: a redundant `eltype`
+  method for `CSV.File` invalidated about 400 method instances.
+
+## Documentation
+
+- `?CSV.File` lists every reader keyword with its default, and `?CSV.write`
+  lists the writer keywords.
+- The migration guide's rows for date-times, empty fields, Booleans,
+  `footerskip`, and `maxwarnings` now match what 0.10 did.
+
 # CSV.jl 1.1.0 release notes
 
 Released September 21, 2026. Requires Julia 1.10 or later.

@@ -60,11 +60,12 @@ A removed keyword throws an `ArgumentError` that names its replacement.
 The `PosLenString` output type is retired. Use `DataStrings.DataString`, `String`,
 or an InlineStrings.jl type.
 
-`types`, `select`, `drop`, and `pool` no longer accept functions. Use type or
-policy values, vectors, or dictionaries. `select` and `drop` take a list, one
-name or index, or a `Regex`; they work on `CSV.File`, `CSV.lazy`, `CSV.Rows`,
-and `CSV.Chunks` and return a unique file-ordered column set. Use
-`Tables.Scan` for a serializable projection and filter expression.
+`types` and `pool` no longer accept functions. Use type or policy values,
+vectors, or dictionaries. `select` and `drop` take a list, one name or index, a
+`Regex`, or the 0.10 `(i, name) -> Bool` function; they work on `CSV.File`,
+`CSV.lazy`, `CSV.Rows`, and `CSV.Chunks` and return a unique file-ordered
+column set. Use `Tables.Scan` for a serializable projection and filter
+expression.
 
 ## Table access
 
