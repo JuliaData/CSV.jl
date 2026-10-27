@@ -50,7 +50,7 @@ sumx(rows) = (s = 0.0; for row in rows; s += row.x; end; s)
     @test length(rows) == 3
     @test names(rows) == [:id, :x, :y]
     @test @inferred(first(rows)) === ROW3(("a,\"q\"", 1.5, Int8(3)))
-    expected = ROW3[("a,\"q\"", 1.5, Int8(3)), ("b", -2000.0, missing), ("c", 7.0, Int8(-128))]
+    expected = ROW3.([("a,\"q\"", 1.5, Int8(3)), ("b", -2000.0, missing), ("c", 7.0, Int8(-128))])
     @test isequal(collect(rows), expected)
     @test isequal(collect(rows), expected)   # the index is retained: iterate again
     cols = Tables.columntable(rows)
@@ -106,7 +106,7 @@ end
     @test schemarows("id,x\nA,B\nq,1\n"; schema=Tables.Schema((:id_A, :x_B), (String, Int)),
                      header=[1, 2]) == [(id_A="q", x_B=1)]
     @test isequal(schemarows("a,1,2\nb,3,\n"; header=false),
-                  ROW3[("a", 1.0, Int8(2)), ("b", 3.0, missing)])
+                  ROW3.([("a", 1.0, Int8(2)), ("b", 3.0, missing)]))
     @test schemarows("a,1,2\n"; skipto=1) == [(id="a", x=1.0, y=Int8(2))]
     @test schemaproblem("a,1\n"; header=false) == (:short_row, 1, 0)
 end
@@ -166,7 +166,7 @@ end
     row(input; kw...) = only(schemarows(input; kw...))
     # a sniffed tab delimiter, a BOM, CRLF row endings, a quoted row ending
     @test isequal(schemarows("\ufeffid\tx\ty\r\n\"two\r\nlines\"\t0.25\t\r\n\"\"\"q\"\"\"\t-0.0\t127\r\n"),
-                  ROW3[("two\r\nlines", 0.25, missing), ("\"q\"", -0.0, Int8(127))])
+                  ROW3.([("two\r\nlines", 0.25, missing), ("\"q\"", -0.0, Int8(127))]))
     @test row("id;x;y\na;1,5;2\n"; delim=';', decimal=',') == (id="a", x=1.5, y=Int8(2))
     @test row("id,x,y\n\"1.234,5\",\"2.000,5\",1\n"; decimal=',', groupmark='.') ==
           (id="1.234,5", x=2000.5, y=Int8(1))
