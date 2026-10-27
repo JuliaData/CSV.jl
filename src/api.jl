@@ -2997,11 +2997,39 @@ end
 
 function _fillschemachunk!(columns::Tuple, ::Type{NT}, inner::_IndexedRows, ci::ChunkIndex,
                            rowbase::Int, n::Int) where {NT}
+    # This chunk's long text, so the File never views the source. One
+    # reservation replaces regrowing (and recopying) the buffer.
+    own = UInt8[]
+    reserved = _reserveschematext!(own, NT, ci, n)
     for i in 1:n
         row = _schemarow(NT, _IndexedRow(inner, ci, ci.firstdatarow + i - 1, rowbase + i))
-        _storeschemarow!(columns, row, rowbase + i)
+        _storeschemarow!(columns, row, rowbase + i, own)
     end
+    # Quoted or escaped values can need less than their spans; give a large
+    # unused part back, since the columns keep this buffer.
+    used = length(own)
+    reserved - used > max(used >> 1, 1 << 16) && sizehint!(own, used)
     return nothing
+end
+
+# Reserve the spans of the chunk's long DataString cells, an upper bound since
+# content never exceeds its span. Returns the reserved capacity.
+function _reserveschematext!(own::Vector{UInt8}, ::Type{NT}, ci::ChunkIndex,
+                             n::Int) where {NT}
+    need = 0
+    for j in _schematextcolumns(NT), lr in ci.firstdatarow:ci.firstdatarow + n - 1
+        sp = fieldspan(ci, lr, j)
+        sp !== nothing && sp[2] > INLINE_MAX && (need += sp[2])
+    end
+    sizehint!(own, need)
+    return need
+end
+
+# The indices of the schema's DataString columns, as a constant tuple.
+@generated function _schematextcolumns(::Type{NT}) where {NT <: NamedTuple}
+    js = Tuple(j for j in 1:fieldcount(NT)
+               if Base.nonmissingtype(fieldtype(NT, j)) === DataString)
+    return :($js)
 end
 
 # Column allocation, row stores, and the File's column vector, generated so that
@@ -3011,20 +3039,23 @@ end
     return :(($(vectors...),))
 end
 
-@generated function _storeschemarow!(columns::Tuple, row::NamedTuple, i::Int)
-    stores = [:(@inbounds columns[$j][i] = _ownschemavalue(getfield(row, $j)))
+@generated function _storeschemarow!(columns::Tuple, row::NamedTuple, i::Int,
+                                     own::Vector{UInt8})
+    stores = [:(@inbounds columns[$j][i] = _ownschemavalue(getfield(row, $j), own))
               for j in 1:fieldcount(row)]
     return Expr(:block, stores..., :(return nothing))
 end
 
-# Eager columns must not retain row views into caller-owned or mapped bytes.
-_ownschemavalue(value) = value
-function _ownschemavalue(value::DataString)
+# Eager columns must not retain row views into caller-owned or mapped bytes: a
+# long DataString moves into `own`, which its chunk's text values share.
+_ownschemavalue(value, ::Vector{UInt8}) = value
+function _ownschemavalue(value::DataString, own::Vector{UInt8})
     n = ncodeunits(value)
     n <= INLINE_MAX && return value
-    pos = payloadpos(value.p)
-    bytes = value.data[pos:pos + n - 1]
-    return _compactview(bytes, 1, n)
+    start = length(own) + 1
+    resize!(own, length(own) + n)
+    copyto!(own, start, value.data, payloadpos(value.p), n)
+    return _compactview(own, start, n)
 end
 
 @generated function _abstractcolumns(columns::Tuple)

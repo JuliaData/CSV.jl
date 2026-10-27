@@ -229,6 +229,8 @@ end
     file = CSV.File(bytes; schema, ignoreemptyrows=false)
     expected = Union{Missing, DataString}[text, "short", "escaped \"long text\" in a field", missing]
     @test file.s isa Vector{Union{Missing, DataString}}
+    # The chunk's long values share one owned buffer, not one buffer each.
+    @test file.s[1].data === file.s[3].data
     fill!(bytes, UInt8('x'))
     @test isequal(file.s, expected)
     mktemp() do path, io
