@@ -43,6 +43,7 @@ String(take!(output))
 | `CSV.read` | You want the columns in another table type | Parses like `CSV.File`, then lets the sink take the columns without copying |
 | `CSV.lazy` | You need a fast first look or sparse cell access | Indexes the input; parses each cell when it is accessed |
 | `CSV.Rows` | You process rows once and do not need columns | Indexes the input; parses cells on access |
+| `CSV.Rows(source; schema)` | You know the columns before reading, or compile with `juliac --trim` | Checks the input against a `Tables.Schema`; returns rows of the schema's types |
 | `CSV.Chunks` | You process a large table in batches | Parses one batch at a time; every batch has the same column types |
 
 `CSV.lazy`, `CSV.Rows`, and `CSV.Chunks` keep the whole input in memory (or

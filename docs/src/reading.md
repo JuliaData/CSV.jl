@@ -376,6 +376,105 @@ instead. `CSV.Rows` keeps no problem log, so it rejects `on_error=:warn`,
 `maxproblems`, and `maxwarnings`; use `CSV.File` for `CSV.problems`. `select`
 and `drop` work as in `CSV.File`.
 
+## Reading with a known schema
+
+When a program knows the columns before it reads, it can pass them as a
+`Tables.Schema`. `CSV.Rows(source; schema)` checks the source against the
+schema and iterates `NamedTuple` rows of exactly the schema's types:
+
+```@example reading-schema
+using CSV, Tables
+
+schema = Tables.Schema((:id, :x, :y), (String, Float64, Union{Missing, Int}))
+rows = CSV.Rows(IOBuffer("id,x,y\na,1.5,3\nb,2,\n"); schema)
+(eltype(rows), collect(rows))
+```
+
+`Tables.schema(rows)` returns `schema`, and `Tables.columntable(rows)` builds
+one vector per column: `Vector{String}`, `Vector{Float64}`, and
+`Vector{Union{Missing, Int}}` here.
+
+The read checks the source this way:
+
+- Header: the header must spell the schema's names in order, once each. A
+  missing, extra, renamed, reordered, or repeated column fails the read before
+  any row is returned. Names are compared after `normalizenames`. A repeated
+  name fails even when the schema uses the `x_1` name that `CSV.File` would
+  give it. With `header=false`, the schema names the columns.
+- Rows: each row parses when iteration reaches it, and must have exactly one
+  field per column. With `ignoreemptyrows=false`, an empty row has one empty
+  field.
+- Values: every field parses as its column type under the usual value options
+  (quotes and escapes, `decimal`, `groupmark`, `dateformat`, `truestrings`,
+  and so on). Nothing is inferred or converted: `1.5` is not an `Int`, `1` is
+  a valid `Float64`, and `1` is not a `Bool`. An integer outside its type's
+  range, such as `128` for `Int8`, fails. A float rounds to the nearest value
+  of its type, as `Base.parse` does, so `1e400` reads as `Inf`.
+- Missing values: an empty field or a `missingstring` spelling is `missing`,
+  and only a `Union{T, Missing}` column accepts it. A quoted empty field `""`
+  is an empty string in a text column and an invalid value in any other.
+
+The first problem throws a [`CSV.ParseError`](@ref CSV.ParseError). Its
+problem records the data row (0 for the header), the column (0 for a whole
+row), the byte position, and a kind: `:header_mismatch`, `:short_row`,
+`:long_row`, `:invalid_value`, `:missing_value`, `:invalid_quoted_field`, or
+`:unclosed_quote`. Iteration has already returned the rows before an invalid
+row. Rows past `limit` are not read.
+
+A column type is a concrete type that `types` accepts, alone or in a `Union`
+with `Missing`: integers, floats, `Bool`, `Char`, `Date`, `DateTime`, `Time`,
+`Timestamp`, `String`, `DataStrings.DataString`, `Symbol`, and extension types
+such as DataDecimals decimals. The schema must carry its names and types as
+type parameters, as `Tables.Schema(names, types)` does for up to 65,535
+columns. `types`, `stringtype`, `select`, and `drop` do not apply, and
+`on_error` and `strict` only accept the strict behavior. The other `CSV.Rows`
+keywords work as usual.
+
+### Compiling a reader with `juliac --trim`
+
+No type in a schema read depends on the file, so a program compiled with
+`juliac --trim=safe` can use it. Make each schema a constant. A program can
+hold several schemas, for example for files with different numbers of numeric
+columns, and choose one at run time:
+
+```julia
+using CSV, Tables
+
+const POINTS = Tables.Schema((:id, :x, :y), (String, Float64, Float64))
+const SAMPLES = Tables.Schema((:id, :a, :b, :c, :d),
+                              (Int, Float64, Float64, Float64, Union{Missing, Float64}))
+
+function (@main)(args::Vector{String})::Cint
+    total = 0.0
+    try
+        if args[1] == "points"
+            for row in CSV.Rows(args[2]; schema=POINTS)
+                total += row.x * row.y
+            end
+        else
+            columns = Tables.columntable(CSV.Rows(args[2]; schema=SAMPLES))
+            total = sum(columns.a)
+        end
+    catch err
+        err isa CSV.ParseError || rethrow()
+        Core.println(err.problem.message)
+        return 1
+    end
+    Core.println(string(total))
+    return 0
+end
+```
+
+```bash
+juliac --output-exe reader --project=. --experimental --trim=safe reader.jl
+```
+
+In a trimmed program, the source must be a local path, an `IO`, or bytes; a
+schema read rejects a URL instead of downloading it. A custom `dateformat`
+needs Parsers.jl's format compiler, which `--trim` cannot compile yet: read
+ISO dates and times, or read the field as text. `Tables.columntable` compiles
+for schemas of up to 100 columns; iterate the rows of a wider schema.
+
 ## Batch iteration
 
 `CSV.Chunks` yields batches, each a `CSV.File`, and implements

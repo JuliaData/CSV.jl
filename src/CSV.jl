@@ -129,6 +129,7 @@ existing index and keeps the columns `lf` selected.
 """ LazyFile
 @doc """
     CSV.Rows(source; types=nothing, stringtype=DataStrings.DataString, keywords...)
+    CSV.Rows(source; schema::Tables.Schema, keywords...)
 
 Iterate Tables.jl row views; each cell parses when it is accessed. The source
 and an index of every row stay in memory, so `length(rows)` and `names(rows)`
@@ -142,6 +143,20 @@ name, a `Regex`, or an `(i, name) -> Bool` function) project columns in stable
 file order. Other keywords are those of [`CSV.File`](@ref CSV.File) for one
 source, except `pool`, `typemap`, `downcast`, `transpose`, `scan`,
 `maxproblems`, `ntasks`, and `nsample`.
+
+With a `schema` that names every column and its type, such as
+`Tables.Schema((:id, :x), (String, Float64))`, the rows are `NamedTuple`s of
+exactly those types, and `Tables.schema(rows)` is `schema`: no type comes from
+the file, so a program compiled with `juliac --trim` can read them. The header
+must spell the schema's names in order, once each (`header=false` reads a
+source without a header row). Each row parses when iteration reaches it: it
+must have one field per column, and every field must parse as its column type,
+with no inference or conversion. An empty field or a `missingstring` spelling
+needs a `Union{T, Missing}` column. Any mismatch throws a `CSV.ParseError`.
+The source is a local path, an `IO`, or bytes; a URL is not downloaded.
+`types`, `stringtype`, `select`, and `drop` do not apply, and `on_error` and
+`strict` can only request this strict behavior. See the
+[Reading with a known schema](@ref) guide.
 """ Rows
 @doc """
     CSV.Chunks(source; ntasks=Threads.nthreads(), chunkbytes=nothing, keywords...)

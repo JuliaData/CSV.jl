@@ -35,7 +35,15 @@ julia --project=test --check-bounds=yes -t4 test/runtests.jl
 julia --project=test test/quality.jl
 julia --project=docs test/dependencies.jl
 julia --project=docs docs/make.jl
+julia --project=test/trim test/dependencies.jl
+julia --project=test/trim test/trim/runtests.jl
 ```
+
+The last command compiles `test/trim/workload.jl` with `juliac --trim=safe`
+(Julia 1.12 or later) and runs schema reads and the writer in the binary.
+Schema reads reach the shared source, preparation, and index code, so keep
+those calls statically resolvable: no untyped keyword containers, `@sync`,
+or downloads on that path.
 
 Test Julia 1.10 and current Julia. Keep fuzz inputs deterministic. For hot-path
 changes, compare time and allocations with the previous commit on fresh seeded

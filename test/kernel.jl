@@ -2071,6 +2071,23 @@ end
     @test all(==(1), seen)
     @test peak[] <= 2
 
+    # A failing item fails the call once every worker has stopped, with each
+    # failed worker reported, as `@sync` reports them.
+    done = zeros(Int, 16)
+    failure = try
+        K._taskforeach(eachindex(done), 2) do i
+            i == 3 && error("item 3")
+            done[i] += 1
+        end
+        nothing
+    catch err
+        err
+    end
+    @test failure isa CompositeException
+    @test length(failure.exceptions) == 1
+    @test K._unwrapfailure(failure) == ErrorException("item 3")
+    @test count(==(1), done) == 15
+
     # Exercise the complete index path with many small byte ranges. The
     # observer counts live index workers. A short wait lets all allowed workers
     # start before any one worker can finish.

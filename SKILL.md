@@ -17,7 +17,9 @@ CSV.write("output.csv", file)
 
 Use `CSV.read(source, sink)` for a Tables.jl sink, `CSV.Rows` for row access,
 `CSV.Chunks` for stable-schema batches, and `CSV.lazy` when values should parse
-only on access. Call `CSV.problems(file)` after a recovering read, pass
+only on access. `CSV.Rows(source; schema=Tables.Schema(names, types))` checks
+the source against a known schema and returns rows of exactly those types; it
+also works in programs compiled with `juliac --trim`. Call `CSV.problems(file)` after a recovering read, pass
 `on_error=:warn` for one summary warning, or `on_error=:error` for fail-fast
 behavior (`CSV.ParseError`).
 
