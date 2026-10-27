@@ -2268,7 +2268,6 @@ end
 Base.getproperty(f::File, nm::Symbol) = _fileproperty(f, nm)
 
 Base.length(f::File) = getfield(f, :table).nrows
-Base.eltype(::Type{File}) = FileRow
 Base.IndexStyle(::Type{File}) = IndexLinear()
 Base.size(f::File) = (length(f),)
 _filerow(f::File, i::Int) = FileRow(names(getfield(f, :table)),
