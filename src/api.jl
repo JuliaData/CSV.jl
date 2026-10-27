@@ -1071,8 +1071,9 @@ Base.@nospecializeinfer function _prepare(buf::Vector{UInt8},
     normalizenames && (names = [normalizename(String(nm)) for nm in names])
     headernames = headerrow == 0 ? nothing : names
     allunique(names) || (names = makeunique!(copy(names)))
-    # Headerless schema reads resolve per-column formats against the schema.
-    headernames === nothing && schemanames !== nothing && (names = schemanames)
+    # Schema reads resolve per-column formats against the schema's names;
+    # `_checkschemaheader` then reports a header that differs from them.
+    schemanames === nothing || (names = schemanames)
 
     skipto === nothing || skipto > rawheaderrow ||
         throw(ArgumentError("skipto=$skipto must be past the header (row $rawheaderrow)"))

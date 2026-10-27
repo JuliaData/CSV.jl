@@ -199,7 +199,7 @@ end
     @test only(schemarows("s,d,y\n$long,$long,$long\n"; schema=s)).d == long
 end
 
-@testset "headerless formats use schema names" begin
+@testset "per-column formats use schema names" begin
     schema = Tables.Schema((:date, :value), (Date, Int))
     for reader in (CSV.Rows, CSV.File),
         kw in ((; header=false), (; header=0), (; header=Int[]), (; skipto=1)),
@@ -211,6 +211,17 @@ end
                                        header=false, dateformat=Dict(:unknown => "yyyy/mm/dd"))
     @test isempty(CSV.File(IOBuffer(""); schema, header=false,
                            dateformat=Dict(:date => "yyyy/mm/dd")))
+    # A header that differs from the schema is the reported problem, not the
+    # format key the header lacks.
+    for reader in (CSV.Rows, CSV.File)
+        err = try
+            reader(IOBuffer("day,value\n2026/10/27,2\n"); schema,
+                   dateformat=Dict(:date => "yyyy/mm/dd"))
+        catch err
+            err
+        end
+        @test err isa CSV.ParseError && err.problem.kind == :header_mismatch
+    end
     # Both header-prefix and data-range quote retries keep the schema's names.
     schema = Tables.Schema((:date, :value), (Date, String))
     for input in ("2026/10/27,bare\"quote\n", "2026/10/27,plain\n2026/10/27,bare\"quote\n"),

@@ -10,8 +10,8 @@ Unreleased. Requires Julia 1.10 or later.
 - `CSV.File(source; schema)` performs the same checks before returning one
   `Vector{T}` per column. Its text columns own their bytes, including requested
   `DataStrings.DataString` values. `CSV.read` passes these columns to a sink.
-- The dialect and row-window options still apply. With `header=false`,
-  per-column date formats use the schema's names.
+- The dialect and row-window options still apply. Per-column date formats
+  name the schema's columns, with or without a header row.
 - Schema reads compile with `juliac --trim=safe`. Sources are local paths,
   `IO`, or bytes; URLs are rejected. Custom date formats cannot yet be trimmed.
   Julia 1.12 trimmed programs need one thread or
