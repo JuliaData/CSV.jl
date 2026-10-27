@@ -199,7 +199,10 @@ function resolvesource(f::LocalFile; buffer_in_memory::Bool=false, prefetch::Boo
     isfile(s) || throw(ArgumentError("no file at $(repr(String(s))) — a String " *
                                      "source is a file path (or an http(s):// URL); " *
                                      "wrap literal data in IOBuffer"))
-    return open(s, "r") do io
+    # Not `open(f, s, "r")`: on Julia 1.12 its argument splat is a dynamic call
+    # that `juliac --trim` rejects.
+    io = open(s, "r")
+    try
         isfile(io) || throw(ArgumentError("no regular file at $(repr(String(s)))"))
         sz = filesize(io)
         if sz >= 2
@@ -219,6 +222,8 @@ function resolvesource(f::LocalFile; buffer_in_memory::Bool=false, prefetch::Boo
         @static Sys.isunix() && Mmap.madvise!(m, Mmap.MADV_WILLNEED)
         prefetch && Threads.nthreads() > 1 && _prefetch!(m, workers)
         return m
+    finally
+        close(io)
     end
 end
 

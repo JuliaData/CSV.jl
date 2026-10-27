@@ -473,7 +473,10 @@ In a trimmed program, the source must be a local path, an `IO`, or bytes; a
 schema read rejects a URL instead of downloading it. A custom `dateformat`
 needs Parsers.jl's format compiler, which `--trim` cannot compile yet: read
 ISO dates and times, or read the field as text. `Tables.columntable` compiles
-for schemas of up to 100 columns; iterate the rows of a wider schema.
+for schemas of up to 100 columns; iterate the rows of a wider schema. Julia
+1.12 does not compile the tasks that a multithreaded read starts, so on 1.12
+run the program with one thread (the default for an executable) or pass
+`parallel=false, prefetch=false`; Julia 1.13 runs them.
 
 ## Batch iteration
 
