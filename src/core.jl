@@ -526,6 +526,14 @@ function findcontent(buf::Vector{UInt8}, i::Int, j::Int,
     k = i + 1
     escaped = false
     if escape == closequote
+        # The common quoted field ends with its close quote and holds no other
+        # close quote: one 64-byte compare proves it for up to 63 content bytes.
+        n = j - i - 1
+        if 0 <= n <= 63 && i + 64 <= length(buf) && @inbounds(buf[j]) == closequote
+            m = GC.@preserve buf byte_mask_vec(pointer(buf, i + 1), closequote)
+            m & ((one(UInt64) << n) - one(UInt64)) == zero(UInt64) &&
+                return (i + 1, n, false, Parsers.RC_OK)
+        end
         GC.@preserve buf begin
             p = pointer(buf)
             @inbounds while k <= j
