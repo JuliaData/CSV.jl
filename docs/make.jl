@@ -24,7 +24,7 @@ makedocs(;
         "Writing" => "writing.md",
         "Examples" => "examples.md",
         "API reference" => "reference.md",
-        "1.0 release notes" => "release-notes.md",
+        "Release notes" => "release-notes.md",
         "Migrating to 1.0" => "migration.md",
     ],
 )

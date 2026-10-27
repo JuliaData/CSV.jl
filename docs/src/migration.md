@@ -93,6 +93,12 @@ The default `on_error=:warn` prints one summary warning per read (once per
 `on_error=:error` to throw a `CSV.ParseError` that carries the first problem in
 source order. Use `maxproblems` to cap retained problem objects.
 
+Since 1.3, passing `schema=Tables.Schema(names, types)` to `CSV.Rows`,
+`CSV.File`, or `CSV.read` opts into strict schema validation. These reads
+always throw on a mismatch, and schema rows are typed `NamedTuple` values.
+Existing calls need no change. See [Reading with a known schema](@ref) before
+replacing `types` with `schema`; their error and row-access behavior differs.
+
 `types=Char` and `types=Symbol` remain supported. A `Char` cell is exactly one
 Unicode scalar; other text follows the normal missing-plus-problem policy.
 
