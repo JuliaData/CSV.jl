@@ -526,6 +526,14 @@ function findcontent(buf::Vector{UInt8}, i::Int, j::Int,
     k = i + 1
     escaped = false
     if escape == closequote
+        # The common quoted field ends with its close quote and holds no other
+        # close quote: one 64-byte compare proves it for up to 63 content bytes.
+        n = j - i - 1
+        if 0 <= n <= 63 && i + 64 <= length(buf) && @inbounds(buf[j]) == closequote
+            m = GC.@preserve buf byte_mask_vec(pointer(buf, i + 1), closequote)
+            m & ((one(UInt64) << n) - one(UInt64)) == zero(UInt64) &&
+                return (i + 1, n, false, Parsers.RC_OK)
+        end
         GC.@preserve buf begin
             p = pointer(buf)
             @inbounds while k <= j
@@ -2407,7 +2415,13 @@ function _normalizetypemap(typemap)
 end
 
 _maptype(tm, T) = tm === nothing || T === Missing ? T : get(tm, T, T)
-@inline function _promotemapped(tm, current::Type, detected::Type)
+# `parsed` is the type the chunk read the conflicting cell under. Another chunk
+# can promote the column while this one is still parsing it: that conflict says
+# nothing against the newer type, so the chunk re-parses under it. Joining the
+# stale detection with a mapped current type (a `typemap` target outside the
+# promotion order, such as Int32) would otherwise give String.
+@inline function _promotemapped(tm, current::Type, parsed::Type, detected::Type)
+    parsed === current || return current
     joined = promote_kernel(current, detected)
     # A mapped result is already the selected parse type. Do not map it again
     # when a later result keeps the same type.
@@ -2825,6 +2839,32 @@ function parsecolchunk!(col::Union{TypedColumn{T}, UnionColumn{T}}, buf::Vector{
     return 0
 end
 
+# Reserve the column bytes the string loop can still copy from local row
+# `lr0` on: the spans of column `j`'s long cells among the rows the loop
+# parses, an upper bound since content never exceeds its span. One reservation
+# replaces the buffer's growth by repeated reallocation, which dominates
+# parallel string parsing. The loop calls this at its first long cell, so a
+# column of inline-length cells pays nothing. Returns the reserved capacity.
+@noinline function _reservelong!(col::StringColumn, ci::ChunkIndex, j::Int, lr0::Int,
+                                 rowbase::Int, mask::Union{Nothing, Vector{Bool}},
+                                 maskbase::Int, reportlimit::Int)
+    tape, rowfirst, rowstartrel, ext = ci.tape, ci.rowfirst, ci.rowstartrel, ci.ext
+    start, skip, fdr, total = ci.start, ci.delimskip, ci.firstdatarow, totalrows(ci)
+    need = 0
+    @inbounds for lr in lr0:total
+        localrow = lr - fdr + 1
+        localrow > reportlimit && break
+        mask !== nothing && !mask[maskbase + rowbase + localrow] && continue
+        sp = _span(start, tape, rowstartrel, ext, skip, Int(rowfirst[lr]),
+                   Int(rowfirst[lr + 1]), lr, j)
+        sp === nothing && continue
+        sp[2] > INLINE_MAX && (need += sp[2])
+    end
+    reserved = length(col.extra) + need
+    sizehint!(col.extra, reserved)
+    return reserved
+end
+
 # The string loop writes into a column that is PRIVATE to this call (a chunk
 # segment, a batch, or a re-parse column), so owning bytes needs no lock.
 function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
@@ -2834,6 +2874,7 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
                         mask::Union{Nothing, Vector{Bool}}=nothing, maskbase::Int=0,
                         reportlimit::Int=typemax(Int))
     payloads = col.payloads
+    reserved = 0
     tape, rowfirst, rowstartrel, ext = ci.tape, ci.rowfirst, ci.rowstartrel, ci.ext
     start, skip, fdr, total = ci.start, ci.delimskip, ci.firstdatarow, totalrows(ci)
     @inbounds first = fdr <= total ? Int(rowfirst[fdr]) : 0
@@ -2857,8 +2898,13 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
             problemrow = problemrowbase + localrow
             pushcellproblem!(problems, problemrow, j, pos, len, :invalid_quoted_field,
                              "malformed quoting in ", buf)
-            len <= INLINE_MAX ? (payloads[out] = inline_payload(buf, pos, len)) :
-                                          _own!(col, buf, pos, len, out)
+            if len <= INLINE_MAX
+                payloads[out] = inline_payload(buf, pos, len)
+            else
+                reserved == 0 && (reserved = _reservelong!(col, ci, j, lr, rowbase, mask,
+                                                           maskbase, reportlimit))
+                _own!(col, buf, pos, len, out)
+            end
             continue
         end
         if st == CELL_MISSING
@@ -2869,13 +2915,26 @@ function parsecolchunk!(col::StringColumn, buf::Vector{UInt8}, ci::ChunkIndex,
             # O(1) codeunit access): short results build inline payloads
             # allocation-free; long ones unescape into the column's bytes
             inl = _unescape_inline(buf, cpos, clen, col.e, col.cq)
-            inl === nothing ? _ownescaped!(col, buf, cpos, clen, out) : (payloads[out] = inl)
+            if inl === nothing
+                reserved == 0 && (reserved = _reservelong!(col, ci, j, lr, rowbase, mask,
+                                                           maskbase, reportlimit))
+                _ownescaped!(col, buf, cpos, clen, out)
+            else
+                payloads[out] = inl
+            end
         elseif clen <= INLINE_MAX
             payloads[out] = inline_payload(buf, cpos, clen)
         else
+            reserved == 0 && (reserved = _reservelong!(col, ci, j, lr, rowbase, mask,
+                                                       maskbase, reportlimit))
             _own!(col, buf, cpos, clen, out)
         end
     end
+    # The reservation counts every long span, but a quoted or escaped value can
+    # still fit inline and a sentinel copies nothing. Give a large unused part
+    # back: the finished column keeps this buffer.
+    used = length(col.extra)
+    reserved - used > max(used >> 1, 1 << 16) && sizehint!(col.extra, used)
     return 0
 end
 
@@ -4090,8 +4149,9 @@ function fusedchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, ncols::Int,
             # single assignment: the lock closure captures it, and a captured
             # local that is reassigned is boxed (and shared across tasks)
             promoT = detected === T ? String : detected   # a conflicting value must move the type
+            parsedT = T
             T = lock(promolock) do
-                promo[j] = _promotemapped(tm, promo[j], promoT)
+                promo[j] = _promotemapped(tm, promo[j], parsedT, promoT)
             end
         end
     end
@@ -4358,13 +4418,18 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
     end
     segs = Vector{Any}(undef, ncols)
     st = Vector{Type}(undef, ncols)
+    # One snapshot of every column's type and final per chunk. A column that
+    # another chunk promotes after the snapshot parses here under its old type
+    # and is re-parsed after the wave, exactly as when the promotion lands
+    # while this chunk is parsing it.
+    types, dests = lock(() -> (copy(promo), copy(finals)), promolock)
     for j in 1:ncols
         if selected !== nothing && !selected[j]
             segs[j] = nothing
             st[j] = Missing
             continue
         end
-        T, dest = lock(() -> (promo[j], finals[j]), promolock)
+        T, dest = types[j], dests[j]
         attempts = 0
         lo = rowbase + 1
         hi = rowbase + min(n, reportlimit)
@@ -4403,8 +4468,9 @@ function directchunk!(ci::ChunkIndex, buf::Vector{UInt8}, d::Dialect, opts::Valu
             # single assignment: promoT is captured by the lock closure below,
             # and a captured-and-reassigned local boxes
             promoT = detected === T ? String : detected
+            parsedT = T
             T, dest = lock(promolock) do
-                joined = _promotemapped(tm, promo[j], promoT)
+                joined = _promotemapped(tm, promo[j], parsedT, promoT)
                 if joined !== promo[j]
                     promo[j] = joined
                     finals[j] = _allocdirect(joined, ndata, buf, opts, d, j,
@@ -4669,18 +4735,24 @@ materialize(v::Vector) = v
 # A duplicate takes the smallest `name_k` not used by ANY
 # name — original or already assigned — so `a,a,a_1` becomes `a,a_2,a_1`
 # (renames never collide with an original that appears later).
+#
+# `taken` only grows, so every suffix below the last one assigned to a name is
+# still taken: the search resumes there, which keeps N copies of one name linear.
 function makeunique!(names::Vector{Symbol})
     taken = Set(names)
+    length(taken) == length(names) && return names
     seen = Set{Symbol}()
+    nextk = Dict{Symbol, Int}()
     for i in eachindex(names)
         nm = names[i]
         if nm in seen
-            k = 1
+            k = get(nextk, nm, 1)
             newnm = Symbol(nm, :_, k)
             while newnm in taken
                 k += 1
                 newnm = Symbol(nm, :_, k)
             end
+            nextk[nm] = k + 1
             push!(taken, newnm)
             names[i] = newnm
             push!(seen, newnm)

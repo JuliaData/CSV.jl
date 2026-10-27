@@ -53,7 +53,7 @@ const _REMOVED_KW = Dict{Symbol, String}(
     :silencewarnings => "use on_error=:collect to silence warnings; problems(f) returns retained problems",
     :inferdecimal => "CSV does not infer decimal types; request one with types, for example " *
                      "types=Dict(:amount => DataDecimals.Decimal64{2})",
-    :debug => "removed in 1.0; parse problems and the structural index are inspectable directly",
+    :debug => "inspect parse problems with CSV.problems(file)",
     :lazystrings => "use stringtype=DataStrings.DataString (the default) or stringtype=String",
     :tasks => "use ntasks",
     :threaded => "use ntasks (ntasks=1 disables threading)",
@@ -64,7 +64,7 @@ const _REMOVED_KW = Dict{Symbol, String}(
     :type => "use types (a single Type applies to every column)",
     :missingstrings => "pass a string or vector to missingstring",
     :dateformats => "pass per-column formats to dateformat",
-    :parsingdebug => "parse problems and the structural index are inspectable directly",
+    :parsingdebug => "inspect parse problems with CSV.problems(file)",
 )
 
 function _checkkwargs(context::AbstractString, kw, allowed)
