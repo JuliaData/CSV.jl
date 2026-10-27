@@ -380,19 +380,24 @@ and `drop` work as in `CSV.File`.
 
 When a program knows the columns before it reads, it can pass them as a
 `Tables.Schema`. `CSV.Rows(source; schema)` checks the source against the
-schema and iterates `NamedTuple` rows of exactly the schema's types:
+schema and iterates `NamedTuple` rows of exactly the schema's types, and
+`CSV.File(source; schema)` reads the same way into one `Vector` per column:
 
 ```@example reading-schema
 using CSV, Tables
 
 schema = Tables.Schema((:id, :x, :y), (String, Float64, Union{Missing, Int}))
-rows = CSV.Rows(IOBuffer("id,x,y\na,1.5,3\nb,2,\n"); schema)
-(eltype(rows), collect(rows))
+data = "id,x,y\na,1.5,3\nb,2,\n"
+rows = CSV.Rows(IOBuffer(data); schema)
+file = CSV.File(IOBuffer(data); schema)
+(eltype(rows), collect(rows), typeof(file.y))
 ```
 
 `Tables.schema(rows)` returns `schema`, and `Tables.columntable(rows)` builds
 one vector per column: `Vector{String}`, `Vector{Float64}`, and
-`Vector{Union{Missing, Int}}` here.
+`Vector{Union{Missing, Int}}` here. A schema `CSV.File` has those same columns
+and checks every row before it returns; `CSV.read(source, sink; schema)` passes
+them to a sink.
 
 The read checks the source this way:
 
@@ -401,8 +406,9 @@ The read checks the source this way:
   any row is returned. Names are compared after `normalizenames`. A repeated
   name fails even when the schema uses the `x_1` name that `CSV.File` would
   give it. With `header=false`, the schema names the columns.
-- Rows: each row parses when iteration reaches it, and must have exactly one
-  field per column. With `ignoreemptyrows=false`, an empty row has one empty
+- Rows: `CSV.Rows` parses each row when iteration reaches it, and `CSV.File`
+  parses them all before it returns. A row must have exactly one field per
+  column. With `ignoreemptyrows=false`, an empty row has one empty
   field.
 - Values: every field parses as its column type under the usual value options
   (quotes and escapes, `decimal`, `groupmark`, `dateformat`, `truestrings`,
@@ -414,21 +420,22 @@ The read checks the source this way:
   and only a `Union{T, Missing}` column accepts it. A quoted empty field `""`
   is an empty string in a text column and an invalid value in any other.
 
-The first problem throws a [`CSV.ParseError`](@ref CSV.ParseError). Its
-problem records the data row (0 for the header), the column (0 for a whole
-row), the byte position, and a kind: `:header_mismatch`, `:short_row`,
+The first problem in the source throws a [`CSV.ParseError`](@ref CSV.ParseError).
+Its problem records the data row (0 for the header), the column (0 for a
+whole row), the byte position, and a kind: `:header_mismatch`, `:short_row`,
 `:long_row`, `:invalid_value`, `:missing_value`, `:invalid_quoted_field`, or
-`:unclosed_quote`. Iteration has already returned the rows before an invalid
-row. Rows past `limit` are not read.
+`:unclosed_quote`. `CSV.Rows` iteration has already returned the rows before
+an invalid row. Rows past `limit` are not read.
 
 A column type is a concrete type that `types` accepts, alone or in a `Union`
 with `Missing`: integers, floats, `Bool`, `Char`, `Date`, `DateTime`, `Time`,
 `Timestamp`, `String`, `DataStrings.DataString`, `Symbol`, and extension types
 such as DataDecimals decimals. The schema must carry its names and types as
 type parameters, as `Tables.Schema(names, types)` does for up to 65,535
-columns. `types`, `stringtype`, `select`, and `drop` do not apply, and
-`on_error` and `strict` only accept the strict behavior. The other `CSV.Rows`
-keywords work as usual.
+columns. `types`, `stringtype`, `select`, and `drop` do not apply, nor do
+`pool`, `downcast`, `transpose`, and `scan` for `CSV.File`, and `on_error`
+and `strict` only accept the strict behavior. The other keywords of each
+reader work as usual; `CSV.File` fills its columns on `ntasks` tasks.
 
 ### Compiling a reader with `juliac --trim`
 
@@ -452,8 +459,8 @@ function (@main)(args::Vector{String})::Cint
                 total += row.x * row.y
             end
         else
-            columns = Tables.columntable(CSV.Rows(args[2]; schema=SAMPLES))
-            total = sum(columns.a)
+            file = CSV.File(args[2]; schema=SAMPLES)
+            total = sum(file.a::Vector{Float64})
         end
     catch err
         err isa CSV.ParseError || rethrow()
@@ -473,7 +480,9 @@ In a trimmed program, the source must be a local path, an `IO`, or bytes; a
 schema read rejects a URL instead of downloading it. A custom `dateformat`
 needs Parsers.jl's format compiler, which `--trim` cannot compile yet: read
 ISO dates and times, or read the field as text. `Tables.columntable` compiles
-for schemas of up to 100 columns; iterate the rows of a wider schema. Julia
+for schemas of up to 100 columns; iterate the rows of a wider schema, or
+read it with `CSV.File`. `CSV.File` is not parametric, so a program checks a
+column's type before using it, as in `x = file.x::Vector{Float64}`. Julia
 1.12 does not compile the tasks that a multithreaded read starts, so on 1.12
 run the program with one thread (the default for an executable) or pass
 `parallel=false, prefetch=false`; Julia 1.13 runs them.

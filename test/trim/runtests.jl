@@ -13,6 +13,8 @@ end
 narrowline(i, id, x, y) = string(i, "|", repr(id), "|", x, "|", y === missing ? "missing" : y)
 wideline(id, a, b, c, d) = string(id, "|", a, "|", b, "|", c, "|", d === missing ? "missing" : d)
 lines(xs...) = join(xs, '\n') * '\n'
+# Each case also runs through `CSV.File`, which prints the same lines.
+filemode(mode) = replace(mode, r"^(narrow|wide|many)" => s"\1-file")
 # A file for the 121-column schema: an id and `ncols` numbers per row.
 manytext(rows; ncols=120) =
     lines(join(["id"; ["x$j" for j in 1:ncols]], ','),
@@ -91,7 +93,7 @@ const REJECTED = [
         isfile(exe) || return
         @test occursin("trim workload passed", read(`$exe`, String))
 
-        @testset "schema reads accept matching input: $mode $(repr(text))" for (mode, text, expected) in ACCEPTED
+        @testset "schema reads accept matching input: $mode $(repr(text))" for (rowmode, text, expected) in ACCEPTED, mode in (rowmode, filemode(rowmode))
             arg = endswith(mode, "-text") ? text : (path = joinpath(dir, "input.csv"); write(path, text); path)
             r = runexe(`$exe $mode $arg`)
             @test (r.code, r.signal) == (0, 0)
@@ -101,7 +103,7 @@ const REJECTED = [
 
         # Rows before the invalid one were already printed: the error is the
         # last line.
-        @testset "schema reads reject mismatched input: $mode $(repr(text))" for (mode, text, code, prefix) in REJECTED
+        @testset "schema reads reject mismatched input: $mode $(repr(text))" for (rowmode, text, code, prefix) in REJECTED, mode in (rowmode, filemode(rowmode))
             arg = endswith(mode, "-text") ? text : (path = joinpath(dir, "input.csv"); write(path, text); path)
             r = runexe(`$exe $mode $arg`)
             @test (r.code, r.signal) == (code, 0)
@@ -110,11 +112,11 @@ const REJECTED = [
             startswith(reported, prefix) || print(r.out, r.err)
         end
 
-        @testset "schema reads reject sources they cannot read" begin
-            r = runexe(`$exe narrow https://example.invalid/data.csv`)
+        @testset "schema reads reject sources they cannot read: $mode" for mode in ("narrow", "narrow-file")
+            r = runexe(`$exe $mode https://example.invalid/data.csv`)
             @test (r.code, r.signal) == (3, 0)
             @test startswith(r.out, "ArgumentError: a schema read takes a local path")
-            r = runexe(`$exe narrow $(joinpath(dir, "absent.csv"))`)
+            r = runexe(`$exe $mode $(joinpath(dir, "absent.csv"))`)
             @test (r.code, r.signal) == (3, 0)
             @test startswith(r.out, "ArgumentError: no file at")
         end
@@ -122,7 +124,7 @@ const REJECTED = [
         # A file large enough to map, prefetch, and index in several chunks,
         # read with one and with several threads. Every `x` is a multiple of
         # 1/4, so the sums are exact in any order.
-        @testset "large file with $threads threads" for threads in (1, 4)
+        @testset "large file with $threads threads: $mode" for threads in (1, 4), mode in ("narrow-summary", "narrow-file-summary")
             n = 150_000
             path = joinpath(dir, "large.csv")
             open(path, "w") do io
@@ -135,7 +137,7 @@ const REJECTED = [
             ys = [i % 200 - 100 for i in 1:n if i % 7 != 0]
             expected = string("rows=", n, " xsum=", sum(i / 4 for i in 1:n), " ymissing=",
                               n - length(ys), " ysum=", sum(ys), "\n")
-            r = runexe(addenv(`$exe narrow-summary $path`, "JULIA_NUM_THREADS" => string(threads)))
+            r = runexe(addenv(`$exe $mode $path`, "JULIA_NUM_THREADS" => string(threads)))
             @test (r.code, r.signal) == (0, 0)
             @test r.out == expected
         end

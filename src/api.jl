@@ -1247,20 +1247,23 @@ struct File <: AbstractVector{FileRow}
     lookup::Dict{Symbol, Int}
 end
 
-function File(source;
-              types=nothing, select=nothing, drop=nothing,
-              scan=nothing,
-              pool=DEFAULT_POOL,
-              downcast::Bool=false,
-              transpose::Bool=false,
-              stringtype::Type=DataString,
-              strict::Bool=false, on_error::Symbol=strict ? :error : :warn,
-              maxwarnings::Union{Nothing, Int}=nothing,
-              maxproblems::Int=something(maxwarnings, 10_000),
-              ntasks::Union{Nothing, Int}=nothing,
-              parallel::Bool=ntasks === nothing ? Threads.nthreads() > 1 : ntasks > 1,
-              validate::Bool=true,
-              kw...)
+File(source; schema=nothing, kw...) =
+    schema === nothing ? _file(source; kw...) : _schemafile(source, schema; kw...)
+
+function _file(source;
+               types=nothing, select=nothing, drop=nothing,
+               scan=nothing,
+               pool=DEFAULT_POOL,
+               downcast::Bool=false,
+               transpose::Bool=false,
+               stringtype::Type=DataString,
+               strict::Bool=false, on_error::Symbol=strict ? :error : :warn,
+               maxwarnings::Union{Nothing, Int}=nothing,
+               maxproblems::Int=something(maxwarnings, 10_000),
+               ntasks::Union{Nothing, Int}=nothing,
+               parallel::Bool=ntasks === nothing ? Threads.nthreads() > 1 : ntasks > 1,
+               validate::Bool=true,
+               kw...)
     return _file(source, types, select, drop, scan, pool, downcast, transpose, stringtype,
                  on_error, maxproblems, ntasks, parallel, validate, kw)
 end
@@ -1466,6 +1469,7 @@ function File(sources::AbstractVector; source=nothing, kw...)
         throw(ArgumentError("source must be a column name or name => values pair"))
     end
     source === nothing && length(sources) == 1 && return File(first(sources); kw...)
+    haskey(kw, :schema) && throw(ArgumentError("a schema read takes one source"))
     strict = get(kw, :strict, false)
     on_error = get(kw, :on_error, strict ? :error : :warn)
     maxwarnings = get(kw, :maxwarnings, nothing)
@@ -2763,24 +2767,39 @@ rownumber(row::Row) = getfield(getfield(row, :view), :rownumber)
 function _schemarows(source, schema::Tables.Schema{N, T}; types=nothing, select=nothing,
                      drop=nothing, stringtype=nothing, strict::Bool=true,
                      on_error::Symbol=:error, reusebuffer::Bool=false, kw...) where {N, T}
-    (N === nothing || T === nothing) && throw(ArgumentError(
-        "schema must carry its column names and types as type parameters, as " *
-        "Tables.Schema(names, types) builds for up to 65535 columns"))
-    for (j, nm) in enumerate(N)
-        findfirst(==(nm), N) == j || throw(ArgumentError("schema names column $nm twice"))
-    end
+    _checkschemakeywords(types, stringtype, select, drop, on_error, strict)
+    src, inner = _schemasource(source, schema, "Rows",
+                               (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...), kw)
+    return Rows{NamedTuple{N, T}, :schema}(inner.name, inner, collect(1:length(N)), src.p.limit)
+end
+
+# Keywords that both schema readers refuse: the schema sets every column and type.
+function _checkschemakeywords(types, stringtype, select, drop, on_error::Symbol, strict::Bool)
     types === nothing && stringtype === nothing || throw(ArgumentError(
         "the schema sets every column type; remove types and stringtype"))
     select === nothing && drop === nothing || throw(ArgumentError(
         "a schema read reads every column of the schema; remove select and drop"))
     on_error === :error && strict || throw(ArgumentError(
         "a schema read throws CSV.ParseError at the first problem; remove on_error and strict"))
-    _checkkwargs("Rows", kw, (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...))
+    return nothing
+end
+
+# The checks a schema read makes before its first row: the schema, the keywords
+# the reader named `context` allows, the source, and the header. Returns the
+# indexed source and a row view over it whose names are the schema's.
+function _schemasource(source, schema::Tables.Schema{N, T}, context::String, allowed,
+                       kw) where {N, T}
+    (N === nothing || T === nothing) && throw(ArgumentError(
+        "schema must carry its column names and types as type parameters, as " *
+        "Tables.Schema(names, types) builds for up to 65535 columns"))
+    for (j, nm) in enumerate(N)
+        findfirst(==(nm), N) == j || throw(ArgumentError("schema names column $nm twice"))
+    end
+    _checkkwargs(context, kw, allowed)
     header = get(kw, :header, 1)
     header isa Union{Bool, Integer, AbstractVector{<:Integer}} || throw(ArgumentError(
         "the schema names the columns; pass header=false for a source without a header row"))
-    NT = NamedTuple{N, T}
-    _checkschematypes(NT)
+    _checkschematypes(NamedTuple{N, T})
     if source isa AbstractString
         _isurl(source) && throw(ArgumentError(
             "a schema read takes a local path, an IO, or bytes; download " *
@@ -2806,7 +2825,7 @@ function _schemarows(source, schema::Tables.Schema{N, T}; types=nothing, select=
     inner = _IndexedRows(name, p.buf, src.bi.chunks, colnames,
                          Dict(nm => j for (j, nm) in enumerate(colnames)), p.opts,
                          p.settings.colopts, p.d)
-    return Rows{NT, :schema}(name, inner, collect(1:length(N)), p.limit)
+    return src, inner
 end
 
 _schemarows(source, schema; kw...) =
@@ -2914,6 +2933,89 @@ end
     Missing <: T && return missing
     pos = (fieldspan(getfield(view, :ci), getfield(view, :localrow), j)::Tuple{Int, Int})[1]
     _throwrowproblem(view, j, pos, :missing_value, "missing value in a $T column")
+end
+
+# `File(source; schema)`: the same checks, every row read before the File is
+# returned, and one `Vector{T}` column per schema type `T`.
+function _schemafile(source, schema::Tables.Schema{N, T}; types=nothing, select=nothing,
+                     drop=nothing, stringtype=nothing, strict::Bool=true,
+                     on_error::Symbol=:error, pool=nothing, downcast=nothing,
+                     transpose=nothing, scan=nothing, kw...) where {N, T}
+    _checkschemakeywords(types, stringtype, select, drop, on_error, strict)
+    pool === nothing && downcast === nothing && transpose === nothing && scan === nothing ||
+        throw(ArgumentError("the schema sets every column type and a schema read reads " *
+                            "every row; remove pool, downcast, transpose, and scan"))
+    src, inner = _schemasource(source, schema, "File",
+                               (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW..., :ntasks), kw)
+    settings = src.p.settings
+    columns, n = _schemacolumns(NamedTuple{N, T}, inner, src.p.limit,
+                                _readtasklimit(settings.parallel, settings.ntasks))
+    colnames = inner.names
+    t = ParsedTable(colnames, _abstractcolumns(columns), n, Problem[], 0)
+    return File(inner.name, t, Dict(nm => j for (j, nm) in enumerate(colnames)))
+end
+
+_schemafile(source, schema; kw...) =
+    throw(ArgumentError("schema must be a Tables.Schema (got $(typeof(schema)))"))
+
+# The schema's columns, filled row by row. Each chunk fills its own rows, on its
+# own task when the read allows several; the source-earliest problem is thrown.
+function _schemacolumns(::Type{NT}, inner::_IndexedRows, limit::Union{Nothing, Int},
+                        tasklimit::Int) where {NT}
+    chunks = inner.chunks
+    counts = Int[nrows(ci) for ci in chunks]
+    remaining = something(limit, typemax(Int))
+    for k in eachindex(counts)
+        counts[k] = min(counts[k], remaining)
+        remaining -= counts[k]
+    end
+    rowbases = cumsum(counts) .- counts
+    n = sum(counts; init=0)
+    columns = _allocschemacolumns(NT, n)
+    failures = Vector{Union{Nothing, ParseError}}(nothing, length(chunks))
+    _taskforeach(eachindex(chunks), tasklimit) do k
+        try
+            _fillschemachunk!(columns, NT, inner, chunks[k], rowbases[k], counts[k])
+        catch err
+            err isa ParseError || rethrow()
+            failures[k] = err
+        end
+    end
+    for failure in failures
+        failure === nothing || throw(failure)
+    end
+    return columns, n
+end
+
+function _fillschemachunk!(columns::Tuple, ::Type{NT}, inner::_IndexedRows, ci::ChunkIndex,
+                           rowbase::Int, n::Int) where {NT}
+    for i in 1:n
+        row = _schemarow(NT, _IndexedRow(inner, ci, ci.firstdatarow + i - 1, rowbase + i))
+        _storeschemarow!(columns, row, rowbase + i)
+    end
+    return nothing
+end
+
+# Column allocation, row stores, and the File's column vector, generated so that
+# each column's type is a constant whatever the schema's width.
+@generated function _allocschemacolumns(::Type{NT}, n::Int) where {NT <: NamedTuple}
+    vectors = [:(Vector{$(fieldtype(NT, j))}(undef, n)) for j in 1:fieldcount(NT)]
+    return :(($(vectors...),))
+end
+
+@generated function _storeschemarow!(columns::Tuple, row::NamedTuple, i::Int)
+    stores = [:(@inbounds columns[$j][i] = getfield(row, $j)) for j in 1:fieldcount(row)]
+    return Expr(:block, stores..., :(return nothing))
+end
+
+@generated function _abstractcolumns(columns::Tuple)
+    n = fieldcount(columns)
+    stores = [:(@inbounds out[$j] = columns[$j]) for j in 1:n]
+    return quote
+        out = Vector{AbstractVector}(undef, $n)
+        $(stores...)
+        return out
+    end
 end
 
 # ---------------------------------------------------------------------------

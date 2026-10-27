@@ -3004,8 +3004,8 @@ Fields: `row` (1-based data row; 0 for a file- or header-level problem), `col`
 (1-based column; 0 for a whole-row problem), `pos` (byte offset into the parsed
 bytes), `kind`, and `message`. The kinds are `:short_row`, `:long_row`,
 `:invalid_value`, `:invalid_quoted_field`, and `:unclosed_quote`. A schema
-read (`CSV.Rows(source; schema)`) also reports `:header_mismatch` (row 0)
-and `:missing_value`, a missing field in a column whose type excludes
+read (`CSV.File` or `CSV.Rows` with `schema`) also reports `:header_mismatch`
+(row 0) and `:missing_value`, a missing field in a column whose type excludes
 `missing`.
 """
 struct Problem

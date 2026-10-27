@@ -255,4 +255,83 @@ end
     @test @allocated(sumx(large)) == @allocated(sumx(small))
 end
 
+# The problem a `CSV.File` schema read throws, as `schemaproblem` reports it.
+function fileproblem(input; schema=SCHEMA3, kw...)
+    try
+        CSV.File(IOBuffer(input); schema, kw...)
+    catch err
+        err isa CSV.ParseError || rethrow()
+        return (err.problem.kind, err.problem.row, err.problem.col)
+    end
+    return nothing
+end
+
+@testset "CSV.File with a schema" begin
+    input = "id,x,y\n\"a,\"\"q\"\"\",1.5,3\nb,-2e3,\nc,7,-128\n"
+    f = CSV.File(IOBuffer(input); schema=SCHEMA3)
+    @test f isa CSV.File
+    @test Tables.schema(f) == SCHEMA3
+    @test f.id isa Vector{String} && f.x isa Vector{Float64}
+    @test f.y isa Vector{Union{Missing, Int8}}
+    @test isequal(Tables.columntable(f), Tables.columntable(CSV.Rows(IOBuffer(input); schema=SCHEMA3)))
+    @test isempty(CSV.problems(f))
+    @test isequal(CSV.read(IOBuffer(input), Tables.columntable; schema=SCHEMA3), Tables.columntable(f))
+    @test length(CSV.File(IOBuffer("id,x,y\n"); schema=SCHEMA3)) == 0
+    @test CSV.File(IOBuffer("a,1,2\n"); schema=SCHEMA3, header=false).id == ["a"]
+    @test length(CSV.File(IOBuffer("id,x,y\na,1,2\nb,bad,3\n"); schema=SCHEMA3, limit=1)) == 1
+    # Every check matches the row reader's.
+    for bad in ("id,z,y\na,1,2\n", "id,x,x\na,1,2\n", "id,x\na,1\n", "", "id,x,y\na,1,2\nb,abc,3\n",
+                "id,x,y\na,1,128\n", "id,x,y\na,\"\",1\n", "id,x,y\n,1,2\n", "id,x,y\na,1,2\nb,1\n",
+                "id,x,y\na,1,2,3\n", "id,x,y\n\"a\"b,1,2\n", "id,x,y\na,1,2\n\"b,1,2\n")
+        @test fileproblem(bad) == schemaproblem(bad)
+        @test fileproblem(bad) !== nothing
+    end
+    @test fileproblem("id;a;b;c;d\n1;1,5;NA;1;1\n"; schema=SCHEMA5, delim=';', decimal=',',
+                      missingstring="NA") == (:missing_value, 1, 3)
+    for kw in ((; types=Dict(:x => Int)), (; stringtype=String), (; select=[:id]), (; drop=[:y]),
+               (; on_error=:warn), (; strict=false), (; pool=true), (; downcast=true),
+               (; transpose=true), (; scan=Tables.Scan()), (; maxproblems=1),
+               (; typemap=Dict(Int => Float64)), (; header=["id", "x", "y"]))
+        @test_throws ArgumentError CSV.File(IOBuffer("id,x,y\na,1,2\n"); schema=SCHEMA3, kw...)
+    end
+    @test_throws ArgumentError CSV.File([IOBuffer("id,x,y\na,1,2\n"), IOBuffer("id,x,y\nb,1,2\n")];
+                                        schema=SCHEMA3)
+    @test CSV.File([IOBuffer("id,x,y\na,1,2\n")]; schema=SCHEMA3).id == ["a"]
+    @test_throws ArgumentError CSV.File("https://example.invalid/data.csv"; schema=SCHEMA3)
+end
+
+@testset "CSV.File schema reads fill chunks on every task" begin
+    n = 20_000
+    text = "id,x,y\n" * join(("k$i,$(i / 4),$(i % 3 == 0 ? "" : i % 100)" for i in 1:n), '\n') * "\n"
+    bytes = Vector{UInt8}(codeunits(text))
+    for ntasks in (1, 4)
+        f = CSV.File(bytes; schema=SCHEMA3, ntasks, chunkbytes=1 << 12)
+        @test length(f) == n
+        @test f.x == [i / 4 for i in 1:n]
+        @test isequal(f.y, [i % 3 == 0 ? missing : Int8(i % 100) for i in 1:n])
+        @test f.id == ["k$i" for i in 1:n]
+    end
+    # Two chunks hold invalid values; the source-earliest one is reported.
+    lines = split(text, '\n')
+    lines[1 + 15_000] = "late,bad,1"
+    lines[1 + 3] = "early,1,999"
+    broken = Vector{UInt8}(codeunits(join(lines, '\n')))
+    for ntasks in (1, 4)
+        err = try
+            CSV.File(broken; schema=SCHEMA3, ntasks, chunkbytes=1 << 12)
+            nothing
+        catch e
+            e
+        end
+        @test err isa CSV.ParseError
+        @test (err.problem.kind, err.problem.row, err.problem.col) == (:invalid_value, 3, 3)
+    end
+    # A schema wider than any tuple Julia unrolls.
+    wide = Tables.Schema((:id, ntuple(i -> Symbol(:x, i), 120)...), (Int, ntuple(_ -> Float64, 120)...))
+    widetext = join(["id"; ["x$j" for j in 1:120]], ',') * "\n" *
+               join(["7"; [string(j / 2) for j in 1:120]], ',') * "\n"
+    wf = CSV.File(IOBuffer(widetext); schema=wide)
+    @test wf.id == [7] && wf.x120 == [60.0] && Tables.schema(wf) == wide
+end
+
 end # @testset schema reads

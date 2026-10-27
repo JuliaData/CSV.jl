@@ -115,6 +115,62 @@ end
 
 widerows(source) = CSV.Rows(source; schema=WIDE, delim=';', decimal=',',
                             missingstring="NA", comment="#")
+widefile(source) = CSV.File(source; schema=WIDE, delim=';', decimal=',',
+                            missingstring="NA", comment="#")
+
+# `CSV.File` is not parametric, so a trimmed program checks each column's
+# type, which the schema fixes, before it uses the column. Print the same
+# lines as the row readers.
+function narrow(f::CSV.File)::Cint
+    ids = f.id; ids isa Vector{String} || return 4
+    xs = f.x; xs isa Vector{Float64} || return 4
+    ys = f.y; ys isa Vector{Union{Missing, Int8}} || return 4
+    for i in eachindex(ids)
+        Core.println(string(i, "|", repr(ids[i]), "|", xs[i], "|", _cell(ys[i])))
+    end
+    Core.println(string("columns ", length(ids)))
+    return 0
+end
+
+function wide(f::CSV.File)::Cint
+    ids = f.id; ids isa Vector{Int} || return 4
+    as = f.a; as isa Vector{Float64} || return 4
+    bs = f.b; bs isa Vector{Float64} || return 4
+    cs = f.c; cs isa Vector{Float64} || return 4
+    ds = f.d; ds isa Vector{Union{Missing, Float64}} || return 4
+    for i in eachindex(ids)
+        Core.println(string(ids[i], "|", as[i], "|", bs[i], "|", cs[i], "|", _cell(ds[i])))
+    end
+    Core.println(string("columns ", length(ids)))
+    return 0
+end
+
+function many(f::CSV.File)::Cint
+    ids = f.id; ids isa Vector{Int} || return 4
+    for i in eachindex(ids)
+        total = 0.0
+        for j in 2:121
+            column = Tables.getcolumn(f, j)
+            column isa Vector{Float64} || return 4
+            total += column[i]
+        end
+        x120 = f.x120; x120 isa Vector{Float64} || return 4
+        Core.println(string(ids[i], "|", total, "|", x120[i]))
+    end
+    return 0
+end
+
+function summary(f::CSV.File)::Cint
+    xs = f.x; xs isa Vector{Float64} || return 4
+    ys = f.y; ys isa Vector{Union{Missing, Int8}} || return 4
+    ysum = 0
+    for y in ys
+        y === missing || (ysum += y)
+    end
+    Core.println(string("rows=", length(xs), " xsum=", sum(xs), " ymissing=",
+                        count(ismissing, ys), " ysum=", ysum))
+    return 0
+end
 
 function reader(mode::String, arg::String)::Cint
     mode == "narrow" && return narrow(CSV.Rows(arg; schema=NARROW))
@@ -123,6 +179,12 @@ function reader(mode::String, arg::String)::Cint
     mode == "wide" && return wide(widerows(arg))
     mode == "wide-text" && return wide(widerows(IOBuffer(arg)))
     mode == "many" && return many(CSV.Rows(arg; schema=MANY))
+    mode == "narrow-file" && return narrow(CSV.File(arg; schema=NARROW))
+    mode == "narrow-file-text" && return narrow(CSV.File(IOBuffer(arg); schema=NARROW))
+    mode == "narrow-file-summary" && return summary(CSV.File(arg; schema=NARROW))
+    mode == "wide-file" && return wide(widefile(arg))
+    mode == "wide-file-text" && return wide(widefile(IOBuffer(arg)))
+    mode == "many-file" && return many(CSV.File(arg; schema=MANY))
     Core.println(string("unknown mode ", mode))
     return 1
 end
