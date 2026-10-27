@@ -5,16 +5,10 @@ Pages = ["examples.md"]
 Depth = 2
 ```
 
-Most examples use literal data in an `IOBuffer` so the
-documentation build executes them. A `String` source is a file path or URL;
-wrap literal text in `IOBuffer`. Load `DataStrings` when you want to name the
-default text type.
+Most examples read literal text through `IOBuffer`; a `String` source is a
+file path or URL. File paths and URLs below are placeholders.
 
 ## [Start here: read, inspect, and write](@id first_example)
-
-Install CSV with `import Pkg; Pkg.add("CSV")`. Install any other package named
-in an example before using it. File paths and URLs below are placeholders;
-replace them with your own sources.
 
 ```@example ex-first
 using CSV
@@ -65,8 +59,8 @@ data = [
 
 # I can just pass a `Vector` of inputs, in this case `IOBuffer(::String)`, but it
 # could also be a `Vector` of any valid input source, like `AbstractVector{UInt8}`,
-# filenames, `IO`, etc. Inputs are parsed on separate tasks and concatenated
-# in order. The first input defines the output columns. Later missing columns
+# filenames, `IO`, etc. Inputs are concatenated in order. The first input
+# defines the output columns. Later missing columns
 # are filled with `missing`, and later extra columns are ignored. To
 # send the parsed columns directly to a sink function, we can use `CSV.read`, like
 # `df = CSV.read(map(IOBuffer, data), DataFrame)`.
@@ -130,7 +124,7 @@ file = CSV.File(Downloads.download(url))
 ## [Reading from a zip file](@id zip_example)
 
 ```julia
-using ZipArchives, Mmap, CSV, DataFrames
+using ZipArchives, CSV, DataFrames
 
 a = DataFrame(a = 1:3)
 CSV.write("a.csv", a)
@@ -142,13 +136,17 @@ ZipWriter("a.zip") do z
 end
 
 # read file from zip archive
-z = ZipReader(open(mmap, "a.zip"))
+z = ZipReader(read("a.zip"))
 
 # identify the right file in zip
 a_copy = CSV.read(zip_readentry(z, "a.csv"), DataFrame)
 
 a == a_copy
 ```
+
+This example buffers the compressed archive and the uncompressed CSV entry in
+memory. For archives too large to buffer, see ZipArchives'
+[file-backed archive example](https://github.com/JuliaIO/ZipArchives.jl/blob/v2.5.1/test/test_file-array.jl#L66).
 
 ## [Column names on 2nd row](@id second_row_header)
 
@@ -298,8 +296,7 @@ totals: 12, 15, 18
 grand total: 45
 """
 
-# `footerskip=2` excludes the last two rows from value parsing.
-# CSV still scans the input to find the row boundaries.
+# `footerskip=2` skips the last two rows
 file = CSV.File(IOBuffer(data); footerskip=2)
 ```
 
@@ -417,9 +414,8 @@ a,b,c
 13,14,15
 """
 
-# Only the first three data rows have their values parsed and returned.
-# CSV still reads or maps the source and builds its structural index.
-# The limit is exact at every thread count.
+# `limit=3` parses and returns only the first three data rows; CSV still
+# indexes the whole input
 file = CSV.File(IOBuffer(data); limit=3)
 ```
 
@@ -532,8 +528,7 @@ file = CSV.File(IOBuffer(data); quotechar='"', escapechar='"')
 file = CSV.File(IOBuffer(data); openquotechar='"', closequotechar='"', escapechar='"')
 ```
 
-A quote inside an unquoted field (`with "inner quotes"`) is content: the
-structural scan notices it and rebuilds its index under the field-start rule.
+A quote inside an unquoted field (`with "inner quotes"`) is content.
 
 ## [DateFormat](@id dateformat_example)
 
@@ -562,8 +557,26 @@ code,date,stamp
 file = CSV.File(IOBuffer(data); dateformat=Dict(:date => "yyyy/mm/dd", :stamp => "dd-mm-yyyy HH:MM"))
 ```
 
+Numeric inference runs before custom date formats. When digits represent a
+date, request the date type with `types`:
+
+```@example ex-dateformat
+using Dates
+
+data = """
+code,date
+0,20190101
+1,20190102
+"""
+
+file = CSV.File(IOBuffer(data); dateformat="yyyymmdd", types=Dict(:date => Date))
+@assert eltype(file.date) === Date # hide
+@assert collect(file.date) == [Date(2019, 1, 1), Date(2019, 1, 2)] # hide
+collect(file.date)
+```
+
 Without a `dateformat`, ISO dates, ISO date-times (with `T` or a space), and
-times are detected. Date-times prefer `Durations.Timestamp{Dates.Nanosecond}`.
+times are detected. Date-times are `Durations.Timestamp{Dates.Nanosecond}`.
 Wider dates use `Timestamp{Microsecond}` if every value fits exactly; otherwise
 the column stays text. Load `Dates` and request `types=Dict(:stamp => DateTime)`
 when a consumer needs `DateTime`. Fractions finer than whole milliseconds then
@@ -577,13 +590,16 @@ using CSV
 # In many places in the world, floating point number decimals are separated with a comma instead of a period (`3,14` vs. `3.14`).
 # We can correctly parse these numbers by passing in the `decimal=','` keyword argument. If the file has no header or
 # delimiter detection is otherwise ambiguous, pass `delim=';'` explicitly so commas are treated only as decimal markers.
+# Such files often group thousands with a period (`1.234,01`); `groupmark='.'` reads those.
 data = """
 col1;col2;col3
-1,01;2,02;3,03
+1.234,01;2,02;3,03
 4,04;5,05;6,06
 """
 
-file = CSV.File(IOBuffer(data); delim=';', decimal=',')
+file = CSV.File(IOBuffer(data); delim=';', decimal=',', groupmark='.')
+@assert file.col1 == [1234.01, 4.04] # hide
+file
 ```
 
 ## [Thousands separator](@id thousands_example)
@@ -908,12 +924,10 @@ chunks = CSV.Chunks(IOBuffer("id,value\n1,10\n2,20\n3,30\n"); chunkbytes=8)
 length(chunks)
 ```
 
-`CSV.Rows` defaults to text unless you supply `types`. Both readers retain the
-source bytes; `CSV.Rows` also retains the whole structural index, while
-`CSV.Chunks` indexes one batch at a time. `CSV.Chunks` checks values across the
-input to choose one schema before iteration, so its constructor reads every row
-it will yield — `limit` excludes the rest from that check — and knows the batch
-count.
+`CSV.Rows` returns text unless you supply `types`. Both readers keep the source
+in memory; `CSV.Rows` also keeps an index of every row, while `CSV.Chunks`
+indexes one batch at a time. `CSV.Chunks` checks every value before the first
+batch to choose one schema.
 
 ## [Index first and parse later](@id lazy_example)
 

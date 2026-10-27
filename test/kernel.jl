@@ -741,6 +741,41 @@ end
 
 # ---------------------------------------------------------------------------
 
+@testset "quoted field content around the 64-byte check" begin
+    # A clean quoted field of up to 63 content bytes with 64 bytes of buffer
+    # after its start is decided by one vector compare; every other field takes
+    # the byte loop. Both must give the exact rule's answer.
+    q = UInt8('"')
+    function reference(buf, i, j)
+        k = i + 1
+        esc = false
+        while k <= j
+            if buf[k] == q
+                if k < j && buf[k + 1] == q
+                    esc = true
+                    k += 2
+                    continue
+                end
+                return (i + 1, j - i - 1, esc, k == j ? Parsers.RC_OK : Parsers.RC_INVALID)
+            end
+            k += 1
+        end
+        return (i + 1, j - i, esc, Parsers.RC_INVALID)
+    end
+    for n in (0, 1, 7, 8, 62, 63, 64, 65, 130), tail in (0, 1, 62, 63, 64, 65),
+        inner in (:none, :lone_first, :lone_last, :doubled_first, :doubled_last)
+        content = fill(UInt8('a'), n)
+        inner === :lone_first && n >= 1 && (content[1] = q)
+        inner === :lone_last && n >= 1 && (content[n] = q)
+        inner === :doubled_first && n >= 2 && (content[1:2] .= q)
+        inner === :doubled_last && n >= 2 && (content[n-1:n] .= q)
+        field = [q; content; q]
+        buf = [UInt8('x'); field; fill(UInt8('y'), tail)]
+        i, j = 2, 1 + length(field)
+        @test K.findcontent(buf, i, j, q, q, q) == reference(buf, i, j)
+    end
+end
+
 @testset "Parsers 3 integration" begin
     quotechar = UInt8('"')
     quoted = Vector{UInt8}(codeunits("\"a\"\"b\""))
@@ -1634,6 +1669,37 @@ end
 end
 
 
+@testset "DataString: owned bytes are reserved at their final size" begin
+    # Long plain, quoted, and quote-escaped cells across many chunks. Each
+    # chunk reserves its column bytes once from the cell spans, so a buffer
+    # holds at most the quote bytes of its cells beyond the bytes it uses.
+    # (Julia 1.10's summarysize ignores capacity, so the bound is vacuous there.)
+    cells = [isodd(i) ? "v" * "x"^(13 + i % 40) :
+             iszero(i % 4) ? "\"q," * "y"^(13 + i % 30) * "\"" :
+             "\"e\"\"" * "z"^(13 + i % 20) * "\"" for i in 1:6_000]
+    decoded = [isodd(i) ? c : iszero(i % 4) ? c[2:end-1] : replace(c[2:end-1], "\"\"" => "\"")
+               for (i, c) in enumerate(cells)]
+    input = "a\n" * join(cells, '\n') * "\n"
+    for parallel in (false, true)
+        col = K.parse(input; chunkbytes=1 << 13, parallel)[:a]
+        @test collect(col) == decoded
+        used = sum(length, col.buffers)
+        @test used == sum(ncodeunits, decoded)
+        @test sum(Base.summarysize, col.buffers) <=
+              used + 4 * length(cells) + 64 * length(col.buffers)
+    end
+    # Quoted 12-byte values and short escaped values fit inline although their
+    # spans are longer, so the reservation over-counts them; the column gives
+    # the unused part back instead of keeping it.
+    for short in ("\"555-123-4567\"", "\"a\"\"b\"\"c\"\"d\"\"e\"")
+        cells = [i % 500 == 1 ? "\"555-123-4567 ext 99\"" : short for i in 1:100_000]
+        col = K.parse("p\n" * join(cells, '\n') * "\n"; chunkbytes=1 << 20, parallel=false)[:p]
+        used = sum(length, col.buffers)
+        @test used == 200 * ncodeunits("555-123-4567 ext 99")
+        @test sum(Base.summarysize, col.buffers) <= used + 64 * length(col.buffers) + (1 << 16)
+    end
+end
+
 @testset "DataString: inline-else-view strings" begin
     # inline/view boundary: 12 bytes inline, 13 views the buffer
     t = K.parse("a\n" * "x"^12 * "\n" * "y"^13 * "\n")
@@ -1887,6 +1953,30 @@ end
     @test isequal(tablesnapshot(malformedseq), tablesnapshot(malformedpar))
     @test isequal(tablesnapshot(malformedseq), tablesnapshot(malformedone))
     @test any(p -> p.kind == :unclosed_quote, K.problems(malformedseq))
+end
+
+@testset "promotions that land while another chunk parses" begin
+    # nsample=1 types every column from the first data row, so chunks promote
+    # columns while other chunks are parsing them. A chunk that read a column's
+    # type before such a promotion finishes under the old type and is re-parsed
+    # after the wave; parallel reads must equal the serial read.
+    rng = Random.Xoshiro(1221)
+    ncols = 40
+    cell(j) = rand(rng) < 0.003 * j ? string(rand(rng)) :
+              rand(rng) < 0.0005 ? "x" : rand(rng) < 0.02 ? "" : string(rand(rng, 1:9))
+    rows = [join((cell(j) for j in 1:ncols), ',') for _ in 1:4000]
+    names = ["c$j" for j in 1:ncols]
+    input = join(names, ',') * "\n" * join(rows, '\n') * "\n"
+    # a typemap target outside the promotion order must survive a stale chunk too
+    for tm in (nothing, Dict(Int64 => Int32))
+        ref = K.parse(input; nsample=1, chunkbytes=512, parallel=false, typemap=tm)
+        for _ in 1:4
+            t = K.parse(input; nsample=1, chunkbytes=512, parallel=true, typemap=tm)
+            @test all(nm -> eltype(t[Symbol(nm)]) == eltype(ref[Symbol(nm)]) &&
+                            isequal(collect(t[Symbol(nm)]), collect(ref[Symbol(nm)])), names)
+            @test K.problems(t) == K.problems(ref)
+        end
+    end
 end
 
 @testset "direct final slice coverage" begin
