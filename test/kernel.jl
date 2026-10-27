@@ -1604,6 +1604,37 @@ end
 end
 
 
+@testset "DataString: owned bytes are reserved at their final size" begin
+    # Long plain, quoted, and quote-escaped cells across many chunks. Each
+    # chunk reserves its column bytes once from the cell spans, so a buffer
+    # holds at most the quote bytes of its cells beyond the bytes it uses.
+    # (Julia 1.10's summarysize ignores capacity, so the bound is vacuous there.)
+    cells = [isodd(i) ? "v" * "x"^(13 + i % 40) :
+             iszero(i % 4) ? "\"q," * "y"^(13 + i % 30) * "\"" :
+             "\"e\"\"" * "z"^(13 + i % 20) * "\"" for i in 1:6_000]
+    decoded = [isodd(i) ? c : iszero(i % 4) ? c[2:end-1] : replace(c[2:end-1], "\"\"" => "\"")
+               for (i, c) in enumerate(cells)]
+    input = "a\n" * join(cells, '\n') * "\n"
+    for parallel in (false, true)
+        col = K.parse(input; chunkbytes=1 << 13, parallel)[:a]
+        @test collect(col) == decoded
+        used = sum(length, col.buffers)
+        @test used == sum(ncodeunits, decoded)
+        @test sum(Base.summarysize, col.buffers) <=
+              used + 4 * length(cells) + 64 * length(col.buffers)
+    end
+    # Quoted 12-byte values and short escaped values fit inline although their
+    # spans are longer, so the reservation over-counts them; the column gives
+    # the unused part back instead of keeping it.
+    for short in ("\"555-123-4567\"", "\"a\"\"b\"\"c\"\"d\"\"e\"")
+        cells = [i % 500 == 1 ? "\"555-123-4567 ext 99\"" : short for i in 1:100_000]
+        col = K.parse("p\n" * join(cells, '\n') * "\n"; chunkbytes=1 << 20, parallel=false)[:p]
+        used = sum(length, col.buffers)
+        @test used == 200 * ncodeunits("555-123-4567 ext 99")
+        @test sum(Base.summarysize, col.buffers) <= used + 64 * length(col.buffers) + (1 << 16)
+    end
+end
+
 @testset "DataString: inline-else-view strings" begin
     # inline/view boundary: 12 bytes inline, 13 views the buffer
     t = K.parse("a\n" * "x"^12 * "\n" * "y"^13 * "\n")
