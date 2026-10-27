@@ -61,6 +61,7 @@ sumx(rows) = (s = 0.0; for row in rows; s += row.x; end; s)
     @test occursin("rows parse and validate when iterated", sprint(show, rows))
     # Without a schema, Rows keeps its lazy row views.
     @test eltype(CSV.Rows(IOBuffer(input))) <: CSV.Row
+    @test length(CSV.File([IOBuffer(input), IOBuffer(input)]; schema=nothing)) == 6
 end
 
 @testset "schemas with different column counts" begin
@@ -196,6 +197,52 @@ end
     @test row == (s="ab", d="c,\"d", y=:sym)
     long = "x"^40
     @test only(schemarows("s,d,y\n$long,$long,$long\n"; schema=s)).d == long
+end
+
+@testset "headerless formats use schema names" begin
+    schema = Tables.Schema((:date, :value), (Date, Int))
+    for reader in (CSV.Rows, CSV.File),
+        kw in ((; header=false), (; header=0), (; header=Int[]), (; skipto=1)),
+        dateformat in (Dict(:date => "yyyy/mm/dd"), Dict(r"^date$" => "yyyy/mm/dd"))
+        table = reader(IOBuffer("2026/10/27,2\n"); schema, dateformat, kw...)
+        @test only(Tables.rows(table)).date == Date(2026, 10, 27)
+    end
+    @test_throws ArgumentError CSV.File(IOBuffer("2026/10/27,2\n"); schema,
+                                       header=false, dateformat=Dict(:unknown => "yyyy/mm/dd"))
+    @test isempty(CSV.File(IOBuffer(""); schema, header=false,
+                           dateformat=Dict(:date => "yyyy/mm/dd")))
+    # Both header-prefix and data-range quote retries keep the schema's names.
+    schema = Tables.Schema((:date, :value), (Date, String))
+    for input in ("2026/10/27,bare\"quote\n", "2026/10/27,plain\n2026/10/27,bare\"quote\n"),
+        reader in (CSV.Rows, CSV.File)
+        table = reader(IOBuffer(input); schema, header=false,
+                       dateformat=Dict(:date => "yyyy/mm/dd"))
+        @test last(collect(Tables.rows(table))).value == "bare\"quote"
+    end
+end
+
+@testset "eager schema text owns its bytes" begin
+    schema = Tables.Schema((:s,), (Union{Missing, DataString},))
+    text = "long text that exceeds inline storage"
+    input = "s\n$text\nshort\n\"escaped \"\"long text\"\" in a field\"\n\n"
+    bytes = Vector{UInt8}(codeunits(input))
+    file = CSV.File(bytes; schema, ignoreemptyrows=false)
+    expected = Union{Missing, DataString}[text, "short", "escaped \"long text\" in a field", missing]
+    @test file.s isa Vector{Union{Missing, DataString}}
+    fill!(bytes, UInt8('x'))
+    @test isequal(file.s, expected)
+    mktemp() do path, io
+        write(io, "s\n" * (text * '\n')^20_000)
+        close(io)
+        @test filesize(path) > CSV.MMAP_THRESHOLD
+        file = CSV.File(path; schema)
+        open(path, "r+") do source
+            seek(source, 2)
+            write(source, "X")
+        end
+        @test file.s[1] == text
+        @test file.s[end] == text
+    end
 end
 
 @testset "schema reads take paths, IO, and bytes, but not URLs" begin

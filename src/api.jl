@@ -874,7 +874,9 @@ _rowarg(n::Integer) = _saturatedint(n)
 # mapped source, because they run while the reader indexes the data range too,
 # well after this call returns. `buffer_in_memory` and `prefetch` reached
 # `resolvesource` there; they are accepted here and ignored.
-function _prepare(buf::Vector{UInt8};
+_prepare(buf::Vector{UInt8}; kw...) = _prepare(buf, nothing; kw...)
+
+function _prepare(buf::Vector{UInt8}, schemanames::Union{Nothing, Vector{Symbol}};
                   header::Union{Bool, Integer, AbstractVector}=1,
                   normalizenames::Bool=false,
                   skipto::Union{Nothing, Integer}=nothing,
@@ -907,7 +909,7 @@ function _prepare(buf::Vector{UInt8};
     return _prepare(buf, _headerarg(header), normalizenames, _rowarg(skipto),
                     _saturatedint(footerskip), _sentinels(missingstring), delim,
                     _rowarg(limit), samplebytes, chunkbytes, parallel, ntasks, validate,
-                    lenient, _preparekeywords(kw))
+                    lenient, schemanames, _preparekeywords(kw))
 end
 
 # Keep sniffing and row-window construction independent of the caller's keyword
@@ -921,7 +923,9 @@ Base.@nospecializeinfer function _prepare(buf::Vector{UInt8},
                   @nospecialize(limit::Union{Nothing, Int}), samplebytes::Int,
                   @nospecialize(chunkbytes::Union{Nothing, Int}), parallel::Bool,
                   @nospecialize(ntasks::Union{Nothing, Int}),
-                  validate::Bool, lenient::Bool, kw::PrepareKeywords{D}) where {D}
+                  validate::Bool, lenient::Bool,
+                  @nospecialize(schemanames::Union{Nothing, Vector{Symbol}}),
+                  kw::PrepareKeywords{D}) where {D}
     # The default header row 1 with skipto=1 means "no header, data starts at
     # row 1" (the header row and the first data row cannot coincide).
     if header isa Integer && header == 1 && skipto !== nothing && skipto == 1
@@ -1012,7 +1016,8 @@ Base.@nospecializeinfer function _prepare(buf::Vector{UInt8},
             # sniffed `ignorerepeated` travels with it (see `_relenient`).
             return _prepare(buf, header, normalizenames, skipto, footerskip, sentinels,
                             delim, limit, samplebytes, chunkbytes, parallel, ntasks,
-                            validate, true, merge(kw, (ignorerepeated=d.ignorerepeated,)))
+                            validate, true, schemanames,
+                            merge(kw, (ignorerepeated=d.ignorerepeated,)))
         end
         chunks = prefix.chunks
         # The single-row header forms read the first live row of the prefix;
@@ -1066,6 +1071,8 @@ Base.@nospecializeinfer function _prepare(buf::Vector{UInt8},
     normalizenames && (names = [normalizename(String(nm)) for nm in names])
     headernames = headerrow == 0 ? nothing : names
     allunique(names) || (names = makeunique!(copy(names)))
+    # Headerless schema reads resolve per-column formats against the schema.
+    headernames === nothing && schemanames !== nothing && (names = schemanames)
 
     skipto === nothing || skipto > rawheaderrow ||
         throw(ArgumentError("skipto=$skipto must be past the header (row $rawheaderrow)"))
@@ -1106,7 +1113,8 @@ Base.@nospecializeinfer function _prepare(buf::Vector{UInt8},
                     fastindex).barequote)
         return _prepare(buf, header, normalizenames, skipto, footerskip, sentinels,
                         delim, limit, samplebytes, chunkbytes, parallel, ntasks,
-                        validate, true, merge(kw, (ignorerepeated=d.ignorerepeated,)))
+                        validate, true, schemanames,
+                        merge(kw, (ignorerepeated=d.ignorerepeated,)))
     end
     # The source ends inside a quoted field. Whichever region reached the end
     # of the source saw it; the data range's own index sees it whenever that
@@ -1162,15 +1170,15 @@ _resolveddelim(d::Dialect) = String(d.delim isa UInt8 ? [d.delim] : copy(d.delim
 # rule: a reader that retried then agrees with one that did not, whatever made it
 # retry (a bare quote past `limit` for `File`, a window boundary for `Chunks`).
 # `_prepare`'s own recursion freezes the same way, with its locals.
-_relenient(p::Prepared; kw...) =
-    _prepare(p.buf; kw..., delim=_resolveddelim(p.d),
+_relenient(p::Prepared, schemanames::Union{Nothing, Vector{Symbol}}=nothing; kw...) =
+    _prepare(p.buf, schemanames; kw..., delim=_resolveddelim(p.d),
              ignorerepeated=p.d.ignorerepeated, lenient=true)
 
 # A bare quote in the data range makes the structural scan unsound the same way
 # one in the header prefix does. Prepare the source again under the lenient
 # quote rule, from the bytes already resolved. Well-formed input never takes
 # this path.
-function _prepareindexed(source; kw...)
+function _prepareindexed(source, schemanames::Union{Nothing, Vector{Symbol}}=nothing; kw...)
     # An eager reader owns the page-touch workers of a mapped file: they run
     # while the header prefix AND the data range are indexed, and are joined
     # before the mapping escapes this call.
@@ -1178,10 +1186,10 @@ function _prepareindexed(source; kw...)
     try
         buf = resolvesource(source; buffer_in_memory=get(kw, :buffer_in_memory, false)::Bool,
                             prefetch=get(kw, :prefetch, true)::Bool, workers)
-        p = _prepare(buf; kw...)
+        p = _prepare(buf, schemanames; kw...)
         bi = _indexdata(p)
         if bi.barequote && !p.d.lenient
-            p = _relenient(p; kw...)
+            p = _relenient(p, schemanames; kw...)
             bi = _indexdata(p)
         end
         return IndexedSource(p, bi)
@@ -1469,7 +1477,7 @@ function File(sources::AbstractVector; source=nothing, kw...)
         throw(ArgumentError("source must be a column name or name => values pair"))
     end
     source === nothing && length(sources) == 1 && return File(first(sources); kw...)
-    haskey(kw, :schema) && throw(ArgumentError("a schema read takes one source"))
+    get(kw, :schema, nothing) === nothing || throw(ArgumentError("a schema read takes one source"))
     strict = get(kw, :strict, false)
     on_error = get(kw, :on_error, strict ? :error : :warn)
     maxwarnings = get(kw, :maxwarnings, nothing)
@@ -2800,13 +2808,14 @@ function _schemasource(source, schema::Tables.Schema{N, T}, context::String, all
     header isa Union{Bool, Integer, AbstractVector{<:Integer}} || throw(ArgumentError(
         "the schema names the columns; pass header=false for a source without a header row"))
     _checkschematypes(NamedTuple{N, T})
+    colnames = collect(Symbol, N)
     if source isa AbstractString
         _isurl(source) && throw(ArgumentError(
             "a schema read takes a local path, an IO, or bytes; download " *
             "$(repr(String(source))) and pass the downloaded file"))
-        src = _prepareindexed(LocalFile(String(source)); kw...)
+        src = _prepareindexed(LocalFile(String(source)), colnames; kw...)
     else
-        src = _prepareindexed(source; kw...)
+        src = _prepareindexed(source, colnames; kw...)
     end
     p = src.p
     name = _sourcename(source)
@@ -2821,7 +2830,6 @@ function _schemasource(source, schema::Tables.Schema{N, T}, context::String, all
         throw(ParseError(Problem(0, 0, length(p.buf), :unclosed_quote,
                                  "input ended inside a quoted field"), 1, name))
     end
-    colnames = collect(Symbol, N)
     inner = _IndexedRows(name, p.buf, src.bi.chunks, colnames,
                          Dict(nm => j for (j, nm) in enumerate(colnames)), p.opts,
                          p.settings.colopts, p.d)
@@ -3004,8 +3012,19 @@ end
 end
 
 @generated function _storeschemarow!(columns::Tuple, row::NamedTuple, i::Int)
-    stores = [:(@inbounds columns[$j][i] = getfield(row, $j)) for j in 1:fieldcount(row)]
+    stores = [:(@inbounds columns[$j][i] = _ownschemavalue(getfield(row, $j)))
+              for j in 1:fieldcount(row)]
     return Expr(:block, stores..., :(return nothing))
+end
+
+# Eager columns must not retain row views into caller-owned or mapped bytes.
+_ownschemavalue(value) = value
+function _ownschemavalue(value::DataString)
+    n = ncodeunits(value)
+    n <= INLINE_MAX && return value
+    pos = payloadpos(value.p)
+    bytes = value.data[pos:pos + n - 1]
+    return _compactview(bytes, 1, n)
 end
 
 @generated function _abstractcolumns(columns::Tuple)

@@ -3028,9 +3028,9 @@ end
 Thrown by the readers under `on_error=:error` (or `strict=true`), and by every
 schema read. `problem` is the source-earliest [`CSV.Problem`](@ref CSV.Problem)
 in a File or Chunks batch, `nproblems` counts every problem found, and `source`
-labels the input. Rows reports the accessed cell's problem with
-`nproblems=1`; a schema read reports the first problem in the header, or in
-the row that iteration reached.
+labels the input. Rows and schema reads report one problem with `nproblems=1`.
+A schema Rows read checks each row when iteration reaches it; a schema File
+checks every row before returning.
 """
 struct ParseError <: Exception
     problem::Problem

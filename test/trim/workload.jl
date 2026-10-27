@@ -11,6 +11,7 @@ const WIDE = Tables.Schema((:id, :a, :b, :c, :d),
 # specialization: read by row, with a runtime column index.
 const MANY = Tables.Schema((:id, ntuple(i -> Symbol(:x, i), 120)...),
                            (Int, ntuple(_ -> Float64, 120)...))
+const TEXT = Tables.Schema((:text,), (Union{Missing, DataString},))
 
 function writer()::Cint
     io = IOBuffer()
@@ -43,6 +44,12 @@ function writer()::Cint
     # quoting fallback; keep that path in the trimmed image too.
     CSV.write(out, (value=[1.5, -0.125],); ntasks=1, delim='.')
     String(take!(out)) == "value\n\"1.5\"\n\"-0.125\"\n" || return 6
+    bytes = Vector{UInt8}(codeunits("text longer than inline storage\n\"\"\n\n"))
+    file = CSV.File(bytes; schema=TEXT, header=false, ignoreemptyrows=false)
+    texts = file.text; texts isa Vector{Union{Missing, DataString}} || return 7
+    bytes[1] = UInt8('X')
+    texts[1] == "text longer than inline storage" && texts[2] == "" &&
+        texts[3] === missing || return 8
     Core.println("trim workload passed")
     return 0
 end
