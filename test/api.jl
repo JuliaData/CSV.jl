@@ -918,6 +918,10 @@ end
     @test A.problems(f) isa Vector{K.Problem}
     @test Tables.schema(f).names == (:name, :score)
     @test Tables.rowaccess(A.File) && Tables.rows(f) === f
+    # File's eltype comes from AbstractVector{FileRow}; a CSV method for it
+    # would invalidate Base's eltype(::Type{<:AbstractArray}) code on load
+    @test eltype(A.File) === eltype(f) === A.FileRow
+    @test which(eltype, Tuple{Type{A.File}}).module === Base
     fbad = A.File(IOBuffer("a\n\"unterminated"); on_error=:collect)
     @test any(p -> p.kind == :unclosed_quote, A.problems(fbad))
     @test occursin("problem", sprint(show, fbad))
