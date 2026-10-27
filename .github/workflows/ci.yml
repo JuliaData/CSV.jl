@@ -95,7 +95,6 @@ jobs:
       - uses: codecov/codecov-action@v7
         continue-on-error: ${{ matrix.allow_failure || false }}
         with:
-          fail_ci_if_error: true
           files: lcov.info
           slug: ${{ github.repository }}
           use_oidc: true
