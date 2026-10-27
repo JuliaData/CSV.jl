@@ -26,7 +26,7 @@ const ACCEPTED = [
      lines(narrowline(1, "a,\"q\"", 1.5, 3), narrowline(2, "b", -2000.0, missing),
            narrowline(3, "c", 7.0, -128), "columns 3")),
     # sniffed tab, BOM, CRLF, a quoted row ending, and an escaped quote
-    ("narrow", "﻿id\tx\ty\r\n\"two\r\nlines\"\t0.25\t\r\n\"\"\"q\"\"\"\t-0.0\t127\r\n",
+    ("narrow", "\ufeffid\tx\ty\r\n\"two\r\nlines\"\t0.25\t\r\n\"\"\"q\"\"\"\t-0.0\t127\r\n",
      lines(narrowline(1, "two\r\nlines", 0.25, missing), narrowline(2, "\"q\"", -0.0, 127),
            "columns 2")),
     ("narrow-text", "id,x,y\nz,1e-3,0\n", lines(narrowline(1, "z", 0.001, 0), "columns 1")),

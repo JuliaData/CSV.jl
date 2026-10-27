@@ -165,7 +165,7 @@ end
 @testset "schema reads use the dialect and value options" begin
     row(input; kw...) = only(schemarows(input; kw...))
     # a sniffed tab delimiter, a BOM, CRLF row endings, a quoted row ending
-    @test isequal(schemarows("﻿id\tx\ty\r\n\"two\r\nlines\"\t0.25\t\r\n\"\"\"q\"\"\"\t-0.0\t127\r\n"),
+    @test isequal(schemarows("\ufeffid\tx\ty\r\n\"two\r\nlines\"\t0.25\t\r\n\"\"\"q\"\"\"\t-0.0\t127\r\n"),
                   ROW3[("two\r\nlines", 0.25, missing), ("\"q\"", -0.0, Int8(127))])
     @test row("id;x;y\na;1,5;2\n"; delim=';', decimal=',') == (id="a", x=1.5, y=Int8(2))
     @test row("id,x,y\n\"1.234,5\",\"2.000,5\",1\n"; decimal=',', groupmark='.') ==
