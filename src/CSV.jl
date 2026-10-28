@@ -76,8 +76,9 @@ Types and columns:
   policies.
 - `transpose=false`: read input rows as output columns.
 - `schema`: a `Tables.Schema` that names every column and its type. Every row
-  is checked against it before the File returns, each column is a `Vector` of
-  the schema's type, and the read compiles with `juliac --trim`. `types`,
+  is checked against it before the File returns, each column holds the
+  schema's type (a `DataStrings.StringVector` for a `DataString` column, a
+  `Vector` otherwise), and the read compiles with `juliac --trim`. `types`,
   `stringtype`, `select`, `drop`, `pool`, `downcast`, `transpose`, and `scan`
   do not apply. See [Reading with a known schema](@ref).
 - `scan`: a `Tables.Scan` request for projection, filters, and row bounds.

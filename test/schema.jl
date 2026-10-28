@@ -6,7 +6,7 @@
 
 using Test, Tables, Dates, CodecZlib
 using Durations: Timestamp
-using DataStrings: DataString
+using DataStrings: DataString, StringVector
 using CSV
 
 const SCHEMA3 = Tables.Schema((:id, :x, :y), (String, Float64, Union{Missing, Int8}))
@@ -239,7 +239,7 @@ end
     bytes = Vector{UInt8}(codeunits(input))
     file = CSV.File(bytes; schema, ignoreemptyrows=false)
     expected = Union{Missing, DataString}[text, "short", "escaped \"long text\" in a field", missing]
-    @test file.s isa Vector{Union{Missing, DataString}}
+    @test file.s isa StringVector{Union{Missing, DataString}}
     # The chunk's long values share one owned buffer, not one buffer each.
     @test file.s[1].data === file.s[3].data
     fill!(bytes, UInt8('x'))
@@ -313,6 +313,26 @@ end
     sumx(small); sumx(large)
     @test sumx(large) == sum(i + 0.5 for i in 1:5000)
     @test @allocated(sumx(large)) == @allocated(sumx(small))
+end
+
+@testset "text schema reads do not allocate per value" begin
+    line(i) = "$i,text value $i past the inline limit,$(isodd(i) ? "x" : "")"
+    source(n) = Vector{UInt8}(codeunits("id,s,t\n" * join((line(i) for i in 1:n), '\n')))
+    s = Tables.Schema((:id, :s, :t), (Int, DataString, Union{Missing, DataString}))
+    readfile(bytes) = CSV.File(bytes; schema=s, ntasks=1)
+    small, large = source(500), source(5000)
+    readfile(small); readfile(large)
+    @test readfile(large).s isa StringVector{DataString}
+    @test (@allocations readfile(large)) - (@allocations readfile(small)) < 500
+    # A NamedTuple field of type Union{Missing, DataString} holds its value by
+    # reference, so only a plain DataString field reads without allocating.
+    r = Tables.Schema((:id, :s), (Int, DataString))
+    rows(n) = CSV.Rows(Vector{UInt8}(codeunits("id,s\n" *
+        join(("$i,text value $i past the inline limit" for i in 1:n), '\n'))); schema=r)
+    textsum(rows) = (n = 0; for row in rows; n += ncodeunits(row.s); end; n)
+    small, large = rows(500), rows(5000)
+    textsum(small); textsum(large)
+    @test @allocated(textsum(large)) == @allocated(textsum(small))
 end
 
 # The problem a `CSV.File` schema read throws, as `schemaproblem` reports it.

@@ -307,11 +307,16 @@ function Base.getindex(row::_IndexedRow, j::Int)
     sp === nothing && return missing
     pos, len = sp
     len == 0 && return missing
-    buf = r.buf
-    opts = _rowopts(r, j)
-    cpos, clen, esc, st = cellcontent(buf, pos, len, opts)
+    cpos, clen, esc, st = cellcontent(r.buf, pos, len, _rowopts(r, j))
     st == CELL_VALUE || return missing
+    return _cellstring(r, j, cpos, clen, esc)
+end
+
+# The DataString for cell `j`'s content span, as `cellcontent` reports it.
+@inline function _cellstring(r::_IndexedRows, j::Int, cpos::Int, clen::Int, esc::Bool)
+    buf = r.buf
     if esc
+        opts = _rowopts(r, j)
         inl = _unescape_inline(buf, cpos, clen, opts.e, r.d.cq)
         inl === nothing || return DataString(inl, EMPTY_BYTES)
         own = UInt8[]

@@ -8,8 +8,9 @@ Unreleased. Requires Julia 1.10 or later.
   row width, missing values, and values against the supplied schema. Iteration
   returns `NamedTuple` rows with exactly the schema's types.
 - `CSV.File(source; schema)` performs the same checks before returning one
-  `Vector{T}` per column. Its text columns own their bytes, including requested
-  `DataStrings.DataString` values. `CSV.read` passes these columns to a sink.
+  `Vector{T}` per column, or a `DataStrings.StringVector{T}` for a
+  `DataString` column, as `CSV.File` returns text without a schema. Text
+  columns own their bytes. `CSV.read` passes these columns to a sink.
 - The dialect and row-window options still apply. Per-column date formats
   name the schema's columns, with or without a header row.
 - Schema reads compile with `juliac --trim=safe`. Sources are local paths,

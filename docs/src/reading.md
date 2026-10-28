@@ -381,7 +381,7 @@ and `drop` work as in `CSV.File`.
 When a program knows the columns before it reads, it can pass them as a
 `Tables.Schema`. `CSV.Rows(source; schema)` checks the source against the
 schema and iterates `NamedTuple` rows of exactly the schema's types, and
-`CSV.File(source; schema)` reads the same way into one `Vector` per column:
+`CSV.File(source; schema)` reads the same way into one vector per column:
 
 ```@example reading-schema
 using CSV, Tables
@@ -395,9 +395,11 @@ file = CSV.File(IOBuffer(data); schema)
 
 `Tables.schema(rows)` returns `schema`, and `Tables.columntable(rows)` builds
 one vector per column: `Vector{String}`, `Vector{Float64}`, and
-`Vector{Union{Missing, Int}}` here. A schema `CSV.File` has those same columns
-and checks every row before it returns; `CSV.read(source, sink; schema)` passes
-them to a sink.
+`Vector{Union{Missing, Int}}` here. A schema `CSV.File` checks every row before
+it returns. Its columns are those same vectors, except that a `DataString`
+column is a `DataStrings.StringVector`, the text column `CSV.File` returns
+without a schema, which stores values without allocating each one.
+`CSV.read(source, sink; schema)` passes the columns to a sink.
 
 The read checks the source this way:
 
@@ -482,7 +484,8 @@ needs Parsers.jl's format compiler, which `--trim` cannot compile yet: read
 ISO dates and times, or read the field as text. `Tables.columntable` compiles
 for schemas of up to 100 columns; iterate the rows of a wider schema, or
 read it with `CSV.File`. `CSV.File` is not parametric, so a program checks a
-column's type before using it, as in `x = file.x::Vector{Float64}`. Julia
+column's type before using it, as in `x = file.x::Vector{Float64}` or
+`s = file.s::DataStrings.StringVector{Union{Missing, DataString}}`. Julia
 1.12 does not compile the tasks that a multithreaded read starts, so on 1.12
 run the program with one thread (the default for an executable) or pass
 `parallel=false, prefetch=false`; Julia 1.13 runs them.

@@ -2693,6 +2693,16 @@ end
 # observed. This keeps the default allocation-free row view while honoring
 # the `strict` keyword and the `on_error` contract.
 function _strictrowvalue(view::_IndexedRow, j::Int, ::Type{T}) where {T}
+    cell = _strictcell(view, j)
+    cell[1] == 0 && return missing
+    return _strictcontent(T, view, j, cell)
+end
+
+# Cell `j` as `(cpos, clen, esc, pos, len, opts)`: its content span from
+# `cellcontent`, its field span, and its value options, with `cpos == 0` for a
+# missing cell. A short row or malformed quoting throws. Inlined, so
+# `_strictrowvalue` stays one call.
+@inline function _strictcell(view::_IndexedRow, j::Int)
     r = getfield(view, :r)
     ci = getfield(view, :ci)
     lr = getfield(view, :localrow)
@@ -2702,14 +2712,22 @@ function _strictrowvalue(view::_IndexedRow, j::Int, ::Type{T}) where {T}
         _throwrowproblem(view, j, pos, :short_row, "row has no field $j")
     end
     pos, len = sp
-    len == 0 && return missing
     opts = _rowopts(r, j)
+    len == 0 && return (0, 0, false, pos, len, opts)
     cpos, clen, esc, st = cellcontent(r.buf, pos, len, opts)
-    st == CELL_MISSING && return missing
+    st == CELL_MISSING && return (0, 0, false, pos, len, opts)
     st == CELL_BADQUOTE &&
         _throwrowproblem(view, j, pos, :invalid_quoted_field,
                          "malformed quoting in " * excerpt(r.buf, pos, len))
-    _stringsink(T) && return _typedvalue(T, view, j)
+    return (cpos, clen, esc, pos, len, opts)
+end
+
+# A present cell (see `_strictcell`) as a `T`. The result is never `missing`, so
+# a DataString returns unboxed.
+@inline function _strictcontent(::Type{T}, view::_IndexedRow, j::Int, cell) where {T}
+    cpos, clen, esc, pos, len, opts = cell
+    r = getfield(view, :r)
+    _stringsink(T) && return _rowstring(T, _cellstring(r, j, cpos, clen, esc))
     T === Missing &&
         _throwrowproblem(view, j, pos, :invalid_value,
                          "non-missing value cannot be parsed as Missing in " *
@@ -2937,15 +2955,29 @@ end
 # `missing`, which only a `Union{S, Missing}` column takes; any other cell must
 # parse as the column type, exactly as `Rows(strict=true)` parses it.
 @inline function _schemacell(::Type{T}, view::_IndexedRow, j::Int) where {T}
-    value = _strictrowvalue(view, j, Base.nonmissingtype(T))
+    S = Base.nonmissingtype(T)
+    if _stringsink(S)
+        # Built here: as the `Union{Missing, S}` result of a call, a DataString
+        # would be boxed.
+        cell = _strictcell(view, j)
+        cell[1] == 0 || return _strictcontent(S, view, j, cell)
+        return _schemamissing(T, view, j, cell[4])
+    end
+    value = _strictrowvalue(view, j, S)
     value === missing || return value
     Missing <: T && return missing
     pos = (fieldspan(getfield(view, :ci), getfield(view, :localrow), j)::Tuple{Int, Int})[1]
     _throwrowproblem(view, j, pos, :missing_value, "missing value in a $T column")
 end
 
+@inline function _schemamissing(::Type{T}, view::_IndexedRow, j::Int, pos::Int) where {T}
+    Missing <: T && return missing
+    _throwrowproblem(view, j, pos, :missing_value, "missing value in a $T column")
+end
+
 # `File(source; schema)`: the same checks, every row read before the File is
-# returned, and one `Vector{T}` column per schema type `T`.
+# returned. A DataString column is a `StringVector{T}`, as `CSV.File` returns text
+# without a schema; any other column is a `Vector{T}`.
 function _schemafile(source, schema::Tables.Schema{N, T}; types=nothing, select=nothing,
                      drop=nothing, stringtype=nothing, strict::Bool=true,
                      on_error::Symbol=:error, pool=nothing, downcast=nothing,
@@ -2960,7 +2992,7 @@ function _schemafile(source, schema::Tables.Schema{N, T}; types=nothing, select=
     columns, n = _schemacolumns(NamedTuple{N, T}, inner, src.p.limit,
                                 _readtasklimit(settings.parallel, settings.ntasks))
     colnames = inner.names
-    t = ParsedTable(colnames, _abstractcolumns(columns), n, Problem[], 0)
+    t = ParsedTable(colnames, _abstractcolumns(NamedTuple{N, T}, columns), n, Problem[], 0)
     return File(inner.name, t, Dict(nm => j for (j, nm) in enumerate(colnames)))
 end
 
@@ -2980,11 +3012,11 @@ function _schemacolumns(::Type{NT}, inner::_IndexedRows, limit::Union{Nothing, I
     end
     rowbases = cumsum(counts) .- counts
     n = sum(counts; init=0)
-    columns = _allocschemacolumns(NT, n)
+    columns = _allocschemacolumns(NT, inner, n, length(chunks))
     failures = Vector{Union{Nothing, ParseError}}(nothing, length(chunks))
     _taskforeach(eachindex(chunks), tasklimit) do k
         try
-            _fillschemachunk!(columns, NT, inner, chunks[k], rowbases[k], counts[k])
+            _fillschemachunk!(columns, NT, inner, chunks[k], k, rowbases[k], counts[k])
         catch err
             err isa ParseError || rethrow()
             failures[k] = err
@@ -2997,77 +3029,120 @@ function _schemacolumns(::Type{NT}, inner::_IndexedRows, limit::Union{Nothing, I
 end
 
 function _fillschemachunk!(columns::Tuple, ::Type{NT}, inner::_IndexedRows, ci::ChunkIndex,
-                           rowbase::Int, n::Int) where {NT}
-    # This chunk's long text, so the File never views the source. One
-    # reservation replaces regrowing (and recopying) the buffer.
-    own = UInt8[]
-    reserved = _reserveschematext!(own, NT, ci, n)
+                           k::Int, rowbase::Int, n::Int) where {NT}
+    segments = _schemasegments(columns, ci, k, n)
     for i in 1:n
-        row = _schemarow(NT, _IndexedRow(inner, ci, ci.firstdatarow + i - 1, rowbase + i))
-        _storeschemarow!(columns, row, rowbase + i, own)
+        view = _IndexedRow(inner, ci, ci.firstdatarow + i - 1, rowbase + i)
+        _fillschemarow!(segments, NT, view, rowbase + i)
     end
-    # Quoted or escaped values can need less than their spans; give a large
-    # unused part back, since the columns keep this buffer.
-    used = length(own)
-    reserved - used > max(used >> 1, 1 << 16) && sizehint!(own, used)
+    _adoptschemasegments!(segments, k)
     return nothing
 end
 
-# Reserve the spans of the chunk's long DataString cells, an upper bound since
-# content never exceeds its span. Returns the reserved capacity.
-function _reserveschematext!(own::Vector{UInt8}, ::Type{NT}, ci::ChunkIndex,
-                             n::Int) where {NT}
-    need = 0
-    for j in _schematextcolumns(NT), lr in ci.firstdatarow:ci.firstdatarow + n - 1
-        sp = fieldspan(ci, lr, j)
-        sp !== nothing && sp[2] > INLINE_MAX && (need += sp[2])
+# Column allocation, chunk segments, row stores, and the File's column vector,
+# generated so that each column's type is a constant whatever the schema's width.
+@generated function _allocschemacolumns(::Type{NT}, inner::_IndexedRows, n::Int,
+                                        nchunks::Int) where {NT <: NamedTuple}
+    columns = map(1:fieldcount(NT)) do j
+        T = fieldtype(NT, j)
+        Base.nonmissingtype(T) === DataString ?
+            :(_schematextcolumn(inner, $j, n, nchunks)) : :(Vector{$T}(undef, n))
     end
-    sizehint!(own, need)
-    return need
+    return :(($(columns...),))
 end
 
-# The indices of the schema's DataString columns, as a constant tuple.
-@generated function _schematextcolumns(::Type{NT}) where {NT <: NamedTuple}
-    js = Tuple(j for j in 1:fieldcount(NT)
-               if Base.nonmissingtype(fieldtype(NT, j)) === DataString)
-    return :($js)
+@generated function _schemasegments(columns::Tuple, ci::ChunkIndex, k::Int, n::Int)
+    segments = [:(_schemasegment(columns[$j], ci, $j, k, n)) for j in 1:fieldcount(columns)]
+    return :(($(segments...),))
 end
 
-# Column allocation, row stores, and the File's column vector, generated so that
-# each column's type is a constant whatever the schema's width.
-@generated function _allocschemacolumns(::Type{NT}, n::Int) where {NT <: NamedTuple}
-    vectors = [:(Vector{$(fieldtype(NT, j))}(undef, n)) for j in 1:fieldcount(NT)]
-    return :(($(vectors...),))
+@generated function _fillschemarow!(segments::Tuple, ::Type{NT}, view::_IndexedRow,
+                                    i::Int) where {NT <: NamedTuple}
+    n = fieldcount(NT)
+    stores = [:(_storeschemacell!(segments[$j], $(fieldtype(NT, j)), view, $j, i))
+              for j in 1:n]
+    return quote
+        _checkfieldcount(view, $n)
+        $(stores...)
+        return nothing
+    end
 end
 
-@generated function _storeschemarow!(columns::Tuple, row::NamedTuple, i::Int,
-                                     own::Vector{UInt8})
-    stores = [:(@inbounds columns[$j][i] = _ownschemavalue(getfield(row, $j), own))
-              for j in 1:fieldcount(row)]
-    return Expr(:block, stores..., :(return nothing))
+@generated function _adoptschemasegments!(segments::Tuple, k::Int)
+    adopts = [:(_adoptschemasegment!(segments[$j], k)) for j in 1:fieldcount(segments)]
+    return Expr(:block, adopts..., :(return nothing))
 end
 
-# Eager columns must not retain row views into caller-owned or mapped bytes: a
-# long DataString moves into `own`, which its chunk's text values share.
-_ownschemavalue(value, ::Vector{UInt8}) = value
-function _ownschemavalue(value::DataString, own::Vector{UInt8})
-    n = ncodeunits(value)
-    n <= INLINE_MAX && return value
-    start = length(own) + 1
-    resize!(own, length(own) + n)
-    copyto!(own, start, value.data, payloadpos(value.p), n)
-    return _compactview(own, start, n)
-end
-
-@generated function _abstractcolumns(columns::Tuple)
-    n = fieldcount(columns)
-    stores = [:(@inbounds out[$j] = columns[$j]) for j in 1:n]
+@generated function _abstractcolumns(::Type{NT}, columns::Tuple) where {NT <: NamedTuple}
+    n = fieldcount(NT)
+    stores = [:(@inbounds out[$j] = _schemacolumn($(fieldtype(NT, j)), columns[$j]))
+              for j in 1:n]
     return quote
         out = Vector{AbstractVector}(undef, $n)
         $(stores...)
         return out
     end
 end
+
+# A DataString column is stored as the reader stores text: payloads, plus one
+# byte buffer per chunk, which `_buffers` numbers 1 + k for chunk `k`.
+function _schematextcolumn(inner::_IndexedRows, j::Int, n::Int, nchunks::Int)
+    col = StringColumn(n, _rowopts(inner, j).e, inner.d.cq)
+    resize!(col.adopted, nchunks)
+    fill!(col.adopted, EMPTY_BYTES)
+    return col
+end
+
+# Chunk `k` writes a DataString column through a segment that shares the
+# column's payloads and owns the chunk's long text, reserved once from the
+# cells' spans. Other columns are written in place.
+_schemasegment(col::Vector, ::ChunkIndex, ::Int, ::Int, ::Int) = col
+function _schemasegment(col::StringColumn, ci::ChunkIndex, j::Int, k::Int, n::Int)
+    seg = StringColumn(col.payloads, UInt8[], col.adopted, col.lock, col.e, col.cq, 1 + k)
+    _reservelong!(seg, ci, j, ci.firstdatarow, 0, nothing, 0, n)
+    return seg
+end
+
+_adoptschemasegment!(::Vector, ::Int) = nothing
+function _adoptschemasegment!(seg::StringColumn, k::Int)
+    sizehint!(seg.extra, length(seg.extra))   # quoted cells reserve more than they use
+    seg.adopted[k] = seg.extra
+    return nothing
+end
+
+@inline function _storeschemacell!(col::Vector, ::Type{T}, view::_IndexedRow, j::Int,
+                                   i::Int) where {T}
+    value = _schemacell(T, view, j)
+    @inbounds col[i] = value
+    return nothing
+end
+
+# A DataString cell is stored as its payload, as `parsecolchunk!` stores text: a
+# missing cell keeps `PAYLOAD_MISSING`, a short one is inline, and a long one is
+# copied (or unescaped) into the segment's bytes.
+@inline function _storeschemacell!(col::StringColumn, ::Type{T}, view::_IndexedRow,
+                                   j::Int, i::Int) where {T}
+    cpos, clen, esc, pos = _strictcell(view, j)
+    if cpos == 0
+        _schemamissing(T, view, j, pos)   # throws unless the column takes missing
+        return nothing
+    end
+    buf = getfield(view, :r).buf
+    if esc
+        inl = _unescape_inline(buf, cpos, clen, col.e, col.cq)
+        inl === nothing ? _ownescaped!(col, buf, cpos, clen, i) :
+                          (@inbounds col.payloads[i] = inl)
+    elseif clen <= INLINE_MAX
+        @inbounds col.payloads[i] = inline_payload(buf, cpos, clen)
+    else
+        _own!(col, buf, cpos, clen, i)
+    end
+    return nothing
+end
+
+_schemacolumn(::Type, col::Vector) = col
+_schemacolumn(::Type{T}, col::StringColumn) where {T} =
+    _stringvector(T, col.payloads, _buffers(col))
 
 # ---------------------------------------------------------------------------
 # Chunks — batched

@@ -2714,7 +2714,7 @@ StringColumn(n::Int, e::UInt8, cq::UInt8) = StringColumn(fill(PAYLOAD_MISSING, n
 
 # Buffer 0 is the unreferenced source slot (DataStrings appends its own edit
 # arena after the last buffer).
-_buffers(col::StringColumn) = Vector{UInt8}[EMPTY_BYTES, col.extra, col.adopted...]
+_buffers(col::StringColumn) = vcat(Vector{UInt8}[EMPTY_BYTES, col.extra], col.adopted)
 
 @noinline _extratoolarge() =
     throw(ArgumentError("a single chunk holds more than 2 GiB of text; use a smaller chunkbytes"))
