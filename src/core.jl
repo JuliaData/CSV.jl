@@ -773,33 +773,35 @@ end
     return (v, rc == Parsers.RC_OK)
 end
 
-@inline function parsevalue(::Type{Float64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
-                            scratch::Vector{UInt8})
+# Float32 and Float16 parse at their own precision: a Float64 parse followed by
+# a conversion rounds twice and can land one unit away from the text's value.
+const NativeFloat = Union{Float64, Float32, Float16}
+
+@inline function parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
+                            scratch::Vector{UInt8}) where {T <: NativeFloat}
     if vo.groupmark != 0x00
         n = _degroup!(scratch, buf, i, j, vo.groupmark, vo.decimal)
-        n == -2 && return (0.0, false)
+        n == -2 && return (zero(T), false)
         if n >= 0
-            v, rc = Parsers.parsefloat(Float64, scratch, 1, n, vo.decimal)
+            v, rc = Parsers.parsefloat(T, scratch, 1, n, vo.decimal)
             return (v, _fixedfloatusable(rc))
         end
     end
-    v, rc = Parsers.parsefloat(Float64, buf, i, j, vo.decimal)
+    v, rc = Parsers.parsefloat(T, buf, i, j, vo.decimal)
     return (v, _fixedfloatusable(rc))
 end
 parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts,
                    scratch::Vector{UInt8}) where {T} = parsevalue(T, buf, i, j, vo)
 
-# Narrow numeric requests use the native integer/float parsers, then convert at
-# the API boundary. Keep that rule available to lazy and row readers too:
+# Narrow integer requests use the native integer parsers, then convert at the
+# API boundary. Keep that rule available to lazy and row readers too:
 # calling `tryparse(Int8, String(...))` here would lose decimal/groupmark
 # handling and would allocate one String per cell.
 const NarrowParseType = Union{Int8, Int16, Int32,
-                              UInt8, UInt16, UInt32, UInt64,
-                              Float16, Float32}
+                              UInt8, UInt16, UInt32, UInt64}
 _narrowbase(::Type{<:Union{Int8, Int16, Int32,
                                    UInt8, UInt16, UInt32}}) = Int64
 _narrowbase(::Type{UInt64}) = Int128
-_narrowbase(::Type{<:Union{Float16, Float32}}) = Float64
 function _narrowvalue(::Type{T}, value, ok::Bool) where {T <: NarrowParseType}
     ok || return (zero(T), false)
     T <: Integer && !(typemin(T) <= value <= typemax(T)) && return (zero(T), false)
@@ -856,14 +858,16 @@ parsevalue(::Type{Int128}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
 @inline parsevalue(::Type{BigInt}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
     vo.groupmark == 0x00 ? _parsebigint_direct(buf, i, j) :
                            parsevalue(BigInt, buf, i, j, vo, Vector{UInt8}(undef, 64))
-function _parsefloat_direct(buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts)
-    v, rc = Parsers.parsefloat(Float64, buf, i, j, vo.decimal)
+function _parsefloat_direct(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int,
+                            vo::ValueOpts) where {T <: NativeFloat}
+    v, rc = Parsers.parsefloat(T, buf, i, j, vo.decimal)
     return (v, _fixedfloatusable(rc))
 end
 
-@inline parsevalue(::Type{Float64}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
-    vo.groupmark == 0x00 ? _parsefloat_direct(buf, i, j, vo) :
-                           parsevalue(Float64, buf, i, j, vo, Vector{UInt8}(undef, 64))
+@inline parsevalue(::Type{T}, buf::Vector{UInt8}, i::Int, j::Int,
+                   vo::ValueOpts) where {T <: NativeFloat} =
+    vo.groupmark == 0x00 ? _parsefloat_direct(T, buf, i, j, vo) :
+                           parsevalue(T, buf, i, j, vo, Vector{UInt8}(undef, 64))
 @inline parsevalue(::Type{BigFloat}, buf::Vector{UInt8}, i::Int, j::Int, vo::ValueOpts) =
     vo.groupmark == 0x00 ? _parsebigfloat_direct(buf, i, j, vo) :
                            parsevalue(BigFloat, buf, i, j, vo, Vector{UInt8}(undef, 64))
@@ -3452,12 +3456,12 @@ function _selectedmask(p::ColumnPlan, ncols::Int)
     return selected
 end
 
-# Narrow numeric requests use a wider scalar parser, followed by a checked
+# Narrow integer requests use a wider scalar parser, followed by a checked
 # conversion. This keeps the scalar parsers small and preserves range errors.
+# Float32 and Float16 have their own parsers (see `NativeFloat`).
 const NARROW_TYPES = Dict{Type, Type}(
     Int8 => Int64, Int16 => Int64, Int32 => Int64,
-    UInt8 => Int64, UInt16 => Int64, UInt32 => Int64, UInt64 => Int128,
-    Float16 => Float64, Float32 => Float64)
+    UInt8 => Int64, UInt16 => Int64, UInt32 => Int64, UInt64 => Int128)
 _nativetype(T::Type) = get(NARROW_TYPES, T, T)
 # Extensions register exact parsers for their scalar types (DataDecimals).
 _parseable(::Type) = false
@@ -3520,8 +3524,8 @@ function _columndecision(T)
     end
     parsetype = _nativetype(requested)
     parseable = parsetype === Missing ||
-                parsetype in (Int64, Int128, Float64, Bool, Char, Date, DateTime, Time,
-                              String, BigInt, BigFloat, Base.UUID) ||
+                parsetype in (Int64, Int128, Float64, Float32, Float16, Bool, Char, Date,
+                              DateTime, Time, String, BigInt, BigFloat, Base.UUID) ||
                 parsetype <: Timestamp ||
                 _parseable(parsetype) ||
                 _customparseable(parsetype)
