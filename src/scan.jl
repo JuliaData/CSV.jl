@@ -137,8 +137,9 @@ end
 # with the types the window sample settled, the filter runs on each chunk, and
 # only the Bool mask stays in memory, plus the kept values of any result column
 # that can reuse this parse. Chunks parse in groups of `tasklimit`, in file
-# order. Returns `nothing` when a cell contradicts its sampled type or when the
-# filter uses no column; the caller then parses the window at once.
+# order. Returns `nothing` when a cell contradicts its sampled type, when the
+# filter throws on a sampled type, or when the filter uses no column; the
+# caller then parses the window at once.
 function _streampredicate(src::IndexedSource, plan::ColumnPlan, b::Tables.BoundScan,
                           window::Int, total::Int, cap::Int)
     p = src.p
@@ -195,7 +196,16 @@ function _streampredicate(src::IndexedSource, plan::ColumnPlan, b::Tables.BoundS
             t = tables[g]
             t === nothing && return nothing
             n = t.nrows
-            m = Vector{Bool}(Tables.filtermask(b, PredicateColumns(t, inputnames, predicate)))
+            # The sampled types stay provisional until every chunk parses, and
+            # the filter can reject one (`isless(::Bool, ::String)` before a
+            # later chunk makes the column text). The window parse evaluates
+            # the filter on the final types and raises a genuine error again.
+            m = try
+                Vector{Bool}(Tables.filtermask(b, PredicateColumns(t, inputnames, predicate)))
+            catch e
+                e isa InterruptException && rethrow()
+                return nothing
+            end
             length(m) == n ||
                 throw(ArgumentError("filter mask has $(length(m)) entries for $n rows"))
             copyto!(mask, pos + 1, m, 1, n)
