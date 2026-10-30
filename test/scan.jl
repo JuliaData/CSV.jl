@@ -100,6 +100,18 @@ end
         t = scanfile(dirty, fallback; chunkbytes=cb)
         @test collect(t.id) == [1500] && collect(t.amount) == ["oops"]
     end
+    # chunks before the contradicting one hold only sampled-type values; a
+    # filter that cannot compare that type (`isless(::Bool, ::String)`) must
+    # still reach the fallback instead of throwing
+    flags = "id,flag\n" * join(("$i,$(i == 150 ? "maybe" : "true")" for i in 1:300), "\n") * "\n"
+    for filter in (T.colcmp(<=, T.col(:flag), "maybe"), startswith(T.col(:flag), "may"))
+        scan = T.Scan(; filter, select = (:id, :flag))
+        ref = T.scan(S.parse(flags), scan)
+        for cb in (128, 1 << 20), par in (false, true)
+            @test sametable(scanfile(flags, scan; chunkbytes=cb, parallel=par,
+                                     ntasks=par ? 2 : 1), ref)
+        end
+    end
     # the kept rows alone type an inferred result column: the excluded text
     # cell does not make the column text (the documented divergence)
     numeric = T.Scan(filter = T.col(:id) > 2990, select = (:id, :amount))

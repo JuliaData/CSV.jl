@@ -305,6 +305,16 @@ end
     @test_throws ArgumentError CSV.Rows(IOBuffer("a\n1\n"); schema=(a=Int,))
 end
 
+@testset "Float32 and Float16 columns round once" begin
+    # Each spelling is just above a midpoint of its type; a Float64 parse and a
+    # conversion would round it down to one.
+    for (T, s) in ((Float32, "1.0000000596046448"), (Float16, "1.0004882812500001"))
+        schema = Tables.Schema((:x,), (T,))
+        @test only(schemarows("x\n$s\n"; schema)).x === nextfloat(one(T))
+        @test CSV.File(IOBuffer("x\n$s\n"); schema).x == [nextfloat(one(T))]
+    end
+end
+
 @testset "numeric schema rows iterate without allocating per row" begin
     s = Tables.Schema((:x, :y), (Float64, Union{Missing, Int}))
     source(n) = Vector{UInt8}(codeunits("x,y\n" * join(("$i.5,$(isodd(i) ? i : "")" for i in 1:n), '\n')))

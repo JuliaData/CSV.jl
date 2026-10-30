@@ -2874,7 +2874,7 @@ function _checkschematype(::Type{T}, nm::Symbol) where {T}
                         "concrete type CSV can parse, or a Union of one with Missing"))
 end
 
-_schemavalue(::Type{<:Union{Int64, Int128, Float64, Bool, Char, Date, DateTime, Time,
+_schemavalue(::Type{<:Union{Int64, Int128, NativeFloat, Bool, Char, Date, DateTime, Time,
                             Timestamp, BigInt, BigFloat, Base.UUID, NarrowParseType}}) = true
 _schemavalue(::Type{T}) where {T} = _stringsink(T) || _parseable(T) || _customparseable(T)
 

@@ -12,6 +12,7 @@ const WIDE = Tables.Schema((:id, :a, :b, :c, :d),
 const MANY = Tables.Schema((:id, ntuple(i -> Symbol(:x, i), 120)...),
                            (Int, ntuple(_ -> Float64, 120)...))
 const TEXT = Tables.Schema((:text, :label), (Union{Missing, DataString}, DataString))
+const FLOATS = Tables.Schema((:a, :b), (Float32, Union{Missing, Float16}))
 
 function writer()::Cint
     io = IOBuffer()
@@ -52,6 +53,13 @@ function writer()::Cint
     bytes[1] = UInt8('X')
     texts[1] == "text longer than inline storage" && texts[2] == "" &&
         texts[3] === missing && labels[2] == "label longer than inline storage" || return 8
+    # Each value is just above a midpoint of its type, so it must round once.
+    floats = CSV.File(Vector{UInt8}(codeunits("1.0000000596046448,1.0004882812500001\n2.5,\n"));
+                      schema=FLOATS, header=false)
+    as = floats.a; as isa Vector{Float32} || return 9
+    bs = floats.b; bs isa Vector{Union{Missing, Float16}} || return 9
+    as[1] === nextfloat(1.0f0) && as[2] === 2.5f0 && bs[1] === nextfloat(Float16(1)) &&
+        bs[2] === missing || return 10
     Core.println("trim workload passed")
     return 0
 end
