@@ -7,6 +7,7 @@
 using Test, Tables, Dates, CodecZlib
 using Durations: Timestamp
 using DataStrings: DataString, StringVector
+using InlineStrings: InlineString, String3
 using CSV
 
 const SCHEMA3 = Tables.Schema((:id, :x, :y), (String, Float64, Union{Missing, Int8}))
@@ -197,6 +198,32 @@ end
     @test row == (s="ab", d="c,\"d", y=:sym)
     long = "x"^40
     @test only(schemarows("s,d,y\n$long,$long,$long\n"; schema=s)).d == long
+end
+
+@testset "fixed-width text reports schema parse problems" begin
+    for T in (String3, Union{Missing, String3}), reader in (CSV.Rows, CSV.File)
+        schema = Tables.Schema((:id, :text), (Int, T))
+        table = reader(IOBuffer("id,text\n1,\"a\"\"b\"\n2,é\n"); schema)
+        @test [row.text for row in Tables.rows(table)] == String3["a\"b", "é"]
+        for value in ("abcd", "éé", "\"a\"\"bc\"")
+            input = "id,text\n1,ok\n2,$value\n"
+            err = try
+                collect(Tables.rows(reader(IOBuffer(input); schema)))
+                nothing
+            catch err
+                err
+            end
+            @test err isa CSV.ParseError
+            if err isa CSV.ParseError
+                @test (err.problem.kind, err.problem.row, err.problem.col, err.problem.pos) ==
+                      (:invalid_value, 2, 2, 16)
+            end
+        end
+    end
+    # Strict lazy rows use the same check; auto-width text still chooses a width.
+    rows = CSV.Rows(IOBuffer("s\ntoolong\n"); types=String3, strict=true)
+    @test_throws CSV.ParseError first(rows).s
+    @test first(CSV.Rows(IOBuffer("s\ntoolong\n"); stringtype=InlineString, strict=true)).s == "toolong"
 end
 
 @testset "per-column formats use schema names" begin
@@ -415,6 +442,12 @@ end
         end
         @test err isa CSV.ParseError
         @test (err.problem.kind, err.problem.row, err.problem.col) == (:invalid_value, 3, 3)
+    end
+    # A later chunk's text overflow must not hide an earlier row's failure.
+    schema = Tables.Schema((:id, :text), (Int, String3))
+    input = "id,text\nbad,ok\n" * "1,ok\n"^1000 * "2,toolong\n"
+    for ntasks in (1, 4)
+        @test fileproblem(input; schema, ntasks, chunkbytes=64) == (:invalid_value, 1, 1)
     end
     # A schema wider than any tuple Julia unrolls.
     wide = Tables.Schema((:id, ntuple(i -> Symbol(:x, i), 120)...), (Int, ntuple(_ -> Float64, 120)...))

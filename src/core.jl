@@ -3029,13 +3029,14 @@ end
 """
     CSV.ParseError <: Exception
 
-Thrown by the readers under `on_error=:error` (or `strict=true`), and by every
-schema read. `problem` is the source-earliest [`CSV.Problem`](@ref CSV.Problem)
-in a File or Chunks batch, `nproblems` counts every problem found, and `source`
-labels the input. Rows reports the accessed cell's problem with `nproblems=1`.
-A schema read throws for the first problem in the source: a header problem
-before any row is read, and a row problem, with `nproblems=1`, when `CSV.Rows`
-iteration reaches the row or before `CSV.File` returns.
+Thrown for invalid input under `on_error=:error` (or `strict=true`), or when a
+schema is supplied. Without a schema, `problem` is the source-earliest
+[`CSV.Problem`](@ref CSV.Problem) in a File or Chunks batch, `nproblems` counts
+every problem found, and `source` labels the input. Rows reports the accessed
+cell's problem with `nproblems=1`.
+A schema read checks the header and unclosed quotes before reading values.
+Otherwise it throws for the first invalid row, with `nproblems=1`, when
+`CSV.Rows` iteration reaches the row or before `CSV.File` returns.
 """
 struct ParseError <: Exception
     problem::Problem
@@ -3051,7 +3052,7 @@ function Base.showerror(io::IO, e::ParseError)
     isempty(e.source) || print(io, " in ", e.source)
     print(io, ": ", p.message)
     e.nproblems > 1 && print(io, " (+", e.nproblems - 1, " more)")
-    print(io, "\nUse on_error=:collect to keep parsing and inspect ",
+    print(io, "\nFor CSV.File without a schema, use on_error=:collect to keep parsing and inspect ",
           "CSV.problems(file), or on_error=:warn for one summary warning (the eager default).")
 end
 

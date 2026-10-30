@@ -2727,7 +2727,13 @@ end
 @inline function _strictcontent(::Type{T}, view::_IndexedRow, j::Int, cell) where {T}
     cpos, clen, esc, pos, len, opts = cell
     r = getfield(view, :r)
-    _stringsink(T) && return _rowstring(T, _cellstring(r, j, cpos, clen, esc))
+    if _stringsink(T)
+        value = _cellstring(r, j, cpos, clen, esc)
+        _rowstringfits(T, value) ||
+            _throwrowproblem(view, j, pos, :invalid_value,
+                             "cannot parse $T from " * excerpt(r.buf, pos, len))
+        return _rowstring(T, value)
+    end
     T === Missing &&
         _throwrowproblem(view, j, pos, :invalid_value,
                          "non-missing value cannot be parsed as Missing in " *
@@ -2762,6 +2768,8 @@ _rowcell(::Type{T}, v::_IndexedRow, j::Int, ::Val) where {T} = _typedvalue(T, v,
 _rowstring(::Type{String}, x::DataString) = String(x)
 _rowstring(::Type{DataString}, x::DataString) = x
 _rowstring(::Type{Symbol}, x::DataString) = Symbol(x)
+# Extensions with bounded text types check capacity before strict conversion.
+_rowstringfits(::Type, ::DataString) = true
 # Inline the access wrappers so a literal column name or index reaches the
 # typed lookup above. This avoids dynamic dispatch and boxing on cell access.
 @inline function Tables.getcolumn(row::Row{NT}, nm::Symbol) where {NT}
@@ -2807,7 +2815,7 @@ function _checkschemakeywords(types, stringtype, select, drop, on_error::Symbol,
     select === nothing && drop === nothing || throw(ArgumentError(
         "a schema read reads every column of the schema; remove select and drop"))
     on_error === :error && strict || throw(ArgumentError(
-        "a schema read throws CSV.ParseError at the first problem; remove on_error and strict"))
+        "a schema read throws CSV.ParseError on invalid input; remove on_error and strict"))
     return nothing
 end
 
@@ -2956,9 +2964,9 @@ end
 # parse as the column type, exactly as `Rows(strict=true)` parses it.
 @inline function _schemacell(::Type{T}, view::_IndexedRow, j::Int) where {T}
     S = Base.nonmissingtype(T)
+    # Parse text inline to return DataString unboxed. Other types use
+    # `_strictrowvalue` to keep generated code small for wide schemas.
     if _stringsink(S)
-        # Built here: as the `Union{Missing, S}` result of a call, a DataString
-        # would be boxed.
         cell = _strictcell(view, j)
         cell[1] == 0 || return _strictcontent(S, view, j, cell)
         return _schemamissing(T, view, j, cell[4])
@@ -2967,7 +2975,7 @@ end
     value === missing || return value
     Missing <: T && return missing
     pos = (fieldspan(getfield(view, :ci), getfield(view, :localrow), j)::Tuple{Int, Int})[1]
-    _throwrowproblem(view, j, pos, :missing_value, "missing value in a $T column")
+    return _schemamissing(T, view, j, pos)
 end
 
 @inline function _schemamissing(::Type{T}, view::_IndexedRow, j::Int, pos::Int) where {T}

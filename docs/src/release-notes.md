@@ -14,7 +14,8 @@ Unreleased. Requires Julia 1.10 or later.
 - The dialect and row-window options still apply. Per-column date formats
   name the schema's columns, with or without a header row.
 - Schema reads compile with `juliac --trim=safe`. Sources are local paths,
-  `IO`, or bytes; URLs are rejected. Custom date formats cannot yet be trimmed.
+  `IO`, or bytes; URLs are rejected. Custom date formats and generic
+  user-defined `tryparse` fallbacks cannot yet be trimmed.
   Julia 1.12 trimmed programs need one thread or
   `parallel=false, prefetch=false`; Julia 1.13 supports multiple threads.
 

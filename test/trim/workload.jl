@@ -1,6 +1,7 @@
 using CSV, DataStrings, DataDecimals, Tables
 using Dates
 using Durations: Timestamp
+using InlineStrings: String3
 
 # Two schemas with different column counts: an ID column and numeric columns.
 # They are constants, so the compiled program knows every column type.
@@ -13,6 +14,7 @@ const MANY = Tables.Schema((:id, ntuple(i -> Symbol(:x, i), 120)...),
                            (Int, ntuple(_ -> Float64, 120)...))
 const TEXT = Tables.Schema((:text, :label), (Union{Missing, DataString}, DataString))
 const FLOATS = Tables.Schema((:a, :b), (Float32, Union{Missing, Float16}))
+const SMALLTEXT = Tables.Schema((:s,), (String3,))
 
 function writer()::Cint
     io = IOBuffer()
@@ -130,6 +132,21 @@ function many(rows)::Cint
     return 0
 end
 
+function smalltext(rows)::Cint
+    for row in rows
+        Core.println(String(row.s))
+    end
+    return 0
+end
+
+function smalltext(file::CSV.File)::Cint
+    values = file.s::Vector{String3}
+    for value in values
+        Core.println(String(value))
+    end
+    return 0
+end
+
 widerows(source) = CSV.Rows(source; schema=WIDE, delim=';', decimal=',',
                             missingstring="NA", comment="#")
 widefile(source) = CSV.File(source; schema=WIDE, delim=';', decimal=',',
@@ -190,6 +207,8 @@ function summary(f::CSV.File)::Cint
 end
 
 function reader(mode::String, arg::String)::Cint
+    mode == "smalltext" && return smalltext(CSV.Rows(arg; schema=SMALLTEXT))
+    mode == "smalltext-file" && return smalltext(CSV.File(arg; schema=SMALLTEXT))
     mode == "narrow" && return narrow(CSV.Rows(arg; schema=NARROW))
     mode == "narrow-text" && return narrow(CSV.Rows(IOBuffer(arg); schema=NARROW))
     mode == "narrow-summary" && return summary(CSV.Rows(arg; schema=NARROW))

@@ -428,12 +428,14 @@ The read checks the source this way:
   and only a `Union{T, Missing}` column accepts it. A quoted empty field `""`
   is an empty string in a text column and an invalid value in any other.
 
-The first problem in the source throws a [`CSV.ParseError`](@ref CSV.ParseError).
+Schema validation throws a [`CSV.ParseError`](@ref CSV.ParseError).
 Its problem records the data row (0 for the header), the column (0 for a
 whole row), the byte position, and a kind: `:header_mismatch`, `:short_row`,
 `:long_row`, `:invalid_value`, `:missing_value`, `:invalid_quoted_field`, or
-`:unclosed_quote`. `CSV.Rows` iteration has already returned the rows before
-an invalid row. Rows past `limit` are not read.
+`:unclosed_quote`. Header problems and an unclosed quote at the end of the
+selected input fail before any values are read. Otherwise, the first invalid
+row fails: `CSV.Rows` iteration has already returned the preceding rows.
+Rows past `limit` are not read.
 
 A column type is a concrete type that `types` accepts, alone or in a `Union`
 with `Missing`: integers, floats, `Bool`, `Char`, `Date`, `DateTime`, `Time`,
@@ -447,10 +449,10 @@ reader work as usual; `CSV.File` fills its columns on `ntasks` tasks.
 
 ### Compiling a reader with `juliac --trim`
 
-No type in a schema read depends on the file, so a program compiled with
-`juliac --trim=safe` can use it. Make each schema a constant. A program can
-hold several schemas, for example for files with different numbers of numeric
-columns, and choose one at run time:
+Schema reads avoid runtime column-type inference, so a program compiled with
+`juliac --trim=safe` can use supported types and options. Make each schema a
+constant. A program can hold several schemas, for example for files with
+different numbers of numeric columns, and choose one at run time:
 
 ```julia
 using CSV, Tables
@@ -487,7 +489,10 @@ juliac --output-exe reader --project=. --experimental --trim=safe reader.jl
 In a trimmed program, the source must be a local path, an `IO`, or bytes; a
 schema read rejects a URL instead of downloading it. A custom `dateformat`
 needs Parsers.jl's format compiler, which `--trim` cannot compile yet: read
-ISO dates and times, or read the field as text. `Tables.columntable` compiles
+ISO dates and times, or read the field as text. User-defined types using the
+generic `Base.tryparse` or `Parsers.tryparse` fallback also work only at runtime;
+the fallback discovers parser methods dynamically and cannot be trimmed.
+`Tables.columntable` compiles
 for schemas of up to 100 columns; iterate the rows of a wider schema, or
 read it with `CSV.File`. `CSV.File` is not parametric, so a program checks a
 column's type before using it, as in `x = file.x::Vector{Float64}` or

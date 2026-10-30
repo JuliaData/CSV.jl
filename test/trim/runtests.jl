@@ -14,7 +14,7 @@ narrowline(i, id, x, y) = string(i, "|", repr(id), "|", x, "|", y === missing ? 
 wideline(id, a, b, c, d) = string(id, "|", a, "|", b, "|", c, "|", d === missing ? "missing" : d)
 lines(xs...) = join(xs, '\n') * '\n'
 # Each case also runs through `CSV.File`, which prints the same lines.
-filemode(mode) = replace(mode, r"^(narrow|wide|many)" => s"\1-file")
+filemode(mode) = replace(mode, r"^(narrow|wide|many|smalltext)" => s"\1-file")
 # A file for the 121-column schema: an id and `ncols` numbers per row.
 manytext(rows; ncols=120) =
     lines(join(["id"; ["x$j" for j in 1:ncols]], ','),
@@ -23,6 +23,7 @@ manytext(rows; ncols=120) =
 # Readers that must succeed: (mode, source text, expected output). Path modes
 # read the text from a file written here; text modes pass it as an argument.
 const ACCEPTED = [
+    ("smalltext", "s\n\"a\"\"b\"\né\n", lines("a\"b", "é")),
     ("many", manytext([(1, j -> j / 4), (2, j -> -j)]), lines("1|1815.0|30.0", "2|-7260.0|-120.0")),
     ("narrow", "id,x,y\n\"a,\"\"q\"\"\",1.5,3\nb,-2e3,\nc,7,-128\n",
      lines(narrowline(1, "a,\"q\"", 1.5, 3), narrowline(2, "b", -2000.0, missing),
@@ -44,6 +45,7 @@ const ACCEPTED = [
 # A schema mismatch or an invalid value is a CSV.ParseError (exit 2) at its
 # data row and column; row 0 is the header and column 0 a whole row.
 const REJECTED = [
+    ("smalltext", "s\nabcd\n", 2, "ParseError invalid_value row=1 col=1:"),
     ("narrow", "id,z,y\na,1,2\n", 2, "ParseError header_mismatch row=0 col=2:"),
     ("narrow", "id,y,x\na,1,2\n", 2, "ParseError header_mismatch row=0 col=2:"),
     ("narrow", "id,x,x\na,1,2\n", 2, "ParseError header_mismatch row=0 col=3:"),
