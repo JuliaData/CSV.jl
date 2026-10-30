@@ -140,7 +140,7 @@ jobs:
       - uses: julia-actions/cache@v3
       - name: Instantiate trim environment
         run: julia --color=yes --project=test/trim test/dependencies.jl
-      - name: Compile and execute the public writer
+      - name: Compile and execute schema reads and the writer
         run: julia --color=yes --project=test/trim test/trim/runtests.jl
 
   quality:

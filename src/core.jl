@@ -112,17 +112,30 @@ end
 const LF = UInt8('\n')
 const CR = UInt8('\r')
 
-function Dialect(; delim::Union{Char, String}=',',
-                   quotechar::Char='"',
-                   openquotechar::Union{Char, Nothing}=nothing,
-                   closequotechar::Union{Char, Nothing}=nothing,
-                   escapechar::Union{Char, Nothing}=nothing,
-                   quoted::Bool=true,
-                   comment::Union{String, Nothing}=nothing,
-                   ignoreemptyrows::Bool=true,
-                   ignorerepeated::Bool=false,
-                   lenient::Bool=false,
-                   commentquotes::Bool=false)
+Dialect(; delim::Union{Char, String}=',',
+          quotechar::Char='"',
+          openquotechar::Union{Char, Nothing}=nothing,
+          closequotechar::Union{Char, Nothing}=nothing,
+          escapechar::Union{Char, Nothing}=nothing,
+          quoted::Bool=true,
+          comment::Union{String, Nothing}=nothing,
+          ignoreemptyrows::Bool=true,
+          ignorerepeated::Bool=false,
+          lenient::Bool=false,
+          commentquotes::Bool=false) =
+    _dialect(delim, quotechar, openquotechar, closequotechar, escapechar, quoted, comment,
+             ignoreemptyrows, ignorerepeated, lenient, commentquotes)
+
+# The checked dialect, taking its options positionally. A keyword call built
+# from these union-typed options would need a dynamic call, which a program
+# compiled with `juliac --trim` cannot make.
+Base.@nospecializeinfer function _dialect(@nospecialize(delim::Union{Char, String}),
+                  quotechar::Char,
+                  @nospecialize(openquotechar::Union{Char, Nothing}),
+                  @nospecialize(closequotechar::Union{Char, Nothing}),
+                  @nospecialize(escapechar::Union{Char, Nothing}), quoted::Bool,
+                  @nospecialize(comment::Union{String, Nothing}), ignoreemptyrows::Bool,
+                  ignorerepeated::Bool, lenient::Bool, commentquotes::Bool)
     isempty(delim) && throw(ArgumentError("delimiter must be non-empty"))
     d = delim isa Char ? (isascii(delim) ? delim % UInt8 : Vector{UInt8}(string(delim))) :
         sizeof(delim) == 1 ? codeunit(delim, 1) : Vector{UInt8}(delim)
@@ -350,8 +363,9 @@ function _dateformatkind(fmt::AbstractString)
 end
 
 # A `Dates.DateFormat` carries its format string as its first type parameter.
+_dateformatstring(::Nothing) = nothing
 _dateformatstring(fmt::AbstractString) = String(fmt)
-_dateformatstring(fmt::DateFormat) = String(typeof(fmt).parameters[1])
+_dateformatstring(::DateFormat{S}) where {S} = String(S)
 _dateformatstring(fmt) =
     throw(ArgumentError("dateformat must be a format String or DateFormat (got $(typeof(fmt)))"))
 
@@ -360,14 +374,19 @@ function makevalueopts(d::Dialect; dateformat=nothing, decimal::Char='.',
                        stripwhitespace::Bool=false,
                        groupmark::Union{Nothing, Char}=nothing,
                        sentinels=nothing)
-    return makevalueopts(d, dateformat, decimal, truestrings, falsestrings,
-                         stripwhitespace, groupmark, sentinels)
+    return makevalueopts(d, _dateformatstring(dateformat), decimal,
+                         _bytelist(truestrings, :truestrings),
+                         _bytelist(falsestrings, :falsestrings), stripwhitespace, groupmark,
+                         _bytelist(sentinels, :sentinels))
 end
 
-Base.@nospecializeinfer function makevalueopts(d::Dialect, @nospecialize(dateformat), decimal::Char,
-                       @nospecialize(truestrings), @nospecialize(falsestrings),
+# The option values in checked, concrete form, so a program compiled with
+# `juliac --trim` resolves each call. It specializes on whether a format is
+# given: only a read with a format compiles the format compiler.
+function makevalueopts(d::Dialect, dateformat::Union{Nothing, String}, decimal::Char,
+                       trues::Vector{Vector{UInt8}}, falses::Vector{Vector{UInt8}},
                        stripwhitespace::Bool, groupmark::Union{Nothing, Char},
-                       @nospecialize(sentinels))
+                       sentinelbytes::Vector{Vector{UInt8}})
     isascii(decimal) || throw(ArgumentError("decimal must be ASCII (got $(repr(decimal)))"))
     # A digit, sign, or exponent letter as the decimal separator would make
     # ordinary integers parse as fractions (`decimal='0'` read 105 as 1.5).
@@ -390,7 +409,6 @@ Base.@nospecializeinfer function makevalueopts(d::Dialect, @nospecialize(datefor
         dp, dtp, dtsp, tp, custom = _ISO_DATE_PATTERN, _ISO_DATETIME_PATTERN,
                                     _ISO_DATETIME_SPACE_PATTERN, _ISO_TIME_PATTERN, false
     else
-        dateformat = _dateformatstring(dateformat)
         p = Parsers.compilepattern(dateformat)
         kind = _dateformatkind(dateformat)
         kind != 0x00 ||
@@ -399,9 +417,6 @@ Base.@nospecializeinfer function makevalueopts(d::Dialect, @nospecialize(datefor
         custom = true
     end
     delimbytes = d.delim isa UInt8 ? [d.delim] : copy(d.delim)
-    trues = _bytelist(truestrings, :truestrings)
-    falses = _bytelist(falsestrings, :falsestrings)
-    sentinelbytes = _bytelist(sentinels, :sentinels)
     if d.quoted
         for s in sentinelbytes, b in s
             b in (d.oq, d.cq, d.e) &&
@@ -2703,7 +2718,7 @@ StringColumn(n::Int, e::UInt8, cq::UInt8) = StringColumn(fill(PAYLOAD_MISSING, n
 
 # Buffer 0 is the unreferenced source slot (DataStrings appends its own edit
 # arena after the last buffer).
-_buffers(col::StringColumn) = Vector{UInt8}[EMPTY_BYTES, col.extra, col.adopted...]
+_buffers(col::StringColumn) = vcat(Vector{UInt8}[EMPTY_BYTES, col.extra], col.adopted)
 
 @noinline _extratoolarge() =
     throw(ArgumentError("a single chunk holds more than 2 GiB of text; use a smaller chunkbytes"))
@@ -2992,13 +3007,17 @@ One recoverable parse problem, as returned by [`CSV.problems`](@ref CSV.problems
 Fields: `row` (1-based data row; 0 for a file- or header-level problem), `col`
 (1-based column; 0 for a whole-row problem), `pos` (byte offset into the parsed
 bytes), `kind`, and `message`. The kinds are `:short_row`, `:long_row`,
-`:invalid_value`, `:invalid_quoted_field`, and `:unclosed_quote`.
+`:invalid_value`, `:invalid_quoted_field`, and `:unclosed_quote`. A schema
+read (`CSV.File` or `CSV.Rows` with `schema`) also reports `:header_mismatch`
+(row 0) and `:missing_value`, a missing field in a column whose type excludes
+`missing`.
 """
 struct Problem
     row::Int          # 1-based data row (0 = file-level problem)
     col::Int          # 1-based column (0 = row-level problem)
     pos::Int          # absolute byte offset into the source buffer
-    kind::Symbol      # :short_row | :long_row | :invalid_value | :invalid_quoted_field | :unclosed_quote
+    kind::Symbol      # :short_row | :long_row | :invalid_value | :invalid_quoted_field |
+                      # :unclosed_quote | :header_mismatch | :missing_value
     message::String
 end
 
@@ -3010,10 +3029,14 @@ end
 """
     CSV.ParseError <: Exception
 
-Thrown by the readers under `on_error=:error` (or `strict=true`). `problem` is
-the source-earliest [`CSV.Problem`](@ref CSV.Problem) in a File or Chunks batch,
-`nproblems` counts every problem found, and `source` labels the input.
-Rows reports the accessed cell's problem with `nproblems=1`.
+Thrown for invalid input under `on_error=:error` (or `strict=true`), or when a
+schema is supplied. Without a schema, `problem` is the source-earliest
+[`CSV.Problem`](@ref CSV.Problem) in a File or Chunks batch, `nproblems` counts
+every problem found, and `source` labels the input. Rows reports the accessed
+cell's problem with `nproblems=1`.
+A schema read checks the header and unclosed quotes before reading values.
+Otherwise it throws for the first invalid row, with `nproblems=1`, when
+`CSV.Rows` iteration reaches the row or before `CSV.File` returns.
 """
 struct ParseError <: Exception
     problem::Problem
@@ -3029,7 +3052,7 @@ function Base.showerror(io::IO, e::ParseError)
     isempty(e.source) || print(io, " in ", e.source)
     print(io, ": ", p.message)
     e.nproblems > 1 && print(io, " (+", e.nproblems - 1, " more)")
-    print(io, "\nUse on_error=:collect to keep parsing and inspect ",
+    print(io, "\nFor CSV.File without a schema, use on_error=:collect to keep parsing and inspect ",
           "CSV.problems(file), or on_error=:warn for one summary warning (the eager default).")
 end
 
@@ -3051,9 +3074,10 @@ function _warnproblems(problems::Vector{Problem}, dropped::Int, source::String,
 end
 
 const ON_ERROR_MODES = (:collect, :warn, :error)
+# `repr(::Symbol)` would bring the expression printer into a trimmed program.
 _checkonerror(on_error::Symbol) =
     on_error in ON_ERROR_MODES ||
-        throw(ArgumentError("on_error must be :collect, :warn, or :error (got $(repr(on_error)))"))
+        throw(ArgumentError("on_error must be :collect, :warn, or :error (got :$on_error)"))
 
 mutable struct ProblemLog
     items::Vector{Problem}
@@ -3476,9 +3500,10 @@ _hasspanparser(T::Type) = hasmethod(Parsers.tryparse, Tuple{Type{T}, Vector{UInt
 _customparseable(T::Type) = isconcretetype(T) &&
     (_hasspanparser(T) || hasmethod(Base.tryparse, Tuple{Type{T}, String}))
 
-# Dict keys can be an integer position, a name, or a regular expression. An
-# exact key takes precedence over a regular expression.
-function _resolvekeys(dict::AbstractDict, names::Vector{Symbol}, ncols::Int, what::String;
+# `dict` is a dictionary or a vector of pairs. Its keys can be an integer
+# position, a name, or a regular expression. An exact key takes precedence over
+# a regular expression.
+function _resolvekeys(dict, names::Vector{Symbol}, ncols::Int, what::String;
                       validate::Bool=true)
     out = Dict{Int, Any}()
     for (k, v) in dict
@@ -3706,8 +3731,9 @@ function _taskforeach(f, items, tasklimit::Int, taskobserver=nothing)
         return nothing
     end
     next = Threads.Atomic{Int}(1)
-    @sync for _ in 1:workers
-        @wkspawn begin
+    tasks = Task[]
+    for _ in 1:workers
+        push!(tasks, @wkspawn begin
             started = false
             try
                 if taskobserver !== nothing
@@ -3722,8 +3748,20 @@ function _taskforeach(f, items, tasklimit::Int, taskobserver=nothing)
             finally
                 started && taskobserver(false)
             end
+        end)
+    end
+    # Join every worker, then report the failures together, as `@sync` does.
+    # `@sync` waits through an untyped channel that `juliac --trim` rejects.
+    failures = nothing
+    for task in tasks
+        try
+            wait(task)
+        catch err
+            failures === nothing && (failures = CompositeException())
+            push!(failures, err)
         end
     end
+    failures === nothing || throw(failures)
     return nothing
 end
 

@@ -115,6 +115,8 @@ function CSV._rowstring(::Type{InlineString}, x::CSV.DataString)
 end
 
 CSV._rowstring(::Type{T}, x::CSV.DataString) where {T <: InlineString} = _inl(T, x)
+CSV._rowstringfits(::Type{T}, x::CSV.DataString) where {T <: InlineString} =
+    T === InlineString || ncodeunits(x) <= _capacity(T)
 
 function CSV._levelvector(::Type{InlineString}, levels::CSV.DataStringVector, n::Int)
     W = _widthfor(levels)

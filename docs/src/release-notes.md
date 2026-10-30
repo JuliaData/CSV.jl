@@ -1,3 +1,27 @@
+# CSV.jl 1.3.0 release notes
+
+Unreleased. Requires Julia 1.10 or later.
+
+## Schema validation and trimmed readers
+
+- `CSV.Rows(source; schema=Tables.Schema(names, types))` validates the header,
+  row width, missing values, and values against the supplied schema. Iteration
+  returns `NamedTuple` rows with exactly the schema's types.
+- `CSV.File(source; schema)` performs the same checks before returning one
+  `Vector{T}` per column, or a `DataStrings.StringVector{T}` for a
+  `DataString` column, as `CSV.File` returns text without a schema. Text
+  columns own their bytes. `CSV.read` passes these columns to a sink.
+- The dialect and row-window options still apply. Per-column date formats
+  name the schema's columns, with or without a header row.
+- Schema reads compile with `juliac --trim=safe`. Sources are local paths,
+  `IO`, or bytes; URLs are rejected. Custom date formats and generic
+  user-defined `tryparse` fallbacks cannot yet be trimmed.
+  Julia 1.12 trimmed programs need one thread or
+  `parallel=false, prefetch=false`; Julia 1.13 supports multiple threads.
+
+See [Reading with a known schema](@ref) for examples and constraints. Existing
+reads keep their behavior when `schema` is omitted or `nothing`.
+
 # CSV.jl 1.2.0 release notes
 
 Released October 27, 2026. Requires Julia 1.10 or later.

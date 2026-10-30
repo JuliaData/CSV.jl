@@ -91,7 +91,7 @@ function _sentinels(missingstring)
     return isempty(sentinels) ? nothing : sentinels
 end
 
-Base.@nospecializeinfer function _probedelim(@nospecialize(dialectkw))
+function _probedelim(dialectkw)
     quotechar = get(dialectkw, :quotechar, '"')
     openquotechar = get(dialectkw, :openquotechar, nothing)
     oq = something(openquotechar, quotechar)
@@ -169,22 +169,40 @@ function _joinprefetch!(tasks::Vector{Task})
     return nothing
 end
 
+_isurl(s::AbstractString) = startswith(s, "http://") || startswith(s, "https://")
+
 function resolvesource(s::AbstractString; buffer_in_memory::Bool=false, prefetch::Bool=true,
                        workers::Union{Nothing, Vector{Task}}=nothing)
     # a URL: fetch to a temporary file with the Downloads stdlib, then
     # resolve that path exactly like any other (magic-byte gzip, mmap, ...)
-    if startswith(s, r"^https?://")
+    if _isurl(s)
         path = Downloads.download(String(s))
         try
-            return resolvesource(path; buffer_in_memory=true, prefetch)   # temp file: read, don't map
+            return resolvesource(LocalFile(path); buffer_in_memory=true, prefetch)   # temp file: read, don't map
         finally
             rm(path; force=true)
         end
     end
+    return resolvesource(LocalFile(String(s)); buffer_in_memory, prefetch, workers)
+end
+
+# A source path that is never downloaded. A schema read resolves a string
+# source through it, so a program compiled with `juliac --trim` does not
+# compile the Downloads stdlib, which trimming cannot resolve.
+struct LocalFile
+    path::String
+end
+
+function resolvesource(f::LocalFile; buffer_in_memory::Bool=false, prefetch::Bool=true,
+                       workers::Union{Nothing, Vector{Task}}=nothing)
+    s = f.path
     isfile(s) || throw(ArgumentError("no file at $(repr(String(s))) — a String " *
                                      "source is a file path (or an http(s):// URL); " *
                                      "wrap literal data in IOBuffer"))
-    return open(s, "r") do io
+    # Not `open(f, s, "r")`: on Julia 1.12 its argument splat is a dynamic call
+    # that `juliac --trim` rejects.
+    io = open(s, "r")
+    try
         isfile(io) || throw(ArgumentError("no regular file at $(repr(String(s)))"))
         sz = filesize(io)
         if sz >= 2
@@ -204,6 +222,8 @@ function resolvesource(s::AbstractString; buffer_in_memory::Bool=false, prefetch
         @static Sys.isunix() && Mmap.madvise!(m, Mmap.MADV_WILLNEED)
         prefetch && Threads.nthreads() > 1 && _prefetch!(m, workers)
         return m
+    finally
+        close(io)
     end
 end
 
@@ -717,6 +737,10 @@ struct Prepared
     # end of input.
     unclosedquote::Bool
     names::Vector{Symbol}
+    # The names the header rows spell (after `normalizenames`), before a
+    # repeated name gets its unique `_k` suffix; `nothing` when the read takes
+    # no header row. A schema read checks the header against these.
+    headernames::Union{Nothing, Vector{Symbol}}
     ncols::Int
     limit::Union{Nothing, Int}
     opts::ValueOpts
@@ -787,17 +811,78 @@ function _headerprefix(buf::Vector{UInt8}, d::Dialect, anchoroff::Int, rows::Int
     return index(buf, d; datastart=anchoroff, stop, chunkbytes, parallel, ntasks, fastindex)
 end
 
+# The dialect, value, index, and driver keywords that preparation reads, after
+# the keyword front end below has checked them. Each field has one type
+# whatever the caller passed, so preparation compiles once per dateformat form
+# rather than once per keyword combination, and a program compiled with
+# `juliac --trim` resolves each call in it. `D` is that form: `Nothing` (ISO
+# dates and times), `String` (one format), or `DateFormatPairs` (per-column
+# formats, resolved once the header names the columns). Only a read with a
+# format compiles Parsers' format compiler.
+const DateFormatPairs = Vector{Pair{Union{Int, Symbol, Regex}, Union{Nothing, String}}}
+const PrepareKeywords{D} = @NamedTuple{
+    quotechar::Char, openquotechar::Union{Nothing, Char},
+    closequotechar::Union{Nothing, Char}, escapechar::Union{Nothing, Char},
+    quoted::Bool, comment::Union{Nothing, String}, ignoreemptyrows::Bool,
+    ignorerepeated::Bool, fastindex::Bool, dateformat::D,
+    decimal::Char, truestrings::Vector{Vector{UInt8}}, falsestrings::Vector{Vector{UInt8}},
+    stripwhitespace::Bool, groupmark::Union{Nothing, Char}, maxproblems::Int,
+    nsample::Union{Nothing, Int}, typemap::Union{Nothing, Dict{Type, Type}}}
+
+_dateformatkey(k::Integer) = _saturatedint(k)
+_dateformatkey(k::Regex) = k
+_dateformatkey(k) = Symbol(k)
+
+_dateformatspec(fmt) = _dateformatstring(fmt)
+_dateformatspec(fmts::AbstractDict) =
+    eltype(DateFormatPairs)[_dateformatkey(k) => _dateformatstring(v) for (k, v) in fmts]
+
+function _preparekeywords(kw)
+    _checkkwargs("File/Rows/Chunks", kw, (_DIALECTKW..., _VALUEKW..., _INDEXKW..., _DRIVERKW...))
+    dateformat = _dateformatspec(get(kw, :dateformat, nothing))
+    return PrepareKeywords{typeof(dateformat)}((
+                            get(kw, :quotechar, '"')::Char,
+                            get(kw, :openquotechar, nothing)::Union{Nothing, Char},
+                            get(kw, :closequotechar, nothing)::Union{Nothing, Char},
+                            get(kw, :escapechar, nothing)::Union{Nothing, Char},
+                            get(kw, :quoted, true)::Bool,
+                            get(kw, :comment, nothing)::Union{Nothing, String},
+                            get(kw, :ignoreemptyrows, true)::Bool,
+                            get(kw, :ignorerepeated, false)::Bool,
+                            get(kw, :fastindex, true)::Bool,
+                            dateformat,
+                            get(kw, :decimal, '.')::Char,
+                            _bytelist(get(kw, :truestrings, nothing), :truestrings),
+                            _bytelist(get(kw, :falsestrings, nothing), :falsestrings),
+                            get(kw, :stripwhitespace, false)::Bool,
+                            get(kw, :groupmark, nothing)::Union{Nothing, Char},
+                            get(kw, :maxproblems, 10_000)::Int,
+                            get(kw, :nsample, nothing)::Union{Nothing, Int},
+                            _normalizetypemap(get(kw, :typemap, nothing)::Union{Nothing, AbstractDict})))
+end
+
+# `header` in the four forms preparation reads: `true`/`false`, a row number,
+# increasing row numbers, or column names.
+_headerarg(header::Bool) = header
+_headerarg(header::Integer) = _saturatedint(header)
+_headerarg(header::AbstractVector{<:Integer}) = Int[_saturatedint(h) for h in header]
+_headerarg(header::AbstractVector) = Symbol[Symbol(h) for h in header]
+_rowarg(::Nothing) = nothing
+_rowarg(n::Integer) = _saturatedint(n)
+
 # The bytes are already resolved. Every reader owns the page-touch workers of a
 # mapped source, because they run while the reader indexes the data range too,
 # well after this call returns. `buffer_in_memory` and `prefetch` reached
 # `resolvesource` there; they are accepted here and ignored.
-function _prepare(buf::Vector{UInt8};
+_prepare(buf::Vector{UInt8}; kw...) = _prepare(buf, nothing; kw...)
+
+function _prepare(buf::Vector{UInt8}, schemanames::Union{Nothing, Vector{Symbol}};
                   header::Union{Bool, Integer, AbstractVector}=1,
                   normalizenames::Bool=false,
                   skipto::Union{Nothing, Integer}=nothing,
                   footerskip::Integer=0,
                   missingstring=nothing,
-                  delim=nothing,
+                  delim::Union{Nothing, Char, String}=nothing,
                   limit::Union{Nothing, Integer}=nothing,
                   samplebytes::Int=1 << 16,
                   chunkbytes::Union{Nothing, Int}=nothing,
@@ -808,20 +893,6 @@ function _prepare(buf::Vector{UInt8};
                   validate::Bool=true,
                   lenient::Bool=false,
                   kw...)
-    return _prepare(buf, header, normalizenames, skipto, footerskip, missingstring,
-                    delim, limit, samplebytes, chunkbytes, parallel, ntasks,
-                    validate, lenient, kw)
-end
-
-# Keep sniffing and row-window construction independent of the caller's keyword
-# names and container types. Hot column loops specialize later.
-Base.@nospecializeinfer function _prepare(buf::Vector{UInt8}, @nospecialize(header), normalizenames::Bool,
-                  @nospecialize(skipto), @nospecialize(footerskip), @nospecialize(missingstring),
-                  @nospecialize(delim), @nospecialize(limit), samplebytes::Int,
-                  @nospecialize(chunkbytes::Union{Nothing, Int}), parallel::Bool,
-                  @nospecialize(ntasks::Union{Nothing, Int}),
-                  validate::Bool, lenient::Bool,
-                  @nospecialize(kw))
     header isa Integer && header < 0 &&
         throw(ArgumentError("header must be ≥ 0 (got $header)"))
     if header isa AbstractVector{<:Integer} && !isempty(header)
@@ -835,40 +906,53 @@ Base.@nospecializeinfer function _prepare(buf::Vector{UInt8}, @nospecialize(head
     samplebytes >= 1 || throw(ArgumentError("samplebytes must be ≥ 1 (got $samplebytes)"))
     ntasks === nothing || ntasks >= 1 ||
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
-    allowed = (_DIALECTKW..., _VALUEKW..., _INDEXKW..., _DRIVERKW...)
-    _checkkwargs("File/Rows/Chunks", kw, allowed)
+    return _prepare(buf, _headerarg(header), normalizenames, _rowarg(skipto),
+                    _saturatedint(footerskip), _sentinels(missingstring), delim,
+                    _rowarg(limit), samplebytes, chunkbytes, parallel, ntasks, validate,
+                    lenient, schemanames, _preparekeywords(kw))
+end
+
+# Keep sniffing and row-window construction independent of the caller's keyword
+# names and container types: the front end above passes every argument in one of
+# the declared types. Hot column loops specialize later.
+Base.@nospecializeinfer function _prepare(buf::Vector{UInt8},
+                  @nospecialize(header::Union{Bool, Int, Vector{Int}, Vector{Symbol}}),
+                  normalizenames::Bool, @nospecialize(skipto::Union{Nothing, Int}),
+                  footerskip::Int, @nospecialize(sentinels::Union{Nothing, Vector{String}}),
+                  @nospecialize(delim::Union{Nothing, Char, String}),
+                  @nospecialize(limit::Union{Nothing, Int}), samplebytes::Int,
+                  @nospecialize(chunkbytes::Union{Nothing, Int}), parallel::Bool,
+                  @nospecialize(ntasks::Union{Nothing, Int}),
+                  validate::Bool, lenient::Bool,
+                  @nospecialize(schemanames::Union{Nothing, Vector{Symbol}}),
+                  kw::PrepareKeywords{D}) where {D}
     # The default header row 1 with skipto=1 means "no header, data starts at
     # row 1" (the header row and the first data row cannot coincide).
     if header isa Integer && header == 1 && skipto !== nothing && skipto == 1
         header = false
     end
     rawheaderrow = header === true ? 1 : header === false ? 0 :
-                   header isa Integer ? header :
-                   header isa AbstractVector{<:Integer} && !isempty(header) ? last(header) : 0
-    d0 = Dialect(; delim=delim === nothing ? _probedelim(kw) : delim,
-                 quotechar=get(kw, :quotechar, '"'),
-                 openquotechar=get(kw, :openquotechar, nothing),
-                 closequotechar=get(kw, :closequotechar, nothing),
-                 escapechar=get(kw, :escapechar, nothing), quoted=get(kw, :quoted, true),
-                 comment=get(kw, :comment, nothing), ignoreemptyrows=get(kw, :ignoreemptyrows, true),
-                 ignorerepeated=get(kw, :ignorerepeated, false), lenient)
-    fastindex = get(kw, :fastindex, true)::Bool
+                   header isa Integer ? Int(header) :
+                   header isa Vector{Int} && !isempty(header) ? last(header) : 0
+    d0 = _dialect(delim === nothing ? _probedelim(kw) : delim, kw.quotechar,
+                  kw.openquotechar, kw.closequotechar, kw.escapechar, kw.quoted, kw.comment,
+                  kw.ignoreemptyrows, kw.ignorerepeated, lenient, false)
+    fastindex = kw.fastindex
     # The first row that MATTERS — the (first) header row, or `skipto` when
     # there is no header row. Everything before it is a skipped prefix: counted
     # as physical lines (quote-blind), never indexed, never sniffed. Row
     # offsets at or after it are quote-aware from that anchor.
     firstrow = header isa Integer && header > 1 ? _saturatedint(header) :
-               header isa AbstractVector{<:Integer} && !isempty(header) ?
-               _saturatedint(first(header)) :
+               header isa Vector{Int} && !isempty(header) ? first(header) :
                (header === false || (header isa Integer && header == 0) ||
-                (header isa AbstractVector && !(header isa AbstractVector{<:Integer}))) &&
+                header isa Vector{Symbol}) &&
                skipto !== nothing ? _saturatedint(skipto) : 1
     rawstart = _datastart(buf)
     anchoroff = firstrow > 1 ? _physicallineoffset(buf, rawstart, firstrow) : rawstart
     # `d` is assigned once: the `rowoff` closure below captures it, and a
     # captured local that is reassigned is boxed.
     d = if delim === nothing
-        get(kw, :ignorerepeated, false) &&
+        kw.ignorerepeated &&
             throw(ArgumentError("auto-delimiter detection is not supported with " *
                                 "ignorerepeated=true; pass delim explicitly"))
         # Sniff from the first row that matters: skipped prefix rows are junk
@@ -881,16 +965,10 @@ Base.@nospecializeinfer function _prepare(buf::Vector{UInt8}, @nospecialize(head
         d0
     end
     # missingstring → sentinels ("" entries are inert: empty is always missing)
-    sentinels = _sentinels(missingstring)
-    dateformat = get(kw, :dateformat, nothing)
-    dfdict = dateformat isa AbstractDict ? dateformat : nothing
-    decimal = get(kw, :decimal, '.')::Char
-    truestrings = get(kw, :truestrings, nothing)
-    falsestrings = get(kw, :falsestrings, nothing)
-    stripwhitespace = get(kw, :stripwhitespace, false)::Bool
-    groupmark = get(kw, :groupmark, nothing)::Union{Nothing, Char}
-    opts = makevalueopts(d, dfdict === nothing ? dateformat : nothing, decimal,
-                         truestrings, falsestrings, stripwhitespace, groupmark, sentinels)
+    sentinelbytes = _bytelist(sentinels, :sentinels)
+    opts = makevalueopts(d, kw.dateformat isa String ? kw.dateformat : nothing, kw.decimal,
+                         kw.truestrings, kw.falsestrings, kw.stripwhitespace, kw.groupmark,
+                         sentinelbytes)
     # `ntasks` sets the chunk target (about four chunks per task) inside the
     # 64 KiB–1 MiB band that keeps a chunk cache-resident: the column loops
     # re-read a chunk once per column, so a chunk must not grow with the file.
@@ -900,8 +978,7 @@ Base.@nospecializeinfer function _prepare(buf::Vector{UInt8}, @nospecialize(head
     # -- the row window, in RAW rows: header rows, skipto, footerskip ---------
     header isa Integer && !(header isa Bool) &&
         (header = header == 0 ? false : _saturatedint(header))
-    headerrows = header isa AbstractVector{<:Integer} ? _saturatedint.(header) :
-                 header isa Int ? [header] : Int[]
+    headerrows = header isa Vector{Int} ? header : header isa Int ? [header] : Int[]
     headerrow = header === true ? 1 : isempty(headerrows) ? 0 : last(headerrows)
     # Skipped prefix rows never enter the index (a generated column count would
     # otherwise come from a junk first row instead of the first DATA row) —
@@ -913,8 +990,7 @@ Base.@nospecializeinfer function _prepare(buf::Vector{UInt8}, @nospecialize(head
     # The header rows sit in a small prefix of the source. Index that prefix
     # only: the names and the first data byte come from it, and nothing here
     # needs the rest of the file indexed. Explicit names need no prefix.
-    explicitnames = header isa AbstractVector && !(header isa AbstractVector{<:Integer}) &&
-                    !isempty(header)
+    explicitnames = header isa Vector{Symbol} && !isempty(header)
     # A listed header row reads the first UNCONSUMED live row at or after its
     # raw offset, so an earlier entry can take the row a later one needs, and
     # a comment row can push a live row out of a short prefix. Grow the
@@ -927,7 +1003,7 @@ Base.@nospecializeinfer function _prepare(buf::Vector{UInt8}, @nospecialize(head
     local headerlog::ProblemLog
     while true
         empty!(headerrefs)
-        headerlog = ProblemLog(get(kw, :maxproblems, 10_000))
+        headerlog = ProblemLog(kw.maxproblems)
         prefix = explicitnames ? BufferIndex(ChunkIndex[], 0, false, false, anchoroff) :
                  _headerprefix(buf, d, anchoroff, prefixrows, cb, parallel, ntasks,
                                fastindex)
@@ -938,9 +1014,10 @@ Base.@nospecializeinfer function _prepare(buf::Vector{UInt8}, @nospecialize(head
             # bytes. Well-formed input never takes this path. The resolved
             # syntax is frozen: `delim` is already the sniffed byte, and a
             # sniffed `ignorerepeated` travels with it (see `_relenient`).
-            return _prepare(buf, header, normalizenames, skipto, footerskip, missingstring,
+            return _prepare(buf, header, normalizenames, skipto, footerskip, sentinels,
                             delim, limit, samplebytes, chunkbytes, parallel, ntasks,
-                            validate, true, (; kw..., ignorerepeated=d.ignorerepeated))
+                            validate, true, schemanames,
+                            merge(kw, (ignorerepeated=d.ignorerepeated,)))
         end
         chunks = prefix.chunks
         # The single-row header forms read the first live row of the prefix;
@@ -950,7 +1027,7 @@ Base.@nospecializeinfer function _prepare(buf::Vector{UInt8}, @nospecialize(head
                      chunks[hk].start + Int(chunks[hk].rowstartrel[chunks[hk].firstdatarow])
         complete = true
         names = if explicitnames
-            Symbol.(header)
+            Symbol.(header::Vector{Symbol})
         elseif header === false ||
                (header isa AbstractVector && isempty(header))   # header=[] ⇒ ColumnN
             k = _firstlive(chunks)
@@ -992,7 +1069,11 @@ Base.@nospecializeinfer function _prepare(buf::Vector{UInt8}, @nospecialize(head
         prefixrows = prefixrows > typemax(Int) >> 1 ? typemax(Int) - 1 : 2 * prefixrows
     end
     normalizenames && (names = [normalizename(String(nm)) for nm in names])
-    names = makeunique!(names)
+    headernames = headerrow == 0 ? nothing : names
+    allunique(names) || (names = makeunique!(copy(names)))
+    # Schema reads resolve per-column formats against the schema's names;
+    # `_checkschemaheader` then reports a header that differs from them.
+    schemanames === nothing || (names = schemanames)
 
     skipto === nothing || skipto > rawheaderrow ||
         throw(ArgumentError("skipto=$skipto must be past the header (row $rawheaderrow)"))
@@ -1031,9 +1112,10 @@ Base.@nospecializeinfer function _prepare(buf::Vector{UInt8}, @nospecialize(head
        (head.barequote ||
         _scanregion(buf, d, dataend, length(buf), cb, parallel, ntasks,
                     fastindex).barequote)
-        return _prepare(buf, header, normalizenames, skipto, footerskip, missingstring,
+        return _prepare(buf, header, normalizenames, skipto, footerskip, sentinels,
                         delim, limit, samplebytes, chunkbytes, parallel, ntasks,
-                        validate, true, (; kw..., ignorerepeated=d.ignorerepeated))
+                        validate, true, schemanames,
+                        merge(kw, (ignorerepeated=d.ignorerepeated,)))
     end
     # The source ends inside a quoted field. Whichever region reached the end
     # of the source saw it; the data range's own index sees it whenever that
@@ -1044,21 +1126,20 @@ Base.@nospecializeinfer function _prepare(buf::Vector{UInt8}, @nospecialize(head
 
     # engine + diagnostics kwargs the parse driver consumes directly
     colopts = nothing
-    if dfdict !== nothing
-        overrides = _resolvekeys(dfdict, names, length(names), "dateformat"; validate)
+    if kw.dateformat isa DateFormatPairs
+        overrides = _resolvekeys(kw.dateformat, names, length(names), "dateformat"; validate)
         colopts = ValueOpts[haskey(overrides, j) ?
-                              makevalueopts(d, overrides[j], decimal, truestrings, falsestrings,
-                                            stripwhitespace, groupmark, sentinels) : opts
-                              for j in 1:length(names)]
+                              makevalueopts(d, overrides[j]::Union{Nothing, String}, kw.decimal,
+                                            kw.truestrings, kw.falsestrings,
+                                            kw.stripwhitespace, kw.groupmark, sentinelbytes) :
+                              opts for j in 1:length(names)]
     end
-    nsample = get(kw, :nsample, nothing)::Union{Nothing, Int}
+    nsample = kw.nsample
     nsample === nothing || nsample >= 1 ||
         throw(ArgumentError("nsample must be ≥ 1 (got $nsample)"))
     settings = ReadSettings(cb, parallel, ntasks, resolvescanner(d, fastindex), fastindex,
-                            get(kw, :maxproblems, 10_000), nsample,
-                            _normalizetypemap(get(kw, :typemap, nothing)::Union{Nothing, AbstractDict}),
-                            validate, colopts)
-    return Prepared(buf, datastart, dataend, unclosedatend, names,
+                            kw.maxproblems, nsample, kw.typemap, validate, colopts)
+    return Prepared(buf, datastart, dataend, unclosedatend, names, headernames,
                     length(names), lim, opts, d, headerlog, headerrefs, settings)
 end
 
@@ -1077,9 +1158,9 @@ function _indexdata(p::Prepared)
     return BufferIndex(bi.chunks, bi.nrows, unclosed, bi.barequote, bi.nextstart)
 end
 
-# The resolved delimiter, as a keyword value. A sniffed delimiter is a single
-# byte; an explicit multi-byte delimiter round-trips as its string.
-_resolveddelim(d::Dialect) = d.delim isa UInt8 ? Char(d.delim) : String(copy(d.delim))
+# The resolved delimiter, as a keyword value: its bytes as a String, which
+# resolves to the same delimiter. One type keeps the retry's keyword call static.
+_resolveddelim(d::Dialect) = String(d.delim isa UInt8 ? [d.delim] : copy(d.delim))
 
 # Prepare the same bytes again under the lenient quote rule. The syntax the
 # first pass resolved is FROZEN — the delimiter AND the repeated-delimiter rule.
@@ -1090,15 +1171,15 @@ _resolveddelim(d::Dialect) = d.delim isa UInt8 ? Char(d.delim) : String(copy(d.d
 # rule: a reader that retried then agrees with one that did not, whatever made it
 # retry (a bare quote past `limit` for `File`, a window boundary for `Chunks`).
 # `_prepare`'s own recursion freezes the same way, with its locals.
-_relenient(p::Prepared; kw...) =
-    _prepare(p.buf; kw..., delim=_resolveddelim(p.d),
+_relenient(p::Prepared, schemanames::Union{Nothing, Vector{Symbol}}=nothing; kw...) =
+    _prepare(p.buf, schemanames; kw..., delim=_resolveddelim(p.d),
              ignorerepeated=p.d.ignorerepeated, lenient=true)
 
 # A bare quote in the data range makes the structural scan unsound the same way
 # one in the header prefix does. Prepare the source again under the lenient
 # quote rule, from the bytes already resolved. Well-formed input never takes
 # this path.
-function _prepareindexed(source; kw...)
+function _prepareindexed(source, schemanames::Union{Nothing, Vector{Symbol}}=nothing; kw...)
     # An eager reader owns the page-touch workers of a mapped file: they run
     # while the header prefix AND the data range are indexed, and are joined
     # before the mapping escapes this call.
@@ -1106,10 +1187,10 @@ function _prepareindexed(source; kw...)
     try
         buf = resolvesource(source; buffer_in_memory=get(kw, :buffer_in_memory, false)::Bool,
                             prefetch=get(kw, :prefetch, true)::Bool, workers)
-        p = _prepare(buf; kw...)
+        p = _prepare(buf, schemanames; kw...)
         bi = _indexdata(p)
         if bi.barequote && !p.d.lenient
-            p = _relenient(p; kw...)
+            p = _relenient(p, schemanames; kw...)
             bi = _indexdata(p)
         end
         return IndexedSource(p, bi)
@@ -1175,20 +1256,23 @@ struct File <: AbstractVector{FileRow}
     lookup::Dict{Symbol, Int}
 end
 
-function File(source;
-              types=nothing, select=nothing, drop=nothing,
-              scan=nothing,
-              pool=DEFAULT_POOL,
-              downcast::Bool=false,
-              transpose::Bool=false,
-              stringtype::Type=DataString,
-              strict::Bool=false, on_error::Symbol=strict ? :error : :warn,
-              maxwarnings::Union{Nothing, Int}=nothing,
-              maxproblems::Int=something(maxwarnings, 10_000),
-              ntasks::Union{Nothing, Int}=nothing,
-              parallel::Bool=ntasks === nothing ? Threads.nthreads() > 1 : ntasks > 1,
-              validate::Bool=true,
-              kw...)
+File(source; schema=nothing, kw...) =
+    schema === nothing ? _file(source; kw...) : _schemafile(source, schema; kw...)
+
+function _file(source;
+               types=nothing, select=nothing, drop=nothing,
+               scan=nothing,
+               pool=DEFAULT_POOL,
+               downcast::Bool=false,
+               transpose::Bool=false,
+               stringtype::Type=DataString,
+               strict::Bool=false, on_error::Symbol=strict ? :error : :warn,
+               maxwarnings::Union{Nothing, Int}=nothing,
+               maxproblems::Int=something(maxwarnings, 10_000),
+               ntasks::Union{Nothing, Int}=nothing,
+               parallel::Bool=ntasks === nothing ? Threads.nthreads() > 1 : ntasks > 1,
+               validate::Bool=true,
+               kw...)
     return _file(source, types, select, drop, scan, pool, downcast, transpose, stringtype,
                  on_error, maxproblems, ntasks, parallel, validate, kw)
 end
@@ -1394,6 +1478,7 @@ function File(sources::AbstractVector; source=nothing, kw...)
         throw(ArgumentError("source must be a column name or name => values pair"))
     end
     source === nothing && length(sources) == 1 && return File(first(sources); kw...)
+    get(kw, :schema, nothing) === nothing || throw(ArgumentError("a schema read takes one source"))
     strict = get(kw, :strict, false)
     on_error = get(kw, :on_error, strict ? :error : :warn)
     maxwarnings = get(kw, :maxwarnings, nothing)
@@ -2500,7 +2585,8 @@ end
 # string type inferred text converts to). Carrying the schema in the type makes
 # `row.name`, and `row[j]` with a literal `j`, resolve statically like
 # NamedTuple fields: a typed cell parses and returns without a dynamic dispatch
-# or a boxed value. `E` is the `on_error` mode.
+# or a boxed value. `E` is the `on_error` mode, or `:schema` for a read that
+# takes `NT` from a caller's `Tables.Schema` (see "Rows with a schema" below).
 struct Rows{NT <: NamedTuple, E}
     name::String
     inner::_IndexedRows
@@ -2508,9 +2594,12 @@ struct Rows{NT <: NamedTuple, E}
     limit::Union{Nothing, Int}
 end
 
-function Rows(source; types=nothing, reusebuffer::Bool=false, select=nothing, drop=nothing,
-              stringtype::Type=DataString, strict::Bool=false,
-              on_error::Symbol=strict ? :error : :collect, kw...)
+Rows(source; schema=nothing, kw...) =
+    schema === nothing ? _rows(source; kw...) : _schemarows(source, schema; kw...)
+
+function _rows(source; types=nothing, reusebuffer::Bool=false, select=nothing, drop=nothing,
+               stringtype::Type=DataString, strict::Bool=false,
+               on_error::Symbol=strict ? :error : :collect, kw...)
     allowed = (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...)
     _checkkwargs("Rows", kw, allowed)
     _checkonerror(on_error)
@@ -2555,12 +2644,12 @@ function Base.length(r::Rows)
     return lim === nothing ? n : min(n, lim)
 end
 
-function Base.show(io::IO, r::Rows)
+function Base.show(io::IO, r::Rows{NT, E}) where {NT, E}
     n = length(r)
     sch = Tables.schema(r)
     print(io, "CSV.Rows(", repr(getfield(r, :name)), "): ", n, " row", n == 1 ? "" : "s",
           " × ", length(sch.names), " column", length(sch.names) == 1 ? "" : "s",
-          " (cells parse on access)")
+          E === :schema ? " (rows parse and validate when iterated)" : " (cells parse on access)")
     for (nm, T) in zip(sch.names, sch.types)
         print(io, "\n  ", nm, "::", T)
     end
@@ -2604,6 +2693,16 @@ end
 # observed. This keeps the default allocation-free row view while honoring
 # the `strict` keyword and the `on_error` contract.
 function _strictrowvalue(view::_IndexedRow, j::Int, ::Type{T}) where {T}
+    cell = _strictcell(view, j)
+    cell[1] == 0 && return missing
+    return _strictcontent(T, view, j, cell)
+end
+
+# Cell `j` as `(cpos, clen, esc, pos, len, opts)`: its content span from
+# `cellcontent`, its field span, and its value options, with `cpos == 0` for a
+# missing cell. A short row or malformed quoting throws. Inlined, so
+# `_strictrowvalue` stays one call.
+@inline function _strictcell(view::_IndexedRow, j::Int)
     r = getfield(view, :r)
     ci = getfield(view, :ci)
     lr = getfield(view, :localrow)
@@ -2613,14 +2712,28 @@ function _strictrowvalue(view::_IndexedRow, j::Int, ::Type{T}) where {T}
         _throwrowproblem(view, j, pos, :short_row, "row has no field $j")
     end
     pos, len = sp
-    len == 0 && return missing
     opts = _rowopts(r, j)
+    len == 0 && return (0, 0, false, pos, len, opts)
     cpos, clen, esc, st = cellcontent(r.buf, pos, len, opts)
-    st == CELL_MISSING && return missing
+    st == CELL_MISSING && return (0, 0, false, pos, len, opts)
     st == CELL_BADQUOTE &&
         _throwrowproblem(view, j, pos, :invalid_quoted_field,
                          "malformed quoting in " * excerpt(r.buf, pos, len))
-    _stringsink(T) && return _typedvalue(T, view, j)
+    return (cpos, clen, esc, pos, len, opts)
+end
+
+# A present cell (see `_strictcell`) as a `T`. The result is never `missing`, so
+# a DataString returns unboxed.
+@inline function _strictcontent(::Type{T}, view::_IndexedRow, j::Int, cell) where {T}
+    cpos, clen, esc, pos, len, opts = cell
+    r = getfield(view, :r)
+    if _stringsink(T)
+        value = _cellstring(r, j, cpos, clen, esc)
+        _rowstringfits(T, value) ||
+            _throwrowproblem(view, j, pos, :invalid_value,
+                             "cannot parse $T from " * excerpt(r.buf, pos, len))
+        return _rowstring(T, value)
+    end
     T === Missing &&
         _throwrowproblem(view, j, pos, :invalid_value,
                          "non-missing value cannot be parsed as Missing in " *
@@ -2655,6 +2768,8 @@ _rowcell(::Type{T}, v::_IndexedRow, j::Int, ::Val) where {T} = _typedvalue(T, v,
 _rowstring(::Type{String}, x::DataString) = String(x)
 _rowstring(::Type{DataString}, x::DataString) = x
 _rowstring(::Type{Symbol}, x::DataString) = Symbol(x)
+# Extensions with bounded text types check capacity before strict conversion.
+_rowstringfits(::Type, ::DataString) = true
 # Inline the access wrappers so a literal column name or index reaches the
 # typed lookup above. This avoids dynamic dispatch and boxing on cell access.
 @inline function Tables.getcolumn(row::Row{NT}, nm::Symbol) where {NT}
@@ -2673,6 +2788,369 @@ end
 @inline Base.getindex(row::Row, nm::AbstractString) =
     Tables.getcolumn(row, Symbol(nm))
 rownumber(row::Row) = getfield(getfield(row, :view), :rownumber)
+
+# ---------------------------------------------------------------------------
+# Rows with a schema — typed, validated rows
+# ---------------------------------------------------------------------------
+# `Rows(source; schema)` takes the column names and types from a
+# `Tables.Schema` the caller fixes before reading, so `NT` is known when the
+# caller compiles, not built from the file. `Rows{NT, :schema}` iterates `NT`
+# values: each row parses and validates when iteration reaches it. A program
+# compiled with `juliac --trim` reads this way: every call below resolves from
+# the schema's types.
+
+function _schemarows(source, schema::Tables.Schema{N, T}; types=nothing, select=nothing,
+                     drop=nothing, stringtype=nothing, strict::Bool=true,
+                     on_error::Symbol=:error, reusebuffer::Bool=false, kw...) where {N, T}
+    _checkschemakeywords(types, stringtype, select, drop, on_error, strict)
+    src, inner = _schemasource(source, schema, "Rows",
+                               (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW...), kw)
+    return Rows{NamedTuple{N, T}, :schema}(inner.name, inner, collect(1:length(N)), src.p.limit)
+end
+
+# Keywords that both schema readers refuse: the schema sets every column and type.
+function _checkschemakeywords(types, stringtype, select, drop, on_error::Symbol, strict::Bool)
+    types === nothing && stringtype === nothing || throw(ArgumentError(
+        "the schema sets every column type; remove types and stringtype"))
+    select === nothing && drop === nothing || throw(ArgumentError(
+        "a schema read reads every column of the schema; remove select and drop"))
+    on_error === :error && strict || throw(ArgumentError(
+        "a schema read throws CSV.ParseError on invalid input; remove on_error and strict"))
+    return nothing
+end
+
+# The checks a schema read makes before its first row: the schema, the keywords
+# the reader named `context` allows, the source, and the header. Returns the
+# indexed source and a row view over it whose names are the schema's.
+function _schemasource(source, schema::Tables.Schema{N, T}, context::String, allowed,
+                       kw) where {N, T}
+    (N === nothing || T === nothing) && throw(ArgumentError(
+        "schema must carry its column names and types as type parameters, as " *
+        "Tables.Schema(names, types) builds for up to 65535 columns"))
+    for (j, nm) in enumerate(N)
+        findfirst(==(nm), N) == j || throw(ArgumentError("schema names column $nm twice"))
+    end
+    _checkkwargs(context, kw, allowed)
+    header = get(kw, :header, 1)
+    header isa Union{Bool, Integer, AbstractVector{<:Integer}} || throw(ArgumentError(
+        "the schema names the columns; pass header=false for a source without a header row"))
+    _checkschematypes(NamedTuple{N, T})
+    colnames = collect(Symbol, N)
+    if source isa AbstractString
+        _isurl(source) && throw(ArgumentError(
+            "a schema read takes a local path, an IO, or bytes; download " *
+            "$(repr(String(source))) and pass the downloaded file"))
+        src = _prepareindexed(LocalFile(String(source)), colnames; kw...)
+    else
+        src = _prepareindexed(source, colnames; kw...)
+    end
+    p = src.p
+    name = _sourcename(source)
+    log = p.headerlog
+    problem = log.first
+    problem === nothing || throw(ParseError(problem, length(log.items) + log.dropped, name))
+    _checkschemaheader(p, N, name)
+    # A source that ends inside a quoted field fails before its first row, as
+    # `CSV.File` reports it, unless `limit` stops short of the last row.
+    if src.bi.unclosedquote &&
+       (p.limit === nothing || p.limit >= sum(nrows, src.bi.chunks; init=0))
+        throw(ParseError(Problem(0, 0, length(p.buf), :unclosed_quote,
+                                 "input ended inside a quoted field"), 1, name))
+    end
+    inner = _IndexedRows(name, p.buf, src.bi.chunks, colnames,
+                         Dict(nm => j for (j, nm) in enumerate(colnames)), p.opts,
+                         p.settings.colopts, p.d)
+    return src, inner
+end
+
+_schemarows(source, schema; kw...) =
+    throw(ArgumentError("schema must be a Tables.Schema (got $(typeof(schema)))"))
+
+# A schema column type is a concrete type CSV can parse, or a Union of one with
+# `Missing`. Generated so that each column's type is a constant at its check,
+# whatever the schema's width.
+@generated function _checkschematypes(::Type{NT}) where {NT <: NamedTuple}
+    checks = [:(_checkschematype($(fieldtype(NT, j)), $(QuoteNode(fieldname(NT, j)))))
+              for j in 1:fieldcount(NT)]
+    return Expr(:block, checks..., :(return nothing))
+end
+
+function _checkschematype(::Type{T}, nm::Symbol) where {T}
+    S = Base.nonmissingtype(T)
+    isconcretetype(S) && _schemavalue(S) && return nothing
+    throw(ArgumentError("schema column $nm has type $T; a column type must be a " *
+                        "concrete type CSV can parse, or a Union of one with Missing"))
+end
+
+_schemavalue(::Type{<:Union{Int64, Int128, NativeFloat, Bool, Char, Date, DateTime, Time,
+                            Timestamp, BigInt, BigFloat, Base.UUID, NarrowParseType}}) = true
+_schemavalue(::Type{T}) where {T} = _stringsink(T) || _parseable(T) || _customparseable(T)
+
+# The header must spell the schema's names, in order, once each. Without a
+# header row the schema names the columns, and the row check below counts
+# each row's fields.
+function _checkschemaheader(p::Prepared, names::Tuple{Vararg{Symbol}}, source::String)
+    found = p.headernames
+    found === nothing && return nothing
+    for (j, nm) in enumerate(found)
+        k = findfirst(==(nm), found)::Int
+        k == j || _throwheaderproblem(p, j, source,
+                                      "the header repeats the name $nm (columns $k and $j)")
+    end
+    expected = collect(Symbol, names)
+    found == expected && return nothing
+    absent = setdiff(expected, found)
+    extra = setdiff(found, expected)
+    if isempty(absent) && isempty(extra)
+        j = findfirst(j -> found[j] != expected[j], eachindex(found))::Int
+        _throwheaderproblem(p, j, source,
+                            "the header names column $j $(found[j]); the schema expects $(expected[j])")
+    end
+    j = something(findfirst(j -> j > length(found) || j > length(expected) ||
+                                 found[j] != expected[j],
+                            1:max(length(found), length(expected))), 1)
+    _throwheaderproblem(p, j, source, "the header does not match the schema" *
+                        (isempty(absent) ? "" : "; missing columns: " * join(absent, ", ")) *
+                        (isempty(extra) ? "" : "; extra columns: " * join(extra, ", ")))
+end
+
+@noinline function _throwheaderproblem(p::Prepared, j::Int, source::String, message::String)
+    pos = p.datastart
+    if !isempty(p.headerrefs)
+        ci, hrow = last(p.headerrefs)
+        pos = j <= nfields(ci, hrow) ? (fieldspan(ci, hrow, j)::Tuple{Int, Int})[1] :
+                                       ci.start + Int(ci.rowstartrel[hrow])
+    end
+    throw(ParseError(Problem(0, j, pos, :header_mismatch, message), 1, source))
+end
+
+Base.eltype(::Type{Rows{NT, :schema}}) where {NT} = NT
+Tables.schema(::Rows{NT, :schema}) where {NT} = Tables.Schema(NT)
+
+function Base.iterate(r::Rows{NT, :schema}, state=((1, nothing, 1))) where {NT}
+    lim = getfield(r, :limit)
+    lim !== nothing && state[3] > lim && return nothing
+    it = iterate(getfield(r, :inner), state)
+    it === nothing && return nothing
+    view, next = it
+    return _schemarow(NT, view), next
+end
+
+# One row at the schema's types. Generated so that each column's type is a
+# constant at its parse, whatever the schema's width.
+@generated function _schemarow(::Type{NT}, view::_IndexedRow) where {NT <: NamedTuple}
+    n = fieldcount(NT)
+    cells = [:(_schemacell($(fieldtype(NT, j)), view, $j)) for j in 1:n]
+    return quote
+        _checkfieldcount(view, $n)
+        return NT(($(cells...),))
+    end
+end
+
+# A row has exactly one field per schema column. A kept empty row
+# (`ignoreemptyrows=false`) has one empty field.
+function _checkfieldcount(view::_IndexedRow, n::Int)
+    ci = getfield(view, :ci)
+    lr = getfield(view, :localrow)
+    nf = nfields(ci, lr)
+    nf == n && return nothing
+    pos = (fieldspan(ci, lr, nf < n ? 1 : n + 1)::Tuple{Int, Int})[1]
+    _throwrowproblem(view, 0, pos, nf < n ? :short_row : :long_row,
+                     "expected $n fields, found $nf")
+end
+
+# One cell at schema type `T`. An empty cell or a `missingstring` spelling is
+# `missing`, which only a `Union{S, Missing}` column takes; any other cell must
+# parse as the column type, exactly as `Rows(strict=true)` parses it.
+@inline function _schemacell(::Type{T}, view::_IndexedRow, j::Int) where {T}
+    S = Base.nonmissingtype(T)
+    # Parse text inline to return DataString unboxed. Other types use
+    # `_strictrowvalue` to keep generated code small for wide schemas.
+    if _stringsink(S)
+        cell = _strictcell(view, j)
+        cell[1] == 0 || return _strictcontent(S, view, j, cell)
+        return _schemamissing(T, view, j, cell[4])
+    end
+    value = _strictrowvalue(view, j, S)
+    value === missing || return value
+    Missing <: T && return missing
+    pos = (fieldspan(getfield(view, :ci), getfield(view, :localrow), j)::Tuple{Int, Int})[1]
+    return _schemamissing(T, view, j, pos)
+end
+
+@inline function _schemamissing(::Type{T}, view::_IndexedRow, j::Int, pos::Int) where {T}
+    Missing <: T && return missing
+    _throwrowproblem(view, j, pos, :missing_value, "missing value in a $T column")
+end
+
+# `File(source; schema)`: the same checks, every row read before the File is
+# returned. A DataString column is a `StringVector{T}`, as `CSV.File` returns text
+# without a schema; any other column is a `Vector{T}`.
+function _schemafile(source, schema::Tables.Schema{N, T}; types=nothing, select=nothing,
+                     drop=nothing, stringtype=nothing, strict::Bool=true,
+                     on_error::Symbol=:error, pool=nothing, downcast=nothing,
+                     transpose=nothing, scan=nothing, kw...) where {N, T}
+    _checkschemakeywords(types, stringtype, select, drop, on_error, strict)
+    pool === nothing && downcast === nothing && transpose === nothing && scan === nothing ||
+        throw(ArgumentError("the schema sets every column type and a schema read reads " *
+                            "every row; remove pool, downcast, transpose, and scan"))
+    src, inner = _schemasource(source, schema, "File",
+                               (_PREPKW..., _DIALECTKW..., _VALUEKW..., _INDEXKW..., :ntasks), kw)
+    settings = src.p.settings
+    columns, n = _schemacolumns(NamedTuple{N, T}, inner, src.p.limit,
+                                _readtasklimit(settings.parallel, settings.ntasks))
+    colnames = inner.names
+    t = ParsedTable(colnames, _abstractcolumns(NamedTuple{N, T}, columns), n, Problem[], 0)
+    return File(inner.name, t, Dict(nm => j for (j, nm) in enumerate(colnames)))
+end
+
+_schemafile(source, schema; kw...) =
+    throw(ArgumentError("schema must be a Tables.Schema (got $(typeof(schema)))"))
+
+# The schema's columns, filled row by row. Each chunk fills its own rows, on its
+# own task when the read allows several; the source-earliest problem is thrown.
+function _schemacolumns(::Type{NT}, inner::_IndexedRows, limit::Union{Nothing, Int},
+                        tasklimit::Int) where {NT}
+    chunks = inner.chunks
+    counts = Int[nrows(ci) for ci in chunks]
+    remaining = something(limit, typemax(Int))
+    for k in eachindex(counts)
+        counts[k] = min(counts[k], remaining)
+        remaining -= counts[k]
+    end
+    rowbases = cumsum(counts) .- counts
+    n = sum(counts; init=0)
+    columns = _allocschemacolumns(NT, inner, n, length(chunks))
+    failures = Vector{Union{Nothing, ParseError}}(nothing, length(chunks))
+    _taskforeach(eachindex(chunks), tasklimit) do k
+        try
+            _fillschemachunk!(columns, NT, inner, chunks[k], k, rowbases[k], counts[k])
+        catch err
+            err isa ParseError || rethrow()
+            failures[k] = err
+        end
+    end
+    for failure in failures
+        failure === nothing || throw(failure)
+    end
+    return columns, n
+end
+
+function _fillschemachunk!(columns::Tuple, ::Type{NT}, inner::_IndexedRows, ci::ChunkIndex,
+                           k::Int, rowbase::Int, n::Int) where {NT}
+    segments = _schemasegments(columns, ci, k, n)
+    for i in 1:n
+        view = _IndexedRow(inner, ci, ci.firstdatarow + i - 1, rowbase + i)
+        _fillschemarow!(segments, NT, view, rowbase + i)
+    end
+    _adoptschemasegments!(segments, k)
+    return nothing
+end
+
+# Column allocation, chunk segments, row stores, and the File's column vector,
+# generated so that each column's type is a constant whatever the schema's width.
+@generated function _allocschemacolumns(::Type{NT}, inner::_IndexedRows, n::Int,
+                                        nchunks::Int) where {NT <: NamedTuple}
+    columns = map(1:fieldcount(NT)) do j
+        T = fieldtype(NT, j)
+        Base.nonmissingtype(T) === DataString ?
+            :(_schematextcolumn(inner, $j, n, nchunks)) : :(Vector{$T}(undef, n))
+    end
+    return :(($(columns...),))
+end
+
+@generated function _schemasegments(columns::Tuple, ci::ChunkIndex, k::Int, n::Int)
+    segments = [:(_schemasegment(columns[$j], ci, $j, k, n)) for j in 1:fieldcount(columns)]
+    return :(($(segments...),))
+end
+
+@generated function _fillschemarow!(segments::Tuple, ::Type{NT}, view::_IndexedRow,
+                                    i::Int) where {NT <: NamedTuple}
+    n = fieldcount(NT)
+    stores = [:(_storeschemacell!(segments[$j], $(fieldtype(NT, j)), view, $j, i))
+              for j in 1:n]
+    return quote
+        _checkfieldcount(view, $n)
+        $(stores...)
+        return nothing
+    end
+end
+
+@generated function _adoptschemasegments!(segments::Tuple, k::Int)
+    adopts = [:(_adoptschemasegment!(segments[$j], k)) for j in 1:fieldcount(segments)]
+    return Expr(:block, adopts..., :(return nothing))
+end
+
+@generated function _abstractcolumns(::Type{NT}, columns::Tuple) where {NT <: NamedTuple}
+    n = fieldcount(NT)
+    stores = [:(@inbounds out[$j] = _schemacolumn($(fieldtype(NT, j)), columns[$j]))
+              for j in 1:n]
+    return quote
+        out = Vector{AbstractVector}(undef, $n)
+        $(stores...)
+        return out
+    end
+end
+
+# A DataString column is stored as the reader stores text: payloads, plus one
+# byte buffer per chunk, which `_buffers` numbers 1 + k for chunk `k`.
+function _schematextcolumn(inner::_IndexedRows, j::Int, n::Int, nchunks::Int)
+    col = StringColumn(n, _rowopts(inner, j).e, inner.d.cq)
+    resize!(col.adopted, nchunks)
+    fill!(col.adopted, EMPTY_BYTES)
+    return col
+end
+
+# Chunk `k` writes a DataString column through a segment that shares the
+# column's payloads and owns the chunk's long text, reserved once from the
+# cells' spans. Other columns are written in place.
+_schemasegment(col::Vector, ::ChunkIndex, ::Int, ::Int, ::Int) = col
+function _schemasegment(col::StringColumn, ci::ChunkIndex, j::Int, k::Int, n::Int)
+    seg = StringColumn(col.payloads, UInt8[], col.adopted, col.lock, col.e, col.cq, 1 + k)
+    _reservelong!(seg, ci, j, ci.firstdatarow, 0, nothing, 0, n)
+    return seg
+end
+
+_adoptschemasegment!(::Vector, ::Int) = nothing
+function _adoptschemasegment!(seg::StringColumn, k::Int)
+    sizehint!(seg.extra, length(seg.extra))   # quoted cells reserve more than they use
+    seg.adopted[k] = seg.extra
+    return nothing
+end
+
+@inline function _storeschemacell!(col::Vector, ::Type{T}, view::_IndexedRow, j::Int,
+                                   i::Int) where {T}
+    value = _schemacell(T, view, j)
+    @inbounds col[i] = value
+    return nothing
+end
+
+# A DataString cell is stored as its payload, as `parsecolchunk!` stores text: a
+# missing cell keeps `PAYLOAD_MISSING`, a short one is inline, and a long one is
+# copied (or unescaped) into the segment's bytes.
+@inline function _storeschemacell!(col::StringColumn, ::Type{T}, view::_IndexedRow,
+                                   j::Int, i::Int) where {T}
+    cpos, clen, esc, pos = _strictcell(view, j)
+    if cpos == 0
+        _schemamissing(T, view, j, pos)   # throws unless the column takes missing
+        return nothing
+    end
+    buf = getfield(view, :r).buf
+    if esc
+        inl = _unescape_inline(buf, cpos, clen, col.e, col.cq)
+        inl === nothing ? _ownescaped!(col, buf, cpos, clen, i) :
+                          (@inbounds col.payloads[i] = inl)
+    elseif clen <= INLINE_MAX
+        @inbounds col.payloads[i] = inline_payload(buf, cpos, clen)
+    else
+        _own!(col, buf, cpos, clen, i)
+    end
+    return nothing
+end
+
+_schemacolumn(::Type, col::Vector) = col
+_schemacolumn(::Type{T}, col::StringColumn) where {T} =
+    _stringvector(T, col.payloads, _buffers(col))
 
 # ---------------------------------------------------------------------------
 # Chunks — batched
