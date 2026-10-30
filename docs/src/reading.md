@@ -284,9 +284,15 @@ chunks of several MiB slow down files with many columns. `CSV.File(lazyfile)`
 reuses the lazy file's chunks.
 
 Type inference starts from a sample of `nsample` rows and widens a column's
-type when a later value needs it. `samplebytes` sets how much input delimiter
-detection reads. `fastindex=false` indexes with a slower byte-at-a-time
-scanner, to check that it agrees with the default vector scanner.
+type when a later value needs it. Only the rows a read returns take part: rows
+after `limit`, and rows that a scan's filter, offset, or limit removes, do not
+widen a type. Such a read can therefore type a column more narrowly than a read
+of the whole file: with `limit=2` over `007`, `2`, `abc`, the column is `Int64`
+and the first value is `7`. Request the type, for example
+`types=Dict(:zip => String)`, to make it independent of the rows read.
+`samplebytes` sets how much input delimiter detection reads.
+`fastindex=false` indexes with a slower byte-at-a-time scanner, to check that
+it agrees with the default vector scanner.
 
 ## Multiple sources
 
@@ -403,7 +409,9 @@ offsets, and limits are applied inside the parser. Unselected columns are not
 sampled or parsed. Rows rejected by the filter do not parse unrelated values.
 Filters see native source values first. Offset and limit follow the filter.
 Requested output types are converted last, so a filtered-out value cannot
-create a conversion problem.
+create a conversion problem. A result column without a requested type is
+inferred from the returned rows only, so its type can differ from
+`Tables.scan(CSV.File(source), request)`, which types the whole file first.
 
 ```julia
 using CSV, Tables
