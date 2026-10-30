@@ -369,8 +369,8 @@ end
     @test plan.columns[1].parsetype === Int64
     @test plan.columns[1].resulttype === Int8
     @test plan.columns[1].declaredmissing
-    @test plan.columns[2].parsetype === Float64
-    @test plan.columns[2].resulttype === Float32
+    @test plan.columns[2].parsetype === Float32
+    @test plan.columns[2].resulttype === nothing
     @test plan.columns[3].parsetype === nothing
     @test K.columnopts(plan, 2) === colopts[2]
 
@@ -381,7 +381,7 @@ end
     @test visible.positions == [2]
     @test visible.columns[1].resulttype === Int8
     @test visible.columns[2].parsetype === nothing
-    @test visible.columns[3].resulttype === Float32
+    @test visible.columns[3].parsetype === Float32
 
     @test_throws ArgumentError K.settlecolumns([:a], opts;
                                                select=[:a], drop=[:a])
@@ -452,6 +452,20 @@ end
         narrowed = A.File(IOBuffer(floatsrc); types=T)
         @test collect(narrowed.x) == T[Inf, -Inf]
         @test isempty(A.problems(narrowed))
+    end
+    # A requested Float32/Float16 cell rounds once, from its text. Each spelling
+    # is just above a midpoint of the narrow type whose nearest Float64 is that
+    # midpoint, so a Float64 parse followed by a conversion rounds it down.
+    for (T, s) in ((Float32, "1.0000000596046448"), (Float16, "1.0004882812500001"))
+        want = nextfloat(one(T))
+        src = "x\n$s\n"
+        @test A.File(IOBuffer(src); types=T).x == [want]
+        @test A.File(IOBuffer(src); typemap=Dict(Float64 => T)).x == [want]
+        @test A.File(IOBuffer("x,$s\n"); transpose=true, types=T).x == [want]
+        @test A.File(IOBuffer(src); scan=Tables.Scan(select=(:x => T,))).x == [want]
+        @test first(A.Chunks(IOBuffer(src); types=T)).x == [want]
+        @test first(A.Rows(IOBuffer(src); types=T)).x === want
+        @test A.lazy(IOBuffer(src); types=T).x[1] === want
     end
     declarednarrow = A.File(IOBuffer("a\n1\n2\n"); types=Union{Missing, Int8})
     @test eltype(declarednarrow.a) == Union{Missing, Int8}
