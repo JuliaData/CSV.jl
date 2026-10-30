@@ -945,6 +945,36 @@ end
     @test K.parsevalue(Time, bt, 1, length(bt), customtime) == (Time(3, 4, 5), true)
     @test !K.parsevalue(Date, bt, 1, length(bt), customtime)[2]
     @test K.detecttype(bt, 1, length(bt), customtime) === Time
+
+    # The nanosecond code contributes a time field even without H/M/S tokens.
+    for (fmt, text, expected) in (("n", "123456789", Time(0, 0, 0, 123, 456, 789)),
+                                  ("yyyy-mm-dd.n", "2024-02-29.123456789", Timestamp(2024, 2, 29, 0, 0, 0, 123, 456, 789)))
+        for format in (fmt, DateFormat(fmt))
+            opts = K.makevalueopts(K.Dialect(); dateformat=format)
+            bytes = Vector{UInt8}(text)
+            @test K.detecttype(bytes, 1, length(bytes), opts) === (fmt == "n" ? Int64 : typeof(expected))
+            @test K.parsevalue(typeof(expected), bytes, 1, length(bytes), opts) == (expected, true)
+            table = K.parse("t\n$text\n"; dateformat=format, types=Dict(:t => typeof(expected)))
+            @test only(table[:t]) == expected
+        end
+    end
+    @test K._dateformatkind("yyyy-mm-dd\\n") == 0x01
+    # A DateFormat object keeps its locale.
+    months = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
+              "septembre", "octobre", "novembre", "décembre"]
+    french = Dates.DateLocale(months, first.(months, 4), ["lundi", "mardi", "mercredi",
+                              "jeudi", "vendredi", "samedi", "dimanche"], [""])
+    table = K.parse("d\n14 mars 2021\n"; dateformat=DateFormat("dd U yyyy", french))
+    @test only(table[:d]) == Date(2021, 3, 14)
+    # A format string keeps Parsers' grammar: a letter that another package
+    # registers with Dates (TimeZones registers `Z`) stays a literal.
+    Dates.CONVERSION_SPECIFIERS['Z'] = Any
+    try
+        table = K.parse("t\n2026-01-02T03:04:05Z\n"; dateformat="yyyy-mm-ddTHH:MM:SSZ")
+        @test only(table[:t]) == Timestamp(2026, 1, 2, 3, 4, 5)
+    finally
+        delete!(Dates.CONVERSION_SPECIFIERS, 'Z')
+    end
 end
 
 @testset "typed: missing values" begin
