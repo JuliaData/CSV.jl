@@ -2708,6 +2708,8 @@ end
     lr = getfield(view, :localrow)
     sp = fieldspan(ci, lr, j)
     if sp === nothing
+        _emptyrow(r.buf, ci, nfields(ci, lr), fieldspan(ci, lr, 1)::Tuple{Int, Int}) &&
+            return missing
         pos = ci.start + Int(ci.rowstartrel[lr])
         _throwrowproblem(view, j, pos, :short_row, "row has no field $j")
     end
