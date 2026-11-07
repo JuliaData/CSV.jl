@@ -34,6 +34,8 @@ A string is a path or URL. Wrap literal delimited text in `IOBuffer`.
 
 Large regular local files are memory-mapped. Small local files, `IO` objects,
 commands, URLs, and non-`Vector{UInt8}` byte containers are read into memory.
+Custom `IO` streams are consumed in reads of at most 16 MiB to limit extra
+buffering inside the stream. CSV still retains the complete source bytes.
 `buffer_in_memory=true` also copies a local file into memory. Gzip is detected
 from its magic bytes for every source type and is fully decompressed into
 memory before parsing. Other compression formats must be decompressed before

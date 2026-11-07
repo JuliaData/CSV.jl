@@ -125,8 +125,21 @@ resolvesource(buf::Vector{UInt8}; buffer_in_memory::Bool=false, prefetch::Bool=t
               workers=nothing) = _maybegunzip(buf)
 # other byte containers (codeunits, views) copy into a Vector, the parser's buffer type
 resolvesource(buf::AbstractVector{UInt8}; kw...) = resolvesource(Vector{UInt8}(buf); kw...)
+
+_readsource(io::Union{IOBuffer,IOStream}) = Base.read(io)
+function _readsource(io::IO)
+    output = IOBuffer()
+    nb = 1 << 16
+    while !eof(io)
+        # Custom streams may buffer the entire requested read internally.
+        Base.write(output, Base.read(io, nb))
+        nb = min(2nb, 1 << 24)
+    end
+    return take!(output)
+end
+
 resolvesource(io::IO; buffer_in_memory::Bool=false, prefetch::Bool=true, workers=nothing) =
-    _maybegunzip(Base.read(io))
+    _maybegunzip(_readsource(io))
 resolvesource(cmd::Base.AbstractCmd; buffer_in_memory::Bool=false, prefetch::Bool=true,
               workers=nothing) = _maybegunzip(Base.read(cmd))
 const PREFETCH_PAGE = 16384
