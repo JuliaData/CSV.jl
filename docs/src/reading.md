@@ -416,8 +416,8 @@ The read checks the source this way:
   give it. With `header=false`, the schema names the columns.
 - Rows: `CSV.Rows` parses each row when iteration reaches it, and `CSV.File`
   parses them all before it returns. A row must have exactly one field per
-  column. With `ignoreemptyrows=false`, an empty row has one empty
-  field.
+  column. With `ignoreemptyrows=false`, an empty row is a row of missing
+  values.
 - Values: every field parses as its column type under the usual value options
   (quotes and escapes, `decimal`, `groupmark`, `dateformat`, `truestrings`,
   and so on). Nothing is inferred or converted: `1.5` is not an `Int`, `1` is

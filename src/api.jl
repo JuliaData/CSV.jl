@@ -2693,9 +2693,23 @@ end
 # observed. This keeps the default allocation-free row view while honoring
 # the `strict` keyword and the `on_error` contract.
 function _strictrowvalue(view::_IndexedRow, j::Int, ::Type{T}) where {T}
+    fieldspan(getfield(view, :ci), getfield(view, :localrow), j) === nothing &&
+        return _absentfield(view, j)
     cell = _strictcell(view, j)
     cell[1] == 0 && return missing
     return _strictcontent(T, view, j, cell)
+end
+
+# Kept out of the inlined `_strictcell` below, and returning instead of falling
+# through to it: either change slows every cell.
+@noinline function _absentfield(view::_IndexedRow, j::Int)
+    ci = getfield(view, :ci)
+    lr = getfield(view, :localrow)
+    sp = fieldspan(ci, lr, 1)::Tuple{Int, Int}
+    _emptyrow(getfield(view, :r).buf, ci, nfields(ci, lr), sp) ||
+        _throwrowproblem(view, j, ci.start + Int(ci.rowstartrel[lr]), :short_row,
+                         "row has no field $j")
+    return missing
 end
 
 # Cell `j` as `(cpos, clen, esc, pos, len, opts)`: its content span from
@@ -2933,6 +2947,7 @@ function Base.iterate(r::Rows{NT, :schema}, state=((1, nothing, 1))) where {NT}
     it = iterate(getfield(r, :inner), state)
     it === nothing && return nothing
     view, next = it
+    _keptemptyrow(view, fieldcount(NT)) && return _missingrow(NT, view), next
     return _schemarow(NT, view), next
 end
 
@@ -2941,21 +2956,26 @@ end
 @generated function _schemarow(::Type{NT}, view::_IndexedRow) where {NT <: NamedTuple}
     n = fieldcount(NT)
     cells = [:(_schemacell($(fieldtype(NT, j)), view, $j)) for j in 1:n]
+    return :(NT(($(cells...),)))
+end
+
+@generated function _missingrow(::Type{NT}, view::_IndexedRow) where {NT <: NamedTuple}
+    cells = [:(_schemamissing($(fieldtype(NT, j)), view, $j, sp[1]))
+             for j in 1:fieldcount(NT)]
     return quote
-        _checkfieldcount(view, $n)
+        sp = fieldspan(getfield(view, :ci), getfield(view, :localrow), 1)::Tuple{Int, Int}
         return NT(($(cells...),))
     end
 end
 
-# A row has exactly one field per schema column. A kept empty row
-# (`ignoreemptyrows=false`) has one empty field.
-function _checkfieldcount(view::_IndexedRow, n::Int)
+function _keptemptyrow(view::_IndexedRow, n::Int)
     ci = getfield(view, :ci)
     lr = getfield(view, :localrow)
     nf = nfields(ci, lr)
-    nf == n && return nothing
-    pos = (fieldspan(ci, lr, nf < n ? 1 : n + 1)::Tuple{Int, Int})[1]
-    _throwrowproblem(view, 0, pos, nf < n ? :short_row : :long_row,
+    nf == n && return false
+    sp = fieldspan(ci, lr, nf < n ? 1 : n + 1)::Tuple{Int, Int}
+    _emptyrow(getfield(view, :r).buf, ci, nf, sp) && return true
+    _throwrowproblem(view, 0, sp[1], nf < n ? :short_row : :long_row,
                      "expected $n fields, found $nf")
 end
 
@@ -3041,7 +3061,11 @@ function _fillschemachunk!(columns::Tuple, ::Type{NT}, inner::_IndexedRows, ci::
     segments = _schemasegments(columns, ci, k, n)
     for i in 1:n
         view = _IndexedRow(inner, ci, ci.firstdatarow + i - 1, rowbase + i)
-        _fillschemarow!(segments, NT, view, rowbase + i)
+        if _keptemptyrow(view, fieldcount(NT))
+            _fillmissingrow!(segments, NT, view, rowbase + i)
+        else
+            _fillschemarow!(segments, NT, view, rowbase + i)
+        end
     end
     _adoptschemasegments!(segments, k)
     return nothing
@@ -3069,8 +3093,16 @@ end
     n = fieldcount(NT)
     stores = [:(_storeschemacell!(segments[$j], $(fieldtype(NT, j)), view, $j, i))
               for j in 1:n]
+    return Expr(:block, stores..., :(return nothing))
+end
+
+@generated function _fillmissingrow!(segments::Tuple, ::Type{NT}, view::_IndexedRow,
+                                     i::Int) where {NT <: NamedTuple}
+    stores = [:(_storemissing!(segments[$j],
+                               _schemamissing($(fieldtype(NT, j)), view, $j, sp[1]), i))
+              for j in 1:fieldcount(NT)]
     return quote
-        _checkfieldcount(view, $n)
+        sp = fieldspan(getfield(view, :ci), getfield(view, :localrow), 1)::Tuple{Int, Int}
         $(stores...)
         return nothing
     end
@@ -3147,6 +3179,10 @@ end
     end
     return nothing
 end
+
+_storemissing!(col::Vector, x::Missing, i::Int) = (@inbounds col[i] = x; nothing)
+_storemissing!(col::StringColumn, ::Missing, i::Int) =
+    (@inbounds col.payloads[i] = PAYLOAD_MISSING; nothing)
 
 _schemacolumn(::Type, col::Vector) = col
 _schemacolumn(::Type{T}, col::StringColumn) where {T} =
