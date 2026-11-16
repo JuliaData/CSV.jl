@@ -2419,13 +2419,20 @@ function _normalizetypemap(typemap)
         a isa Type && b isa Type ||
             throw(ArgumentError("typemap entries must be Type => Type (got $a => $b)"))
         key = Base.nonmissingtype(a)
+        # The target is the type cells parse as, so it must be one the kernel
+        # reads; text is `String`, which `stringtype` then materializes.
+        target = Base.nonmissingtype(b)
+        _kernelparseable(target) || throw(ArgumentError(
+            "typemap target $b is not a type CSV can parse cells as: use a concrete " *
+            "type such as Float64, Int32, or a type with a tryparse method, or " *
+            "String for text (`stringtype` sets the text type)"))
         # Inference uses Int64 on every architecture. Keep the common `Int`
         # spelling portable by treating it as the inferred integer type on
         # 32-bit Julia too; otherwise the same typemap silently stops applying.
         if key === Int && Int !== Int64
-            inttarget = Base.nonmissingtype(b)
+            inttarget = target
         else
-            tm[key] = Base.nonmissingtype(b)
+            tm[key] = target
         end
     end
     # An explicit Int64 entry is more specific than the portable Int alias.
@@ -3500,6 +3507,15 @@ _hasspanparser(T::Type) = hasmethod(Parsers.tryparse, Tuple{Type{T}, Vector{UInt
 _customparseable(T::Type) = isconcretetype(T) &&
     (_hasspanparser(T) || hasmethod(Base.tryparse, Tuple{Type{T}, String}))
 
+# A type the parse kernel reads cells as: a requested `types` entry after the
+# narrow-integer mapping, or a `typemap` target. Each one is checked before
+# any input is read.
+_kernelparseable(T::Type) = isconcretetype(T) &&
+    (T === Missing ||
+     T in (Int64, Int128, Float64, Float32, Float16, Bool, Char, Date, DateTime, Time,
+           String, BigInt, BigFloat, Base.UUID) ||
+     T <: Timestamp || _parseable(T) || _customparseable(T))
+
 # `dict` is a dictionary or a vector of pairs. Its keys can be an integer
 # position, a name, or a regular expression. An exact key takes precedence over
 # a regular expression.
@@ -3548,13 +3564,10 @@ function _columndecision(T)
         return ColumnDecision(String, requested, declaredmissing)
     end
     parsetype = _nativetype(requested)
-    parseable = parsetype === Missing ||
-                parsetype in (Int64, Int128, Float64, Float32, Float16, Bool, Char, Date,
-                              DateTime, Time, String, BigInt, BigFloat, Base.UUID) ||
-                parsetype <: Timestamp ||
-                _parseable(parsetype) ||
-                _customparseable(parsetype)
-    parseable || throw(ArgumentError(
+    isconcretetype(parsetype) || throw(ArgumentError(
+        "column type $T is not concrete: request a concrete type such as Int64 or " *
+        "String, or leave the column out of `types` to infer its type"))
+    _kernelparseable(parsetype) || throw(ArgumentError(
         "unsupported column type $parsetype: define " *
         "Parsers.tryparse(::Type{$parsetype}, buf::AbstractVector{UInt8}, i::Int, j::Int) " *
         "or Base.tryparse(::Type{$parsetype}, ::String)"))

@@ -152,7 +152,8 @@ replaces the defaults. Other value options include:
   letter);
 - `groupmark` for grouped digits;
 - `stripwhitespace`; and
-- `typemap` to replace an inferred type.
+- `typemap` to replace an inferred type with another type CSV can parse, or
+  with `String` for text, which `stringtype` materializes.
 
 Numeric detection runs before custom date formats, so `20190101` infers as an
 integer even with `dateformat="yyyymmdd"`. Load `Dates` and pass
@@ -200,7 +201,9 @@ i::Integer, j::Integer)` to parse the field bytes in place, or
 `Base.tryparse(::Type{T}, ::String)` to parse a `String` made from them. The
 method must return `nothing` for text it cannot parse; that cell is then a
 problem. A type with neither method is an `ArgumentError` before parsing
-starts, and a parser that throws aborts the read.
+starts, and a parser that throws aborts the read. An abstract type, such as
+`Any`, `Real`, or `Union{Int, String}`, is also an `ArgumentError`: every
+value in a column parses as one concrete type.
 
 With DataDecimals.jl loaded, an
 explicitly requested decimal type such as `types=Dict(:amount =>
