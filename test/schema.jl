@@ -157,8 +157,6 @@ end
     @test ismissing(schemarows("id,x,y\na,1,NA\n"; missingstring="NA")[1].y)
     # A quoted empty field is a present, empty string.
     @test schemarows("id,x,y\n\"\",1,2\n")[1].id == ""
-    # A kept empty row is one empty field.
-    @test schemaproblem("id,x,y\na,1,2\n\nb,1,2\n"; ignoreemptyrows=false) == (:short_row, 2, 0)
     s1 = Tables.Schema((:y,), (Union{Missing, Int},))
     @test isequal(schemarows("y\n1\n\n2\n"; schema=s1, ignoreemptyrows=false),
                   [(y=1,), (y=missing,), (y=2,)])
@@ -455,6 +453,28 @@ end
                join(["7"; [string(j / 2) for j in 1:120]], ',') * "\n"
     wf = CSV.File(IOBuffer(widetext); schema=wide)
     @test wf.id == [7] && wf.x120 == [60.0] && Tables.schema(wf) == wide
+end
+
+@testset "a kept empty row reads as missing values" begin
+    nullable = Tables.Schema((:a, :b, :c), (Union{Missing, Int}, Union{Missing, Float64},
+                                            Union{Missing, DataString}))
+    required = Tables.Schema((:a, :b, :c), (Union{Missing, Int}, Float64,
+                                            Union{Missing, DataString}))
+    for nl in ("\n", "\r\n")
+        input = join(("a,b,c", "1,2.5,x", "", "3,4.5,y", ""), nl) * nl
+        expected = [(a=1, b=2.5, c="x"), (a=missing, b=missing, c=missing),
+                    (a=3, b=4.5, c="y"), (a=missing, b=missing, c=missing)]
+        @test isequal(schemarows(input; schema=nullable, ignoreemptyrows=false), expected)
+        @test isequal(Tables.rowtable(CSV.File(IOBuffer(input); schema=nullable,
+                                               ignoreemptyrows=false)), expected)
+        @test schemaproblem(input; schema=required, ignoreemptyrows=false) == (:missing_value, 2, 2)
+        @test fileproblem(input; schema=required, ignoreemptyrows=false) == (:missing_value, 2, 2)
+        final = join(("a,b,c", "1,2.5,x", "3,4.5,y", ""), nl) * nl
+        @test schemaproblem(final; schema=required, ignoreemptyrows=false) == (:missing_value, 3, 2)
+        @test fileproblem(final; schema=required, ignoreemptyrows=false) == (:missing_value, 3, 2)
+    end
+    @test schemaproblem("a,b,c\n1\n"; schema=nullable, ignoreemptyrows=false) == (:short_row, 1, 0)
+    @test fileproblem("a,b,c\n1\n"; schema=nullable, ignoreemptyrows=false) == (:short_row, 1, 0)
 end
 
 end # @testset schema reads

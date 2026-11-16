@@ -157,8 +157,9 @@ the file, so a program compiled with `juliac --trim` can read them. The header
 must spell the schema's names in order, once each (`header=false` reads a
 source without a header row). Each row parses when iteration reaches it: it
 must have one field per column, and every field must parse as its column type,
-with no inference or conversion. An empty field or a `missingstring` spelling
-needs a `Union{T, Missing}` column. Any mismatch throws a `CSV.ParseError`.
+with no inference or conversion. An empty field, a `missingstring` spelling, and
+every field of an empty row kept by `ignoreemptyrows=false` read as `missing`,
+which needs a `Union{T, Missing}` column. Any mismatch throws a `CSV.ParseError`.
 The source is a local path, an `IO`, or bytes; a URL is not downloaded.
 `types`, `stringtype`, `select`, and `drop` do not apply, and `on_error` and
 `strict` can only request this strict behavior. See the
