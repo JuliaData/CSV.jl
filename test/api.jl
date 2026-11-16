@@ -1957,6 +1957,41 @@ end
     end
 end
 
+@testset "requested types CSV cannot parse are rejected before parsing" begin
+    src = "a,t\n1,2024-01-02T03:04:05\n"
+    argerror(f) = try
+        f(); nothing
+    catch e
+        e isa ArgumentError ? e.msg : e
+    end
+    # A non-concrete request names itself, on every reader and on a scan.
+    for T in (Timestamp, Union{Missing, Timestamp}, Any, Real, Union{Int, String})
+        for read in (kw -> A.File(IOBuffer(src); kw...),
+                     kw -> A.Rows(IOBuffer(src); kw...),
+                     kw -> A.lazy(IOBuffer(src); kw...),
+                     kw -> A.Chunks(IOBuffer(src); kw...))
+            msg = argerror(() -> read((; types=Dict(:t => T))))
+            @test msg isa String && occursin("not concrete", msg)
+        end
+        msg = argerror(() -> A.File(IOBuffer(src); scan=Tables.Scan(select=(:t => T,))))
+        @test msg isa String && occursin("not concrete", msg)
+        msg = argerror(() -> A.File(IOBuffer("a,1\nt,2024-01-02T03:04:05\n");
+                                    transpose=true, types=Dict(:t => T)))
+        @test msg isa String && occursin("not concrete", msg)
+    end
+    # A typemap target is the type cells parse as.
+    for T in (Real, Any, Missing, Timestamp, A.DataString, Symbol, InlineString,
+              Vector{Int})
+        msg = argerror(() -> A.File(IOBuffer(src); typemap=Dict(Int64 => T)))
+        @test msg isa String && occursin("typemap target", msg)
+    end
+    for (T, want) in ((Int8, Int8[1]), (Float32, Float32[1]), (Char, ['1']),
+                      (BigInt, BigInt[1]), (APICustomScalar, [APICustomScalar(1)]))
+        @test A.File(IOBuffer(src); typemap=Dict(Int64 => T)).a == want
+    end
+    @test A.File(IOBuffer(src); typemap=Dict(Int64 => String), stringtype=String).a == ["1"]
+end
+
 @testset "DataString hash + stringtype extension hook" begin
     # hash contract: DataString hashes like its String, allocation-free
     col = K.parse(Vector{UInt8}(codeunits("a\n" * join(("v$(i)_" * "x"^(i % 30) for i in 1:500), '\n') * "\n"))).columns[1]

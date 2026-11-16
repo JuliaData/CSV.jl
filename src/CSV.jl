@@ -66,7 +66,7 @@ Types and columns:
 - `types`: one type, a vector with one type per column, or a dictionary keyed
   by column index, name, or `Regex`.
 - `typemap`: a dictionary that replaces inferred types, such as
-  `Dict(Int64 => Float64)`.
+  `Dict(Int64 => Float64)`, or `Dict(Int64 => String)` for text.
 - `downcast=false`: narrow `Int64` columns to the smallest integer type that
   holds their values.
 - `select`, `drop`: column indices, names, or a Bool mask; one name or index;
