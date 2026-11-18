@@ -112,9 +112,11 @@ when accessed. Column, cell, and Tables.jl column access are supported.
 repeating the structural scan. This API retains the source bytes and index; it
 does not stream an unbounded input. List selection uses stable file order and
 removes duplicates. A later `CSV.File(lazyfile)` retains those visible columns
-and can only project them further. Ordinary text cells are zero-copy views. A
-long cell whose absolute source offset cannot fit the compact view word copies
-only that cell into a bounded backing buffer.
+and can only project them further. It also keeps the requested `types` and
+`stringtype`; its own `types` replace the request for the columns they name.
+Ordinary text cells are zero-copy views. A long cell whose absolute source
+offset cannot fit the compact view word copies only that cell into a bounded
+backing buffer.
 
 It takes the keywords of [`CSV.File`](@ref CSV.File) for one source, except
 `pool`, `typemap`, `downcast`, `transpose`, `scan`, `on_error`, `strict`,
@@ -131,7 +133,7 @@ is text (`stringtype`, `DataString` by default) or `missing` unless `types`
 requested a type for its column. A view keeps the source alive, so a
 `LazyFile` is a way to look before parsing, not a way to hold a large file
 cheaply. [`CSV.File`](@ref CSV.File)`(lf)` runs the eager typed parse on the
-existing index and keeps the columns `lf` selected.
+existing index and keeps the columns `lf` selected and the types it requested.
 """ LazyFile
 @doc """
     CSV.Rows(source; types=nothing, stringtype=DataStrings.DataString, keywords...)
