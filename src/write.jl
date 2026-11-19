@@ -554,22 +554,52 @@ end
     return _appendudec!(out, unsigned(y), false)
 end
 
-function _appenddate!(out::_WriteOutput, x::Date)
-    y, m, d = Dates.yearmonthday(x)
+# Two digits of 0 <= v < 100 at out[i] and out[i + 1]; the caller reserved them.
+@inline function _put2!(out::_WriteOutput, i::Int, v::Integer)
+    @inbounds out[i] = UInt8('0') + (v ÷ 10) % UInt8
+    @inbounds out[i + 1] = UInt8('0') + (v % 10) % UInt8
+    return
+end
+
+# yyyy-mm-dd. A four-digit year reserves the ten bytes once and stores them;
+# other years take the general sign and padding path.
+@inline function _appendymd!(out::_WriteOutput, y::Integer, m::Integer, d::Integer)
+    if 1000 <= y <= 9999
+        len = length(out)
+        _room!(out, 10)
+        _put2!(out, len + 1, y ÷ 100); _put2!(out, len + 3, y % 100)
+        @inbounds out[len + 5] = UInt8('-')
+        _put2!(out, len + 6, m)
+        @inbounds out[len + 8] = UInt8('-')
+        _put2!(out, len + 9, d)
+        return out
+    end
     _appendyear!(out, y); push!(out, UInt8('-'))
     _append2!(out, m); push!(out, UInt8('-'))
-    _append2!(out, d)
+    return _append2!(out, d)
+end
+
+# HH:MM:SS
+@inline function _appendhms!(out::_WriteOutput, h::Integer, mi::Integer, s::Integer)
+    len = length(out)
+    _room!(out, 8)
+    _put2!(out, len + 1, h)
+    @inbounds out[len + 3] = UInt8(':')
+    _put2!(out, len + 4, mi)
+    @inbounds out[len + 6] = UInt8(':')
+    _put2!(out, len + 7, s)
     return out
+end
+
+function _appenddate!(out::_WriteOutput, x::Date)
+    y, m, d = Dates.yearmonthday(x)
+    return _appendymd!(out, y, m, d)
 end
 
 function _appenddatetime!(out::_WriteOutput, x::DateTime)
     y, m, d = Dates.yearmonthday(x)
-    _appendyear!(out, y); push!(out, UInt8('-'))
-    _append2!(out, m); push!(out, UInt8('-'))
-    _append2!(out, d); push!(out, UInt8('T'))
-    _append2!(out, Dates.hour(x)); push!(out, UInt8(':'))
-    _append2!(out, Dates.minute(x)); push!(out, UInt8(':'))
-    _append2!(out, Dates.second(x))
+    _appendymd!(out, y, m, d); push!(out, UInt8('T'))
+    _appendhms!(out, Dates.hour(x), Dates.minute(x), Dates.second(x))
     ms = Dates.millisecond(x)
     if ms != 0                                   # ".sss" — three digits, omitted only when zero
         push!(out, UInt8('.'))
@@ -586,9 +616,7 @@ end
 # `.123456789`), or no fraction at all.
 function _appendtimestamp!(out::_WriteOutput, x::Timestamp)
     y, m, d = Dates.yearmonthday(x)
-    _appendyear!(out, y); push!(out, UInt8('-'))
-    _append2!(out, m); push!(out, UInt8('-'))
-    _append2!(out, d); push!(out, UInt8('T'))
+    _appendymd!(out, y, m, d); push!(out, UInt8('T'))
     return _appendtime!(out, Time(x))
 end
 
@@ -599,9 +627,7 @@ function _appendtime!(out::_WriteOutput, x::Time)
     h, rest = divrem(ns, 3_600_000_000_000)
     mi, rest = divrem(rest, 60_000_000_000)
     s, frac = divrem(rest, 1_000_000_000)
-    _append2!(out, h); push!(out, UInt8(':'))
-    _append2!(out, mi); push!(out, UInt8(':'))
-    _append2!(out, s)
+    _appendhms!(out, h, mi, s)
     frac == 0 && return out
     nd = 9
     while frac % 10 == 0
