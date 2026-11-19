@@ -843,6 +843,18 @@ end
         end
     end
     @test fractions_ok
+    # Decimals of up to 15 significant digits skip Ryu's digit loop. Cover
+    # 1 to 16 digits across the scales that path accepts and past its edges,
+    # with neighbors that are not short.
+    decimals_ok = true
+    for digits in 1:16, e in -12:16, _ in 1:20
+        k = rand(rng, Int64(10)^(digits - 1):Int64(10)^digits - 1)
+        x = parse(Float64, string(k, "e", e - digits))
+        for y in (x, -x, prevfloat(x), nextfloat(x))
+            decimals_ok &= render(y) == string(y)
+        end
+    end
+    @test decimals_ok
     okall = true
     for _ in 1:20_000
         x = reinterpret(Float64, rand(rng, UInt64))

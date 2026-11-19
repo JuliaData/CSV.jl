@@ -416,7 +416,8 @@ const _WRITE_COEFFLIMIT = ntuple(i -> UInt64(999_999_999_999_999) ÷ _WRITE_POW5
 # Small binary fractions have an exact short decimal: m / 2^k = m*5^k / 10^k.
 # With fewer than 10^15 coefficient units, removing a nonzero decimal digit
 # moves farther than a Float64 rounding interval. The exact coefficient is
-# therefore already shortest. Other values use Ryu's general reduction.
+# therefore already shortest. Other values try `_writeshortdecimal`, then
+# Ryu's general reduction.
 @inline _writereduce(x) = Base.Ryu.reduce_shortest(x, nothing)
 @inline function _writereduce(x::Float64)
     bits = reinterpret(UInt64, x)
@@ -430,7 +431,39 @@ const _WRITE_COEFFLIMIT = ntuple(i -> UInt64(999_999_999_999_999) ÷ _WRITE_POW5
             return m * _WRITE_POW5[i], e
         end
     end
+    if e < 0                                 # integers keep Ryu's cheap integer branch
+        ok, u, e10 = _writeshortdecimal(x)
+        ok && return u, e10
+    end
     return Base.Ryu.reduce_shortest(x, nothing)
+end
+
+const _WRITE_P10 = ntuple(i -> 10.0^(i - 1), 23)   # 1e0 through 1e22, every one exact
+
+# Short decimals (prices, measurements) make Ryu drop one digit per loop
+# step. A decimal of at most 15 significant digits is the only such decimal
+# that rounds to its Float64: two of them near x differ by more than x's
+# rounding interval. So when one rounds to x it is the shortest, which is
+# what Ryu returns. Scale |x| into [1e13, 1e15), round, and check that the
+# decimal rounds back to x (division by an exact power of ten rounds
+# correctly), then drop its trailing zeros.
+@inline function _writeshortdecimal(x::Float64)
+    a = abs(x)
+    e2 = Int(reinterpret(UInt64, a) >> 52) - 1023
+    e10 = (e2 * 78913) >> 18                 # floor(e2 * log10(2)), so 10^e10 <= a < 10^(e10 + 2)
+    d = 13 - e10
+    0 <= d <= 22 || return false, UInt64(0), 0
+    p = @inbounds _WRITE_P10[d + 1]
+    c = round(a * p)
+    c / p == a || return false, UInt64(0), 0
+    u = unsafe_trunc(UInt64, c)
+    e = -d
+    # at most 15 trailing zeros: drop 8, 4, 2, then 1
+    q = u ÷ UInt64(100_000_000); q * UInt64(100_000_000) == u && (u = q; e += 8)
+    q = u ÷ UInt64(10_000); q * UInt64(10_000) == u && (u = q; e += 4)
+    q = u ÷ UInt64(100); q * UInt64(100) == u && (u = q; e += 2)
+    q = u ÷ UInt64(10); q * UInt64(10) == u && (u = q; e += 1)
+    return true, u, e
 end
 
 function _writeshortest_default(buf::_WriteOutput, pos::Int, x::T, decchar::UInt8) where {T <: Union{Float64, Float32, Float16}}
