@@ -350,7 +350,9 @@ lazyfile = CSV.lazy(IOBuffer("id,price\n1,3.5\n2,4.0\n");
 `CSV.File(lazyfile)` performs the full parse without indexing the input again.
 Row-position, dialect, and input-buffer options were fixed when the lazy file
 was created. Selection is sticky: an eager parse starts from the columns
-visible on the lazy file and can only select or drop further columns.
+visible on the lazy file and can only select or drop further columns. Requested
+`types` and `stringtype` carry over too; `types` passed to
+`CSV.File(lazyfile)` replace the request only for the columns they name.
 
 ## Row iteration
 

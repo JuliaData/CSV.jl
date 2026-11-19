@@ -2434,7 +2434,8 @@ function lazy(source; types=nothing, stringtype::Type=DataString,
     end
     names = p.names[js]
     return LazyFile(_sourcename(source), src, js, names, cols, nr,
-                    Dict(nm => i for (i, nm) in enumerate(names)))
+                    Dict(nm => i for (i, nm) in enumerate(names)),
+                    plan.columns[js], stringtype)
 end
 
 _lazyeltype(::Type{DataString}) = Union{DataString, Missing}
@@ -2541,6 +2542,8 @@ struct LazyFile
     columns::Vector{AbstractVector}
     nrows::Int
     lookup::Dict{Symbol, Int}
+    requests::Vector{ColumnDecision}   # the type `lazy` settled for each column
+    stringtype::Type
 end
 
 Base.names(lf::LazyFile) = getfield(lf, :names)
@@ -2573,7 +2576,8 @@ function Base.show(io::IO, lf::LazyFile)
 end
 
 function File(lf::LazyFile; types=nothing, select=nothing, drop=nothing, pool=DEFAULT_POOL,
-              downcast::Bool=false, stringtype::Type=DataString, strict::Bool=false,
+              downcast::Bool=false, stringtype::Type=getfield(lf, :stringtype),
+              strict::Bool=false,
               on_error::Symbol=strict ? :error : :warn,
               maxwarnings::Union{Nothing, Int}=nothing,
               maxproblems::Int=something(maxwarnings, 10_000),
@@ -2585,7 +2589,12 @@ function File(lf::LazyFile; types=nothing, select=nothing, drop=nothing, pool=DE
     ntasks === nothing || ntasks >= 1 ||
         throw(ArgumentError("ntasks must be ≥ 1 (got $ntasks)"))
     _checkstringtype(stringtype)
-    return _filefromprepared(getfield(lf, :prepared), getfield(lf, :name); types, select, drop,
+    # Start from the types `lazy` requested; `types` replaces them only for the
+    # columns it names, resolved against the columns `lf` shows.
+    requests = copy(getfield(lf, :requests))
+    _applytypes!(requests, types, getfield(lf, :names), collect(eachindex(requests)); validate)
+    return _filefromprepared(getfield(lf, :prepared), getfield(lf, :name); types=requests,
+                             select, drop,
                              pool, downcast, stringtype, on_error, maxproblems, parallel, ntasks,
                              validate, available=getfield(lf, :sourceindices))
 end

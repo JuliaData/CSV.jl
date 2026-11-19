@@ -587,6 +587,16 @@ end
     @test all(isequal(collect(Tables.getcolumn(f, nm)), collect(Tables.getcolumn(g, nm))) for nm in Base.names(g))
     ft = A.File(lf; types=Dict(:price => Float32))
     @test Tables.getcolumn(ft, :price) isa Vector{Float32}
+    # File(lf) keeps the types and stringtype that lazy requested; File's own
+    # types replace the request only for the columns they name
+    reqlf = A.lazy(IOBuffer("zip,x,s\n00501,0.1,a\n02134,0.2,b\n");
+                   types=Dict(:zip => String, :x => Float32), stringtype=String)
+    reqfile = A.File(reqlf)
+    @test reqfile.zip == ["00501", "02134"] && reqfile.x isa Vector{Float32}
+    @test reqfile.s isa Vector{String}
+    reqover = A.File(reqlf; types=Dict(:x => Float64))
+    @test reqover.zip == ["00501", "02134"] && reqover.x isa Vector{Float64}
+    @test A.File(reqlf; types=String).x == ["0.1", "0.2"]
     cleanlf = A.lazy(IOBuffer("a\n1\n"))
     @test_throws ArgumentError A.File(cleanlf; maxproblems=-1)
     @test_throws ArgumentError A.File(cleanlf; maxwarnings=-1)

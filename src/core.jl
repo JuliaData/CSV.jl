@@ -3574,6 +3574,7 @@ function _columndecision(T)
     resulttype = haskey(NARROW_TYPES, requested) ? requested : nothing
     return ColumnDecision(parsetype, resulttype, declaredmissing)
 end
+_columndecision(d::ColumnDecision) = d   # a request a LazyFile already settled
 
 function _selectpositions(select, drop, names::Vector{Symbol};
                           matchnormalized::Bool=false)
