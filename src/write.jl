@@ -846,11 +846,16 @@ const _EMPTY_WRITESTAGE = ColStage()
 # for a table schema or a column count.
 # `@noinline`: one compiled method per column type, called (not expanded)
 # once per column when a new schema is prepared.
-for (tag, emptycol) in enumerate(_EMPTY_WRITECOLUMNS)
+# Descriptor constructor arguments with `colexpr` in field `tag`. Constant
+# indices keep the call static; a sliced, splatted tuple would not be.
+function _descriptorargs(tag::Int, colexpr)
     args = Any[:(_EMPTY_WRITECOLUMNS[$j]) for j in eachindex(_EMPTY_WRITECOLUMNS)]
-    args[tag] = :col
+    args[tag] = colexpr
+    return args
+end
+for (tag, emptycol) in enumerate(_EMPTY_WRITECOLUMNS)
     @eval @noinline _preparewritecolumn(col::$(typeof(emptycol))) =
-        _WriteColumn($(UInt8(tag)), $(args...), _EMPTY_WRITESTAGE)
+        _WriteColumn($(UInt8(tag)), $(_descriptorargs(tag, :col)...), _EMPTY_WRITESTAGE)
 end
 
 @noinline _preparewritecolumn(col::AbstractVector) =
@@ -864,11 +869,11 @@ end
 # renders each cell twice. UInt64 can exceed Int64 and keeps the fallback.
 for S in (Int8, Int16, Int32, UInt8, UInt16, UInt32)
     @eval @noinline _preparewritecolumn(col::Vector{$S}) =
-        _WriteColumn(0x01, convert(Vector{Int64}, col), _EMPTY_WRITECOLUMNS[2:end]...,
+        _WriteColumn(0x01, $(_descriptorargs(1, :(convert(Vector{Int64}, col)))...),
                      _EMPTY_WRITESTAGE)
     @eval @noinline _preparewritecolumn(col::Vector{Union{Missing, $S}}) =
-        _WriteColumn(0x04, _EMPTY_WRITECOLUMNS[1:3]..., convert(Vector{Union{Missing, Int64}}, col),
-                     _EMPTY_WRITECOLUMNS[5:end]..., _EMPTY_WRITESTAGE)
+        _WriteColumn(0x04, $(_descriptorargs(4, :(convert(Vector{Union{Missing, Int64}}, col)))...),
+                     _EMPTY_WRITESTAGE)
     @eval _isdirect(::Type{Vector{$S}}) = true
     @eval _isdirect(::Type{Vector{Union{Missing, $S}}}) = true
 end

@@ -976,6 +976,8 @@ end
     end
 end
 
+# Keep `@allocations` inside a compiled function, as in test/kernel.jl.
+allocsprepare(col) = @allocations W._preparewritecolumn(col)
 @testset "parallel gzip members, widened narrow integers, in-place float formats, row sources" begin
     tbl = (a=collect(1:20_000), b=rand(MersenneTwister(1), 20_000),
            s=["s$(i)" for i in 1:20_000], m=[isodd(i) ? missing : i for i in 1:20_000])
@@ -997,6 +999,11 @@ end
     nar = (a=Int32[1, -2], b=Union{Missing, Int16}[3, missing], c=UInt8[255, 0],
            d=UInt64[typemax(UInt64), 1])
     @test str(io -> W.write(io, nar)) == "a,b,c,d\n1,3,255,18446744073709551615\n-2,,0,1\n"
+    # building a narrow column's descriptor allocates only its widened copy
+    for col in (nar.a, nar.b, nar.c)
+        allocsprepare(col)
+        @test allocsprepare(col) <= 2
+    end
     seen = Type[]
     W.write(devnull, nar; transform=(j, v) -> (push!(seen, typeof(v)); v))
     @test seen == [Int32, Int16, UInt8, UInt64, Int32, Missing, UInt8, UInt64]
