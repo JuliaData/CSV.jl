@@ -7,6 +7,8 @@ const W = CSV
 
 buf() = IOBuffer()
 str(f) = (io = buf(); f(io); String(take!(io)))
+# Keep `@allocations` inside a compiled function, as in test/kernel.jl.
+allocsrows(rw) = @allocations foreach(identity, rw)
 
 mutable struct NoSchemaRows{T}
     values::Vector{T}
@@ -161,6 +163,11 @@ Base.iterate(::ThrowingRows, state=1) =
                                        header=false, bufsize=4)
     @test_throws ArgumentError collect(CSV.RowWriter((a=[12345],);
                                                       writeheader=false, bufsize=4))
+    # rows of a typed source render without boxing each cell
+    typed = (a=collect(1:200), b=rand(MersenneTwister(2), 200), c=fill(Date(2024), 200),
+             d=fill(DateTime(2024), 200), e=fill(Int32(7), 200), f=fill(1.5f0, 200))
+    allocsrows(CSV.RowWriter(typed))
+    @test allocsrows(CSV.RowWriter(typed)) < 15 * 200
     sized = CSV.RowWriter(rowtable)
     @test Base.IteratorSize(typeof(sized)) isa Base.HasLength
     @test length(sized) == 3

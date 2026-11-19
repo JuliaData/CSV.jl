@@ -1433,10 +1433,13 @@ _identity_transform(::Int, value) = value
 
 # --- RowWriter: the row-string iterator ---------------------------------------
 
-struct RowWriter{R, I, O <: WriteOpts, F, P}
+# `schema` is `nothing` when the source has none; its first row is then
+# prefetched into `initial` to find the column names.
+struct RowWriter{R, I, O <: WriteOpts, F, S <: Union{Nothing, Tables.Schema}}
     rows::R
     initial::I
     names::Vector{Symbol}
+    schema::S
     o::O
     writeheader::Bool
     transform::F
@@ -1456,8 +1459,7 @@ function _rowwriter(table, o::WriteOpts;
                    collect(Symbol, Tables.columnnames(initial[1])) :
                    collect(Symbol, sch.names)
     names, wantheader = _headeroptions(source_names, header, writeheader, defaultheader)
-    return RowWriter{typeof(rows), typeof(initial), typeof(o), typeof(transform), prefetched}(
-        rows, initial, names, o, wantheader, transform)
+    return RowWriter(rows, initial, names, sch, o, wantheader, transform)
 end
 
 function RowWriter(table; writeheader::Union{Nothing, Bool}=nothing,
@@ -1473,19 +1475,19 @@ _rowwritersize(::Base.HasLength) = Base.HasLength()
 _rowwritersize(::Base.HasShape) = Base.HasLength()
 _rowwritersize(::Base.IsInfinite) = Base.IsInfinite()
 _rowwritersize(::Base.SizeUnknown) = Base.SizeUnknown()
-Base.IteratorSize(::Type{<:RowWriter{R, I, O, F, true}}) where {R, I, O, F} =
+Base.IteratorSize(::Type{<:RowWriter{R, I, O, F, Nothing}}) where {R, I, O, F} =
     Base.SizeUnknown()
-Base.IteratorSize(::Type{<:RowWriter{R, I, O, F, false}}) where {R, I, O, F} =
+Base.IteratorSize(::Type{<:RowWriter{R, I, O, F, <:Tables.Schema}}) where {R, I, O, F} =
     _rowwritersize(Base.IteratorSize(R))
 Base.eltype(::Type{<:RowWriter}) = String
-function Base.length(rw::RowWriter{R, I, O, F, false}) where {R, I, O, F}
+function Base.length(rw::RowWriter{R, I, O, F, <:Tables.Schema}) where {R, I, O, F}
     nrows = length(rw.rows)
     hasheader = rw.writeheader && !isempty(rw.names)
     bomonly = rw.o.bom && nrows == 0 && !hasheader
     return nrows + hasheader + bomonly
 end
 
-Base.size(rw::RowWriter{R, I, O, F, false}) where {R, I, O, F} = (length(rw),)
+Base.size(rw::RowWriter{R, I, O, F, <:Tables.Schema}) where {R, I, O, F} = (length(rw),)
 
 # Append one Tables.jl row to `out` through the shared cell renderer.
 function _appendrow!(out::Vector{UInt8}, row, ncols::Int, o::WriteOpts, transform::F) where {F}
@@ -1519,12 +1521,12 @@ end
 _appendrow!(out::Vector{UInt8}, row, ::Nothing, ncols::Int, o::WriteOpts, transform::F) where {F} =
     _appendrow!(out, row, ncols, o, transform)
 
-_renderrow(row, names, o::WriteOpts, transform) =
-    String(_appendrow!(UInt8[], row, length(names), o, transform))
+_renderrow(row, rw::RowWriter) =
+    String(_appendrow!(UInt8[], row, rw.schema, length(rw.names), rw.o, rw.transform))
 
 function Base.iterate(rw::RowWriter, state=nothing)
     if state === nothing
-        it = rw isa RowWriter{<:Any, <:Any, <:Any, <:Any, true} ? rw.initial : iterate(rw.rows)
+        it = rw.schema === nothing ? rw.initial : iterate(rw.rows)
         if rw.writeheader && !isempty(rw.names)
             line = String(_renderheader(rw.names, rw.o))
             rw.o.bom && (line = string('\ufeff', line))
@@ -1532,7 +1534,7 @@ function Base.iterate(rw::RowWriter, state=nothing)
         elseif rw.o.bom
             it === nothing && return "\ufeff", (nothing,)
             row, rstate = it
-            return string('\ufeff', _renderrow(row, rw.names, rw.o, rw.transform)),
+            return string('\ufeff', _renderrow(row, rw)),
                    (iterate(rw.rows, rstate),)
         end
         state = (it,)
@@ -1540,7 +1542,7 @@ function Base.iterate(rw::RowWriter, state=nothing)
     it = state[1]
     it === nothing && return nothing
     row, rstate = it
-    return _renderrow(row, rw.names, rw.o, rw.transform), (iterate(rw.rows, rstate),)
+    return _renderrow(row, rw), (iterate(rw.rows, rstate),)
 end
 
 # Row sources render into one reusable block buffer that flushes to the sink at
@@ -1550,10 +1552,10 @@ function _emitrows!(io, rw::RowWriter; bom::Bool=false)
     out = UInt8[]
     rw.writeheader && !isempty(rw.names) && append!(out, _renderheader(rw.names, rw.o))
     ncols = length(rw.names)
-    it = rw isa RowWriter{<:Any, <:Any, <:Any, <:Any, true} ? rw.initial : iterate(rw.rows)
+    it = rw.schema === nothing ? rw.initial : iterate(rw.rows)
     # the loop specializes on the schema (a function barrier): known column
     # types make every cell read static, an unknown schema stays dynamic
-    _emitrowsloop!(io, out, rw, it, Tables.schema(rw.rows), ncols)
+    _emitrowsloop!(io, out, rw, it, rw.schema, ncols)
     return
 end
 
