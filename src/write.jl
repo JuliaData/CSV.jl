@@ -1490,7 +1490,7 @@ end
 Base.size(rw::RowWriter{R, I, O, F, <:Tables.Schema}) where {R, I, O, F} = (length(rw),)
 
 # Append one Tables.jl row to `out` through the shared cell renderer.
-function _appendrow!(out::Vector{UInt8}, row, ncols::Int, o::WriteOpts, transform::F) where {F}
+function _appendrow!(out::_WriteOutput, row, ncols::Int, o::WriteOpts, transform::F) where {F}
     start = length(out)
     for j in 1:ncols
         _appendcell!(out, transform(j, Tables.getcolumn(row, j)), o)
@@ -1505,7 +1505,7 @@ end
 # With a known schema each cell reads through a static
 # `Tables.getcolumn(row, T, i, name)` call (Tables unrolls the columns), so a
 # NamedTuple row renders without a dynamic dispatch per cell.
-function _appendrow!(out::Vector{UInt8}, row, sch::Tables.Schema, ncols::Int, o::WriteOpts,
+function _appendrow!(out::_WriteOutput, row, sch::Tables.Schema, ncols::Int, o::WriteOpts,
                      transform::F) where {F}
     start = length(out)
     Tables.eachcolumn(sch, row) do val, j, nm
@@ -1518,7 +1518,7 @@ function _appendrow!(out::Vector{UInt8}, row, sch::Tables.Schema, ncols::Int, o:
     return out
 end
 
-_appendrow!(out::Vector{UInt8}, row, ::Nothing, ncols::Int, o::WriteOpts, transform::F) where {F} =
+_appendrow!(out::_WriteOutput, row, ::Nothing, ncols::Int, o::WriteOpts, transform::F) where {F} =
     _appendrow!(out, row, ncols, o, transform)
 
 _renderrow(row, rw::RowWriter) =
@@ -1546,10 +1546,11 @@ function Base.iterate(rw::RowWriter, state=nothing)
 end
 
 # Row sources render into one reusable block buffer that flushes to the sink at
-# the block byte target: one sink write per block, not per row.
+# the block byte target: one sink write per block, not per row. The block
+# buffer, as for column sources, keeps cell appends from resizing a Vector.
 function _emitrows!(io, rw::RowWriter; bom::Bool=false)
     bom && Base.write(io, UInt8[0xef, 0xbb, 0xbf])
-    out = UInt8[]
+    out = _WriteBuffer()
     rw.writeheader && !isempty(rw.names) && append!(out, _renderheader(rw.names, rw.o))
     ncols = length(rw.names)
     it = rw.schema === nothing ? rw.initial : iterate(rw.rows)
@@ -1559,7 +1560,7 @@ function _emitrows!(io, rw::RowWriter; bom::Bool=false)
     return
 end
 
-function _emitrowsloop!(io, out::Vector{UInt8}, rw::RowWriter, it, sch, ncols::Int)
+function _emitrowsloop!(io, out::_WriteBuffer, rw::RowWriter, it, sch, ncols::Int)
     complete = length(out)
     try
         while it !== nothing
@@ -1569,8 +1570,8 @@ function _emitrowsloop!(io, out::Vector{UInt8}, rw::RowWriter, it, sch, ncols::I
             if complete >= WRITE_BLOCK_BYTES
                 # A sink failure may have written part of the block. Do not retry it.
                 complete = 0
-                Base.write(io, out)
-                empty!(out)
+                _writeblock(io, out)
+                resize!(out, 0)
             end
             it = iterate(rw.rows, state)
         end
@@ -1579,12 +1580,12 @@ function _emitrowsloop!(io, out::Vector{UInt8}, rw::RowWriter, it, sch, ncols::I
         # failing row is discarded; cleanup cannot replace the original error.
         resize!(out, complete)
         try
-            isempty(out) || Base.write(io, out)
+            isempty(out) || _writeblock(io, out)
         catch
         end
         rethrow()
     end
-    isempty(out) || Base.write(io, out)
+    isempty(out) || _writeblock(io, out)
     return
 end
 

@@ -1023,4 +1023,7 @@ end
     neg = (j, v) -> v isa Number ? -v : v
     @test str(io -> W.write(io, rows; transform=neg)) == str(io -> W.write(io, tbl; transform=neg))
     @test str(io -> W.write(io, (r for r in rows))) == plain    # schema-less generator
+    # a row source larger than one block flushes the block buffer mid-stream
+    long = (a=collect(1:300_000), s=fill("abcdefghijklmnopqrstuvwxyz", 300_000))
+    @test str(io -> W.write(io, Tables.rowtable(long))) == str(io -> W.write(io, long))
 end
