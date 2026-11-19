@@ -262,7 +262,17 @@ end
 @inline _byteat(bytes::AbstractVector{UInt8}, i::Int) = @inbounds bytes[i]
 _needsquotebytes(o::WriteOpts, bytes::AbstractVector{UInt8}, n::Int) =
     any(b -> _needsquote(o, b), bytes)
-_appendraw!(out::_WriteOutput, bytes::AbstractVector{UInt8}, n::Int) = append!(out, bytes)
+# Copy byte by byte rather than through `append!`: Base's generic `copyto!`
+# asks `unalias` for the source's `objectid`, which hashes the whole string
+# behind a `CodeUnits` on every cell.
+function _appendraw!(out::_WriteOutput, bytes::AbstractVector{UInt8}, n::Int)
+    len = length(out)
+    _room!(out, n)
+    @inbounds for i in 1:n
+        out[len + i] = bytes[i]
+    end
+    return out
+end
 function _appendraw!(out::_WriteOutput, p::Ptr{UInt8}, n::Int)
     len = length(out)
     _room!(out, n)
@@ -341,7 +351,10 @@ end
 _appendint!(out::_WriteOutput, x::Union{UInt128, UInt64, UInt32, UInt16, UInt8}) =
     _appendudec!(out, x, false)
 # other Integers (BigInt, ...) print via Base
-_appendint!(out::_WriteOutput, x::Integer) = append!(out, codeunits(string(x)))
+function _appendint!(out::_WriteOutput, x::Integer)
+    s = string(x)
+    return _appendraw!(out, codeunits(s), ncodeunits(s))
+end
 function _appendudec!(out::_WriteOutput, u::Unsigned, neg::Bool)
     nd = u == 0 ? 1 : ndigits(u; base=10)
     len = length(out)
@@ -670,7 +683,8 @@ _stagecell!(st::ColStage, x, o::WriteOpts) = _appendcell!(st.bytes, x, o)
         # the letters of true/false can only be structural under an exotic
         # dialect; the checked path handles that
         if o.quotestyle !== :none && !_boolbyte(o.delim) && !_boolbyte(o.oq) && !_boolbyte(o.cq)
-            append!(out, x ? _TRUE : _FALSE)
+            bytes = x ? _TRUE : _FALSE
+            _appendraw!(out, bytes, length(bytes))
         else
             _appendscalar!(out, x ? "true" : "false", o)
         end
