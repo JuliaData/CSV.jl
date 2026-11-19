@@ -355,7 +355,7 @@ function _dateformatkind(fmt::AbstractString)
             end
         else
             c in ('y', 'Y', 'm', 'd', 'u', 'U') && (kind |= 0x01)
-            c in ('H', 'M', 'S', 's', 'I', 'p') && (kind |= 0x02)
+            c in ('H', 'M', 'S', 's', 'n', 'I', 'p') && (kind |= 0x02)
         end
         i <= lastindex(fmt) && (i = nextind(fmt, i))
     end
